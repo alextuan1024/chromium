@@ -273,8 +273,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
     // When the animation completes, the preferred width will be the collapsed
     // width.
     ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
-    EXPECT_EQ(VerticalTabStripRegionView::kCollapsedWidth,
-              region_view()->GetPreferredSize().width());
+    EXPECT_EQ(0, region_view()->GetPreferredSize().width());
   }
 }
 
@@ -362,7 +361,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
 
   // Grow the area beyond the snap point and tab strip will start expanding.
   {
-    const int resize_amount = 50;
+    const int resize_amount =
+        VerticalTabStripRegionView::kCollapseSnapWidth - initial_width + 1;
     const int resize_width = initial_width + resize_amount;
     ASSERT_LT(VerticalTabStripRegionView::kCollapseSnapWidth, resize_width);
     ASSERT_LT(resize_width, VerticalTabStripRegionView::kUncollapsedMinWidth);

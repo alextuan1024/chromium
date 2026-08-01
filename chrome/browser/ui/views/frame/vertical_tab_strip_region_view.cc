@@ -104,6 +104,7 @@ VerticalTabStripRegionView::VerticalTabStripRegionView(
       state_controller_(state_controller) {
   // For z-ordering purposes this needs to be on a layer.
   SetPaintToLayer();
+  layer()->SetMasksToBounds(true);
   // Because corners may be transparent, this must be set to false.
   layer()->SetFillsBoundsOpaquely(false);
 
