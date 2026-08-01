@@ -626,6 +626,34 @@ class ToolbarViewVerticalTabsRTLTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+class ToolbarViewVerticalTabsTest
+    : public VerticalTabsInteractiveTestMixin<ToolbarViewTest> {
+ public:
+  void SetUp() override {
+    scoped_feature_list_.InitAndEnableFeature(tabs::kVerticalTabs);
+    ToolbarViewTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(ToolbarViewVerticalTabsTest,
+                       CollapseButtonPrecedesBackButton) {
+  RunTestSequence(
+      EnterVerticalTabsMode(),
+      WaitForShow(kVerticalTabStripCollapseButtonElementId), Do([this]() {
+        ToolbarView* toolbar =
+            BrowserView::GetBrowserViewForBrowser(browser())->toolbar();
+        ToolbarButton* collapse_button =
+            toolbar->vertical_tabs_collapse_button();
+        ASSERT_TRUE(collapse_button);
+        EXPECT_EQ(toolbar, collapse_button->parent());
+        EXPECT_LE(collapse_button->bounds().right(),
+                  toolbar->back_button()->bounds().x());
+      }));
+}
+
 IN_PROC_BROWSER_TEST_P(ToolbarViewVerticalTabsRTLTest, ReloadButtonWorks) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabId);
 
@@ -651,4 +679,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     /* no prefix */,
     ToolbarViewVerticalTabsRTLTest,
+    ::testing::Values(false));
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    ToolbarViewVerticalTabsTest,
     ::testing::Values(false));

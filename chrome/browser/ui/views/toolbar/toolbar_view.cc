@@ -210,6 +210,11 @@ constexpr int kInsideBorderAroundGlicButtons = 2;
 constexpr int kOutsideBorderAroundGlicButtons = 11;
 constexpr int kGlicButtonMargin = 5;
 
+class IconOnlyToolbarButton : public ToolbarButton {
+ private:
+  void SetText(std::u16string_view) override {}
+};
+
 // Returns whether `point` should be treated as part of the caption area in
 // `view`. Recursively traverses into icon containers to correctly handle
 // padding between buttons.
@@ -405,6 +410,33 @@ void ToolbarView::Init() {
 #endif
 
   // Always add children in order from left to right, for accessibility.
+  if (auto* vertical_tabs_controller =
+          tabs::VerticalTabStripStateController::From(browser_)) {
+    actions::ActionItem* collapse_action =
+        actions::ActionManager::Get().FindAction(
+            kActionToggleCollapseVertical, browser_->browser_window_features()
+                                               ->browser_actions()
+                                               ->root_action_item());
+    CHECK(collapse_action);
+
+    std::unique_ptr<ToolbarButton> collapse_button =
+        std::make_unique<IconOnlyToolbarButton>();
+    collapse_button->SetProperty(views::kElementIdentifierKey,
+                                 kVerticalTabStripCollapseButtonElementId);
+    vertical_tabs_collapse_button_ = AddChildView(std::move(collapse_button));
+    action_view_controller_ = std::make_unique<views::ActionViewController>();
+    action_view_controller_->CreateActionViewRelationship(
+        vertical_tabs_collapse_button_.get(), collapse_action->GetAsWeakPtr());
+
+    should_display_vertical_tabs_ =
+        vertical_tabs_controller->ShouldDisplayVerticalTabs();
+    vertical_tabs_collapse_button_->SetVisible(should_display_vertical_tabs_);
+    vertical_tab_subscription_ =
+        vertical_tabs_controller->RegisterOnModeChanged(
+            base::BindRepeating(&ToolbarView::OnVerticalTabStripModeChanged,
+                                base::Unretained(this)));
+  }
+
   if (!features::IsWebUIBackForwardButtonEnabled()) {
     back_ = AddChildView(std::make_unique<BackForwardButton>(
         BackForwardButton::Direction::kBack,
@@ -639,16 +671,6 @@ void ToolbarView::Init() {
   }
 
   if (glic::GlicEnabling::IsProfileEligible(browser_view_->GetProfile())) {
-    auto* vertical_tab_strip_state_controller =
-        tabs::VerticalTabStripStateController::From(browser_view_->browser());
-    if (vertical_tab_strip_state_controller) {
-      vertical_tab_subscription_ =
-          vertical_tab_strip_state_controller->RegisterOnModeChanged(
-              base::BindRepeating(&ToolbarView::OnVerticalTabStripModeChanged,
-                                  base::Unretained(this)));
-      should_display_vertical_tabs_ =
-          vertical_tab_strip_state_controller->ShouldDisplayVerticalTabs();
-    }
     UpdateGlicButtonVisibility();
   }
 
@@ -685,6 +707,7 @@ void ToolbarView::InitGlicContainer() {
 void ToolbarView::OnVerticalTabStripModeChanged(
     tabs::VerticalTabStripStateController* controller) {
   should_display_vertical_tabs_ = controller->ShouldDisplayVerticalTabs();
+  vertical_tabs_collapse_button_->SetVisible(should_display_vertical_tabs_);
   UpdateGlicButtonVisibility();
   UpdateGlicActorVisibility();
 }

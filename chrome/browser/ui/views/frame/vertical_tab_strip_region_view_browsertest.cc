@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -120,9 +121,10 @@ class VerticalTabStripRegionViewTest
   }
 
   void PressCollapseButton() {
-    region_view()
-        ->GetTopContainer()
-        ->GetCollapseButton()
+    browser()
+        ->GetBrowserView()
+        .toolbar()
+        ->vertical_tabs_collapse_button()
         ->button_controller()
         ->NotifyClick();
   }

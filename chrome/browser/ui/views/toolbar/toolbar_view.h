@@ -67,6 +67,7 @@ class OverflowButton;
 class PerformanceInterventionButton;
 
 namespace views {
+class ActionViewController;
 class FlexLayout;
 class LabelButton;
 }  // namespace views
@@ -174,7 +175,11 @@ class ToolbarView : public views::AccessiblePaneView,
   ExtensionsToolbarDesktop* extensions_container() const {
     return extensions_container_;
   }
+  ToolbarButton* back_button() const { return back_; }
   ToolbarButton* forward_button() const { return forward_; }
+  ToolbarButton* vertical_tabs_collapse_button() const {
+    return vertical_tabs_collapse_button_;
+  }
   ExtensionsToolbarButton* GetExtensionsButton() const;
   ReloadButton* reload_button() const { return reload_; }
   LocationBarView* location_bar_view() const { return location_bar_view_; }
@@ -369,6 +374,7 @@ class ToolbarView : public views::AccessiblePaneView,
   // Controls. Most of these can be null, e.g. in popup windows. Only
   // |location_bar_| is guaranteed to exist. These pointers are owned by the
   // view hierarchy.
+  raw_ptr<ToolbarButton> vertical_tabs_collapse_button_ = nullptr;
   raw_ptr<ToolbarButton> back_ = nullptr;
   raw_ptr<ToolbarButton> forward_ = nullptr;
   raw_ptr<ReloadButton> reload_ = nullptr;
@@ -378,6 +384,7 @@ class ToolbarView : public views::AccessiblePaneView,
   raw_ptr<SplitTabsToolbarButton> split_tabs_ = nullptr;
   raw_ptr<CustomTabBarView> custom_tab_bar_ = nullptr;
   raw_ptr<LocationBarView> location_bar_view_ = nullptr;
+  std::unique_ptr<views::ActionViewController> action_view_controller_;
 
   // An alias for `location_bar_view_` or `toolbar_webview_->GetLocationBar()`.
   raw_ptr<LocationBar> location_bar_ = nullptr;

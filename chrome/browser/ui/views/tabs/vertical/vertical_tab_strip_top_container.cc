@@ -46,11 +46,6 @@ VerticalTabStripTopContainer::VerticalTabStripTopContainer(
               kVerticalTabStripTopContainerElementId);
   SetLayoutManager(std::make_unique<views::DelegatingLayoutManager>(this));
 
-  collapse_button_ = AddChildButtonFor(kActionToggleCollapseVertical);
-  collapse_button_->set_context_menu_controller(this);
-  collapse_button_->SetProperty(views::kElementIdentifierKey,
-                                kVerticalTabStripCollapseButtonElementId);
-
   if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
     unfocus_button_ = AddChildButtonFor(kActionUnfocusTabGroup);
     unfocus_button_->SetProperty(views::kElementIdentifierKey,
