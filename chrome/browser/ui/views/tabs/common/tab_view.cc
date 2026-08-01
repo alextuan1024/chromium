@@ -1284,9 +1284,10 @@ int TabView::UncollapsedMinWidth() {
 
 // static
 int TabView::CollapsedWidth() {
-  return VerticalTabStripRegionView::kCollapsedWidth -
-         2 * GetLayoutConstant(
-                 LayoutConstant::kVerticalTabStripHorizontalPadding);
+  return std::max(
+      0, VerticalTabStripRegionView::kCollapsedWidth -
+             2 * GetLayoutConstant(
+                     LayoutConstant::kVerticalTabStripHorizontalPadding));
 }
 
 bool TabView::IsInExpandOnHover(int width) const {

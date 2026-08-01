@@ -527,7 +527,7 @@ BASE_FEATURE_PARAM(bool,
                    false);
 
 
-BASE_FEATURE(kVerticalTabsGrabHandleRemoval, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kVerticalTabsGrabHandleRemoval, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If false, then the grab handle will only be removed when the vertical tab
 // strip is expanded.

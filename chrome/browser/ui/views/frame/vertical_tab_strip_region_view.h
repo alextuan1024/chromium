@@ -65,7 +65,7 @@ class VerticalTabStripRegionView final
   // TODO(crbug.com/465832180): Replace constant based width final max width for
   // view.
   static constexpr int kUncollapsedMaxWidth = 400;
-  static constexpr int kCollapsedWidth = 56;
+  static constexpr int kCollapsedWidth = 0;
   // TODO(crbug.com/465833741): Determine snapping behavior.
   static constexpr int kCollapseSnapWidth =
       (kUncollapsedMinWidth + kCollapsedWidth) / 2;
