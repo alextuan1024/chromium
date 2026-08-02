@@ -2930,7 +2930,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
                 if (chrome::IsCtrlTabMruEnabled(bwi)) {
                   base::RecordAction(
                       base::UserMetricsAction("Accel_CycleToNextTab"));
-                  chrome::CycleToMruTab(bwi);
+                  chrome::CycleToMruTab(bwi, /*reverse=*/false);
                 } else {
                   base::RecordAction(
                       base::UserMetricsAction("Accel_SelectNextTab"));
@@ -2949,7 +2949,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
                 if (chrome::IsCtrlTabMruEnabled(bwi)) {
                   base::RecordAction(
                       base::UserMetricsAction("Accel_CycleToPrevTab"));
-                  chrome::CycleToMruTab(bwi);
+                  chrome::CycleToMruTab(bwi, /*reverse=*/true);
                 } else {
                   base::RecordAction(
                       base::UserMetricsAction("Accel_SelectPreviousTab"));

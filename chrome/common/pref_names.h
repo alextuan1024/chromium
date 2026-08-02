@@ -650,8 +650,8 @@ inline constexpr char kSplitViewDragAndDropNudgeShownCount[] =
 inline constexpr char kSplitViewDragAndDropNudgeUsedCount[] =
     "browser.split_view_drag_and_drop_nudge_used_count";
 
-// A boolean pref set to true if Ctrl-Tab should switch between the two most
-// recently used tabs.
+// A boolean pref set to true if Ctrl-Tab should cycle through tabs in most
+// recently used order.
 inline constexpr char kCtrlTabMru[] = "browser.ctrl_tab_mru";
 
 // An int pref that controls the voice typing feature. This is managed by
