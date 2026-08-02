@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/browser_commands.h"
 
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -21,6 +22,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "base/no_destructor.h"
 #include "base/strings/escape.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -203,7 +205,9 @@
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/models/list_selection_model.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/event_monitor.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -482,48 +486,93 @@ Browser* CreateNewBrowser(Browser* browser, bool user_gesture) {
   return Browser::Create(params);
 }
 
-struct MruTabResult {
-  raw_ptr<BrowserWindowInterface> browser;
-  int index;
+struct MruTabEntry {
+  tabs::TabHandle handle;
+  base::Time last_active;
 };
 
-std::optional<MruTabResult> GetGlobalMruTab(
-    BrowserCollection* collection,
-    BrowserWindowInterface* active_browser) {
-  BrowserWindowInterface* mru_browser = nullptr;
-  int mru_idx = -1;
-  base::Time max_time = base::Time::Min();
-
+std::vector<tabs::TabHandle> GetGlobalMruTabs(BrowserCollection* collection) {
+  std::vector<MruTabEntry> entries;
   collection->ForEach(
       [&](BrowserWindowInterface* b) {
         TabStripModel* model = b->GetTabStripModel();
-        int i = 0;
-        for (auto it = model->begin(); it != model->end(); ++it, ++i) {
-          if (b == active_browser && i == model->active_index()) {
-            continue;
-          }
-          content::WebContents* contents = (*it)->GetContents();
+        for (tabs::TabInterface* tab : *model) {
+          content::WebContents* contents = tab->GetContents();
           auto* lifecycle_unit =
               resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
                   contents);
           if (!lifecycle_unit) {
             continue;
           }
-          base::Time last_active = lifecycle_unit->GetLastFocusedTime();
-          if (last_active > max_time) {
-            max_time = last_active;
-            mru_browser = b;
-            mru_idx = i;
-          }
+          entries.push_back(
+              {tab->GetHandle(), lifecycle_unit->GetLastFocusedTime()});
         }
         return true;
       },
       BrowserCollection::Order::kActivation);
 
-  if (mru_browser) {
-    return MruTabResult{mru_browser, mru_idx};
+  std::stable_sort(entries.begin(), entries.end(),
+                   [](const MruTabEntry& lhs, const MruTabEntry& rhs) {
+                     return lhs.last_active > rhs.last_active;
+                   });
+  std::vector<tabs::TabHandle> tabs;
+  tabs.reserve(entries.size());
+  for (const MruTabEntry& entry : entries) {
+    tabs.push_back(entry.handle);
   }
-  return std::nullopt;
+  return tabs;
+}
+
+class MruTabCycle : public ui::EventObserver {
+ public:
+  MruTabCycle() = default;
+
+  std::optional<tabs::TabHandle> Advance(BrowserCollection* collection,
+                                         tabs::TabHandle active_tab,
+                                         bool reverse) {
+    std::vector<tabs::TabHandle> live_tabs = GetGlobalMruTabs(collection);
+    auto active = std::find(live_tabs.begin(), live_tabs.end(), active_tab);
+    if (live_tabs.size() < 2 || active == live_tabs.end()) {
+      ring_.clear();
+      return std::nullopt;
+    }
+
+    // ponytail: O(n^2) set validation; use a hash set if profiles with
+    // thousands of tabs make shortcut handling measurably slow.
+    if (ring_.size() != live_tabs.size() ||
+        !std::is_permutation(ring_.begin(), ring_.end(), live_tabs.begin()) ||
+        ring_[cursor_] != active_tab) {
+      ring_ = std::move(live_tabs);
+      cursor_ = std::distance(
+          ring_.begin(), std::find(ring_.begin(), ring_.end(), active_tab));
+    }
+    if (!event_monitor_) {
+      event_monitor_ = views::EventMonitor::CreateApplicationMonitor(
+          this, gfx::NativeWindow(), {ui::EventType::kKeyReleased});
+    }
+
+    cursor_ = reverse ? (cursor_ + ring_.size() - 1) % ring_.size()
+                      : (cursor_ + 1) % ring_.size();
+    return ring_[cursor_];
+  }
+
+  void OnEvent(const ui::Event& event) override {
+    if (event.AsKeyEvent()->key_code() == ui::VKEY_CONTROL) {
+      ring_.clear();
+      cursor_ = 0;
+      event_monitor_.reset();
+    }
+  }
+
+ private:
+  std::vector<tabs::TabHandle> ring_;
+  size_t cursor_ = 0;
+  std::unique_ptr<views::EventMonitor> event_monitor_;
+};
+
+MruTabCycle& GetMruTabCycle() {
+  static base::NoDestructor<MruTabCycle> cycle;
+  return *cycle;
 }
 
 void ActivateTab(TabStripModel* model,
@@ -1468,14 +1517,24 @@ bool IsCtrlTabMruEnabled(BrowserWindowInterface* browser) {
 }
 
 void CycleToMruTab(BrowserWindowInterface* browser,
+                   bool reverse,
                    TabStripUserGestureDetails gesture_detail) {
-  auto mru_result = GetGlobalMruTab(
-      ProfileBrowserCollection::GetForProfile(browser->GetProfile()), browser);
-  if (mru_result) {
-    if (mru_result->browser != browser) {
-      mru_result->browser->GetWindow()->Activate();
+  tabs::TabInterface* active_tab = browser->GetTabStripModel()->GetActiveTab();
+  if (!active_tab) {
+    return;
+  }
+  auto target_handle = GetMruTabCycle().Advance(
+      ProfileBrowserCollection::GetForProfile(browser->GetProfile()),
+      active_tab->GetHandle(), reverse);
+  tabs::TabInterface* target = target_handle ? target_handle->Get() : nullptr;
+  BrowserWindowInterface* target_browser =
+      target ? target->GetBrowserWindowInterface() : nullptr;
+  if (target_browser) {
+    if (target_browser != browser) {
+      target_browser->GetWindow()->Activate();
     }
-    ActivateTab(mru_result->browser->GetTabStripModel(), mru_result->index,
+    TabStripModel* target_model = target_browser->GetTabStripModel();
+    ActivateTab(target_model, target_model->GetIndexOfTab(target),
                 gesture_detail);
   }
 }

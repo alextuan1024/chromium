@@ -1628,7 +1628,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   contextual_search::ContextualSearchService::RegisterProfilePrefs(registry);
   contextual_tasks::RegisterProfilePrefs(registry);
   registry->RegisterIntegerPref(prefs::kContextualTasksNextPanelOpenCount, 0);
-  registry->RegisterBooleanPref(prefs::kCtrlTabMru, false);
+  registry->RegisterBooleanPref(prefs::kCtrlTabMru, true);
   cross_device::RegisterProfilePrefs(registry);
   enterprise::RegisterIdentifiersProfilePrefs(registry);
   enterprise_connectors::RegisterProfilePrefs(registry);

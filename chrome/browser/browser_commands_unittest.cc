@@ -138,9 +138,17 @@ TEST_F(BrowserCommandsTest, CycleToMruTab) {
 
   CommandUpdater* updater = chrome::BrowserCommandController::From(browser());
 
-  // If MRU is active, the most recently used tab before 2 is 0.
+  // Cycle through every tab in MRU order, then wrap around.
   updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
   EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  EXPECT_EQ(2, browser()->tab_strip_model()->active_index());
+
+  // Reverse direction traverses the same ring backwards.
+  updater->ExecuteCommand(IDC_CYCLE_TO_PREV_TAB);
+  EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
 }
 
 // Tests that IDC_SELECT_NEXT_TAB and IDC_SELECT_PREVIOUS_TAB perform

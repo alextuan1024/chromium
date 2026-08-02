@@ -775,7 +775,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_CYCLE_TO_NEXT_TAB:
       if (IsCtrlTabMruEnabled(browser_)) {
         base::RecordAction(base::UserMetricsAction("Accel_CycleToNextTab"));
-        CycleToMruTab(browser_,
+        CycleToMruTab(browser_, /*reverse=*/false,
                       TabStripUserGestureDetails(
                           TabStripUserGestureDetails::GestureType::kKeyboard,
                           time_stamp));
@@ -790,7 +790,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_CYCLE_TO_PREV_TAB:
       if (IsCtrlTabMruEnabled(browser_)) {
         base::RecordAction(base::UserMetricsAction("Accel_CycleToPrevTab"));
-        CycleToMruTab(browser_,
+        CycleToMruTab(browser_, /*reverse=*/true,
                       TabStripUserGestureDetails(
                           TabStripUserGestureDetails::GestureType::kKeyboard,
                           time_stamp));
