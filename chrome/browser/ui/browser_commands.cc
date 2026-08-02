@@ -548,7 +548,8 @@ class MruTabCycle : public ui::EventObserver {
     }
     if (!event_monitor_) {
       event_monitor_ = views::EventMonitor::CreateApplicationMonitor(
-          this, gfx::NativeWindow(), {ui::EventType::kKeyReleased});
+          this, gfx::NativeWindow(),
+          {ui::EventType::kKeyPressed, ui::EventType::kKeyReleased});
     }
 
     cursor_ = reverse ? (cursor_ + ring_.size() - 1) % ring_.size()
