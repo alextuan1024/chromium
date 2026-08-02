@@ -145,7 +145,6 @@ _CONFIG = [
             'base::PowerMonitor',
             'base::Process',
             'base::RadToDeg',
-            'base::RangeAsRvalues',
             'base::raw_span',
             'base::RefCountedData',
             'base::RefCountedMemory',
@@ -205,9 +204,6 @@ _CONFIG = [
             'base::expected',
             'base::ok',
             'base::unexpected',
-
-            # //base/types/zip.h
-            'base::zip',
 
             # //base/functional/bind.h
             'base::IgnoreResult',

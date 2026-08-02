@@ -31,6 +31,7 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/base_window.h"
 
 namespace ttc {
 namespace {
@@ -776,10 +777,115 @@ IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, GetToolDefinitions) {
   ASSERT_TRUE(list.has_value());
   ASSERT_FALSE(list->empty());
 
+  // Verify formatted JSON string contains full functionDeclarations schema
   auto tool_list_str = base::WriteJsonWithOptions(*list, base::OPTIONS_PRETTY_PRINT);
   ASSERT_TRUE(tool_list_str.has_value());
   EXPECT_FALSE(tool_list_str->empty());
   EXPECT_NE(std::string::npos, tool_list_str->find("functionDeclarations"));
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, SetTextSuccess) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,<html><body><input id='test_input' "
+           "value='old' /></body></html>")));
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  int dom_node_id =
+      content::GetDOMNodeId(*contents->GetPrimaryMainFrame(), "#test_input")
+          .value();
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->SetText(dom_node_id, "new_value", future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_EQ("new_value",
+            content::EvalJs(contents, "document.getElementById('test_input').value"));
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, SetTextNotFound) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,<html><body><input id='test_input' "
+           "value='old' /></body></html>")));
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->SetText(999, "new_value", future.GetCallback());
+
+  EXPECT_FALSE(future.Get().has_value());
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, ClickElementCheckbox) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,<html><body><input type='checkbox' id='test_check' "
+           "/></body></html>")));
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  int dom_node_id =
+      content::GetDOMNodeId(*contents->GetPrimaryMainFrame(), "#test_check")
+          .value();
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->ClickElement(dom_node_id, future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_EQ(true,
+            content::EvalJs(contents, "document.getElementById('test_check').checked"));
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, ClickElementRadioButton) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,<html><body><input type='radio' id='test_radio' "
+           "/></body></html>")));
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  int dom_node_id =
+      content::GetDOMNodeId(*contents->GetPrimaryMainFrame(), "#test_radio")
+          .value();
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->ClickElement(dom_node_id, future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_EQ(true,
+            content::EvalJs(contents, "document.getElementById('test_radio').checked"));
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, SetFullscreen) {
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->SetFullscreen(true, future.GetCallback());
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_TRUE(browser()->GetWindow()->IsFullscreen());
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future2;
+  tools()->SetFullscreen(false, future2.GetCallback());
+  EXPECT_TRUE(future2.Get().has_value());
+  EXPECT_FALSE(browser()->GetWindow()->IsFullscreen());
+}
+
+IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, SelectOptionSuccess) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,<html><body><select id='test_select'><option "
+           "value='opt1'>Opt 1</option><option value='opt2'>Opt 2</option></select></body></html>")));
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  int dom_node_id =
+      content::GetDOMNodeId(*contents->GetPrimaryMainFrame(), "#test_select")
+          .value();
+
+  base::test::TestFuture<base::expected<std::monostate, std::string>> future;
+  tools()->SelectOption(dom_node_id, "opt2", future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_EQ("opt2",
+            content::EvalJs(contents, "document.getElementById('test_select').value"));
 }
 }  // namespace
 }  // namespace ttc

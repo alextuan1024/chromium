@@ -11,13 +11,17 @@
 
 @protocol SuggestionsFromGeminiConsumer;
 @class SuggestionsFromGeminiMediator;
-class PrefService;
+@class PrefBackedBoolean;
 
 // Delegate for SuggestionsFromGeminiMediator.
 @protocol SuggestionsFromGeminiMediatorDelegate <NSObject>
 
-// Tells the delegate to open the Gemini connected apps management page.
-- (void)suggestionsFromGeminiMediatorOpenConnectedApps:
+// Tells the delegate that the user selected the Connected Apps option.
+- (void)suggestionsFromGeminiMediatorDidSelectConnectedApps:
+    (SuggestionsFromGeminiMediator*)mediator;
+
+// Tells the delegate that the user selected the Help Improve option.
+- (void)suggestionsFromGeminiMediatorDidSelectHelpImprove:
     (SuggestionsFromGeminiMediator*)mediator;
 
 @end
@@ -32,8 +36,8 @@ class PrefService;
 // The delegate for this mediator.
 @property(nonatomic, weak) id<SuggestionsFromGeminiMediatorDelegate> delegate;
 
-- (instancetype)initWithPrefService:(PrefService*)prefService
-    NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithPrefBackedBoolean:
+    (PrefBackedBoolean*)personalContextSwitchEnabled NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

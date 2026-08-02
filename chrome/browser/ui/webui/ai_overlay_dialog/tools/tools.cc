@@ -30,9 +30,13 @@
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/actor.mojom.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
@@ -777,6 +781,163 @@ void AiOverlayTools::OpenPage(const std::string& query,
           std::move(response), std::move(callback), weak_factory_.GetWeakPtr(),
           target_id_counter),
       &task_tracker_);
+}
+
+void AiOverlayTools::SetText(int32_t dom_node_id,
+                             const std::string& text,
+                             SetTextCallback callback) {
+  RecordToolCallInvoked("SetText");
+  // TODO(crbug.com/540575255): Scope form editing actions to the target
+  // WebContents active when tool invocation was requested.
+  content::WebContents* contents =
+      browser_->tab_strip_model()->GetActiveWebContents();
+  if (!contents) {
+    std::move(callback).Run(base::unexpected("No active tab"));
+    return;
+  }
+
+  // TODO(crbug.com/540584855): Support targeting subframes/iframes when Page
+  // Content Summary includes iframe DOM node IDs.
+  content::RenderFrameHost* rfh = contents->GetPrimaryMainFrame();
+  if (!rfh) {
+    std::move(callback).Run(base::unexpected("No main frame"));
+    return;
+  }
+
+  mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> chrome_render_frame;
+  rfh->GetRemoteAssociatedInterfaces()->GetInterface(&chrome_render_frame);
+
+  auto type_action = actor::mojom::TypeAction::New();
+  type_action->mode = actor::mojom::TypeAction::Mode::kDeleteExisting;
+  type_action->text = text;
+  type_action->follow_by_enter = false;
+
+  auto invocation = actor::mojom::ToolInvocation::New();
+  invocation->task_id = actor::TaskId();
+  invocation->target = actor::mojom::ToolTarget::NewDomNodeId(dom_node_id);
+  invocation->action =
+      actor::mojom::ToolAction::NewType(std::move(type_action));
+
+  auto* raw_frame = chrome_render_frame.get();
+  raw_frame->InvokeTool(
+      std::move(invocation),
+      base::BindOnce(
+          [](mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> remote,
+             SetTextCallback cb, actor::mojom::ActionResultPtr res) {
+            if (res && res->code == actor::mojom::ActionResultCode::kOk) {
+              std::move(cb).Run(base::ok(std::monostate()));
+            } else {
+              std::move(cb).Run(base::unexpected(
+                  res ? res->message : "Input field not found or hidden"));
+            }
+          },
+          std::move(chrome_render_frame), std::move(callback)));
+}
+
+void AiOverlayTools::ClickElement(int32_t dom_node_id,
+                                  ClickElementCallback callback) {
+  RecordToolCallInvoked("ClickElement");
+  content::WebContents* contents =
+      browser_->tab_strip_model()->GetActiveWebContents();
+  if (!contents) {
+    std::move(callback).Run(base::unexpected("No active tab"));
+    return;
+  }
+
+  content::RenderFrameHost* rfh = contents->GetPrimaryMainFrame();
+  if (!rfh) {
+    std::move(callback).Run(base::unexpected("No main frame"));
+    return;
+  }
+
+  mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> chrome_render_frame;
+  rfh->GetRemoteAssociatedInterfaces()->GetInterface(&chrome_render_frame);
+
+  auto click_action = actor::mojom::ClickAction::New();
+  click_action->type = actor::mojom::ClickType::kLeft;
+  click_action->count = actor::mojom::ClickCount::kSingle;
+
+  auto invocation = actor::mojom::ToolInvocation::New();
+  invocation->task_id = actor::TaskId();
+  invocation->target = actor::mojom::ToolTarget::NewDomNodeId(dom_node_id);
+  invocation->action =
+      actor::mojom::ToolAction::NewClick(std::move(click_action));
+
+  auto* raw_frame = chrome_render_frame.get();
+  raw_frame->InvokeTool(
+      std::move(invocation),
+      base::BindOnce(
+          [](mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> remote,
+             ClickElementCallback cb, actor::mojom::ActionResultPtr res) {
+            if (res && res->code == actor::mojom::ActionResultCode::kOk) {
+              std::move(cb).Run(base::ok(std::monostate()));
+            } else {
+              std::move(cb).Run(base::unexpected(
+                  (res && !res->message.empty())
+                      ? res->message
+                      : "Element not found or non-clickable"));
+            }
+          },
+          std::move(chrome_render_frame), std::move(callback)));
+}
+
+void AiOverlayTools::SetFullscreen(bool fullscreen,
+                                   SetFullscreenCallback callback) {
+  RecordToolCallInvoked("SetFullscreen");
+  if (!browser_ || !browser_->GetWindow()) {
+    std::move(callback).Run(base::unexpected("No active browser window"));
+    return;
+  }
+  bool is_fullscreen = browser_->GetWindow()->IsFullscreen();
+  if (fullscreen != is_fullscreen) {
+    chrome::ToggleFullscreenMode(browser_.get());
+  }
+  std::move(callback).Run(base::ok(std::monostate()));
+}
+
+void AiOverlayTools::SelectOption(int32_t dom_node_id,
+                                  const std::string& value,
+                                  SelectOptionCallback callback) {
+  RecordToolCallInvoked("SelectOption");
+  content::WebContents* contents =
+      browser_->GetTabStripModel()->GetActiveWebContents();
+  if (!contents) {
+    std::move(callback).Run(base::unexpected("No active tab"));
+    return;
+  }
+
+  content::RenderFrameHost* rfh = contents->GetPrimaryMainFrame();
+  if (!rfh) {
+    std::move(callback).Run(base::unexpected("No main frame"));
+    return;
+  }
+
+  mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> chrome_render_frame;
+  rfh->GetRemoteAssociatedInterfaces()->GetInterface(&chrome_render_frame);
+
+  auto select_action = actor::mojom::SelectAction::New();
+  select_action->value = value;
+
+  auto invocation = actor::mojom::ToolInvocation::New();
+  invocation->task_id = actor::TaskId();
+  invocation->target = actor::mojom::ToolTarget::NewDomNodeId(dom_node_id);
+  invocation->action =
+      actor::mojom::ToolAction::NewSelect(std::move(select_action));
+
+  auto* raw_frame = chrome_render_frame.get();
+  raw_frame->InvokeTool(
+      std::move(invocation),
+      base::BindOnce(
+          [](mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> remote,
+             SelectOptionCallback cb, actor::mojom::ActionResultPtr res) {
+            if (res && res->code == actor::mojom::ActionResultCode::kOk) {
+              std::move(cb).Run(base::ok(std::monostate()));
+            } else {
+              std::move(cb).Run(base::unexpected(
+                  res ? res->message : "Dropdown element or option value not found"));
+            }
+          },
+          std::move(chrome_render_frame), std::move(callback)));
 }
 
 void AiOverlayTools::GetToolDefinitions(GetToolDefinitionsCallback callback) {

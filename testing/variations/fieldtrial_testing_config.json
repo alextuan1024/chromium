@@ -3003,24 +3003,6 @@
             ]
         }
     ],
-    "AutofillEnableDownstreamCardAwarenessIph": [
-        {
-            "platforms": [
-                "chromeos",
-                "linux",
-                "mac",
-                "windows"
-            ],
-            "experiments": [
-                {
-                    "name": "Enabled",
-                    "enable_features": [
-                        "AutofillEnableDownstreamCardAwarenessIph"
-                    ]
-                }
-            ]
-        }
-    ],
     "AutofillEnableImportOfUnchangedValuesForCountryAndState": [
         {
             "platforms": [
@@ -3091,6 +3073,25 @@
                     "name": "Enabled",
                     "enable_features": [
                         "AutofillEnableSaveAndFill"
+                    ]
+                }
+            ]
+        }
+    ],
+    "AutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos": [
+        {
+            "platforms": [
+                "android",
+                "chromeos",
+                "linux",
+                "mac",
+                "windows"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled",
+                    "enable_features": [
+                        "AutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos"
                     ]
                 }
             ]
@@ -5107,6 +5108,24 @@
                     "name": "Enabled",
                     "enable_features": [
                         "CheckAutoCommitInCommitAndRollback"
+                    ]
+                }
+            ]
+        }
+    ],
+    "ChromeDarkNeutrals26": [
+        {
+            "platforms": [
+                "chromeos",
+                "linux",
+                "mac",
+                "windows"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled",
+                    "enable_features": [
+                        "ChromeDarkNeutrals26"
                     ]
                 }
             ]
@@ -9288,27 +9307,6 @@
                     },
                     "enable_features": [
                         "DIPS"
-                    ]
-                }
-            ]
-        }
-    ],
-    "DirectOpusAudioDecoding": [
-        {
-            "platforms": [
-                "android",
-                "android_webview",
-                "chromeos",
-                "fuchsia",
-                "linux",
-                "mac",
-                "windows"
-            ],
-            "experiments": [
-                {
-                    "name": "Enabled",
-                    "enable_features": [
-                        "DirectOpusAudioDecoding"
                     ]
                 }
             ]
@@ -15470,23 +15468,6 @@
             ]
         }
     ],
-    "IosAppStoreAgeSignal": [
-        {
-            "platforms": [
-                "ios"
-            ],
-            "experiments": [
-                {
-                    "name": "Enabled",
-                    "enable_features": [
-                        "BuildExternalPrivacyContext",
-                        "EnforceCanSignInToChromeCapability",
-                        "ReadContextualAccountCapabilities"
-                    ]
-                }
-            ]
-        }
-    ],
     "IosOptimizedCPEPerformance": [
         {
             "platforms": [
@@ -17477,6 +17458,52 @@
             ]
         }
     ],
+    "NoopRuntimeMutableStudy1": [
+        {
+            "platforms": [
+                "android",
+                "chromeos",
+                "ios",
+                "linux",
+                "mac",
+                "windows"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled_20260731",
+                    "enable_features": [
+                        "NoopRuntimeMutable1"
+                    ],
+                    "disable_features": [
+                        "NoopRuntimeMutable2"
+                    ]
+                }
+            ]
+        }
+    ],
+    "NoopRuntimeMutableStudy2": [
+        {
+            "platforms": [
+                "android",
+                "chromeos",
+                "ios",
+                "linux",
+                "mac",
+                "windows"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled_20260731",
+                    "enable_features": [
+                        "NoopRuntimeMutable3"
+                    ],
+                    "disable_features": [
+                        "NoopRuntimeMutable4"
+                    ]
+                }
+            ]
+        }
+    ],
     "NotificationTrampolineNoNewTask": [
         {
             "platforms": [
@@ -18652,8 +18679,7 @@
                 {
                     "name": "Enabled",
                     "enable_features": [
-                        "AiModePageActionOptimization",
-                        "LensOverlayHomeworkPageActionFocusOptimization"
+                        "AiModePageActionOptimization"
                     ]
                 }
             ]
@@ -25852,6 +25878,26 @@
             ]
         }
     ],
+    "VariationsRuntimeMutability": [
+        {
+            "platforms": [
+                "android",
+                "chromeos",
+                "ios",
+                "linux",
+                "mac",
+                "windows"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled_20260731",
+                    "enable_features": [
+                        "VariationsRuntimeMutability"
+                    ]
+                }
+            ]
+        }
+    ],
     "VariationsStickyNoopTest": [
         {
             "platforms": [
@@ -27413,6 +27459,21 @@
                     "name": "Enabled",
                     "enable_features": [
                         "WebViewInterceptedCookieHeader"
+                    ]
+                }
+            ]
+        }
+    ],
+    "WebViewLatchedCookiePolicy": [
+        {
+            "platforms": [
+                "android_webview"
+            ],
+            "experiments": [
+                {
+                    "name": "Enabled_20260116",
+                    "enable_features": [
+                        "WebViewLatchedCookiePolicy"
                     ]
                 }
             ]

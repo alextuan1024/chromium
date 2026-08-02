@@ -15,7 +15,9 @@
 #include "base/containers/span.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/types/id_type.h"
+#include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom.h"
@@ -37,12 +39,16 @@ class PersonalContextService;
 
 namespace context_hub {
 
-class AutoTodosStore;
 class TabGroupStore;
 class ContextHubBackend;
 
-class ContextHubService : public KeyedService {
+class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
  public:
+  class Observer : public base::CheckedObserver {
+   public:
+    virtual void OnAutoTodosChanged(base::span<const AutoTodoEntry> entries) {}
+  };
+
   ContextHubService(
       personal_context::PersonalContextService* personal_context_service,
       optimization_guide::RemoteModelExecutor*
@@ -56,12 +62,18 @@ class ContextHubService : public KeyedService {
   ContextHubService& operator=(const ContextHubService&) = delete;
   ~ContextHubService() override;
 
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
+  // AutoTodosStore::Observer:
+  void OnAutoTodosChanged(base::span<const AutoTodoEntry> entries) override;
+
   using AutoTodosCallback = base::OnceCallback<void(
       std::optional<personal_context::proto::AutoTodosResponse>)>;
 
-  // Generates auto-todos and invokes `callback` on completion, whether it's
-  // successful or not.
-  void GenerateAutoTodos(AutoTodosCallback callback);
+  // Generates 1P AutoTodos and saves them in the AutoTodos store. Invokes
+  // `callback` on completion with the response if successful, or std::nullopt.
+  void GenerateFirstPartyAutoTodos(AutoTodosCallback callback);
 
   // Stores or updates a todo feedback item in the in-memory cache.
   void SetTodoFeedback(
@@ -146,8 +158,9 @@ class ContextHubService : public KeyedService {
                          GroupTabsCallback callback);
 
   // Handles the async response from the AutoTodos fetch.
-  void OnAutoTodosFetched(AutoTodosCallback callback,
-                          personal_context::FetchContextResult result);
+  void OnFirstPartyAutoTodosFetched(
+      AutoTodosCallback callback,
+      personal_context::FetchContextResult result);
 
   // Handles the result of the model execution from `GenerateTabGroups`.
   void HandleTabGroupModelExecutionResult(
@@ -189,6 +202,8 @@ class ContextHubService : public KeyedService {
   std::unique_ptr<TabGroupStore> tab_group_store_;
 
   std::unique_ptr<AutoTodosStore> auto_todos_store_;
+
+  base::ObserverList<Observer> observers_;
 
   base::WeakPtrFactory<ContextHubService> weak_factory_{this};
 };

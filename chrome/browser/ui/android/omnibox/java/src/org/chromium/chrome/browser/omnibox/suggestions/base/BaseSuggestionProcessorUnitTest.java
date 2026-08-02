@@ -17,6 +17,8 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
+import android.view.Gravity;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -56,6 +58,7 @@ import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.Page
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
@@ -353,7 +356,7 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     @Config(qualifiers = "w400dp")
-    public void setRemoveOrRefineAction_noRmoveActionOnPhone() {
+    public void setRemoveOrRefineAction_noRemoveActionOnPhone() {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
 
         var action = setUpDeleteScenarioForRemoveActionTesting();
@@ -368,7 +371,6 @@ public class BaseSuggestionProcessorUnitTest {
     @Test
     @Config(qualifiers = "sw600dp")
     public void setRemoveOrRefineAction_noRemoveActionOnTabletWithoutPeripherals() {
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
         DeviceInput.setSupportsPrecisionPointerForTesting(false);
 
         var action = setUpDeleteScenarioForRemoveActionTesting();
@@ -392,9 +394,35 @@ public class BaseSuggestionProcessorUnitTest {
                         R.string.accessibility_omnibox_remove_suggestion,
                         mSuggestion.getFillIntoEdit());
         assertEquals(expectedDescription, action.accessibilityDescription);
-        assertEquals(R.drawable.btn_close, shadowOf(action.icon.drawable).getCreatedFromResId());
+        var layerDrawable = (LayerDrawable) action.icon.drawable;
+        assertEquals(
+                R.drawable.btn_close, shadowOf(layerDrawable.getDrawable(0)).getCreatedFromResId());
+        assertEquals(Gravity.CENTER, layerDrawable.getLayerGravity(0));
 
         var monitor = new UserActionTester();
+        action.callback.run();
+        assertEquals(1, monitor.getActionCount("MobileOmniboxRemoveSuggestion.Button"));
+        assertEquals(1, monitor.getActions().size());
+        monitor.tearDown();
+    }
+
+    @Test
+    public void setRemoveOrRefineAction_removeActionOnDesktopPlatform() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
+
+        Action action = setUpDeleteScenarioForRemoveActionTesting();
+
+        String expectedDescription =
+                mContext.getString(
+                        R.string.accessibility_omnibox_remove_suggestion,
+                        mSuggestion.getFillIntoEdit());
+        assertEquals(expectedDescription, action.accessibilityDescription);
+        var layerDrawable = (LayerDrawable) action.icon.drawable;
+        assertEquals(
+                R.drawable.btn_close, shadowOf(layerDrawable.getDrawable(0)).getCreatedFromResId());
+        assertEquals(Gravity.CENTER, layerDrawable.getLayerGravity(0));
+
+        UserActionTester monitor = new UserActionTester();
         action.callback.run();
         assertEquals(1, monitor.getActionCount("MobileOmniboxRemoveSuggestion.Button"));
         assertEquals(1, monitor.getActions().size());

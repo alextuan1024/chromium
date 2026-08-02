@@ -790,7 +790,7 @@
   {
     "name": "atmemory-context-menu-entry-point",
     "owners": [ "novakovica@google.com", "leozhao@google.com", "tmartino@google.com", "bling-transactions@google.com" ],
-    "expiry_milestone": 140
+    "expiry_milestone": 165
   },
   {
     "name": "audio-flexible-loopback-for-system-loopback",
@@ -840,7 +840,7 @@
       "tmartino@chromium.org",
       "bling-transactions@google.com"
     ],
-    "expiry_milestone": 135
+    "expiry_milestone": 165
   },
   {
     "name": "autofill-ai-always-trigger-server-model",
@@ -1172,12 +1172,12 @@
   {
     "name": "autofill-throttle-doc-form-scans",
     "owners": ["vincb@google.com", "tmartino@google.com", "bling-transactions@google.com"],
-    "expiry_milestone": 136
+    "expiry_milestone": 165
   },
   {
     "name": "autofill-throttle-filtered-doc-form-scan",
     "owners": ["vincb@google.com", "tmartino@google.com", "bling-transactions@google.com"],
-    "expiry_milestone": 136
+    "expiry_milestone": 165
   },
   {
     "name": "autofill-touch-to-fill-show-manual-fill-for-vcn-fix",
@@ -3118,6 +3118,11 @@
     "expiry_milestone": 152
   },
   {
+    "name": "enable-ai-subscription-avatar-ring",
+    "owners": [ "droger@chromium.org", "chrome-signin-team@google.com" ],
+    "expiry_milestone": 170
+  },
+  {
     "name": "enable-android-document-picture-in-picture",
     "owners": [
       "kkaplon@google.com",
@@ -4270,11 +4275,6 @@
     "expiry_milestone": 160
   },
   {
-    "name": "enable-screenshot-protection-ios",
-    "owners": [ "dmytriievd@google.com", "bling-enterprise@google.com" ],
-    "expiry_milestone": 153
-  },
-  {
     "name": "enable-seamless-refresh-rate-switching",
     "owners": [ "ddavenport@chromium.org", "chromeos-gfx-display@google.com" ],
     "expiry_milestone": 120
@@ -5105,6 +5105,11 @@
     "expiry_milestone": 200
   },
   {
+    "name": "force-ai-subscription-tier",
+    "owners": [ "droger@chromium.org", "chrome-signin-team@google.com" ],
+    "expiry_milestone": 170
+  },
+  {
     "name": "force-color-profile",
     "owners": [ "ccameron@chromium.org" ],
     // Used by developers and manual testing to test custom color profiles.
@@ -5569,6 +5574,11 @@
     "name": "glic-client-zoom-control",
     "owners": [ "cuianthony@google.com", "//chrome/browser/glic/OWNERS" ],
     "expiry_milestone": 152
+  },
+  {
+    "name": "glic-context-menu-below-search",
+    "owners": [ "sanaakbani@google.com", "//chrome/browser/glic/OWNERS" ],
+    "expiry_milestone": 160
   },
   {
     "name": "glic-contextual-cue-bubble",

@@ -7329,6 +7329,11 @@ bool WebContentsImpl::GotResponseToPointerLockRequest(
     if (pointer_lock_widget_->GotResponseToPointerLockRequest(result)) {
       return true;
     }
+
+    if (pointer_lock_widget_ && pointer_lock_widget_->GetView() &&
+        pointer_lock_widget_->GetView()->IsPointerLocked()) {
+      return true;
+    }
   }
 
   SetPointerLockWidgetInParentChain(nullptr);
@@ -10815,6 +10820,13 @@ FrameTree* WebContentsImpl::GetDocumentPictureInPictureOpenerFrameTree() {
   }
 
   return nullptr;
+}
+
+std::optional<int64_t> WebContentsImpl::GetPrivilegedContentsFeatureId() {
+  if (privileged_params_) {
+    return privileged_params_->feature_id;
+  }
+  return std::nullopt;
 }
 
 WebContents* WebContentsImpl::GetDocumentPictureInPictureOpener() {

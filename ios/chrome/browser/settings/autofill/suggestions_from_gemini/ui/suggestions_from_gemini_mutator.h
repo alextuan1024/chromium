@@ -10,9 +10,16 @@
 // Mutator for the Suggestions from Gemini settings ViewController.
 @protocol SuggestionsFromGeminiMutator <NSObject>
 
-// Informs the delegate that the user tapped on the link to manage connected
+// Informs the mutator that the user toggled the Suggestions from Gemini switch.
+- (void)didToggleSuggestionsFromGeminiSwitch:(BOOL)on;
+
+// Informs the mutator that the user tapped on the link to manage connected
 // apps.
 - (void)didSelectManageConnectedApps;
+
+// Informs the mutator that the user tapped on the Help improve enhanced
+// autofill.
+- (void)didSelectHelpImprove;
 
 @end
 
