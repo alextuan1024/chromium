@@ -13,6 +13,8 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
@@ -44,6 +46,20 @@ const gfx::Rect kNoBounds(kInvalidCoordinate,
                           kInvalidCoordinate,
                           kInvalidCoordinate,
                           kInvalidCoordinate);
+constexpr char kAndroidSidePanelHistogramPrefix[] = "SidePanel.Android";
+
+void RecordAutoCloseOrRestoreMetric(SidePanelEntry* entry, bool is_auto_close) {
+  if (!entry) {
+    return;
+  }
+  std::string_view entry_name =
+      SidePanelEntryIdToHistogramName(entry->key().id());
+  std::string_view action =
+      is_auto_close ? ".OnWillAutoClose" : ".OnWillAutoRestore";
+  base::UmaHistogramBoolean(
+      base::StrCat({kAndroidSidePanelHistogramPrefix, ".", entry_name, action}),
+      true);
+}
 }  // namespace
 
 using jni_zero::AttachCurrentThread;
@@ -310,6 +326,9 @@ void SidePanelCoordinatorAndroid::OnWillAutoClose() {
   has_insufficient_space_ = true;
 
   if (IsSidePanelShowing() && state_ != SidePanelState::kClosing) {
+    RecordAutoCloseOrRestoreMetric(GetEntryForCurrentKeyNonNull(),
+                                   /*is_auto_close=*/true);
+
     deferred_entry_tracker_.AddActiveEntries();
 
     // TODO(crbug.com/527985639): Rename `kWindowResized` as
@@ -344,6 +363,8 @@ void SidePanelCoordinatorAndroid::OnWillAutoRestore() {
           active_tab->GetHandle());
 
   if (key_to_show) {
+    RecordAutoCloseOrRestoreMetric(GetEntryForUniqueKey(*key_to_show),
+                                   /*is_auto_close=*/false);
     Show(*key_to_show, SidePanelOpenTrigger::kWindowResized,
          /*suppress_animations=*/true);
   }
@@ -615,6 +636,34 @@ void SidePanelCoordinatorAndroid::StartClosingPanel(
   SidePanelEntry* entry = GetEntryForCurrentKeyNonNull();
   entry->OnEntryWillHide(hide_reason);
   pending_hide_reason_ = hide_reason;
+
+  // We need to explicitly reset the active entry for the "close side panel"
+  // case.
+  //
+  // Context as of Apr 15, 2026:
+  //
+  // `SidePanelRegistry` observes all its `SidePanelEntries` via
+  // `SidePanelEntryObserver`.
+  //
+  // For the "open side panel" case, the active entry is set via
+  // `SidePanelEntry::OnEntryShown()` -> `SidePanelRegistry::OnEntryShown()`.
+  //
+  // For the "close side panel" case, `SidePanelRegistry` doesn't implement
+  // `SidePanelEntryObserver::OnEntryHidden()` or
+  // `SidePanelEntryObserver::OnEntryHiddenWithReason()`, so
+  // `SidePanelEntry::OnEntryHidden()` and
+  // `SidePanelEntry::OnEntryHiddenWithReason()` can't reset the active entry.
+  //
+  // TODO(crbug.com/503113522): Consider having `SidePanelRegistry` _reset_
+  // the active entry so it's consistent with how the active entry is _set_.
+  if (auto* contextual_registry = GetActiveContextualRegistry()) {
+    contextual_registry->ResetActiveEntry();
+  }
+  if (auto* window_registry = SidePanelRegistry::From(browser())) {
+    window_registry->ResetActiveEntry();
+  }
+  ClearCachedEntryViews();
+
   Java_SidePanelCoordinatorAndroidImpl_startClosingPanel(
       AttachCurrentThread(), java_coordinator(), suppress_animations);
 }
@@ -634,33 +683,6 @@ void SidePanelCoordinatorAndroid::FinishClosingPanel() {
     entry->OnEntryHidden();
     entry->OnEntryHiddenWithReason(*pending_hide_reason_);
     pending_hide_reason_ = std::nullopt;
-
-    // We need to explicitly reset the active entry for the "close side panel"
-    // case.
-    //
-    // Context as of Apr 15, 2026:
-    //
-    // `SidePanelRegistry` observes all its `SidePanelEntries` via
-    // `SidePanelEntryObserver`.
-    //
-    // For the "open side panel" case, the active entry is set via
-    // `SidePanelEntry::OnEntryShown()` -> `SidePanelRegistry::OnEntryShown()`.
-    //
-    // For the "close side panel" case, `SidePanelRegistry` doesn't implement
-    // `SidePanelEntryObserver::OnEntryHidden()` or
-    // `SidePanelEntryObserver::OnEntryHiddenWithReason()`, so
-    // `SidePanelEntry::OnEntryHidden()` and
-    // `SidePanelEntry::OnEntryHiddenWithReason()` can't reset the active entry.
-    //
-    // TODO(crbug.com/503113522): Consider having `SidePanelRegistry` _reset_
-    // the active entry so it's consistent with how the active entry is _set_.
-    if (auto* contextual_registry = GetActiveContextualRegistry()) {
-      contextual_registry->ResetActiveEntry();
-    }
-    if (auto* window_registry = SidePanelRegistry::From(browser())) {
-      window_registry->ResetActiveEntry();
-    }
-    ClearCachedEntryViews();
 
     SidePanelMetrics::RecordSidePanelClosed(opened_timestamp());
   }

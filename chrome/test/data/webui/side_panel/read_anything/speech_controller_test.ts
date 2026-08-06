@@ -704,6 +704,37 @@ suite('SpeechController', () => {
         assertTrue(speechController.isSpeechActive());
       });
 
+  test(
+      'onend ignored when speech is paused and resume speaks next segment',
+      async () => {
+        const text = 'First sentence. Second sentence.';
+        setContent(text, readAloudModel);
+
+        // Start playing speech.
+        const element = onPlayPauseToggle(text);
+        const spoken = await speech.whenCalled('speak');
+        spoken.onstart(new SpeechSynthesisEvent('start', {utterance: spoken}));
+
+        // Pause speech.
+        speechController.onPlayPauseToggle(element);
+        assertFalse(speechController.isSpeechActive());
+        speech.reset();
+
+        // Simulate an asynchronous onend event arriving after pause.
+        spoken.onend();
+
+        // No new utterance should be queued or spoken immediately.
+        assertEquals(0, speech.getCallCount('speak'));
+        assertEquals(1, readAloudModel.getCallCount('moveSpeechForward'));
+
+        // Resuming speech after onend should speak the next segment instead
+        // of calling resume() on a finished utterance.
+        speechController.onPlayPauseToggle(element);
+        assertEquals(0, speech.getCallCount('resume'));
+        await speech.whenCalled('speak');
+        assertTrue(speechController.isSpeechActive());
+      });
+
   test('onNextGranularityClick propagates change', () => {
     speechController.onNextGranularityClick();
     assertEquals(1, readAloudModel.getCallCount('moveSpeechForward'));
@@ -821,6 +852,44 @@ suite('SpeechController', () => {
     // Same voice should not log
     speechController.onVoiceSelected(voice3);
     assertEquals(0, metrics.getCallCount('recordVoiceLanguageChange'));
+  });
+
+  test('new utterance starts before old interruption error', async () => {
+    const text = 'I\'m kind of freaking out and not in the best way. ' +
+        'More like a heart beating out my chest cause I\'m stressed way.';
+    const element = document.createElement('div');
+    element.textContent = text;
+    setContent(text, readAloudModel);
+    speechController.onPlayPauseToggle(element);
+
+    // Get the first utterance.
+    const utterance1 = await speech.whenCalled('speak');
+    speech.reset();
+
+    // Simulate start of first utterance.
+    utterance1.onstart(
+        new SpeechSynthesisEvent('start', {utterance: utterance1}));
+    assertTrue(speechController.isSpeechActive());
+
+    // Trigger next granularity. This should cancel utterance1 and speak
+    // utterance2.
+    speechController.onNextGranularityClick();
+    assertEquals(1, speech.getCallCount('cancel'));
+
+    // Fire onstart for utterance2 BEFORE onerror for
+    // utterance1. This simulates a possible race condition possible in
+    // production.
+    const utterance2 = await speech.whenCalled('speak');
+    utterance2.onstart(
+        new SpeechSynthesisEvent('start', {utterance: utterance2}));
+    assertFalse(speechController.isSpeechBeingRepositioned());
+
+    // Fire interrupted error for utterance1.
+    utterance1.onerror(createSpeechErrorEvent(utterance1, 'interrupted'));
+
+    // Verify speech is still active.
+    assertTrue(speechController.isSpeechActive());
+    assertTrue(speechController.isAudioCurrentlyPlaying());
   });
 
   test('playFromContentPosition logs selection metric', async () => {

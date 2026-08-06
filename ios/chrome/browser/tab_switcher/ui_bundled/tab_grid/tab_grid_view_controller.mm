@@ -22,7 +22,7 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/menu/ui_bundled/action_factory.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
@@ -105,8 +105,8 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 @interface TabGridViewController () <GestureInProductHelpViewDelegate,
                                      GridViewControllerDelegate,
-                                     LayoutStateObserver,
                                      PinnedTabsViewControllerDelegate,
+                                     SceneLayoutStateObserver,
                                      TabGridStateObserving,
                                      TabGroupsPanelViewControllerUIDelegate,
                                      UIGestureRecognizerDelegate,
@@ -178,8 +178,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   // Top and bottom toolbar background views.
   TabGridToolbarBackgroundView* _topToolbarBackground;
   TabGridToolbarBackgroundView* _bottomToolbarBackground;
-  // Following next responder for ResponderChaining.
-  __weak UIResponder* _followingNextResponder;
 
   // The constraints for the bottom anchor of the bottom toolbar.
   NSLayoutConstraint* _bottomToolbarBottomConstraint;
@@ -201,7 +199,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   return self;
 }
 
-- (void)setLayoutState:(LayoutState*)layoutState {
+- (void)setLayoutState:(SceneLayoutState*)layoutState {
   if (_layoutState == layoutState) {
     return;
   }
@@ -629,6 +627,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 #pragma mark - Private
 
+// Returns YES if the bottom toolbar edge background should be created.
+- (BOOL)shouldCreateBottomBackground {
+  if (@available(iOS 26, *)) {
+    return YES;
+  }
+  return IsChromeNextIaEnabled();
+}
+
 // Updates elements in response to trait collection changes.
 - (void)handleTraitChanges {
   [self updateConstraintsOnTraitChange];
@@ -638,10 +644,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 // Updates the edge effects on the top and bottom toolbars based on the current
 // layout.
 - (void)updateToolbarEdgeEffects {
-  if (!@available(iOS 26, *)) {
-    return;
-  }
-
   UIView* topToolbar = self.topToolbar;
   UIView* bottomToolbar = self.bottomToolbar;
 
@@ -651,28 +653,36 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   if (shouldUseCompactLayout) {
     UIView* view = self.view;
 
-    [view insertSubview:_topToolbarBackground belowSubview:topToolbar];
-    [NSLayoutConstraint activateConstraints:@[
-      [_topToolbarBackground.leadingAnchor
-          constraintEqualToAnchor:view.leadingAnchor],
-      [_topToolbarBackground.trailingAnchor
-          constraintEqualToAnchor:view.trailingAnchor],
-      [_topToolbarBackground.topAnchor constraintEqualToAnchor:view.topAnchor],
-      [_topToolbarBackground.bottomAnchor
-          constraintEqualToAnchor:topToolbar.bottomAnchor],
-    ]];
+    // `_topToolbarBackground` is only instantiated on iOS 26+.
+    if (_topToolbarBackground && !_topToolbarBackground.superview) {
+      [view insertSubview:_topToolbarBackground belowSubview:topToolbar];
+      [NSLayoutConstraint activateConstraints:@[
+        [_topToolbarBackground.leadingAnchor
+            constraintEqualToAnchor:view.leadingAnchor],
+        [_topToolbarBackground.trailingAnchor
+            constraintEqualToAnchor:view.trailingAnchor],
+        [_topToolbarBackground.topAnchor
+            constraintEqualToAnchor:view.topAnchor],
+        [_topToolbarBackground.bottomAnchor
+            constraintEqualToAnchor:topToolbar.bottomAnchor],
+      ]];
+    }
 
-    [view insertSubview:_bottomToolbarBackground belowSubview:bottomToolbar];
-    [NSLayoutConstraint activateConstraints:@[
-      [_bottomToolbarBackground.leadingAnchor
-          constraintEqualToAnchor:view.leadingAnchor],
-      [_bottomToolbarBackground.trailingAnchor
-          constraintEqualToAnchor:view.trailingAnchor],
-      [_bottomToolbarBackground.topAnchor
-          constraintEqualToAnchor:bottomToolbar.topAnchor],
-      [_bottomToolbarBackground.bottomAnchor
-          constraintEqualToAnchor:view.bottomAnchor],
-    ]];
+    // `_bottomToolbarBackground` is instantiated on iOS 26+ and on pre-iOS 26
+    // when ChromeNextIA is enabled.
+    if (_bottomToolbarBackground && !_bottomToolbarBackground.superview) {
+      [view insertSubview:_bottomToolbarBackground belowSubview:bottomToolbar];
+      [NSLayoutConstraint activateConstraints:@[
+        [_bottomToolbarBackground.leadingAnchor
+            constraintEqualToAnchor:view.leadingAnchor],
+        [_bottomToolbarBackground.trailingAnchor
+            constraintEqualToAnchor:view.trailingAnchor],
+        [_bottomToolbarBackground.topAnchor
+            constraintEqualToAnchor:bottomToolbar.topAnchor],
+        [_bottomToolbarBackground.bottomAnchor
+            constraintEqualToAnchor:view.bottomAnchor],
+      ]];
+    }
 
   } else {
     [_topToolbarBackground removeFromSuperview];
@@ -806,8 +816,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     [self.pinnedTabsViewController pinnedTabsAvailable:pinnedTabsAvailable];
   }
   [self updateToolbarsAppearance];
-  // Make sure the current page becomes the first responder, so that it can
-  // register and handle key commands.
   [self.delegate tabGridViewController:self didChangeCurrentPage:currentPage];
 }
 
@@ -1018,7 +1026,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   [self.layoutGuideCenter referenceView:bottomToolbar
                               underName:kTabGridBottomToolbarGuide];
 
-  if (@available(iOS 26, *)) {
+  if ([self shouldCreateBottomBackground]) {
     _bottomToolbarBackground = [[TabGridToolbarBackgroundView alloc]
         initWithPosition:TabGridToolbarBackgroundPosition::kBottom];
     _bottomToolbarBackground.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1217,16 +1225,23 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
           self.tabGroupsPanelViewController.remainingScrollDistanceBottom;
       break;
   }
-  if (@available(iOS 26, *)) {
+  // Update modern background views when attached to the view hierarchy,
+  // otherwise fall back to legacy discrete edge state updates on the toolbars
+  // (e.g. on iPad / non-compact layout where the background views are
+  // detached).
+  if (_topToolbarBackground && _topToolbarBackground.superview) {
     _topToolbarBackground.remainingScrollDistance = remainingScrollDistanceTop;
+  } else {
+    [self.topToolbar
+        setScrollViewScrolledToEdge:remainingScrollDistanceTop <= 0];
+  }
+  if (_bottomToolbarBackground && _bottomToolbarBackground.superview) {
     _bottomToolbarBackground.remainingScrollDistance =
         remainingScrollDistanceBottom;
-    return;
+  } else {
+    [self.bottomToolbar
+        setScrollViewScrolledToEdge:remainingScrollDistanceBottom <= 0];
   }
-
-  [self.topToolbar setScrollViewScrolledToEdge:remainingScrollDistanceTop <= 0];
-  [self.bottomToolbar
-      setScrollViewScrolledToEdge:remainingScrollDistanceBottom <= 0];
 }
 
 - (void)reportTabSelectionTime {
@@ -1864,45 +1879,55 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 #pragma mark - UIResponder
 
-#pragma mark - ResponderChaining
-
-- (void)respondBeforeResponder:(UIResponder*)nextResponder {
-  _followingNextResponder = nextResponder;
-}
-
 // To always be able to register key commands via -keyCommands, the VC must be
 // able to become first responder.
 - (BOOL)canBecomeFirstResponder {
   return YES;
 }
 
-- (UIResponder*)nextResponder {
-  UIResponder* nextResponder = _followingNextResponder ?: [super nextResponder];
-  if (self.viewVisible) {
-    // Add toolbars to the responder chain.
-    // TODO(crbug.com/40273478): Transform toolbars in view controller directly
-    // have it in the chain by default instead of adding it manually.
-    [self.bottomToolbar respondBeforeResponder:nextResponder];
-    [self.topToolbar respondBeforeResponder:self.bottomToolbar];
-    return self.topToolbar;
-  } else {
-    return nextResponder;
+- (NSArray<UIKeyCommand*>*)keyCommands {
+  // As they are siblings, expose key commands of child toolbars (topToolbar and
+  // bottomToolbar) along with TabGrid key commands.
+  if (!self.tabGridState.tabGridVisible) {
+    return nil;
   }
+  NSMutableArray<UIKeyCommand*>* commands = [NSMutableArray array];
+  if (self.topToolbar.keyCommands) {
+    [commands addObjectsFromArray:self.topToolbar.keyCommands];
+  }
+  if (self.bottomToolbar.keyCommands) {
+    [commands addObjectsFromArray:self.bottomToolbar.keyCommands];
+  }
+  [commands addObject:UIKeyCommand.cr_openNewRegularTab];
+  [commands addObjectsFromArray:[super keyCommands]];
+  return commands;
 }
 
-- (NSArray<UIKeyCommand*>*)keyCommands {
-  // On iOS 15+, key commands visible in the app's menu are created in
-  // MenuBuilder. Return the key commands that are not already present in the
-  // menu.
-  return @[
-    UIKeyCommand.cr_openNewRegularTab,
-  ];
+- (id)targetForAction:(SEL)action withSender:(id)sender {
+  if ([self.topToolbar canPerformAction:action withSender:sender]) {
+    return self.topToolbar;
+  }
+  if ([self.bottomToolbar canPerformAction:action withSender:sender]) {
+    return self.bottomToolbar;
+  }
+  if ([self canPerformAction:action withSender:sender]) {
+    return self;
+  }
+  return nil;
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-  if (self.presentedViewController) {
+  if (self.presentedViewController || !self.tabGridState.tabGridVisible) {
     return NO;
   }
+
+  if ([self.topToolbar canPerformAction:action withSender:sender]) {
+    return YES;
+  }
+  if ([self.bottomToolbar canPerformAction:action withSender:sender]) {
+    return YES;
+  }
+
   if (sel_isEqual(action, @selector(keyCommand_closeTab))) {
     return [self canPerformCloseTab];
   }
@@ -2114,9 +2139,9 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   }
 }
 
-#pragma mark - LayoutStateObserver
+#pragma mark - SceneLayoutStateObserver
 
-- (void)layoutState:(LayoutState*)layoutState
+- (void)layoutState:(SceneLayoutState*)layoutState
     didChangeAppBarPosition:(AppBarPosition)appBarPosition {
   if (IsPinnedTabsEnabled()) {
     [self updatePinnedTabsViewControllerConstraints];

@@ -59,11 +59,12 @@ public class BaseCarouselSuggestionViewBinderUnitTest {
         mResources = mContext.getResources();
 
         mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
-        mBinder = new BaseCarouselSuggestionViewBinder(mResourceProvider);
+        mBinder = new BaseCarouselSuggestionViewBinder();
         mTiles = new ModelList();
         mAdapter = new SimpleRecyclerViewAdapter(mTiles);
         mView = spy(new BaseCarouselSuggestionView(mContext, mAdapter));
         mModel = new PropertyModel(BaseCarouselSuggestionViewProperties.ALL_KEYS);
+        mModel.set(SuggestionCommonProperties.RESOURCE_PROVIDER, mResourceProvider);
         PropertyModelChangeProcessor.create(mModel, mView, mBinder);
     }
 
@@ -157,6 +158,7 @@ public class BaseCarouselSuggestionViewBinderUnitTest {
 
         var model =
                 new PropertyModel.Builder(BaseCarouselSuggestionViewProperties.ALL_KEYS)
+                        .with(SuggestionCommonProperties.RESOURCE_PROVIDER, mResourceProvider)
                         .with(BaseCarouselSuggestionViewProperties.APPLY_BACKGROUND, true)
                         .build();
 
@@ -169,9 +171,8 @@ public class BaseCarouselSuggestionViewBinderUnitTest {
         verify(view).setOutlineProvider(notNull());
         verify(view).setClipToOutline(true);
         verify(view).setLayoutParams(layoutParams);
-        assertEquals(
-                OmniboxResourceProvider.getSideSpacing(mContext), layoutParams.getMarginStart());
-        assertEquals(OmniboxResourceProvider.getSideSpacing(mContext), layoutParams.getMarginEnd());
+        assertEquals(mResourceProvider.getSideSpacing(), layoutParams.getMarginStart());
+        assertEquals(mResourceProvider.getSideSpacing(), layoutParams.getMarginEnd());
     }
 
     @Test
@@ -183,6 +184,7 @@ public class BaseCarouselSuggestionViewBinderUnitTest {
 
         var model =
                 new PropertyModel.Builder(BaseCarouselSuggestionViewProperties.ALL_KEYS)
+                        .with(SuggestionCommonProperties.RESOURCE_PROVIDER, mResourceProvider)
                         .with(SuggestionCommonProperties.COLOR_SCHEME, BrandedColorScheme.INCOGNITO)
                         .with(BaseCarouselSuggestionViewProperties.APPLY_BACKGROUND, true)
                         .build();
@@ -197,9 +199,8 @@ public class BaseCarouselSuggestionViewBinderUnitTest {
         verify(view).setOutlineProvider(notNull());
         verify(view).setClipToOutline(true);
         verify(view).setLayoutParams(layoutParams);
-        assertEquals(
-                OmniboxResourceProvider.getSideSpacing(mContext), layoutParams.getMarginStart());
-        assertEquals(OmniboxResourceProvider.getSideSpacing(mContext), layoutParams.getMarginEnd());
+        assertEquals(mResourceProvider.getSideSpacing(), layoutParams.getMarginStart());
+        assertEquals(mResourceProvider.getSideSpacing(), layoutParams.getMarginEnd());
     }
 
     @Test

@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <utility>
@@ -18,7 +19,6 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
@@ -802,7 +802,6 @@ void TabStripModel::UpdateSelectionModelForCollectionDetach(
       }
     }
   }
-
   NotifyTabGroupFocusChanged(old_focused_group);
 }
 
@@ -1272,9 +1271,8 @@ int TabStripModel::GetIndexOfWebContents(const WebContents* contents) const {
 
 void TabStripModel::NotifyTabChanged(tabs::TabInterface* tab,
                                      TabChangeType change_type) {
-  const int index = GetIndexOfTab(tab);
   for (auto& observer : observers_) {
-    observer.OnTabChangedAt(tab, index, change_type);
+    observer.OnTabChangedAt(tab, change_type);
   }
 }
 
@@ -1283,7 +1281,7 @@ void TabStripModel::UpdateWebContentsStateAt(int index,
   tabs::TabInterface* tab = GetTabAtIndex(index);
 
   for (auto& observer : observers_) {
-    observer.OnTabChangedAt(tab, index, change_type);
+    observer.OnTabChangedAt(tab, change_type);
   }
 }
 
@@ -1292,7 +1290,7 @@ void TabStripModel::SetTabNeedsAttentionAt(int index, bool attention) {
   TabUIHelper::From(tab)->SetNeedsAttention(attention);
 
   for (auto& observer : observers_) {
-    observer.OnTabChangedAt(tab, index, TabChangeType::kAttentionOnly);
+    observer.OnTabChangedAt(tab, TabChangeType::kAttentionOnly);
   }
 }
 
@@ -1307,7 +1305,7 @@ void TabStripModel::CloseAllTabs() {
   closing_tabs.reserve(count());
   for (std::vector<tabs::TabInterface*> tabs =
            contents_data_->GetTabsRecursive();
-       tabs::TabInterface* tab : base::Reversed(tabs)) {
+       tabs::TabInterface* tab : std::views::reverse(tabs)) {
     closing_tabs.push_back(tab->GetContents());
   }
   CloseTabs(closing_tabs, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
@@ -1320,6 +1318,8 @@ void TabStripModel::CloseAllTabsInGroup(const tab_groups::TabGroupId& group) {
   }
 
   if (selection_model_.focused_group() == group) {
+    base::UmaHistogramEnumeration("TabGroups.Focus.ExitReason",
+                                  TabGroupFocusExitReason::kGroupClosed);
     SetFocusedGroup(std::nullopt);
   }
 
@@ -2145,6 +2145,13 @@ void TabStripModel::RemoveFromGroup(const std::vector<int>& indices) {
     CHECK(first_tab_in_group);
     int first_tab_index = GetIndexOfTab(first_tab_in_group);
 
+    if (selection_model_.focused_group() == immutable_group_id &&
+        static_cast<int>(immutable_group_indices.size()) ==
+            group->tab_count()) {
+      base::UmaHistogramEnumeration("TabGroups.Focus.ExitReason",
+                                    TabGroupFocusExitReason::kGroupUngrouped);
+    }
+
     tabs::TabInterface* last_tab_in_group = group->GetLastTab();
     int last_tab_index = GetIndexOfTab(last_tab_in_group);
 
@@ -2243,6 +2250,17 @@ void TabStripModel::NotifyTabGroupFocusChanged(
   const std::optional<tab_groups::TabGroupId> new_focused_group =
       selection_model_.focused_group();
   if (old_focused_group != new_focused_group) {
+    if (old_focused_group.has_value() &&
+        focus_mode_session_start_time_.has_value()) {
+      base::UmaHistogramLongTimes(
+          "TabGroups.Focus.SessionDuration",
+          base::TimeTicks::Now() - *focus_mode_session_start_time_);
+      focus_mode_session_start_time_.reset();
+    }
+    if (new_focused_group.has_value()) {
+      focus_mode_session_start_time_ = base::TimeTicks::Now();
+    }
+
     for (auto& observer : observers_) {
       observer.OnTabGroupFocusChanged(new_focused_group, old_focused_group);
     }
@@ -4210,7 +4228,7 @@ std::vector<int> TabStripModel::GetSelectedUnpinnedTabs() {
 
   std::vector<int> indices;
 
-  for (int selected_index : base::Reversed(selected_indices)) {
+  for (int selected_index : std::views::reverse(selected_indices)) {
     if (selected_index >= pinned_tab_count) {
       // Insert to the start so it is in ascending order.
       indices.insert(indices.begin(), selected_index);
@@ -4680,6 +4698,12 @@ std::unique_ptr<tabs::TabModel> TabStripModel::RemoveTabFromIndexImpl(
         SetSelectedIndex(selection_model_, next_selected_index.value());
       }
     }
+  }
+
+  if (old_focused_group.has_value() &&
+      !selection_model_.focused_group().has_value()) {
+    base::UmaHistogramEnumeration("TabGroups.Focus.ExitReason",
+                                  TabGroupFocusExitReason::kLastTabClosed);
   }
 
   NotifyTabGroupFocusChanged(old_focused_group);

@@ -316,13 +316,10 @@ HEADLESS_MODE_PROTOCOL_TEST(FullscreenRestoreWindow,
 HEADLESS_MODE_PROTOCOL_TEST(MaximizedWindowSize,
                             "shared/maximized-window-size.js")
 
-// These currently fail on Mac, see https://crbug.com/40288046
-#if !BUILDFLAG(IS_MAC)
 HEADLESS_MODE_PROTOCOL_TEST(FullscreenWindowSize,
                             "shared/fullscreen-window-size.js")
 HEADLESS_MODE_PROTOCOL_TEST(FullscreenWindowSizeScaled,
                             "shared/fullscreen-window-size-scaled.js")
-#endif  // !BUILDFLAG(IS_MAC)
 
 HEADLESS_MODE_PROTOCOL_TEST(SetZoomedWindowBounds,
                             "shared/set-zoomed-window-bounds.js")
@@ -383,9 +380,7 @@ HEADLESS_MODE_PROTOCOL_TEST(OzoneScreenSizeOverride,
 HEADLESS_MODE_PROTOCOL_TEST(MultipleScreenDetails,
                             "shared/multiple-screen-details.js")
 
-// TODO(crbug.com/40283476): MoveWindowBetweenScreens is failing on Mac
-// TODO(crbug.com/484218769): Failing/flaky on other platforms as well
-HEADLESS_MODE_PROTOCOL_TEST(DISABLED_MoveWindowBetweenScreens,
+HEADLESS_MODE_PROTOCOL_TEST(MoveWindowBetweenScreens,
                             "shared/move-window-between-screens.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenOnSecondaryScreen,
@@ -425,25 +420,25 @@ HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitch,
 HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitchScaled,
                             "sanity/start-fullscreen-switch-scaled.js")
 
-// TODO(crbug.com/430156442): This fails on macOS where fullscreen uses display
-// bounds rather than work area
+// TODO(crbug.com/543040219): flaky on macOS.
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_WindowStateTransitions DISABLED_WindowStateTransitions
-#define MAYBE_WindowZoomSizeMatchesWorkArea \
-  DISABLED_WindowZoomSizeMatchesWorkArea
 #else
 #define MAYBE_WindowStateTransitions WindowStateTransitions
-#define MAYBE_WindowZoomSizeMatchesWorkArea WindowZoomSizeMatchesWorkArea
 #endif
-
 HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowStateTransitions,
                             "shared/window-state-transitions.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowZoomOnSecondaryScreen,
                             "shared/window-zoom-on-secondary-screen.js")
 
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowZoomSizeMatchesWorkArea,
+// On macOS fullscreen uses display bounds rather than work area.
+#if BUILDFLAG(IS_MAC)
+HEADLESS_MODE_PROTOCOL_TEST(, "shared/window-zoom-size-matches-screen.js")
+#else
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesWorkArea,
                             "shared/window-zoom-size-matches-work-area.js")
+#endif
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowScreenScaleFactor,
                             "shared/window-screen-scale-factor.js")
@@ -522,5 +517,8 @@ HEADLESS_MODE_PROTOCOL_TEST(PopupWindowHasOpener,
 
 HEADLESS_MODE_PROTOCOL_TEST(NormalWindowHasOpener,
                             "shared/normal-window-has-opener.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(GetBrowserContexts,
+                            "shared/get-browser-contexts.js")
 
 }  // namespace headless

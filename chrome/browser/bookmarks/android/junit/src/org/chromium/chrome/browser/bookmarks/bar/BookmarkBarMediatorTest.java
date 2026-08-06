@@ -45,6 +45,7 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpener;
@@ -84,6 +85,7 @@ import java.util.function.Supplier;
 
 /** Unit tests for the {@link BookmarkBarMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@DisableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
 public class BookmarkBarMediatorTest {
     @Rule
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
@@ -606,6 +608,7 @@ public class BookmarkBarMediatorTest {
                         "Bookmark to Delete",
                         JUnitTestGURLs.URL_1);
 
+        ShadowLooper.idleMainLooper();
         mMediator.deleteBookmark(bookmarkId);
 
         ArgumentCaptor<Snackbar> snackbarCaptor = ArgumentCaptor.forClass(Snackbar.class);
@@ -711,8 +714,9 @@ public class BookmarkBarMediatorTest {
         // Simulate right click or long press (BUTTON_SECONDARY).
         clickCallback.onClickWithMeta(0, MotionEvent.BUTTON_SECONDARY);
 
-        // Context menu should NOT be shown for the All Bookmarks button.
+        // No response should happen for right click on the All bookmarks button.
         verify(mPopupCoordinator, never()).showContextMenuPopup(any(), any(), any(), anyBoolean());
+        verify(mBookmarkManagerOpener, never()).showBookmarkManager(any(), any(), any(), any());
     }
 
     @Test

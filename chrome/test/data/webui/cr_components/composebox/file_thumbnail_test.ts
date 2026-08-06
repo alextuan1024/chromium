@@ -68,6 +68,33 @@ suite('ComposeboxFileThumbnailTest', () => {
         (thumbnail as HTMLImageElement).src, fileThumbnailElement.file.dataUrl);
   });
 
+  test('display video file', async () => {
+    // Arrange.
+    fileThumbnailElement.file = createFile(1, {
+      name: 'video.mp4',
+      type: 'video/mp4',
+      objectUrl: 'data:foo',
+    });
+    await microtasksFinished();
+
+    // Assert one video file.
+    const thumbnail =
+        fileThumbnailElement.shadowRoot.querySelector<HTMLVideoElement>(
+            '.img-thumbnail');
+    assertTrue(!!thumbnail);
+    assertEquals(thumbnail.tagName, 'VIDEO');
+    assertEquals(
+        thumbnail.getAttribute('src'),
+        `${fileThumbnailElement.file.objectUrl}#t=0.001`);
+    assertEquals(thumbnail.getAttribute('preload'), 'metadata');
+    assertTrue(thumbnail.hasAttribute('muted'));
+    assertTrue(thumbnail.hasAttribute('playsinline'));
+    assertTrue(thumbnail.hasAttribute('disablepictureinpicture'));
+    assertTrue(thumbnail.hasAttribute('disableremoteplayback'));
+    assertEquals(
+        thumbnail.getAttribute('aria-label'), fileThumbnailElement.file.name);
+  });
+
   test('display document file (flag disabled)', async () => {
     loadTimeData.overrideValues({lensSendRawFileMediaTypesEnabled: false});
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -89,7 +116,7 @@ suite('ComposeboxFileThumbnailTest', () => {
     const icon = fileThumbnailElement.shadowRoot.querySelector<CrIconElement>(
         '.pdf-icon');
     assertTrue(!!icon);
-    assertEquals(icon.icon, 'thumbnail:pdf');
+    assertEquals(icon.icon, 'thumbnail:drive-pdf');
   });
 
   test('display document file (flag enabled) for non-pdf', async () => {
@@ -113,7 +140,7 @@ suite('ComposeboxFileThumbnailTest', () => {
     const icon = fileThumbnailElement.shadowRoot.querySelector<CrIconElement>(
         '.document-icon');
     assertTrue(!!icon);
-    assertEquals(icon.icon, 'thumbnail:document');
+    assertEquals(icon.icon, 'thumbnail:attach-file');
   });
 
   test('display pdf file (flag enabled)', async () => {
@@ -137,7 +164,7 @@ suite('ComposeboxFileThumbnailTest', () => {
     const icon = fileThumbnailElement.shadowRoot.querySelector<CrIconElement>(
         '.pdf-icon');
     assertTrue(!!icon);
-    assertEquals(icon.icon, 'thumbnail:pdf');
+    assertEquals(icon.icon, 'thumbnail:drive-pdf');
   });
 
   test('display document file (flag enabled) for google doc', async () => {
@@ -213,6 +240,40 @@ suite('ComposeboxFileThumbnailTest', () => {
     // Arrange.
     fileThumbnailElement.file = createFile(1, {
       type: 'image/jpeg',
+      objectUrl: 'data:foo',
+      isDeletable: false,
+    });
+    await microtasksFinished();
+
+    // Assert.
+    const removeButton =
+        fileThumbnailElement.shadowRoot.querySelector('#removeImgButton');
+    assertEquals(null, removeButton);
+  });
+
+  test('clicking video delete button sends event', async () => {
+    // Arrange.
+    fileThumbnailElement.file = createFile(1, {
+      type: 'video/mp4',
+      objectUrl: 'data:foo',
+    });
+    await microtasksFinished();
+
+    // Act.
+    const deleteEventPromise = eventToPromise<CustomEvent<{uuid: string}>>(
+        'delete-file', fileThumbnailElement);
+    assertTrue(!!fileThumbnailElement.$.removeImgButton);
+    fileThumbnailElement.$.removeImgButton.click();
+
+    // Assert.
+    const deleteEvent = await deleteEventPromise;
+    assertEquals(deleteEvent.detail.uuid, fileThumbnailElement.file.uuid);
+  });
+
+  test('hides video delete button when not deletable', async () => {
+    // Arrange.
+    fileThumbnailElement.file = createFile(1, {
+      type: 'video/mp4',
       objectUrl: 'data:foo',
       isDeletable: false,
     });

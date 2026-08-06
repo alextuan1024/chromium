@@ -32,6 +32,7 @@ import static org.chromium.ui.test.util.MockitoHelper.doRunnable;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
 import android.util.Pair;
 
 import androidx.annotation.ColorInt;
@@ -1456,12 +1457,16 @@ public class BookmarkManagerMediatorTest {
 
         // Delete.
         clickChildAt(menu, 4);
-        verify(mBookmarkModel).deleteBookmarks(mBookmarkId21);
+        verify(mBookmarkModel).deleteBookmarks(mBookmarkUndoController, mBookmarkId21);
 
         // Open in new tab.
         clickChildAt(menu, 5);
         verify(mBookmarkOpener)
-                .openBookmarksInNewTabs(Collections.singletonList(mBookmarkId21), false);
+                .openBookmarksInNewTabs(
+                        eq(Collections.singletonList(mBookmarkId21)),
+                        eq(false),
+                        eq(null),
+                        any(Bundle.class));
     }
 
     @Test
@@ -1494,12 +1499,17 @@ public class BookmarkManagerMediatorTest {
         // Open in new tab.
         clickChildAt(menu, 5);
         verify(mBookmarkOpener)
-                .openBookmarksInNewTabs(Collections.singletonList(mBookmarkId21), true);
+                .openBookmarksInNewTabs(
+                        eq(Collections.singletonList(mBookmarkId21)),
+                        eq(true),
+                        eq(null),
+                        any(Bundle.class));
 
         // Open in other window.
         clickChildAt(menu, 6);
         verify(mBookmarkOpener)
-                .openBookmarksInNewWindow(Collections.singletonList(mBookmarkId21), true);
+                .openBookmarksInNewWindow(
+                        eq(Collections.singletonList(mBookmarkId21)), eq(true), any(Bundle.class));
     }
 
     @Test
@@ -2766,6 +2776,24 @@ public class BookmarkManagerMediatorTest {
         doReturn("chrome://bookmarks/").when(mNativePage).getUrl();
         mMediator.openFolder(mFolderId2);
         verify(mNativePage).onStateChange("chrome-native://bookmarks/folder/6", true);
+    }
+
+    @Test
+    public void testUpdateForUrl_popsStateStack() {
+        finishLoading();
+        mMediator.openFolder(mMobileFolderId);
+        mMediator.openFolder(mFolderId1);
+        mMediator.openFolder(mFolderId2);
+        // Initially, the stack should contain root folder (MobileBookmarks), Folder1, and Folder2.
+        assertEquals(3, mMediator.getStateStackForTesting().size());
+
+        // Simulate tab back navigation to Folder1 by calling updateForUrl.
+        mMediator.updateForUrl("chrome-native://bookmarks/folder/" + mFolderId1.getId());
+
+        // The stack should now contain root folder and Folder1. Folder2 should be popped.
+        assertEquals(2, mMediator.getStateStackForTesting().size());
+        assertEquals(BookmarkUiMode.FOLDER, mMediator.getCurrentUiMode());
+        assertEquals(mFolderId1, mMediator.getStateStackForTesting().peekLast().mFolder);
     }
 
     private void verifyMenuListItemTitles(ModelList modelList, int... expectedTitleIds) {

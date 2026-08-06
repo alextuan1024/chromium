@@ -368,7 +368,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
     if (this.cyclingPlaceholders) {
       waitForLazyRender().then(async () => {
-        const {config} = await this.pageHandler().getPlaceholderConfig();
+        const {config} = await this.pageHandler().getCyclingPlaceholderConfig();
         const texts = config.texts;
         if (texts.length < 2) {
           // Need at least 2 placeholders to cycle. If fewer, disable cycling
@@ -875,14 +875,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   }
 
   protected computePlaceholderText_(placeholderText: string): string {
-    if (placeholderText) {
-      return placeholderText;
-    }
-    return this.i18n('searchBoxHint');
-  }
-
-  getInputStateForTesting(): InputState|null {
-    return this.inputState_;
+    return placeholderText || '';
   }
 }
 

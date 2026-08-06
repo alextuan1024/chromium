@@ -611,9 +611,9 @@ class CORE_EXPORT Document : public ContainerNode,
   // Returns all `HTMLFormElement`s that have no shadow-including
   // `HTMLFormElement` ancestor. Note that the form elements are returned in BFS
   // order.
-  const HeapVector<Member<HTMLFormElement>>& GetTopLevelForms();
-  // Invalidates the cache for top level form elements.
-  void MarkTopLevelFormsDirty();
+  const HeapVector<Member<HTMLFormElement>>& GetOutermostForms();
+  // Invalidates the cache for outermost form elements.
+  void MarkOutermostFormsDirty();
 
   // "defaultView" attribute defined in HTML spec.
   DOMWindow* defaultView() const;
@@ -817,16 +817,6 @@ class CORE_EXPORT Document : public ContainerNode,
   void UpdateStyleAndLayoutForNode(const Node*, DocumentUpdateReason);
   void UpdateStyleAndLayoutForRange(const Range*, DocumentUpdateReason);
 
-  // Ensures that location-based data will be valid for a given node.
-  //
-  // This will run style and layout if they are currently dirty, and it may also
-  // run compositing inputs if the node is in a sticky subtree (as the sticky
-  // offset may change the node's position).
-  //
-  // Due to this you should only call this if you definitely need valid location
-  // data, otherwise use one of the |UpdateStyleAndLayout...| methods above.
-  void EnsurePaintLocationDataValidForNode(const Node*,
-                                           DocumentUpdateReason reason);
 
   // Gets the description for the specified page. This includes preferred page
   // size and margins in pixels, assuming 96 pixels per inch. Updates layout as
@@ -2421,8 +2411,8 @@ class CORE_EXPORT Document : public ContainerNode,
     bool dirty_ = false;
   };
 
-  // Helper class to cache the top level <form> elements of a document.
-  class TopLevelFormsList {
+  // Helper class to cache the outermost <form> elements of a document.
+  class OutermostFormsList {
     DISALLOW_NEW();
 
    public:
@@ -3111,7 +3101,7 @@ class CORE_EXPORT Document : public ContainerNode,
 
   UnassociatedListedElementsList unassociated_listed_elements_;
 
-  TopLevelFormsList top_level_forms_;
+  OutermostFormsList outermost_forms_;
 
   // |ukm_recorder_| and |source_id_| will allow objects that are part of
   // the document to record UKM.

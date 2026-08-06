@@ -45,6 +45,7 @@
 #include "components/search_engines/ai_mode_button_service.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "net/base/url_util.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/webui/webui_util.h"
@@ -138,7 +139,7 @@ OmniboxPopupUI::OmniboxPopupUI(content::WebUI* web_ui)
                      omnibox::IsAimPopupFeatureEnabled());
   // TODO(b/504670497): Replace this NTP-specific flag with a generic flag.
   // TODO(b/474406096): Replace this NTP-specific flag with a generic flag.
-  source->AddBoolean("ntpRealboxNextEnabled", false);
+  source->AddBoolean("isFuseboxEnabled", false);
   source->AddBoolean("searchboxDynamicColorScheme",
                      omnibox::kWebUIOmniboxDynamicColorScheme.Get());
   source->AddBoolean("searchboxDynamicAnimation",
@@ -255,6 +256,9 @@ OmniboxPopupUI::OmniboxPopupUI(content::WebUI* web_ui)
   }
   webui::SetupWebUIDataSource(source, kOmniboxPopupResources, default_resource);
   webui::EnableTrustedTypesCSP(source);
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::MediaSrc,
+      "media-src blob: data: 'self';");
 
   // Add a handler to provide pluralized strings.
   auto plural_string_handler = std::make_unique<PluralStringHandler>();

@@ -341,13 +341,9 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewWebUIFullV2Test, TabSwitchStateSync) {
   }
 }
 
-// TODO(crbug.com/536046012): Re-enable this test on Linux and Mac.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
-#define MAYBE_TabSwitchNoSavedState DISABLED_TabSwitchNoSavedState
-#else
-#define MAYBE_TabSwitchNoSavedState TabSwitchNoSavedState
-#endif
-IN_PROC_BROWSER_TEST_F(OmniboxPopupViewWebUIFullV2Test, MAYBE_TabSwitchNoSavedState) {
+// TODO(crbug.com/536046012): Re-enable this test.
+IN_PROC_BROWSER_TEST_F(OmniboxPopupViewWebUIFullV2Test,
+                       DISABLED_TabSwitchNoSavedState) {
   // Create a new tab.
   int initial_tab_index = browser()->tab_strip_model()->active_index();
   chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
@@ -407,8 +403,14 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewWebUIFullV2Test, MAYBE_TabSwitchNoSavedSt
   }));
 }
 
+// TODO(crbug.com/542637306): Re-enable this test on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_DeactivationClearsPopupState DISABLED_DeactivationClearsPopupState
+#else
+#define MAYBE_DeactivationClearsPopupState DeactivationClearsPopupState
+#endif
 IN_PROC_BROWSER_TEST_F(OmniboxPopupViewWebUIFullV2Test,
-                       DeactivationClearsPopupState) {
+                       MAYBE_DeactivationClearsPopupState) {
   // Focus the location bar to ensure the Omnibox has active focus and the popup
   // is open.
   location_bar()->FocusLocation(/*is_user_initiated=*/true,
@@ -700,11 +702,13 @@ class OmniboxPopupViewWebUIFrameCacheTest
       feature_list_.InitWithFeatures(
           {omnibox::kOmniboxWebUIPopupMarkAsHidden,
            ::features::kHideDelegatedFrameHostMac},
-          {omnibox::kOmniboxWebUIDetachWebContentsOnHide});
+          {omnibox::kOmniboxWebUIDeferShowUntilVisualStateReady,
+           omnibox::kOmniboxWebUIDetachWebContentsOnHide});
     } else {
       feature_list_.InitWithFeatures(
           {omnibox::kOmniboxWebUIPopupMarkAsHidden},
-          {omnibox::kOmniboxWebUIDetachWebContentsOnHide,
+          {omnibox::kOmniboxWebUIDeferShowUntilVisualStateReady,
+           omnibox::kOmniboxWebUIDetachWebContentsOnHide,
            ::features::kHideDelegatedFrameHostMac});
     }
   }

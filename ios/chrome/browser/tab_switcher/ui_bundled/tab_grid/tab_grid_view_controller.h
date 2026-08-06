@@ -8,7 +8,6 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/keyboard/ui_bundled/key_command_actions.h"
-#import "ios/chrome/browser/keyboard/ui_bundled/responder_chaining.h"
 #import "ios/chrome/browser/shared/ui/util/ui_view_controller_with_display_tracing.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/disabled_grid_view_controller.h"
@@ -30,11 +29,11 @@ class GURL;
 @protocol IncognitoReauthConsumer;
 enum class IPHDismissalReasonType;
 @class LayoutGuideCenter;
-@class LayoutState;
 @class PinnedTabsViewController;
 @protocol PriceCardDataSource;
 @class RegularGridViewController;
 @protocol SceneCommands;
+@class SceneLayoutState;
 @protocol TabCollectionConsumer;
 @protocol TabCollectionDragDropHandler;
 @protocol TabContextMenuProvider;
@@ -108,7 +107,6 @@ enum class TabGridPageConfiguration {
                                           DisabledGridViewControllerDelegate,
                                           GridConsumer,
                                           KeyCommandActions,
-                                          ResponderChaining,
                                           TabGridConsumer,
                                           TabGridIdleStatusHandler,
                                           TabGridToolbarsMainTabGridDelegate,
@@ -159,7 +157,7 @@ enum class TabGridPageConfiguration {
 @property(nonatomic, strong) LayoutGuideCenter* layoutGuideCenter;
 
 // The layout state of the scene.
-@property(nonatomic, weak) LayoutState* layoutState;
+@property(nonatomic, weak) SceneLayoutState* layoutState;
 
 // Top and bottom toolbars. Those must be set before -viewDidLoad is called.
 @property(nonatomic, strong) TabGridTopToolbar* topToolbar;

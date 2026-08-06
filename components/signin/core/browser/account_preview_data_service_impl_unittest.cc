@@ -14,6 +14,7 @@
 #include "base/version_info/channel.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/core/browser/account_metrics_id_allocator.h"
@@ -84,6 +85,8 @@ class AccountPreviewDataServiceTest : public testing::Test {
   void SetUp() override {
     AccountPreviewDataService::RegisterProfilePrefs(prefs_.registry());
     SigninPrefs::RegisterProfilePrefs(prefs_.registry());
+    prefs_.registry()->RegisterBooleanPref(prefs::kSigninAllowed, true);
+    prefs_.SetBoolean(prefs::kSigninAllowed, true);
     identity_test_env_.SetAutomaticIssueOfAccessTokens(true);
     auto helper = std::make_unique<TestWaitForNetworkCallbackHelper>();
     network_delay_helper_ = helper.get();
@@ -114,6 +117,16 @@ TEST_F(AccountPreviewDataServiceTest, EmptyInitially) {
   GaiaId id("some-gaia-id");
   std::optional<AccountPreviewData> data = service_->GetAccountPreviewData(id);
   EXPECT_FALSE(data.has_value());
+}
+
+TEST_F(AccountPreviewDataServiceTest, SigninDisallowed) {
+  prefs_.SetBoolean(prefs::kSigninAllowed, false);
+  AccountInfo account_info =
+      identity_test_env_.MakeAccountAvailable("primary@gmail.com");
+
+  EXPECT_FALSE(service_->HasActiveFetcherForTesting(account_info.gaia));
+  EXPECT_FALSE(service_->GetAccountPreviewData(account_info.gaia).has_value());
+  EXPECT_FALSE(service_->GetPreferredAccountForPromo().has_value());
 }
 
 TEST_F(AccountPreviewDataServiceTest, FetchesForPrimaryAccount) {
@@ -920,6 +933,9 @@ TEST_F(AccountPreviewDataServiceTest, LogsFetchTriggerCause) {
 }
 
 TEST_F(AccountPreviewDataServiceTest, LogsTriggerCauseWithAllCachesAvailable) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      switches::kEnableAccountPreviewData, {{"persist_accounts", "false"}});
   base::HistogramTester histograms;
 
   // Make account available and cache it.
@@ -1275,6 +1291,44 @@ TEST_F(AccountPreviewDataServiceTest,
   // Removing the account should hit the barrier which would complete the fetch.
   all_fetches_run_loop.Run();
   EXPECT_FALSE(service_->GetAccountPreviewData(account_info.gaia).has_value());
+}
+
+TEST_F(AccountPreviewDataServiceTest,
+       OnIdentityManagerShutdownClearsCacheAndFetchers) {
+  AccountInfo account =
+      identity_test_env_.MakeAccountAvailable("user@gmail.com");
+
+  // Fetcher is active.
+  EXPECT_TRUE(service_->HasActiveFetcherForTesting(account.gaia));
+
+  MockSuccessfulFetch(&test_url_loader_factory_);
+  base::RunLoop run_loop;
+  service_->SetFetchCompleteCallbackForTesting(run_loop.QuitClosure());
+  run_loop.Run();
+
+  ASSERT_TRUE(service_->GetAccountPreviewData(account.gaia).has_value());
+
+  // Set a preferred account preference to simulate stored results.
+  base::DictValue dict;
+  dict.Set("gaia_id", account.gaia.ToString());
+  prefs_.SetDict(prefs::kAccountPreviewPreference, std::move(dict));
+  ASSERT_TRUE(service_->GetPreferredAccountForPromo().has_value());
+
+  // Start fetching data for a second account, but without completing it.
+  AccountInfo account2 =
+      identity_test_env_.MakeAccountAvailable("user2@gmail.com");
+  // Fetcher for account2 is active.
+  EXPECT_TRUE(service_->HasActiveFetcherForTesting(account2.gaia));
+
+  // Trigger IdentityManager shutdown.
+  service_->OnIdentityManagerShutdown(identity_test_env_.identity_manager());
+
+  // Cached data and active fetchers should be cleared.
+  EXPECT_FALSE(service_->GetAccountPreviewData(account.gaia).has_value());
+  EXPECT_FALSE(service_->HasActiveFetcherForTesting(account2.gaia));
+
+  // Stored results in prefs should remain intact.
+  EXPECT_TRUE(service_->GetPreferredAccountForPromo().has_value());
 }
 
 }  // namespace signin

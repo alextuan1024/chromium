@@ -7,13 +7,13 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <utility>
 #include <variant>
 
 #include "base/auto_reset.h"
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -52,6 +52,7 @@
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -2132,7 +2133,8 @@ void TabDragController::RestoreInitialSelection() {
   // the tabs from initial_selection_model_ as it was created with the tabs
   // still there.
   ui::ListSelectionModel selection_model = initial_selection_model_;
-  for (const TabDragData& data : base::Reversed(drag_data_.tab_drag_data_)) {
+  for (const TabDragData& data :
+       std::views::reverse(drag_data_.tab_drag_data_)) {
     if (data.source_model_index.has_value()) {
       selection_model.DecrementFrom(data.source_model_index.value());
     }
@@ -2518,7 +2520,7 @@ void TabDragController::BringWindowUnderPointToFront(
   // it in order to avoid stacking the browser window on top of the phantom
   // drag widget created by DragWindowController in a second display.
   for (aura::Window* window :
-       base::Reversed(browser_window->parent()->children())) {
+       std::views::reverse(browser_window->parent()->children())) {
     // If the iteration reached the recipient browser window then it is
     // already topmost and it is safe to return with no stacking change.
     if (window == browser_window) {
@@ -2913,8 +2915,9 @@ bool TabDragController::CanAttachTo(gfx::NativeWindow window) {
 #endif  // BUILDFLAG(USE_AURA)
 
   // We don't allow drops on windows that don't have tabstrips.
-  if (!other_browser->SupportsWindowFeature(
-          Browser::WindowFeature::kFeatureTabStrip)) {
+  if (!WindowFeatureController::From(other_browser)
+           ->SupportsWindowFeature(
+               WindowFeatureController::WindowFeature::kFeatureTabStrip)) {
     return false;
   }
 
@@ -2928,9 +2931,10 @@ bool TabDragController::CanAttachTo(gfx::NativeWindow window) {
   }
 
   // Ensure that browser types and app names are the same.
-  if (other_browser->type() != browser->type() ||
+  if (other_browser->GetType() != browser->GetType() ||
       (browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
-       browser->app_name() != other_browser->app_name())) {
+       BrowserInitState::From(browser)->create_params().app_name !=
+           BrowserInitState::From(other_browser)->create_params().app_name)) {
     return false;
   }
 

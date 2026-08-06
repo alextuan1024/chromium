@@ -2858,15 +2858,16 @@ ci.builder(
     gn_args = gn_args.config(
         configs = [
             "ci/Win x64 Builder",
+            "no_symbols",
             "separate_renderer",
         ],
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_gtests",
+            "chromium_win10_gtests",
         ],
         additional_compile_targets = [
-            "all",
+            "chrome",
         ],
         mixins = [
             "win10",
@@ -2889,12 +2890,13 @@ ci.builder(
     gn_args = gn_args.config(
         configs = [
             "ci/Linux Builder",
+            "no_symbols",
             "separate_renderer",
         ],
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_gtests",
+            "chromium_linux_gtests",
         ],
         additional_compile_targets = [
             "chrome",
@@ -2917,12 +2919,13 @@ fyi_mac_builder(
     gn_args = gn_args.config(
         configs = [
             "ci/Mac Builder",
+            "no_symbols",
             "separate_renderer",
         ],
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_gtests",
+            "chromium_mac_gtests",
         ],
         additional_compile_targets = [
             "chrome",

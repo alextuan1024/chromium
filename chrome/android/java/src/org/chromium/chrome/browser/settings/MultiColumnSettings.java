@@ -947,4 +947,20 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat
         getChildFragmentManager().unregisterFragmentLifecycleCallbacks(mFragmentTracker);
         super.onDestroy();
     }
+
+    /** Returns the number of entries in the child fragment manager back stack. */
+    public int getBackStackEntryCount() {
+        return isAdded() ? getChildFragmentManager().getBackStackEntryCount() : 0;
+    }
+
+    /** Pops the top entry from the child fragment manager back stack. */
+    public void popBackStack() {
+        assert isAdded();
+        getChildFragmentManager().popBackStack();
+    }
+
+    /** Returns the child fragment manager if attached, or null. */
+    public @Nullable FragmentManager getChildFragmentManagerOrNull() {
+        return isAdded() ? getChildFragmentManager() : null;
+    }
 }

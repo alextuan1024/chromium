@@ -54,6 +54,19 @@ const base::FeatureParam<bool> kUseStaleConnectorsForOptimisticDns{
 
 BASE_FEATURE(kAddressSorterConnectCache, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE_PARAM(size_t,
+                   kAddressSorterConnectCacheMaxNetworks,
+                   &kAddressSorterConnectCache,
+                   2);
+BASE_FEATURE_PARAM(size_t,
+                   kAddressSorterConnectCacheMaxNaksPerNetwork,
+                   &kAddressSorterConnectCache,
+                   16);
+BASE_FEATURE_PARAM(size_t,
+                   kAddressSorterConnectCacheMaxPredictionsPerPartition,
+                   &kAddressSorterConnectCache,
+                   1024);
+
 BASE_FEATURE(kDnsTransactionDynamicTimeouts, base::FEATURE_DISABLED_BY_DEFAULT);
 
 const base::FeatureParam<double> kDnsTransactionTimeoutMultiplier{
@@ -328,6 +341,10 @@ BASE_FEATURE(kAsyncQuicSession,
 #else
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
+
+// A flag to use QuicSessionPool::AsyncDnsJob, which resolves hostnames with
+// HostResolver::ServiceEndpointRequest, for direct QUIC sessions.
+BASE_FEATURE(kAsyncDnsQuicJob, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // A flag to make multiport context creation asynchronous.
 BASE_FEATURE(kAsyncMultiPortPath,
@@ -797,7 +814,7 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    base::Seconds(quic::kInitialIdleTimeoutSecs));
 
 BASE_FEATURE(kQuicIgnoreRedundantOnNetworkMadeDefault,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kQuicLongerIdleConnectionTimeout,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -981,5 +998,22 @@ BASE_FEATURE(kEnableBackendCleanupTrackerOnHttpCache,
 
 BASE_FEATURE(kPartitionWebSocketEndpointLocksByNetworkAnonymizationKey,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kInitialDelayForBrokenAlternativeService,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kInitialDelayForBrokenAlternativeServiceParam,
+                   &kInitialDelayForBrokenAlternativeService,
+                   base::Seconds(300));
+
+BASE_FEATURE(kPersistBrokenAlternativeServices,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kMaxDelayForBrokenAlternativeService,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kMaxDelayForBrokenAlternativeServiceParam,
+                   &kMaxDelayForBrokenAlternativeService,
+                   base::Days(2));
 
 }  // namespace net::features

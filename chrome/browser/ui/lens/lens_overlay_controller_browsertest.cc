@@ -735,7 +735,9 @@ class LensOverlayControllerBrowserTest : public InProcessBrowserTest {
         kActiveContentsWebViewRetrievalId);
   }
 
-  SidePanel* GetSidePanel() { return browser()->GetBrowserView().side_panel(); }
+  SidePanel* GetSidePanel() {
+    return BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
+  }
 
   virtual void SetupFeatureList() {
     feature_list_.InitWithFeaturesAndParameters(
@@ -4735,7 +4737,7 @@ class LensOverlayControllerEntrypointsBrowserTest
     actions::ActionItem* toolbar_entry_point =
         actions::ActionManager::Get().FindAction(
             kActionSidePanelShowLensOverlayResults,
-            browser()->browser_actions()->root_action_item());
+            BrowserActions::From(browser())->root_action_item());
     EXPECT_TRUE(toolbar_entry_point->GetVisible());
     EXPECT_TRUE(toolbar_entry_point->GetEnabled());
   }
@@ -5286,7 +5288,7 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserFullscreenDisabled,
   actions::ActionItem* toolbar_entry_point =
       actions::ActionManager::Get().FindAction(
           kActionSidePanelShowLensOverlayResults,
-          browser()->browser_actions()->root_action_item());
+          BrowserActions::From(browser())->root_action_item());
   EXPECT_TRUE(toolbar_entry_point->GetEnabled());
   EXPECT_TRUE(
       chrome::BrowserCommandController::From(browser())->IsCommandEnabled(

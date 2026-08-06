@@ -2106,12 +2106,12 @@ base::DictValue DevToolsUIBindings::GetHostConfigDictionary(Profile* profile) {
   response_dict.Set("devToolsAiGeneratedTimelineLabels",
                     std::move(ai_generated_timeline_labels_dict));
 
-  base::DictValue devtools_force_popover_dict;
-  devtools_force_popover_dict.Set(
+  base::DictValue devtools_force_interest_dict;
+  devtools_force_interest_dict.Set(
       "enabled", base::FeatureList::IsEnabled(
-                     blink::features::kDevToolsAllowPopoverForcing));
-  response_dict.Set("devToolsAllowPopoverForcing",
-                    std::move(devtools_force_popover_dict));
+                     blink::features::kDevToolsAllowInterestForcing));
+  response_dict.Set("devToolsAllowInterestForcing",
+                    std::move(devtools_force_interest_dict));
 
   base::DictValue flexible_layout_dict;
   flexible_layout_dict.Set(
@@ -2229,6 +2229,14 @@ base::DictValue DevToolsUIBindings::GetHostConfigDictionary(Profile* profile) {
           "enabled", GetFeatureStateForDevTools(
                          ::features::kDevToolsInstrumentationBreakpoints,
                          enabled_by_flags, disabled_by_flags)));
+
+  response_dict.Set(
+      "devToolsSourceMapScopesInSourcesPanel",
+      base::DictValue().Set(
+          "enabled",
+          GetFeatureStateForDevTools(
+              ::features::kDevToolsSourceMapScopesInSourcesPanel,
+              enabled_by_flags, disabled_by_flags)));
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // We check AreExtensionsOnExtensionURLsAllowed() here because this is used to

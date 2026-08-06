@@ -20,6 +20,7 @@
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/search/search.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -85,7 +86,7 @@ BASE_FEATURE(kOmniboxEverywhere, DISABLED);
 // Controls showing the profile picker menu on profile avatar click in
 // OmniboxEverywhere.
 const base::FeatureParam<bool> kOmniboxEverywhereProfilePickerParam{
-    &kOmniboxEverywhere, "ProfilePicker", false};
+    &kOmniboxEverywhere, "ProfilePicker", true};
 // Enables the WebUI for omnibox suggestions without modifying the popup UI.
 BASE_FEATURE(kWebUIOmniboxPopupDebug, DISABLED);
 // Enables side-by-side comparison omnibox suggestions in WebUI and Views.
@@ -267,6 +268,19 @@ bool IsAimPopupEnabled(Profile* profile) {
   auto* aim_service = AimEligibilityServiceFactory::GetForProfile(profile);
   return aim_service && aim_service->IsAimEligible() &&
          aim_service->IsFuseboxEligible();
+}
+
+bool IsOmniboxEverywhereEnabled(Profile* profile) {
+  if (!profile) {
+    return false;
+  }
+
+  if (!base::FeatureList::IsEnabled(kOmniboxEverywhere)) {
+    return false;
+  }
+
+  return search::DefaultSearchProviderIsGoogle(
+      TemplateURLServiceFactory::GetForProfile(profile));
 }
 
 bool IsContentSharingEnabled(

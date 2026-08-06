@@ -36,10 +36,10 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       'deleteContext',
       'deleteTabContext',
       'executeAction',
+      'getCyclingPlaceholderConfig',
       'getDriveDisclaimerStatus',
       'getInputState',
       'getPageClassification',
-      'getPlaceholderConfig',
       'getRecentTabs',
       'getSmartTabSharingActive',
       'getTabPreview',
@@ -148,7 +148,7 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
   queryAutocomplete(
       queryId: number, input: String16, preventInlineAutocomplete: boolean,
       cursorPosition: number, suggestInventory: SuggestInventory,
-      isOnFocus: boolean) {
+      isOnFocus: boolean, keyword: string) {
     this.methodCalled('queryAutocomplete', {
       queryId,
       input,
@@ -156,6 +156,7 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       cursorPosition,
       suggestInventory,
       isOnFocus,
+      keyword,
     });
   }
 
@@ -167,8 +168,8 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     this.methodCalled('toggleSuggestionGroupIdVisibility', {suggestionGroupId});
   }
 
-  getPlaceholderConfig(): Promise<{config: PlaceholderConfig}> {
-    this.methodCalled('getPlaceholderConfig');
+  getCyclingPlaceholderConfig(): Promise<{config: PlaceholderConfig}> {
+    this.methodCalled('getCyclingPlaceholderConfig');
     return Promise.resolve({
       config: {
         texts: [],

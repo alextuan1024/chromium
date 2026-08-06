@@ -198,6 +198,9 @@ inline constexpr char kChromeUIInternalsHost[] = "internals";
 inline constexpr char kChromeUIInterstitialHost[] = "interstitials";
 inline constexpr char kChromeUIInterstitialURL[] = "chrome://interstitials/";
 inline constexpr char kChromeUIIwaDevHost[] = "iwa-dev";
+inline constexpr char kChromeUILensOverlayHost[] = "lens-overlay";
+inline constexpr char kChromeUILensOverlayUntrustedURL[] =
+    "chrome-untrusted://lens-overlay/";
 inline constexpr char kChromeUILocalStateHost[] = "local-state";
 inline constexpr char kChromeUILocalStateURL[] = "chrome://local-state";
 inline constexpr char kChromeUILocationInternalsHost[] = "location-internals";
@@ -256,8 +259,6 @@ inline constexpr char kChromeUIPasswordManagerURL[] =
     "chrome://password-manager";
 inline constexpr char kChromeUiPasswordChangeUrl[] =
     "chrome://password-manager/settings/password-change";
-inline constexpr char kChromeUIPersonalContextInternalsHost[] =
-    "personal-context-internals";
 inline constexpr char kChromeUIPolicyHost[] = "policy";
 inline constexpr char kChromeUIPolicyLogsURL[] = "chrome://policy/logs";
 inline constexpr char kChromeUIPolicyTestURL[] = "chrome://policy/test";
@@ -400,9 +401,6 @@ inline constexpr char kChromeUILensUntrustedSidePanelAPIURL[] =
     "chrome-untrusted://lens/side_panel/side_panel.html";
 inline constexpr char kChromeUILensUntrustedSidePanelURL[] =
     "chrome-untrusted://lens/";
-inline constexpr char kChromeUILensOverlayHost[] = "lens-overlay";
-inline constexpr char kChromeUILensOverlayUntrustedURL[] =
-    "chrome-untrusted://lens-overlay/";
 inline constexpr char kChromeUIMultistepFilterInternalsHost[] =
     "multistep-filter-internals";
 inline constexpr char kChromeUINearbyInternalsHost[] = "nearby-internals";

@@ -141,6 +141,9 @@ NSMenuItem* BuildFileMenu(NSApplication* nsapp,
               Item(IDS_NEW_INCOGNITO_WINDOW_MAC)
                   .command_id(IDC_NEW_INCOGNITO_WINDOW)
                   .remove_if(is_pwa),
+              Item(IDS_NEW_ISOLATED_WINDOW_MAC)
+                  .command_id(IDC_NEW_ISOLATED_WINDOW)
+                  .remove_if(is_pwa),
               Item(IDS_REOPEN_CLOSED_TABS_MAC)
                   .command_id(IDC_RESTORE_TAB)
                   .remove_if(is_pwa),
@@ -575,6 +578,8 @@ NSMenuItem* BuildTabMenu(NSApplication* nsapp,
                   .set_hidden(true),
               Item(IDS_MOVE_TAB_TO_NEW_WINDOW)
                   .command_id(IDC_MOVE_TAB_TO_NEW_WINDOW),
+              Item(IDS_TAB_CXMENU_ADD_TAB_TO_NEW_SPLIT)
+                  .command_id(IDC_NEW_SPLIT_TAB),
               Item(IDS_SEARCH_TABS)
                   .command_id(IDC_TAB_SEARCH),
               Item().is_separator(),

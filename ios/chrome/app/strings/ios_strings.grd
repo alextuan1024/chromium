@@ -300,7 +300,7 @@
        <ph name="EMAIL">$1<ex>jessica@gmail.com</ex></ph>. <ph name="MANAGED_STATUS">$2<ex>Your account is managed</ex></ph>. <ph name="AI_TIER">$3<ex>Google AI Foo membership</ex></ph>.
       </message>
       <message name="IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MEMBERSHIPS_AI_TIER" desc="Part of the accessibility label letting the user know which membership tier they have. Used in strings such as IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MANAGED_STATUS_AI_TIER. [iOS only]">
-        <ph name="AI_TIER_NAME">$1<ex>Tier name</ex> membership</ph>
+        <ph name="AI_TIER_NAME">$1<ex>Tier name</ex></ph> membership
       </message>
       <message name="IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME" desc="The accessibility label for the cell containing user’s name and email. [iOS only]">
         <ph name="USER_NAME">$1<ex>Jessica</ex></ph>, <ph name="EMAIL">$2<ex>jessica@gmail.com</ex></ph>.
@@ -3347,14 +3347,26 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
       <message name="IDS_IOS_GEMINI_CONSENT_FOOTNOTE_TEXT_SOUTH_KOREA" desc="Format string for the Gemini consent footnote for accounts in South Korea.">
           Our <ph name="BEGIN_LINK">BEGIN_LINK</ph>Terms<ph name="END_LINK">END_LINK</ph>, <ph name="BEGIN_LINK">BEGIN_LINK</ph>Korean Location Terms<ph name="END_LINK">END_LINK</ph>, and <ph name="BEGIN_LINK">BEGIN_LINK</ph>Privacy Notice<ph name="END_LINK">END_LINK</ph> apply. Gemini is AI and can make mistakes, including about people.
       </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_FOOTNOTE_TEXT_SOUTH_KOREA_STRICT" desc="Format string for the Gemini consent footnote for accounts in South Korea for strict mode.">
+        Our <ph name="BEGIN_LINK">BEGIN_LINK</ph>Terms<ph name="END_LINK">END_LINK</ph>, <ph name="BEGIN_LINK">BEGIN_LINK</ph>Korean Location Terms<ph name="END_LINK">END_LINK</ph>, and <ph name="BEGIN_LINK">BEGIN_LINK</ph>Privacy Notice<ph name="END_LINK">END_LINK</ph> apply. Chats are reviewed and used to improve Google AI. Gemini is AI and can make mistakes, including about people. Some content may not be suitable for everyone. You can <ph name="BEGIN_LINK">BEGIN_LINK</ph>manage your activity<ph name="END_LINK">END_LINK</ph>, including info about your location. <ph name="BEGIN_LINK">BEGIN_LINK</ph>Learn more about your choices<ph name="END_LINK">END_LINK</ph>
+      </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_FOOTNOTE_TEXT_STRICT" desc="Format string for the Gemini consent footnote for strict mode.">
+        Gemini is AI and can make mistakes, including about people. Some content may not be suitable for everyone. Chats are reviewed and used to improve Google AI. <ph name="BEGIN_LINK">BEGIN_LINK</ph>Learn about your choices<ph name="END_LINK">END_LINK</ph>. Our <ph name="BEGIN_LINK">BEGIN_LINK</ph>Terms<ph name="END_LINK">END_LINK</ph> and <ph name="BEGIN_LINK">BEGIN_LINK</ph>Privacy Notice<ph name="END_LINK">END_LINK</ph> apply.
+      </message>
       <message name="IDS_IOS_GEMINI_CONSENT_FOOTNOTE_US_ONLY_ADDITION" desc="US-only footer addition message.">
           Some content may not be suitable for everyone.
       </message>
       <message name="IDS_IOS_GEMINI_CONSENT_FOOTNOTE_WATCH_LABEL" desc="Footer label for watch video.">
           Watch: <ph name="BEGIN_LINK">BEGIN_LINK</ph>5 must-knows for generative AI<ph name="END_LINK">END_LINK</ph>
       </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_PRIMARY_BUTTON_STRICT" desc="Primary button text for the Gemini Consent page for strict mode.">
+          Use Gemini
+      </message>
       <message name="IDS_IOS_GEMINI_CONSENT_SHARE_TAB_BODY" desc="Share tab body text for the Gemini Consent page.">
         Google uses the content and URL of shared tabs. Your current tab is shared in new chats. You can change this setting anytime.
+      </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_SHARE_TAB_BODY_STRICT" desc="Share tab body text for the Gemini Consent page for strict mode.">
+        By default, your current tab is shared when you start a new chat. When tabs are shared, their contents and URLs are sent to Google. You can change this setting anytime.
       </message>
       <message name="IDS_IOS_GEMINI_CONSENT_SHARE_TAB_TITLE" desc="Share tab title text for the Gemini Consent page.">
           Tabs are shared for more relevant answers
@@ -3368,11 +3380,17 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
       <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_BODY_2" desc="Body of part 2 for the strict data governance row.">
         Your <ph name="BEGIN_LINK">BEGIN_LINK</ph>Keep Activity<ph name="END_LINK">END_LINK</ph> setting is off by default. When it’s off, Google saves your chats for 3 days. It uses them to make Gemini Apps work correctly, help keep them safe, and use your feedback to fix problems. You can turn on Keep Activity to help improve Google AI for everyone.
       </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_BODY_3" desc="Body of part 3 for the strict data governance row.">
+        When it’s on, your activity is saved in Gemini Apps Activity for 18 months, which you can change to 3 or 36 months. Google uses your activity to develop and improve its services (including Gemini models) as well as to protect Google, its users, and the public with the help of human reviewers. Data reviewed by service providers is disconnected from your account and saved for 3 years.
+      </message>
       <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_SUBTITLE_1" desc="Title of part 1 for the strict data governance row.">
         What activity is collected
       </message>
       <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_SUBTITLE_2" desc="Title of part 2 for the strict data governance row.">
         If you’re under 18
+      </message>
+      <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_TITLE" desc="Title text for the strict data governance row.">
+        Your data improves Google AI
       </message>
       <message name="IDS_IOS_GEMINI_IMAGE_CONTEXT_MENU_ENTRY_POINT" desc="The entry point for Gemini when the user long-presses an image. Invites the user to create an image using Gemini in Chrome.">
         Edit Image with Gemini
@@ -5974,6 +5992,9 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_HELPING_IMPROVE_NOTICE_TITLE" desc="Title of the subpage explaining how users can help improve enhanced autofill settings. [iOS only]">
         Help improve enhanced autofill
       </message>
+      <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_HELPING_IMPROVE_TITLE" desc="Title of the section in the subpage explaining how users can help improve enhanced autofill settings. [iOS only]">
+        You're helping improve enhanced autofill
+      </message>
       <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_MANAGE_CONNECTED_APPS_SUMMARY" desc="Subtext or description beneath the 'Manage Connected Apps' entry point, explaining its purpose. 'Gemini' is a proper product name and must remain unlocalized. [iOS only]">
         Choose which apps Gemini connects to
       </message>
@@ -5989,8 +6010,14 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_SWITCH_TITLE" desc="Section header or toggle label in Chrome settings for enabling AI-driven autofill suggestions. 'Gemini' is a proper Google product name and must remain unlocalized.">
         Find and fill with Gemini
       </message>
+      <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_THINGS_TO_CONSIDER_TITLE" desc="Subheading in the settings page describing the data logging behavior when the enhanced autofill feature is triggered by the user. [iOS only]">
+        Things to consider
+      </message>
       <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_TITLE" desc="Page title in Chrome settings for the advanced, AI-powered form-filling features. 'Autofill' refers to the browser's ability to automatically populate form fields. [iOS only]">
         Enhanced autofill
+      </message>
+      <message name="IDS_IOS_PERSONAL_CONTEXT_AUTOFILL_SETTINGS_WHEN_USED_TITLE" desc="Subheading in the settings page describing the data logging behavior when the enhanced autofill feature is triggered by the user. [iOS only]">
+        When used
       </message>
       <message name="IDS_IOS_PHONE_CALL_BUTTON" desc="Text in the confirmation dialog button that will initiate a phone call for the presented number. [Length: 10em] [iOS only]">
         Call
@@ -6320,7 +6347,7 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_READER_MODE_CHIP_ACCESSIBILITY_LABEL" desc="Accessibility label for a button which opens the Reading mode options view.">
         Open Reading mode options
       </message>
-      <message name="IDS_IOS_READER_MODE_CONTENT_SETTINGS_TITLE" translateable="false" desc="Title of the Reading Mode Content Settings options.">
+      <message name="IDS_IOS_READER_MODE_CONTENT_SETTINGS_TITLE" desc="Title of the Reading Mode Content Settings options.">
         Reading mode
       </message>
       <message name="IDS_IOS_READER_MODE_OPTIONS_COLOR_THEME_BUTTON_ACCESSIBILITY_LABEL_DARK" desc="Label of a Reading mode options button which changes the Reading mode dark color scheme.">
@@ -6482,13 +6509,13 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_READING_MODE_SETTING_TITLE" desc="Title of the setting to enable the 'Reading mode available' message [iOS only]" meaning="Title of the setting to enable the 'Reading mode available' message [iOS only]">
         Show Reading Mode
       </message>
-      <message name="IDS_IOS_READING_MODE_SHOW_HYPERLINKS_DESCRIPTION" translateable="false" desc="Description of the setting to enable hyperlinks in Reader Mode [iOS only]">
+      <message name="IDS_IOS_READING_MODE_SHOW_HYPERLINKS_DESCRIPTION" desc="Description of the setting to enable hyperlinks in Reader Mode [iOS only]">
         Show links when reading mode is on
       </message>
-      <message name="IDS_IOS_READING_MODE_SHOW_HYPERLINKS_TITLE" translateable="false" desc="Title of the setting to enable hyperlinks in Reading Mode [iOS only]">
+      <message name="IDS_IOS_READING_MODE_SHOW_HYPERLINKS_TITLE" desc="Title of the setting to enable hyperlinks in Reading Mode [iOS only]">
         Show hyperlinks
       </message>
-      <message name="IDS_IOS_READING_MODE_SHOW_SUGGESTION_TITLE" translateable="false" desc="Title of the setting to enable the 'Reading mode available' message [iOS only]">
+      <message name="IDS_IOS_READING_MODE_SHOW_SUGGESTION_TITLE" desc="Title of the setting to enable the 'Reading mode available' message [iOS only]">
         Show suggestion
       </message>
       <message name="IDS_IOS_RECENT_TABS_DISABLED_BY_ORGANIZATION" desc="This message is shown in the Other Devices section of the Recent Tabs view if browser sign-in is disabled via policy by the device's administrator / organization.">

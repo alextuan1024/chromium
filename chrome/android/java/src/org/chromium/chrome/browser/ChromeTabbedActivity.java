@@ -217,6 +217,7 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
 import org.chromium.chrome.browser.ntp_customization.theme.NtpCustomizationPromoManager;
 import org.chromium.chrome.browser.ntp_customization.theme.daily_refresh.NtpThemeDailyRefreshManager;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.CrossDeviceThemeTracker;
 import org.chromium.chrome.browser.offlinepages.OfflinePageUtils;
 import org.chromium.chrome.browser.paint_preview.StartupPaintPreviewHelper;
 import org.chromium.chrome.browser.paint_preview.StartupPaintPreviewHelperSupplier;
@@ -1631,6 +1632,15 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                     getProfileProviderSupplier().get().getOriginalProfile(),
                     getLifecycleDispatcher(),
                     this::isWarmOnResume);
+
+            if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled() && !isIncognitoWindow()) {
+                CrossDeviceThemeTracker themeTracker =
+                        CrossDeviceThemeTracker.getForProfile(
+                                getProfileProviderSupplier().get().getOriginalProfile());
+                if (themeTracker != null) {
+                    themeTracker.setActivity(this);
+                }
+            }
 
             super.finishNativeInitialization();
 
@@ -4625,6 +4635,19 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                 newTabPage.listenToFeed(mRootUiCoordinator.getReadAloudControllerSupplier());
                 RecordUserAction.record("MobileMenuListenToFeed");
             }
+        } else if (id == R.id.select_next_tab) {
+            TabModel currentTabModel = getCurrentTabModel();
+            int tabCount = currentTabModel.getCount();
+            if (tabCount > 1) {
+                TabModelUtils.setIndex(currentTabModel, (currentTabModel.index() + 1) % tabCount);
+            }
+        } else if (id == R.id.select_previous_tab) {
+            TabModel currentTabModel = getCurrentTabModel();
+            int tabCount = currentTabModel.getCount();
+            if (tabCount > 1) {
+                TabModelUtils.setIndex(
+                        currentTabModel, (currentTabModel.index() + tabCount - 1) % tabCount);
+            }
         } else if (id == R.id.toggle_caret_browsing) {
             if (CaretBrowsingDialog.shouldShowDialogForKeyboardShortcut(
                     getCurrentTabModel().getProfile())) {
@@ -5033,28 +5056,21 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                 }
             }
 
-            Tab firstTab = tabCreator.createNewTab(loadUrlParams, launchType, parentTab, intent);
-
             List<String> additionalUrls =
                     IntentUtils.safeGetSerializableExtra(
                             intent, IntentHandler.EXTRA_ADDITIONAL_URLS);
             boolean openAdditionalUrlsInTabGroup =
                     IntentUtils.safeGetBooleanExtra(
                             intent, IntentHandler.EXTRA_OPEN_ADDITIONAL_URLS_IN_TAB_GROUP, false);
-            if (additionalUrls != null) {
-                final Tab parent = openAdditionalUrlsInTabGroup ? firstTab : null;
-                @TabLaunchType
-                int additionalUrlLaunchType =
-                        openAdditionalUrlsInTabGroup
-                                ? TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
-                                : TabLaunchType.FROM_RESTORE;
-                for (int i = 0; i < additionalUrls.size(); i++) {
-                    String url = additionalUrls.get(i);
-                    LoadUrlParams copy = LoadUrlParams.copy(loadUrlParams);
-                    copy.setUrl(url);
-                    tabCreator.createNewTab(copy, additionalUrlLaunchType, parent);
-                }
-            }
+
+            Tab firstTab =
+                    tabCreator.createNewTabs(
+                            loadUrlParams,
+                            additionalUrls,
+                            launchType,
+                            parentTab,
+                            openAdditionalUrlsInTabGroup,
+                            intent);
 
             TabModel tabModel =
                     mTabModelSelector != null && firstTab != null

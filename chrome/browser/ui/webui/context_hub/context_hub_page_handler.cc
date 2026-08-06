@@ -4,24 +4,17 @@
 
 #include "chrome/browser/ui/webui/context_hub/context_hub_page_handler.h"
 
-#include <array>
 #include <vector>
 
 #include "base/check.h"
-#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
-#include "base/rand_util.h"
-#include "base/strings/strcat.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
 #include "chrome/browser/context_hub/context_hub_service.h"
 #include "chrome/browser/context_hub/context_hub_service_factory.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/personal_context/proto/features/auto_todos.pb.h"
 #include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 
@@ -94,77 +87,85 @@ class BrowserTabProvider : public ContextHubPageHandler::TabProvider {
 #endif
 
 ContextHubPageHandler::ContextHubPageHandler(
+    mojo::PendingRemote<browser::context_hub::mojom::Page> page,
     mojo::PendingReceiver<browser::context_hub::mojom::PageHandler> receiver,
     Profile* profile,
     content::WebContents* web_contents,
     std::unique_ptr<TabProvider> tab_provider)
-    : receiver_(this, std::move(receiver)),
+    : page_(std::move(page)),
+      receiver_(this, std::move(receiver)),
       tab_provider_(std::move(tab_provider)),
       profile_(profile),
       web_contents_(web_contents) {
+  CHECK(page_.is_bound());
   if (!tab_provider_) {
 #if !BUILDFLAG(IS_ANDROID)
     tab_provider_ = std::make_unique<BrowserTabProvider>();
 #endif
   }
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (service) {
+    service_observation_.Observe(service);
+  }
 }
 
 ContextHubPageHandler::~ContextHubPageHandler() = default;
 
-void ContextHubPageHandler::GenerateAutoTodos(
-    GenerateAutoTodosCallback callback) {
+void ContextHubPageHandler::OnAutoTodosChanged(
+    base::span<const context_hub::AutoTodoEntry> entries) {
+  page_->OnAutoTodosChanged(std::vector(std::from_range, entries));
+}
+
+void ContextHubPageHandler::GenerateFirstPartyAutoTodos(
+    GenerateFirstPartyAutoTodosCallback callback) {
   context_hub::ContextHubService* service =
       ContextHubServiceFactory::GetForProfile(profile_);
   if (!service) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(false);
     return;
   }
 
-  service->GenerateFirstPartyAutoTodos(
-      base::BindOnce(&ContextHubPageHandler::OnAutoTodosGenerated,
-                     weak_factory_.GetWeakPtr(), std::move(callback)));
+  service->GenerateFirstPartyAutoTodos(std::move(callback));
 }
 
-void ContextHubPageHandler::OnAutoTodosGenerated(
-    GenerateAutoTodosCallback callback,
-    std::optional<personal_context::proto::AutoTodosResponse> result) {
-  std::optional<std::vector<browser::context_hub::mojom::AutoTodoItemPtr>>
-      mojo_todos;
-  if (result.has_value() && result.value().todos_size() > 0) {
-    mojo_todos.emplace();
-    for (const personal_context::proto::AutoTodoItem& todo :
-         result.value().todos()) {
-      browser::context_hub::mojom::AutoTodoItemPtr mojo_todo =
-          browser::context_hub::mojom::AutoTodoItem::New();
-      // TODO(b/540562062): Use the ID from the response.
-      mojo_todo->id = todo.title();
-      mojo_todo->title = todo.title();
-      mojo_todo->description = todo.description();
-      mojo_todo->actionable_url = GURL(todo.actionable_url());
-      mojo_todo->score =
-          std::round(todo.importance_score() * 100.0f) / 100.0f;
-      for (const personal_context::proto::SourceReference& ref :
-           todo.source_references()) {
-        if (ref.has_gmail()) {
-          browser::context_hub::mojom::GmailReferencePtr gmail =
-              browser::context_hub::mojom::GmailReference::New();
-          gmail->message_url = GURL(ref.gmail().message_url());
-          mojo_todo->source_references.push_back(
-              browser::context_hub::mojom::SourceReference::NewGmail(
-                  std::move(gmail)));
-        } else if (ref.has_photos()) {
-          browser::context_hub::mojom::PhotosReferencePtr photos =
-              browser::context_hub::mojom::PhotosReference::New();
-          photos->photos_url = GURL(ref.photos().photos_url());
-          mojo_todo->source_references.push_back(
-              browser::context_hub::mojom::SourceReference::NewPhotos(
-                  std::move(photos)));
-        }
-      }
-      mojo_todos->push_back(std::move(mojo_todo));
-    }
+void ContextHubPageHandler::GetAutoTodos(GetAutoTodosCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({}, {});
+    return;
   }
-  std::move(callback).Run(std::move(mojo_todos));
+
+  service->GetAutoTodos(base::BindOnce(
+      [](GetAutoTodosCallback callback,
+         std::vector<context_hub::AutoTodoEntry> entries) {
+        std::vector<context_hub::AutoTodoEntry> first_party_todos;
+        std::vector<context_hub::AutoTodoEntry> third_party_todos;
+        for (auto& entry : entries) {
+          if (entry.is_first_party()) {
+            first_party_todos.push_back(std::move(entry));
+          } else if (entry.is_third_party()) {
+            third_party_todos.push_back(std::move(entry));
+          }
+        }
+        std::move(callback).Run(std::move(first_party_todos),
+                                std::move(third_party_todos));
+      },
+      std::move(callback)));
+}
+
+void ContextHubPageHandler::UpdateAutoTodo(
+    const context_hub::AutoTodoEntry& todo,
+    UpdateAutoTodoCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  service->UpdateAutoTodo(todo, std::move(callback));
 }
 
 void ContextHubPageHandler::SetTodoFeedback(
@@ -313,6 +314,19 @@ std::vector<browser::context_hub::mojom::ChatMessagePtr> ToMojoChatHistory(
 }
 
 }  // namespace
+
+void ContextHubPageHandler::GenerateTabBasedTodos(
+    GenerateTabBasedTodosCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service || !tab_provider_) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  service->GenerateTabBasedTodos(
+      GetOpenTabs(tab_provider_.get(), web_contents_), std::move(callback));
+}
 
 void ContextHubPageHandler::GetTabs(GetTabsCallback callback) {
   std::move(callback).Run(

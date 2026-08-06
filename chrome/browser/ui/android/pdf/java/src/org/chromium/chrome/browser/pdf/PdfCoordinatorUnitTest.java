@@ -11,6 +11,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -88,6 +89,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 
 @RunWith(BaseRobolectricTestRunner.class)
 @DisableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
@@ -186,7 +188,7 @@ public class PdfCoordinatorUnitTest {
 
         // Assert
         ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
-        float expectedYOffsetPoints = (PDF_CONTENT_HEIGHT / 2f) / shadowPdfView.mZoom;
+        float expectedYOffsetPoints = (mPdfView.getHeight() / 2f) / shadowPdfView.mZoom;
         assertEquals(new PdfPoint(pageIndex, 0f, expectedYOffsetPoints), shadowPdfView.mPdfPoint);
     }
 
@@ -429,7 +431,7 @@ public class PdfCoordinatorUnitTest {
         assertEquals(2, shadowPdfView.mPagesPerRow);
         assertEquals(zoomLevel, shadowPdfView.mZoom, 0.001f);
 
-        float expectedYOffsetPoints = (PDF_CONTENT_HEIGHT / 2f) / zoomLevel;
+        float expectedYOffsetPoints = (mPdfView.getHeight() / 2f) / zoomLevel;
         assertEquals(
                 new PdfPoint(currentPageIndex, 0f, expectedYOffsetPoints), shadowPdfView.mPdfPoint);
 
@@ -442,12 +444,81 @@ public class PdfCoordinatorUnitTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowPdfView.class})
+    public void testResetLoadState_ResetsTwoPagesPerRow() {
+        createPdfCoordinator();
+        mPdfCoordinator.toggleTwoPagesPerRow(true, 1.5f, 2);
+        ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
+        assertEquals(2, shadowPdfView.mPagesPerRow);
+
+        mPdfCoordinator.resetLoadState();
+
+        assertEquals(1, shadowPdfView.mPagesPerRow);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
     public void testToggleTwoPagesPerRow_PdfViewNull() {
         createPdfCoordinator();
         mPdfCoordinator.mChromePdfViewerFragment.setPdfViewForTesting(null);
 
         // Verify that no exception is thrown when mPdfView is null.
         mPdfCoordinator.toggleTwoPagesPerRow(true, 1.5f, 2);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowPdfView.class})
+    public void testToggleTwoPagesPerRow_negativePageIndex() {
+        createPdfCoordinator();
+        float zoomLevel = 1.5f;
+
+        // Negative page index should be clamped to 0 and not throw IllegalArgumentException.
+        mPdfCoordinator.toggleTwoPagesPerRow(true, zoomLevel, -1);
+
+        ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
+        assertEquals(2, shadowPdfView.mPagesPerRow);
+        float expectedYOffsetPoints = (mPdfView.getHeight() / 2f) / zoomLevel;
+        assertEquals(new PdfPoint(0, 0f, expectedYOffsetPoints), shadowPdfView.mPdfPoint);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowPdfView.class})
+    public void testToggleFitToPage_negativePageIndex() {
+        createPdfCoordinator();
+        boolean[] getPageInfoCalled = new boolean[1];
+        PdfDocument mockPdfDocument =
+                (PdfDocument)
+                        Proxy.newProxyInstance(
+                                PdfDocument.class.getClassLoader(),
+                                new Class[] {PdfDocument.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("getPageInfo")
+                                            && args != null
+                                            && args.length == 2) {
+                                        // Verify page index -1 was clamped to 0.
+                                        assertEquals(0, args[0]);
+                                        getPageInfoCalled[0] = true;
+                                        return null;
+                                    }
+                                    if (method.getName().equals("getPageCount")) {
+                                        return 5;
+                                    }
+                                    Class<?> returnType = method.getReturnType();
+                                    if (returnType.equals(Void.TYPE)) return null;
+                                    if (returnType.equals(Boolean.TYPE)) return false;
+                                    if (returnType.equals(Integer.TYPE)) return 0;
+                                    if (returnType.equals(Long.TYPE)) return 0L;
+                                    if (returnType.equals(Float.TYPE)) return 0f;
+                                    return null;
+                                });
+        ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
+        shadowPdfView.mPdfDocument = mockPdfDocument;
+
+        // Negative page index should be clamped to 0 and not throw an exception.
+        mPdfCoordinator.toggleFitToPage(true, -1);
+        assertTrue("getPageInfo should be called with clamped index 0", getPageInfoCalled[0]);
     }
 
     @Test
@@ -494,7 +565,7 @@ public class PdfCoordinatorUnitTest {
         ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
         PdfDocument mockPdfDocument =
                 (PdfDocument)
-                        java.lang.reflect.Proxy.newProxyInstance(
+                        Proxy.newProxyInstance(
                                 PdfDocument.class.getClassLoader(),
                                 new Class[] {PdfDocument.class},
                                 (proxy, method, args) -> {
@@ -583,14 +654,14 @@ public class PdfCoordinatorUnitTest {
     @Test
     @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
     @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
-    public void testFormFillingEnabledBasedOnEditMode() {
+    public void testFormFillingEnabledWhenInlinePdfV2IsEnabled() {
         createPdfCoordinator();
 
-        // Initially, when view is created with edit mode false, form filling should be enabled
+        // Initially, when view is created, form filling should be enabled
         mPdfCoordinator.mChromePdfViewerFragment.onPdfViewCreated(mPdfView);
         ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
         assertTrue(
-                "Form filling should be enabled initially since edit mode is false",
+                "Form filling should be enabled initially",
                 shadowPdfView.isFormFillingEnabled());
 
         PdfDocument pdfDocument = Mockito.mock(PdfDocument.class);
@@ -601,22 +672,18 @@ public class PdfCoordinatorUnitTest {
                 "Form filling should still be enabled after document load success",
                 shadowPdfView.isFormFillingEnabled());
 
-        // Simulate entering edit mode
-        mPdfCoordinator.mChromePdfViewerFragment.onEnterEditMode();
-        assertFalse(
-                "Form filling should be disabled when in edit mode",
-                shadowPdfView.isFormFillingEnabled());
-
-        // Simulate exiting edit mode
-        mPdfCoordinator.mChromePdfViewerFragment.onExitEditMode();
-        assertTrue(
-                "Form filling should be enabled again when exiting edit mode",
-                shadowPdfView.isFormFillingEnabled());
-
-        // Simulate document reload success after edit mode is exited
+        // Simulate document reload success
         mPdfCoordinator.mChromePdfViewerFragment.onLoadDocumentSuccess(pdfDocument);
         assertTrue(
-                "Form filling should remain enabled after reload when edit mode is false",
+                "Form filling should remain enabled after reload",
+                shadowPdfView.isFormFillingEnabled());
+
+        // Verify that if edit mode is true, document reload does not enable form filling
+        mPdfCoordinator.mChromePdfViewerFragment.setEditModeEnabled(true);
+        shadowPdfView.setFormFillingEnabled(false);
+        mPdfCoordinator.mChromePdfViewerFragment.onLoadDocumentSuccess(pdfDocument);
+        assertFalse(
+                "Form filling should not be enabled on reload when edit mode is true",
                 shadowPdfView.isFormFillingEnabled());
     }
 
@@ -637,6 +704,101 @@ public class PdfCoordinatorUnitTest {
                 "Form filling should still not be enabled after document load success when"
                     + " InlinePdfV2 is disabled",
                 shadowPdfView.isFormFillingEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
+    public void testOnDestroyViewResetsPdfViewSetup() {
+        createPdfCoordinator();
+        mPdfCoordinator.mChromePdfViewerFragment.onPdfViewCreated(mPdfView);
+        assertTrue(
+                "mIsPdfViewSetup should be true after onPdfViewCreated",
+                mPdfCoordinator.mChromePdfViewerFragment.mIsPdfViewSetup);
+        assertNotNull(
+                "mPdfView should be set after onPdfViewCreated",
+                mPdfCoordinator.mChromePdfViewerFragment.mPdfView);
+
+        mPdfCoordinator.mChromePdfViewerFragment.onDestroyView();
+        assertFalse(
+                "mIsPdfViewSetup should be false after onDestroyView",
+                mPdfCoordinator.mChromePdfViewerFragment.mIsPdfViewSetup);
+        assertNull(
+                "mPdfView should be null after onDestroyView",
+                mPdfCoordinator.mChromePdfViewerFragment.mPdfView);
+
+        // Simulate navigating back and recreating the view.
+        PdfView newPdfView = new PdfView(mActivity);
+        mPdfCoordinator.mChromePdfViewerFragment.onPdfViewCreated(newPdfView);
+        assertTrue(
+                "mIsPdfViewSetup should be true after recreating PdfView",
+                mPdfCoordinator.mChromePdfViewerFragment.mIsPdfViewSetup);
+        assertEquals(
+                "mPdfView should reference newPdfView",
+                newPdfView,
+                mPdfCoordinator.mChromePdfViewerFragment.mPdfView);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
+    public void testOnPdfViewCreated_WithExistingDocument_CallsDocumentLoadedOnce() {
+        PdfActionsDelegate mockDelegate = Mockito.mock(PdfActionsDelegate.class);
+        when(mockDelegate.isPageNavAndEditVisible()).thenReturn(true);
+        PdfCoordinator.ChromePdfViewerFragment fragment =
+                new PdfCoordinator.ChromePdfViewerFragment(mockDelegate);
+
+        PdfView pdfView = new PdfView(mActivity);
+        ShadowPdfView shadowPdfView = Shadow.extract(pdfView);
+        PdfDocument mockDocument = Mockito.mock(PdfDocument.class);
+        when(mockDocument.getPageCount()).thenReturn(5);
+        shadowPdfView.mPdfDocument = mockDocument;
+
+        fragment.onPdfViewCreated(pdfView);
+
+        verify(mockDelegate, times(1)).onDocumentLoaded(5);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
+    public void testOnPdfViewCreated_WithExistingDocument_DocumentClosedException() {
+        PdfActionsDelegate mockDelegate = Mockito.mock(PdfActionsDelegate.class);
+        when(mockDelegate.isPageNavAndEditVisible()).thenReturn(true);
+        PdfCoordinator.ChromePdfViewerFragment fragment =
+                new PdfCoordinator.ChromePdfViewerFragment(mockDelegate);
+
+        PdfView pdfView = new PdfView(mActivity);
+        ShadowPdfView shadowPdfView = Shadow.extract(pdfView);
+        PdfDocument mockDocument = Mockito.mock(PdfDocument.class);
+        when(mockDocument.getPageCount()).thenThrow(new PdfDocument.DocumentClosedException());
+        shadowPdfView.mPdfDocument = mockDocument;
+
+        fragment.onPdfViewCreated(pdfView);
+
+        verify(mockDelegate, never()).onDocumentLoaded(anyInt());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.INLINE_PDF_V2, ChromeFeatureList.PDF_REUSE_FRAGMENT})
+    @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
+    public void testCreatePdfCoordinator_ReusesFragmentWithLoadedDocument_NoAssertionError() {
+        TestChromePdfViewerFragment existingFragment = new TestChromePdfViewerFragment();
+        mActivity
+                .getSupportFragmentManager()
+                .beginTransaction()
+                .add(existingFragment, String.valueOf(TAB_ID))
+                .commitNow();
+        PdfView pdfView = new PdfView(mActivity);
+        ShadowPdfView shadowPdfView = Shadow.extract(pdfView);
+        PdfDocument mockDocument = Mockito.mock(PdfDocument.class);
+        when(mockDocument.getPageCount()).thenReturn(3);
+        shadowPdfView.mPdfDocument = mockDocument;
+        existingFragment.onPdfViewCreated(pdfView);
+
+        createPdfCoordinator();
+        assertNotNull(mPdfCoordinator.getView());
+        assertTrue(mPdfCoordinator.mChromePdfViewerFragment.mIsPdfViewSetup);
     }
 
     @Test
@@ -794,6 +956,24 @@ public class PdfCoordinatorUnitTest {
         assertEquals(expectedUri, mPdfCoordinator.getUri());
     }
 
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testReloadWhenViewDetached() {
+        createPdfCoordinator();
+        assertTrue(mPdfCoordinator.getIsPdfLoadedForTesting());
+
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.removeView(mPdfCoordinator.getView());
+        assertNull(mPdfCoordinator.getView().getParent());
+
+        mPdfCoordinator.reload();
+        assertFalse(mPdfCoordinator.getIsPdfLoadedForTesting());
+
+        contentView.addView(mPdfCoordinator.getView());
+        ShadowLooper.idleMainLooper();
+        assertTrue(mPdfCoordinator.getIsPdfLoadedForTesting());
+    }
+
     public static class TestModalDialogActivity extends org.chromium.ui.base.TestActivity
             implements org.chromium.ui.modaldialog.ModalDialogManagerHolder {
         private org.chromium.ui.modaldialog.ModalDialogManager mModalDialogManager;
@@ -836,7 +1016,7 @@ public class PdfCoordinatorUnitTest {
         ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
         PdfDocument mockPdfDocument =
                 (PdfDocument)
-                        java.lang.reflect.Proxy.newProxyInstance(
+                        Proxy.newProxyInstance(
                                 PdfDocument.class.getClassLoader(),
                                 new Class[] {PdfDocument.class},
                                 (proxy, method, args) -> {
@@ -937,7 +1117,7 @@ public class PdfCoordinatorUnitTest {
             ShadowPdfView shadowPdfView = Shadow.extract(pdfView);
             PdfDocument mockPdfDocument =
                     (PdfDocument)
-                            java.lang.reflect.Proxy.newProxyInstance(
+                            Proxy.newProxyInstance(
                                     PdfDocument.class.getClassLoader(),
                                     new Class[] {PdfDocument.class},
                                     (proxy, method, args) -> {

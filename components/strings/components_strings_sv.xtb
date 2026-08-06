@@ -104,6 +104,7 @@
 <translation id="1165174597379888365">En sida besöks</translation>
 <translation id="1165813024716836071">{COUNT,plural, =0{Inga}=1{Från 1 webbplats (du förblir inloggad på Google-kontot)}other{Från # webbplatser (du förblir inloggad på Google-kontot)}}</translation>
 <translation id="1167877250265821930">Det gick inte att ladda ned <ph name="LANGUAGE" /></translation>
+<translation id="1171306609584863516">Verifierad av <ph name="IDP_ORIGIN" /></translation>
 <translation id="1174644974616730562">Kinesiskt nr 1-kuvert</translation>
 <translation id="1174723505405632867">Vill du tillåta att <ph name="EMBEDDED_URL" /> använder cookies och webbplatsdata på <ph name="TOP_LEVEL_URL" />?
 
@@ -225,7 +226,6 @@ Annars blockeras detta av integritetsinställningarna. Om du tillåter detta kan
 <translation id="1337692097987160377">Dela den här fliken</translation>
 <translation id="1339601241726513588">Registreringsdomän:</translation>
 <translation id="1340482604681802745">Hämtningsadress</translation>
-<translation id="1343356790768851700">Den här webbplatsen avgör vad du gillar och föreslår sedan annonser till andra webbplatser</translation>
 <translation id="1343830902827845050">Logga in i Chrome</translation>
 <translation id="1346748346194534595">Höger</translation>
 <translation id="1348779747280417563">Bekräfta namn</translation>
@@ -570,6 +570,7 @@ Annars blockeras detta av integritetsinställningarna. Om du tillåter detta kan
 <translation id="1871284979644508959">Obligatoriskt fält</translation>
 <translation id="1871739799120352748">Priset är högt</translation>
 <translation id="1874224422119691492">Du kan ändra om du vill använda skärmlåset för att fylla i lösenord eller inte i <ph name="SETTINGS" /></translation>
+<translation id="1874749478353075307">Skickades till Chrome på din <ph name="DEVICE_NAME" /> • <ph name="USER_EMAIL" /></translation>
 <translation id="1875025161375567525">Fotofack</translation>
 <translation id="1875512691959384712">Google Formulär</translation>
 <translation id="1876399092304384674">Efter datum</translation>
@@ -1303,6 +1304,7 @@ Annars blockeras detta av integritetsinställningarna. Om du tillåter detta kan
 <translation id="3019738915977809060">Spara boardingkortet i Wallet</translation>
 <translation id="3022959067768579802">Fortsätt skriva</translation>
 <translation id="3024663005179499861">Felaktig policytyp</translation>
+<translation id="3027857899292697441">Chrome har upptäckt detaljer som är vanliga på webbplatser som är kopplade till nätfiske, skadlig kod eller bedrägerier. <ph name="BEGIN_LINK" />Läs mer<ph name="END_LINK" /></translation>
 <translation id="3027915437837548462">SVG-bild</translation>
 <translation id="3030331669969285614">Dessa flaggor förhindrar eller återställer en icke-bakåtkompatibel ändring och är endast tillgängliga under en begränsad tid.</translation>
 <translation id="3033200136993730761">Din hemadress kan hjälpa dig att få saker gjorda i Googles tjänster, till exempel mer relevanta sökresultat och vägbeskrivningar i Google Maps. Du kan redigera eller radera din adress <ph name="BEGIN_LINK" />i Google-kontot <ph name="ACCOUNT" /><ph name="END_LINK" />.</translation>
@@ -2040,6 +2042,7 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="4153446078232988116"><ph name="SITE" /> har inte stöd för en säker anslutning med HTTPS</translation>
 <translation id="4153858337812834972">Senaste flikarna</translation>
 <translation id="4154277373259957087">Nu verifierar Chrome din identitet innan betalningsmetoder fylls i. Du kan uppdatera detta när som helst i <ph name="IDS_AUTOFILL_MANDATORY_REAUTH_CONFIRMATION_SETTINGS_LINK" />.</translation>
+<translation id="4157273919218514718">Drivs av Personlig intelligens med Gemini. <ph name="BEGIN_LINK" />Hantera inställningar<ph name="END_LINK" /></translation>
 <translation id="4159784952369912983">Lila</translation>
 <translation id="4165422751765527461">Öppnar en hjälpcenterartikel på en ny flik</translation>
 <translation id="4165986682804962316">Webbplatsinställningar</translation>
@@ -2111,6 +2114,7 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="4250716950689692560">A4 x 4</translation>
 <translation id="4250937007454749162">T-tröjor</translation>
 <translation id="4253168017788158739">Kommentar</translation>
+<translation id="4255125583058870090">Läser in betalningsapp</translation>
 <translation id="4255487295905690262">Du får aviseringar via e-post om priset sjunker på en webbplats.</translation>
 <translation id="425582637250725228">Ändringar som du har gjort kanske inte sparas.</translation>
 <translation id="4258748452823770588">Felaktig signatur</translation>
@@ -2786,7 +2790,6 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="5340250774223869109">Appen blockeras</translation>
 <translation id="5342693890921195472">min sedan</translation>
 <translation id="534295439873310000">NFC-enheter</translation>
-<translation id="5344522958567249764">Hantera annonsintegritet</translation>
 <translation id="5344579389779391559">Den här sidan kan försöka debitera dig</translation>
 <translation id="5345249337934847112">Papper (tungt, bestruket)</translation>
 <translation id="5346059693449184483">Vad vill du ha hjälp med?</translation>
@@ -2985,6 +2988,7 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="5611398002774823980">Spara i kontot</translation>
 <translation id="561165882404867731">Översätt den här sidan med Google Översätt</translation>
 <translation id="5612720917913232150"><ph name="URL" /> vill använda datorns plats</translation>
+<translation id="5613117810542399920">Kommentaren har gjorts om</translation>
 <translation id="5613958591683399697">Fråga <ph name="ENGINE_NAME" /></translation>
 <translation id="5614190747811328134">Meddelande till användaren</translation>
 <translation id="5614520971155863709">Kortspel</translation>
@@ -3003,6 +3007,7 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="5640474731385449758">Tillägget <ph name="EXTENSION_NAME" /> vill öppna <ph name="PROTOCOL" />-länkar i <ph name="ORIGIN" /> via <ph name="HANDLER_HOSTNAME" /></translation>
 <translation id="5642411781689336699">Stereosystem och -komponenter</translation>
 <translation id="5642508497713047">CRL-signerare</translation>
+<translation id="5643946808525377120">Skickades till Chrome på din <ph name="DEVICE_NAME" /></translation>
 <translation id="5644090287519800334">Sida 1 bild X – byte</translation>
 <translation id="5644128326840674462">Kampanjbanner</translation>
 <translation id="5645132789250840550">Plast (halvblank)</translation>
@@ -3044,6 +3049,7 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="5715150588940290235">Vill du radera sparade säkerhetskoder?</translation>
 <translation id="5715918316982363436"><ph name="TAB_COUNT" /> från <ph name="WINDOW_COUNT" /> på den här enheten</translation>
 <translation id="5716325061445053985">Tryck för att öppna fliken på telefonen</translation>
+<translation id="5717281954932320486">Fyll i kortuppgifter automatiskt när du betalar online. Korten sparas säkert i Google Wallet.</translation>
 <translation id="5717509257172454543">Skridskor</translation>
 <translation id="5718326209176373202">Lägg till textkommentarer</translation>
 <translation id="5718601519531438273">Inkluderar information som pass och körkort</translation>
@@ -3213,7 +3219,6 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="5989320800837274978">Varken fasta proxyservrar eller en webbadress med PAC-skript har angetts.</translation>
 <translation id="5989917734461988169">Du kan använda sparade adresser i Googles produkter. Detta ändrar inte din befintliga hemadress. Den sparas i ditt Google-konto, <ph name="ACCOUNT" />.</translation>
 <translation id="5992691462791905444">Förskjuten Z-falsning</translation>
-<translation id="5992805036496113940">Se vilken information som används för att visa annonser</translation>
 <translation id="5995727681868049093">Hantera uppgifter, integritet och säkerhet i Google-kontot</translation>
 <translation id="5996255674476750320">Fordonsmässor</translation>
 <translation id="5997247540087773573">Lösenordet som du precis använde har läckt ut vid ett dataintrång. Du rekommenderas av Google Lösenordshantering att byta det nu och se över dina sparade lösenord för att skydda dina konton.</translation>
@@ -3362,7 +3367,6 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="6197648101609735209">89 x 89 mm</translation>
 <translation id="6198480336395236519">Helt avskurna flikar</translation>
 <translation id="6203231073485539293">Kontrollera internetanslutningen</translation>
-<translation id="6205314730813004066">Annonsintegritet</translation>
 <translation id="6212314149070368045">Amerikansk Fanfold</translation>
 <translation id="6213685130162740188">Known Traveler Numbers</translation>
 <translation id="6215936431492593050">Metall (satäng)</translation>
@@ -3893,7 +3897,6 @@ Gå till <ph name="BEGIN_LINK" />betalningsinställningarna<ph name="END_LINK" /
 <translation id="701757816833614688">Konst- och formgivningsutbildning</translation>
 <translation id="7020464868401003526">Webbadressen till genvägen överskrider den maximala tillåtna längden på <ph name="MAX_LENGTH" /> tecken.</translation>
 <translation id="7020581144940000377">Använd ungefärlig plats</translation>
-<translation id="702275896380648118">Den här webbplatsen avgör vad du gillar och föreslår sedan annonser till andra webbplatser. Webbplatsen hämtar dessutom dina annonsämnen från Chrome för att visa mer relevanta annonser för dig.</translation>
 <translation id="7023162328967545559">Varning från administratören</translation>
 <translation id="7023765275461720661">Vill du länka kontot och betala med <ph name="BNPL_ISSUER_NAME" />?</translation>
 <translation id="7030164307377592766">ändra inställningarna för att fylla i betalningsmetoder</translation>
@@ -4041,6 +4044,7 @@ Mer information.
 <translation id="7257453341537973799">Yrkesvägledning</translation>
 <translation id="725866823122871198">Det gick inte att upprätta en privat anslutning till <ph name="BEGIN_BOLD" /><ph name="DOMAIN" /><ph name="END_BOLD" /> eftersom datorns datum och tid (<ph name="DATE_AND_TIME" />) inte stämmer.</translation>
 <translation id="7260075294900977274">En ny smart mapp som hjälper dig att spara alla shoppingsidor på ett ställe och automatiskt bevakar priser, samlar prisinformation med mera</translation>
+<translation id="7261463765917514051">Betala säkert med autofyll</translation>
 <translation id="7265608370113700582">Adressen är endast tillgänglig på den här enheten</translation>
 <translation id="7266094331715305887">appar på enheten</translation>
 <translation id="7269151392155523061">Kortkommandot kan inte vara detsamma som sökaggregatorsökordet som definieras av <ph name="SEARCH_AGGREGATOR_SETTINGS_POLICY" />: <ph name="SHORTCUT_NAME" /></translation>
@@ -4066,6 +4070,7 @@ Mer information.
 <translation id="7310392214323165548">Enheten startas om inom kort</translation>
 <translation id="7311244614769792472">Inga resultat hittades</translation>
 <translation id="7313107491291103073">Organisationen har flaggat den här webbplatsen eftersom den kan bryta mot en policy.</translation>
+<translation id="7315372670898739748">Länkningen misslyckades. Försök igen senare.</translation>
 <translation id="7316521168101843192">Sparar filen i Microsoft OneDrive</translation>
 <translation id="7319430975418800333">A3</translation>
 <translation id="7320336641823683070">Anslutningshjälp</translation>
@@ -4259,6 +4264,7 @@ Mer information.
 <translation id="7575800019233204241">Anslutningen är inte privat eller &lt;span class="error-code"&gt;NET::ERR_CERT_AUTHORITY_INVALID&lt;/span&gt; eller &lt;span class="error-code"&gt;ERR_CERT_COMMON_NAME_INVALID&lt;/span&gt; eller &lt;span class="error-code"&gt;NET::ERR_CERT_WEAK_SIGNATURE_ALGORITHM&lt;/span&gt; eller SSL-certifikatfel.</translation>
 <translation id="7575887283389198269">Mobiltelefoner</translation>
 <translation id="7579113844074980463"><ph name="MANUFACTURER" />-surfplatta</translation>
+<translation id="7579227976546039122">utvecklarversion</translation>
 <translation id="7579442726219254162">Okänd variabel, <ph name="VARIABLE" />, i den hanterade konfigurationen av <ph name="APPLICATION_ID" />.</translation>
 <translation id="7581199239021537589">Sida 2 bild Y – byte</translation>
 <translation id="7582602800368606489">Skapa en ny händelse i Google Kalender snabbt</translation>
@@ -4508,6 +4514,7 @@ Mer information.
 <translation id="7956713633345437162">Bokmärken i mobilen</translation>
 <translation id="7961015016161918242">Aldrig</translation>
 <translation id="7962467575542381659">Plattformsdator</translation>
+<translation id="796439090588610411">Chrome slutar att automatiskt bekräfta den här e-postadressen på webbplatser som stöds.</translation>
 <translation id="7966803981046576691">Kontotyp för utskriften</translation>
 <translation id="7967477318370169806">Aktiefonder</translation>
 <translation id="7967636097426665267">Kommunikationsutrustning</translation>
@@ -4612,6 +4619,7 @@ Mer information.
 <translation id="8134058435519644366">Rekrytering och bemanning</translation>
 <translation id="8135546115396015134">vänstertangent</translation>
 <translation id="8137456439814903304">Energi och energiproduktion</translation>
+<translation id="8138591088112729119">Drivs av Personlig intelligens</translation>
 <translation id="814071672416123670">Det gick inte att kopiera innehållet på grund av organisationens policyer</translation>
 <translation id="814432316791813431">{NUM_MONTHS,plural, =1{Skapades för 1 månad sedan}other{Skapades för {NUM_MONTHS} månader sedan}}</translation>
 <translation id="8147389370274164212"><ph name="SEARCH_ENGINE_NAME" />, nuvarande standardsökmotor. <ph name="MARKETING_SNIPPET" /></translation>
@@ -4626,6 +4634,7 @@ Mer information.
 <translation id="81563721597823545">Hockeyutrustning</translation>
 <translation id="815805690561372740">Chrome har inbyggda säkerhetsfunktioner som skyddar dig när du surfar, till exempel Google Säker webbsökning, som <ph name="BEGIN_LINK" />nyligen hittade skadlig kod<ph name="END_LINK" /> på webbplatsen du försökte besöka.</translation>
 <translation id="8161095570253161196">Fortsätt surfa</translation>
+<translation id="8163468049564974856">Aktivera autofyll för att betala säkert online. Dina kortuppgifter krypteras i Google Wallet.</translation>
 <translation id="8163866351304776260">Fyra hål till vänster</translation>
 <translation id="8164078261547504572">Vill du få e-postmeddelanden när priserna sänks?</translation>
 <translation id="8169175551046720804">Tangenterna <ph name="DATA_CONTROLS_KEYS" /> kan inte anges i samma ordlista</translation>
@@ -4815,6 +4824,7 @@ Mer information:
 <translation id="8446884382197647889">Läs mer</translation>
 <translation id="8449036207308062757">Hantera lagringsutrymme</translation>
 <translation id="8449155699563577224">17 x 24 tum</translation>
+<translation id="8449513475775663994">Vill du ta bort den verifierade e-postadressen?</translation>
 <translation id="8449836157089738489">Öppna alla i en ny flikgrupp</translation>
 <translation id="8451518040456311377">Spara och fyll i identitetshandlingar</translation>
 <translation id="84561192812921051">Administratören kan göra ändringar i din profil och webbläsare på distans, analysera information om webbläsaren genom rapportering och utföra andra nödvändiga uppgifter. Aktivitet på den här enheten kan även hanteras utanför Chrome.  <ph name="BEGIN_LINK" />Läs mer<ph name="END_LINK" /></translation>
@@ -4865,7 +4875,6 @@ Mer information:
 <translation id="8538228968820006247">Flikgruppen är full. Nya medlemmar kan inte gå med i den med länken.</translation>
 <translation id="8539500321752640291">Vill du ge två behörigheter?</translation>
 <translation id="8541158209346794904">Bluetooth-enhet</translation>
-<translation id="8541410041357371550">Webbplatsen hämtar dina annonsämnen från Chrome för att visa mer relevanta annonser för dig</translation>
 <translation id="8541579497401304453">Kontakta ett företag genom att ringa dem.</translation>
 <translation id="8542014550340843547">Tre häftklamrar längst ned</translation>
 <translation id="8542617028204211143">SRA0</translation>
@@ -4990,6 +4999,7 @@ Mer information:
 <translation id="8758529215314160755">Du kan redigera ditt namn i <ph name="BEGIN_LINK" />Google-kontot<ph name="END_LINK" /> <ph name="ACCOUNT" />.</translation>
 <translation id="8759274551635299824">Kortets giltighetstid har löpt ut</translation>
 <translation id="87601671197631245">Den här webbplatsens säkerhetskonfiguration är inaktuell. Det kan leda till att dina uppgifter (t.ex. lösenord, meddelanden eller kreditkort) exponeras när de skickas till den här webbplatsen.</translation>
+<translation id="8762871163452985706">Kommentaren har ångrats</translation>
 <translation id="8763676559028782284">{COUNT,plural, =1{Länk skickades från <ph name="DEVICE_NAME" />}other{# länkar skickades från <ph name="DEVICE_NAME" />}}</translation>
 <translation id="8763927697961133303">USB-enhet</translation>
 <translation id="8763986294015493060">Stäng alla inkognitofönster som är öppna för närvarande</translation>
@@ -5029,6 +5039,7 @@ Mer information:
 <translation id="8814707942599948500">C8-kuvert</translation>
 <translation id="881559332211266856">Uppdatera ditt Redress Number</translation>
 <translation id="8816395686387277279"><ph name="UPDATE_CHROME_FOCUSED_FRIENDLY_MATCH_TEXT" />, tryck på Tabb och sedan på Retur om du vill uppdatera Chrome i inställningarna för Chrome</translation>
+<translation id="8816960833040967795">Var försiktig på den här webbplatsen</translation>
 <translation id="8819155700324279105">Lägg till ett extra skydd mot hot online</translation>
 <translation id="8819855907485254989">Spara åkbiljetten i Wallet</translation>
 <translation id="8820817407110198400">Bokmärken</translation>
@@ -5339,6 +5350,7 @@ Mer information:
 <translation id="987264212798334818">Allmänt</translation>
 <translation id="988159990683914416">Utvecklarversion</translation>
 <translation id="989988560359834682">Redigera adress</translation>
+<translation id="990164307229195234"><ph name="DEVICE_NAME" /> (<ph name="DISAMBIGUATION_LABEL" />)</translation>
 <translation id="991936891556421157">Skor</translation>
 <translation id="992110854164447044">Ett virtuellt kort döljer det riktiga kortet och skyddar dig från eventuella bedrägerier. <ph name="IDS_AUTOFILL_VIRTUAL_CARD_ENROLLMENT_LEARN_MORE_LINK_LABEL" /></translation>
 <translation id="992115559265932548"><ph name="MICROSOFT_ACTIVE_DIRECTORY" /></translation>

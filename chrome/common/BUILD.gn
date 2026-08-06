@@ -36,6 +36,11 @@ fuzzer_test("ini_parser_fuzzer") {
 }
 grit("resources") {
   source = "common_resources.grd"
+  inputs = [
+    "apps/platform_apps/api/_api_features.json",
+    "controlled_frame/api/_api_features.json",
+    "extensions/api/_api_features.json",
+  ]
   defines = chrome_grit_defines
   output_dir = "$root_gen_dir/chrome"
   output_name = "common_resources"
@@ -57,6 +62,7 @@ buildflag_header("buildflags") {
     "ENABLE_DOWNGRADE_PROCESSING=$enable_downgrade_processing",
     "ENABLE_HANGOUT_SERVICES_EXTENSION=$enable_hangout_services_extension",
     "ENABLE_PDF_SAVE_TO_DRIVE=$enable_pdf_save_to_drive",
+    "ENABLE_SEPARATE_RENDERER_BINARY=$enable_separate_renderer_binary",
     "ENABLE_SERVICE_DISCOVERY=$enable_service_discovery",
     "ENABLE_SESSION_SERVICE=$enable_session_service",
     "ENABLE_WEBUI_CERTIFICATE_VIEWER=$enable_webui_certificate_viewer",
@@ -65,9 +71,7 @@ buildflag_header("buildflags") {
 }
 
 source_set("readaloud_constants") {
-  sources = [
-    "readaloud/read_aloud_constants.h",
-  ]
+  sources = [ "readaloud/read_aloud_constants.h" ]
   public_deps = [
     "//base",
     "//media",

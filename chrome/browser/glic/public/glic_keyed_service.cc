@@ -29,6 +29,7 @@
 #include "chrome/browser/glic/common/application_hotkey_delegate.h"
 #include "chrome/browser/glic/common/future_browser_features.h"
 #include "chrome/browser/glic/common/glic_navigation.h"
+#include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_controller.h"
 #include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
@@ -90,7 +91,6 @@
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #else
-#include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_controller.h"
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/media/glic_media_integration.h"
 #include "chrome/browser/glic/widget/glic_widget.h"
@@ -151,10 +151,8 @@ GlicKeyedService::GlicKeyedService(
           profile,
           &profile_manager->GetProfileAttributesStorage())),
       metrics_(std::make_unique<GlicMetrics>(profile, enabling_.get())),
-#if !BUILDFLAG(IS_ANDROID)
       opt_in_controller_(
           std::make_unique<GlicExperimentalOptInController>(profile)),
-#endif
       instance_coordinator_(std::make_unique<GlicInstanceCoordinatorImpl>(
           profile,
           identity_manager,
@@ -233,48 +231,18 @@ void GlicKeyedService::Shutdown() {
   instance_coordinator().Shutdown();
 }
 
+void GlicKeyedService::ShowUI(BrowserWindowInterface* bwi,
+                              mojom::InvocationSource source) {
+  instance_coordinator().Show(
+      bwi ? bwi : GetActiveGlicEligibleBrowser(profile_), source);
+}
+
 void GlicKeyedService::ToggleUI(BrowserWindowInterface* bwi,
                                 bool prevent_close,
                                 mojom::InvocationSource source) {
-  // Glic may be disabled for certain user profiles (the user is browsing in
-  // incognito or guest mode, policy, etc). In those cases, the entry points to
-  // this method should already have been removed.
-  CHECK(GlicEnabling::ShouldShowGlicButton(profile_));
-
-  if (MaybeInvoke(bwi, source)) {
-    return;
-  }
-
-  enabling().MaybeRecordRecoveryOnInteraction();
   instance_coordinator().Toggle(
       bwi ? bwi : GetActiveGlicEligibleBrowser(profile_), prevent_close,
       source);
-}
-
-bool GlicKeyedService::MaybeInvoke(BrowserWindowInterface* bwi,
-                                   mojom::InvocationSource source) {
-  BrowserWindowInterface* target_bwi =
-      bwi ? bwi : GetActiveGlicEligibleBrowser(profile_);
-  if (!target_bwi) {
-    return false;
-  }
-
-  bool panel_closed = !IsPanelShowingForBrowser(*target_bwi);
-  bool fre_override_compatible =
-      !GlicEnabling::HasConsentedForProfile(profile_);
-
-  if (fre_override_compatible && panel_closed &&
-      base::FeatureList::IsEnabled(features::kGlicMessageFirstFre)) {
-    GlicInvokeOptions options(source);
-    if (auto* active_tab = TabListInterface::From(target_bwi)->GetActiveTab()) {
-      options.target = Target(*active_tab);
-    }
-    options.fre_override = mojom::FreOverride::kTrustFirstInline;
-    Invoke(std::move(options));
-    return true;
-  }
-
-  return false;
 }
 
 base::WeakPtr<GlicInstance> GlicKeyedService::InvokeWithAutoSubmit(
@@ -315,12 +283,10 @@ GlicInstanceCoordinator& GlicKeyedService::instance_coordinator() const {
   return *instance_coordinator_.get();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 GlicExperimentalOptInController& GlicKeyedService::opt_in_controller() {
   CHECK(opt_in_controller_);
   return *opt_in_controller_.get();
 }
-#endif
 
 GlicSharingManagerInternal&
 GlicKeyedService::active_instance_sharing_manager() {

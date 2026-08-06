@@ -2126,7 +2126,6 @@ interface TrustedTypePolicy
     getter name
     method constructor
     method createHTML
-    method createParserOptions
     method createScript
     method createScriptURL
 interface TrustedTypePolicyFactory
@@ -3562,6 +3561,7 @@ interface WebTransport
     getter closed
     getter congestionControl
     getter datagrams
+    getter draining
     getter incomingBidirectionalStreams
     getter incomingUnidirectionalStreams
     getter protocol

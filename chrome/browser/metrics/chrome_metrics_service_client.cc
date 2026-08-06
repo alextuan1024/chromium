@@ -203,6 +203,7 @@
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/metrics/google_update_metrics_provider_mac.h"
 #include "chrome/browser/metrics/power/power_metrics_provider_mac.h"
+#include "chrome/browser/metrics/task_info_metrics_provider_mac.h"
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
@@ -928,6 +929,10 @@ void ChromeMetricsServiceClient::RegisterMetricsServiceProviders() {
 #if BUILDFLAG(IS_MAC)
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<GoogleUpdateMetricsProviderMac>());
+  if (base::FeatureList::IsEnabled(features::kTaskInfoMetricsMac)) {
+    metrics_service_->RegisterMetricsProvider(
+        std::make_unique<TaskInfoMetricsProviderMac>());
+  }
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -1247,8 +1252,8 @@ bool ChromeMetricsServiceClient::RegisterForProfileEvents(Profile* profile) {
       return false;
     }
     profile_observations_.AddObservation(profile);
-    MonitorAdvancedReportingPref(profile->GetPrefs());
     StartObserving(sync, profile->GetPrefs());
+    MonitorAdvancedReportingPref(profile->GetPrefs());
     return true;
   }
 #endif
@@ -1274,8 +1279,8 @@ bool ChromeMetricsServiceClient::RegisterForProfileEvents(Profile* profile) {
     return false;
   }
   profile_observations_.AddObservation(profile);
-  MonitorAdvancedReportingPref(profile->GetPrefs());
   StartObserving(sync, profile->GetPrefs());
+  MonitorAdvancedReportingPref(profile->GetPrefs());
   return true;
 }
 

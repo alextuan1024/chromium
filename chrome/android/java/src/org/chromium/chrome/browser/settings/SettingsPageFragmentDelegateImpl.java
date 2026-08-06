@@ -476,32 +476,43 @@ public class SettingsPageFragmentDelegateImpl
 
     @Override
     public void onTitleUpdated() {
+        updateNavigationIcon();
         updateBackPressState();
     }
 
     @Override
     public void onSlideStateUpdated(int newState) {
+        updateNavigationIcon();
         updateBackPressState();
     }
 
     @Override
     public void onHeaderLayoutUpdated() {
+        updateNavigationIcon();
+        updateBackPressState();
+    }
+
+    private void updateNavigationIcon() {
         if (mToolbar != null) {
             // The layout must be updated at least once before isTwoColumnSettingsVisible() returns
             // the correct value.
             SettingsMenuHelper.updateNavigationIcon(
-                    mToolbar, mActivity, /* show= */ true, isTwoColumnSettingsVisible());
+                    mToolbar,
+                    mActivity,
+                    /* show= */ true,
+                    isTwoColumnSettingsVisible(),
+                    isMainSettingsVisible());
         }
-        updateBackPressState();
+    }
+
+    private boolean isMainSettingsVisible() {
+        MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
+        return multiColumnSettings != null && !multiColumnSettings.isLayoutOpen();
     }
 
     @Override
     public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
         return mBackPressStateSupplier;
-    }
-
-    private static boolean isFragmentAttached(@Nullable Fragment fragment) {
-        return fragment != null && fragment.isAdded();
     }
 
     @Override
@@ -510,10 +521,9 @@ public class SettingsPageFragmentDelegateImpl
             return BackPressResult.SUCCESS;
         }
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
-        if (isFragmentAttached(multiColumnSettings)) {
-            assumeNonNull(multiColumnSettings);
-            if (multiColumnSettings.getChildFragmentManager().getBackStackEntryCount() > 0) {
-                multiColumnSettings.getChildFragmentManager().popBackStack();
+        if (multiColumnSettings != null) {
+            if (multiColumnSettings.getBackStackEntryCount() > 0) {
+                multiColumnSettings.popBackStack();
                 return BackPressResult.SUCCESS;
             }
             if (multiColumnSettings.getView() != null) {
@@ -524,10 +534,9 @@ public class SettingsPageFragmentDelegateImpl
                 }
             }
         }
-        if (isFragmentAttached(mSettingsHostFragment)) {
-            assumeNonNull(mSettingsHostFragment);
-            if (mSettingsHostFragment.getChildFragmentManager().getBackStackEntryCount() > 0) {
-                mSettingsHostFragment.getChildFragmentManager().popBackStack();
+        if (mSettingsHostFragment != null && mSettingsHostFragment.isAttachedToActivity()) {
+            if (mSettingsHostFragment.getBackStackEntryCount() > 0) {
+                mSettingsHostFragment.popBackStack();
                 return BackPressResult.SUCCESS;
             }
         }
@@ -537,9 +546,8 @@ public class SettingsPageFragmentDelegateImpl
     private void updateBackPressState() {
         boolean canHandle = false;
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
-        if (isFragmentAttached(multiColumnSettings)) {
-            assumeNonNull(multiColumnSettings);
-            if (multiColumnSettings.getChildFragmentManager().getBackStackEntryCount() > 0) {
+        if (multiColumnSettings != null) {
+            if (multiColumnSettings.getBackStackEntryCount() > 0) {
                 canHandle = true;
             } else if (multiColumnSettings.getView() != null) {
                 var slidingPane = multiColumnSettings.getSlidingPaneLayout();
@@ -547,10 +555,8 @@ public class SettingsPageFragmentDelegateImpl
                     canHandle = true;
                 }
             }
-        } else if (isFragmentAttached(mSettingsHostFragment)) {
-            assumeNonNull(mSettingsHostFragment);
-            canHandle =
-                    mSettingsHostFragment.getChildFragmentManager().getBackStackEntryCount() > 0;
+        } else if (mSettingsHostFragment != null && mSettingsHostFragment.isAttachedToActivity()) {
+            canHandle = mSettingsHostFragment.getBackStackEntryCount() > 0;
         }
         mBackPressStateSupplier.set(canHandle);
     }

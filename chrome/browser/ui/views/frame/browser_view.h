@@ -77,7 +77,6 @@ class BookmarkBarView;
 class Browser;
 class BrowserViewLayout;
 class ContentsContainerView;
-class ContentsLayoutManager;
 struct DropData;
 class ExclusiveAccessBubbleViews;
 class ExclusiveAccessBubbleViewsContext;
@@ -254,8 +253,8 @@ class BrowserView : public BrowserWindow,
   }
 #endif
 
-  // Container for the web contents.
-  views::View* contents_container() { return contents_container_; }
+  // Container for multiple contents container views.
+  views::View* contents_container();
 
   views::View* main_shadow_overlay() { return main_shadow_overlay_; }
 
@@ -626,7 +625,6 @@ class BrowserView : public BrowserWindow,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
   void OnTabChangedAt(tabs::TabInterface* tab,
-                      int index,
                       TabChangeType change_type) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;
   void TabStripEmpty() override;
@@ -1023,6 +1021,9 @@ class BrowserView : public BrowserWindow,
   void UpdateWindowControlsOverlayEnabled();
   void RefreshWindowControlsOverlayAfterFullscreenTransition();
 
+  // Called each time the browser window is shown.
+  void OnWindowDidShow();
+
   // Updates the Window Controls Overlay availability in this window.
   void UpdateWindowControlsOverlayAvailable();
 
@@ -1098,10 +1099,14 @@ class BrowserView : public BrowserWindow,
   // |------------------------------------------------------------------------|
   // | All infobars (infobar_container_)                                      |
   // |------------------------------------------------------------------------|
-  // | Contents container (contents_container_)                               |
-  // |  --------------------------------------------------------------------  |
-  // |  |  MultiContentsView (multi_contents_view_)                        |  |
-  // |  --------------------------------------------------------------------  |
+  // |------------------------------------------------------------------------|
+  // | MultiContentsView (multi_contents_view_)                               |
+  // |  |------------------------------------------------------------------|  |
+  // |  | ContentsContainerView (web contents, devtools, overlay, borders) |  |
+  // |  |------------------------------------------------------------------|  |
+  // |  | ContentsContainerView (web contents, devtools, overlay, borders) |  |
+  // |  -------------------------------------------------------------------|  |
+  // |------------------------------------------------------------------------|
   // |------------------------------------------------------------------------|
   // | SidePanel (side_panel_)                                                |
   // |------------------------------------------------------------------------|
@@ -1198,9 +1203,6 @@ class BrowserView : public BrowserWindow,
 
   // The view that contains all visible WebContents.
   raw_ptr<MultiContentsView> multi_contents_view_ = nullptr;
-
-  // Handled by ContentsLayoutManager.
-  raw_ptr<views::View> contents_container_ = nullptr;
 
   // The view responsible for housing the contents of the vertical tab strip.
   raw_ptr<VerticalTabStripRegionView> vertical_tab_strip_region_view_ = nullptr;
@@ -1321,6 +1323,10 @@ class BrowserView : public BrowserWindow,
   bool is_window_controls_overlay_available_ = false;
   bool unframed_mode_enabled_ = false;
   bool window_management_permission_granted_ = false;
+
+  // True if the browser window has been shown at least once.
+  bool window_has_shown_ = false;
+
 #if BUILDFLAG(IS_WIN)
   class PipExclusionObserverImpl;
   std::unique_ptr<PipExclusionObserverImpl> pip_exclusion_observer_;

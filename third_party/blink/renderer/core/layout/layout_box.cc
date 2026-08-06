@@ -701,7 +701,6 @@ void LayoutBox::StyleDidChange(StyleDifference diff,
           diff.border_radius_changed ||
           (diff.border_shape_changed &&
            (new_style.HasBorderShape() || old_style->HasBorderShape())) ||
-          (HasControlClip() && !old_style->PaddingEqual(new_style)) ||
           (new_style.OverflowClipMargin() &&
            new_style.OverflowClipMargin()->GetReferenceBox() ==
                StyleOverflowClipMargin::ReferenceBox::kContentBox &&
@@ -1887,7 +1886,7 @@ bool LayoutBox::ApplyBoxClips(
     TransformState::TransformAccumulation accumulation,
     VisualRectFlags visual_rect_flags) const {
   NOT_DESTROYED();
-  if (visual_rect_flags & VisualRectFlags::kSkipAncestorAndViewportClips) {
+  if (visual_rect_flags.Has(VisualRectFlag::kSkipAncestorAndViewportClips)) {
     return true;
   }
   transform_state.Flatten();
@@ -1899,7 +1898,7 @@ bool LayoutBox::ApplyBoxClips(
   // receive CSS clip but for whom the current object is not in the containing
   // block chain.
   PhysicalRect clip_rect = ClippingRect();
-  if (visual_rect_flags & kEdgeInclusive) {
+  if (visual_rect_flags.Has(VisualRectFlag::kEdgeInclusive)) {
     does_intersect = rect.InclusiveIntersect(clip_rect);
   } else {
     rect.Intersect(clip_rect);
@@ -2334,23 +2333,11 @@ PhysicalRect LayoutBox::OverflowClipRect(
                       kExcludeScrollbarGutter);
   }
 
-  if (HasControlClip()) [[unlikely]] {
-    PhysicalRect control_clip = PhysicalContentBoxRect();
-    clip_rect.Intersect(control_clip);
-  }
-
   return clip_rect;
 }
 
 PhysicalRect LayoutBox::OverflowClipRectForScrollNode() const {
   return OverflowClipRect();
-}
-
-bool LayoutBox::HasControlClip() const {
-  NOT_DESTROYED();
-  return !RuntimeEnabledFeatures::SelectUsesUAClipEnabled() && IsMenuList() &&
-         StyleRef().EffectiveAppearance() != AppearanceValue::kBase &&
-         StyleRef().EffectiveAppearance() != AppearanceValue::kBaseSelect;
 }
 
 void LayoutBox::ExcludeScrollbars(
@@ -2980,7 +2967,7 @@ bool LayoutBox::MapToVisualRectInAncestorSpaceInternal(
   if (ancestor == this)
     return true;
 
-  if (!(visual_rect_flags & kIgnoreFilters)) {
+  if (!visual_rect_flags.Has(VisualRectFlag::kIgnoreFilters)) {
     InflateVisualRectForFilter(transform_state);
   }
 
@@ -2997,7 +2984,8 @@ bool LayoutBox::MapToVisualRectInAncestorSpaceInternal(
     container_offset += AnchorPositionScrollTranslationOffset();
   }
 
-  if (skip_info.FilterSkipped() && !(visual_rect_flags & kIgnoreFilters)) {
+  if (skip_info.FilterSkipped() &&
+      !visual_rect_flags.Has(VisualRectFlag::kIgnoreFilters)) {
     InflateVisualRectForFilterUnderContainer(transform_state, *container,
                                              ancestor);
   }
@@ -3677,6 +3665,48 @@ PhysicalOffset LayoutBox::OffsetPoint(const Element* parent) const {
   return AdjustedPositionRelativeTo(PhysicalLocation(), parent);
 }
 
+LayoutUnit LayoutBox::StitchedBlockSize() const {
+  NOT_DESTROYED();
+  if (!PhysicalFragmentCount()) {
+    return LayoutUnit();
+  }
+  auto writing_direction = StyleRef().GetWritingDirection();
+  const auto& first_fragment = *GetPhysicalFragment(0);
+  if (first_fragment.IsOnlyForNode() ||
+      (first_fragment.GetBreakToken() &&
+       first_fragment.GetBreakToken()->IsRepeated())) {
+    // This node either generates a single fragment, or we're dealing with
+    // repeated content, which isn't stitched.
+    return LogicalFragment(writing_direction, first_fragment).BlockSize();
+  }
+
+  wtf_size_t idx = PhysicalFragmentCount();
+  DCHECK_GT(idx, 1u);
+  idx--;
+  // Calculating the stitched size is straight-forward if the node isn't
+  // overflowed: Just add the consumed block-size of the last break token
+  // and the block-size of the last fragment. If it is overflowed, on the
+  // other hand, we need to search backwards until we find the end of the
+  // block-end border edge.
+  PhysicalSize last_content_fragment_size = GetPhysicalFragment(idx)->Size();
+  LayoutUnit previously_consumed_block_size;
+  while (idx) {
+    // Look at the preceding break token.
+    idx--;
+    const BlockBreakToken* break_token =
+        GetPhysicalFragment(idx)->GetBreakToken();
+    if (!break_token->IsAtBlockEnd()) {
+      previously_consumed_block_size = break_token->ConsumedBlockSize();
+      break;
+    }
+    last_content_fragment_size = GetPhysicalFragment(idx)->Size();
+  }
+
+  LogicalSize logical_size(
+      ToLogicalSize(last_content_fragment_size, StyleRef().GetWritingMode()));
+  return previously_consumed_block_size + logical_size.block_size;
+}
+
 PhysicalSize LayoutBox::StitchedSize() const {
   NOT_DESTROYED();
   if (!HasValidCachedGeometry()) {
@@ -3846,8 +3876,9 @@ PhysicalRect LayoutBox::DebugRect() const {
 
 OverflowClipAxes LayoutBox::ComputeOverflowClipAxes() const {
   NOT_DESTROYED();
-  if (ShouldApplyPaintContainment() || HasControlClip())
+  if (ShouldApplyPaintContainment()) {
     return kOverflowClipBothAxis;
+  }
 
   if (!RespectsCSSOverflow() || !HasNonVisibleOverflow())
     return kNoOverflowClip;

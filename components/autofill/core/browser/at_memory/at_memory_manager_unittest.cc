@@ -20,7 +20,6 @@
 #include "base/test/task_environment.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/at_memory/at_memory_data_type.h"
 #include "components/autofill/core/browser/at_memory/at_memory_manager_test_api.h"
 #include "components/autofill/core/browser/at_memory/at_memory_metrics_recorder_test_api.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
@@ -36,8 +35,11 @@
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
+#include "components/autofill/core/browser/integrators/at_memory/memory_data_type_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_search_result.h"
 #include "components/autofill/core/browser/integrators/at_memory/mock_at_memory_query_service.h"
+#include "components/autofill/core/browser/payments/credit_card_access_manager.h"
+#include "components/autofill/core/browser/payments/credit_card_access_manager_test_api.h"
 #include "components/autofill/core/browser/payments/iban_access_manager.h"
 #include "components/autofill/core/browser/payments/mock_iban_access_manager.h"
 #include "components/autofill/core/browser/payments/test/mock_multiple_request_payments_network_interface.h"
@@ -74,6 +76,7 @@ using ::testing::_;
 using ::testing::AllOf;
 using ::testing::Contains;
 using ::testing::ElementsAre;
+using ::testing::Eq;
 using ::testing::Field;
 using ::testing::InSequence;
 using ::testing::IsEmpty;
@@ -98,6 +101,10 @@ class MockAutofillClient : public TestAutofillClient {
   MOCK_METHOD(void,
               ShowAutofillAiFetchEntityFailureNotification,
               (),
+              (override));
+  MOCK_METHOD(void,
+              ShowAtMemoryFetchFailureNotification,
+              (std::optional<std::u16string>),
               (override));
   MOCK_METHOD(void,
               HideSuggestions,
@@ -147,6 +154,19 @@ class MockAutofillAiAccessManager : public AutofillAiAccessManager {
               (EntityInstance entity,
                bool will_fill_sensitive_info,
                OnEntityInstanceFetchedCallback callback),
+              (override));
+};
+
+class MockCreditCardAccessManager : public CreditCardAccessManager {
+ public:
+  explicit MockCreditCardAccessManager(BrowserAutofillManager* manager)
+      : CreditCardAccessManager(manager) {}
+  ~MockCreditCardAccessManager() override = default;
+
+  MOCK_METHOD(void,
+              FetchCreditCard,
+              (const CreditCard*,
+               CreditCardAccessManager::OnCreditCardFetchedCallback),
               (override));
 };
 
@@ -268,6 +288,42 @@ class AtMemoryManagerTest : public Test,
     return {form_id, field_id};
   }
 
+  // Sets up a test form, adds `card` to the PersonalDataManager, mocks search
+  // results returning `card`, submits the search, and injects a
+  // MockCreditCardAccessManager on the BrowserAutofillManager.
+  // Returns the pair of the form id and field id.
+  std::pair<FormGlobalId, FieldGlobalId> SetUpCreditCardAsyncSearch(
+      CreditCard& card,
+      std::vector<Suggestion>& suggestions,
+      MockCreditCardAccessManager*& mock_ccam) {
+    card = test::GetCreditCard();
+    card.set_guid(test::MakeGuid(1));
+    autofill_client()
+        .GetPersonalDataManager()
+        .payments_data_manager()
+        .AddCreditCard(card);
+
+    auto [form_id, field_id] = SeeFormAndShowPopup();
+
+    MemorySearchResult entry(MemoryDataType::kCreditCardNumber, u"Card",
+                             u"some text");
+    entry.identifier = card.guid();
+    entry.sources = {MemoryEntrySource(MemoryEntrySourceType::kAutofill)};
+    MockQueryResultsAndExpectCallback(u"query",
+                                      MemorySearchStatus::kFinalResponseSuccess,
+                                      {entry}, suggestions);
+    manager().OnSearchSubmitted(u"query");
+    EXPECT_EQ(suggestions.size(), 1u);
+
+    auto mock_ccam_unique =
+        std::make_unique<NiceMock<MockCreditCardAccessManager>>(
+            &autofill_manager());
+    mock_ccam = mock_ccam_unique.get();
+    test_api(autofill_manager())
+        .set_credit_card_access_manager(std::move(mock_ccam_unique));
+    return {form_id, field_id};
+  }
+
  protected:
   test::AutofillUnitTestEnvironment autofill_test_environment_;
   base::test::TaskEnvironment task_environment_{
@@ -313,7 +369,7 @@ Matcher<Suggestion> EqualsSuggestionWithManageEnhancedAutofillFooter(
           ElementsAre(Suggestion::Text(l10n_util::GetStringUTF16(
               IDS_AUTOFILL_AT_MEMORY_SOURCE_ATTRIBUTION_PERSONAL_INTELLIGENCE)))),
       Field(&Suggestion::acceptability,
-            Suggestion::Acceptability::kSelectableButUnacceptable));
+            Suggestion::Acceptability::kUnselectableAndUnacceptable));
 
   if constexpr (sizeof...(matchers) == 0) {
     return EqualsAtMemorySuggestion(
@@ -379,7 +435,9 @@ TEST_F(AtMemoryManagerTest,
 
   SeeFormAndShowPopup();
 
-  autofill_client().set_should_show_personal_context_at_memory_notice(false);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(false);
 
   std::vector<Suggestion> suggestions;
   EXPECT_CALL(update_callback_,
@@ -406,7 +464,9 @@ TEST_F(AtMemoryManagerTest,
 TEST_F(AtMemoryManagerTest, OnFilterChanged_GeneratesDisclosureWhenEnabled) {
   SeeFormAndShowPopup();
 
-  autofill_client().set_should_show_personal_context_at_memory_notice(false);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(false);
 
   EXPECT_CALL(
       update_callback_,
@@ -424,7 +484,9 @@ TEST_F(AtMemoryManagerTest, OnFilterChanged_GeneratesDisclosureWhenEnabled) {
 TEST_F(AtMemoryManagerTest, OnFilterChanged_NoDisclosureWhenNoticePending) {
   SeeFormAndShowPopup();
 
-  autofill_client().set_should_show_personal_context_at_memory_notice(true);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(true);
 
   EXPECT_CALL(update_callback_,
               Run(Not(Contains(Field("type", &Suggestion::type,
@@ -529,6 +591,68 @@ TEST_F(AtMemoryManagerTest,
   ASSERT_EQ(final_suggestions[0].labels.size(), 1u);
   ASSERT_EQ(final_suggestions[0].labels[0].size(), 1u);
   EXPECT_EQ(final_suggestions[0].labels[0][0].value, u"Custom Type");
+}
+
+// Tests that for a flight reservation departure date entry with metadata,
+// the main suggestion text and payload value retain the full date fill value
+// ("2024-06-07 3:30 PM"), while metadata labels use the short "MMM d" format
+// ("Jun 7"). Also verifies the filled value passed to the Autofill driver.
+TEST_F(AtMemoryManagerTest, FlightReservation_ValueAndLabelFormatting) {
+  auto [form_id, field_id] = SeeFormAndShowPopup();
+
+  personal_context::proto::TypedValue datetime_typed;
+  datetime_typed.mutable_date_time()->set_year(2024);
+  datetime_typed.mutable_date_time()->set_month(6);
+  datetime_typed.mutable_date_time()->set_day(7);
+  datetime_typed.mutable_date_time()->set_hours(15);
+  datetime_typed.mutable_date_time()->set_minutes(30);
+
+  MemorySearchResult entry(MemoryDataType::kFlightReservationDepartureDate,
+                           /*type_name=*/u"Departure Date",
+                           /*value=*/u"2024-06-07 3:30 PM",
+                           /*relevance_score=*/1.0,
+                           /*typed_value=*/datetime_typed);
+
+  entry.metadata_list.emplace_back(
+      MemoryDataType::kFlightReservationDepartureDate,
+      /*type_name=*/u"Departure Date",
+      /*value=*/u"2024-06-07 3:30 PM",
+      /*typed_value=*/datetime_typed);
+
+  std::vector<MemorySearchResult> entries;
+  entries.push_back(std::move(entry));
+
+  std::vector<Suggestion> final_suggestions;
+  MockQueryResultsAndExpectCallback(u"flight",
+                                    MemorySearchStatus::kFinalResponseSuccess,
+                                    std::move(entries), final_suggestions);
+
+  manager().OnSearchSubmitted(u"flight");
+
+  ASSERT_EQ(final_suggestions.size(), 1u);
+  // Main fill value should retain the full date and time string.
+  EXPECT_EQ(final_suggestions[0].main_text.value, u"2024-06-07 3:30 PM");
+
+  const auto* payload =
+      std::get_if<Suggestion::AtMemoryPayload>(&final_suggestions[0].payload);
+  ASSERT_NE(payload, nullptr);
+  EXPECT_EQ(payload->value, u"2024-06-07 3:30 PM");
+
+  // Label row should format the flight date metadata in "MMM d" format.
+  ASSERT_EQ(final_suggestions[0].labels.size(), 1u);
+  ASSERT_FALSE(final_suggestions[0].labels[0].empty());
+  EXPECT_EQ(final_suggestions[0].labels[0].back().value, u"Jun 7");
+
+  // Verify the exact filled value passed to the Autofill driver.
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger,
+                         form_id, field_id, Eq(u"2024-06-07 3:30 PM"),
+                         FillingProduct::kAtMemory, _));
+
+  manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill, form_id,
+                                      field_id, final_suggestions[0]);
 }
 
 // Tests that Autofill-sourced data displays ONLY the local settings manage link
@@ -720,7 +844,8 @@ TEST_F(AtMemoryManagerTest, FillSensitiveAutofillAiData_AttributeSuccess) {
         .WillOnce([&](EntityInstance entity, bool will_fill,
                       AutofillAiAccessManager::OnEntityInstanceFetchedCallback
                           callback) {
-          std::move(callback).Run(entity, /*reauth_attempted=*/false);
+          std::move(callback).Run(entity, /*did_fetch_from_server=*/true,
+                                  /*reauth_attempted=*/false);
           return true;
         });
     EXPECT_CALL(autofill_client(),
@@ -890,7 +1015,7 @@ TEST_F(AtMemoryManagerTest,
 }
 
 // Tests that when fetching the unmasked Personal Context value fails, the
-// manager does not fill any value.
+// manager triggers the fetch error notification and does not fill any value.
 TEST_F(AtMemoryManagerTest, FillSensitivePersonalContextData_FetchFailed) {
   base::HistogramTester histogram_tester;
   auto [form_id, field_id] = SeeFormAndShowPopup();
@@ -917,6 +1042,8 @@ TEST_F(AtMemoryManagerTest, FillSensitivePersonalContextData_FetchFailed) {
       .WillOnce(RunOnceCallback<5>(base::unexpected(
           AtMemoryQueryService::SpiiRetrievalFailureReason::kFetchFailed)));
 
+  EXPECT_CALL(autofill_client(),
+              ShowAtMemoryFetchFailureNotification(Eq(std::nullopt)));
   EXPECT_CALL(autofill_manager(), FillOrPreviewField).Times(0);
 
   manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill, form_id,
@@ -929,6 +1056,47 @@ TEST_F(AtMemoryManagerTest, FillSensitivePersonalContextData_FetchFailed) {
   histogram_tester.ExpectUniqueSample(
       "Autofill.AtMemory.FetchPersonalContextPiiData.FailureReason",
       AtMemoryQueryService::SpiiRetrievalFailureReason::kFetchFailed, 1);
+}
+
+// Tests that when fetching the unmasked Personal Context value fails due to
+// reauth in progress, the manager triggers the fetch error notification with
+// a specific error message override.
+TEST_F(AtMemoryManagerTest, FillSensitivePersonalContextData_ReauthInProgress) {
+  base::HistogramTester histogram_tester;
+  auto [form_id, field_id] = SeeFormAndShowPopup();
+
+  std::vector<Suggestion> final_suggestions;
+  {
+    MemorySearchResult entry(MemoryDataType::kPassportNumber, u"Passport",
+                             u"1234");
+    entry.identifier = "personal-context-guid";
+    entry.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
+    MockQueryResultsAndExpectCallback(u"query",
+                                      MemorySearchStatus::kFinalResponseSuccess,
+                                      {entry}, final_suggestions);
+  }
+  manager().OnSearchSubmitted(u"query");
+
+  EXPECT_CALL(
+      mock_query_service(),
+      AuthenticateAndFetchPiiEntity(
+          Ref(autofill_client()),
+          GetAuthenticationMessage(
+              autofill_client().GetLastCommittedPrimaryMainFrameOrigin()),
+          std::u16string_view(u"1234"), MemoryDataType::kPassportNumber, _, _))
+      .WillOnce(RunOnceCallback<5>(
+          base::unexpected(AtMemoryQueryService::SpiiRetrievalFailureReason::
+                               kReauthInProgress)));
+
+  EXPECT_CALL(
+      autofill_client(),
+      ShowAtMemoryFetchFailureNotification(
+          std::make_optional(l10n_util::GetStringUTF16(
+              IDS_AUTOFILL_AT_MEMORY_REAUTH_IN_PROGRESS_ERROR_NOTIFICATION))));
+  EXPECT_CALL(autofill_manager(), FillOrPreviewField).Times(0);
+
+  manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill, form_id,
+                                      field_id, final_suggestions[0]);
 }
 
 // Tests that when fetching the unmasked entity instance fails, the manager
@@ -969,6 +1137,7 @@ TEST_F(AtMemoryManagerTest, FillSensitiveAutofillAiData_FetchFailed) {
         std::move(callback).Run(
             base::unexpected(
                 AutofillAiAccessManager::FailureReason::kFetchFailed),
+            /*did_fetch_from_server=*/true,
             /*reauth_attempted=*/false);
         return true;
       });
@@ -1029,6 +1198,9 @@ TEST_F(AtMemoryManagerTest, FillCreditCard_Success) {
   manager().OnSearchSubmitted(u"query");
   ASSERT_EQ(final_suggestions.size(), 1u);
 
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              std::optional(FillingProduct::kAtMemory)));
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
@@ -1053,6 +1225,223 @@ TEST_F(AtMemoryManagerTest, FillCreditCard_Success) {
                                        .GetCreditCardByGUID(test::MakeGuid(1));
   ASSERT_TRUE(updated_card);
   EXPECT_EQ(updated_card->usage_history().use_count(), initial_use_count + 1);
+}
+
+// Tests that fetching an unmasked Credit Card asynchronously returns
+// `IsAsync(true)`, hides suggestions when the fetch completes, fills the
+// field, and records metrics.
+TEST_F(AtMemoryManagerTest, FillCreditCard_AsyncSuccess) {
+  base::HistogramTester histogram_tester;
+  CreditCard card;
+  std::vector<Suggestion> final_suggestions;
+  MockCreditCardAccessManager* mock_ccam_ptr = nullptr;
+  auto [form_id, field_id] =
+      SetUpCreditCardAsyncSearch(card, final_suggestions, mock_ccam_ptr);
+
+  CreditCardAccessManager::OnCreditCardFetchedCallback fetch_callback;
+  {
+    InSequence seq;
+    EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+        .WillOnce([&](const CreditCard* card_to_fetch,
+                      CreditCardAccessManager::OnCreditCardFetchedCallback
+                          callback) {
+          fetch_callback = std::move(callback);
+          test_api(*mock_ccam_ptr)
+              .NotifyObservers(
+                  &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                  *card_to_fetch);
+        });
+
+    EXPECT_CALL(autofill_client(),
+                HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                                std::optional(FillingProduct::kAtMemory)));
+    EXPECT_CALL(
+        autofill_manager(),
+        FillOrPreviewField(mojom::ActionPersistence::kFill,
+                           mojom::FieldActionType::kReplaceAtMemoryTrigger, _,
+                           _, card.number(), FillingProduct::kAtMemory, _));
+  }
+
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+
+  std::move(fetch_callback).Run(card);
+  test_api(*mock_ccam_ptr)
+      .NotifyObservers(
+          &CreditCardAccessManager::Observer::OnCreditCardFetchSucceeded, card);
+
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.SuggestionAccepted",
+                                      true, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.SuggestionFilled",
+                                      true, 1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.AtMemory.Latency.FetchPii.CreditCard", 1);
+}
+
+// Tests that when an asynchronous Credit Card fetch fails, suggestions are
+// hidden and failure metrics are recorded.
+TEST_F(AtMemoryManagerTest, FillCreditCard_FetchFailed) {
+  base::HistogramTester histogram_tester;
+  CreditCard card;
+  std::vector<Suggestion> final_suggestions;
+  MockCreditCardAccessManager* mock_ccam_ptr = nullptr;
+  auto [form_id, field_id] =
+      SetUpCreditCardAsyncSearch(card, final_suggestions, mock_ccam_ptr);
+
+  {
+    InSequence seq;
+    EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+        .WillOnce([&](const CreditCard* card_to_fetch,
+                      CreditCardAccessManager::OnCreditCardFetchedCallback
+                          callback) {
+          test_api(*mock_ccam_ptr)
+              .NotifyObservers(
+                  &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                  *card_to_fetch);
+        });
+
+    EXPECT_CALL(autofill_client(),
+                HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                                std::optional(FillingProduct::kAtMemory)));
+  }
+  EXPECT_CALL(autofill_manager(), FillOrPreviewField).Times(0);
+
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+
+  test_api(*mock_ccam_ptr)
+      .NotifyObservers(
+          &CreditCardAccessManager::Observer::OnCreditCardFetchFailed, &card);
+
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.SuggestionAccepted",
+                                      true, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.SuggestionFilled",
+                                      false, 1);
+}
+
+// Tests that calling FillCreditCard while an asynchronous fetch is already in
+// progress immediately returns IsAsync(true) without calling FetchCreditCard
+// a second time on CreditCardAccessManager.
+TEST_F(AtMemoryManagerTest, FillCreditCard_OverlappingRequests) {
+  CreditCard card;
+  std::vector<Suggestion> final_suggestions;
+  MockCreditCardAccessManager* mock_ccam_ptr = nullptr;
+  auto [form_id, field_id] =
+      SetUpCreditCardAsyncSearch(card, final_suggestions, mock_ccam_ptr);
+
+  EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+      .WillOnce([&](const CreditCard* card_to_fetch,
+                    CreditCardAccessManager::OnCreditCardFetchedCallback
+                        callback) {
+        test_api(*mock_ccam_ptr)
+            .NotifyObservers(
+                &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                *card_to_fetch);
+      });
+
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+
+  // A second overlapping call should return IsAsync(true) without calling
+  // FetchCreditCard again.
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+}
+
+// Tests that when CreditCardAccessManager is destroyed while an asynchronous
+// fetch is in progress, fetch state is reset.
+TEST_F(AtMemoryManagerTest, FillCreditCard_AccessManagerDestroyedMidFetch) {
+  CreditCard card;
+  std::vector<Suggestion> final_suggestions;
+  MockCreditCardAccessManager* mock_ccam_ptr = nullptr;
+  auto [form_id, field_id] =
+      SetUpCreditCardAsyncSearch(card, final_suggestions, mock_ccam_ptr);
+
+  EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+      .WillOnce([&](const CreditCard* card_to_fetch,
+                    CreditCardAccessManager::OnCreditCardFetchedCallback
+                        callback) {
+        test_api(*mock_ccam_ptr)
+            .NotifyObservers(
+                &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                *card_to_fetch);
+      });
+
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+
+  test_api(*mock_ccam_ptr)
+      .NotifyObservers(&CreditCardAccessManager::Observer::
+                           OnCreditCardAccessManagerDestroyed);
+
+  // After CCAM is destroyed, fetch state should be reset so a subsequent fill
+  // attempt is permitted to start a new fetch.
+  EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+      .WillOnce([&](const CreditCard* card_to_fetch,
+                    CreditCardAccessManager::OnCreditCardFetchedCallback
+                        callback) {
+        test_api(*mock_ccam_ptr)
+            .NotifyObservers(
+                &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                *card_to_fetch);
+      });
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+}
+
+// Tests that when OnPopupHidden() is called during an asynchronous fetch,
+// fetch state is reset cleanly so subsequent sessions are not blocked.
+TEST_F(AtMemoryManagerTest, FillCreditCard_PopupHiddenResetsFetchInProgress) {
+  CreditCard card;
+  std::vector<Suggestion> final_suggestions;
+  MockCreditCardAccessManager* mock_ccam_ptr = nullptr;
+  auto [form_id, field_id] =
+      SetUpCreditCardAsyncSearch(card, final_suggestions, mock_ccam_ptr);
+
+  EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+      .WillOnce([&](const CreditCard* card_to_fetch,
+                    CreditCardAccessManager::OnCreditCardFetchedCallback
+                        callback) {
+        test_api(*mock_ccam_ptr)
+            .NotifyObservers(
+                &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                *card_to_fetch);
+      });
+
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
+
+  manager().OnPopupHidden();
+
+  // After hiding popup, a new fetch should be allowed to start rather than
+  // returning IsAsync(true) immediately without calling FetchCreditCard.
+  EXPECT_CALL(*mock_ccam_ptr, FetchCreditCard)
+      .WillOnce([&](const CreditCard* card_to_fetch,
+                    CreditCardAccessManager::OnCreditCardFetchedCallback
+                        callback) {
+        test_api(*mock_ccam_ptr)
+            .NotifyObservers(
+                &CreditCardAccessManager::Observer::OnCreditCardFetchStarted,
+                *card_to_fetch);
+      });
+  EXPECT_EQ(manager().FillOrPreviewSearchResult(mojom::ActionPersistence::kFill,
+                                                form_id, field_id,
+                                                final_suggestions[0]),
+            IsAsync(true));
 }
 
 // Tests that fetching an unmasked IBAN asynchronously returns `IsAsync(true)`,
@@ -1607,7 +1996,9 @@ TEST_F(AtMemoryManagerTest, FillOverlappingPopups) {
 // Tests that the personal context notice is appended when the user needs to see
 // the notice.
 TEST_F(AtMemoryManagerTest, PersonalContext_AppendsNoticeSuggestion) {
-  autofill_client().set_should_show_personal_context_at_memory_notice(true);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(true);
 
   SeeFormAndShowPopup();
 
@@ -1629,7 +2020,9 @@ TEST_F(AtMemoryManagerTest, PersonalContext_AppendsNoticeSuggestion) {
 // is appended at the end (after the search affordance suggestion).
 TEST_F(AtMemoryManagerTest,
        PersonalContext_NoticePositioning_SearchAffordance) {
-  autofill_client().set_should_show_personal_context_at_memory_notice(true);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(true);
   SeeFormAndShowPopup();
 
   // Set up expectation for `update_callback_` when the filter text changes.
@@ -1650,7 +2043,9 @@ TEST_F(AtMemoryManagerTest,
 // Tests that after search results are returned, the personal context notice
 // is prepended at the top (before the search result suggestions).
 TEST_F(AtMemoryManagerTest, PersonalContext_NoticePositioning_SearchResults) {
-  autofill_client().set_should_show_personal_context_at_memory_notice(true);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(true);
   SeeFormAndShowPopup();
 
   // Mock search results returned by the query service.
@@ -1682,7 +2077,9 @@ TEST_F(AtMemoryManagerTest, PersonalContext_NoticePositioning_SearchResults) {
 // receives the `kAtMemoryFetching` meta-suggestion followed by a separator and
 // the notice card if active.
 TEST_F(AtMemoryManagerTest, FetchingState_Suggestions_NoticeActive) {
-  autofill_client().set_should_show_personal_context_at_memory_notice(true);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(true);
   auto [form_id, field_id] = SeeForm();
   manager().OnPopupShown(
       form_id, field_id,
@@ -1708,7 +2105,9 @@ TEST_F(AtMemoryManagerTest, FetchingState_Suggestions_NoticeActive) {
 // Tests that during the fetching state when the notice has been accepted,
 // the UI receives only `kAtMemoryFetching` meta-suggestion.
 TEST_F(AtMemoryManagerTest, FetchingState_Suggestions_NoticeAccepted) {
-  autofill_client().set_should_show_personal_context_at_memory_notice(false);
+  autofill_client()
+      .GetPersonalContextFirstRunService()
+      ->set_should_show_at_memory_notice(false);
 
   auto [form_id, field_id] = SeeForm();
   manager().OnPopupShown(

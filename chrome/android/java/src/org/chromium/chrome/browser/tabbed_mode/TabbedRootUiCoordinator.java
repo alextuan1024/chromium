@@ -1649,7 +1649,10 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
             } else if (MultiWindowUtils.shouldShowRecentTabsIph()) {
                 featureName = FeatureConstants.RECENT_TABS;
                 stringId = R.string.iph_recent_tabs_text;
-                menuId = R.id.recent_tabs_menu_id;
+                menuId =
+                        TabbedAppMenuPropertiesDelegate.isSubmenusEnabled(mActivity)
+                                ? R.id.history_parent_menu_id
+                                : R.id.recent_tabs_menu_id;
             }
 
             if (featureName != null) {
@@ -2314,7 +2317,8 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                         sideUiStartAnchorContainerStub,
                         sideUiEndAnchorContainerStub,
                         webContentHairlineContainerStub,
-                        stripBottomPxSupplier);
+                        stripBottomPxSupplier,
+                        mIncognitoStateProvider);
         if (mSideUiCoordinator == null) {
             return;
         }
@@ -2383,6 +2387,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                                     assumeNonNull(mProfileSupplier.get()),
                                     mVerticalTabsActionDelegate,
                                     mWindowAndroid,
+                                    mActivityResultTracker,
                                     assumeNonNull(mMultiInstanceManager),
                                     assumeNonNull(mSnackbarManagerSupplier.get()),
                                     getDesktopWindowStateManager(),
@@ -2397,6 +2402,10 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                                     mUndoGroupSnackbarController),
                             mIsVerticalTabsActiveSupplier);
             mSideUiCoordinator.registerSideUiContainer(mVerticalTabsSideUiCoordinator);
+            if (mToolbarManager != null) {
+                mToolbarManager.setVerticalTabsAutoHiddenSupplier(
+                        mVerticalTabsSideUiCoordinator.getIsAutoHiddenSupplier());
+            }
         }
 
         mSideUiStateProviderSupplier.onAvailable(

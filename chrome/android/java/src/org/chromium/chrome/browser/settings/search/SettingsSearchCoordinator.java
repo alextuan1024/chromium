@@ -955,13 +955,7 @@ public class SettingsSearchCoordinator
      */
     private @Nullable FragmentManager getSettingsFragmentManager() {
         if (mMultiColumnSettings != null) {
-            // Check that the fragment is attached before retrieving its child fragment manager,
-            // otherwise getChildFragmentManager() throws an IllegalStateException.
-            // We check getContext() != null instead of isAdded() because getContext() is not final
-            // and can be mocked in unit tests.
-            return mMultiColumnSettings.getContext() != null
-                    ? mMultiColumnSettings.getChildFragmentManager()
-                    : null;
+            return mMultiColumnSettings.getChildFragmentManagerOrNull();
         } else {
             return mActivity.getSupportFragmentManager();
         }
@@ -1097,7 +1091,9 @@ public class SettingsSearchCoordinator
         }
         // Case for settings in tab.
         if (mActionBar != null) {
-            SettingsMenuHelper.updateNavigationIcon(mActionBar, mActivity, show, mUseMultiColumn);
+            boolean isMainSettings = mMultiColumnSettings != null && isShowingMainSettings();
+            SettingsMenuHelper.updateNavigationIcon(
+                    mActionBar, mActivity, show, mUseMultiColumn, isMainSettings);
         }
     }
 

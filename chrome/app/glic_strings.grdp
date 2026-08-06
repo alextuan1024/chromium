@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Glic specific strings (included from generated_resources.grd). -->
 <grit-part>
+  <message name="IDS_GLIC_TASK_WAITING_FOR_CONSENT_TITLE" desc="Title of task in task list bubble showing that the task is waiting for user consent.">
+    Review Important Information
+  </message>
+  <message name="IDS_GLIC_TASK_WAITING_FOR_CONSENT_SUBTITLE" desc="Subtitle of task in task list bubble showing that the task is waiting for user consent.">
+    Working on your task
+  </message>
   <message name="IDS_TOOLTIP_TAB_ALERT_STATE_GLIC_ACCESSING" desc="Extra tool tip text, when the tab's context is being shared with Gemini">
     You're sharing this tab with Gemini
   </message>
@@ -498,6 +504,9 @@
   <message name="IDS_GLIC_BUTTON_ENTRYPOINT_ASK_GEMINI_LABEL" desc="Label on the button used to open Gemini in Chrome." formatter_data="android_java">
     Ask Gemini
   </message>
+  <message name="IDS_GLIC_OPEN_GEMINI_LABEL" desc="Label on the menu item used to open Gemini in Chrome." formatter_data="android_java">
+    Open Chat
+  </message>
   <message name="IDS_GLIC_SELECTION_CTA_TELL_ME" desc="Experimental CTA label on selection button.">
     Tell me about this
   </message>
@@ -563,6 +572,15 @@
   </message>
   <message name="IDS_GLIC_SELECTION_ASK_MORE_ABOUT_THIS" desc="Label for the button at the bottom of the inline explanation box to open Gemini in the side panel for follow-up questions.">
     Ask Gemini more about this
+  </message>
+  <message name="IDS_GLIC_SELECTION_MORE_SKILLS" desc="Label for the submenu item showing all user skills in the selection widget context menu.">
+    More
+  </message>
+  <message name="IDS_GLIC_SELECTION_YOUR_SKILLS" desc="Section heading for user-created skills in the selection widget context menu.">
+    Your skills
+  </message>
+  <message name="IDS_GLIC_SELECTION_FOR_THIS_PAGE" desc="Section heading for contextual skills relevant to the current page in the selection widget context menu.">
+    For this page
   </message>
 
   <!-- Educational Tip -->

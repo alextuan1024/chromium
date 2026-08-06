@@ -327,13 +327,14 @@ TEST_F(AutofillAiManagerTest, OnAfterLoadedServerPredictions_TriggersFetch) {
   auto form_structure = std::make_unique<FormStructure>(
       test::GetFormData({.fields = {{.role = PASSPORT_NUMBER}}}));
   AddPredictionsToFormStructure(*form_structure, {{PASSPORT_NUMBER}});
+  FormGlobalId form_id = form_structure->global_id();
   test_api(autofill_manager()).AddSeenFormStructure(std::move(form_structure));
 
   EXPECT_CALL(
       pcontext_manager(),
       PrefetchContext(ElementsAre(EntityType(EntityTypeName::kPassport))));
 
-  manager().OnAfterLoadedServerPredictions(autofill_manager());
+  manager().OnAfterLoadedServerPredictions(autofill_manager(), {form_id});
 }
 
 // Tests that PrefetchContext is not executed if the enablement state is
@@ -352,10 +353,11 @@ TEST_F(AutofillAiManagerTest,
   auto form_structure = std::make_unique<FormStructure>(
       test::GetFormData({.fields = {{.role = PASSPORT_NUMBER}}}));
   AddPredictionsToFormStructure(*form_structure, {{PASSPORT_NUMBER}});
+  FormGlobalId form_id = form_structure->global_id();
   test_api(autofill_manager()).AddSeenFormStructure(std::move(form_structure));
 
   EXPECT_CALL(pcontext_manager(), PrefetchContext).Times(0);
-  manager().OnAfterLoadedServerPredictions(autofill_manager());
+  manager().OnAfterLoadedServerPredictions(autofill_manager(), {form_id});
 }
 
 // Tests that PrefetchContext only fetches non-SPII types if the client
@@ -382,49 +384,15 @@ TEST_F(AutofillAiManagerTest,
                   {.role = FLIGHT_RESERVATION_FLIGHT_NUMBER}}}));
   AddPredictionsToFormStructure(
       *form_structure, {{PASSPORT_NUMBER}, {FLIGHT_RESERVATION_FLIGHT_NUMBER}});
+  FormGlobalId form_id = form_structure->global_id();
   test_api(autofill_manager()).AddSeenFormStructure(std::move(form_structure));
 
   EXPECT_CALL(pcontext_manager(), PrefetchContext(ElementsAre(EntityType(
                                       EntityTypeName::kFlightReservation))));
-  manager().OnAfterLoadedServerPredictions(autofill_manager());
+  manager().OnAfterLoadedServerPredictions(autofill_manager(), {form_id});
 }
 
-// Tests that IPH should be displayed if the user is opted out of the feature,
-// has an address, and form submission with filled out fields would lead to
-// entity import.
-// TODO(crbug.com/440488776): Remove this test when cleaning up
-// kAutofillAiAvailableByDefault. This feature deprecated the IPH.
-TEST_F(AutofillAiManagerTest, ShouldDisplayIph) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndDisableFeature(features::kAutofillAiAvailableByDefault);
-  test::FormDescription form_description = {.fields = {{}}};
-  FormData form = test::GetFormData(form_description);
-  FormStructure form_structure = FormStructure(form);
-  AddPredictionsToFormStructure(form_structure, {{PASSPORT_NUMBER}});
-  AddAutofillProfile();
-  SetAutofillAiOptInStatus(autofill_client(), AutofillAiOptInStatus::kOptedOut);
 
-  EXPECT_TRUE(
-      manager().ShouldDisplayIph(form_structure, form.fields()[0].global_id()));
-}
-
-// Tests that IPH should be displayed when the user is opted out of the feature
-// and does not have address or payments data stored.
-// TODO(crbug.com/440488776): Remove this test when cleaning up
-// kAutofillAiAvailableByDefault. This feature deprecated the IPH.
-TEST_F(AutofillAiManagerTest,
-       ShouldDisplayIphWhenUserHasNoAddressOrPaymentsData) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndDisableFeature(features::kAutofillAiAvailableByDefault);
-  test::FormDescription form_description = {.fields = {{}}};
-  FormData form = test::GetFormData(form_description);
-  FormStructure form_structure = FormStructure(form);
-  AddPredictionsToFormStructure(form_structure, {{PASSPORT_NUMBER}});
-  SetAutofillAiOptInStatus(autofill_client(), AutofillAiOptInStatus::kOptedOut);
-
-  EXPECT_TRUE(
-      manager().ShouldDisplayIph(form_structure, form.fields()[0].global_id()));
-}
 
 // Tests that IPH should not be displayed if the user is opted into AutofillAI
 // already.

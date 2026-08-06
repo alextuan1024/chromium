@@ -107,7 +107,11 @@ void ContextHubService::OnAutoTodosChanged(
 }
 
 void ContextHubService::GenerateFirstPartyAutoTodos(
-    AutoTodosCallback callback) {
+    AutoTodosStore::OperationCallback callback) {
+  if (!auto_todos_store_) {
+    std::move(callback).Run(false);
+    return;
+  }
 
   personal_context::proto::AutoTodosRequest request_metadata;
   personal_context::ContextMemoryRequestOptions options;
@@ -120,26 +124,40 @@ void ContextHubService::GenerateFirstPartyAutoTodos(
                      weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
+void ContextHubService::GenerateTabBasedTodos(
+    std::vector<TabData> tabs,
+    AutoTodosStore::OperationCallback callback) {
+  // TODO(crbug.com/539697847): Implement call to MES to generate tab-based
+  // todos with fetched APC.
+  if (callback) {
+    std::move(callback).Run(false);
+  }
+}
+
 void ContextHubService::OnFirstPartyAutoTodosFetched(
-    AutoTodosCallback callback,
+    AutoTodosStore::OperationCallback callback,
     personal_context::FetchContextResult result) {
   if (!result.response.has_value()) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(false);
     return;
   }
 
   personal_context::proto::AutoTodosResponse response;
   if (!response.ParseFromString(result.response.value().value())) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(false);
     return;
   }
 
-  if (auto_todos_store_) {
   // TODO(crbug.com/540562062): Remove this once state management is handled.
   auto_todos_store_->Clear(base::DoNothing());
 
+  std::vector<AutoTodoEntry> entries;
+  entries.reserve(response.todos_size());
   for (const personal_context::proto::AutoTodoItem& todo : response.todos()) {
     AutoTodoEntry entry;
+    // TODO(crbug.com/541276677): Remove when the observer is notified of cache
+    // changes.
+    entry.id = todo.title();
     entry.title = todo.title();
     entry.description = todo.description();
     entry.importance_score = todo.importance_score();
@@ -149,16 +167,33 @@ void ContextHubService::OnFirstPartyAutoTodosFetched(
     first_party.actionable_url = GURL(todo.actionable_url());
     for (const auto& ref : todo.source_references()) {
       if (ref.has_gmail()) {
-        first_party.source_references.push_back(
-            GURL(ref.gmail().message_url()));
+        first_party.source_references.emplace_back(ref.gmail().message_url());
       }
     }
     entry.data = std::move(first_party);
-    auto_todos_store_->AddOrUpdateItem(std::move(entry), base::DoNothing());
-  }
+    entries.push_back(std::move(entry));
   }
 
-  std::move(callback).Run(std::move(response));
+  auto_todos_store_->AddAllTodos(std::move(entries), base::DoNothing());
+  std::move(callback).Run(true);
+}
+
+void ContextHubService::GetAutoTodos(GetAutoTodosCallback callback) const {
+  if (!auto_todos_store_) {
+    std::move(callback).Run({});
+    return;
+  }
+  auto_todos_store_->GetAllItems(std::move(callback));
+}
+
+void ContextHubService::UpdateAutoTodo(
+    AutoTodoEntry item,
+    AutoTodosStore::OperationCallback callback) {
+  if (!auto_todos_store_) {
+    std::move(callback).Run(false);
+    return;
+  }
+  auto_todos_store_->AddOrUpdateItem(std::move(item), std::move(callback));
 }
 
 void ContextHubService::SetTodoFeedback(

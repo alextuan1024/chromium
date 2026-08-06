@@ -1935,6 +1935,8 @@ source_set("browser") {
     "resource_coordinator_service.cc",
     "sandboxed_opaque_origin_creator.cc",
     "sandboxed_opaque_origin_creator.h",
+    "sandboxed_process_launcher_delegate.cc",
+    "sandboxed_process_launcher_delegate.h",
     "scheduler/browser_io_thread_delegate.cc",
     "scheduler/browser_io_thread_delegate.h",
     "scheduler/browser_task_executor.cc",
@@ -2290,6 +2292,8 @@ source_set("browser") {
     "webid/identity_registry.cc",
     "webid/identity_registry.h",
     "webid/identity_registry_delegate.h",
+    "webid/idp_accounts_parser.cc",
+    "webid/idp_accounts_parser.h",
     "webid/idp_network_request_manager.cc",
     "webid/idp_network_request_manager.h",
     "webid/idp_registration_handler.cc",
@@ -3607,6 +3611,8 @@ source_set("browser") {
     sources += [
       "vrp_flags/vrp_flags_factory_impl.cc",
       "vrp_flags/vrp_flags_factory_impl.h",
+      "vrp_flags/vrp_navigation_throttle.cc",
+      "vrp_flags/vrp_navigation_throttle.h",
     ]
     deps += [ "//components/vrp_flags" ]
     public_deps += [ "//components/vrp_flags:mojom" ]

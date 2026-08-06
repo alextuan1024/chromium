@@ -32,15 +32,16 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/contextual_search/searchbox_context_data.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_delegate.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_base_content.h"
 #include "chrome/browser/ui/webui/cr_components/composebox/composebox_handler.h"
 #include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
@@ -799,6 +800,8 @@ void OmniboxContextMenuController::UpdateSearchboxContext(
     tab_attachment->tab_id = tab_info->tab_id;
     tab_attachment->title = base::UTF16ToUTF8(tab_info->title);
     tab_attachment->url = tab_info->url;
+    tab_attachment->source =
+        searchbox::mojom::TabAttachmentSource::kContextMenu;
     context->file_infos.push_back(
         searchbox::mojom::SearchContextAttachment::NewTabAttachment(
             std::move(tab_attachment)));
@@ -1272,7 +1275,7 @@ OmniboxPopupUI* OmniboxContextMenuController::GetOmniboxPopupUI(
   }
 
   // Fallback: If web_contents does not have WebUI (e.g. it is the active tab),
-  // try to find it through the active browser window's LocationBarView.
+  // try to find it through the active browser window's LocationBar.
   auto* browser_window_interface =
       webui::GetBrowserWindowInterface(web_contents);
   if (!browser_window_interface) {
@@ -1285,12 +1288,12 @@ OmniboxPopupUI* OmniboxContextMenuController::GetOmniboxPopupUI(
     return nullptr;
   }
 
-  auto* location_bar_view = static_cast<LocationBarView*>(location_bar);
-  if (!location_bar_view) {
+  auto* presenter_delegate = location_bar->GetPresenterDelegate();
+  if (!presenter_delegate) {
     return nullptr;
   }
 
-  auto* presenter = location_bar_view->GetOmniboxPopupAimPresenter();
+  auto* presenter = presenter_delegate->GetOmniboxPopupAimPresenter();
   if (!presenter) {
     return nullptr;
   }

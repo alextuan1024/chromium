@@ -8,6 +8,7 @@
 
 #include "base/barrier_closure.h"
 #include "base/check_deref.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -91,9 +92,14 @@ AccountPreviewDataServiceImpl::AccountPreviewDataServiceImpl(
                         *identity_manager,
                         *profile_metrics_service) {
   CHECK(network_delay_helper_);
-  identity_manager_observation_.Observe(identity_manager_);
+  pref_change_registrar_.Init(pref_service_);
+  pref_change_registrar_.Add(
+      prefs::kSigninAllowed,
+      base::BindRepeating(
+          &AccountPreviewDataServiceImpl::OnSigninAllowedPrefChanged,
+          base::Unretained(this)));
 
-  CreateAndStartRepeatingTimer();
+  OnSigninAllowedPrefChanged();
 }
 
 AccountPreviewDataServiceImpl::~AccountPreviewDataServiceImpl() = default;
@@ -194,8 +200,13 @@ void AccountPreviewDataServiceImpl::OnSingleFetchCompleted(
   active_fetchers_.erase(gaia_id);
   // `gaia_id` is owned by the fetcher and should not be used beyond this point.
 
-  CHECK(all_accounts_fetched_barrier_);
-  all_accounts_fetched_barrier_.Run();
+  if (all_accounts_fetched_barrier_) {
+    all_accounts_fetched_barrier_.Run();
+  } else {
+    // TODO(crbug.com/543000429): Investigate why this can happen.
+    // crbug.com/542550030 is an example of that instance.
+    base::debug::DumpWithoutCrashing();
+  }
 
   if (fetch_complete_callback_for_testing_) {
     std::move(fetch_complete_callback_for_testing_).Run();
@@ -213,6 +224,8 @@ void AccountPreviewDataServiceImpl::OnIdentityManagerShutdown(
   CHECK_EQ(identity_manager_, identity_manager);
   identity_manager_observation_.Reset();
   identity_manager_ = nullptr;
+  repeating_timer_.reset();
+  ClearMemoryData();
 }
 
 void AccountPreviewDataServiceImpl::RefreshAllAccountPreviewData() {
@@ -259,8 +272,12 @@ void AccountPreviewDataServiceImpl::EnsureAllAccountsFetched(
     account_id_to_gaia_id_[account.account_id] = account.gaia;
   }
 
+  // Do not perform any fetch in case the previous list used to compute the
+  // preferred data is exactly equiavlent to the current list of accounts. This
+  // will directly be false for all periodic refreshes since the previous list
+  // and results are cleared during periodic refreshes.
   if (switches::kAccountPreviewDataPersistAccounts.Get() &&
-      cached_data_.empty() && !HaveAccountsMutatedSinceLastFetch(accounts)) {
+      !HaveAccountsMutatedSinceLastFetch(accounts)) {
     base::UmaHistogramEnumeration(
         "Signin.AccountPreview.TriggerCauseAccountsUnchangedSinceLastFetch",
         cause);
@@ -280,6 +297,11 @@ void AccountPreviewDataServiceImpl::EnsureAllAccountsFetched(
   }
 
   if (gaia_ids_to_fetch.empty()) {
+    // When `kAccountPreviewDataPersistAccounts` is enabled,
+    // `HaveAccountsMutatedSinceLastFetch()` above ensures `gaia_ids_to_fetch`
+    // is not empty. However, if `kAccountPreviewDataPersistAccounts` is
+    // disabled, all accounts may already be cached.
+    CHECK(!switches::kAccountPreviewDataPersistAccounts.Get());
     base::UmaHistogramEnumeration(
         "Signin.AccountPreview.TriggerCauseWithAllCachesAvailable", cause);
 
@@ -287,7 +309,7 @@ void AccountPreviewDataServiceImpl::EnsureAllAccountsFetched(
     // - if there are on-going fetches, they will be cleared (via
     // `OnRefreshTokenRemovedForAccount()`) or finalized when the result is
     // fetched.
-    // - otherwise, there no need to force recomputing the preferred account.
+    // - otherwise, there is no need to force recomputing the preferred account.
     return;
   }
 
@@ -474,6 +496,20 @@ void AccountPreviewDataServiceImpl::ResetTimer() {
   CreateAndStartRepeatingTimer();
 }
 
+void AccountPreviewDataServiceImpl::OnSigninAllowedPrefChanged() {
+  if (pref_service_->GetBoolean(prefs::kSigninAllowed)) {
+    if (!identity_manager_observation_.IsObserving()) {
+      identity_manager_observation_.Observe(identity_manager_);
+      CreateAndStartRepeatingTimer();
+    }
+    return;
+  }
+
+  identity_manager_observation_.Reset();
+  repeating_timer_.reset();
+  ClearAllDataAndResults();
+}
+
 void AccountPreviewDataServiceImpl::CreateAndStartRepeatingTimer() {
   repeating_timer_ = std::make_unique<PersistentRepeatingTimer>(
       pref_service_, prefs::kAccountPreviewDataLastUpdatePref,
@@ -485,11 +521,22 @@ void AccountPreviewDataServiceImpl::CreateAndStartRepeatingTimer() {
   repeating_timer_->Start();
 }
 
-void AccountPreviewDataServiceImpl::ClearAllDataAndResults() {
+void AccountPreviewDataServiceImpl::ClearMemoryData() {
   cached_data_.clear();
+  active_fetchers_.clear();
   account_id_to_gaia_id_.clear();
+  all_accounts_fetched_barrier_.Reset();
+  deferred_fetch_on_loaded_tokens_callback_.Reset();
+}
+
+void AccountPreviewDataServiceImpl::ClearStoredResults() {
   pref_service_->ClearPref(prefs::kAccountPreviewDataLastFetchAccounts);
   WritePreferredAccountToPrefs(std::nullopt);
+}
+
+void AccountPreviewDataServiceImpl::ClearAllDataAndResults() {
+  ClearMemoryData();
+  ClearStoredResults();
 }
 
 }  // namespace signin

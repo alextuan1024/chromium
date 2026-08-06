@@ -163,8 +163,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(features::kFedCmEmbedderInitiatedLogin), kDefault},
           {wf::EnableFedCmErrorAttribute,
            raw_ref(features::kFedCmErrorAttribute), kDefault},
-          {wf::EnableFedCmNonStringToken,
-           raw_ref(features::kFedCmNonStringToken), kDefault},
           {wf::EnableGamepadMultitouch,
            raw_ref(features::kEnableGamepadMultitouch)},
           {wf::EnableGamepadRawInputChangeEvent,
@@ -342,6 +340,9 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(webnn::mojom::features::
                        kExperimentalWebMachineLearningNeuralNetwork),
            kSetOnlyIfOverridden},
+          {"RequestStorageAccessFor",
+           raw_ref(content_settings::features::
+                       kStorageAccessAPIRelatedWebsiteSets)},
           {"LocalNetworkAccessPermissionPolicy",
            raw_ref(network::features::kLocalNetworkAccessChecks)}};
   for (const auto& mapping : runtimeFeatureNameToChromiumFeatureMapping) {

@@ -22,6 +22,7 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.text.TextUtils;
+import android.view.KeyEvent;
 import android.view.View;
 
 import androidx.annotation.VisibleForTesting;
@@ -84,6 +85,7 @@ import org.chromium.components.omnibox.ToolModeProto.ToolMode;
 import org.chromium.components.omnibox.ToolModeUtils;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.ui.base.KeyNavigationUtil;
 import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.ListObservable;
@@ -135,6 +137,9 @@ import java.util.function.Supplier;
     private final Supplier<String> mUrlBarTextSupplier;
     private final boolean mIsDesktopPlatform;
     private final SettableNonNullObservableSupplier<Boolean> mHasAttachmentsSupplier;
+    private final NonNullObservableSupplier<Boolean> mWindowHasFocusSupplier;
+    private final Callback<Boolean> mOnWindowFocusChanged = hasFocus -> updateActivationChip();
+    private @Nullable AttachmentsSelectionController mSelectionController;
 
     private boolean mIsTextWrapping;
     private boolean mHasContextualTasksFocus;
@@ -180,7 +185,8 @@ import java.util.function.Supplier;
             Runnable onActivationChipClickedWithQuery,
             Runnable clearUrlBarTextRunnable,
             Supplier<String> urlBarTextSupplier,
-            SettableNonNullObservableSupplier<Boolean> hasAttachmentsSupplier) {
+            SettableNonNullObservableSupplier<Boolean> hasAttachmentsSupplier,
+            NonNullObservableSupplier<Boolean> windowHasFocusSupplier) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mPermissionDelegate = windowAndroid;
@@ -203,6 +209,8 @@ import java.util.function.Supplier;
         mUrlBarTextSupplier = urlBarTextSupplier;
         mIsDesktopPlatform = OmniboxCapabilities.isDesktopPlatform();
         mHasAttachmentsSupplier = hasAttachmentsSupplier;
+        mWindowHasFocusSupplier = windowHasFocusSupplier;
+        mWindowHasFocusSupplier.addSyncObserver(mOnWindowFocusChanged);
 
         // Create the upload failed snackbar.
         mAttachmentUploadFailedSnackbar =
@@ -245,6 +253,7 @@ import java.util.function.Supplier;
     /* package */ void destroy() {
         endInput();
         mBackPressManager.removeHandler(this);
+        mWindowHasFocusSupplier.removeObserver(mOnWindowFocusChanged);
     }
 
     public boolean wasActionTaken() {
@@ -253,6 +262,24 @@ import java.util.function.Supplier;
 
     public void setOnFirstPickerInteractionCanceledCallback(Runnable callback) {
         mOnFirstPickerInteractionCanceledCallback = callback;
+    }
+
+    boolean handleKeyEvent(int keyCode, KeyEvent event) {
+        if (mSelectionController == null) return false;
+        boolean isBackwardsTab = KeyNavigationUtil.isTabBackward(event);
+        boolean isForwardTab = KeyNavigationUtil.isTabForward(event);
+        boolean isActivation = KeyNavigationUtil.isButtonActivate(event);
+
+        if (isForwardTab) {
+            return mSelectionController.selectNextItem();
+        } else if (isBackwardsTab) {
+            return mSelectionController.selectPreviousItem();
+        } else if (isActivation) {
+            mSelectionController.handleActivation();
+            return true;
+        }
+
+        return false;
     }
 
     @EnsuresNonNullIf(
@@ -323,6 +350,7 @@ import java.util.function.Supplier;
             mModelList.updateVisualsForState(mBrandedColorScheme);
             mModelList.addAttachmentChangeListener(this);
             mModelList.addObserver(mListObserver);
+            mSelectionController = new AttachmentsSelectionController(mModelList);
             onAttachmentsChanged();
         } else {
             // Need a safe fallback.
@@ -330,6 +358,7 @@ import java.util.function.Supplier;
             mModel.set(FuseboxProperties.ADAPTER, null);
             mModel.set(FuseboxProperties.ATTACHMENTS_VISIBLE, false);
             mHasAttachmentsSupplier.set(false);
+            mSelectionController = null;
         }
     }
 
@@ -572,6 +601,8 @@ import java.util.function.Supplier;
         // Conditions here, when grouped into a single return, are difficult to parse.
         // Breaking down into explicit if/elseif/else to help understand what's going on.
         if (!isInInputSession()) {
+            return false;
+        } else if (mInput.isStandby()) {
             return false;
         } else if (ToolModeUtils.isConventionalRequest(mInput.getRequestType())) {
             // Never show mode button if in Search mode.
@@ -1050,11 +1081,12 @@ import java.util.function.Supplier;
     /* package */ void updateActivationChip() {
         boolean showActivationChip =
                 isInInputSession()
+                        && mWindowHasFocusSupplier.get()
                         && mModel.get(FuseboxProperties.FUSEBOX_LAYOUT_MODE)
                                 == FuseboxLayoutMode.SUGGESTIONS_POPOVER
                         && mInput.getRequestType() == AutocompleteRequestType.SEARCH
                         && mInput.getSiteSearchData() == null
-                        && (mInput.getPreviewMatchUrl() == null);
+                        && (mInput.getPreviewMatchUrl() == null || mInput.isInZeroPrefixContext());
         if (mProfile != null
                 && !UserPrefs.get(mProfile).getBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON)) {
             showActivationChip = false;
@@ -1479,5 +1511,15 @@ import java.util.function.Supplier;
         mInput.setModelMode(modelMode);
         // TODO(https://crbug.com/476434460): Consider replacing with wiring in session state.
         mComposeboxQueryControllerBridge.setActiveModel(modelMode);
+    }
+
+    void selectFirstAttachment() {
+        if (mSelectionController == null) return;
+        mSelectionController.selectFirstItem();
+    }
+
+    void selectLastAttachment() {
+        if (mSelectionController == null) return;
+        mSelectionController.selectLastItem();
     }
 }

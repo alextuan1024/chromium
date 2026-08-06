@@ -219,8 +219,10 @@ void PageInfoControllerAndroid::SetPermissionInfo(
   base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
   permissions_to_display.push_back(
       ContentSettingsType::FILE_SYSTEM_WRITE_GUARD);
-  if (cmd->HasSwitch(switches::kEnableExperimentalWebPlatformFeatures))
+  permissions_to_display.push_back(ContentSettingsType::SERIAL_GUARD);
+  if (cmd->HasSwitch(switches::kEnableExperimentalWebPlatformFeatures)) {
     permissions_to_display.push_back(ContentSettingsType::BLUETOOTH_SCANNING);
+  }
   permissions_to_display.push_back(ContentSettingsType::VR);
   permissions_to_display.push_back(ContentSettingsType::AR);
 #if BUILDFLAG(ENABLE_VR)
@@ -355,18 +357,6 @@ std::optional<PermissionSetting> PageInfoControllerAndroid::GetSettingToDisplay(
   // subpage directly from the permissions returned from this controller.
 
   return std::nullopt;
-}
-
-void PageInfoControllerAndroid::SetAdPersonalizationInfo(
-    const AdPersonalizationInfo& info) {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  std::vector<std::u16string> topic_names;
-  for (const auto& topic : info.accessed_topics) {
-    topic_names.push_back(topic.GetLocalizedRepresentation());
-  }
-  Java_PageInfoController_setAdPersonalizationInfo(
-      env, controller_jobject_, info.has_joined_user_to_interest_group,
-      base::android::ToJavaArrayOfStrings(env, topic_names));
 }
 
 DEFINE_JNI(PageInfoController)

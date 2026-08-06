@@ -265,7 +265,7 @@ class AutocompleteMediator
         mDropdownViewInfoListBuilder.setShareDelegateSupplier(shareDelegateSupplier);
         mDropdownViewInfoListManager =
                 new DropdownItemViewInfoListManager(
-                        mSuggestionModels, context, mRoundSidesSupplier);
+                        mSuggestionModels, mContext, mRoundSidesSupplier, mResourceProvider);
         OmniboxResourceProvider.invalidateDrawableCache();
         mLifecycleDispatcher = lifecycleDispatcher;
         mLifecycleDispatcher.register(this);
@@ -726,7 +726,8 @@ class AutocompleteMediator
                         keyword,
                         name,
                         /* enteredViaSpace= */ false,
-                        suggestion.getStarterPackId()));
+                        suggestion.getStarterPackId(),
+                        /* isStarterPackPreview= */ true));
         return true;
     }
 
@@ -1054,13 +1055,14 @@ class AutocompleteMediator
     @Override
     public void onSuggestionFocused(AutocompleteMatch suggestion) {
         if (!isInInputSession()) return;
+        if (mIgnoreOmniboxItemSelection) return;
 
         if (!maybeEnterKeywordMode(suggestion)) {
             // Clear keyword mode only if it was a temporary preview triggered by highlighting
-            // a starter pack. hasPreviewText() prevents clearing explicitly typed keyword modes.
+            // a starter pack.
             if (mAutocompleteInput != null
                     && mAutocompleteInput.getSiteSearchData() != null
-                    && mAutocompleteInput.hasPreviewText()) {
+                    && mAutocompleteInput.getSiteSearchData().isStarterPackPreview) {
                 onKeywordModeEntered(null);
             }
             setOmniboxEditingText(suggestion.getFillIntoEdit(), suggestion);
@@ -1118,11 +1120,20 @@ class AutocompleteMediator
         mListPropertyModel.set(SuggestionListProperties.LIST_IS_FINAL, false);
         mIgnoreOmniboxItemSelection = true;
         boolean isInZeroPrefixContext = mAutocompleteInput.isInZeroPrefixContext();
-        boolean allowParking =
-                isInZeroPrefixContext
-                        || !mAutocompleteInput.isConventionalRequestType()
-                        || !OmniboxCapabilities.hasDesktopExperience(mContext);
-        mListPropertyModel.set(SuggestionListProperties.ALLOW_PARKING_AT_SENTINEL, allowParking);
+        boolean isUnconventional =
+                isInZeroPrefixContext || !mAutocompleteInput.isConventionalRequestType();
+        @SelectionController.Mode int selectionMode;
+        if (isUnconventional || !OmniboxCapabilities.hasDesktopExperience(mContext)) {
+            // In desktop experiences, we use SENTINEL_THEN_WRAPPING to match the behavior of the
+            // desktop browser.
+            selectionMode =
+                    OmniboxCapabilities.hasDesktopExperience(mContext)
+                            ? SelectionController.Mode.SENTINEL_THEN_WRAPPING
+                            : SelectionController.Mode.WRAPPING_WITH_SENTINEL;
+        } else {
+            selectionMode = SelectionController.Mode.WRAPPING;
+        }
+        mListPropertyModel.set(SuggestionListProperties.SELECTION_MODE, selectionMode);
         mListPropertyModel.set(SuggestionListProperties.RESET_SELECTION, null);
         cancelAutocompleteRequests();
 
@@ -1226,6 +1237,11 @@ class AutocompleteMediator
         }
 
         mListPropertyModel.set(SuggestionListProperties.LIST_IS_FINAL, isFinal);
+        boolean shouldApplyVerticalPadding =
+                input.getRequestType() != AutocompleteRequestType.AI_MODE
+                        || getFuseboxLayoutMode() != FuseboxLayoutMode.SUGGESTIONS_POPOVER;
+        mListPropertyModel.set(
+                SuggestionListProperties.APPLY_VERTICAL_PADDING, shouldApplyVerticalPadding);
         measureSuggestionRequestToUiModelTime(isFinal);
     }
 
@@ -1690,22 +1706,42 @@ class AutocompleteMediator
     }
 
     /**
-     * Uses the provided voice search query to generate a URL, and then loads that URL.
+     * Uses the provided voice search query to generate a URL, and then loads that URL. Works even
+     * when no session is active (e.g., via NTP fakebox), so long as the fallback profile is
+     * provided.
      *
      * @param query The voice search query used to generate the URL to load.
+     * @param fallbackProfile Profile to use for URL generation and classification if not in a
+     *     session.
      */
-    /* package */ void loadUrlFromVoice(String query) {
-        if (!isInInputSession()) return;
+    /* package */ void loadUrlFromVoice(String query, @Nullable Profile fallbackProfile) {
+        // TODO(b/542187860) Preferably, we avoid using a fallback profile by always initializing
+        // a session before this function is called.
+        final Profile profile;
+        final @AutocompleteRequestType int requestType;
+        final @Nullable AutocompleteController autocomplete;
 
-        Profile profile = mSessionState.getProfile();
-        if (profile == null) return;
+        if (!isInInputSession()) {
+            if (!OmniboxFeatures.sOmniboxSessionlessVoiceSearch.isEnabled()) return;
+            if (fallbackProfile == null) return;
+            profile = fallbackProfile;
+            autocomplete = AutocompleteController.getForProfile(profile);
+            requestType = AutocompleteRequestType.SEARCH;
+        } else {
+            @Nullable Profile sessionProfile = mSessionState.getProfile();
+            if (sessionProfile == null) return;
+            profile = sessionProfile;
+            autocomplete = mAutocomplete;
+            requestType = mAutocompleteInput.getRequestType();
+        }
 
-        AutocompleteMatch match = mAutocomplete != null ? mAutocomplete.classify(query) : null;
+        @Nullable AutocompleteMatch match =
+                autocomplete != null ? autocomplete.classify(query) : null;
 
         GURL url;
         if (match == null
                 || match.isSearchSuggestion()
-                || ToolModeUtils.isAimRequest(mAutocompleteInput.getRequestType())) {
+                || ToolModeUtils.isAimRequest(requestType)) {
             url = TemplateUrlServiceFactory.getForProfile(profile).getUrlForVoiceSearchQuery(query);
         } else {
             url = match.getUrl();
@@ -1976,16 +2012,13 @@ class AutocompleteMediator
 
         cancelAutocompleteRequests();
         mCurrentAutocompleteRequest =
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        // TODO(crbug.com/475620206) carefully reenable.
-                        // mIsExecutingAutocompleteAction = true;
-                        action.run();
-                        // mIsExecutingAutocompleteAction = false;
-                        // Release completed Runnable.
-                        mCurrentAutocompleteRequest = null;
-                    }
+                () -> {
+                    // TODO(crbug.com/475620206) carefully reenable.
+                    // mIsExecutingAutocompleteAction = true;
+                    action.run();
+                    // mIsExecutingAutocompleteAction = false;
+                    // Release completed Runnable.
+                    mCurrentAutocompleteRequest = null;
                 };
 
         mHandler.postDelayed(mCurrentAutocompleteRequest, delayMillis);

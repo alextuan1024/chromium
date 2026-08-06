@@ -118,6 +118,9 @@ import java.util.function.Supplier;
  *   <li>Handle omnibox input.
  * </ul>
  *
+ * /** The main coordinator for the location bar, responsible for creating and coordinating
+ * sub-components.
+ *
  * <p>The coordinator creates and owns elements within this component.
  */
 @NullMarked
@@ -159,6 +162,7 @@ public class LocationBarCoordinator
     private final SettableMonotonicObservableSupplier<Tracker> mTrackerSupplier =
             ObservableSuppliers.createMonotonic();
     private final @Nullable UserEducationHelper mUserEducationHelper;
+    private @Nullable WindowFocusSupplier mWindowFocusSupplier;
     private LocationBarMediator mLocationBarMediator;
     private View mUrlBar;
     private View mZoomButton;
@@ -313,6 +317,7 @@ public class LocationBarCoordinator
         final boolean isIncognito =
                 incognitoStateProvider != null && incognitoStateProvider.isIncognitoSelected();
         OmniboxResourceProvider.setTabFaviconFactory(tabFaviconFunction);
+        mWindowFocusSupplier = new WindowFocusSupplier(activityLifecycleDispatcher, windowAndroid);
         mFuseboxCoordinator =
                 new FuseboxCoordinator(
                         context,
@@ -332,7 +337,8 @@ public class LocationBarCoordinator
                                         AutocompleteCoordinator.NavigationTarget.CURRENT_TAB),
                         this::clearEditingAndUserText,
                         this::getUrlBarTextWithoutAutocomplete,
-                        uiOverrides.isForcedPhoneStyleOmnibox());
+                        uiOverrides.isForcedPhoneStyleOmnibox(),
+                        mWindowFocusSupplier);
         NonNullObservableSupplier<Integer> fuseboxStateSupplier =
                 mFuseboxCoordinator.getFuseboxStateSupplier();
         fuseboxStateSupplier.addSyncObserverAndPostIfNonNull(mOnFuseboxStateChange);
@@ -351,6 +357,7 @@ public class LocationBarCoordinator
         View alignmentView = mLocationBarLayout.getAlignmentView();
         mOmniboxDropdownEmbedderImpl =
                 new OmniboxSuggestionsDropdownEmbedderImpl(
+                        mResourceProvider,
                         mWindowAndroid,
                         autocompleteAnchorView,
                         alignmentView,
@@ -403,7 +410,8 @@ public class LocationBarCoordinator
                         mFuseboxCoordinator,
                         locationBarEmbedder,
                         omniboxChipManager,
-                        scrimHandler);
+                        scrimHandler,
+                        mWindowFocusSupplier);
         mBackButton = mLocationBarLayout.findViewById(R.id.omnibox_back_button);
         if (mBackButton != null) {
             mBackButton.setOnClickListener(v -> mLocationBarMediator.onBackButtonClicked());
@@ -636,6 +644,8 @@ public class LocationBarCoordinator
 
         mLocationBarLayout.getContext().unregisterComponentCallbacks(mLocationBarMediator);
 
+        mResourceProvider.destroy();
+
         mAutocompleteCoordinator.destroy();
         mAutocompleteCoordinator = null;
 
@@ -666,6 +676,10 @@ public class LocationBarCoordinator
             mPageZoomIndicatorCoordinator.setOnZoomLevelChangedCallback(null);
             mPageZoomIndicatorCoordinator.destroy();
             mPageZoomIndicatorCoordinator = null;
+        }
+        if (mWindowFocusSupplier != null) {
+            mWindowFocusSupplier.destroy();
+            mWindowFocusSupplier = null;
         }
 
         mDestroyed = true;
@@ -757,6 +771,13 @@ public class LocationBarCoordinator
     @Override
     public View getSecurityIconView() {
         return mLocationBarLayout.getSecurityIconView();
+    }
+
+    @Override
+    public @Nullable View getOptionalButtonViewForTesting() {
+        return mOptionalButtonCoordinator != null
+                ? mOptionalButtonCoordinator.getButtonView()
+                : null;
     }
 
     /** Returns the {@link VoiceRecognitionHandler} associated with this LocationBar. */

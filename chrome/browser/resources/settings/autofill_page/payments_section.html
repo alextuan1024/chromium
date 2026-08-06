@@ -1,5 +1,5 @@
 <style include="cr-shared-style settings-shared passwords-shared
-    your-saved-info-shared">
+    autofill-shared">
   .expiration-column {
     align-items: center;
     display: flex;
@@ -61,7 +61,8 @@
       sub-label="$i18n{enableMandatoryAuthToggleSublabel}"
       pref="{{prefs.autofill.payment_methods_mandatory_reauth}}" no-set-pref
       disabled="[[shouldDisableAuthToggle_(
-          prefs.autofill.credit_card_enabled.value, deviceAuthAvailable_)]]"
+          prefs.autofill.credit_card_enabled.value, deviceAuthAvailable_,
+          prefsInitialized_)]]"
       on-settings-boolean-control-change="onMandatoryAuthToggleChange_">
   </settings-toggle-button>
 </template>
@@ -124,7 +125,7 @@
       if="[[!shouldShowIbanSettings_(showIbanSettingsEnabled_)]]">
     <cr-button id="addCreditCard" class="header-aligned-button"
         on-click="onAddCreditCardClick_" aria-label="$i18n{addCreditCardTitle}"
-        hidden$="[[!prefs.autofill.credit_card_enabled.value]]">
+        disabled="[[!prefs.autofill.credit_card_enabled.value]]">
       $i18n{add}
     </cr-button>
   </template>
@@ -133,7 +134,7 @@
     <cr-button class="header-aligned-button"
         id="addPaymentMethods" on-click="onAddPaymentMethodClick_"
         aria-label="$i18n{addPaymentMethods}"
-        hidden$="[[!prefs.autofill.credit_card_enabled.value]]">
+        disabled="[[!prefs.autofill.credit_card_enabled.value]]">
       $i18n{add}
       <cr-icon icon="cr:arrow-drop-down" class="arrow-icon-down"></cr-icon>
     </cr-button>

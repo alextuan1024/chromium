@@ -799,6 +799,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 </variants>
 
 <variants name="AutofillServerSaveCardSituation">
+  <variant name="LegalMessageLinesMentionPersonalization"
+      summary="has a legal message that mentions personalization"/>
   <variant name="WithMultipleLegalLines"
       summary="has a legal message with multiple lines"/>
   <variant name="WithSameLastFourButDifferentExpiration"
@@ -2236,7 +2238,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 <histogram
     name="Autofill.AmountExtraction.Latency2.{AmountExtractionLatencyResult}"
     units="ms" expires_after="2027-04-30">
-  <owner>yiwenqian@google.com</owner>
+  <owner>vinnypersky@google.com</owner>
+  <owner>jamessun@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     Records the latency of amount extraction process. This latency is measured
@@ -2255,7 +2258,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.AmountExtraction.Result2"
     enum="AmountExtractionResult" expires_after="2027-04-30">
-  <owner>yiwenqian@google.com</owner>
+  <owner>vinnypersky@google.com</owner>
+  <owner>jamessun@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     Records the result of amount extraction process. Amount extraction process
@@ -3005,7 +3009,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.Bnpl.IssuersSyncedCount.Startup" units="issuers"
     expires_after="2027-04-30">
-  <owner>yiwenqian@google.com</owner>
+  <owner>vinnypersky@google.com</owner>
+  <owner>jamessun@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     The number of BNPL issuers that were successfully synced at startup,
@@ -3724,7 +3729,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.CreditCardScanner.CandidatesCount" units="count"
     expires_after="2027-04-01">
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -3738,7 +3743,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.CreditCardScanner.FramesToSuccess" units="count"
     expires_after="2027-04-01">
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -3751,7 +3756,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.CreditCardScanner.MaxFrameLatency" units="ms"
     expires_after="2027-04-01">
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -3763,7 +3768,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.CreditCardScanner.SlowFramesCount" units="count"
     expires_after="2027-04-01">
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -3775,7 +3780,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.CreditCardScanner.TimeToSuccess" units="ms"
     expires_after="2027-04-01">
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -4648,18 +4653,6 @@ Called by update_autofill_enums.py. This is a manual comment.-->
   </token>
 </histogram>
 
-<histogram name="Autofill.FormData.Fields.DuplicateGlobalIdFound"
-    enum="BooleanFound" expires_after="2026-12-12">
-  <owner>taminob@chromium.org</owner>
-  <owner>chrome-autofill-alerts@google.com</owner>
-  <summary>
-    Records if there is any pair of fields with duplicate global IDs among the
-    fields of a form. Emitted every time form fields or form data are validated
-    (whenever the C++ functions `IsValidFormFields()` or `IsValidFormData()` are
-    called).
-  </summary>
-</histogram>
-
 <histogram name="Autofill.FormEvents.CreditCard.Benefits"
     enum="CardBenefitFormEvent" expires_after="2027-04-30">
   <owner>ferny@google.com</owner>
@@ -4709,7 +4702,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 
 <histogram name="Autofill.FormEvents.CreditCard.Bnpl" enum="BnplFormEvent"
     expires_after="2027-04-30">
-  <owner>yiwenqian@google.com</owner>
+  <owner>vinnypersky@google.com</owner>
+  <owner>jamessun@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     This histogram records events related to Buy Now Pay Later (BNPL)
@@ -5331,6 +5325,30 @@ Called by update_autofill_enums.py. This is a manual comment.-->
       variants="Autofill.PaymentsSigninState"/>
 </histogram>
 
+<histogram name="Autofill.IdentityDocs.DisabledReason.PageLoad"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.identity_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on page load for a page containing forms.
+  </summary>
+</histogram>
+
+<histogram name="Autofill.IdentityDocs.DisabledReason.Startup"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.identity_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on startup.
+  </summary>
+</histogram>
+
 <histogram
     name="Autofill.ImageFetcher.{AutofillImage}.OverallResultOnBrowserStart"
     enum="BooleanSuccess" expires_after="2027-04-30">
@@ -5674,7 +5692,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 </histogram>
 
 <histogram name="Autofill.Leipzig.FillingAssistanceCategory"
-    enum="AutofillCategoryResolvedFillingAssistance" expires_after="2026-11-29">
+    enum="AutofillCategoryResolvedFillingAssistance" expires_after="2027-01-31">
   <owner>koerber@chromium.org</owner>
   <owner>fleimgruber@chromium.org</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
@@ -6367,6 +6385,17 @@ Called by update_autofill_enums.py. This is a manual comment.-->
   </summary>
   <token key="CardType" variants="Autofill.PaymentsRpcCardType"/>
   <token key="OtpAuthType" variants="Autofill.OtpAuth.Type"/>
+</histogram>
+
+<histogram name="Autofill.OtpFilling.SafeBrowsingCheckResult"
+    enum="OtpFillingSafeBrowsingCheckResult" expires_after="2027-02-28">
+  <owner>thefrog@chromium.org</owner>
+  <owner>chrome-counter-abuse-alerts@google.com</owner>
+  <summary>
+    Records the result of the Safe Browsing blocklist check for each URL checked
+    during OTP filling. Logged when a check completes (safe, unsafe, or
+    timeout).
+  </summary>
 </histogram>
 
 <histogram
@@ -7561,7 +7590,8 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 <histogram
     name="Autofill.RendererLabeledAmountExtractionLatency.{RendererAmountExtractionLatencyResult}"
     units="ms" expires_after="2027-04-30">
-  <owner>yiwenqian@google.com</owner>
+  <owner>vinnypersky@google.com</owner>
+  <owner>jamessun@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     Recorded after attempting to extract a labeled amount from a web page within
@@ -7937,7 +7967,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
     name="Autofill.SaveCreditCardPromptOffer.IOS.{SaveDestination}.{OverlayType}.NumStrikes.{Strikes}.{FixFlow}.{SaveCardWithCvcSituation}"
     enum="AutofillSavePaymentMethodPromptOfferEnum" expires_after="2027-04-30">
   <owner>kavitasoni@google.com</owner>
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-payments-eng@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -7969,7 +7999,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
     name="Autofill.SaveCreditCardPromptOffer.IOS.{SaveDestination}.{OverlayType}.{SaveCardWithCvcSituation}"
     enum="AutofillSavePaymentMethodPromptOfferEnum" expires_after="2027-04-30">
   <owner>kavitasoni@google.com</owner>
-  <owner>yiwenqian@google.com</owner>
+  <owner>qihuizhao@google.com</owner>
   <owner>chrome-payments-eng@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
@@ -8179,7 +8209,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 <histogram
     name="Autofill.SaveCvcPromptOffer.IOS.{AutofillSaveCreditCardPromptDestination}"
     enum="AutofillSavePaymentMethodPromptOfferEnum" expires_after="2027-04-30">
-  <owner>yiwenqian@chromium.org</owner>
+  <owner>qihuizhao@chromium.org</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     The relative frequency with which the Autofill save CVC prompt is shown or
@@ -8208,7 +8238,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 <histogram
     name="Autofill.SaveCvcPromptResult.IOS.{AutofillSaveCreditCardPromptDestination}"
     enum="AutofillSavePaymentMethodPromptResultEnum" expires_after="2027-04-30">
-  <owner>yiwenqian@chromium.org</owner>
+  <owner>qihuizhao@chromium.org</owner>
   <owner>payments-autofill-team@google.com</owner>
   <summary>
     The relative frequency with which users accept or deny the Autofill save CVC
@@ -8478,6 +8508,30 @@ Called by update_autofill_enums.py. This is a manual comment.-->
   <summary>
     Records user interactions with local IBANs on the Chrome payment methods
     settings page.
+  </summary>
+</histogram>
+
+<histogram name="Autofill.Shopping.DisabledReason.PageLoad"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.shopping_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on page load for a page containing forms.
+  </summary>
+</histogram>
+
+<histogram name="Autofill.Shopping.DisabledReason.Startup"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.shopping_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on startup.
   </summary>
 </histogram>
 
@@ -9163,7 +9217,7 @@ Called by update_autofill_enums.py. This is a manual comment.-->
 </histogram>
 
 <histogram name="Autofill.Timing.SuggestionGeneration2" units="ms"
-    expires_after="2026-11-29">
+    expires_after="2027-01-31">
   <owner>jihadghanna@google.com</owner>
   <owner>kuchyn@google.com</owner>
   <owner>chrome-autofill-alerts@google.com</owner>
@@ -9505,6 +9559,30 @@ Called by update_autofill_enums.py. This is a manual comment.-->
     Records the outcome of the attempt to trigger Touch To Fill for loyalty
     cards. It is recorded only when the form is parsed as a loyalty card by
     Autofill on Chrome Android and the user clicks on the form field.
+  </summary>
+</histogram>
+
+<histogram name="Autofill.Travel.DisabledReason.PageLoad"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.travel_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on page load for a page containing forms.
+  </summary>
+</histogram>
+
+<histogram name="Autofill.Travel.DisabledReason.Startup"
+    enum="AutofillPreferenceSetter" expires_after="2026-12-12">
+  <owner>battre@chromium.org</owner>
+  <owner>luchenpeng@google.com</owner>
+  <owner>chrome-autofill-alerts@google.com</owner>
+  <summary>
+    If the pref autofill.ai.travel_entities_enabled is disabled, or blocked by
+    the AutofillSettings enterprise policy, this metric records the source.
+    Emitted on startup.
   </summary>
 </histogram>
 

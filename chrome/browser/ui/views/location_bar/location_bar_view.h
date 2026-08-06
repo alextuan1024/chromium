@@ -205,6 +205,7 @@ class LocationBarView
   void Revert() override;
   OmniboxView* GetOmniboxView() override;
   OmniboxPopupView* GetOmniboxPopupView() override;
+  OmniboxPopupPresenterDelegate* GetPresenterDelegate() override;
   OmniboxController* GetOmniboxController() override;
   bool ShouldCloseOmniboxPopup(ui::MouseEvent* event) override;
   ChipController* GetChipController() override;
@@ -270,6 +271,7 @@ class LocationBarView
   views::Widget* GetLocationBarWidget() override;
   OmniboxPopupFileSelector* GetOmniboxPopupFileSelector() const override;
   OmniboxPopupAimPresenter* GetOmniboxPopupAimPresenter() const override;
+  const views::View* GetLocationBarFocusRestoreView() const override;
 
   static bool IsVirtualKeyboardVisible(views::Widget* widget);
 
@@ -497,9 +499,6 @@ class LocationBarView
   bool HasAllowedInputs();
 
   content::WebContents* GetWrappedWebContents();
-
-  static OmniboxPopupPresenterDelegate* GetPresenterDelegate(
-      LocationBar* location_bar);
 
 #if BUILDFLAG(IS_MAC)
   // Called when app shims change.

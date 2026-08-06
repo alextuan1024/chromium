@@ -77,6 +77,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.rlz.RevenueStats;
 import org.chromium.chrome.browser.selection.CompositeSelectionActionMenuDelegate;
 import org.chromium.chrome.browser.selection.TextSelectionActionMenuDelegate;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
 import org.chromium.chrome.browser.tab.Tab.SelectionStateSupplier;
@@ -105,6 +106,7 @@ import org.chromium.components.security_state.SecurityStateModel;
 import org.chromium.components.sensitive_content.SensitiveContentClient;
 import org.chromium.components.sensitive_content.SensitiveContentFeatures;
 import org.chromium.components.tabs.DetachReason;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -1920,7 +1922,7 @@ class TabImpl implements Tab, TabInternal {
         String host = url.getHost();
         if (!UrlConstants.SETTINGS_HOST.equals(host)) return false;
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SETTINGS_IN_TAB)) return false;
+        if (SettingsInTab.isEnabled()) return false;
 
         // TODO(crbug.com/456164910): Use the URL path to open deeplinks into Settings.
         SettingsNavigationFactory.createSettingsNavigation().startSettings(getContext());
@@ -3062,6 +3064,12 @@ class TabImpl implements Tab, TabInternal {
     }
 
     @Override
+    public @Nullable @TabAlert Integer getAlertState() {
+        if (mNativeTabAndroid == 0) return null;
+        return TabImplJni.get().getAlertState(mNativeTabAndroid);
+    }
+
+    @Override
     public @MediaState int getMediaState() {
         return mMediaState;
     }
@@ -3159,7 +3167,11 @@ class TabImpl implements Tab, TabInternal {
         mIsOffscreenRenderingSupplier.set(false);
         if (mWebContents != null && mNativeTabAndroid != 0) {
             TabImplJni.get().attachWebContentsToContentLayer(mNativeTabAndroid, mWebContents);
-            mWebContents.setTopLevelNativeWindow(mWindowAndroid);
+            WindowAndroid window =
+                    (mWindowAndroid != null && !mWindowAndroid.isDestroyed())
+                            ? mWindowAndroid
+                            : null;
+            mWebContents.setTopLevelNativeWindow(window);
         }
     }
 
@@ -3180,6 +3192,10 @@ class TabImpl implements Tab, TabInternal {
                 .closeTabs(
                         TabClosureParams.closeTab(tab).allowUndo(false).build(),
                         /* allowDialog= */ false);
+    }
+
+    public void setWebContentsForTesting(WebContents webContents) {
+        mWebContents = webContents;
     }
 
     private void clearCurrentTabSupplier(@DetachReason int detachReason) {
@@ -3267,6 +3283,11 @@ class TabImpl implements Tab, TabInternal {
         void initializeAutofillIfNecessary(long nativeTabAndroid);
 
         void getMemoryUsageBytes(long nativeTabAndroid, Callback<Long> callback);
+
+        @JniType("std::optional<int>")
+        @Nullable
+        @TabAlert
+        Integer getAlertState(long nativeTabAndroid);
 
         void updateDelegates(
                 long nativeTabAndroid,

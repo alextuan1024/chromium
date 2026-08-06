@@ -23,6 +23,7 @@
 #include "base/observer_list.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/tab_list/tab_removed_reason.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
@@ -446,8 +447,9 @@ class TabStripModel {
   int GetIndexOfWebContents(const content::WebContents* contents) const;
 
   // Notify any observers that the tab has changed in some way. See
-  // TabChangeType for details of |change_type|.'
-  void NotifyTabChanged(tabs::TabInterface* tab, TabChangeType change_type);
+  // TabChangeType for details of |change_type|.
+  void NotifyTabChanged(tabs::TabInterface* tab,
+                        TabChangeType change_type);
 
   // Notify any observers that the WebContents at the specified index has
   // changed in some way. See TabChangeType for details of |change_type|.
@@ -1476,6 +1478,9 @@ class TabStripModel {
 
   // Tracks whether a modal UI is showing.
   bool showing_modal_ui_ = false;
+
+  // Timestamp when the current focus mode session began, if active.
+  std::optional<base::TimeTicks> focus_mode_session_start_time_;
 
   base::WeakPtrFactory<TabStripModel> weak_factory_{this};
 };

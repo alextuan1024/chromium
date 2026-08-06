@@ -59,25 +59,23 @@ TEST_F(ContentSettingsTableViewControllerTest,
   CheckTitleWithId(IDS_IOS_CONTENT_SETTINGS_TITLE);
 
   if (web::features::IsWebInspectorSupportEnabled()) {
-    if (IsReaderModeContentSettingsForLinkEnabled() &&
-        IsReaderModeAvailable()) {
+    if (IsReaderModeContentSettingsForLinkEnabled()) {
       ASSERT_EQ(3, NumberOfSections());
     } else {
       ASSERT_EQ(2, NumberOfSections());
     }
     ASSERT_EQ(1, NumberOfItemsInSection(1));
   } else {
-    if (IsReaderModeContentSettingsForLinkEnabled() &&
-        IsReaderModeAvailable()) {
+    if (IsReaderModeContentSettingsForLinkEnabled()) {
       ASSERT_EQ(2, NumberOfSections());
     } else {
       ASSERT_EQ(1, NumberOfSections());
     }
   }
   if (base::FeatureList::IsEnabled(web::features::kEnableMeasurements)) {
-    ASSERT_EQ(6, NumberOfItemsInSection(0));
+    ASSERT_EQ(7, NumberOfItemsInSection(0));
   } else {
-    ASSERT_EQ(5, NumberOfItemsInSection(0));
+    ASSERT_EQ(6, NumberOfItemsInSection(0));
   }
   CheckDetailItemTextWithIds(IDS_IOS_BLOCK_POPUPS, IDS_IOS_SETTING_ON, 0, 0);
 }

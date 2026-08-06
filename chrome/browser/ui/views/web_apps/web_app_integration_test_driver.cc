@@ -125,7 +125,6 @@
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_generator.h"
-#include "chrome/browser/web_applications/web_app_install_finalizer.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -834,11 +833,12 @@ void LoadResponseFromDisk(const base::FilePath& root,
 class MenuButtonUpdateListener {
  public:
   MenuButtonUpdateListener(Browser& app_browser, bool should_expect_expanded) {
-    BrowserView& browser_view = app_browser.GetBrowserView();
+    BrowserView* browser_view =
+        BrowserView::GetBrowserViewForBrowser(&app_browser);
     WebAppMenuButton* menu_button = views::AsViewClass<WebAppMenuButton>(
         views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
             kToolbarAppMenuButtonElementId,
-            views::ElementTrackerViews::GetContextForView(&browser_view)));
+            views::ElementTrackerViews::GetContextForView(browser_view)));
     if (menu_button->IsLabelPresentAndVisible() == should_expect_expanded) {
       return;
     }
@@ -1543,7 +1543,7 @@ void WebAppIntegrationTestDriver::InstallOmniboxIcon(InstallableSite site) {
   install_observer.BeginListening();
   actions::ActionManager::Get()
       .FindAction(kActionInstallPwa,
-                  browser()->GetActions()->root_action_item())
+                  BrowserActions::From(browser())->root_action_item())
       ->InvokeAction();
 
   WaitForAndAcceptInstallDialogForSite(InstallableSiteToSite(site));
@@ -3090,8 +3090,8 @@ void WebAppIntegrationTestDriver::CheckUpdateDialogIsShowing() {
   WaitForAppIdentityUpdateDialogToShow();
   ASSERT_TRUE(active_update_dialog_widget_);
   ASSERT_TRUE(app_browser());
-  EXPECT_TRUE(app_browser()->GetBrowserView().GetProperty(
-      kIsPwaUpdateDialogShowingKey));
+  EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(app_browser())
+                  ->GetProperty(kIsPwaUpdateDialogShowingKey));
   AfterStateCheckAction();
 }
 
@@ -4285,11 +4285,12 @@ void WebAppIntegrationTestDriver::CheckMenuButtonPendingUpdate(
       state == MenuButtonState::kExpandedUpdateAvailable;
   MenuButtonUpdateListener(*app_browser(), should_expect_expanded).Await();
 
-  BrowserView& app_browser_view = app_browser()->GetBrowserView();
+  BrowserView* app_browser_view =
+      BrowserView::GetBrowserViewForBrowser(app_browser());
   WebAppMenuButton* const menu_button = views::AsViewClass<WebAppMenuButton>(
       views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
           kToolbarAppMenuButtonElementId,
-          views::ElementTrackerViews::GetContextForView(&app_browser_view)));
+          views::ElementTrackerViews::GetContextForView(app_browser_view)));
   EXPECT_EQ(should_expect_expanded, menu_button->IsLabelPresentAndVisible());
   AfterStateCheckAction();
 }

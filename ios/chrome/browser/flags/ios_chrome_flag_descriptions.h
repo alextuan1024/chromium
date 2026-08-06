@@ -56,10 +56,6 @@ inline constexpr char kAimCobrowseHeaderName[] = "AimCobrowseHeader";
 inline constexpr char kAimCobrowseHeaderDescription[] =
     "Changes the design of the AIM cobrowse header.";
 
-inline constexpr char kAimCobrowseName[] = "AimCobrowse";
-inline constexpr char kAimCobrowseDescription[] =
-    "Enables the AimCobrowse feature.";
-
 inline constexpr char kAimUrlNavigationFetchEnabledName[] =
     "AimUrlNavigationFetchEnabled";
 inline constexpr char kAimUrlNavigationFetchEnabledDescription[] =
@@ -924,6 +920,10 @@ inline constexpr char kGeminiUpdatedEligibilityName[] =
 inline constexpr char kGeminiUpdatedEligibilityDescription[] =
     "Enables the updated eligibility checks for Gemini users.";
 
+inline constexpr char kGeminiVisualRichFREName[] = "Gemini Visual Rich FRE";
+inline constexpr char kGeminiVisualRichFREDescription[] =
+    "Enables the Visual Rich experimental flow in Gemini First Run Experience.";
+
 inline constexpr char kGeneralizedGeminiEntryFlowName[] =
     "Generalized Gemini Entry Flow";
 inline constexpr char kGeneralizedGeminiEntryFlowDescription[] =
@@ -1131,6 +1131,11 @@ inline constexpr char kIOSSaveToPhotosSignedOutName[] =
     "Save to Photos Signed Out";
 inline constexpr char kIOSSaveToPhotosSignedOutDescription[] =
     "Enables the Save to Photos feature to signed out users.";
+
+inline constexpr char kIOSSettingsDefaultBrowserPromoV2Name[] =
+    "Settings Default Browser Promo V2";
+inline constexpr char kIOSSettingsDefaultBrowserPromoV2Description[] =
+    "When enabled, shows the Default Browser Promo V2 in Settings.";
 
 inline constexpr char kIOSSoftLockName[] = "Soft Lock on iOS";
 inline constexpr char kIOSSoftLockDescription[] =
@@ -1442,6 +1447,12 @@ inline constexpr char kNewTabPageFieldTrialDescription[] =
     "Enables new tab page features that are available on first run for new "
     "Chrome iOS users.";
 
+inline constexpr char kNewTabPagePaddingUpdateName[] =
+    "New Tab Page padding updates";
+inline constexpr char kNewTabPagePaddingUpdateDescription[] =
+    "Enables padding updates and fake omnibox styling on the New Tab Page. "
+    "Padding is dependent on the enabled feature parameter.";
+
 inline constexpr char kNewTabPageRedesignName[] = "New Tab Page Redesign";
 inline constexpr char kNewTabPageRedesignDescription[] =
     "Enables the redesigned New Tab Page on iOS (iPhone only).";
@@ -1697,11 +1708,6 @@ inline constexpr char kPersistTabContextDescription[] =
     "Enables persisting tab APC and inner text in storage for fast access to "
     "multi-tab context.";
 
-inline constexpr char kPersistTabContextRichExtractionName[] =
-    "PersistTabContextRichExtraction";
-inline constexpr char kPersistTabContextRichExtractionDescription[] =
-    "Enables the PersistTabContextRichExtraction feature.";
-
 inline constexpr char kPhoneNumberName[] = "Phone number experience enable";
 inline constexpr char kPhoneNumberDescription[] =
     "When enabled, one tapping or long pressing on a phone number will trigger "
@@ -1750,10 +1756,6 @@ inline constexpr char kReaderModeSupportNewFontsName[] =
     "Reader Mode support new fonts";
 inline constexpr char kReaderModeSupportNewFontsDescription[] =
     "Enables new accessible font options in Reader Mode.";
-
-inline constexpr char kReaderModeUSEnabledName[] = "Enables Reader Mode in US";
-inline constexpr char kReaderModeUSEnabledDescription[] =
-    "Enables Reader Mode for users in the US. Requires reader-mode-enabled.";
 
 inline constexpr char kRefactorToolbarsSizeName[] = "Refactor toolbars size";
 inline constexpr char kRefactorToolbarsSizeDescription[] =
@@ -1860,15 +1862,6 @@ inline constexpr char kSupervisedUserEmitLogRecordSeparatelyName[] =
 inline constexpr char kSupervisedUserEmitLogRecordSeparatelyDescription[] =
     "Emit supervised user log record separately for Family Link and device "
     "parental controls users (no user-visible effect).";
-
-inline constexpr char
-    kSupervisedUserMergeDeviceParentalControlsAndFamilyLinkPrefsName[] =
-        "Merge device parental controls and Family Link prefs";
-inline constexpr char
-    kSupervisedUserMergeDeviceParentalControlsAndFamilyLinkPrefsDescription[] =
-        "Merges non-web filtering device parental controls settings with "
-        "Family Link settings in the SupervisedUserPrefStore (no user-visible "
-        "effect).";
 
 inline constexpr char kSupervisedUserUseUrlFilteringServiceName[] =
     "Use URL filtering service";
@@ -2020,6 +2013,11 @@ inline constexpr char kWalletServiceUseSandboxName[] =
     "Use Google Payments sandbox";
 inline constexpr char kWalletServiceUseSandboxDescription[] =
     "Uses the sandbox service for Google Payments API calls.";
+
+inline constexpr char kWebFrameTreeName[] = "WebFrame Tree Structure";
+inline constexpr char kWebFrameTreeDescription[] =
+    "Enables building a tree structure of WebFrames using isolated world "
+    "messaging.";
 
 inline constexpr char kWelcomeBackName[] = "Enable Welcome Back screen";
 inline constexpr char kWelcomeBackDescription[] =

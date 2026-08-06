@@ -497,23 +497,16 @@ void TabMenuModel::Build(int index) {
             send_tab_to_self::EntryPointDisplayReason::kOfferFeature) {
       BuildSendTabToSelfSubmenu(index, indices);
     } else {
-      if (send_tab_to_self_reason !=
-          send_tab_to_self::EntryPointDisplayReason::kOfferFeature) {
-        // TODO(crbug.com/488252159): Add edge cases (e.g. not signed in
-        // or no target devices available) when UI is fully specified.
-      }
       BuildLegacySendTabToSelfItem();
     }
   }
 
   if (tabs::kVerticalTabsToggleInTabContextMenu.Get() && controller) {
     AddSeparator(ui::NORMAL_SEPARATOR);
-    if (controller->ShouldDisplayVerticalTabs()) {
-      AddItemWithStringId(TabStripModel::CommandToggleVertical,
-                          IDS_SWITCH_TO_HORIZONTAL_TAB);
-    } else {
-      AddItemWithStringId(TabStripModel::CommandToggleVertical,
-                          IDS_SWITCH_TO_VERTICAL_TAB);
+    AddItemWithStringIdAndIcon(TabStripModel::CommandToggleVertical,
+                               controller->GetToggleStringId(),
+                               controller->GetToggleIcon(kTabMenuIconSize));
+    if (!controller->ShouldDisplayVerticalTabs()) {
       const bool use_preview_badge =
           base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
       const user_education::DisplayNewBadge show_badge =

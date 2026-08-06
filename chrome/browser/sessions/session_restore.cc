@@ -36,6 +36,7 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/token.h"
 #include "build/build_config.h"
 #include "chrome/browser/after_startup_task_utils.h"
 #include "chrome/browser/browser_process.h"
@@ -65,6 +66,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -76,6 +78,7 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -458,8 +461,10 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
     bool use_new_window = disposition == WindowOpenDisposition::NEW_WINDOW;
 
     Browser* browser =
-        use_new_window ? Browser::Create(Browser::CreateParams(profile_, true))
-                       : browser_.get();
+        use_new_window
+            ? CreateBrowserWindow(BrowserWindowCreateParams(profile_, true))
+                  ->GetBrowserForMigrationOnly()
+            : browser_.get();
 
     RecordAppLaunchForTab(browser, tab, selected_index);
 
@@ -536,11 +541,14 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
     Browser* browser = nullptr;
     if (!created_tabbed_browser && always_create_tabbed_browser_) {
       base::TimeTicks now = base::TimeTicks::Now();
-      browser = Browser::Create(Browser::CreateParams(profile_, false));
-      if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
+      BrowserWindowInterface* browser_window =
+          CreateBrowserWindow(BrowserWindowCreateParams(profile_, false));
+      if (auto* manager =
+              InitialWebUIWindowMetricsManager::From(browser_window)) {
         manager->SetWindowCreationInfo(
             waap::NewWindowCreationSource::kBrowserInitiated, now);
       }
+      browser = browser_window->GetBrowserForMigrationOnly();
       if (startup_tabs_.empty() ||
           (startup_tabs_.size() == 1 && whats_new::IsEnabled() &&
            startup_tabs_[0].url == whats_new::GetWebUIStartupURL())) {
@@ -916,14 +924,18 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
       //    Note, this may delete some of the WebContents created earlier.
       RestoreTabGroupMetadata(browser, new_group_ids, window->tab_groups);
 
-      // 8. Notify SessionService of restored tabs, so they can be saved to the
+      // 8. Restore the focused tab group for the window if one was previously
+      //    focused.
+      RestoreFocusedTabGroup(browser, new_group_ids);
+
+      // 9. Notify SessionService of restored tabs, so they can be saved to the
       //    current session.
       // TODO(fdoray): This seems redundant with the call to
       // SessionService::TabRestored() at the end of chrome::AddRestoredTab().
       // Consider removing it.
       NotifySessionServiceOfRestoredTabs(browser, initial_tab_count);
 
-      // 9. Close the tab that was active in the window prior to session
+      // 10. Close the tab that was active in the window prior to session
       //    restore, if needed.
       if (close_active_tab) {
         chrome::CloseWebContents(browser, active_tab, true);
@@ -1165,6 +1177,32 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
     }
   }
 
+  void RestoreFocusedTabGroup(
+      Browser* browser,
+      const base::flat_map<tab_groups::TabGroupId, tab_groups::TabGroupId>&
+          new_group_ids) {
+    if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+        !browser->tab_strip_model()->SupportsTabGroups()) {
+      return;
+    }
+    std::optional<tab_groups::TabGroupId> initial_group =
+        BrowserInitState::From(browser)->initial_focused_tab_group_id();
+    if (!initial_group.has_value()) {
+      return;
+    }
+    if (browser->tab_strip_model()->group_model()->ContainsTabGroup(
+            *initial_group)) {
+      browser->tab_strip_model()->SetFocusedGroup(*initial_group);
+      return;
+    }
+    auto it = new_group_ids.find(*initial_group);
+    if (it != new_group_ids.end() &&
+        browser->tab_strip_model()->group_model()->ContainsTabGroup(
+            it->second)) {
+      browser->tab_strip_model()->SetFocusedGroup(it->second);
+    }
+  }
+
   void RestoreTabGroupMetadata(
       Browser* browser,
       const base::flat_map<tab_groups::TabGroupId, tab_groups::TabGroupId>&
@@ -1237,17 +1275,17 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
       const std::string& user_title,
       const std::map<std::string, std::string>& extra_data,
       int32_t restore_id) {
-    Browser::CreateParams params(type, profile_, false);
+    BrowserWindowCreateParams params(type, profile_, false);
     params.initial_bounds = bounds;
     params.user_title = user_title;
 
     // We only store trusted app windows, so we also create them as trusted.
-    if (type == Browser::Type::TYPE_APP) {
-      params = Browser::CreateParams::CreateForApp(
+    if (type == BrowserWindowInterface::Type::TYPE_APP) {
+      params = BrowserWindowCreateParams::CreateForApp(
           app_name, /*trusted_source=*/true, bounds, profile_,
           /*user_gesture=*/false);
-    } else if (type == Browser::Type::TYPE_APP_POPUP) {
-      params = Browser::CreateParams::CreateForAppPopup(
+    } else if (type == BrowserWindowInterface::Type::TYPE_APP_POPUP) {
+      params = BrowserWindowCreateParams::CreateForAppPopup(
           app_name, /*trusted_source=*/true, bounds, profile_,
           /*user_gesture=*/false);
     }
@@ -1259,7 +1297,8 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
     params.initial_show_state = show_state;
     params.initial_workspace = workspace;
     params.initial_visible_on_all_workspaces_state = visible_on_all_workspaces;
-    params.creation_source = Browser::CreationSource::kSessionRestore;
+    params.creation_source =
+        BrowserWindowCreateParams::CreationSource::kSessionRestore;
 
     if (tabs::IsVerticalTabsFeatureEnabled()) {
       if (extra_data.contains(
@@ -1281,14 +1320,28 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
       }
     }
 
+    if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+      auto it = extra_data.find(
+          tabs::TabStripModelSelectionState::kFocusedTabGroupIdKey);
+      if (it != extra_data.end() && !it->second.empty()) {
+        std::optional<base::Token> token = base::Token::FromString(it->second);
+        if (token.has_value()) {
+          params.focused_tab_group_id =
+              tab_groups::TabGroupId::FromRawToken(*token);
+        }
+      }
+    }
+
     base::TimeTicks now = base::TimeTicks::Now();
-    Browser* browser = Browser::Create(params);
-    if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
+    BrowserWindowInterface* browser_window =
+        CreateBrowserWindow(std::move(params));
+    if (auto* manager =
+            InitialWebUIWindowMetricsManager::From(browser_window)) {
       manager->SetWindowCreationInfo(
           waap::NewWindowCreationSource::kSessionRestore, now);
     }
     g_is_any_session_restored = true;
-    return browser;
+    return browser_window->GetBrowserForMigrationOnly();
   }
 
   void ShowBrowser(Browser* browser, int selected_tab_index) {
@@ -1350,10 +1403,11 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
       AppendURLsToBrowser(last_normal_browser, normal_startup_tabs);
     }
     if (!startup_tabs_from_last_and_urls_pref.empty()) {
-      Browser::CreateParams params =
-          Browser::CreateParams(profile_, /*user_gesture*/ false);
-      params.creation_source = Browser::CreationSource::kLastAndUrlsStartupPref;
-      Browser* new_browser = Browser::Create(params);
+      BrowserWindowCreateParams params(profile_, /*from_user_gesture=*/false);
+      params.creation_source =
+          BrowserWindowCreateParams::CreationSource::kLastAndUrlsStartupPref;
+      Browser* new_browser =
+          CreateBrowserWindow(std::move(params))->GetBrowserForMigrationOnly();
       AppendURLsToBrowser(new_browser, startup_tabs_from_last_and_urls_pref);
       new_browser->GetWindow()->Show();
       browser_to_activate = new_browser;

@@ -138,13 +138,13 @@
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/foundation_util.h"
 #include "chrome/app/chrome_main_mac.h"
-#include "chrome/browser/chrome_browser_application_mac.h"
 #include "chrome/browser/mac/code_sign_clone_manager.h"
 #include "chrome/browser/mac/relauncher.h"
 #include "components/crash/core/common/objc_zombie.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 #if !defined(BUILDING_CHROME_RENDERER)
+#include "chrome/browser/chrome_browser_application_mac.h"  // nogncheck
 #include "chrome/browser/shell_integration.h"  // nogncheck
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 #endif
@@ -1208,21 +1208,22 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   // process becomes the stub, and will terminate after the main browser has
   // terminated, with the exit code from the main browser.
   if (is_browser && chrome::IsIsolationEnabled(&command_line)) {
-    const auto isolated_process = chrome::LaunchIsolatedBrowser(command_line);
+    const auto isolated_process =
+        chrome::IsolatedBrowserProcess::Launch(command_line);
     if (isolated_process.has_value()) {
-      int exit_code = 0;
-      if (isolated_process->WaitForExit(&exit_code)) {
-        // A negative exit code indicates the browser crashed, however
-        // `content::RunContentProcess` treats negative return code from
-        // `BasicStartupComplete` as indicating that startup should continue, so
-        // in this case it is best to simply pass the exit code straight back to
-        // the shell by terminating immediately.
-        if (exit_code < 0) {
-          base::Process::TerminateCurrentProcessImmediately(exit_code);
-        }
-        return exit_code;
+      auto exit_code = isolated_process->WaitForExit();
+      if (!exit_code.has_value()) {
+        return CHROME_RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS;
       }
-      return CHROME_RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS;
+      // A negative exit code indicates the browser crashed, however
+      // `content::RunContentProcess` treats negative return code from
+      // `BasicStartupComplete` as indicating that startup should continue, so
+      // in this case it is best to simply pass the exit code straight back to
+      // the shell by terminating immediately.
+      if (*exit_code < 0) {
+        base::Process::TerminateCurrentProcessImmediately(*exit_code);
+      }
+      return *exit_code;
     }
   }
 

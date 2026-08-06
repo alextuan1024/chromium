@@ -46,6 +46,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin_notification_infobar_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signout_action_sheet/undo_signout/coordinator/undo_signout_coordinator.h"
 #import "ios/chrome/browser/cobrowse/coordinator/assistant_aim_coordinator.h"
+#import "ios/chrome/browser/cobrowse/model/cobrowse_browser_agent.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_context.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
@@ -84,8 +85,8 @@
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_passkey.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -264,7 +265,7 @@ inline LayoutStateScenePassKey PassKey() {
   // window.
   SceneViewController* _viewController;
   // The layout state for this scene.
-  LayoutState* _layoutState;
+  SceneLayoutState* _layoutState;
   // Fetches the Family Link member role asynchronously from KidsManagement API.
   std::unique_ptr<supervised_user::ListFamilyMembersFetcher>
       _familyMembersFetcher;
@@ -542,6 +543,14 @@ inline LayoutStateScenePassKey PassKey() {
     id<SnackbarCommands> snackbarHandler = HandlerForProtocol(
         _regularBrowser->GetCommandDispatcher(), SnackbarCommands);
     [snackbarHandler dismissAllSnackbars];
+  }
+
+  if (IsAimCobrowseEnabled()) {
+    CobrowseBrowserAgent* agent =
+        CobrowseBrowserAgent::FromBrowser(_regularBrowser.get());
+    if (agent) {
+      agent->TerminateSession();
+    }
   }
 
   // Exit fullscreen mode for web page when we re-enter app through external

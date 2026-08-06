@@ -18,6 +18,8 @@
 #include "net/base/network_isolation_key.h"
 #include "net/disk_cache/sql/cache_entry_key.h"
 #include "net/disk_cache/sql/sql_persistent_store.h"
+#include "net/disk_cache/sql/sql_read_cache_memory_monitor.h"
+#include "net/disk_cache/sql/sql_shared_cache_blob_handle.h"
 #include "net/disk_cache/sql/sql_shared_cache_isolated_database.h"
 #include "net/disk_cache/sql/sql_tracked_sequence_bound.h"
 
@@ -42,6 +44,7 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
       const base::FilePath& directory,
       base::RepeatingCallback<void(SqlSharedCache&)> on_unreferenced_callback,
       scoped_refptr<base::SequencedTaskRunner> db_task_runner,
+      scoped_refptr<SqlReadCacheMemoryMonitor> read_cache_memory_monitor,
       scoped_refptr<BackendCleanupTracker> cleanup_tracker);
   ~SqlSharedCache();
 
@@ -105,6 +108,16 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
           void(base::expected<void, SqlSharedCacheIsolatedDatabase::Error>)>
           callback);
 
+  // Asynchronously retrieves a `SqlSharedCacheBlobHandle` for a shared cache
+  // entry.
+  void GetBlobHandle(
+      const CacheEntryKey& entry_key,
+      SqlSharedCacheRowId shared_cache_row_id,
+      int body_size,
+      base::OnceCallback<void(
+          base::expected<scoped_refptr<SqlSharedCacheBlobHandle>,
+                         SqlSharedCacheIsolatedDatabase::Error>)> callback);
+
  private:
   // Entry Copying Call Flow Overview:
   //
@@ -117,26 +130,31 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
   //  |    |                                               |
   //  |    v                            (error)            |
   //  |  OnEntryOpenedForSharedCache() ----------------> OnCopyEntryFailed()
-  //  |    | (body == 0)   | (body > 0)                    ^ ^ ^     ^
-  //  |    |               v                      (error)  | | |     |
-  //  |    |          OnEntryDataReadForInsert() ----------+ | |     |
-  //  |    |               | (OK)                            | |     |
-  //  |    v               v           (error)               | |     |
-  //  |  OnIsolatedDatabaseInserted() -----------------------+ |     |
-  //  |                    | (OK)                              |     |
-  //  |                    v                                   |     |
-  //  |               ReadNextChunk()                          |     |
-  //  |               |(done)  ^    | (has data)               |     |
-  //  |               v        |    v                 (error)  |     |
-  //  +- OnCopyEntryComplete() |   OnEntryDataRead() ----------+     |
-  //                           |    | (OK)                           |
-  //                       (OK)|    v                         (error)|
-  //                           +- OnIsolatedDatabaseWritten() -------+
+  //  |    | (body == 0)   | (body > 0)                    ^ ^ ^     ^ ^
+  //  |    |               v                      (error)  | | |     | |
+  //  |    |          OnEntryDataReadForInsert() ----------+ | |     | |
+  //  |    |               | (OK)                            | |     | |
+  //  |    v               v           (error)               | |     | |
+  //  |  OnIsolatedDatabaseInserted() -----------------------+ |     | |
+  //  |                    | (OK)                              |     | |
+  //  |                    v                                   |     | |
+  //  |               ReadNextChunk()                          |     | |
+  //  |               |(done)  ^    | (has data)               |     | |
+  //  |               |        |    v                 (error)  |     | |
+  //  |               |        |   OnEntryDataRead() ----------+     | |
+  //  |               |        |    | (OK)                           | |
+  //  |               |    (OK)|    v                         (error)| |
+  //  |               |        +- OnIsolatedDatabaseWritten() -------+ |
+  //  |               |                                                |
+  //  |               v                (error)                         |
+  //  |      MoveBlobsToSharedCache() ---------------------------------+
+  //  |               |  (OK)
+  //  |               v
+  //  +----- OnCopyEntryComplete()
   void CopyNextEntry();
   void OnEntryOpenedForSharedCache(
       SqlPersistentStore::SharedCacheEligibleEntry entry,
-      base::expected<std::optional<SqlPersistentStore::EntryInfo>,
-                     SqlPersistentStore::Error> result);
+      SqlPersistentStore::EntryInfoOrError result);
   void OnEntryDataReadForInsert(
       SqlPersistentStore::SharedCacheEligibleEntry entry,
       SqlPersistentStore::ResId res_id,
@@ -172,6 +190,9 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
       int64_t next_offset,
       SqlSharedCacheRowId shared_cache_row_id,
       base::expected<void, SqlSharedCacheIsolatedDatabase::Error> result);
+  void MoveBlobsToSharedCache(CacheEntryKey key,
+                              SqlPersistentStore::ResId res_id,
+                              SqlSharedCacheRowId shared_cache_row_id);
   void OnCopyEntryComplete();
   void OnCopyEntryFailed();
   void FinishCopy();
@@ -183,6 +204,7 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
   base::RepeatingCallback<void(SqlSharedCache&)> on_unreferenced_callback_;
   int handle_count_ = 0;
   scoped_refptr<base::SequencedTaskRunner> db_task_runner_;
+  scoped_refptr<SqlReadCacheMemoryMonitor> read_cache_memory_monitor_;
   scoped_refptr<BackendCleanupTracker> cleanup_tracker_;
 
   std::optional<SqlSharedCacheDbId> shared_cache_db_id_;

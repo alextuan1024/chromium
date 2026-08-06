@@ -40,6 +40,7 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.view.ContextThemeWrapper;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 
 import androidx.constraintlayout.widget.ConstraintLayout;
@@ -168,6 +169,8 @@ public class FuseboxMediatorUnitTest {
     @Mock private PrefChangeRegistrar.Natives mPrefChangeRegistrarJni;
     @Mock private Runnable mOnActivationChipClickedWithQuery;
     @Mock private Runnable mClearUrlBarTextCallback;
+    @Mock private KeyEvent mKeyEvent;
+    @Mock private Runnable mOnRemoveRunnable;
 
     @Captor private ArgumentCaptor<Intent> mIntentCaptor;
     @Captor private ArgumentCaptor<WindowAndroid.IntentCallback> mIntentCallbackCaptor;
@@ -195,6 +198,8 @@ public class FuseboxMediatorUnitTest {
             ObservableSuppliers.createNonNull("");
     private final SettableNonNullObservableSupplier<Boolean> mHasAttachmentsSupplier =
             ObservableSuppliers.createNonNull(false);
+    private final SettableNonNullObservableSupplier<Boolean> mWindowHasFocusSupplier =
+            ObservableSuppliers.createNonNull(true);
     private final AutocompleteInput mInput = new AutocompleteInput();
 
     @Before
@@ -278,7 +283,8 @@ public class FuseboxMediatorUnitTest {
                         mOnActivationChipClickedWithQuery,
                         mClearUrlBarTextCallback,
                         mUrlBarText,
-                        mHasAttachmentsSupplier);
+                        mHasAttachmentsSupplier,
+                        mWindowHasFocusSupplier);
         mMediator.beginInput(createSession());
     }
 
@@ -746,6 +752,16 @@ public class FuseboxMediatorUnitTest {
     public void updateFuseboxState_setsRequestTypeButtonVisible_false_desktopAiMode() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
         mInput.setRequestType(AutocompleteRequestType.AI_MODE);
+        recreateMediator();
+
+        assertFalse(mModel.get(FuseboxProperties.REQUEST_TYPE_BUTTON_VISIBLE));
+    }
+
+    @Test
+    public void updateFuseboxState_setsRequestTypeButtonVisible_false_standby() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
+        mInput.setRequestType(AutocompleteRequestType.IMAGE_GENERATION);
+        mInput.setAutocompleteState(AutocompleteState.STANDBY);
         recreateMediator();
 
         assertFalse(mModel.get(FuseboxProperties.REQUEST_TYPE_BUTTON_VISIBLE));
@@ -2557,6 +2573,11 @@ public class FuseboxMediatorUnitTest {
         mInput.setRequestType(AutocompleteRequestType.SEARCH);
         assertFalse(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
 
+        // Initial zero-prefix focus on a webpage.
+        mInput.setInitialUserText("page.com");
+        mInput.setUserText("page.com");
+        mInput.setPreviewMatchUrl(new GURL("https://page.com"));
+
         mMediator.beginInput(createSession());
         assertTrue(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
 
@@ -2566,6 +2587,8 @@ public class FuseboxMediatorUnitTest {
         mInput.setSiteSearchData(null);
         assertTrue(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
 
+        // When user types a new URL, it hides the chip.
+        mInput.setUserText("https://example.com");
         mInput.setPreviewMatchUrl(new GURL("https://example.com"));
         assertFalse(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
 
@@ -2716,5 +2739,66 @@ public class FuseboxMediatorUnitTest {
         // Verify registrar is destroyed when ending input
         mMediator.endInput();
         assertNull(mMediator.mPrefChangeRegistrar);
+    }
+
+    @Test
+    public void activationChip_windowFocusChanged() {
+        mModel.set(FuseboxProperties.FUSEBOX_LAYOUT_MODE, FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mInput.setPreviewMatchUrl(null);
+        recreateMediator();
+
+        assertTrue(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
+
+        mWindowHasFocusSupplier.set(false);
+        assertFalse(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
+
+        mWindowHasFocusSupplier.set(true);
+        assertTrue(mModel.get(FuseboxProperties.ACTIVATION_CHIP_VISIBLE));
+    }
+
+    @Test
+    public void testHandleKeyEvent() {
+        addAttachment("title", "token", FuseboxAttachmentType.ATTACHMENT_IMAGE);
+        addAttachment("title2", "token2", FuseboxAttachmentType.ATTACHMENT_IMAGE);
+        assertEquals(2, mAttachments.size());
+
+        doReturn(KeyEvent.ACTION_DOWN).when(mKeyEvent).getAction();
+
+        // Test Forward Tab
+        doReturn(KeyEvent.KEYCODE_TAB).when(mKeyEvent).getKeyCode();
+        doReturn(true).when(mKeyEvent).hasNoModifiers();
+
+        // Initial state: select first attachment
+        mMediator.selectFirstAttachment();
+        assertTrue(
+                mAttachments.get(0).model.get(FuseboxAttachmentProperties.REMOVE_BUTTON_SELECTED));
+
+        // Press TAB -> should move to second attachment
+        assertTrue(mMediator.handleKeyEvent(KeyEvent.KEYCODE_TAB, mKeyEvent));
+        assertFalse(
+                mAttachments.get(0).model.get(FuseboxAttachmentProperties.REMOVE_BUTTON_SELECTED));
+        assertTrue(
+                mAttachments.get(1).model.get(FuseboxAttachmentProperties.REMOVE_BUTTON_SELECTED));
+
+        // Test Backward Tab
+        doReturn(false).when(mKeyEvent).hasNoModifiers();
+        doReturn(true).when(mKeyEvent).hasModifiers(KeyEvent.META_SHIFT_ON);
+
+        mMediator.selectLastAttachment();
+        assertTrue(mMediator.handleKeyEvent(KeyEvent.KEYCODE_TAB, mKeyEvent));
+        assertTrue(
+                mAttachments.get(0).model.get(FuseboxAttachmentProperties.REMOVE_BUTTON_SELECTED));
+
+        // Test Activation
+        doReturn(false).when(mKeyEvent).hasModifiers(KeyEvent.META_SHIFT_ON);
+        doReturn(KeyEvent.KEYCODE_ENTER).when(mKeyEvent).getKeyCode();
+
+        // Setup ON_REMOVE runnable to verify activation
+        mAttachments.get(0).model.set(FuseboxAttachmentProperties.ON_REMOVE, mOnRemoveRunnable);
+
+        mMediator.selectFirstAttachment();
+        assertTrue(mMediator.handleKeyEvent(KeyEvent.KEYCODE_ENTER, mKeyEvent));
+        verify(mOnRemoveRunnable).run();
     }
 }

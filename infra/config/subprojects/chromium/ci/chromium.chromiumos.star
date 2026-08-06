@@ -514,6 +514,10 @@ ci.builder(
                 ],
             ),
             "browser_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     shards = 200,
                 ),
@@ -524,6 +528,10 @@ ci.builder(
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     shards = 24,
                 ),
@@ -537,6 +545,10 @@ ci.builder(
                 reason = "pthreadpool is not built for ChromeOS currently.",
             ),
             "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     shards = 6,
                 ),
@@ -630,9 +642,21 @@ ci.builder(
                 ci_only = True,
             ),
             "browser_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     dimensions = {
                         "kvm": "1",
+                    },
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
                     },
                     shards = 60,
                 ),
@@ -643,6 +667,10 @@ ci.builder(
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     shards = 5,
                 ),
@@ -651,6 +679,10 @@ ci.builder(
                 reason = "pthreadpool is not built for ChromeOS currently.",
             ),
             "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
                     shards = 2,
                 ),

@@ -58,6 +58,7 @@ class SyncedTabDelegate;
 }  // namespace sync_sessions
 
 namespace tabs {
+class TabAlertController;
 class TabCollection;
 class TabFeatures;
 }  // namespace tabs
@@ -71,6 +72,9 @@ class TabAndroid : public tabs::TabInterface,
     // Called when WebContents is initialized.
     virtual void OnInitWebContents(TabAndroid* tab) = 0;
   };
+
+  // Denotes an invalid Tab Id.
+  static constexpr int kInvalidTabId = -1;
 
   // Convenience method to retrieve the Tab associated with the passed
   // WebContents. Can return nullptr.
@@ -202,6 +206,7 @@ class TabAndroid : public tabs::TabInterface,
   void InitializeAutofillIfNecessary();
   void GetMemoryUsageBytes(JNIEnv* env,
                            const base::android::JavaRef<jobject>& j_callback);
+  std::optional<int> GetAlertState(JNIEnv* env);
   void UpdateDelegates(
       JNIEnv* env,
       const base::android::JavaRef<jobject>& jweb_contents_delegate,
@@ -365,6 +370,7 @@ class TabAndroid : public tabs::TabInterface,
       will_detach_callback_list_;
   base::RepeatingCallbackList<void(TabInterface*)> did_insert_callback_list_;
 
+  std::unique_ptr<tabs::TabAlertController> tab_alert_controller_;
   const base::WeakPtr<Profile> profile_;
   ui::UnownedUserDataHost unowned_user_data_host_;
   base::WeakPtrFactory<TabAndroid> weak_ptr_factory_{this};

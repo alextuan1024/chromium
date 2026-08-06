@@ -94,7 +94,8 @@ WebUILocationBar::WebUILocationBar(Browser* browser,
       delegate_(delegate),
       content_setting_image_control_(this),
       page_action_control_(
-          browser ? browser->browser_actions()->root_action_item() : nullptr) {
+          browser ? BrowserActions::From(browser)->root_action_item()
+                  : nullptr) {
   permission_dashboard_ = std::make_unique<WebUIPermissionDashboard>(this);
   permission_dashboard_controller_ =
       std::make_unique<PermissionDashboardController>(
@@ -162,8 +163,7 @@ void WebUILocationBar::Init(WebUIToolbarControlDelegate* delegate) {
           base::BindRepeating(&WebUILocationBar::OnPopupStateChanged,
                               base::Unretained(this)));
 
-  RegisterOmniboxActions(
-      base::BindRepeating(&WebUILocationBar::GetPresenterDelegate), browser_);
+  RegisterOmniboxActions(browser_);
 
   is_initialized_ = true;
 }
@@ -308,6 +308,10 @@ void WebUILocationBar::Revert() {
 
 OmniboxView* WebUILocationBar::GetOmniboxView() {
   return omnibox_view_.get();
+}
+
+OmniboxPopupPresenterDelegate* WebUILocationBar::GetPresenterDelegate() {
+  return this;
 }
 
 OmniboxPopupView* WebUILocationBar::GetOmniboxPopupView() {
@@ -686,12 +690,6 @@ void WebUILocationBar::ShowPageInfoBubble() {
   page_info_reopen_suppressor_.Observe(bubble->GetWidget());
 }
 
-// static
-OmniboxPopupPresenterDelegate* WebUILocationBar::GetPresenterDelegate(
-    LocationBar* location_bar) {
-  return static_cast<WebUILocationBar*>(location_bar);
-}
-
 void WebUILocationBar::SetSuppressionThresholdForTesting(
     base::TimeDelta threshold) {
   page_info_reopen_suppressor_.SetSuppressionThresholdForTesting(  // IN-TEST
@@ -808,6 +806,10 @@ OmniboxPopupFileSelector* WebUILocationBar::GetOmniboxPopupFileSelector()
 OmniboxPopupAimPresenter* WebUILocationBar::GetOmniboxPopupAimPresenter()
     const {
   return omnibox_popup_aim_presenter_.get();
+}
+
+const views::View* WebUILocationBar::GetLocationBarFocusRestoreView() const {
+  return toolbar_delegate_ ? toolbar_delegate_->GetInternalWebView() : nullptr;
 }
 
 bool WebUILocationBar::ShouldChipOverrideLocationIcon() {

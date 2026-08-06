@@ -82,6 +82,9 @@ data/accessibility/accname/name-button-label-labelledby.html
 data/accessibility/accname/name-button-label.html
 data/accessibility/accname/name-button-labelledby-expected-blink.txt
 data/accessibility/accname/name-button-labelledby-expected-mac.txt
+data/accessibility/accname/name-button-labelledby-self-expected-blink.txt
+data/accessibility/accname/name-button-labelledby-self-expected-mac.txt
+data/accessibility/accname/name-button-labelledby-self.html
 data/accessibility/accname/name-button-labelledby.html
 data/accessibility/accname/name-button-role-content-only-expected-blink.txt
 data/accessibility/accname/name-button-role-content-only-expected-mac.txt
@@ -560,6 +563,9 @@ data/accessibility/aria/annotation-roles-expected-mac.txt
 data/accessibility/aria/annotation-roles-expected-uia-win.txt
 data/accessibility/aria/annotation-roles-expected-win.txt
 data/accessibility/aria/annotation-roles.html
+data/accessibility/aria/apg-patterns-thirdparty/meter-expected-android-external.txt
+data/accessibility/aria/apg-patterns-thirdparty/meter-expected-auralinux.txt
+data/accessibility/aria/apg-patterns-thirdparty/meter-expected-blink.txt
 data/accessibility/aria/apg-patterns/aria-accordion-expected-android-external.txt
 data/accessibility/aria/apg-patterns/aria-accordion-expected-android.txt
 data/accessibility/aria/apg-patterns/aria-accordion-expected-blink.txt

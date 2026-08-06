@@ -384,9 +384,8 @@ class MockTabStripModelObserver : public TabStripModelObserver {
   }
 
   void OnTabChangedAt(tabs::TabInterface* tab,
-                      int index,
                       TabChangeType change_type) override {
-    states_.emplace_back(tab->GetContents(), index, CHANGE);
+    states_.emplace_back(tab->GetContents(), std::nullopt, CHANGE);
   }
 
   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override {
@@ -738,7 +737,7 @@ TEST_F(TabStripModelTest, TestBasicAPI) {
   {
     tabstrip()->UpdateWebContentsStateAt(0, TabChangeType::kAll);
     EXPECT_EQ(1, observer()->GetStateCount());
-    State s1(raw_contents2, 0, MockTabStripModelObserver::CHANGE);
+    State s1(raw_contents2, std::nullopt, MockTabStripModelObserver::CHANGE);
     observer()->ExpectStateEquals(0, s1);
     observer()->ClearStates();
   }
@@ -1353,6 +1352,7 @@ TEST_F(TabStripModelTest, ClosingFocusedGroupUnsetsFocus) {
   TabStripModel model(&delegate, profile());
   ASSERT_TRUE(model.empty());
 
+  base::HistogramTester histogram_tester;
   model.AppendWebContents(CreateWebContents(), true);
   model.AppendWebContents(CreateWebContents(), true);
 
@@ -1362,6 +1362,8 @@ TEST_F(TabStripModelTest, ClosingFocusedGroupUnsetsFocus) {
 
   model.CloseAllTabsInGroup(group);
   EXPECT_EQ(model.GetFocusedGroup(), std::nullopt);
+  histogram_tester.ExpectUniqueSample("TabGroups.Focus.ExitReason",
+                                      TabGroupFocusExitReason::kGroupClosed, 1);
 }
 
 TEST_F(TabStripModelTest, UngroupingFocusedGroupUnsetsFocus) {
@@ -1369,6 +1371,7 @@ TEST_F(TabStripModelTest, UngroupingFocusedGroupUnsetsFocus) {
   TabStripModel model(&delegate, profile());
   ASSERT_TRUE(model.empty());
 
+  base::HistogramTester histogram_tester;
   model.AppendWebContents(CreateWebContents(), true);
   model.AppendWebContents(CreateWebContents(), true);
 
@@ -1378,6 +1381,87 @@ TEST_F(TabStripModelTest, UngroupingFocusedGroupUnsetsFocus) {
 
   model.RemoveFromGroup({0, 1});
   EXPECT_EQ(model.GetFocusedGroup(), std::nullopt);
+  histogram_tester.ExpectUniqueSample("TabGroups.Focus.ExitReason",
+                                      TabGroupFocusExitReason::kGroupUngrouped,
+                                      1);
+}
+
+TEST_F(TabStripModelTest,
+       ClosingLastTabOfFocusedGroupUnsetsFocusAndLogsHistogram) {
+  TestTabStripModelDelegate delegate;
+  TabStripModel model(&delegate, profile());
+  ASSERT_TRUE(model.empty());
+
+  base::HistogramTester histogram_tester;
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+
+  const tab_groups::TabGroupId group = model.AddToNewGroup({0, 1});
+  model.SetFocusedGroup(group);
+  EXPECT_EQ(model.GetFocusedGroup(), group);
+
+  // Closing first tab keeps group focused.
+  model.CloseWebContentsAt(1, TabCloseTypes::CLOSE_USER_GESTURE);
+  EXPECT_EQ(model.GetFocusedGroup(), group);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.ExitReason", 0);
+
+  // Closing last tab unsets focus and logs histogram.
+  model.CloseWebContentsAt(0, TabCloseTypes::CLOSE_USER_GESTURE);
+  EXPECT_EQ(model.GetFocusedGroup(), std::nullopt);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.Focus.ExitReason", TabGroupFocusExitReason::kLastTabClosed, 1);
+}
+
+TEST_F(TabStripModelTest, FocusModeSessionDurationHistogramOnExit) {
+  TestTabStripModelDelegate delegate;
+  TabStripModel model(&delegate, profile());
+  ASSERT_TRUE(model.empty());
+
+  base::HistogramTester histogram_tester;
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+
+  const tab_groups::TabGroupId group = model.AddToNewGroup({0, 1});
+
+  // Focus the group. Session starts, no histogram recorded yet.
+  model.SetFocusedGroup(group);
+  EXPECT_EQ(model.GetFocusedGroup(), group);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.SessionDuration", 0);
+
+  // Unfocus the group. Session ends, duration histogram recorded.
+  model.SetFocusedGroup(std::nullopt);
+  EXPECT_EQ(model.GetFocusedGroup(), std::nullopt);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.SessionDuration", 1);
+}
+
+TEST_F(TabStripModelTest, FocusModeSessionDurationHistogramOnSwitchGroup) {
+  TestTabStripModelDelegate delegate;
+  TabStripModel model(&delegate, profile());
+  ASSERT_TRUE(model.empty());
+
+  base::HistogramTester histogram_tester;
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+  model.AppendWebContents(CreateWebContents(), true);
+
+  const tab_groups::TabGroupId group1 = model.AddToNewGroup({0, 1});
+  const tab_groups::TabGroupId group2 = model.AddToNewGroup({2, 3});
+
+  // Focus group 1.
+  model.SetFocusedGroup(group1);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.SessionDuration", 0);
+
+  // Switch focus directly from group 1 to group 2.
+  // Group 1 session should end and record a duration histogram.
+  model.SetFocusedGroup(group2);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.SessionDuration", 1);
+
+  // Unfocus group 2. Group 2 session ends and records another duration
+  // histogram.
+  model.SetFocusedGroup(std::nullopt);
+  histogram_tester.ExpectTotalCount("TabGroups.Focus.SessionDuration", 2);
 }
 
 TEST_F(TabStripModelTest, RemovingLastTabOfFocusedGroupUnsetsFocus) {

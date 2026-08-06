@@ -121,6 +121,8 @@ BASE_FEATURE(kWebViewEnableCrash, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables the resolution of hostnames via platform DNS APIs in WebView.
 BASE_FEATURE(kWebViewEnableDnsPlatform, base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<bool> kWebViewEnableDnsPlatformNoSystem{
+    &kWebViewEnableDnsPlatform, "no_system", false};
 
 // When enabled, the default user agent string is fetched more quickly without
 // waiting for chromium startup to complete.
@@ -389,6 +391,11 @@ BASE_FEATURE(kWebViewUnreducedProductVersion, base::FEATURE_ENABLED_BY_DEFAULT);
 // Use WebView's nonembedded MetricsUploadService to upload UMA metrics instead
 // of sending it directly to GMS-core when running within the SDK Runtime.
 BASE_FEATURE(kWebViewUseMetricsUploadServiceOnlySdkRuntime,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, all the layered studies in WebView will use WebView low entropy
+// source instead of the app's low entropy source.
+BASE_FEATURE(kWebViewUseWVLESForLayeredStudy,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, binds FrameSinkManager as a DirectReceiver, allowing IPCs

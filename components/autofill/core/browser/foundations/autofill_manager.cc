@@ -27,6 +27,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/functional/function_ref.h"
 #include "base/location.h"
 #include "base/memory/raw_ref.h"
@@ -345,7 +346,10 @@ void AutofillManager::QueryServerPredictions(
     return;
   }
 
-  NotifyObservers(&Observer::OnBeforeLoadedServerPredictions);
+  std::vector<FormGlobalId> queryable_form_ids =
+      base::ToVector(queryable_forms, &FormData::global_id);
+  NotifyObservers(&Observer::OnBeforeLoadedServerPredictions,
+                  queryable_form_ids);
   // TODO(crbug.com/470949499): Consider changing the type of callback that
   // StartQueryRequest() expects to include the queried forms. This would allow
   // StartQueryRequest() to provide the queried forms to the callback
@@ -395,7 +399,10 @@ void AutofillManager::OnFormsParsed(const std::vector<FormData>& forms,
 
   // Query the server if at least one of the forms was parsed.
   if (!queryable_forms.empty()) {
-    NotifyObservers(&Observer::OnBeforeLoadedServerPredictions);
+    std::vector<FormGlobalId> queryable_form_ids =
+        base::ToVector(queryable_forms, &FormData::global_id);
+    NotifyObservers(&Observer::OnBeforeLoadedServerPredictions,
+                    queryable_form_ids);
     // If language detection is currently reparsing the form, wait until the
     // server response is processed, to ensure server predictions are not lost.
     auto on_loaded =
@@ -636,16 +643,7 @@ void AutofillManager::TriggerFormExtractionInAllFrames(
 }
 
 void AutofillManager::ReparseKnownForms() {
-  auto ProcessParsedForms = [](AutofillManager& self,
-                               const std::vector<FormData>& parsed_forms) {
-    if (!parsed_forms.empty()) {
-      self.OnFormsParsed(parsed_forms, base::TimeTicks());
-    }
-  };
-  ParseFormsAsync(
-      base::ToVector(form_structures_,
-                     [](const auto& p) { return p.second->ToFormData(); }),
-      base::BindOnce(ProcessParsedForms));
+  TriggerFormExtractionInAllFrames(base::DoNothing());
 }
 
 base::flat_map<FieldGlobalId, AutofillServerPrediction>
@@ -970,9 +968,12 @@ void AutofillManager::OnLoadedServerPredictions(
         "Autofill.TimingInterval.FormsSeen.LoadedServerPredictions",
         base::TimeTicks::Now() - form_seen_timestamp);
   }
-  absl::Cleanup on_after_loaded_server_predictions = [this] {
-    NotifyObservers(&Observer::OnAfterLoadedServerPredictions);
-  };
+  std::vector<FormGlobalId> form_ids =
+      base::ToVector(forms, &FormData::global_id);
+  absl::Cleanup on_after_loaded_server_predictions =
+      [this, form_ids = std::move(form_ids)] {
+        NotifyObservers(&Observer::OnAfterLoadedServerPredictions, form_ids);
+      };
 
   if (!response) {
     return;

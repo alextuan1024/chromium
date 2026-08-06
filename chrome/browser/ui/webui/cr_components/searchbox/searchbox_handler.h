@@ -123,7 +123,8 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                          bool prevent_inline_autocomplete,
                          uint32_t cursor_position,
                          omnibox::SuggestInventory suggest_inventory,
-                         bool is_on_focus) override;
+                         bool is_on_focus,
+                         const std::string& keyword) override;
   void StopAutocomplete(bool clear_result) override;
   void OpenAutocompleteMatch(uint8_t line,
                              const GURL& url,
@@ -157,7 +158,8 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                      bool ctrl_key,
                      bool meta_key,
                      bool shift_key) override;
-  void GetPlaceholderConfig(GetPlaceholderConfigCallback callback) override;
+  void GetCyclingPlaceholderConfig(
+      GetCyclingPlaceholderConfigCallback callback) override;
   void GetRecentTabs(GetRecentTabsCallback callback) override;
   void GetTabPreview(int32_t tab_id, GetTabPreviewCallback callback) override {}
   void WaitForTabFaviconLoad(int32_t tab_id,
@@ -170,6 +172,7 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                       AddFileContextCallback callback) override {}
   void AddTabContext(int32_t tab_id,
                      bool delay_upload,
+                     searchbox::mojom::TabAttachmentSource source,
                      AddTabContextCallback) override {}
   void DeleteContext(const base::UnguessableToken& file_token,
                      bool from_automatic_chip) override {}

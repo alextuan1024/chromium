@@ -84,10 +84,11 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   [self setUpHeader];
   [self setUpWebStateView];
 
-  [self
-      registerForTraitChanges:
-          @[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]
-                   withAction:@selector(traitsDidChange)];
+  [self registerForTraitChanges:@[
+    UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
+    UITraitUserInterfaceStyle.class
+  ]
+                     withAction:@selector(traitsDidChange)];
   [self traitsDidChange];
 }
 
@@ -708,6 +709,15 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
     [self.view layoutIfNeeded];
   }];
   [self.mutator didTapHistory];
+}
+
+- (void)assistantAIMHeaderViewDidTapMyActivity:
+    (AssistantAIMHeaderView*)headerView {
+  [self.delegate assistantAIMViewControllerDidTapMyActivity:self];
+}
+
+- (void)assistantAIMHeaderViewDidTapHelp:(AssistantAIMHeaderView*)headerView {
+  [self.delegate assistantAIMViewControllerDidTapHelp:self];
 }
 
 #pragma mark - Private

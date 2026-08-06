@@ -272,7 +272,9 @@ class ExtensionSidePanelBrowserTest : public ExtensionBrowserTest {
   }
 
   ExtensionsToolbarDesktop* GetExtensionsToolbarDesktop() const {
-    return browser()->GetBrowserView().toolbar()->extensions_container();
+    return BrowserView::GetBrowserViewForBrowser(browser())
+        ->toolbar()
+        ->extensions_container();
   }
 
   void WaitForSidePanelToolbarCloseButtonVisibility(bool visible) {
@@ -298,8 +300,9 @@ class ExtensionSidePanelBrowserTest : public ExtensionBrowserTest {
 
   void WaitForSidePanelClose() {
     ASSERT_TRUE(base::test::RunUntil([&]() {
-      return browser()->GetBrowserView().side_panel()->state() ==
-             SidePanel::State::kClosed;
+      return BrowserView::GetBrowserViewForBrowser(browser())
+                 ->side_panel()
+                 ->state() == SidePanel::State::kClosed;
     }));
   }
 
@@ -374,7 +377,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelBrowserTest,
   ASSERT_TRUE(side_panel_extension);
 
   // Check if ActionItem is created.
-  BrowserActions* browser_actions = browser()->browser_actions();
+  BrowserActions* browser_actions = BrowserActions::From(browser());
   actions::ActionItem* action_item =
       GetActionItemForExtension(side_panel_extension.get(), browser_actions);
   EXPECT_EQ(action_item->GetText(),
@@ -470,7 +473,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelBrowserTest, MultipleBrowsers) {
   SidePanelRegistry* const first_global_registry =
       SidePanelRegistry::From(browser());
   EXPECT_TRUE(first_global_registry->GetEntryForKey(extension_key));
-  BrowserActions* browser_actions = browser()->browser_actions();
+  BrowserActions* browser_actions = BrowserActions::From(browser());
   actions::ActionItem* browser_one_action_item =
       GetActionItemForExtension(extension.get(), browser_actions);
   EXPECT_EQ(browser_one_action_item->GetText(),
@@ -480,7 +483,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelBrowserTest, MultipleBrowsers) {
   // registered for the new window's global SidePanelRegistry.
   Browser* second_browser = CreateBrowser(browser()->GetProfile());
   BrowserActions* browser_actions_second_browser =
-      second_browser->browser_actions();
+      BrowserActions::From(second_browser);
 
   SidePanelRegistry* const second_global_registry =
       SidePanelRegistry::From(second_browser);
@@ -548,7 +551,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelBrowserTest,
       test_data_dir_.AppendASCII("api_test/side_panel/simple_default"));
   ASSERT_TRUE(extension);
 
-  BrowserActions* browser_actions = browser()->browser_actions();
+  BrowserActions* browser_actions = BrowserActions::From(browser());
   actions::ActionItem* action_item =
       GetActionItemForExtension(extension.get(), browser_actions);
 
@@ -1245,7 +1248,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelBrowserTest,
   ASSERT_TRUE(extension);
 
   // Check if ActionItem is created.
-  BrowserActions* browser_actions = browser()->browser_actions();
+  BrowserActions* browser_actions = BrowserActions::From(browser());
   actions::ActionItem* action_item =
       GetActionItemForExtension(extension.get(), browser_actions);
   EXPECT_EQ(action_item->GetText(), base::UTF8ToUTF16(extension->short_name()));
@@ -2639,7 +2642,7 @@ class ExtensionOnClosedEventSidePanelBrowserTest
 
 // Tests that onClosed fires when the hosting tab is closed.
 IN_PROC_BROWSER_TEST_F(ExtensionOnClosedEventSidePanelBrowserTest,
-                       DISABLED_OnClosedEvent_TabClosed) {
+                       OnClosedEvent_TabClosed) {
   // Open a new tab first to prevent the browser from shutting down.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
@@ -2657,8 +2660,14 @@ IN_PROC_BROWSER_TEST_F(ExtensionOnClosedEventSidePanelBrowserTest,
       GetCurrentTabRegistry()->GetEntryForKey(GetKey(extension->id()));
   ASSERT_TRUE(extension_entry);
 
+  // Restrict the helper to ONLY wait for the side panel host. This prevents it
+  // from accidentally catching the background page's load event.
   extensions::ExtensionHostTestHelper host_helper(profile(), extension->id());
+  host_helper.RestrictToType(extensions::mojom::ViewType::kExtensionSidePanel);
+
   ShowContextualEntryAndWait(GetKey(extension->id()));
+
+  // Strictly block until the side panel is fully loaded.
   host_helper.WaitForHostCompletedFirstLoad();
 
   // Close the active tab, which has the panel. This action should trigger the

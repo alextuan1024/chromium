@@ -23,6 +23,7 @@
 
 namespace enterprise_connectors {
 struct RequestHandlerResult;
+class PasteboardContentHandlerIOS;
 }
 
 namespace web {
@@ -168,8 +169,9 @@ class DataControlsTabHelper
                          std::string_view org_domain,
                          base::OnceCallback<void(bool)> on_bypassed_callback);
 
-  // Shows a snackbar to inform the user that an action was blocked by policy.
-  void ShowRestrictSnackbar(std::string_view org_domain);
+  // Shows a snackbar message to inform the user that an action was blocked by
+  // policy or content analysis.
+  void ShowRestrictSnackbar(NSString* title);
 
   // Returns the management domain for the given `profile`.
   std::string GetManagementDomain(ProfileIOS* profile);
@@ -183,6 +185,10 @@ class DataControlsTabHelper
 
   // The snackbar command handler.
   __weak id<SnackbarCommands> snackbar_handler_ = nil;
+
+  // The handler for pasteboard content analysis.
+  std::unique_ptr<enterprise_connectors::PasteboardContentHandlerIOS>
+      pasteboard_content_handler_;
 
   PasteEventState paste_event_state_ = PasteEventState::kIdle;
 

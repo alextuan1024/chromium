@@ -93,7 +93,7 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
         if (!mIsForeground) {
             ActorForegroundServiceUmaHelper.recordLifecycleHistogram(ForegroundLifecycle.STARTED);
             mIsForeground = true;
-            if (ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC_BACKGROUND_TRIGGERING)) {
+            if (ChromeFeatureList.sGlicBackgroundTriggering.isEnabled()) {
                 ChromeBrowserInitializer.getInstance().handleSynchronousStartup();
             }
         } else {
@@ -120,13 +120,21 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
 
     @Override
     public int onStartCommand(@Nullable Intent intent, int flags, int startId) {
-        Log.d(TAG, "GlicTrigger: ActorForegroundService onStartCommand");
+        boolean isGlicBackgroundTriggerEnabled =
+                ChromeFeatureList.sGlicBackgroundTriggering.isEnabled();
+        Log.d(
+                TAG,
+                "ActorForegroundService onStartCommand. mIsForeground: "
+                        + mIsForeground
+                        + ", featureEnabled: "
+                        + isGlicBackgroundTriggerEnabled);
         if (mStartTime == 0) {
             mStartTime = SystemClock.elapsedRealtime();
         }
 
         if (!mIsForeground
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC_BACKGROUND_TRIGGERING)) {
+                && isGlicBackgroundTriggerEnabled
+                && intent != null && START_ACTOR_FOREGROUND_SERVICE.equals(intent.getAction())) {
             Log.d(TAG, "GlicTrigger: Promoting to foreground");
             NotificationWrapper taskStartsSoonNotificationWrapper =
                     ActorNotificationFactory.buildTaskStartsSoonNotification();
@@ -142,7 +150,7 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
         }
 
         if (intent != null && START_ACTOR_FOREGROUND_SERVICE.equals(intent.getAction())) {
-            if (!ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC_BACKGROUND_TRIGGERING)) {
+            if (!isGlicBackgroundTriggerEnabled) {
                 Log.w(TAG, "Background triggering disabled, ignoring start intent.");
                 return Service.START_NOT_STICKY;
             }

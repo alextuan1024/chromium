@@ -1359,7 +1359,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="BrowserRenderProcessHost.AvailableMemoryBeforeCreation.SpareRenderer"
-    units="MB" expires_after="2026-11-29">
+    units="MB" expires_after="2027-01-31">
   <owner>gjc@google.com</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -1727,7 +1727,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BrowserRenderProcessHost.SpareProcessStartupTime" units="ms"
-    expires_after="2026-11-29">
+    expires_after="2027-01-31">
   <owner>kerenzhu@chromium.org</owner>
   <owner>dayeung@chromium.org</owner>
   <owner>robliao@chromium.org</owner>
@@ -2287,6 +2287,31 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="SidePanel.Android.{SidePanelEntry}.OnWillAutoClose"
+    enum="Boolean" expires_after="2027-01-31">
+  <owner>mschillaci@google.com</owner>
+  <owner>linyuh@google.com</owner>
+  <owner>clank-app-team@google.com</owner>
+  <summary>
+    Records when the side panel has been automatically closed because the window
+    was resized to be too small. Recorded when the user resizes the window.
+  </summary>
+  <token key="SidePanelEntry" variants="SidePanelEntry"/>
+</histogram>
+
+<histogram name="SidePanel.Android.{SidePanelEntry}.OnWillAutoRestore"
+    enum="Boolean" expires_after="2027-01-31">
+  <owner>mschillaci@google.com</owner>
+  <owner>linyuh@google.com</owner>
+  <owner>clank-app-team@google.com</owner>
+  <summary>
+    Records when the side panel has been automatically restored because the
+    window was resized to be big enough again. Recorded when the user resizes
+    the window.
+  </summary>
+  <token key="SidePanelEntry" variants="SidePanelEntry"/>
+</histogram>
+
 <histogram name="SidePanel.ReadAnything.ShownDurationMax1Day" units="ms"
     expires_after="2026-12-27">
   <owner>alfredohiguera@google.com</owner>
@@ -2325,7 +2350,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="{SidePanelType}.OpenTrigger" enum="SidePanelOpenTrigger"
-    expires_after="2026-11-29">
+    expires_after="2027-01-31">
   <owner>corising@chromium.org</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
   <summary>
@@ -2425,7 +2450,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="{SidePanelType}.{SidePanelEntry}.ShownDuration" units="ms"
-    expires_after="2026-11-29">
+    expires_after="2027-01-31">
   <owner>corising@chromium.org</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
   <summary>

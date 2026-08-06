@@ -734,17 +734,6 @@ void HistoryService::UpdateWithPageEndTime(ContextID context_id,
                      context_id, nav_entry_id, url, end_ts));
 }
 
-void HistoryService::SetBrowsingTopicsAllowed(ContextID context_id,
-                                              int nav_entry_id,
-                                              const GURL& url) {
-  TRACE_EVENT0("browser", "HistoryService::SetBrowsingTopicsAllowed");
-  DCHECK(backend_task_runner_) << "History service being called after cleanup";
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  ScheduleTask(PRIORITY_NORMAL,
-               base::BindOnce(&HistoryBackend::SetBrowsingTopicsAllowed,
-                              history_backend_, context_id, nav_entry_id, url));
-}
-
 void HistoryService::SetPageLanguageForVisit(ContextID context_id,
                                              int nav_entry_id,
                                              const GURL& url,
@@ -1491,10 +1480,13 @@ bool HistoryService::Init(
 
   // Unit tests can inject `backend_task_runner_` before this is called.
   if (!backend_task_runner_) {
+    base::TaskPriority priority = base::TaskPriority::USER_BLOCKING;
+    if (base::FeatureList::IsEnabled(kHistoryInitPrioritySettings)) {
+      priority = kHistoryInitPriority.Get();
+    }
     backend_task_runner_ =
         base::ThreadPool::CreateSequencedTaskRunnerForResource(
-            {base::MayBlock(), base::WithBaseSyncPrimitives(),
-             base::TaskPriority::USER_BLOCKING,
+            {base::MayBlock(), base::WithBaseSyncPrimitives(), priority,
              base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
             history_dir_.Append(kHistoryFilename));
   }

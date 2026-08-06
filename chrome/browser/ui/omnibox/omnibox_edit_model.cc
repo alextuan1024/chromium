@@ -826,6 +826,7 @@ void OmniboxEditModel::PopulateActiveTabContext() {
   tab_attachment->tab_id = tab_handle_val;
   tab_attachment->title = base::UTF16ToUTF8(web_contents->GetTitle());
   tab_attachment->url = web_contents->GetLastCommittedURL();
+  tab_attachment->source = searchbox::mojom::TabAttachmentSource::kAutoAdded;
   context->file_infos.push_back(
       searchbox::mojom::SearchContextAttachment::NewTabAttachment(
           std::move(tab_attachment)));
@@ -2296,12 +2297,18 @@ std::u16string OmniboxEditModel::GetPopupAccessibilityLabelForCurrentSelection(
   size_t total_matches =
       include_positional_info ? autocomplete_controller()->result().size() : 0;
 
+  // For informational matches, the relevant text is in contents.
+  std::u16string announcement_text =
+      match.type == AutocompleteMatchType::NULL_RESULT_MESSAGE ? match.contents
+                                                               : match_text;
   // If there's a button focused, we don't want the "n of m" message announced.
-  return AutocompleteMatchType::ToAccessibilityLabel(
+  std::u16string label = AutocompleteMatchType::ToAccessibilityLabel(
       match,
       autocomplete_controller()->GetSuggestionGroupHeaderText(
           match.suggestion_group_id),
-      match_text, line, total_matches, additional_message, label_prefix_length);
+      announcement_text, line, total_matches, additional_message,
+      label_prefix_length);
+  return label;
 }
 
 std::u16string OmniboxEditModel::GetPopupAccessibilityLabelForAimButton() {
@@ -2322,7 +2329,10 @@ OmniboxEditModel::MaybeGetPopupAccessibilityLabelForIPHSuggestion() {
   if (next_line < autocomplete_controller()->result().size()) {
     const AutocompleteMatch& next_match =
         autocomplete_controller()->result().match_at(next_line);
-    if (next_match.IsIphSuggestion()) {
+    // Only append lookahead suffixes for non-interactive (no link) IPH tips.
+    // Interactive IPH suggestions (disclaimers/promos with links) are focusable
+    // and will be read directly when they receive selection focus.
+    if (next_match.IsIphSuggestion() && next_match.iph_link_url.is_empty()) {
       label =
           l10n_util::GetStringFUTF16(IDS_ACC_CHROME_TIP, next_match.contents);
 

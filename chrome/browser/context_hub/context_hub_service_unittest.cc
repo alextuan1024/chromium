@@ -111,16 +111,10 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceSuccess) {
                   Field(&AutoTodoEntry::title, "Test Todo"),
                   Field(&AutoTodoEntry::description, "Test Description")))));
 
-  base::test::TestFuture<
-      std::optional<personal_context::proto::AutoTodosResponse>>
-      future;
+  base::test::TestFuture<bool> future;
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
-  auto result = future.Get();
-  ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(result.value().todos_size(), 1);
-  EXPECT_EQ(result.value().todos(0).title(), "Test Todo");
-  EXPECT_EQ(result.value().todos(0).description(), "Test Description");
+  EXPECT_TRUE(future.Get());
 }
 
 TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceError) {
@@ -143,12 +137,10 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceError) {
 
   EXPECT_CALL(observer, OnAutoTodosChanged(_)).Times(0);
 
-  base::test::TestFuture<
-      std::optional<personal_context::proto::AutoTodosResponse>>
-      future;
+  base::test::TestFuture<bool> future;
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
-  EXPECT_FALSE(future.Get().has_value());
+  EXPECT_FALSE(future.Get());
 }
 
 TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ParseError) {
@@ -169,12 +161,20 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ParseError) {
 
   EXPECT_CALL(observer, OnAutoTodosChanged(_)).Times(0);
 
-  base::test::TestFuture<
-      std::optional<personal_context::proto::AutoTodosResponse>>
-      future;
+  base::test::TestFuture<bool> future;
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
-  EXPECT_FALSE(future.Get().has_value());
+  EXPECT_FALSE(future.Get());
+}
+
+TEST_F(ContextHubServiceTest, GenerateTabBasedTodos) {
+  std::vector<TabData> input_tabs = {
+      {1, "Tab 1", GURL("https://example1.com")}};
+
+  base::test::TestFuture<bool> future;
+  service_.GenerateTabBasedTodos(std::move(input_tabs), future.GetCallback());
+
+  EXPECT_FALSE(future.Get());
 }
 
 TEST_F(ContextHubServiceTest, SaveTab) {
@@ -330,9 +330,9 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithTabs) {
   EXPECT_THAT(
       stored_groups_future.Get(),
       ElementsAre(
-          FieldsAre("group_1", "Group 1", ElementsAre(1, 2), _,
+          FieldsAre(testing::Ne(""), "Group 1", ElementsAre(1, 2), _,
                     testing::Ne(base::Time()), testing::Ne(base::Time())),
-          FieldsAre("group_2", "Group 2", ElementsAre(3, 4), _,
+          FieldsAre(testing::Ne(""), "Group 2", ElementsAre(3, 4), _,
                     testing::Ne(base::Time()), testing::Ne(base::Time()))));
 }
 
@@ -598,6 +598,101 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Error) {
   std::vector<int64_t> ids = {100};
   service_.ExecuteMemoryBankChat(ids, "hello", future.GetCallback());
   EXPECT_FALSE(future.Get().has_value());
+}
+
+TEST_F(ContextHubServiceTest, UpdateAutoTodo) {
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+
+  AutoTodoEntry entry;
+  entry.id = "todo_1";
+  entry.title = "Initial Title";
+  entry.status = AutoTodoEntry::Status::kActive;
+
+  EXPECT_CALL(observer,
+              OnAutoTodosChanged(ElementsAre(AllOf(
+                  Field(&AutoTodoEntry::id, "todo_1"),
+                  Field(&AutoTodoEntry::title, "Initial Title"),
+                  Field(&AutoTodoEntry::status, AutoTodoEntry::Status::kActive)))));
+
+  base::test::TestFuture<bool> add_future;
+  service_.UpdateAutoTodo(entry, add_future.GetCallback());
+  EXPECT_TRUE(add_future.Get());
+
+  AutoTodoEntry updated_entry;
+  updated_entry.id = "todo_1";
+  updated_entry.title = "Updated Title";
+  updated_entry.status = AutoTodoEntry::Status::kCompleted;
+
+  EXPECT_CALL(observer,
+              OnAutoTodosChanged(ElementsAre(AllOf(
+                  Field(&AutoTodoEntry::id, "todo_1"),
+                  Field(&AutoTodoEntry::title, "Updated Title"),
+                  Field(&AutoTodoEntry::status, AutoTodoEntry::Status::kCompleted)))));
+
+  base::test::TestFuture<bool> update_future;
+  service_.UpdateAutoTodo(updated_entry, update_future.GetCallback());
+  EXPECT_TRUE(update_future.Get());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service_.GetAutoTodos(get_future.GetCallback());
+  auto items = get_future.Get();
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0].id, "todo_1");
+  EXPECT_EQ(items[0].title, "Updated Title");
+  EXPECT_EQ(items[0].status, AutoTodoEntry::Status::kCompleted);
+}
+
+TEST_F(ContextHubServiceTest, GetAutoTodos) {
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_empty_future;
+  service_.GetAutoTodos(get_empty_future.GetCallback());
+  EXPECT_TRUE(get_empty_future.Get().empty());
+
+  AutoTodoEntry entry1;
+  entry1.id = "todo_1";
+  entry1.title = "Todo 1";
+  entry1.description = "Description 1";
+  entry1.status = AutoTodoEntry::Status::kActive;
+  entry1.importance_score = 0.8f;
+  entry1.data = FirstPartyData{
+      .source_references = {GURL("https://mail.google.com/1")},
+      .actionable_url = GURL("https://example.com/1"),
+  };
+
+  AutoTodoEntry entry2;
+  entry2.id = "todo_2";
+  entry2.title = "Todo 2";
+  entry2.description = "Description 2";
+  entry2.status = AutoTodoEntry::Status::kCompleted;
+  entry2.importance_score = 0.5f;
+
+  base::test::TestFuture<bool> update_future1;
+  service_.UpdateAutoTodo(entry1, update_future1.GetCallback());
+  EXPECT_TRUE(update_future1.Get());
+
+  base::test::TestFuture<bool> update_future2;
+  service_.UpdateAutoTodo(entry2, update_future2.GetCallback());
+  EXPECT_TRUE(update_future2.Get());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service_.GetAutoTodos(get_future.GetCallback());
+  auto items = get_future.Get();
+  ASSERT_EQ(items.size(), 2u);
+
+  EXPECT_EQ(items[0].id, "todo_2");
+  EXPECT_EQ(items[0].title, "Todo 2");
+  EXPECT_EQ(items[0].description, "Description 2");
+  EXPECT_EQ(items[0].status, AutoTodoEntry::Status::kCompleted);
+  EXPECT_FLOAT_EQ(items[0].importance_score, 0.5f);
+
+  EXPECT_EQ(items[1].id, "todo_1");
+  EXPECT_EQ(items[1].title, "Todo 1");
+  EXPECT_EQ(items[1].description, "Description 1");
+  EXPECT_EQ(items[1].status, AutoTodoEntry::Status::kActive);
+  EXPECT_FLOAT_EQ(items[1].importance_score, 0.8f);
+  EXPECT_TRUE(items[1].is_first_party());
 }
 
 }  // namespace

@@ -579,6 +579,10 @@ export class SpeechController {
         // of the current utterance until the utterance is complete. The
         // entire utterance is highlighted, so there's no need to update
         // highlighting until the utterance substring is an acceptable size.
+        if (!this.isSpeechActive()) {
+          this.model_.setPauseSource(PauseActionSource.DEFAULT);
+          return;
+        }
         const remainingText = utteranceText.substring(textToPlay.length);
         this.playText_(remainingText);
         return;
@@ -590,6 +594,16 @@ export class SpeechController {
       // boundary index whenever we move the granularity position.
       this.wordBoundaries_.resetToDefaultState();
       this.moveToNextGranularity_();
+
+      // If speech was paused (e.g. via the play/pause button calling pause()
+      // instead of cancel()), do not speak the next block of text. Clear the
+      // pause source so that resuming speech correctly calls speak() on the
+      // new granularity instead of resume() on the finished utterance.
+      if (!this.isSpeechActive()) {
+        this.model_.setPauseSource(PauseActionSource.DEFAULT);
+        return;
+      }
+
       // Continue speaking with the next block of text.
       if (!this.highlightAndPlayMessage_()) {
         this.onSpeechFinished_();
@@ -624,7 +638,7 @@ export class SpeechController {
     this.setEngineState_(SpeechEngineState.LOADED);
 
     if (error.error === 'interrupted') {
-      this.onSpeechInterrupted_();
+      this.onSpeechInterrupted_(error.utterance);
       return;
     }
 
@@ -672,6 +686,7 @@ export class SpeechController {
   }
 
   private stopSpeech_(pauseSource: PauseActionSource) {
+    this.model_.setActiveUtterance(null);
     this.clearEngineTimeout_();
     // Pause source needs to be set before updating isSpeechActive so that
     // listeners get the correct source when listening for isSpeechActive
@@ -835,7 +850,15 @@ export class SpeechController {
     }
   }
 
-  private onSpeechInterrupted_() {
+  private onSpeechInterrupted_(utterance: SpeechSynthesisUtterance) {
+    // It's possible for there to be a race condition where onSpeechInterrupted
+    // is triggered on an old utterance, which can lead to an indeterminate
+    // state. When this happens, return early.
+    const activeUtterance = this.model_.getActiveUtterance();
+    if (activeUtterance && utterance !== activeUtterance) {
+      return;
+    }
+
     // SpeechSynthesis.cancel() was called, which could have originated
     // either within or outside of reading mode. If it originated from
     // within reading mode, we should do nothing. If it came from outside
@@ -880,6 +903,7 @@ export class SpeechController {
     this.speech_.cancel();
     this.highlighter_.reset();
     this.wordBoundaries_.resetToDefaultState();
+    this.model_.setActiveUtterance(null);
 
     const speechPlayingState = {
       isSpeechActive: false,
@@ -1098,6 +1122,8 @@ export class SpeechController {
     message.volume = this.model_.getVolume();
     message.lang = chrome.readingMode.baseLanguageForSpeech;
     message.rate = getCurrentSpeechRate();
+    this.model_.setActiveUtterance(message);
+
     // Cancel any pending utterances that may be happening in other tabs.
     this.speech_.cancel();
 

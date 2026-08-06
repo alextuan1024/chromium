@@ -23,10 +23,6 @@ static constexpr char kPAFeatureEnabledProcessesStr[] = "enabled-processes";
 static constexpr char kBrowserOnlyStr[] = "browser-only";
 static constexpr char kBrowserAndRendererStr[] = "browser-and-renderer";
 static constexpr char kNonRendererStr[] = "non-renderer";
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-static constexpr char kGPUOnlyStr[] = "gpu-only";
-static constexpr char kBrowserAndGPUStr[] = "browser-and-gpu";
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 static constexpr char kAllProcessesStr[] = "all-processes";
 
 }  // namespace
@@ -99,27 +95,6 @@ BASE_FEATURE_PARAM(int,
                    "ring-size",
                    partition_alloc::internal::SlotSpanRingMaxSize::kMedium);
 
-BASE_FEATURE(kPartitionAllocWithAdvancedChecks, FEATURE_ENABLED_BY_DEFAULT);
-constexpr FeatureParam<PartitionAllocWithAdvancedChecksEnabledProcesses>::Option
-    kPartitionAllocWithAdvancedChecksEnabledProcessesOptions[] = {
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserOnly,
-         kBrowserOnlyStr},
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserAndRenderer,
-         kBrowserAndRendererStr},
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kNonRenderer,
-         kNonRendererStr},
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kGPUOnly,
-         kGPUOnlyStr},
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserAndGPU,
-         kBrowserAndGPUStr},
-        {PartitionAllocWithAdvancedChecksEnabledProcesses::kAllProcesses,
-         kAllProcessesStr}};
-// Note: Do not use the prepared macro as of no need for a local cache.
-constinit const FeatureParam<PartitionAllocWithAdvancedChecksEnabledProcesses>
-    kPartitionAllocWithAdvancedChecksEnabledProcessesParam{
-        &kPartitionAllocWithAdvancedChecks, kPAFeatureEnabledProcessesStr,
-        PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserOnly,
-        &kPartitionAllocWithAdvancedChecksEnabledProcessesOptions};
 
 // Enabled-by-default. Without proper
 // `PartitionAllocSchedulerLoopQuarantineConfig` configuration, the feature
@@ -312,6 +287,38 @@ BASE_FEATURE_PARAM(TimeDelta,
                    "interval",
                    TimeDelta()  // Defaults to zero.
 );
+
+// Whether the periodic memory reclaim interval adapts to how much memory is
+// actually reclaimable, instead of running at a fixed cadence: back off while
+// there is little to decommit, so that idle processes wake up less often, and
+// ramp back up once there is a lot. Only consulted when
+// `kPartitionAllocMemoryReclaimerInterval` does not pin the interval.
+BASE_FEATURE(kPartitionAllocAdaptiveMemoryReclaimInterval,
+             FEATURE_DISABLED_BY_DEFAULT);
+// Bounds of the back-off. The interval starts at `default_interval` and stays
+// within [`min_interval`, `max_interval`]. Defaults match
+// partition_alloc::MemoryReclaimer::AdaptiveIntervalConfig.
+BASE_FEATURE_PARAM(TimeDelta,
+                   kPartitionAllocAdaptiveMemoryReclaimMinInterval,
+                   &kPartitionAllocAdaptiveMemoryReclaimInterval,
+                   Seconds(4));
+BASE_FEATURE_PARAM(TimeDelta,
+                   kPartitionAllocAdaptiveMemoryReclaimMaxInterval,
+                   &kPartitionAllocAdaptiveMemoryReclaimInterval,
+                   Minutes(1));
+BASE_FEATURE_PARAM(TimeDelta,
+                   kPartitionAllocAdaptiveMemoryReclaimDefaultInterval,
+                   &kPartitionAllocAdaptiveMemoryReclaimInterval,
+                   Seconds(8));
+// Low watermark of decommittable bytes, at or below which the interval grows.
+// The default of 100 KiB was picked from live browser measurements as the
+// least aggressive back-off that still reduces reclaim wake-ups meaningfully
+// while keeping the per-reclaim decommit batch, and therefore the
+// committed-memory headroom, close to the non-adaptive baseline.
+BASE_FEATURE_PARAM(int,
+                   kPartitionAllocAdaptiveMemoryReclaimMinDecommittableBytes,
+                   &kPartitionAllocAdaptiveMemoryReclaimInterval,
+                   100 * 1024);
 
 // Configures whether we set a lower limit for renderers that do not have a main
 // frame, similar to the limit that is already done for backgrounded renderers.

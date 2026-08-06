@@ -598,8 +598,9 @@ public class NtpCustomizationUtils {
 
     /** Returns whether a white background should be applied on fake search box. */
     public static boolean shouldApplyWhiteBackgroundOnSearchBox() {
-        if (ChromeFeatureList.sNtpAurora.isEnabled() && !OmniboxCapabilities.isDesktopPlatform())
+        if (ChromeFeatureList.sNtpAurora.isEnabled() && !OmniboxCapabilities.isDesktopPlatform()) {
             return true;
+        }
 
         return shouldApplyWhiteBackgroundOnComposeplate();
     }
@@ -1900,7 +1901,7 @@ public class NtpCustomizationUtils {
             float elevation =
                     context.getResources().getDimensionPixelSize(R.dimen.fake_search_box_elevation);
             view.setElevation(elevation);
-            int shadowColor = context.getColor(R.color.color_primary_with_alpha_30);
+            int shadowColor = context.getColor(R.color.color_primary_with_alpha_50);
             view.setOutlineAmbientShadowColor(shadowColor);
             view.setOutlineSpotShadowColor(shadowColor);
         } else {

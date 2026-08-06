@@ -4,7 +4,6 @@
 
 #include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/password_manager/password_change/features.h"
@@ -41,6 +40,11 @@ std::optional<DiscardReason> GetDiscardReason(
   auto* parsed_form = form_manager->GetParsedObservedForm();
   if (!parsed_form) {
     return DiscardReason::kUnknown;
+  }
+
+  if (!form_manager->GetDriver() ||
+      !form_manager->GetDriver()->IsInPrimaryMainFrame()) {
+    return DiscardReason::kNotInPrimaryMainFrame;
   }
 
   // New password field must be present in a change password form.

@@ -2623,6 +2623,15 @@ TEST_F(NetworkContextTest, MultipleClearHttpCacheCalls) {
 }
 
 TEST_F(NetworkContextTest, DestroyWithPendingHttpCacheDataRemovers) {
+  // Force Simple Cache to avoid memory leaks reported on Fuchsia and Windows
+  // ASan bots. The legacy Blockfile backend intentionally drops in-flight tasks
+  // during non-test teardown via DropPendingIO(), which AddressSanitizer flags
+  // as leaks. Using Simple Cache tests NetworkContext teardown without legacy
+  // blockfile interference.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      net::features::kDiskCacheBackendExperiment, {{"backend", "simple"}});
+
   mojom::NetworkContextParamsPtr context_params =
       CreateNetworkContextParamsForTesting();
   context_params->file_paths = mojom::NetworkContextFilePaths::New();
@@ -2646,7 +2655,7 @@ TEST_F(NetworkContextTest, DestroyWithPendingHttpCacheDataRemovers) {
 
   // Run pending tasks to ensure clean teardown without dangling pointers or
   // races.
-  base::RunLoop().RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   EXPECT_FALSE(callback_called);
 }
@@ -13171,6 +13180,71 @@ TEST_F(ConnectionAllowlistReportingTest,
   EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
       nonce, allowed_url, nak));
   VerifyReports(network_context.get(), {});
+}
+
+// When the enforced allowlist is null, all network requests and redirects are
+// allowed. This can happen when the response does not have the
+// "Connection-Allowlist" but the "Connection-Allowlist-Report-Only" header.
+TEST_F(ConnectionAllowlistReportingTest,
+       ConnectionAllowlistsReporting_NullEnforcedAllowlist) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithReporting();
+
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+  GURL allowed_url("https://allowed.example.com");
+
+  network::ConnectionAllowlist report_only;
+  report_only.allowlist.push_back(allowed_url.spec());
+  report_only.reporting_endpoint = "report-only-endpoint";
+
+  RestrictNetworkForIdWithAllowlists(network_context.get(), nonce,
+                                     /*enforced=*/std::nullopt,
+                                     std::move(report_only));
+
+  net::NetworkAnonymizationKey nak =
+      net::NetworkAnonymizationKey::CreateTransient();
+
+  GURL url("https://any.arbitrary.me");
+
+  // All network requests and redirects are allowed.
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, nak, /*is_redirect=*/false));
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, nak, /*is_redirect=*/true));
+}
+
+// When the enforced allowlist has an empty list of patterns, all network
+// requests and redirects are blocked.
+TEST_F(ConnectionAllowlistReportingTest,
+       ConnectionAllowlistsReporting_EmptyPatternEnforcedAllowlist) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithReporting();
+
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+  GURL allowed_url("https://allowed.example.com");
+
+  // The enforced allowlist has an empty list of patterns.
+  network::ConnectionAllowlist enforced;
+  enforced.allowlist = {};
+
+  network::ConnectionAllowlist report_only;
+  report_only.allowlist.push_back(allowed_url.spec());
+  report_only.reporting_endpoint = "report-only-endpoint";
+
+  RestrictNetworkForIdWithAllowlists(network_context.get(), nonce,
+                                     std::move(enforced),
+                                     std::move(report_only));
+
+  net::NetworkAnonymizationKey nak =
+      net::NetworkAnonymizationKey::CreateTransient();
+
+  GURL url("https://any.arbitrary.me");
+
+  // All network requests and redirects are blocked.
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, nak, /*is_redirect=*/false));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, nak, /*is_redirect=*/true));
 }
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 

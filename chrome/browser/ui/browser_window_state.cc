@@ -44,7 +44,7 @@ bool ParseCommaSeparatedIntegers(const std::string& str,
 }  // namespace
 
 std::string GetWindowName(const Browser* browser) {
-  switch (browser->type()) {
+  switch (browser->GetType()) {
     case Browser::TYPE_NORMAL:
       return prefs::kBrowserWindowPlacement;
     case Browser::TYPE_POPUP:
@@ -52,9 +52,10 @@ std::string GetWindowName(const Browser* browser) {
       return prefs::kBrowserWindowPlacementPopup;
     case Browser::TYPE_APP:
     case Browser::TYPE_DEVTOOLS:
-      return browser->app_name();
+      return BrowserInitState::From(browser)->create_params().app_name;
     case Browser::TYPE_APP_POPUP:
-      return browser->app_name() + "_popup";
+      return BrowserInitState::From(browser)->create_params().app_name +
+             "_popup";
   }
 }
 
@@ -128,14 +129,14 @@ void SaveWindowPlacement(Browser* browser,
   // showing, and we don't want to bring in the session service this early.
   SessionServiceBase* service = GetAppropriateSessionServiceIfExisting(browser);
   if (service) {
-    service->SetWindowBounds(browser->session_id(), bounds, show_state);
+    service->SetWindowBounds(browser->GetSessionID(), bounds, show_state);
   }
 }
 
 void SaveWindowWorkspace(Browser* browser, const std::string& workspace) {
   SessionServiceBase* service = GetAppropriateSessionServiceIfExisting(browser);
   if (service) {
-    service->SetWindowWorkspace(browser->session_id(), workspace);
+    service->SetWindowWorkspace(browser->GetSessionID(), workspace);
   }
 }
 
@@ -143,7 +144,7 @@ void SaveWindowVisibleOnAllWorkspaces(Browser* browser,
                                       bool visible_on_all_workspaces) {
   SessionServiceBase* service = GetAppropriateSessionServiceIfExisting(browser);
   if (service) {
-    service->SetWindowVisibleOnAllWorkspaces(browser->session_id(),
+    service->SetWindowVisibleOnAllWorkspaces(browser->GetSessionID(),
                                              visible_on_all_workspaces);
   }
 }

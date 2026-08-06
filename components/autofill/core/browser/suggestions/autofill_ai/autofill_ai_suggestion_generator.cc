@@ -61,6 +61,8 @@
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/personal_context/core/personal_context_features.h"
+#include "components/personal_context/core/personal_context_prefs.h"
+#include "components/personal_context/first_run/personal_context_first_run_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -1024,8 +1026,20 @@ bool ShouldShowPrivateInferenceNotice(const AutofillField& trigger_field,
                   prefs::kAutofillAiPrivateInferenceNoticeFirstShownTimestamp)
             : base::Time();
   const base::Time ambient_autofill_notice_acked =
-      prefs ? prefs->GetTime(prefs::kAmbientAutofillNoticeAcknowledgedTimestamp)
+      prefs ? prefs->GetTime(personal_context::prefs::
+                                 kAmbientAutofillNoticeAcknowledgedTimestamp)
             : base::Time();
+
+  const bool ambient_autofill_notice_impression_shown =
+      prefs &&
+      prefs->GetInteger(
+          personal_context::prefs::
+              kPersonalContextAmbientAutofillNoticeImpressionCount) > 0;
+
+  if (ambient_autofill_notice_impression_shown &&
+      ambient_autofill_notice_acked.is_null()) {
+    return false;
+  }
 
   const bool private_inference_notice_never_shown =
       private_inference_notice_first_shown.is_null();
@@ -1085,12 +1099,17 @@ std::vector<Suggestion> CreateAutofillAiFillingSuggestions(
     return {};
   }
 
+  bool personal_context_notice_added = false;
   if (IsPersonalContextNoticeSuggestionSupported() &&
-      HasPersonalContextSuggestion(suggestions, all_entities) &&
-      client.ShouldShowPersonalContextAmbientAutofillNotice()) {
-    Suggestion& suggestion =
-        suggestions.emplace_back(SuggestionType::kPersonalContextNotice);
-    suggestion.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+      HasPersonalContextSuggestion(suggestions, all_entities)) {
+    personal_context::PersonalContextFirstRunService* service =
+        client.GetPersonalContextFirstRunService();
+    if (service && service->ShouldShowPersonalContextAmbientAutofillNotice()) {
+      Suggestion& suggestion =
+          suggestions.emplace_back(SuggestionType::kPersonalContextNotice);
+      suggestion.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+      personal_context_notice_added = true;
+    }
   }
 
   if (should_show_fetching_suggestions) {
@@ -1100,7 +1119,7 @@ std::vector<Suggestion> CreateAutofillAiFillingSuggestions(
     }
   }
 
-  if (should_show_private_inference_notice) {
+  if (should_show_private_inference_notice && !personal_context_notice_added) {
     suggestions.emplace_back(SuggestionType::kAutofillAiPrivateInferenceNotice);
   }
 

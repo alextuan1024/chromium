@@ -15,14 +15,13 @@ import android.widget.TextView;
 
 import androidx.appcompat.widget.ActionMenuView;
 import androidx.appcompat.widget.Toolbar;
-import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
-import androidx.fragment.app.FragmentHostCallback;
 import androidx.fragment.app.FragmentManager;
 import androidx.slidingpanelayout.widget.SlidingPaneLayout;
 
 import com.google.android.material.appbar.AppBarLayout;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -31,6 +30,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -107,10 +107,16 @@ public class SettingsSearchCoordinatorUnitTest {
                         modalDialogSupplier);
     }
 
+    @After
+    public void tearDown() {
+        // Avoid runnable pollution between tests.
+        ShadowLooper.idleMainLooper();
+    }
+
     @Test
     public void testAccessibilityStateChanged_whenMultiColumnSettingsNotAdded_doesNotCrash() {
-        // Mock multiColumnSettings to return null context (not attached).
-        when(mMultiColumnSettings.getContext()).thenReturn(null);
+        // Mock multiColumnSettings to return null (not attached).
+        when(mMultiColumnSettings.getChildFragmentManagerOrNull()).thenReturn(null);
 
         var state =
                 new AccessibilityState.State(
@@ -121,19 +127,10 @@ public class SettingsSearchCoordinatorUnitTest {
     }
 
     @Test
-    public void testAccessibilityStateChanged_whenMultiColumnSettingsAdded_doesNotCrash()
-            throws Exception {
-        // Mock multiColumnSettings to be attached (getContext() is non-null) and return a child
-        // fragment manager.
-        when(mMultiColumnSettings.getContext()).thenReturn(mActivity);
-
-        // Set mHost to a non-null mock to bypass mHost != null check in getChildFragmentManager()
-        Object mockHost = mock(FragmentHostCallback.class);
-        setFragmentField(mMultiColumnSettings, "mHost", mockHost);
-
-        // Set mChildFragmentManager to our mocked childFragmentManager
+    public void testAccessibilityStateChanged_whenMultiColumnSettingsAdded_doesNotCrash() {
+        // Mock multiColumnSettings to be attached and return a child fragment manager.
         FragmentManager childFragmentManager = mock(FragmentManager.class);
-        setFragmentField(mMultiColumnSettings, "mChildFragmentManager", childFragmentManager);
+        when(mMultiColumnSettings.getChildFragmentManagerOrNull()).thenReturn(childFragmentManager);
         when(childFragmentManager.isStateSaved()).thenReturn(false);
 
         var state =
@@ -152,15 +149,14 @@ public class SettingsSearchCoordinatorUnitTest {
     }
 
     @Test
-    public void testOnHeaderLayoutUpdated_switchesToSingleColumnMode() throws Exception {
-        when(mMultiColumnSettings.getContext()).thenReturn(mActivity);
-        Object mockHost = mock(FragmentHostCallback.class);
-        setFragmentField(mMultiColumnSettings, "mHost", mockHost);
+    public void testOnHeaderLayoutUpdated_switchesToSingleColumnMode() {
         FragmentManager childFragmentManager = mock(FragmentManager.class);
-        setFragmentField(mMultiColumnSettings, "mChildFragmentManager", childFragmentManager);
+        when(mMultiColumnSettings.getChildFragmentManagerOrNull()).thenReturn(childFragmentManager);
 
         SlidingPaneLayout slidingPaneLayout = new SlidingPaneLayout(mActivity);
         when(mMultiColumnSettings.getView()).thenReturn(slidingPaneLayout);
+        when(mMultiColumnSettings.requireView()).thenReturn(slidingPaneLayout);
+        when(mMultiColumnSettings.getSlidingPaneLayout()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
 
         // Start in multi-column mode.
@@ -180,10 +176,15 @@ public class SettingsSearchCoordinatorUnitTest {
         assertEquals(appBarLayout, searchBox.getParent());
     }
 
-    private void setFragmentField(Fragment fragment, String fieldName, Object value)
-            throws Exception {
-        java.lang.reflect.Field field = Fragment.class.getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(fragment, value);
+    @Test
+    public void testEmptyFragmentClear_whenViewsDetached_doesNotCrash() {
+        EmptyFragment emptyFragment = new EmptyFragment();
+        mActivity
+                .getSupportFragmentManager()
+                .beginTransaction()
+                .add(emptyFragment, "empty")
+                .commitNow();
+        // Clear when R.id.empty_state_icon is not present in Activity view hierarchy.
+        emptyFragment.clear();
     }
 }

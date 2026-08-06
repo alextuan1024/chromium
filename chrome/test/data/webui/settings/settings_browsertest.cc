@@ -131,10 +131,6 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, AutofillAiEntriesList) {
   RunTest("settings/autofill_ai_entries_list_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(SettingsTest, AutofillAiSection) {
-  RunTest("settings/autofill_ai_section_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(SettingsTest, AutofillAiAddOrEditDialog) {
   RunTest("settings/autofill_ai_add_or_edit_dialog_test.js", "mocha.run()");
 }
@@ -1324,8 +1320,6 @@ IN_PROC_BROWSER_TEST_F(SettingsSystemPageTest, SystemPage) {
 #endif  //! BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-// TODO(crbug.com/537695604): Re-enable on ChromeOS after investigating failure.
-#if !BUILDFLAG(IS_CHROMEOS)
 class SettingsAiPageOfficialTest : public SettingsBrowserTest {
  private:
   base::test::ScopedFeatureList scoped_feature_list_{
@@ -1335,7 +1329,6 @@ class SettingsAiPageOfficialTest : public SettingsBrowserTest {
 IN_PROC_BROWSER_TEST_F(SettingsAiPageOfficialTest, AiPageOfficial) {
   RunTest("settings/ai_page_official_test.js", "mocha.run()");
 }
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 using SettingsAboutPageTest = SettingsBrowserTest;
@@ -1395,7 +1388,16 @@ IN_PROC_BROWSER_TEST_F(SettingsClearBrowsingDataTest,
           "runMochaSuite('DeleteBrowsingDataTimePicker')");
 }
 
-using SettingsCookiesPageTest = SettingsBrowserTest;
+class SettingsCookiesPageTest : public SettingsBrowserTest {
+ public:
+  SettingsCookiesPageTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        privacy_sandbox::kRelatedWebsiteSetsUi);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, CookiesPageTest) {
   RunTest("settings/cookies_page_test.js", "runMochaSuite('CookiesPageTest')");
@@ -1933,20 +1935,20 @@ IN_PROC_BROWSER_TEST_F(SettingsTranslatePageTest, MetricsBrowser) {
 
 using YourSavedInfoTest = SettingsBrowserTest;
 
-IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, YourSavedInfoAccount) {
-  RunTest("settings/your_saved_info_account_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, AutofillAccount) {
+  RunTest("settings/autofill_account_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, CollapsibleAutofillSettingsCard) {
   RunTest("settings/collapsible_autofill_settings_card_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, YourSavedInfoPage) {
-  RunTest("settings/your_saved_info_page_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, AutofillPage) {
+  RunTest("settings/autofill_page_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, YourSavedInfoPageIndex) {
-  RunTest("settings/your_saved_info_page_index_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, AutofillPageIndex) {
+  RunTest("settings/autofill_page_index_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, IdentityDocsPageTest) {

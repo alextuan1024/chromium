@@ -4,9 +4,10 @@
 
 #include <initializer_list>
 #include <memory>
+#include <ranges>
 #include <string_view>
 
-#include "base/containers/adapters.h"
+#include "base/cfi_buildflags.h"
 #include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
@@ -22,6 +23,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/types/optional_util.h"
+#include "build/build_config.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/net/storage_test_utils.h"
@@ -513,7 +515,7 @@ class StorageAccessAPIBaseBrowserTest : public policy::PolicyTest {
                         const GURL& destination) {
     GURL url = destination;
 
-    for (const auto& host : base::Reversed(hosts)) {
+    for (const auto& host : std::views::reverse(hosts)) {
       url = https_server().GetURL(host, ServerRedirectPath(url));
     }
     return url;
@@ -1069,8 +1071,19 @@ IN_PROC_BROWSER_TEST_F(StorageAccessAPIBrowserTest,
   EXPECT_FALSE(content::ExecJs(nested_frame, fetch_blob_url_js));
 }
 
+// TODO(https://crbug.com/540611509): Fails on Linux CFI and Linux debug builds.
+#if BUILDFLAG(IS_LINUX) &&                                      \
+    (!defined(NDEBUG) ||                                        \
+     BUILDFLAG(CFI_CAST_CHECK) || BUILDFLAG(CFI_ICALL_CHECK) || \
+     BUILDFLAG(CFI_ENFORCEMENT_TRAP) || BUILDFLAG(CFI_ENFORCEMENT_DIAGNOSTIC))
+#define MAYBE_AccessGranted_DoesNotConsumeUserInteraction \
+  DISABLED_AccessGranted_DoesNotConsumeUserInteraction
+#else
+#define MAYBE_AccessGranted_DoesNotConsumeUserInteraction \
+  AccessGranted_DoesNotConsumeUserInteraction
+#endif
 IN_PROC_BROWSER_TEST_F(StorageAccessAPIBrowserTest,
-                       AccessGranted_DoesNotConsumeUserInteraction) {
+                       MAYBE_AccessGranted_DoesNotConsumeUserInteraction) {
   SetBlockThirdPartyCookies(true);
   prompt_factory()->set_response_type(
       permissions::PermissionRequestManager::ACCEPT_ALL);
@@ -2518,7 +2531,7 @@ class StorageAccessAPIWithFirstPartySetsBrowserTest
     std::vector<base::test::FeatureRefAndParams> enabled =
         StorageAccessAPIBaseBrowserTest::GetEnabledFeatures();
     enabled.push_back(
-        {blink::features::kStorageAccessAPIRelatedWebsiteSets, {}});
+        {content_settings::features::kStorageAccessAPIRelatedWebsiteSets, {}});
     return enabled;
   }
 
@@ -2811,7 +2824,7 @@ class StorageAccessAPIWithFirstPartySetsAndImplicitGrantsBrowserTest
     std::vector<base::test::FeatureRefAndParams> enabled =
         StorageAccessAPIBaseBrowserTest::GetEnabledFeatures();
     enabled.push_back(
-        {blink::features::kStorageAccessAPIRelatedWebsiteSets, {}});
+        {content_settings::features::kStorageAccessAPIRelatedWebsiteSets, {}});
     return enabled;
   }
 

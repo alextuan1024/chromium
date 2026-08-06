@@ -636,7 +636,10 @@ void WebUIBrowserWindow::ProcessFullscreen(bool fullscreen) {
     page->OnFullscreenModeChanged(fullscreen, context);
   }
 
-  browser_->WindowFullscreenStateChanged();
+  browser_->GetFeatures()
+      .exclusive_access_manager()
+      ->fullscreen_controller()
+      ->WindowFullscreenStateChanged();
 }
 
 void WebUIBrowserWindow::DeleteBrowserWindow() {
@@ -1295,5 +1298,5 @@ void WebUIBrowserWindow::CloseSidePanel() {
 
 WebUIBrowserSidePanelUI* WebUIBrowserWindow::GetWebUIBrowserSidePanelUI() {
   return static_cast<WebUIBrowserSidePanelUI*>(
-      browser_->browser_window_features()->side_panel_ui());
+      browser_->GetFeatures().side_panel_ui());
 }

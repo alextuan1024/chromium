@@ -2021,6 +2021,7 @@ source_set("unit_tests") {
     "extension_special_storage_policy_unittest.cc",
     "extension_tab_util_unittest.cc",
     "extension_telemetry_service_verdict_handler_unittest.cc",
+    "extension_ui_util_unittest.cc",
     "extension_url_overrides_unittest.cc",
     "extension_user_script_loader_unittest.cc",
     "extension_util_unittest.cc",
@@ -2542,6 +2543,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/extensions",
     "//chrome/browser/ui/extensions:test_support",
     "//chrome/browser/ui/navigator",
+    "//chrome/browser/ui/tabs/alert:tab_alert",
     "//chrome/browser/ui/toolbar",
     "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/ui/webui/extensions:browser_tests",
@@ -2851,7 +2853,10 @@ source_set("browser_tests") {
         "api/web_authentication_proxy/web_authentication_proxy_apitest.cc",
       ]
 
-      deps += [ "//chrome/browser/ui/webui/app_home:browser_tests" ]
+      deps += [
+        "//chrome/browser/ui/views/web_apps/sub_apps",
+        "//chrome/browser/ui/webui/app_home:browser_tests",
+      ]
     }
 
     if (enterprise_cloud_content_analysis || is_android) {
@@ -3194,6 +3199,10 @@ source_set("interactive_ui_tests") {
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
   sources = []
   deps = []
+
+  if (!is_android) {
+    deps += [ "//chrome/browser/ui/window_feature_controller" ]
+  }
 
   if (enable_extensions) {
     sources += [

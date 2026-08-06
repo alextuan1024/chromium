@@ -108,8 +108,8 @@
 #import "ios/chrome/browser/shared/coordinator/default_browser_promo/non_modal_default_browser_promo_scheduler_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller+OTRProfileDeletion.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_controller_testing.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
-#import "ios/chrome/browser/shared/coordinator/scene/scene_state_options.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_prefs.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_ui_provider.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
@@ -1724,16 +1724,15 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   }
 }
 
-- (void)connectWithOptions:(SceneStateOptions)options {
+- (void)connectWithProfileState:(ProfileState*)profileState
+                 sceneSessionID:(std::string_view)sceneSessionID {
   DCHECK(!_sceneState.profileState);
-
-  ProfileState* profileState = options.profile_state;
+  DCHECK(!sceneSessionID.empty());
   DCHECK(profileState);
 
   // Set the properties to SceneState.
-  DCHECK(!options.identifier.empty());
   _sceneState.profileState = profileState;
-  _sceneState.sceneSessionID = options.identifier;
+  _sceneState.sceneSessionID = sceneSessionID;
 
   // Connect the ProfileState with the SceneState.
   [profileState sceneStateConnected:_sceneState];
@@ -2672,6 +2671,17 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
       initWithEntryPoint:gemini::EntryPoint::AppSwitcherAISummarization];
   startupState.prepopulatedPrompt =
       l10n_util::GetNSString(IDS_IOS_GEMINI_SUMMARIZE_PAGE_PROMPT);
+
+  AuthenticationService* authService =
+      AuthenticationServiceFactory::GetForProfile(browser->GetProfile());
+  id<SystemIdentity> identity =
+      authService ? authService->GetPrimaryIdentity() : nil;
+  NSString* activeHashedGaiaID = identity ? identity.hashedGaiaID : nil;
+  NSString* targetHashedGaiaID = self.startupParameters.appSwitcherHashedUserID;
+  if (targetHashedGaiaID.length && activeHashedGaiaID.length &&
+      ![targetHashedGaiaID isEqualToString:activeHashedGaiaID]) {
+    startupState.isMismatchedAccount = YES;
+  }
 
   id<GeminiCommands> geminiHandler =
       HandlerForProtocol(browser->GetCommandDispatcher(), GeminiCommands);

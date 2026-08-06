@@ -576,7 +576,7 @@ constexpr base::FeatureParam<double>
         /*name=*/kIOSOneTapMiniMapRestrictionMinAlphanumProportionParamName,
         /*default_value=*/0.8};
 
-BASE_FEATURE(kIOSMiniMapUniversalLink, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIOSMiniMapUniversalLink, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIOSMiniMapUniversalLinkCounterfactual,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1028,6 +1028,9 @@ const base::FeatureParam<base::TimeDelta> kIOSSoftLockBackgroundThreshold{
 BASE_FEATURE(kAimCobrowse, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsAimCobrowseEnabled() {
+  if (GetChannel() == version_info::Channel::STABLE) {
+    return false;
+  }
   return base::FeatureList::IsEnabled(kAimCobrowse);
 }
 
@@ -1168,10 +1171,10 @@ bool IsIdentityAwarenessEnabled() {
   return base::FeatureList::IsEnabled(kIdentityAwareness);
 }
 
-BASE_FEATURE(kAiAvatarRingIos, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAiSubscriptionAvatarRingIOS, base::FEATURE_DISABLED_BY_DEFAULT);
 
-bool IsAiAvatarRingIosEnabled() {
-  return base::FeatureList::IsEnabled(kAiAvatarRingIos);
+bool IsAiSubscriptionAvatarRingIOSEnabled() {
+  return base::FeatureList::IsEnabled(kAiSubscriptionAvatarRingIOS);
 }
 
 BASE_FEATURE(kInfobarBannerRevamp, base::FEATURE_DISABLED_BY_DEFAULT);

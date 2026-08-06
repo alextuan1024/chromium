@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/debug/dump_without_crashing.h"
@@ -43,6 +44,7 @@
 #include "chrome/browser/sessions/session_service_lookup.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -623,9 +625,11 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
   }
 
   if (!browser) {
-    browser = Browser::Create(Browser::CreateParams::CreateForApp(
-        GenerateApplicationNameFromAppId(app_id), true /* trusted_source */,
-        gfx::Rect(), profile, true /* user_gesture */));
+    browser = CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
+                                      GenerateApplicationNameFromAppId(app_id),
+                                      true /* trusted_source */, gfx::Rect(),
+                                      profile, true /* user_gesture */))
+                  ->GetBrowserForMigrationOnly();
 
     // If the current url isn't in scope, then set the initial url on the
     // AppBrowserController so that the 'x' button still shows up.
@@ -653,8 +657,8 @@ std::unique_ptr<AppBrowserController> MaybeCreateAppBrowserController(
     BrowserWindowInterface* bwi) {
   Browser* const browser = bwi->GetBrowserForMigrationOnly();
   std::unique_ptr<AppBrowserController> controller;
-  const webapps::AppId app_id =
-      GetAppIdFromApplicationName(browser->app_name());
+  const webapps::AppId app_id = GetAppIdFromApplicationName(
+      BrowserInitState::From(browser)->create_params().app_name);
   auto* const provider =
       WebAppProvider::GetForLocalAppsUnchecked(browser->GetProfile());
   if (provider && provider->registrar_unsafe().AppMatches(
@@ -733,8 +737,28 @@ Browser* CreateWebAppWindowMaybeWithHomeTab(
     const Browser::CreateParams& params) {
   CHECK(params.type == Browser::Type::TYPE_APP_POPUP ||
         params.type == Browser::Type::TYPE_APP);
-  Browser* browser = Browser::Create(params);
-  CHECK(GenerateApplicationNameFromAppId(app_id) == browser->app_name());
+  BrowserWindowCreateParams create_params =
+      params.type == BrowserWindowInterface::Type::TYPE_APP_POPUP
+          ? BrowserWindowCreateParams::CreateForAppPopup(
+                params.app_name, params.trusted_source, params.initial_bounds,
+                params.profile, params.user_gesture)
+          : BrowserWindowCreateParams::CreateForApp(
+                params.app_name, params.trusted_source, params.initial_bounds,
+                params.profile, params.user_gesture);
+#if BUILDFLAG(IS_CHROMEOS)
+  create_params.restore_id = params.restore_id;
+#endif
+  create_params.initial_show_state = params.initial_show_state;
+  create_params.can_resize = params.can_resize;
+  create_params.can_maximize = params.can_maximize;
+  create_params.can_fullscreen = params.can_fullscreen;
+  create_params.omit_from_session_restore = params.omit_from_session_restore;
+  create_params.should_trigger_session_restore =
+      params.should_trigger_session_restore;
+  Browser* browser = CreateBrowserWindow(std::move(create_params))
+                         ->GetBrowserForMigrationOnly();
+  CHECK(GenerateApplicationNameFromAppId(app_id) ==
+        BrowserInitState::From(browser)->create_params().app_name);
   if (params.type != Browser::Type::TYPE_APP_POPUP) {
     MaybeAddPinnedHomeTab(browser, app_id);
   }
@@ -931,7 +955,7 @@ void FocusAppContainer(BrowserWindowInterface* browser, int tab_index) {
     tab_strip_model->ActivateTabAt(tab_index);
   }
   // This call will un-minimize the window.
-  browser->GetBrowserForMigrationOnly()->GetBrowserView().Activate();
+  CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(browser)).Activate();
 }
 
 }  // namespace web_app

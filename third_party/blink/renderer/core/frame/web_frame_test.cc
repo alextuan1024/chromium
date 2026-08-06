@@ -14198,13 +14198,15 @@ TEST_F(WebFrameTest, RemoteViewportAndMainframeIntersections) {
   local_frame->GetFrame()
       ->GetDocument()
       ->GetLayoutView()
-      ->MapToVisualRectInAncestorSpace(nullptr, mainframe_rect,
-                                       kDontApplyMainFrameOverflowClip);
+      ->MapToVisualRectInAncestorSpace(
+          nullptr, mainframe_rect,
+          {VisualRectFlag::kDontApplyMainFrameOverflowClip});
   EXPECT_EQ(PhysicalRect(7, -11, 25, 35), mainframe_rect);
 
-  constexpr auto kGeometryMapperFlags = static_cast<VisualRectFlags>(
-      kUseGeometryMapper | kVisualRectApplyRemoteViewportTransform |
-      kIgnoreFilters);
+  constexpr VisualRectFlags kGeometryMapperFlags = {
+      VisualRectFlag::kUseGeometryMapper,
+      VisualRectFlag::kApplyRemoteViewportTransform,
+      VisualRectFlag::kIgnoreFilters};
 
   // Translate (0,0) by (7, -11) => (7, -11)
   // Clip against parent viewport (0, 0, 200, 140):
@@ -14436,7 +14438,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
     EXPECT_CALL(policy_container_host,
-                SetReferrerPolicy(network::mojom::ReferrerPolicy::kNever));
+                SetReferrerPolicy(network::mojom::ReferrerPolicy::kNever, _));
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy("no-referrer", std::string()),
         test_url);
@@ -14454,7 +14456,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
     EXPECT_CALL(policy_container_host,
-                SetReferrerPolicy(network::mojom::ReferrerPolicy::kOrigin));
+                SetReferrerPolicy(network::mojom::ReferrerPolicy::kOrigin, _));
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy("origin", std::string()),
         test_url);
@@ -14471,7 +14473,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), std::string()),
         test_url);
@@ -14489,7 +14491,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "origin"),
         test_url);
@@ -14506,7 +14508,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "same-origin"),
         test_url);
@@ -14523,7 +14525,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "no-referrer"),
         test_url);

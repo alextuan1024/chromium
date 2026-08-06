@@ -361,7 +361,7 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/true);
+        /*is_on_focus=*/true, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
@@ -390,7 +390,7 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/false);
+        /*is_on_focus=*/false, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -438,7 +438,7 @@ TEST_F(RealboxHandlerTest, AutocompleteController_StartWithSuggestInventory) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false);
+        /*is_on_focus=*/false, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -491,7 +491,7 @@ TEST_F(RealboxHandlerTest, SetInputMethodTest) {
     handler_->QueryAutocomplete(
         0, u"test query", /*prevent_inline_autocomplete=*/false, 10,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false);
+        /*is_on_focus=*/false, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"test query");
     EXPECT_EQ(input.text(), u"test query");
@@ -519,7 +519,7 @@ TEST_F(RealboxHandlerTest, SetInputMethodTest) {
     handler_->QueryAutocomplete(
         0, u"another query", /*prevent_inline_autocomplete=*/false, 13,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false);
+        /*is_on_focus=*/false, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"another query");
     EXPECT_EQ(input.text(), u"another query");
@@ -531,9 +531,10 @@ TEST_F(RealboxHandlerTest, SetInputMethodTest) {
   }
 }
 
-TEST_F(RealboxHandlerTest, GetPlaceholderConfig_NoPecApiReturnsEmpty) {
+TEST_F(RealboxHandlerTest,
+       GetCyclingPlaceholderConfig_NoAimEligibilityServiceReturnsEmpty) {
   base::test::TestFuture<searchbox::mojom::PlaceholderConfigPtr> future;
-  handler_->GetPlaceholderConfig(future.GetCallback());
+  handler_->GetCyclingPlaceholderConfig(future.GetCallback());
   auto config = future.Take();
 
   ASSERT_EQ(config->texts.size(), 0u);
@@ -554,10 +555,10 @@ std::unique_ptr<KeyedService> BuildMockAimEligibilityService(
 }
 }  // namespace
 
-class SearchboxHandlerPecApiTest : public RealboxHandlerTest {
+class SearchboxHandlerAimEligibilityTest : public RealboxHandlerTest {
  public:
-  SearchboxHandlerPecApiTest() = default;
-  ~SearchboxHandlerPecApiTest() override = default;
+  SearchboxHandlerAimEligibilityTest() = default;
+  ~SearchboxHandlerAimEligibilityTest() override = default;
 
  protected:
   raw_ptr<testing::NiceMock<MockAimEligibilityService>>
@@ -590,50 +591,30 @@ class SearchboxHandlerPecApiTest : public RealboxHandlerTest {
   }
 };
 
-TEST_F(SearchboxHandlerPecApiTest, GetPlaceholderConfig_WithToolConfigs) {
-  omnibox::SearchboxConfig& config = mock_aim_eligibility_service_->config();
-
-  auto* tool = config.add_tool_configs();
-  tool->set_tool(omnibox::TOOL_MODE_IMAGE_GEN);
-
-  auto* tool2 = config.add_tool_configs();
-  tool2->set_tool(omnibox::TOOL_MODE_CANVAS);
-
-  ON_CALL(*mock_aim_eligibility_service_, GetSearchboxConfig())
-      .WillByDefault(testing::Return(&config));
+TEST_F(SearchboxHandlerAimEligibilityTest,
+       GetCyclingPlaceholderConfig_AimEligibleReturnsEvergreenPlaceholders) {
+  ON_CALL(*mock_aim_eligibility_service_, IsAimEligible())
+      .WillByDefault(testing::Return(true));
 
   base::test::TestFuture<searchbox::mojom::PlaceholderConfigPtr> future;
-  handler_->GetPlaceholderConfig(future.GetCallback());
+  handler_->GetCyclingPlaceholderConfig(future.GetCallback());
   auto result = future.Take();
 
-  ASSERT_EQ(result->texts.size(), 3u);
+  ASSERT_EQ(result->texts.size(), 4u);
   EXPECT_EQ(result->texts[0], u"Ask Google");
-  EXPECT_EQ(result->texts[1], u"Describe your image");
-  EXPECT_EQ(result->texts[2], u"Create anything");
+  EXPECT_EQ(result->texts[1], u"Research a topic");
+  EXPECT_EQ(result->texts[2], u"Learn a new skill");
+  EXPECT_EQ(result->texts[3], u"Get advice");
 }
 
-TEST_F(SearchboxHandlerPecApiTest,
-       GetPlaceholderConfig_NoToolConfigsReturnsEmpty) {
-  omnibox::SearchboxConfig& config = mock_aim_eligibility_service_->config();
-
-  ON_CALL(*mock_aim_eligibility_service_, GetSearchboxConfig())
-      .WillByDefault(testing::Return(&config));
-
-  base::test::TestFuture<searchbox::mojom::PlaceholderConfigPtr> future;
-  handler_->GetPlaceholderConfig(future.GetCallback());
-  auto result = future.Take();
-
-  // Not eligible tools -> cycling disabled -> empty placeholder list.
-  ASSERT_EQ(result->texts.size(), 0u);
-}
-
-TEST_F(SearchboxHandlerPecApiTest,
-       GetPlaceholderConfig_NullSearchboxConfigReturnsEmpty) {
-  ON_CALL(*mock_aim_eligibility_service_, GetSearchboxConfig())
-      .WillByDefault(testing::Return(nullptr));
+TEST_F(SearchboxHandlerAimEligibilityTest,
+       GetCyclingPlaceholderConfig_NotAimEligibleReturnsEmpty) {
+  // Explicit: the mock's constructor defaults IsAimEligible() to true.
+  ON_CALL(*mock_aim_eligibility_service_, IsAimEligible())
+      .WillByDefault(testing::Return(false));
 
   base::test::TestFuture<searchbox::mojom::PlaceholderConfigPtr> future;
-  handler_->GetPlaceholderConfig(future.GetCallback());
+  handler_->GetCyclingPlaceholderConfig(future.GetCallback());
   auto result = future.Take();
 
   ASSERT_EQ(result->texts.size(), 0u);
@@ -749,7 +730,7 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/true);
+        /*is_on_focus=*/true, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
@@ -804,7 +785,7 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/false);
+        /*is_on_focus=*/false, /*keyword=*/"");
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -995,6 +976,54 @@ TEST_F(WebuiOmniboxHandlerTest, OnActiveTabChanged_SavesAndRestoresState) {
 
 TEST_F(WebuiOmniboxHandlerTest,
        CreateAutocompleteMatch_ContextualSearchIconOverride) {
+  AutocompleteMatch match;
+  match.suggestion_group_id = omnibox::GroupId::GROUP_CONTEXTUAL_SEARCH;
+  match.destination_url = GURL("https://example.com");
+
+  bookmarks::BookmarkModel* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(profile());
+  bookmark_model->LoadEmptyForTest();
+
+  auto mojom_match = handler_->CreateAutocompleteMatch(
+      match, 0, bookmark_model, omnibox::GroupConfigMap(),
+      omnibox_controller_->client()->GetTemplateURLService());
+
+  ASSERT_TRUE(mojom_match.has_value());
+  EXPECT_EQ(mojom_match.value()->icon_path,
+            searchbox_internal::kReplyRotated180IconResourceName);
+}
+
+TEST_F(WebuiOmniboxHandlerTest,
+       CreateAutocompleteMatch_ContextualSearchIconOverride_AskGSwapSuggestionIconEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      omnibox::kWebUIOmniboxAskGAboutThisPage,
+      {{"Omnibox_AskGSwapSuggestionIcon", "true"}});
+
+  AutocompleteMatch match;
+  match.suggestion_group_id = omnibox::GroupId::GROUP_CONTEXTUAL_SEARCH;
+  match.destination_url = GURL("https://example.com");
+
+  bookmarks::BookmarkModel* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(profile());
+  bookmark_model->LoadEmptyForTest();
+
+  auto mojom_match = handler_->CreateAutocompleteMatch(
+      match, 0, bookmark_model, omnibox::GroupConfigMap(),
+      omnibox_controller_->client()->GetTemplateURLService());
+
+  ASSERT_TRUE(mojom_match.has_value());
+  EXPECT_EQ(mojom_match.value()->icon_path,
+            searchbox_internal::kSearchSparkIconResourceName);
+}
+
+TEST_F(WebuiOmniboxHandlerTest,
+       CreateAutocompleteMatch_ContextualSearchIconOverride_AskGSwapIconEnabledOnly) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      omnibox::kWebUIOmniboxAskGAboutThisPage,
+      {{"Omnibox_AskGSwapIcon", "true"}});
+
   AutocompleteMatch match;
   match.suggestion_group_id = omnibox::GroupId::GROUP_CONTEXTUAL_SEARCH;
   match.destination_url = GURL("https://example.com");

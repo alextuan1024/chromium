@@ -33,6 +33,7 @@ import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
 import org.hamcrest.Matchers;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -112,6 +113,13 @@ public class ShowNtpAtStartupTest {
         EducationalTipModuleUtils.setEducationalTipActiveForTesting(false);
         // TODO(https://crbug.com/454091341): Enable incognito mode on this test suite.
         IncognitoUtils.setEnabledForTesting(false);
+    }
+
+    @After
+    public void tearDown() {
+        if (mActivityTestRule.getActivity() != null) {
+            ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
+        }
     }
 
     @Test
@@ -561,7 +569,10 @@ public class ShowNtpAtStartupTest {
     @Restriction(DeviceFormFactor.PHONE)
     @EnableFeatures({START_SURFACE_RETURN_TIME_IMMEDIATE, NEW_TAB_PAGE_CUSTOMIZATION_V2})
     // TODO(crbug.com/475816843): Remove this and update goldens once migration is complete.
-    @DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON})
+    @DisableFeatures({
+        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
+        SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING
+    })
     public void testToolbar_defaultBackground() throws IOException {
         mActivityTestRule.startFromLauncherAtNtp();
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();

@@ -18,6 +18,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
@@ -51,7 +52,8 @@ bool BrowserMatches(BrowserWindowInterface* browser,
                     const GURL& url) {
   return browser->GetProfile() == profile && browser->GetType() == type &&
          web_app::GetAppIdFromApplicationName(
-             browser->GetBrowserForMigrationOnly()->app_name()) == app_id &&
+             BrowserInitState::From(browser)->create_params().app_name) ==
+             app_id &&
          (url.is_empty() || BrowserMatchesURL(browser, url));
 }
 
@@ -233,10 +235,12 @@ BrowserDelegate* BrowserControllerImpl::NewTabWithPostData(
   navigate_params.browser = FindTabbedBrowserOnCurrentWorkspace(profile);
   if (!navigate_params.browser &&
       GetBrowserWindowCreationStatusForProfile(*profile) ==
-          Browser::CreationStatus::kOk) {
-    Browser::CreateParams create_params(profile, navigate_params.user_gesture);
+          BrowserWindowInterface::CreationStatus::kOk) {
+    BrowserWindowCreateParams create_params(profile,
+                                            navigate_params.user_gesture);
     create_params.should_trigger_session_restore = false;
-    navigate_params.browser = Browser::Create(create_params);
+    navigate_params.browser = CreateBrowserWindow(std::move(create_params))
+                                  ->GetBrowserForMigrationOnly();
   }
 
   Navigate(&navigate_params);

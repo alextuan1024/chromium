@@ -240,6 +240,14 @@ std::string VariationsFieldTrialCreator::GetLatestCountry() const {
              : seed_store_->GetLatestCountry();
 }
 
+std::string VariationsFieldTrialCreator::GetLatestGeoLevel1() const {
+  const std::string override_geo = base::ToLowerASCII(
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kVariationsOverrideGeoLevel1));
+  return !override_geo.empty() ? override_geo
+                               : seed_store_->GetLatestGeoLevel1();
+}
+
 bool VariationsFieldTrialCreator::SetUpFieldTrials(
     const std::vector<std::string>& variation_ids,
     const std::vector<base::FeatureList::FeatureOverrideInfo>& extra_overrides,
@@ -440,6 +448,7 @@ VariationsFieldTrialCreator::GetClientFilterableStateForVersion(
   state->session_consistency_country = GetLatestCountry();
   state->permanent_consistency_country = LoadPermanentConsistencyCountry(
       version, state->session_consistency_country);
+  state->session_consistency_geolevel1 = GetLatestGeoLevel1();
   // Update the stored permanent consistency country
   permanent_consistency_country_ = state->permanent_consistency_country;
   permanent_consistency_country_initialized_ = true;

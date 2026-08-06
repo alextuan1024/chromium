@@ -21,6 +21,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Process;
 import android.text.TextUtils;
 
 import androidx.browser.trusted.FileHandlingData;
@@ -30,7 +31,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.ContextUtils;
+import org.chromium.base.ContentUriUtils;
 import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -51,7 +52,6 @@ import org.chromium.content_public.browser.WebContents;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Manages web application launch configurations based on client mode. Provides methods to process
@@ -131,16 +131,15 @@ public class WebAppLaunchHandler {
     }
 
     private boolean isValidFileHandlingData(FileHandlingData fileHandlingData) {
-        String packageName = ContextUtils.getApplicationContext().getPackageName();
         for (Uri uri : fileHandlingData.uris) {
-            if (!isValidLaunchUri(uri, packageName)) {
+            if (!isValidLaunchUri(uri)) {
                 return false;
             }
         }
         return true;
     }
 
-    private static boolean isValidLaunchUri(Uri uri, String packageName) {
+    private static boolean isValidLaunchUri(Uri uri) {
         if (uri == null) return false;
 
         // Only content URIs are allowed. Legitimate file launching on Android should
@@ -150,14 +149,8 @@ public class WebAppLaunchHandler {
         }
 
         // Block Chrome's own Content URIs.
-        String authority = uri.getAuthority();
-        if (authority != null) {
-            String chromeAuthorityPrefix = packageName + ".";
-            if (authority
-                    .toLowerCase(Locale.US)
-                    .startsWith(chromeAuthorityPrefix.toLowerCase(Locale.US))) {
-                return false;
-            }
+        if (ContentUriUtils.isUriFromThisApp(uri)) {
+            return false;
         }
 
         return true;
@@ -482,8 +475,15 @@ public class WebAppLaunchHandler {
             try {
                 var caller = mActivity.getCurrentCaller();
                 if (caller != null) {
-                    return caller.checkContentUriPermission(uri, requestedPermission)
-                            == PackageManager.PERMISSION_GRANTED;
+                    if (caller.getUid() == Process.myUid()) {
+                        Log.d(
+                                TAG,
+                                "Caller is ourselves (trampoline launch). Falling back to session"
+                                        + " check.");
+                    } else {
+                        return caller.checkContentUriPermission(uri, requestedPermission)
+                                == PackageManager.PERMISSION_GRANTED;
+                    }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Failed to check caller's permission via getCurrentCaller.", e);

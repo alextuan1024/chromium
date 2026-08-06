@@ -267,6 +267,7 @@ class LocationBarMediator
     private final HintTextUpdater mHintTextUpdater;
 
     private SelectableView mUrlBarSelectableView;
+    private SelectableView mFuseboxAttachmentsSelectableView;
     private boolean mWaitingForInitialUrl;
     private @Nullable Boolean mIsLensOnOmniboxEnabled;
     private @Nullable ViewGroup mToolbarParent;
@@ -291,7 +292,9 @@ class LocationBarMediator
     private boolean mShouldShowButtonsWhenUnfocused;
     private float mUrlFocusChangeFraction;
     private @Deprecated boolean mUrlHasFocus; // Please check mCurrentInput instead.
-    private boolean mWindowHasFocus;
+    private final NonNullObservableSupplier<Boolean> mWindowHasFocusSupplier;
+    private final Callback<Boolean> mOnWindowFocusChanged = (hasFocus) -> updateShowStandbyRing();
+
     private @Nullable Boolean mPreviousDeleteButtonVisible;
     private @Nullable Boolean mPreviousInstallButtonVisible;
     private @Nullable Boolean mPreviousMicButtonVisible;
@@ -337,7 +340,8 @@ class LocationBarMediator
             FuseboxCoordinator fuseboxCoordinator,
             LocationBarEmbedder locationBarEmbedder,
             @Nullable OmniboxChipManager omniboxChipManager,
-            @Nullable LocationBarFocusScrimHandler scrimHandler) {
+            @Nullable LocationBarFocusScrimHandler scrimHandler,
+            NonNullObservableSupplier<Boolean> windowHasFocusSupplier) {
         mContext = context;
         mLocationBarLayout = locationBarLayout;
         mLocationBarDataProvider = locationBarDataProvider;
@@ -364,8 +368,8 @@ class LocationBarMediator
         mBrowserControlsStateProvider = browserControlsStateProvider;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mPageZoomIndicatorCoordinator = pageZoomIndicatorCoordinator;
-        var activity = mWindowAndroid.getActivity().get();
-        mWindowHasFocus = activity != null && activity.getWindow().isActive();
+        mWindowHasFocusSupplier = windowHasFocusSupplier;
+        mWindowHasFocusSupplier.addSyncObserver(mOnWindowFocusChanged);
         if (mPageZoomIndicatorCoordinator != null) {
             mPageZoomIndicatorCoordinator.setOnDismissCallbacks(
                     () -> updateZoomButtonVisibility(/* notifyEmbedder= */ true));
@@ -533,12 +537,28 @@ class LocationBarMediator
                     }
                 };
 
+        mFuseboxAttachmentsSelectableView =
+                new SelectableView() {
+                    @Override
+                    public boolean isVisible() {
+                        return mFuseboxCoordinator.getHasAttachmentsSupplier().get();
+                    }
+
+                    @Override
+                    public void setSelected(boolean isSelected) {}
+
+                    @Override
+                    public void handleActivationEvent(KeyEvent event) {}
+                };
+
         List<SelectableView> selectableViews =
                 List.of(
                         mUrlBarSelectableView,
                         wrapSelectableView(
-                                mLocationBarLayout.findViewById(R.id.fusebox_activation_chip)),
+                                mLocationBarLayout.getActivationChip(),
+                                mFuseboxCoordinator::onActivationChipSelectionChanged),
                         wrapSelectableView(mLocationBarLayout.getDeleteButton()),
+                        mFuseboxAttachmentsSelectableView,
                         autocompleteSelectableView,
                         wrapSelectableView(
                                 mLocationBarLayout.findViewById(R.id.fusebox_plus_button)),
@@ -557,7 +577,8 @@ class LocationBarMediator
         mLocationBarLayout.getUrlBar().setOnDragListener(dragDropHandler);
     }
 
-    private SelectableView wrapSelectableView(View view) {
+    private SelectableView wrapSelectableView(
+            View view, @Nullable Callback<Boolean> onSelectionChanged) {
         return new SelectableView() {
             @Override
             public boolean isVisible() {
@@ -567,6 +588,9 @@ class LocationBarMediator
             @Override
             public void setSelected(boolean isSelected) {
                 view.setSelected(isSelected);
+                if (onSelectionChanged != null) {
+                    onSelectionChanged.onResult(isSelected);
+                }
             }
 
             @Override
@@ -574,6 +598,10 @@ class LocationBarMediator
                 view.performClick();
             }
         };
+    }
+
+    private SelectableView wrapSelectableView(View view) {
+        return wrapSelectableView(view, null);
     }
 
     @SuppressWarnings("NullAway")
@@ -594,6 +622,7 @@ class LocationBarMediator
         mVoiceRecognitionHandler.destroy();
         mVoiceRecognitionHandler = null;
         mLocationBarDataProvider.removeObserver(this);
+        mWindowHasFocusSupplier.removeObserver(mOnWindowFocusChanged);
         mUrlFocusChangeListeners.clear();
         mUrlTextChangeListeners.clear();
         if (mPageZoomIndicatorCoordinator != null) {
@@ -946,7 +975,9 @@ class LocationBarMediator
 
         if (mUrlCoordinator.shouldAutocomplete()) {
             String siteSearchLabel = null;
-            if (defaultMatch != null && defaultMatch.getAssociatedKeyword() != null) {
+            if (mCurrentInput.getSiteSearchData() != null) {
+                siteSearchLabel = mCurrentInput.getSiteSearchData().fullName;
+            } else if (defaultMatch != null && defaultMatch.getAssociatedKeyword() != null) {
                 TemplateUrlService templateUrlService = mTemplateUrlServiceSupplier.get();
                 if (templateUrlService != null) {
                     siteSearchLabel =
@@ -1184,6 +1215,8 @@ class LocationBarMediator
             mLocationBarLayout
                     .getUrlBar()
                     .setAccessibilityTraversalBefore(R.id.fusebox_activation_chip);
+        } else if (mLocationBarLayout.getDeleteButton().getVisibility() == VISIBLE) {
+            mLocationBarLayout.getUrlBar().setAccessibilityTraversalBefore(R.id.delete_button);
         } else {
             mLocationBarLayout
                     .getUrlBar()
@@ -1591,6 +1624,10 @@ class LocationBarMediator
         set.constrainedHeight(mDropdown.getId(), true);
         set.applyTo(mLocationBarLayout);
         mLocationBarLayout.setReparentedToPopover(true);
+
+        // Recalculate alignment to account for added width in popover mode and to prevent re-layout
+        // causing a flicker in status view icon.
+        mEmbedderImpl.recalculateOmniboxAlignment();
         mUrlCoordinator.finishReparenting(true);
         mIsReparenting = false;
     }
@@ -2135,6 +2172,8 @@ class LocationBarMediator
         mPreviousDeleteButtonVisible = showDeleteButton;
 
         mLocationBarLayout.setDeleteButtonVisibility(showDeleteButton);
+        updateUrlBarAccessibilityOrder(
+                mFuseboxCoordinator.getActivationChipVisibilitySupplier().get());
 
         if (showDeleteButton) {
             if (mCurrentInput != null
@@ -2233,8 +2272,7 @@ class LocationBarMediator
         if (mUrlHasFocus || mIsUrlFocusChangeInProgress) return false;
         if (!mIsTablet
                 || mPageZoomIndicatorCoordinator == null
-                || getWebContentsForCurrentTab() == null
-                || mPageZoomIndicatorCoordinator.isZoomLevelDefault()) {
+                || getWebContentsForCurrentTab() == null) {
             return false;
         }
         return !mPageZoomIndicatorCoordinator.isZoomLevelDefault()
@@ -2622,6 +2660,11 @@ class LocationBarMediator
             mUrlCoordinator.maybeAcceptInlineSuggestion(event);
         }
 
+        if (mSelectionController.getSelectedView() == mFuseboxAttachmentsSelectableView) {
+            boolean fuseboxHandled = mFuseboxCoordinator.handleKeyEvent(keyCode, event);
+            if (fuseboxHandled) return true;
+        }
+
         boolean isTypedStateConventionalRequest =
                 mCurrentInput != null
                         && !mCurrentInput.isInZeroPrefixContext()
@@ -2631,21 +2674,14 @@ class LocationBarMediator
                 return mAutocompleteCoordinator.handleKeyEvent(keyCode, event);
             }
 
-            boolean selectionCouldLeaveAutocomplete =
-                    (isBackwardsTab && mAutocompleteCoordinator.isFirstItemSelected())
-                            || (isForwardTab && mAutocompleteCoordinator.isLastItemSelected());
             Integer positionBeforeHandle = mAutocompleteCoordinator.getSelectedIndex();
             boolean autocompleteHandled = mAutocompleteCoordinator.handleKeyEvent(keyCode, event);
             Integer positionAfterHandle = mAutocompleteCoordinator.getSelectedIndex();
-            boolean selectionShouldLeaveAutocomplete =
-                    selectionCouldLeaveAutocomplete
-                            && !Objects.equals(positionBeforeHandle, positionAfterHandle);
             boolean autocompleteSelectionMovedFromSecondToFirst =
                     Objects.requireNonNullElse(positionAfterHandle, -1) == 0
                             && Objects.requireNonNullElse(positionBeforeHandle, -1) == 1;
-            if (selectionShouldLeaveAutocomplete) {
+            if (!autocompleteHandled) {
                 mAutocompleteCoordinator.resetSelection();
-                autocompleteHandled = false;
                 if (mCurrentInput != null && mCurrentInput.isInZeroPrefixContext()) {
                     mCurrentInput.setUserText("");
                     mUrlCoordinator.setUrlBarData(
@@ -2677,21 +2713,39 @@ class LocationBarMediator
             if (mSelectionController.isAutocompleteListSelected()) {
                 // We just moved backwards to the autocomplete list. The last item of that list
                 // should be selected.
+                boolean autocompleteHasSelectableItems = mAutocompleteCoordinator.selectLastItem();
+                // Special case to avoid selecting an empty suggestions list: move past it if it's
+                // empty.
+                if (!autocompleteHasSelectableItems) {
+                    mSelectionController.selectPreviousItem();
+                }
                 mAutocompleteCoordinator.selectLastItem();
+            } else if (mSelectionController.getSelectedView()
+                    == mFuseboxAttachmentsSelectableView) {
+                mFuseboxCoordinator.selectLastAttachment();
             }
         } else if (isForwardTab) {
             if (!mSelectionController.selectNextItem()) return false;
             if (mSelectionController.isAutocompleteListSelected()) {
                 // We just moved forwards to the autocomplete list. The first item of that list
                 // should be selected.
-                mAutocompleteCoordinator.selectFirstItem();
-                // Special case for the typed state, where we support nested, simultaneous
-                // selection. The first item of the autocomplete list is selected at the same time
-                // as the url bar. To avoid needing to tab an extra time to go past this view or to
-                // its own nested selection, we re-handle the event.
-                if (isTypedStateConventionalRequest) {
+                boolean autocompleteHasSelectableItems = mAutocompleteCoordinator.selectFirstItem();
+                // Special case to avoid selecting an empty suggestions list: move past it if it's
+                // empty.
+                if (!autocompleteHasSelectableItems) {
+                    mSelectionController.selectNextItem();
+                } else if (isTypedStateConventionalRequest) {
+                    // Special case for the typed state, where we support nested, simultaneous
+                    // selection. The first item of the autocomplete list is selected at the same
+                    // time
+                    // as the url bar. To avoid needing to tab an extra time to go past this view or
+                    // to
+                    // its own nested selection, we re-handle the event.
                     mAutocompleteCoordinator.handleKeyEvent(keyCode, event);
                 }
+            } else if (mSelectionController.getSelectedView()
+                    == mFuseboxAttachmentsSelectableView) {
+                mFuseboxCoordinator.selectFirstAttachment();
             }
         }
 
@@ -2701,7 +2755,6 @@ class LocationBarMediator
 
     @Override
     public void onWindowFocusChanged(boolean windowHasFocus) {
-        mWindowHasFocus = windowHasFocus;
         updateShowStandbyRing();
     }
 
@@ -2710,7 +2763,7 @@ class LocationBarMediator
                 mCurrentInput != null
                         && mCurrentInput.getAutocompleteState() == AutocompleteState.STANDBY
                         && mSelectionController.getSelectedView() == mUrlBarSelectableView
-                        && mWindowHasFocus;
+                        && mWindowHasFocusSupplier.get();
         mLocationBarLayout.setShowStandbyRing(showStandbyRing);
     }
 
@@ -2930,12 +2983,6 @@ class LocationBarMediator
         }
 
         updateReparentingState();
-
-        // StatusMediator#onPreviewMatchUrlChanged observes this supplier, so we need it to see this
-        // null value before the observer is disconnected in StatusMediator#endInput. This will
-        // no longer be needed after implementing drafting w/o focus TODO(b/530079993), because
-        // suspend input won't clear the favicon anymore.
-        input.setPreviewMatchUrl(null);
 
         mAutocompleteCoordinator.endInput();
         mStatusCoordinator.endInput();

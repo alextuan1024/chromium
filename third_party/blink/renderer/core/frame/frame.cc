@@ -374,11 +374,6 @@ bool Frame::ConsumeTransientUserActivationInFrameTree() {
   bool was_active = user_activation_state_.IsActive();
   Frame& root = Tree().Top();
 
-  // To record UMA once per consumption, we arbitrarily picked the LocalFrame
-  // for root.
-  if (IsA<LocalFrame>(root))
-    root.user_activation_state_.RecordPreconsumptionUma();
-
   for (Frame* node = &root; node; node = node->Tree().TraverseNext())
     node->user_activation_state_.ConsumeIfActive();
 
@@ -1026,7 +1021,8 @@ void Frame::DetachFromParent() {
   Parent()->RemoveChild(this);
 }
 
-void Frame::AdjustOffsetByAncestorFrames(gfx::Point* origin_point) {
+void Frame::DeprecatedAdjustOffsetByAncestorFrames(gfx::Point* origin_point) {
+  CHECK(!RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled());
   CHECK(origin_point);
   Frame* current_frame = this;
   while (current_frame->Owner()) {

@@ -24,7 +24,8 @@ TabDragSession::TabDragSession(TabDragSessionParams params,
       end_callback_(std::move(params.end_callback)),
       start_point_in_screen_(params.start_point),
       last_mouse_screen_point_(params.start_point),
-      dragged_window_(params.source_window_id) {
+      dragged_window_(params.source_window_id),
+      tab_original_offset_x_(params.tab_original_offset_x) {
   CHECK(registry());
   CHECK(dragged_window_);
   TabDragWindowAdapter* source_window = registry()->Get(dragged_window_);
@@ -42,7 +43,8 @@ base::expected<void, mojo_base::mojom::ErrorPtr> TabDragSession::Start() {
     CHECK(window);
     window->SetCapture();
     injector_->GetSessionListener().OnSessionStarted(
-        dragged_tabs_, dragged_window_, start_point_in_screen_);
+        dragged_tabs_, dragged_window_, start_point_in_screen_,
+        tab_original_offset_x_);
   }
   return result;
 }
@@ -61,6 +63,14 @@ TabDragWindowRegistry* TabDragSession::registry() const {
 void TabDragSession::EndSession() {
   if (end_callback_) {
     std::move(end_callback_).Run();
+  }
+}
+
+void TabDragSession::OnDropTargetRegistered(DropTargetId target_id,
+                                            TabDragWindowId window_id) {
+  if (dragged_window_ == window_id && drag_mode_ == DragMode::kDetachedWindow) {
+    injector_->GetSessionListener().OnTargetChanged(target_id,
+                                                    last_mouse_screen_point_);
   }
 }
 
@@ -107,7 +117,9 @@ void TabDragSession::OnInputEvent(const TabDragInputEvent& event) {
       EndSession();
       break;
     case TabDragInputEvent::Type::kMoved:
-      HandleMovedEvent(event.screen_point);
+      if (drag_mode_ != DragMode::kDetachedWindow) {
+        HandleMovedEvent(event.screen_point);
+      }
       break;
   }
 }
@@ -212,7 +224,6 @@ bool TabDragSession::ShouldTearOff(const gfx::Point& screen_point) const {
 void TabDragSession::StartWindowDrag(TabDragWindowId window_id,
                                      const gfx::Point& screen_point) {
   drag_mode_ = DragMode::kDetachedWindow;
-  injector_->GetSessionListener().OnDragDetached(screen_point);
 
   TabDragWindowAdapter* window = registry()->Get(window_id);
   CHECK(window);
@@ -239,6 +250,8 @@ void TabDragSession::StartWindowDrag(TabDragWindowId window_id,
 
 void TabDragSession::DetachAndStartWindowDrag(const gfx::Point& screen_point) {
   drag_mode_ = DragMode::kDetaching;
+  injector_->GetSessionListener().OnDragDetached(screen_point);
+
   TabDragWindowAdapter* source_window = registry()->Get(dragged_window_);
   CHECK(source_window);
   auto detach_result = source_window->DetachToNewWindow(

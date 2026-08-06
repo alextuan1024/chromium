@@ -832,6 +832,12 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_GENERIC_ERROR" desc="Message shown when @memory search fails due to a generic or internal error." translateable="false">
     Something went wrong
   </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_FETCH_ERROR_NOTIFICATION" desc="A toast message appearing at the top of the screen when fetching AtMemory information fails." translateable="false">
+    Something went wrong. Try again
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_REAUTH_IN_PROGRESS_ERROR_NOTIFICATION" desc="A toast message appearing at the top of the screen when fetching AtMemory information fails due to reauth already in progress." translateable="false">
+    Another verification is in progress. Try again later.
+  </message>
   <message name="IDS_AUTOFILL_AT_MEMORY_SEARCH_AFFORDANCE_TITLE" desc="Title of the AtMemory search trigger affordance." translateable="false">
     Try searching in Chrome Memory
   </message>
@@ -847,6 +853,12 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_UNSUPPORTED_QUERY_DESCRIPTION" desc="A linkout that suggests using Gemini for a broader search or query, as the current recall feature could not handle the request. This text is a verb phrase short for the longer phrase: 'Try submitting your query to the Gemini in Chrome side panel'.">
     Ask Gemini in Chrome instead
   </message>
+  <message name="IDS_AT_MEMORY_NOTICE_TEXT_NO_LOGGING" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
+    Powered by Personal Intelligence with Gemini. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
+  </message>
+  <message name="IDS_AT_MEMORY_NOTICE_TITLE" desc="Headline of an informational notice introducing a new enhanced autofill feature. 'Gmail' is a proper branding name and should remain unlocalized and match standard guidelines across languages." formatter_data="android_java">
+    Now you can find and fill info from Gmail and more
+  </message>
   <if expr="is_android">
     <message name="IDS_AT_MEMORY_SEARCH_HINT" desc="Hint text for the search bar in the @memory bottom sheet." formatter_data="android_java" translateable="false">
       Find and fill
@@ -857,17 +869,8 @@
     <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_TITLE" desc="Title text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
       You’ll find your autofill suggestions here
     </message>
-    <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE" desc="Subtitle text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
-      Type what you need to find and fill info from your Connected Apps
-    </message>
-    <message name="IDS_AT_MEMORY_NOTICE_TITLE" desc="Headline of an informational notice introducing a new enhanced autofill feature. 'Gmail' is a proper branding name and should remain unlocalized and match standard guidelines across languages." formatter_data="android_java">
-      Now you can find and fill info from Gmail and more
-    </message>
     <message name="IDS_AT_MEMORY_NOTICE_TEXT" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
       Powered by Personal Intelligence with Gemini. Your requests, page titles, and URLs may be reviewed to improve enhanced autofill. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
-    </message>
-    <message name="IDS_AT_MEMORY_NOTICE_TEXT_NO_LOGGING" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
-      Powered by Personal Intelligence with Gemini. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
     </message>
     <message name="IDS_AT_MEMORY_NOTICE_OK_BUTTON" desc="Standard acknowledgment button label to dismiss the informational notice." formatter_data="android_java">
       OK
@@ -885,6 +888,11 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_MANAGE_CONTACT_INFO" desc="The text displayed at the bottom of the AtMemory popup to allow the user to manage their Autofill preferences for contact information. When the user clicks on it, opens the Contact info settings page." translateable="false">
     Manage contact info
   </message>
+  <if expr="is_android or is_ios">
+  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE" desc="Subtitle text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
+    Type what you need to find and fill info from your Connected Apps
+  </message>
+  </if>
 
   <!-- Autofill Address Edit Dialog -->
   <!-- Common on all platforms -->
@@ -1315,20 +1323,56 @@
     <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save driver's license in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save driver's license securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save driver's license securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_ID_CARD_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save ID card in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_ID_CARD_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save ID card securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_ID_CARD_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save ID card securely
     </message>
     <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save passport in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save passport securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save passport securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save vehicle in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save vehicle securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save vehicle securely
     </message>
     <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save KTN in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save KTN securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save KTN securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save redress number in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save redress number securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save redress number securely
     </message>
 
     <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved. For example, the user previously saved information related to their driver’s license. Now, the user is filling out a new form either with additional details associated with the driver’s license or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the driver’s license that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
@@ -1356,20 +1400,56 @@
     <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update driver's license in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update driver's license securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update driver's license securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_ID_CARD_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update ID card in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_ID_CARD_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update ID card securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_ID_CARD_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update ID card securely
     </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update passport in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update passport securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update passport securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update vehicle in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update vehicle securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update vehicle securely
     </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update KTN in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update KTN securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update KTN securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
       Update redress number in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved, with Google Wallet branding.">
+      Update redress number securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved.">
+      Update redress number securely
     </message>
 
     <message name="IDS_AUTOFILL_AI_UPDATE_ENTITY_DIALOG_SUBTITLE" desc="A description that appears beneath the Update title prompt asking users whether they want to update their data stored locally. For example, the user previously saved information related to their passport. Now, the user is filling out a new form either with additional details associated with the passport or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the passport that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
@@ -1462,20 +1542,56 @@
     <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save driver's license in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save driver's license securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save driver's license securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save identity card in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save identity card securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save identity card securely
     </message>
     <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save passport in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save passport securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save passport securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save vehicle in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save vehicle securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save vehicle securely
     </message>
     <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save Known Traveler Number in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save Known Traveler Number securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save Known Traveler Number securely
+    </message>
     <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
       Save redress number in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to save information they just filled in on a form, with Google Wallet branding.">
+      Save redress number securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_SAVE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to save information they just filled in on a form.">
+      Save redress number securely
     </message>
 
     <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved. For example, the user previously saved information related to their driver’s license. Now, the user is filling out a new form either with additional details associated with the driver’s license or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the driver’s license that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
@@ -1500,20 +1616,56 @@
     <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their driver’s license. Now, the user is filling out a new form either with additional details associated with the driver’s license or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the driver’s license that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
       Update driver's license in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their driver’s license. Now, the user is filling out a new form either with additional details associated with the driver’s license or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the driver’s license that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update driver's license securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_DRIVERS_LICENSE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their driver’s license. Now, the user is filling out a new form either with additional details associated with the driver’s license or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the driver’s license that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update driver's license securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their national identity card. Now, the user is filling out a new form either with additional details associated with the national identity card or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the national identity card that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Important: Avoid translations that refer to a single, specific government document. Instead try to find a general term that is inclusive of all identity cards that meet the definition below, including documents issued by foreign governments. DEFINITION OF “NATIONAL IDENTITY CARD”: The definition we use for this feature is: “An identity document that meets the following criteria: 1) Issued by the government 2) Primary purpose is proving a natural person's identity (as opposed to e.g. their residence) 3) Common form of identification that most copy keep with them 4) Not a passport or driver’s license.” EXAMPLES: This definition would include https://www.service-public.fr/particuliers/vosdroits/N358?lang=en. It would not include a United States Social Security Number or https://www.bzst.de/EN/Private_individuals/Tax_identification_number/tax_identification_number_node.html">
       Update identity card in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their national identity card. Now, the user is filling out a new form either with additional details associated with the national identity card or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the national identity card that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Important: Avoid translations that refer to a single, specific government document. Instead try to find a general term that is inclusive of all identity cards that meet the definition below, including documents issued by foreign governments. DEFINITION OF “NATIONAL IDENTITY CARD”: The definition we use for this feature is: “An identity document that meets the following criteria: 1) Issued by the government 2) Primary purpose is proving a natural person's identity (as opposed to e.g. their residence) 3) Common form of identification that most copy keep with them 4) Not a passport or driver’s license.” EXAMPLES: This definition would include https://www.service-public.fr/particuliers/vosdroits/N358?lang=en. It would not include a United States Social Security Number or https://www.bzst.de/EN/Private_individuals/Tax_identification_number/tax_identification_number_node.html">
+      Update identity card securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_NATIONAL_ID_CARD_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their national identity card. Now, the user is filling out a new form either with additional details associated with the national identity card or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the national identity card that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Important: Avoid translations that refer to a single, specific government document. Instead try to find a general term that is inclusive of all identity cards that meet the definition below, including documents issued by foreign governments. DEFINITION OF “NATIONAL IDENTITY CARD”: The definition we use for this feature is: “An identity document that meets the following criteria: 1) Issued by the government 2) Primary purpose is proving a natural person's identity (as opposed to e.g. their residence) 3) Common form of identification that most copy keep with them 4) Not a passport or driver’s license.” EXAMPLES: This definition would include https://www.service-public.fr/particuliers/vosdroits/N358?lang=en. It would not include a United States Social Security Number or https://www.bzst.de/EN/Private_individuals/Tax_identification_number/tax_identification_number_node.html">
+      Update identity card securely
     </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their passport. Now, the user is filling out a new form either with additional details associated with the passport or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the passport that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
       Update passport in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their passport. Now, the user is filling out a new form either with additional details associated with the passport or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the passport that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update passport securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their passport. Now, the user is filling out a new form either with additional details associated with the passport or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the passport that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update passport securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their car. Now, the user is filling out a new form either with additional details associated with the car or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the vehicle that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
       Update vehicle in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their car. Now, the user is filling out a new form either with additional details associated with the car or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the vehicle that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update vehicle securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their car. Now, the user is filling out a new form either with additional details associated with the car or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the vehicle that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
+      Update vehicle securely
     </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their Known Traveler Number. Now, the user is filling out a new form either with additional details associated with the Known Traveler Number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the Known Traveler Number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. This is designed for Known Traveler Numbers issued by the United States only. For more info, see https://www.tsa.gov/travel/frequently-asked-questions/what-known-traveler-number-ktn.">
       Update KTN in Google Wallet
     </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their Known Traveler Number. Now, the user is filling out a new form either with additional details associated with the Known Traveler Number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the Known Traveler Number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. This is designed for Known Traveler Numbers issued by the United States only. For more info, see https://www.tsa.gov/travel/frequently-asked-questions/what-known-traveler-number-ktn.">
+      Update KTN securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_KNOWN_TRAVELER_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their Known Traveler Number. Now, the user is filling out a new form either with additional details associated with the Known Traveler Number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the Known Traveler Number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. This is designed for Known Traveler Numbers issued by the United States only. For more info, see https://www.tsa.gov/travel/frequently-asked-questions/what-known-traveler-number-ktn.">
+      Update KTN securely
+    </message>
     <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their known redress number. Now, the user is filling out a new form either with additional details associated with the redress number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the redress number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Now a user can also save a “Redress number”. This is designed for redress numbers issued by the United States only. For more info, see https://www.dhs.gov/dhs-trip.">
       Update redress number in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_1_BRANDED" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their known redress number. Now, the user is filling out a new form either with additional details associated with the redress number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the redress number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Now a user can also save a “Redress number”. This is designed for redress numbers issued by the United States only. For more info, see https://www.dhs.gov/dhs-trip.">
+      Update redress number securely in Google Wallet
+    </message>
+    <message name="IDS_AUTOFILL_AI_UPDATE_REDRESS_NUMBER_ENTITY_DIALOG_TITLE_ANDROID_VARIANT_2_SECURELY" desc="The title of a dialog that prompts the user to update information associated with something they have previously saved in Google Wallet. For example, the user previously saved information related to their known redress number. Now, the user is filling out a new form either with additional details associated with the redress number or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the redress number that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome. Now a user can also save a “Redress number”. This is designed for redress numbers issued by the United States only. For more info, see https://www.dhs.gov/dhs-trip.">
+      Update redress number securely
     </message>
 
     <message name="IDS_AUTOFILL_AI_SAVE_ENTITY_MESSAGE_SUBTITLE" desc="A description that appears beneath the Save title message. This sentence notifies the user that their data will be stored locally. We prompt the user to save their information with Chrome with the promise that Chrome can then help the user fill out forms more quickly using their saved info.">

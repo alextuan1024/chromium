@@ -59,15 +59,23 @@ class AtMemoryBottomSheetMediator implements AtMemorySearchBarView.Delegate {
 
     // Interactions with the AtMemory notice.
     // LINT.IfChange(NoticeInteraction)
-    @IntDef({NoticeInteraction.SHOWN, NoticeInteraction.ACKNOWLEDGED, NoticeInteraction.COUNT})
+    @IntDef({
+        NoticeInteraction.SHOWN,
+        NoticeInteraction.ACKNOWLEDGED,
+        NoticeInteraction.DISMISSED,
+        NoticeInteraction.LINK_BUTTON_CLICKED,
+        NoticeInteraction.COUNT
+    })
     @Retention(RetentionPolicy.SOURCE)
     @interface NoticeInteraction {
         int SHOWN = 0;
         int ACKNOWLEDGED = 1;
-        int COUNT = 2;
+        int DISMISSED = 2;
+        int LINK_BUTTON_CLICKED = 3;
+        int COUNT = 4;
     }
 
-    // LINT.ThenChange(//tools/metrics/histograms/metadata/personal_context/enums.xml:PersonalContextAtMemoryNoticeInteractions)
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/personal_context/enums.xml:PopupNoticeInteractions)
 
     private final Context mContext;
     private final PropertyModel mModel;
@@ -134,6 +142,7 @@ class AtMemoryBottomSheetMediator implements AtMemorySearchBarView.Delegate {
         ModelList sheetItems = mHomeModel.get(HomeProperties.SHEET_ITEMS);
         sheetItems.clear();
 
+        boolean isNoticeVisible = hasNotice(suggestions);
         if (screenState.showZeroState) {
             sheetItems.add(
                     new ListItem(
@@ -141,7 +150,7 @@ class AtMemoryBottomSheetMediator implements AtMemorySearchBarView.Delegate {
         }
         if (screenState.showAtMemorySuggestions) {
             for (int i = 0; i < suggestions.size(); i++) {
-                if (suggestions.get(i).getSuggestionType() != SuggestionType.SEPARATOR) {
+                if (shouldShowSuggestion(suggestions.get(i), isNoticeVisible)) {
                     sheetItems.add(createListItemForSuggestion(suggestions.get(i), i));
                 }
             }
@@ -153,6 +162,29 @@ class AtMemoryBottomSheetMediator implements AtMemorySearchBarView.Delegate {
             mFlyoutModel.set(FlyoutProperties.SUGGESTIONS, List.of());
             sheetItems.clear();
         }
+    }
+
+    private static boolean shouldShowSuggestion(
+            AutofillSuggestion suggestion, boolean isNoticeVisible) {
+        if (suggestion.getSuggestionType() == SuggestionType.SEPARATOR) {
+            return false;
+        }
+        // Do not show the fetching illustration card if the notice is visible to avoid displaying
+        // multiple card banners simultaneously.
+        if (suggestion.getSuggestionType() == SuggestionType.AT_MEMORY_FETCHING
+                && isNoticeVisible) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean hasNotice(List<AutofillSuggestion> suggestions) {
+        for (AutofillSuggestion suggestion : suggestions) {
+            if (suggestion.getSuggestionType() == SuggestionType.PERSONAL_CONTEXT_NOTICE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ListItem createListItemForSuggestion(AutofillSuggestion suggestion, int position) {

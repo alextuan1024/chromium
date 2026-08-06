@@ -12,6 +12,7 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
@@ -143,6 +144,7 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
     private final Runnable mClearUrlBarTextCallback;
     private final Supplier<String> mUrlBarTextSupplier;
     private final boolean mIsForcedPhoneStyleOmnibox;
+    private final NonNullObservableSupplier<Boolean> mWindowHasFocusSupplier;
 
     /**
      * Creates a new instance of {@link FuseboxCoordinator}.
@@ -159,6 +161,7 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
      * @param clearUrlBarTextRunnable Callback to clear the URL bar text.
      * @param urlBarTextSupplier Supplier for the current URL bar text
      * @param isForcedPhoneStyleOmnibox Whether to force phone-style Omnibox layout.
+     * @param windowHasFocusSupplier Supplier for whether the window currently has focus.
      */
     public FuseboxCoordinator(
             Context context,
@@ -172,7 +175,8 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
             Runnable onActivationChipClickedWithQuery,
             Runnable clearUrlBarTextRunnable,
             Supplier<String> urlBarTextSupplier,
-            boolean isForcedPhoneStyleOmnibox) {
+            boolean isForcedPhoneStyleOmnibox,
+            NonNullObservableSupplier<Boolean> windowHasFocusSupplier) {
         mActivity = assumeNonNull(ContextUtils.activityFromContext(context));
         mWindowAndroid = windowAndroid;
         mParent = parent;
@@ -188,6 +192,7 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
         mOnActivationChipClickedWithQuery = onActivationChipClickedWithQuery;
         mClearUrlBarTextCallback = clearUrlBarTextRunnable;
         mUrlBarTextSupplier = urlBarTextSupplier;
+        mWindowHasFocusSupplier = windowHasFocusSupplier;
 
         if (!OmniboxFeatures.isMultimodalInputEnabled(context)
                 || parent.findViewById(R.id.fusebox_request_type) == null) {
@@ -314,7 +319,8 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
                         mOnActivationChipClickedWithQuery,
                         mClearUrlBarTextCallback,
                         mUrlBarTextSupplier,
-                        mHasAttachmentsSupplier);
+                        mHasAttachmentsSupplier,
+                        mWindowHasFocusSupplier);
         mMediator.onContextualTaskFocusChanged(mHasContextualTasksFocus);
         if (mLastBrandedColorScheme != null) {
             mMediator.updateVisualsForState(mLastBrandedColorScheme);
@@ -464,6 +470,26 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
             return;
         }
         mModel.get(FuseboxProperties.ACTIVATION_CHIP_CLICKED).run();
+    }
+
+    /**
+     * Handle a key event by activating it or changing the currently keyboard-selected view; returns
+     * true if a view was selected or activated.
+     */
+    public boolean handleKeyEvent(int keyCode, KeyEvent event) {
+        return mMediator != null && mMediator.handleKeyEvent(keyCode, event);
+    }
+
+    /** Set the first attachment as selected. Does nothing if there are not attachments. */
+    public void selectFirstAttachment() {
+        if (mMediator == null) return;
+        mMediator.selectFirstAttachment();
+    }
+
+    /** Set the last attachment as selected. Does nothing if there are not attachments. */
+    public void selectLastAttachment() {
+        if (mMediator == null) return;
+        mMediator.selectLastAttachment();
     }
 
     // TemplateUrlServiceObserver

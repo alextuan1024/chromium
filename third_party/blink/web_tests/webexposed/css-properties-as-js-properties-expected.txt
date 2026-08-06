@@ -359,6 +359,7 @@ mathDepth
 mathShift
 mathStyle
 maxBlockSize
+maxContentSizing
 maxHeight
 maxInlineSize
 maxLines
@@ -559,6 +560,7 @@ textBoxTrim
 textCombineUpright
 textDecoration
 textDecorationColor
+textDecorationInset
 textDecorationLine
 textDecorationSkipInk
 textDecorationSkipSpaces

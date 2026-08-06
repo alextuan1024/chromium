@@ -2693,6 +2693,7 @@ void RenderFrameImpl::CommitNavigation(
         fetch_later_loader_factory,
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token,
+    const base::UnguessableToken& initiator_state_token,
     const base::Uuid& base_auction_nonce,
     blink::mojom::PolicyContainerPtr policy_container,
     mojo::PendingRemote<blink::mojom::CodeCacheHost> code_cache_host,
@@ -2807,7 +2808,8 @@ void RenderFrameImpl::CommitNavigation(
   bool is_client_redirect =
       !!(common_params->transition & ui::PAGE_TRANSITION_CLIENT_REDIRECT);
   auto navigation_params = std::make_unique<WebNavigationParams>(
-      document_token, devtools_navigation_token, base_auction_nonce);
+      document_token, devtools_navigation_token, initiator_state_token,
+      base_auction_nonce);
   navigation_params->navigation_delivery_type =
       commit_params->navigation_delivery_type;
   navigation_params->is_client_redirect = is_client_redirect;
@@ -3153,6 +3155,7 @@ void RenderFrameImpl::CommitFailedNavigation(
         subresource_loader_factories,
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token,
+    const base::UnguessableToken& initiator_state_token,
     blink::mojom::PolicyContainerPtr policy_container,
     mojom::AlternativeErrorPageOverrideInfoPtr alternative_error_page_info,
     mojom::NavigationClient::CommitFailedNavigationCallback callback) {
@@ -3216,7 +3219,7 @@ void RenderFrameImpl::CommitFailedNavigation(
   commit_params->content_settings =
       blink::CreateDefaultRendererContentSettings();
   auto navigation_params = std::make_unique<WebNavigationParams>(
-      document_token, devtools_navigation_token,
+      document_token, devtools_navigation_token, initiator_state_token,
       /*base_auction_nonce=*/base::Uuid::GenerateRandomV4());
   FillNavigationParamsRequest(*common_params, *commit_params,
                               navigation_params.get());
@@ -4921,11 +4924,12 @@ void RenderFrameImpl::DidCreateScriptContext(v8::Local<v8::Context> context,
   v8::MicrotasksScope microtasks(GetAgentGroupScheduler().Isolate(),
                                  context->GetMicrotaskQueue(),
                                  v8::MicrotasksScope::kDoNotRunMicrotasks);
-  if (((enabled_bindings_.Has(BindingsPolicyValue::kMojoWebUi)) ||
-       enable_mojo_js_bindings_) &&
-      IsMainFrame() && world_id == ISOLATED_WORLD_ID_GLOBAL) {
+  if ((enable_mojo_js_bindings_ ||
+       (enabled_bindings_.Has(BindingsPolicyValue::kMojoWebUi) &&
+        IsMainFrame())) &&
+      world_id == ISOLATED_WORLD_ID_GLOBAL) {
     // We only allow these bindings to be installed when creating the main
-    // world context of the main frame.
+    // world context of the main frame (or subframes if explicitly enabled).
     blink::WebV8Features::EnableMojoJS(context, true);
 
     if (mojo_js_features_) {
@@ -5177,9 +5181,6 @@ RenderFrameImpl::MakeDidCommitProvisionalLoadParams(
 
   params->insecure_request_policy = frame_->GetInsecureRequestPolicy();
   params->insecure_navigations_set = frame_->GetInsecureRequestToUpgrade();
-
-  params->has_potentially_trustworthy_unique_origin =
-      frame_origin.IsOpaque() && frame_origin.IsPotentiallyTrustworthy();
 
   // Set the URL to be displayed in the browser UI to the user. Note this might
   // be different than the URL actually used in the DocumentLoader (see comments
@@ -5671,6 +5672,9 @@ void RenderFrameImpl::BeginNavigation(
   // to |this|.
   CHECK(in_frame_tree_);
 
+  // We should always have a valid `initiator_state_token`.
+  CHECK(!info->initiator_state_token.is_empty());
+
   // This might be the first navigation in this RenderFrame.
   const bool first_navigation_in_render_frame = !had_started_any_navigation_;
   had_started_any_navigation_ = true;
@@ -5711,7 +5715,7 @@ void RenderFrameImpl::BeginNavigation(
   if (!url.is_empty() && !use_archive && !IsURLHandledByNetworkStack(url) &&
       GetContentClient()->renderer()->HandleNavigation(
           this, frame_, info->url_request, info->navigation_type,
-          info->navigation_policy, false /* is_redirect */)) {
+          info->navigation_policy)) {
     return;
   }
 #endif
@@ -6449,9 +6453,13 @@ void RenderFrameImpl::BeginNavigationInternal(
     }
   }
 
+  // We must not send an empty `initiator_state_token` ot the browser process.
+  CHECK(!info->initiator_state_token.is_empty());
+
   blink::mojom::BeginNavigationParamsPtr begin_params =
       blink::mojom::BeginNavigationParams::New(
-          info->initiator_frame_token,
+          info->initiator_frame_token, info->initiator_state_token,
+          info->initiator_document_token,
           blink::GetWebURLRequestHeadersAsString(info->url_request).Latin1(),
           load_flags, info->url_request.GetSkipServiceWorker(),
           blink::GetRequestContextTypeForWebURLRequest(info->url_request),
@@ -6509,6 +6517,7 @@ void RenderFrameImpl::BeginNavigationInternal(
     if (begin_params->was_initiated_by_link_click ==
             prev_begin_params.was_initiated_by_link_click &&
         common_params->url == prev_common_params.url &&
+        common_params->url.SchemeIsHTTPOrHTTPS() &&
         common_params->method == "GET" && prev_common_params.method == "GET" &&
         common_params->initiator_origin ==
             prev_common_params.initiator_origin &&

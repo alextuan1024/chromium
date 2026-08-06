@@ -22,6 +22,7 @@ import android.os.PersistableBundle;
 import android.text.TextUtils;
 
 import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
@@ -37,7 +38,10 @@ import org.chromium.chrome.browser.LaunchIntentDispatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync_device_info.FormFactor;
 
 import java.util.ArrayList;
@@ -59,8 +63,10 @@ public class OtherDevicesShortcutController implements Destroyable {
     public static final String EXTRA_DEVICE_NAME =
             "org.chromium.chrome.browser.share.send_tab_to_self.extra.DEVICE_NAME";
 
-    private static final String SHORTCUT_ID_PREFIX = "stts-target-";
-    private static final String CATEGORY =
+    @VisibleForTesting public static final String SHORTCUT_ID_PREFIX = "stts-target-";
+
+    @VisibleForTesting
+    static final String CATEGORY =
             "org.chromium.chrome.browser.share.send_tab_to_self.category.DEVICE";
 
     // Limit to 2 devices to avoid overcrowding the share sheet and the launcher.
@@ -238,14 +244,15 @@ public class OtherDevicesShortcutController implements Destroyable {
         if (ChromeFeatureList.sSendTabToSelfDynamicShortcuts.isEnabled()) {
             List<TargetDeviceInfo> devices =
                     SendTabToSelfAndroidBridge.getAllTargetDeviceInfos(mProfile);
-            // TODO(crbug.com/484887324): Consider filtering out devices which won't show up in the
-            // "Recent Tabs" page - this may happen if a device has no eligible open tabs.
+            IdentityManager identityManager =
+                    IdentityServicesProvider.get().getIdentityManager(mProfile);
+            AccountInfo accountInfo =
+                    identityManager != null ? identityManager.getPrimaryAccountInfo() : null;
+            String givenName = accountInfo != null ? accountInfo.getGivenName() : null;
 
-            // LauncherShortcutActivity may create up to 2 dynamic shortcuts, which should always
-            // appear before the STTS shortcuts.
-            // TODO(crbug.com/484887324): Introduce a common manager class for all dynamic
-            // shortcuts.
-            int nextRank = 2;
+            // LauncherShortcutActivity may create a dynamic shortcut (with rank 0), which should
+            // always appear before the STTS shortcuts, so start at rank 1 here.
+            int nextRank = 1;
             // Limit the number of devices to avoid overcrowding the share sheet and the launcher.
             // The list of devices is sorted, so the most-recently-used devices will be used for
             // shortcuts.
@@ -272,12 +279,19 @@ public class OtherDevicesShortcutController implements Destroyable {
 
                 // Note: A Person can also have a name and an icon, but those are not used for the
                 // display of DirectShare targets.
-                // TODO(crbug.com/484887324): Is there any point in providing name/icon/key/uri?
                 Person person = new Person.Builder().setImportant(true).build();
 
                 PersistableBundle shortcutExtras = new PersistableBundle();
                 shortcutExtras.putString(EXTRA_DEVICE_GUID, device.cacheGuid);
                 shortcutExtras.putString(EXTRA_DEVICE_NAME, device.deviceName);
+
+                String longLabel =
+                        !TextUtils.isEmpty(givenName)
+                                ? mContext.getString(
+                                        R.string.send_tab_to_self_device_shortcut_long_label,
+                                        givenName,
+                                        device.deviceName)
+                                : device.deviceName;
 
                 // The ID passed to the constructor will become EXTRA_SHORTCUT_ID in the received
                 // Intent.
@@ -286,8 +300,7 @@ public class OtherDevicesShortcutController implements Destroyable {
                         new ShortcutInfo.Builder(mContext, id)
                                 // Common fields:
                                 .setShortLabel(device.deviceName)
-                                // TODO(crbug.com/484887324): Include the email in the long label?
-                                .setLongLabel(device.deviceName)
+                                .setLongLabel(longLabel)
                                 .setIcon(icon)
                                 // For launcher shortcut:
                                 .setIntent(intent)
@@ -351,7 +364,7 @@ public class OtherDevicesShortcutController implements Destroyable {
                             for (ShortcutInfo shortcut : newShortcuts) {
                                 shortcutManager.pushDynamicShortcut(shortcut);
                             }
-                            Log.d(TAG, "Pushed " + newShortcuts.size() + " shortcuts");
+                            Log.d(TAG, "Pushed %d shortcuts", newShortcuts.size());
                         } catch (IllegalArgumentException e) {
                             Log.e(TAG, "Tried to update immutable shortcut", e);
                         } catch (IllegalStateException e) {

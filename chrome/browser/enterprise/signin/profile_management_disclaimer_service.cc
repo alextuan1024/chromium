@@ -45,6 +45,7 @@
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/device_signals/core/browser/pref_names.h"
@@ -285,8 +286,8 @@ void ProfileManagementDisclaimerService::
       ProfileBrowserCollection::GetForProfile(&profile_.get())
           ->GetLastActiveBrowser();
   bool has_browser_with_tab =
-      browser && browser->GetBrowserForMigrationOnly()->SupportsWindowFeature(
-                     Browser::WindowFeature::kFeatureTabStrip);
+      browser && WindowFeatureController::From(browser)->SupportsWindowFeature(
+                     WindowFeatureController::WindowFeature::kFeatureTabStrip);
   // If there is no browser and we are not in tests, abort.
   if (!has_browser_with_tab && !profile_separation_policies_for_testing_ &&
       !user_choice_for_testing_) {
@@ -654,6 +655,8 @@ void ProfileManagementDisclaimerService::OpenPrivacyPolicyArticlePopUp(
   // article.
   Browser::CreateParams create_params(Browser::TYPE_POPUP, &*profile_,
                                       /*user_gesture=*/true);
+  create_params.should_trigger_session_restore = false;
+  create_params.omit_from_session_restore = true;
   Browser* popup_browser = Browser::Create(create_params);
   if (popup_browser) {
     privacy_article_browser_ = popup_browser->GetWeakPtr();

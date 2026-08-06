@@ -19,6 +19,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.view.View;
+import android.view.ViewGroup.MarginLayoutParams;
 import android.view.ViewStub;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -99,6 +100,8 @@ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
+import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityService;
+import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityServiceFactory;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
@@ -180,7 +183,8 @@ import java.util.function.Supplier;
     ChromeFeatureList.HTTPS_FIRST_DIALOG_UI,
     SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
     SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-    ChromeFeatureList.GLIC
+    ChromeFeatureList.GLIC,
+    SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING
 })
 @DisableFeatures({
     SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS,
@@ -260,6 +264,7 @@ public class ToolbarManagerUnitTest {
     @Mock private PrefService mPrefService;
     @Mock private TabModel mIncognitoTabModel;
     @Mock private Profile mIncognitoProfile;
+    @Mock private SubscriptionEligibilityService mSubscriptionEligibilityService;
     @Mock private ButtonDataProvider mIdentityDiscProvider;
     @Mock private ButtonDataProvider mAdaptiveButtonProvider;
 
@@ -324,6 +329,7 @@ public class ToolbarManagerUnitTest {
         IdentityServicesProvider.setIdentityManagerForTesting(mIdentityManager);
         IdentityServicesProvider.setSigninManagerForTesting(mSigninManager);
         SyncServiceFactory.setInstanceForTesting(mSyncService);
+        SubscriptionEligibilityServiceFactory.setForTesting(mSubscriptionEligibilityService);
 
         mActivityController = Robolectric.buildActivity(TestActivity.class).setup();
         AppCompatActivity activity = mActivityController.get();
@@ -1139,5 +1145,45 @@ public class ToolbarManagerUnitTest {
         IncognitoNewTabPage incognitoNtpPage = mock(IncognitoNewTabPage.class);
         when(incognitoNtpTab.getNativePage()).thenReturn(incognitoNtpPage);
         assertTrue(delegate.isIncognitoNewTabPageCurrentlyVisible());
+    }
+
+    @Test
+    public void testSetToolbarTabletMarginsForAutoHiddenVerticalTab() throws Exception {
+        ToolbarControlContainer controlContainer = mock(ToolbarControlContainer.class);
+        View tabletLayout = new View(mActivityController.get());
+        MarginLayoutParams params = new MarginLayoutParams(100, 100);
+        params.rightMargin = 20;
+        params.topMargin = 0;
+        params.leftMargin = 0;
+        tabletLayout.setLayoutParams(params);
+
+        when(controlContainer.findViewById(R.id.toolbar_tablet_layout)).thenReturn(tabletLayout);
+        when(controlContainer.getContext()).thenReturn(mActivityController.get());
+
+        Field controlContainerField = ToolbarManager.class.getDeclaredField("mControlContainer");
+        controlContainerField.setAccessible(true);
+        controlContainerField.set(mToolbarManager, controlContainer);
+
+        SettableNonNullObservableSupplier<Boolean> isAutoHiddenSupplier =
+                ObservableSuppliers.createNonNull(false);
+        mToolbarManager.setVerticalTabsAutoHiddenSupplier(isAutoHiddenSupplier);
+
+        int tabStripHeight =
+                mActivityController
+                        .get()
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.tab_strip_height);
+
+        // When Vertical Tabs is hidden due to narrow window width
+        isAutoHiddenSupplier.set(true);
+        verify(controlContainer).setToolbarContainerTopMarginForAutoHiddenVerticalTab(true);
+        assertEquals(0, params.rightMargin);
+        assertEquals(0, params.leftMargin);
+
+        // When Vertical Tabs gets shown again or turned off
+        isAutoHiddenSupplier.set(false);
+        verify(controlContainer).setToolbarContainerTopMarginForAutoHiddenVerticalTab(false);
+        assertEquals(20, params.rightMargin);
+        assertEquals(0, params.leftMargin);
     }
 }

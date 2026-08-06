@@ -51,6 +51,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/responsiveness_calculator_delegate.h"
 #include "content/public/browser/security_principal.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/sms_fetcher.h"
 #include "content/public/browser/tracing_delegate.h"
 #include "content/public/browser/url_loader_request_interceptor.h"
@@ -431,9 +432,8 @@ bool ContentBrowserClient::IsTopChromeWebUIURL(const GURL& url) {
   return false;
 }
 
-bool ContentBrowserClient::ShouldAllowMojoJsBindingsForSite(
-    BrowserContext* browser_context,
-    const GURL& site_url) {
+bool ContentBrowserClient::ShouldAllowMojoJsBindingsForFrame(
+    RenderFrameHost& render_frame_host) {
   return false;
 }
 
@@ -1168,7 +1168,10 @@ ContentBrowserClient::WillCreateURLLoaderRequestInterceptors(
 ContentBrowserClient::URLLoaderRequestHandler ContentBrowserClient::
     CreateURLLoaderHandlerForServiceWorkerInitiatedNavigationRequest(
         FrameTreeNodeId frame_tree_node_id,
-        const network::ResourceRequest& resource_request) {
+        const network::ResourceRequest& resource_request,
+        int64_t navigation_id,
+        scoped_refptr<base::SequencedTaskRunner>
+            navigation_response_task_runner) {
   return ContentBrowserClient::URLLoaderRequestHandler();
 }
 

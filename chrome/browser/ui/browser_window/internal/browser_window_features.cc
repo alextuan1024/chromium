@@ -482,7 +482,8 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
   session_service_browser_helper_ =
       std::make_unique<SessionServiceBrowserHelper>(
           browser->GetTabStripModel(), browser->GetSessionID(),
-          browser->GetType(), browser->GetProfile());
+          browser->GetType(), browser->GetProfile(),
+          &BrowserInitState::From(browser)->create_params());
 
   // Must be after session_service_browser_helper_:
   //   tab_list_bridge_ depends on initialized session tab/window state.
@@ -746,8 +747,8 @@ void BrowserWindowFeatures::InitPostWindowConstruction(Browser* browser) {
   }
 
   exclusive_access_manager_ = std::make_unique<ExclusiveAccessManager>(
-      browser,
-      BrowserWindow::FromBrowser(browser)->GetExclusiveAccessContext());
+      browser, BrowserWindow::FromBrowser(browser)->GetExclusiveAccessContext(),
+      browser_command_controller_.get(), bookmark_bar_controller_.get());
 
   // Must be after exclusive_access_manager_ and
   // desktop_browser_window_capabilities_.
@@ -804,7 +805,9 @@ void BrowserWindowFeatures::InitPostWindowConstruction(Browser* browser) {
 
   live_tab_context_ = std::make_unique<BrowserLiveTabContext>(
       browser, browser->GetTabStripModel(), profile, browser->GetWindow(),
-      browser->GetType(), browser->app_name(), browser->GetSessionID());
+      browser->GetType(),
+      BrowserInitState::From(browser)->create_params().app_name,
+      browser->GetSessionID());
 
   if (browser_view) {
     if (base::FeatureList::IsEnabled(ntp_features::kNtpFooter)) {
@@ -1216,7 +1219,8 @@ FindBarController* BrowserWindowFeatures::GetFindBarController() {
   if (!find_bar_controller_.get()) {
     CHECK(browser_);
     find_bar_controller_ = std::make_unique<FindBarController>(
-        BrowserWindow::FromBrowser(browser_)->CreateFindBar());
+        BrowserWindow::FromBrowser(browser_)->CreateFindBar(),
+        browser_command_controller_.get());
     find_bar_controller_->find_bar()->SetFindBarController(
         find_bar_controller_.get());
     find_bar_controller_->ChangeWebContents(

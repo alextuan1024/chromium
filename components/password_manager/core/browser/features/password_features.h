@@ -109,6 +109,9 @@ BASE_DECLARE_FEATURE(kEnablePasswordManagerMojoApi);
 // Enables Phase 2 of the Mojo JavaScript API migration for the password
 // manager, replacing the legacy passwordsPrivate extension API.
 BASE_DECLARE_FEATURE(kEnablePasswordManagerMojoApiPhase2);
+
+// Enables the Desktop Trusted Vault unlock UI flow.
+BASE_DECLARE_FEATURE(kTrustedVaultDesktopUnlock);
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 // Cross domain credential data is not previewed by the manual fallback
@@ -193,6 +196,10 @@ BASE_DECLARE_FEATURE(kPreventAPCOnFederatedLogin);
 
 // Prevents password manager from showing save/update UI on federated login.
 BASE_DECLARE_FEATURE(kPreventPasswordManagerOnFederatedLogin);
+
+// Enables publishing of the password readines metric for users with the trusted
+// vault passphrase type.
+BASE_DECLARE_FEATURE(kRecordPasswordReadiness);
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Enables "Needs access to keychain, restart chrome" bubble and banner.

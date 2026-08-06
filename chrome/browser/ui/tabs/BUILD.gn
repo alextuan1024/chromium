@@ -11,9 +11,11 @@ import("//chrome/common/features.gni")
 # dependencies this interface should not depend on anything else in //chrome.
 source_set("tabs_public") {
   public = [
+    "contents_observing_tab_feature.h",
     "public/tab_dialog_manager.h",
     "public/tab_features.h",
   ]
+  sources = [ "contents_observing_tab_feature.cc" ]
   public_deps = [
     "//base",
     "//chrome/common:buildflags",
@@ -206,6 +208,7 @@ if (!is_android) {
       "existing_base_sub_menu_model.h",
       "existing_tab_group_sub_menu_model.h",
       "existing_window_sub_menu_model.h",
+      "recent_tabs_builder.h",
       "recent_tabs_sub_menu_model.h",
       "split_tab_menu_model.h",
       "split_tab_swap_menu_model.h",
@@ -361,7 +364,6 @@ if (!is_android) {
 
   source_set("tabs") {
     sources = [
-      "contents_observing_tab_feature.h",
       "features.h",
       "hover_tab_selector.h",
       "new_tab_grouping_user_data.h",
@@ -431,12 +433,12 @@ if (!is_android) {
     ]
 
     sources = [
-      "contents_observing_tab_feature.cc",
       "hover_tab_selector.cc",
       "page_context_eligibility_helper.cc",
       "pinned_tab_codec.cc",
       "pinned_tab_service.cc",
       "pinned_tab_service_factory.cc",
+      "recent_tabs_builder.cc",
       "recent_tabs_sub_menu_model.cc",
       "split_tab_highlight_controller.cc",
       "split_tab_metrics.cc",
@@ -488,6 +490,7 @@ if (!is_android) {
       "//chrome/browser/net",
       "//chrome/browser/preloading/bookmarkbar_preload",
       "//chrome/browser/preloading/new_tab_page_preload",
+      "//chrome/browser/preloading/prefetch:zero_suggest_prefetch",
       "//chrome/browser/profiles",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/profiles:profile_manager",
@@ -545,7 +548,6 @@ if (!is_android) {
       "//chrome/browser/ui/webui:webui_util",
       "//chrome/browser/vr",
       "//chrome/browser/web_applications",
-      "//components/browsing_topics",
       "//components/content_settings/core/browser",
       "//components/contextual_tasks/public",
       "//components/enterprise",

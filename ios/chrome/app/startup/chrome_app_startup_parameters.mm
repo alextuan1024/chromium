@@ -203,6 +203,10 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
     appStartupParameters.openedViaWidgetScheme = YES;
     return appStartupParameters;
     // LINT.ThenChange(//ios/chrome/app/task_request_url_context.mm:WidgetKitScheme)
+    // LINT.IfChange(XCallbackURL)
+    // TODO(crbug.com/462018636): This code will be soon migrated to
+    // task_request_url_context.mm, so any change should be reflected also
+    // there. Contact fedegermi for additional information or support.
   } else if (IsXCallbackURL(parsedURL)) {
     base::UmaHistogramEnumeration(kAppLaunchSource,
                                   AppLaunchSource::X_CALLBACK);
@@ -233,6 +237,7 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
     UMA_HISTOGRAM_ENUMERATION(kUMAMobileSessionStartActionHistogram,
                               START_ACTION_XCALLBACK_OPEN,
                               MOBILE_SESSION_START_ACTION_COUNT);
+    // LINT.ThenChange(//ios/chrome/app/task_request_url_context.mm:XCallbackURL)
 
     std::map<std::string, std::string> parameters =
         ExtractQueryParametersFromXCallbackURL(parsedURL);
@@ -387,6 +392,10 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
 // Returns the correct startup parameters for a given external action passed as
 // path to the external action "scheme". Returns nil (no-op) if the action is
 // not recognized.
+// LINT.IfChange(ExternalAction)
+// TODO(crbug.com/462018636): This code will be soon migrated to
+// task_request_url_context.mm, so any change should be reflected also
+// there. Contact fedegermi for additional information or support.
 + (instancetype)startupParametersForExternalActionWithAppID:(NSString*)appID
                                                 completeURL:(NSURL*)completeURL
                                        forceApplicationMode:
@@ -476,6 +485,7 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
   params.openedViaFirstPartyScheme = CallerAppIsFirstParty(params.callerApp);
   return params;
 }
+// LINT.ThenChange(//ios/chrome/app/task_request_for_standard_url_context.mm:ExternalAction)
 
 + (instancetype)startupParametersForExtensionCommandWithURL:(NSURL*)URL
                                           sourceApplication:(NSString*)appID

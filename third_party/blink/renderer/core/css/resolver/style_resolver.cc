@@ -2477,7 +2477,8 @@ Element* StyleResolver::FindContainerForElement(
   Element* start_candidate = FlatTreeTraversal::ParentElement(*element);
   if (PseudoElement* pseudo_element = DynamicTo<PseudoElement>(element)) {
     if (pseudo_element->IsLayoutSiblingOfOriginatingElement() &&
-        container_selector.SelectsSizeContainers()) {
+        (container_selector.SelectsSizeContainers() ||
+         pseudo_element->GetPseudoId() == kPseudoIdSkeleton)) {
       start_candidate = FlatTreeTraversal::ParentElement(*start_candidate);
     }
   }
@@ -2981,6 +2982,16 @@ bool StyleResolver::CanReuseBaseComputedStyle(const StyleResolverState& state) {
     return false;
   }
 
+  // If the base style was generated for 'display: none', resources (StyleImage
+  // etc) may still be pending. Animating the 'display' property in such a case
+  // can produce a computed style with pending resources. See also comment in
+  // `StyleResolverState::LoadPendingResources`.
+  if (base_style->Display() == EDisplay::kNone) {
+    if (CSSAnimations::IsAnimatingDisplayProperty(element_animations)) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -2997,6 +3008,16 @@ const CSSValue* StyleResolver::ComputeValue(
     const CSSPropertyName& property_name,
     const CSSValue& value,
     CSSToLengthConversionData::Flags& flags) {
+  bool has_random = false;
+  return ComputeValue(element, property_name, value, flags, has_random);
+}
+
+const CSSValue* StyleResolver::ComputeValue(
+    Element* element,
+    const CSSPropertyName& property_name,
+    const CSSValue& value,
+    CSSToLengthConversionData::Flags& flags,
+    bool& has_random) {
   Document& document = element->GetDocument();
   document.GetStyleEngine().UpdateViewportSize();
   const ComputedStyle* base_style = element->GetComputedStyle();
@@ -3031,6 +3052,10 @@ const CSSValue* StyleResolver::ComputeValue(
     }
   }
 
+  if (resolved_value && resolved_value->HasRandomFunctions()) {
+    has_random = true;
+  }
+
   auto* set =
       MakeGarbageCollected<MutableCSSPropertyValueSet>(state.GetParserMode());
   set->SetProperty(property_name, *resolved_value);
@@ -3047,8 +3072,12 @@ const CSSValue* StyleResolver::ComputeValue(
   CSSPropertyRef property_ref(&property_name, document);
   flags = state.TakeLengthConversionFlags();
   const ComputedStyle* style = state.TakeStyle();
-  return ComputedStyleUtils::ComputedPropertyValue(property_ref.GetProperty(),
-                                                   *style);
+  const CSSValue* computed_value = ComputedStyleUtils::ComputedPropertyValue(
+      property_ref.GetProperty(), *style);
+  if (computed_value && computed_value->HasRandomFunctions()) {
+    has_random = true;
+  }
+  return computed_value;
 }
 
 const CSSValue* StyleResolver::ResolveValue(

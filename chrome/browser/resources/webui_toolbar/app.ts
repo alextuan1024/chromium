@@ -19,6 +19,7 @@ import './icons.js';
 
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import {MetricsReporterImpl} from '//resources/js/metrics_reporter/metrics_reporter.js';
 import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
@@ -30,6 +31,7 @@ import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
 import {BrowserProxyImpl, EventDispositionFlag, INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE} from './browser_proxy.js';
 import type {BrowserProxy, IconUpdate, NavigationControlsState, NavigationControlsStateListenerHandle} from './browser_proxy.js';
+import type {ResponsiveControl} from './responsive_control.js';
 import {setHasHelpBubble} from './toolbar_button.js';
 
 // clang-format off
@@ -147,6 +149,12 @@ export type {
   ToolbarFlatStateSchema,
 };
 // clang-format on
+
+// LINT.IfChange(InitialWebUIRendererMilestones)
+const MARK_JS_RESOURCES_LOADED = 'JsResourcesLoaded';
+const MARK_LOAD_TIME_DATA_READ = 'LoadTimeDataRead';
+const MARK_JS_COMPOSITION_COMPLETE = 'JsCompositionComplete';
+// LINT.ThenChange(//chrome/browser/page_load_metrics/observers/initial_webui_page_load_metrics_observer.cc:InitialWebUIRendererMilestones)
 
 const TRACKED_ELEMENTS: Array<{selector: string, id: string}> = [
   {selector: '#back', id: 'kToolbarBackButtonElementId'},
@@ -336,6 +344,10 @@ export class ToolbarAppElement extends AppElementBase {
       hasInitialStateKey(ToolbarStateKey.IS_NAVIGATION_LOADING) &&
       hasInitialStateKey(ToolbarStateKey.BACK_BUTTON_ENABLED) &&
       hasInitialStateKey(ToolbarStateKey.FORWARD_BUTTON_ENABLED);
+  private omniboxResizingPrioritizationEnabled_: boolean =
+      loadTimeData.getBoolean('omniboxResizingPrioritizationEnabled');
+  private webUIToolbarFullyEnabled_: boolean =
+      loadTimeData.getBoolean('webUIToolbarFullyEnabled');
   protected accessor navigationControlsState_: NavigationControlsState = {
     reloadControlState: {
       // While this will be overwritten anyways, this matches the default value
@@ -449,10 +461,14 @@ export class ToolbarAppElement extends AppElementBase {
           INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE;
   private iconTable_: IconTable;
   private isPageInitialized_: boolean = false;
+  private hasReadState_ = false;
   private initializeSessionId_: number = 0;
+  private resizeObserver_?: ResizeObserver;
   private dragOverListener_ = (e: DragEvent) => this.onDragOver_(e);
   private dropListener_ = (e: DragEvent) => this.onDrop_(e);
   private keyDownListener_ = (e: KeyboardEvent) => this.onKeyDown_(e);
+  private windowResizeListener_:
+      () => void = () => this.layoutResponsiveControls();
 
   private isRtl_: boolean = loadTimeData.getString('textdirection') === 'rtl';
 
@@ -493,6 +509,7 @@ export class ToolbarAppElement extends AppElementBase {
     this.browserProxy_ = BrowserProxyImpl.getInstance();
     this.iconTable_ = IconTable.getInstance();
     ColorChangeUpdater.forDocument().start();
+    MetricsReporterImpl.getInstance().mark(MARK_JS_RESOURCES_LOADED);
   }
 
   /**
@@ -502,11 +519,22 @@ export class ToolbarAppElement extends AppElementBase {
   override connectedCallback() {
     super.connectedCallback();
 
+    if (this.webUIToolbarFullyEnabled_) {
+      this.setAttribute('webui-toolbar-fully-enabled', '');
+    }
+
     const sessionId = ++this.initializeSessionId_;
+
+    this.setAttribute('role', 'toolbar');
 
     this.addEventListener('dragover', this.dragOverListener_);
     this.addEventListener('drop', this.dropListener_);
     this.addEventListener('keydown', this.keyDownListener_);
+
+    this.resizeObserver_ =
+        new ResizeObserver(() => this.layoutResponsiveControls());
+    this.resizeObserver_.observe(this);
+    window.addEventListener('resize', this.windowResizeListener_);
 
     // Initial setup of CSS variables
     this.style.setProperty(
@@ -527,11 +555,19 @@ export class ToolbarAppElement extends AppElementBase {
               this.iconTable_.applyUpdates(iconUpdates);
               this.navigationControlsState_ = state;
 
+              if (!this.hasReadState_) {
+                this.hasReadState_ = true;
+                MetricsReporterImpl.getInstance().mark(
+                    MARK_LOAD_TIME_DATA_READ);
+              }
+
               // Defer notifying the browser that the page is ready until after
               // the first Mojo-populated update has completed its render cycle.
               if (!this.isInitialized_) {
                 this.isInitialized_ = true;
                 this.updateComplete.then(() => {
+                  MetricsReporterImpl.getInstance().mark(
+                      MARK_JS_COMPOSITION_COMPLETE);
                   this.initializePage_(sessionId);
                 });
               }
@@ -539,6 +575,7 @@ export class ToolbarAppElement extends AppElementBase {
 
     if (this.isInitialized_) {
       this.updateComplete.then(() => {
+        MetricsReporterImpl.getInstance().mark(MARK_JS_COMPOSITION_COMPLETE);
         this.initializePage_(sessionId);
       });
     }
@@ -600,6 +637,9 @@ export class ToolbarAppElement extends AppElementBase {
     this.removeEventListener('dragover', this.dragOverListener_);
     this.removeEventListener('drop', this.dropListener_);
     this.removeEventListener('keydown', this.keyDownListener_);
+
+    this.resizeObserver_?.disconnect();
+    window.removeEventListener('resize', this.windowResizeListener_);
 
     this.browserProxy_.removeNavigationStateListener(
         this.navigationStateListenerHandle_);
@@ -736,6 +776,128 @@ export class ToolbarAppElement extends AppElementBase {
       chrome.histograms.recordTime(
           'InitialWebUI.Toolbar.ParseFinishedToFirstUpdate',
           Math.round(performance.now() - entry.domInteractive));
+    }
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+
+    // Check if a new layout is needed and if so, do it now. Checking only after
+    // all controls have been updated ensures that there's only one update if
+    // multiple controls are updated at once. ResizeObserver could theoretically
+    // trigger another notification, but since the entire toolbar should end up
+    // the same size after laying out all controls, there should hopefully only
+    // be a single call to layoutResponsiveControls().
+    let needsLayout = false;
+    for (const control of this.getResponsiveControls()) {
+      if (control.consumeNeedsLayout()) {
+        needsLayout = true;
+      }
+    }
+    if (needsLayout) {
+      this.layoutResponsiveControls();
+    }
+  }
+
+  /**
+   * Returns a prioritized Array of responsive controls that can be resized or
+   * hidden so the toolbar fits in the window. Earlier controls in the Array
+   * have higher priority.
+   *
+   * Controls that can't be hidden on overflow or otherwise change size in
+   * response to the amount of available width are not ResponsiveControls, so
+   * are not returned by this method. e.g., of the navigation buttons on the
+   * left of the toolbar, the back and reload buttons are always shown, and
+   * never moved to the overflow menu, so are not included.
+   */
+  getResponsiveControls(): Array<ResponsiveControl&HTMLElement> {
+    const locationBar =
+        this.shadowRoot.querySelector<LocationBarElement>('#location-bar');
+
+    const buttons = [
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+          '#split-tabs'),
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#forward'),
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#home'),
+    ];
+
+    return (this.omniboxResizingPrioritizationEnabled_ ?
+                [locationBar, ...buttons] :
+                [...buttons, locationBar])
+        .filter((el): el is ResponsiveControl&HTMLElement => el !== null);
+  }
+
+  /**
+   * Resizes / shows / hides responsive controls based on available space in the
+   * toolbar.
+   *
+   * This should be called whenever:
+   * 1. The browser window/container size changes (monitored via
+   * `windowResizeListener_`).
+   * 2. Any control's visibility state or size changes (monitored via
+   * `resizeObserver_`).
+   *
+   * Note that for an overflowable button being pinned to be observable by
+   * `resizeObserver_`, unpinned buttons must not have `overflow-display-none`
+   * set, so that pinning them causes the toolbar to be resized, causing the
+   * `resizeObserver_` to invoke this method.
+   *
+   * TODO(crbug.com/491791965): Investigate performance of this method. It does
+   * force a lot of layouts, which may well be a performance issue. There are
+   * ways to improve performance, at potentially significant complexity cost.
+   */
+  private layoutResponsiveControls() {
+    // If `webUIToolbarFullyEnabled_` is false, the C++ FlexLayout class will
+    // handle laying out controls.
+    if (!this.webUIToolbarFullyEnabled_) {
+      return;
+    }
+
+    const responsiveControls = this.getResponsiveControls();
+
+    // Set all responsive elements that should be shown to their minimum width.
+    for (const control of responsiveControls) {
+      // Elements that should not be shown are hidden by other means than
+      // setting `overflow-display-none`, so that if at some point they should
+      // be shown, showing them will increase the size of the main app element,
+      // which will force layoutResponsiveControls() to be called again.
+      if (control.shouldBeShown()) {
+        control.setToMinWidth();
+      }
+    }
+
+    // Width available to all elements combined, including non-responsive ones.
+    const availableWidth = window.innerWidth;
+
+    // If all elements at their minimum sizes are, combined, larger than the
+    // available size, exit early, using sizes that are too large.
+    //
+    // TODO(crbug.com/491791965): Should we shrink the location bar to even less
+    // than min size here?
+    if (this.clientWidth >= availableWidth) {
+      return;
+    }
+
+    // Try expanding each element to preferred width in order of priority.
+    // If expanding causes the container to overflow, the element is responsible
+    // for shrinking itself back.
+    for (const control of responsiveControls) {
+      if (!control.shouldBeShown()) {
+        continue;
+      }
+
+      control.expandUpToPreferredWidth();
+    }
+
+    // Assign all remaining space to the location bar to fill the entire
+    // toolbar.
+    //
+    // TODO(crbug.com/491791965): Cache this, making sure we update the value
+    // if we ever re-create the control (can that happen?).
+    const locationBar =
+        this.shadowRoot.querySelector<LocationBarElement>('#location-bar');
+    if (locationBar && locationBar.shouldBeShown()) {
+      locationBar.setToAvailableWidth();
     }
   }
 

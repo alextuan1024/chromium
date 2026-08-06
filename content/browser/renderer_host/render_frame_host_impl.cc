@@ -385,6 +385,12 @@ namespace features {
 
 BASE_FEATURE(kDoNotEvictOnAXLocationChange, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, RenderFrameHost::IsFocused() treats the main frame as focused
+// by default when the top-level widget has OS focus but FrameTree does not yet
+// have a focused subframe (e.g., in newly opened windows or tabs).
+BASE_FEATURE(kDefaultToMainFrameFocusWhenNoSubframeFocused,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kEnforceUserActivationForBeforeUnload,
              base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace features
@@ -2612,6 +2618,10 @@ RenderFrameHostImpl::RenderFrameHostImpl(
       cookie_observers_(
           base::BindRepeating(&RenderFrameHostImpl::NotifyCookiesAccessed,
                               base::Unretained(this))),
+      // TODO(crbug.com/510258191): Plumb an initiator state token from the
+      // renderer process when the RenderFrameHost is for an initial empty
+      // document first created in the renderer process.
+      current_initiator_state_token_(base::UnguessableToken::Create()),
       code_cache_host_receivers_(
           GetProcess()->GetStoragePartition()->GetGeneratedCodeCacheContext()),
       fenced_frame_status_(fenced_frame_status),
@@ -4398,11 +4408,15 @@ void RenderFrameHostImpl::InitializePolicyContainerHost(
   // This will register this RFH as the PolicyContainerHost::Client, and the
   // PolicyContainerHost will no longer be modifiable (except by IPCs received
   // from the renderer process).
-  SetPolicyContainerHost(std::move(policy_container_host));
+  // Since this is the initialization of the frame, we do not need to generate a
+  // new initiator state token, as there was not previous state.
+  SetPolicyContainerHost(std::move(policy_container_host),
+                         current_initiator_state_token_);
 }
 
 void RenderFrameHostImpl::SetPolicyContainerHost(
-    scoped_refptr<PolicyContainerHost> policy_container_host) {
+    scoped_refptr<PolicyContainerHost> policy_container_host,
+    const base::UnguessableToken& new_initiator_state_token) {
   // Reset an existing PolicyContainerHost::Client now that it will no longer be
   // associated with this RenderFrameHost.
   if (policy_container_host_) {
@@ -4415,6 +4429,13 @@ void RenderFrameHostImpl::SetPolicyContainerHost(
   // open windows using noopener.
   devtools_instrumentation::DidUpdatePolicyContainerHost(frame_tree_node_);
   CHECK(parent_ || !IsCredentialless());
+
+  current_initiator_state_token_ = new_initiator_state_token;
+
+  // TODO(crbug.com/510258191): Here, we should generate a new
+  // InitiatorNavigationState tied to the updated initiator state token and
+  // store it in the RenderFrameHost, so that it can be passed to navigations
+  // started from the document.
 }
 
 void RenderFrameHostImpl::DidChangeReferrerPolicy(
@@ -4424,6 +4445,14 @@ void RenderFrameHostImpl::DidChangeReferrerPolicy(
   }
   CHECK(owner_);  // See `owner_` invariants about `IsActive()`.
   owner_->DidChangeReferrerPolicy(referrer_policy);
+}
+
+void RenderFrameHostImpl::DidUpdateInitiatorStateToken(
+    const base::UnguessableToken& new_initiator_state_token) {
+  // TODO(crbug.com/510258191): We should create a new InitiatorNavigationState
+  // and associate it with the updated token, while validating that the updated
+  // token is valid and is not already in use.
+  current_initiator_state_token_ = new_initiator_state_token;
 }
 
 void RenderFrameHostImpl::InitializeLocalNetworkAccessRequestPolicy() {
@@ -5301,8 +5330,7 @@ void RenderFrameHostImpl::DidNavigate(
   // The origin is only updated for cross-document navigations.
   if (!was_within_same_document ||
       !features::IsEnforceSameDocumentOriginInvariantsEnabled()) {
-    SetLastCommittedOrigin(params.origin,
-                           params.has_potentially_trustworthy_unique_origin);
+    SetLastCommittedOrigin(params.origin);
   }
 
   // If the navigation was a cross-document navigation and it's not the
@@ -5441,14 +5469,13 @@ void RenderFrameHostImpl::DidNavigate(
   }
 }
 
-void RenderFrameHostImpl::SetLastCommittedOrigin(
-    const url::Origin& origin,
-    bool is_potentially_trustworthy_unique_origin) {
+void RenderFrameHostImpl::SetLastCommittedOrigin(const url::Origin& origin) {
   last_committed_origin_ = origin;
-  // TODO(https://crbug.com/40159049): Instead of passing
-  // `is_potentially_trustworthy_unique_origin`, maybe we can just check if the
-  // origin is opaque and use ``network::IsOriginPotentiallyTrustworthy()` on
-  // its precursor origin.
+  const url::SchemeHostPort& precursor =
+      origin.GetTupleOrPrecursorTupleIfOpaque();
+  bool is_potentially_trustworthy_unique_origin =
+      origin.opaque() && precursor.IsValid() &&
+      network::IsUrlPotentiallyTrustworthy(precursor.GetURL());
   browsing_context_state()->SetCurrentOrigin(
       origin, is_potentially_trustworthy_unique_origin);
 }
@@ -5459,13 +5486,7 @@ void RenderFrameHostImpl::SetInheritedBaseUrl(const GURL& inherited_base_url) {
 
 void RenderFrameHostImpl::SetLastCommittedOriginForTesting(
     const url::Origin& origin) {
-  // Default setting `is_potentially_trustworthy_unique_origin` to just whether
-  // the origin is opaque or not, since we don't really have a way to get the
-  // correct value from a random origin. Since this function is used mostly for
-  // unit tests that won't actually use this value (which is only used in the
-  // renderer), it should be good enough.
-  SetLastCommittedOrigin(
-      origin, /*is_potentially_trustworthy_unique_origin=*/origin.opaque());
+  SetLastCommittedOrigin(origin);
 }
 
 const url::Origin& RenderFrameHostImpl::ComputeTopFrameOrigin(
@@ -5824,19 +5845,7 @@ void RenderFrameHostImpl::SetOriginDependentStateOfNewFrame(
     GetStoragePartition()->IncrementActiveDocumentCount(
         GetNetworkIsolationKey());
   }
-  // The `is_potentially_trustworthy_unique_origin` bit should be inherited from
-  // the creator frame if it exists. Note that we do this even when the new
-  // frame is sandboxed, following `DocumentLoader::CaclculateOrigin()`.
-  // TODO(https://crbug.com/40159049): Once we can always trust
-  // `network::IsOriginPotentiallyTrustworthy()` instead of passing around
-  // `has_potentially_trustworthy_unique_origin`, remove this.
-  bool is_potentially_trustworthy_unique_origin =
-      creator_frame ? creator_frame->browsing_context_state()
-                          ->current_replication_state()
-                          .has_potentially_trustworthy_unique_origin
-                    : false;
-  SetLastCommittedOrigin(new_frame_origin,
-                         is_potentially_trustworthy_unique_origin);
+  SetLastCommittedOrigin(new_frame_origin);
   if (!creator_frame || !creator_frame->is_error_document_) {
     frame_tree_node()->set_last_successful_origin(new_frame_origin);
   }
@@ -8416,8 +8425,8 @@ void RenderFrameHostImpl::UpdateSubresourceLoaderFactories() {
   // UpdateSubresourceLoaderFactories() above will not be able to update the
   // factory used by fetch keepalive requests after https://crbug.com/1356128.
   // The following block replaces the in-browser fetch keepalive factory (shared
-  // with other subresource loading, e.g. prefetch and browsing_topics) with a
-  // new dedicated and intercepted factory.
+  // with other subresource loading, e.g. prefetch) with a new dedicated and
+  // intercepted factory.
   if (document_associated_data_->keep_alive_url_loader_factory_context()) {
     auto keep_alive_url_loader_factory_bundle =
         std::make_unique<blink::PendingURLLoaderFactoryBundle>();
@@ -10041,14 +10050,6 @@ void RenderFrameHostImpl::DidChangeIframeAttributes(
     return;
   }
 
-  if (attributes->browsing_topics &&
-      !base::FeatureList::IsEnabled(network::features::kBrowsingTopics)) {
-    bad_message::ReceivedBadMessage(
-        GetProcess(),
-        bad_message::RFH_RECEIVED_INVALID_BROWSING_TOPICS_ATTRIBUTE);
-    return;
-  }
-
   auto* child = FindAndVerifyChild(
       child_frame_token, bad_message::RFH_DID_CHANGE_IFRAME_ATTRIBUTE);
   if (!child) {
@@ -11562,6 +11563,20 @@ void RenderFrameHostImpl::BeginNavigation(
     return;
   }
 
+  // The renderer process must provide an `initiator_state_token` and an
+  // `initiator_document_token` in `begin_params`. Terminate a renderer process
+  // that sends empty values.
+  if (!begin_params->initiator_state_token.has_value() ||
+      !begin_params->initiator_document_token.has_value()) {
+    bad_message::ReceivedBadMessage(
+        GetProcess(), bad_message::RFH_BEGIN_NAVIGATION_NO_INITIATOR_TOKENS);
+    return;
+  }
+
+  // TODO(crbug.com/510258191): Use the `initiator_state_token` to retrieve a
+  // matching InitiatorNavigationState. Validate that it matches the
+  // `initiator_document_token` and the RFH's ProcessID.
+
   // See `owner_` invariants about `lifecycle_state_`.
   // `IsInactiveAndDisallowActivation()` check cause both pending deletion and
   // bfcached states to return early.
@@ -11676,9 +11691,11 @@ void RenderFrameHostImpl::BeginNavigation(
     }
   }
 
-  // TODO(crbug.com/40066983): Consider converting these into renderer kills.
   GetProcess()->FilterURL(true, &begin_params->searchable_form_url);
-  GetProcess()->FilterURL(true, &begin_params->client_side_redirect_url);
+  if (!VerifyClientSideRedirectUrl(*this,
+                                   &begin_params->client_side_redirect_url)) {
+    return;
+  }
 
   // If the request was for a blob URL, but the validated URL is no longer a
   // blob URL, reset the blob_url_token to prevent hitting the ReportBadMessage
@@ -13237,11 +13254,11 @@ void RenderFrameHostImpl::CommitNavigation(
   } else {
     // Set up the subresource loader factory that will pass requests from the
     // renderer to the originally intended network service endpoint. To save
-    // memory, this is intentionally shared for prefetch, topics, and
-    // keep-alive.
+    // memory, this is intentionally shared for prefetch and keep-alive.
     scoped_refptr<network::SharedURLLoaderFactory>
         subresource_proxying_factory_bundle;
     if (subresource_loader_factories) {
+      base::ElapsedTimer subresource_proxying_timer;
       // Clone the factory bundle for prefetch.
       auto bundle = base::MakeRefCounted<blink::URLLoaderFactoryBundle>(
           std::move(subresource_loader_factories));
@@ -13265,11 +13282,14 @@ void RenderFrameHostImpl::CommitNavigation(
         subresource_proxying_factory_bundle =
             network::SharedURLLoaderFactory::Create(CloneFactoryBundle(bundle));
       }
+      base::UmaHistogramMicrosecondsTimes(
+          "Navigation.CreateSubresourceProxyingURLLoaderFactoryBundle.Duration",
+          subresource_proxying_timer.Elapsed());
     }
 
     // Set up the subresource loader factory to be passed to the renderer. It is
-    // used to proxy relevant subresoruce requests (e.g. prefetch, topics)
-    // through the browser process.
+    // used to proxy relevant subresoruce requests (e.g. prefetch) through the
+    // browser process.
     mojo::PendingRemote<network::mojom::URLLoaderFactory>
         subresource_proxying_loader_factory_for_renderer;
     if (subresource_proxying_factory_bundle) {
@@ -13308,10 +13328,12 @@ void RenderFrameHostImpl::CommitNavigation(
     // Note that this loader does not depend on
     // `subresource_proxying_loader_factory_for_renderer`.
     //
-    // TODO(crbug.com/40266418): consolidate with
-    // `subresource_proxying_loader_factory_for_renderer` so that requests can
-    // be properly handled when both keepalive and browsing_topics are
-    // specified.
+    // TODO(crbug.com/40266418): Consolidate with
+    // `subresource_proxying_loader_factory_for_renderer` to be future-proof.
+    // Currently, `subresource_proxying_loader_factory_for_renderer` only
+    // handles prefetch requests, which are distinct from keepalive. However,
+    // consolidating the two makes it possible to handle keepalive alongside
+    // other heuristics.
     mojo::PendingRemote<network::mojom::URLLoaderFactory>
         keep_alive_loader_factory;
     if (subresource_proxying_factory_bundle &&
@@ -13674,13 +13696,22 @@ void RenderFrameHostImpl::BindBlobUrlStoreReceiver(
 }
 
 bool RenderFrameHostImpl::IsFocused() {
-  if (!GetMainFrame()->GetRenderWidgetHost()->is_focused() ||
-      !frame_tree_->GetFocusedFrame()) {
+  if (!GetMainFrame()->GetRenderWidgetHost()->is_focused()) {
     return false;
   }
 
-  RenderFrameHostImpl* focused_rfh =
-      frame_tree_->GetFocusedFrame()->current_frame_host();
+  // If the top-level widget has OS focus but FrameTree does not yet have a
+  // focused subframe, treat the main frame as focused by default.
+  FrameTreeNode* focused_frame = frame_tree_->GetFocusedFrame();
+  if (!focused_frame) {
+    if (base::FeatureList::IsEnabled(
+            features::kDefaultToMainFrameFocusWhenNoSubframeFocused)) {
+      return this == GetMainFrame();
+    }
+    return false;
+  }
+
+  RenderFrameHostImpl* focused_rfh = focused_frame->current_frame_host();
   return focused_rfh == this ||
          focused_rfh->IsDescendantOfWithinFrameTree(this);
 }
@@ -13726,6 +13757,11 @@ void RenderFrameHostImpl::SetWebUI(NavigationRequest& request) {
   web_ui_type_ = new_web_ui_type;
 
   // WebUIs need the ability to request certain schemes.
+  if (!GetSiteInstance()->GetSiteInfo().site_url().SchemeIs(
+          kChromeUIUntrustedScheme)) {
+    web_ui_->AddRequestableScheme(kChromeUIScheme);
+    web_ui_->AddRequestableScheme(url::kFileScheme);
+  }
   for (const auto& scheme : web_ui_->GetRequestableSchemes()) {
     ChildProcessSecurityPolicyImpl::GetInstance()->GrantRequestScheme(
         GetProcess()->GetDeprecatedID(), scheme);
@@ -15908,7 +15944,16 @@ bool RenderFrameHostImpl::ValidateURLAndOrigin(
   // the setting is disabled (e.g., due to document.open), they are allowed a
   // narrower exemption in ChildProcessSecurityPolicyImpl::CanCommitOriginAndUrl
   // due to compatibility requirements for existing apps.
-  if (origin.scheme() == url::kFileScheme) {
+  //
+  // This exemption is conditioned on the browser-side last committed origin
+  // already being a file origin, so that documents which were not loaded from
+  // file URLs cannot use it to commit unexpected origins.
+  //
+  // In case of multiple same-document navigations, the last_committed_origin_
+  // is kept as the original file: origin, so each same-document navigation can
+  // still pass this check.
+  if (origin.scheme() == url::kFileScheme &&
+      last_committed_origin_.scheme() == url::kFileScheme) {
     auto prefs = GetOrCreateWebPreferences();
     if (prefs.allow_universal_access_from_file_urls) {
       return true;
@@ -16240,6 +16285,15 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
     return false;
   }
 
+  if (!ValidateDidCommitParams(navigation_request.get(), params.get(),
+                               is_same_document_navigation)) {
+    if (navigation_request) {
+      navigation_request->set_navigation_discard_reason(
+          NavigationDiscardReason::kFailedSecurityCheck);
+    }
+    return false;
+  }
+
   // Any opaque origin loaded with LoadDataWithBaseURL can bypass some of the
   // URL and origin validation checks in unlocked processes, including both the
   // original document and any about:blank frames that inherit the same origin.
@@ -16254,6 +16308,10 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
   // allow_universal_access_from_file_urls setting is enabled, in case that
   // setting is later disabled and then a previously-exempted URL is inherited
   // by a new same-origin document via document.open.
+  //
+  // These exemptions are granted only after `params->origin` has been
+  // validated above, so that they are not based on values that the browser
+  // would otherwise reject.
   //
   // TODO(crbug.com/40092527): Move these to UpdatePermissionsForNavigation
   // once origin can be reliably computed by NavigationRequest at commit time.
@@ -16281,15 +16339,6 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
         "ever_had_universal_access_exemption",
         base::debug::CrashKeySize::Size32);
     base::debug::SetCrashKeyString(crash_key, "true");
-  }
-
-  if (!ValidateDidCommitParams(navigation_request.get(), params.get(),
-                               is_same_document_navigation)) {
-    if (navigation_request) {
-      navigation_request->set_navigation_discard_reason(
-          NavigationDiscardReason::kFailedSecurityCheck);
-    }
-    return false;
   }
 
   // TODO(clamy): We should stop having a special case for same-document
@@ -16998,7 +17047,8 @@ void RenderFrameHostImpl::TakeNewDocumentPropertiesFromNavigation(
   // about:blank (because otherwise we would overwrite the PolicyContainerHost
   // of the new document, inherited at RenderFrameHost creation time, with an
   // empty PolicyContainerHost).
-  SetPolicyContainerHost(navigation_request->TakePolicyContainerHost());
+  SetPolicyContainerHost(navigation_request->TakePolicyContainerHost(),
+                         navigation_request->initiator_state_token_to_commit());
 
   if (navigation_request->response()) {
     last_response_head_ = navigation_request->response()->Clone();
@@ -17384,9 +17434,10 @@ void RenderFrameHostImpl::SendCommitNavigation(
         std::move(subresource_proxying_loader_factory),
         std::move(keep_alive_loader_factory),
         std::move(fetch_later_loader_factory), document_token,
-        devtools_navigation_token, base::Uuid::GenerateRandomV4(),
-        std::move(policy_container), std::move(code_cache_host),
-        std::move(code_cache_host_for_background),
+        devtools_navigation_token,
+        navigation_request->initiator_state_token_to_commit(),
+        base::Uuid::GenerateRandomV4(), std::move(policy_container),
+        std::move(code_cache_host), std::move(code_cache_host_for_background),
         std::move(cookie_manager_info), std::move(storage_info),
         BuildCommitNavigationCallback(navigation_request));
   }
@@ -17433,7 +17484,9 @@ void RenderFrameHostImpl::SendCommitFailedNavigation(
         has_stale_copy_in_cache, error_code, extended_error_code,
         navigation_request->GetResolveErrorInfo(), error_page_content,
         std::move(subresource_loader_factories), document_token,
-        devtools_navigation_token, std::move(policy_container),
+        devtools_navigation_token,
+        navigation_request->initiator_state_token_to_commit(),
+        std::move(policy_container),
         GetContentClient()->browser()->GetAlternativeErrorPageOverrideInfo(
             navigation_request->GetURL(), this, GetBrowserContext(),
             error_code),
@@ -18907,12 +18960,11 @@ void RenderFrameHostImpl::EnableMojoJsBindings(
     content::mojom::ExtraMojoJsFeaturesPtr features) {
   // This method should only be called on RenderFrameHost which is for a WebUI
   // or custom URLs allowlisted by the embedder.
-  CHECK(WebUIControllerFactoryRegistry::GetInstance()->GetWebUIType(
-            GetSiteInstance()->GetBrowserContext(),
-            site_instance_->GetSiteInfo().site_url()) != WebUI::kNoWebUI ||
-        GetContentClient()->browser()->ShouldAllowMojoJsBindingsForSite(
-            GetSiteInstance()->GetBrowserContext(),
-            site_instance_->GetSiteInfo().site_url()));
+  CHECK(
+      WebUIControllerFactoryRegistry::GetInstance()->GetWebUIType(
+          GetSiteInstance()->GetBrowserContext(),
+          site_instance_->GetSiteInfo().site_url()) != WebUI::kNoWebUI ||
+      GetContentClient()->browser()->ShouldAllowMojoJsBindingsForFrame(*this));
 
   GetFrameBindingsControl()->EnableMojoJsBindings(std::move(features));
 }
@@ -19807,7 +19859,13 @@ void RenderFrameHostImpl::SetPolicyContainerForEarlyCommitAfterCrash(
   // to DCHECK because of a past crash spike. See crbug.com/517224615.
   DCHECK_EQ(lifecycle_state(), LifecycleStateImpl::kSpeculative);
   DCHECK(!policy_container_host_);
-  SetPolicyContainerHost(std::move(policy_container_host));
+
+  // We're using `current_initiator_state_token_` here because this is a
+  // speculative RenderFrameHost that does not have an associated
+  // InitiatorNavigationState yet since it does not have a
+  // `policy_container_host_`.
+  SetPolicyContainerHost(std::move(policy_container_host),
+                         current_initiator_state_token_);
 }
 
 void RenderFrameHostImpl::OnDidRunInsecureContent(

@@ -13,28 +13,41 @@ source_set("prefs") {
   deps = [ "//components/prefs" ]
 }
 
-# Omnibox Everywhere global features on desktop.
+# Omnibox Everywhere public interface headers.
 source_set("omnibox_everywhere") {
-  sources = [
-    "omnibox_everywhere_controller.cc",
-    "omnibox_everywhere_ui_manager.cc",
-    "omnibox_everywhere_ui_manager.h",
-    "omnibox_everywhere_widget_delegate.cc",
-    "omnibox_everywhere_widget_delegate.h",
-  ]
   public = [
     "omnibox_everywhere_controller.h",
     "omnibox_everywhere_ui_manager.h",
   ]
-  friend = [
-    ":interactive_ui_tests",
-    ":unit_tests",
+  if (is_mac) {
+    public += [ "omnibox_everywhere_mac_utils.h" ]
+  }
+  public_deps = [
+    ":prefs",
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/webui/top_chrome",
+    "//components/prefs",
+    "//ui/base/accelerators/global_accelerator_listener",
+    "//ui/gfx",
+    "//ui/views",
   ]
-  public_deps = [ "//base" ]
+}
+
+# Omnibox Everywhere desktop implementation.
+source_set("impl") {
+  sources = [
+    "omnibox_everywhere_controller.cc",
+    "omnibox_everywhere_ui_manager.cc",
+    "omnibox_everywhere_widget_delegate.cc",
+    "omnibox_everywhere_widget_delegate.h",
+  ]
+  public_deps = [ ":omnibox_everywhere" ]
   deps = [
     ":prefs",
     "//chrome/browser:file_select_helper",
     "//chrome/browser/background/omnibox_everywhere",
+    "//chrome/browser/media/webrtc",
     "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/ui/omnibox",
     "//chrome/browser/ui/profiles",
@@ -43,6 +56,7 @@ source_set("omnibox_everywhere") {
     "//chrome/browser/ui/webui/omnibox_popup",
     "//components/omnibox/common:features",
     "//components/prefs",
+    "//ui/base",
     "//ui/base/accelerators/global_accelerator_listener",
     "//ui/gfx",
     "//ui/views",
@@ -59,7 +73,6 @@ source_set("omnibox_everywhere") {
       "omnibox_everywhere_mac_utils.h",
       "omnibox_everywhere_mac_utils.mm",
     ]
-    public += [ "omnibox_everywhere_mac_utils.h" ]
     deps += [ "//components/remote_cocoa/app_shim" ]
   }
 }
@@ -67,6 +80,7 @@ source_set("omnibox_everywhere") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "//chrome/browser/background/omnibox_everywhere/omnibox_everywhere_background_mode_manager_unittest.cc",
     "omnibox_everywhere_controller_unittest.cc",
     "omnibox_everywhere_ui_manager_unittest.cc",
   ]
@@ -74,11 +88,13 @@ source_set("unit_tests") {
     sources += [ "omnibox_everywhere_event_handler_aura_unittest.cc" ]
   }
   deps = [
+    ":impl",
     ":omnibox_everywhere",
     ":prefs",
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
+    "//chrome/browser/background/omnibox_everywhere",
     "//chrome/browser/ui/omnibox",
     "//chrome/test:test_support",
     "//chrome/test/views",
@@ -94,6 +110,7 @@ source_set("interactive_ui_tests") {
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
   sources = [ "omnibox_everywhere_interactive_uitest.cc" ]
   deps = [
+    ":impl",
     ":omnibox_everywhere",
     "//base",
     "//base/test:test_support",

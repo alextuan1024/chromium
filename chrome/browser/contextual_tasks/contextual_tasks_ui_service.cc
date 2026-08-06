@@ -7,7 +7,6 @@
 #include <optional>
 
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -2635,6 +2634,8 @@ void ContextualTasksUiService::OnTaskChanged(
       for (const auto& id : tab_ids) {
         contextual_tasks_service_->AssociateTabWithTask(final_task_id, id);
       }
+    } else {
+      contextual_tasks_service_->AssociateTabWithTask(final_task_id, active_id);
     }
 
     controller->OnTaskChanged(web_contents, final_task_id);

@@ -744,8 +744,6 @@ class EnclaveAuthenticatorBrowserTest : public EnclaveAuthenticatorTestBase {
       pre_tai_run_loop_ = std::make_unique<base::RunLoop>();
     }
 
-    void RunMakeCredentialWithLargeBlobSupport(std::string* out_b64);
-
     void WaitForDelegateDestruction() {
       destruction_run_loop_->Run();
       destruction_run_loop_ = std::make_unique<base::RunLoop>();
@@ -2837,7 +2835,7 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest, BiometricsInPWA) {
       "appname", /*trusted_source=*/true, gfx::Rect(0, 0, 500, 500),
       browser()->GetProfile(),
       /*user_gesture=*/true));
-  ASSERT_EQ(app_browser->type(), Browser::Type::TYPE_APP);
+  ASSERT_EQ(app_browser->GetType(), Browser::Type::TYPE_APP);
   app_browser->GetWindow()->Show();
 
   ASSERT_TRUE(NavigateToURLWithDisposition(

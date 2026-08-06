@@ -73,6 +73,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/crash/content/browser/crash_handler_host_linux.h"
@@ -295,11 +296,16 @@ void AwContentBrowserClient::OnNetworkServiceCreated(
       base::FeatureList::IsEnabled(features::kWebViewEnableDnsPlatform)) {
     // Using the platform DNS APIs requires:
     // 1. Enabling the built-in DNS in platform mode
-    // (net::InsecureDnsMode::kEnabledPlatform)
+    // (net::InsecureDnsMode::kEnabledPlatform or
+    // net::InsecureDnsMode::kEnabledPlatformNoSystem)
     // 2. Disabling DoH queries, these do not yet use the platform DNS APIs
     //    (net::SecureDnsMode::kOff)
+    net::InsecureDnsMode insecure_dns_mode =
+        features::kWebViewEnableDnsPlatformNoSystem.Get()
+            ? net::InsecureDnsMode::kEnabledPlatformNoSystem
+            : net::InsecureDnsMode::kEnabledPlatform;
     network_service->ConfigureStubHostResolver(
-        net::InsecureDnsMode::kEnabledPlatform,
+        insecure_dns_mode,
         /*happy_eyeballs_v3_enabled=*/false, net::SecureDnsMode::kOff,
         net::DnsOverHttpsConfig(),
         /*additional_dns_types_enabled=*/true,
@@ -1194,6 +1200,10 @@ void AwContentBrowserClient::WillCreateURLLoaderFactory(
       base::MakeRefCounted<AwBrowserContextIoThreadHandle>(
           static_cast<AwBrowserContext*>(browser_context));
 
+  bool was_blocked = !browser_context->GetDefaultStoragePartition()
+                          ->IsNetworkContextInitialized();
+  base::ElapsedTimer timer;
+
   mojo::PendingRemote<network::mojom::CookieManager> cookie_manager;
   browser_context->GetDefaultStoragePartition()
       ->GetNetworkContext()
@@ -1201,6 +1211,9 @@ void AwContentBrowserClient::WillCreateURLLoaderFactory(
 
   AwBrowserContext* aw_browser_context =
       static_cast<AwBrowserContext*>(browser_context);
+  AwBrowserContext::RecordNetworkContextInitializationBlocking(
+      "Navigation", timer.Elapsed(), was_blocked);
+
   AwCookieAccessPolicy* cookie_access_policy =
       aw_browser_context->GetCookieManager()->cookie_access_policy();
 

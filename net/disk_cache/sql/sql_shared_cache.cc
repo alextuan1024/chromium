@@ -28,12 +28,14 @@ SqlSharedCache::SqlSharedCache(
     const base::FilePath& directory,
     base::RepeatingCallback<void(SqlSharedCache&)> on_unreferenced_callback,
     scoped_refptr<base::SequencedTaskRunner> db_task_runner,
+    scoped_refptr<SqlReadCacheMemoryMonitor> read_cache_memory_monitor,
     scoped_refptr<BackendCleanupTracker> cleanup_tracker)
     : nik_string_(std::move(nik_string)),
       store_(store),
       directory_(directory),
       on_unreferenced_callback_(std::move(on_unreferenced_callback)),
       db_task_runner_(std::move(db_task_runner)),
+      read_cache_memory_monitor_(std::move(read_cache_memory_monitor)),
       cleanup_tracker_(std::move(cleanup_tracker)) {}
 
 SqlSharedCache::~SqlSharedCache() {
@@ -63,7 +65,7 @@ void SqlSharedCache::InitIsolatedDatabase(
   shared_cache_db_id_ = shared_cache_db_id;
   isolated_database_ = SqlTrackedSequenceBound<SqlSharedCacheIsolatedDatabase>(
       db_task_runner_, store_->GetAsyncTaskManager(), nik_string_, directory_,
-      shared_cache_db_id);
+      shared_cache_db_id, db_task_runner_, read_cache_memory_monitor_);
   isolated_database_.AsyncCall(&SqlSharedCacheIsolatedDatabase::Init)
       .Then(base::BindOnce(
           [](base::OnceCallback<void(bool)> callback,
@@ -121,14 +123,12 @@ void SqlSharedCache::CopyNextEntry() {
 
 void SqlSharedCache::OnEntryOpenedForSharedCache(
     SqlPersistentStore::SharedCacheEligibleEntry entry,
-    base::expected<std::optional<SqlPersistentStore::EntryInfo>,
-                   SqlPersistentStore::Error> result) {
-  if (!result.has_value() || !result.value().has_value() ||
-      !result.value()->head) {
+    SqlPersistentStore::EntryInfoOrError result) {
+  if (!result.has_value() || !result->head) {
     OnCopyEntryFailed();
     return;
   }
-  auto info = std::move(result.value().value());
+  auto info = std::move(*result);
   if (info.body_end >
       net::features::kSqlDiskCacheMaxSharedCacheCopyEntrySize.Get()) {
     OnCopyEntryFailed();
@@ -217,7 +217,7 @@ void SqlSharedCache::ReadNextChunk(CacheEntryKey key,
                                    SqlSharedCacheRowId shared_cache_row_id) {
   CHECK_LE(offset, body_end);
   if (offset == body_end) {
-    OnCopyEntryComplete();
+    MoveBlobsToSharedCache(key, res_id, shared_cache_row_id);
     return;
   }
   int64_t chunk_size =
@@ -272,6 +272,26 @@ void SqlSharedCache::OnIsolatedDatabaseWritten(
                 shared_cache_row_id);
 }
 
+void SqlSharedCache::MoveBlobsToSharedCache(
+    CacheEntryKey key,
+    SqlPersistentStore::ResId res_id,
+    SqlSharedCacheRowId shared_cache_row_id) {
+  store_->MoveBlobsToSharedCache(
+      key, res_id, {*shared_cache_db_id_, shared_cache_row_id},
+      base::BindOnce(
+          [](base::WeakPtr<SqlSharedCache> self,
+             SqlPersistentStore::Error error) {
+            if (self) {
+              if (error == SqlPersistentStore::Error::kOk) {
+                self->OnCopyEntryComplete();
+              } else {
+                self->OnCopyEntryFailed();
+              }
+            }
+          },
+          weak_factory_.GetWeakPtr()));
+}
+
 void SqlSharedCache::OnCopyEntryComplete() {
   // Resource redirection via SqlPersistentStore::MoveBlobsToSharedCache and
   // Mojo client notifications will be hooked up in a follow-up CL.
@@ -311,6 +331,23 @@ void SqlSharedCache::DeleteEntries(
   }
   isolated_database_.AsyncCall(&SqlSharedCacheIsolatedDatabase::DeleteEntries)
       .WithArgs(shared_cache_row_ids)
+      .Then(std::move(callback));
+}
+
+void SqlSharedCache::GetBlobHandle(
+    const CacheEntryKey& entry_key,
+    SqlSharedCacheRowId shared_cache_row_id,
+    int body_size,
+    base::OnceCallback<
+        void(base::expected<scoped_refptr<SqlSharedCacheBlobHandle>,
+                            SqlSharedCacheIsolatedDatabase::Error>)> callback) {
+  if (!isolated_database_) {
+    std::move(callback).Run(base::unexpected(
+        SqlSharedCacheIsolatedDatabase::Error::kIsolatedDatabaseNotAvailable));
+    return;
+  }
+  isolated_database_.AsyncCall(&SqlSharedCacheIsolatedDatabase::GetBlobHandle)
+      .WithArgs(entry_key, shared_cache_row_id, body_size)
       .Then(std::move(callback));
 }
 

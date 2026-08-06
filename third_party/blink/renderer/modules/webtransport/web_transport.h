@@ -94,6 +94,7 @@ class MODULES_EXPORT WebTransport final
   void close(WebTransportCloseInfo*);
   ScriptPromise<IDLUndefined> ready(ScriptState*);
   ScriptPromise<WebTransportCloseInfo> closed(ScriptState*);
+  ScriptPromise<IDLUndefined> draining(ScriptState*);
   void setDatagramWritableQueueExpirationDuration(double ms);
   ScriptPromise<WebTransportConnectionStats> getStats(ScriptState*);
   const String& protocol();
@@ -136,6 +137,7 @@ class MODULES_EXPORT WebTransport final
   void OnClosed(
       network::mojom::blink::WebTransportCloseInfoPtr close_info,
       network::mojom::blink::WebTransportStatsPtr final_stats) override;
+  void OnDraining() override;
 
   // Implementation of ExecutionContextLifecycleStateObserver
   void ContextDestroyed() final;
@@ -152,6 +154,12 @@ class MODULES_EXPORT WebTransport final
 
   // Forwards a StopSending() message to the mojo interface.
   void StopSending(uint32_t stream_id, uint32_t code);
+
+  // Forwards a SetStreamPriority() message to the mojo interface. Used by
+  // WebTransportSendStream when its sendGroup or sendOrder is changed.
+  void SetStreamPriority(
+      uint32_t stream_id,
+      network::mojom::blink::WebTransportStreamPriorityPtr priority);
 
   // Removes the reference to a stream. |has_received_close| indicates whether
   // OnIncomingStreamClosed() was called for this stream before it was
@@ -320,6 +328,8 @@ class MODULES_EXPORT WebTransport final
   using ReadyProperty = ScriptPromiseProperty<IDLUndefined, IDLAny>;
   Member<ReadyProperty> ready_;
   Member<ScriptPromiseProperty<WebTransportCloseInfo, IDLAny>> closed_;
+  using DrainingProperty = ScriptPromiseProperty<IDLUndefined, IDLAny>;
+  Member<DrainingProperty> draining_;
   // True if [[State]] is "connecting".
   bool connection_pending_ = true;
 

@@ -480,23 +480,20 @@ class JPEGImageReader final {
             std::unique_ptr<ColorProfile> profile =
                 ColorProfile::Create(skia::as_byte_span(*profile_data));
             if (profile) {
-              uint32_t data_color_space =
-                  profile->GetProfile()->data_color_space;
               switch (info_.jpeg_color_space) {
                 case JCS_CMYK:
                 case JCS_YCCK:
-                  if (data_color_space != skcms_Signature_CMYK) {
+                  if (!profile->IsCMYK()) {
                     profile = nullptr;
                   }
                   break;
                 case JCS_GRAYSCALE:
-                  if (data_color_space != skcms_Signature_Gray &&
-                      data_color_space != skcms_Signature_RGB) {
+                  if (!profile->IsGray() && !profile->IsRGB()) {
                     profile = nullptr;
                   }
                   break;
                 default:
-                  if (data_color_space != skcms_Signature_RGB) {
+                  if (!profile->IsRGB()) {
                     profile = nullptr;
                   }
                   break;
@@ -902,7 +899,7 @@ void JPEGImageDecoder::OnSetData(scoped_refptr<SegmentReader> data) {
       reader_ && reader_->Info()->scale_num == reader_->Info()->scale_denom &&
       // TODO(crbug.com/911246): Support color space transformations on planar
       // data.
-      !ColorTransform() &&
+      !NeedsDecodeTimeColorTransform() &&
       SubsamplingSupportedByDecodeToYUV(GetYUVSubsampling());
 }
 
@@ -1164,15 +1161,8 @@ bool OutputRows(JPEGImageReader* reader, ImageFrame& buffer) {
       SetPixel<colorSpace>(pixel, samples, x);
     }
 
-    ColorProfileTransform* xform = reader->Decoder()->ColorTransform();
-    if (xform) {
-      ImageFrame::PixelData* row = buffer.GetAddr(0, y);
-      skcms_AlphaFormat alpha_format = skcms_AlphaFormat_Unpremul;
-      bool color_conversion_successful = skcms_Transform(
-          row, XformColorFormat(), alpha_format, xform->SrcProfile(), row,
-          XformColorFormat(), alpha_format, xform->DstProfile(), width);
-      DCHECK(color_conversion_successful);
-    }
+    reader->Decoder()->DoDecodeTimeColorTransformIfNeeded(
+        buffer, SkIRect::MakeXYWH(0, y, width, 1));
   }
 
   buffer.SetPixelsChanged(true);
@@ -1289,15 +1279,9 @@ bool JPEGImageDecoder::OutputScanlines() {
         return false;
       }
 
-      ColorProfileTransform* xform = ColorTransform();
-      if (xform) {
-        skcms_AlphaFormat alpha_format = skcms_AlphaFormat_Unpremul;
-        bool color_conversion_successful = skcms_Transform(
-            row, XformColorFormat(), alpha_format, xform->SrcProfile(), row,
-            XformColorFormat(), alpha_format, xform->DstProfile(),
-            info->output_width);
-        DCHECK(color_conversion_successful);
-      }
+      DoDecodeTimeColorTransformIfNeeded(
+          buffer, SkIRect::MakeXYWH(0, info->output_scanline - 1,
+                                    info->output_width, 1));
     }
     buffer.SetPixelsChanged(true);
     return true;

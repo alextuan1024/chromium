@@ -21,6 +21,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/autofill/core/browser/at_memory/autofill_data_provider.h"
+#include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
@@ -46,6 +47,10 @@ namespace {
 using ::base::test::ErrorIs;
 using ::base::test::RunOnceCallback;
 using ::base::test::TestFuture;
+using ::personal_context::proto::AutofillFetchSpecification;
+using ::personal_context::proto::TypedValue;
+using TypedValueFilter =
+    ::personal_context::proto::AutofillFetchSpecification::TypedValueFilter;
 using ::testing::_;
 using ::testing::AllOf;
 using ::testing::ByMove;
@@ -57,6 +62,7 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::UnorderedElementsAre;
 using ::testing::Values;
+using ::testing::WithParamInterface;
 
 class FakeMemoryDataProvider : public AutofillDataProvider {
  public:
@@ -893,6 +899,95 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_EQ(result.entries.size(), 1u);
 }
 
+// Tests that deduplication works when the local data is obfuscated with dots
+// and the remote one is a raw suffix.
+TEST_F(AtMemoryQueryServiceTest, Query_DeduplicatesResults_ObfuscatedValues) {
+  // Local, obfuscated result.
+  std::u16string raw_value = u"DL123456789012";
+  std::u16string obfuscated_value = GetObfuscatedValue(raw_value, 4);
+
+  MemorySearchResult result1(MemoryDataType::kDriversLicenseNumber,
+                             u"Driver's license number", obfuscated_value);
+  result1.is_local = true;
+  result1.metadata_list.emplace_back(MemoryDataType::kDriversLicenseName,
+                                     u"Name", u"John Doe");
+
+  // Remote result with last 4 digits.
+  MemorySearchResult result2(MemoryDataType::kDriversLicenseNumber,
+                             u"Driver's license number", u"9012");
+  result2.is_local = false;
+  result2.metadata_list.emplace_back(MemoryDataType::kDriversLicenseName,
+                                     u"Name", u"John Doe");
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 1u);
+}
+
+// Tests that results with matching metadata `TypedValue`s are deduplicated,
+// even if their string representations differ in formatting.
+TEST_F(AtMemoryQueryServiceTest, Query_DeduplicatesResults_TypedValueMatching) {
+  personal_context::proto::TypedValue datetime1;
+  datetime1.mutable_date_time()->set_year(2024);
+  datetime1.mutable_date_time()->set_month(6);
+  datetime1.mutable_date_time()->set_day(7);
+  datetime1.mutable_date_time()->set_hours(15);
+  datetime1.mutable_date_time()->set_minutes(30);
+
+  personal_context::proto::TypedValue datetime2 = datetime1;
+
+  MemorySearchResult result1(MemoryDataType::kFlightReservationFlightNumber,
+                             u"Flight Number", u"FL123");
+  result1.metadata_list.emplace_back(
+      MemoryDataType::kFlightReservationDepartureDate, u"Departure Date",
+      u"2024-06-07 15:30", datetime1);
+
+  MemorySearchResult result2(MemoryDataType::kFlightReservationFlightNumber,
+                             u"Flight Number", u"FL123");
+  result2.metadata_list.emplace_back(
+      MemoryDataType::kFlightReservationDepartureDate, u"Departure Date",
+      u"2024-06-07 3:30 PM", datetime2);
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 1u);
+}
+
+// Tests that results with mismatching metadata `TypedValue`s are not
+// deduplicated.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_TypedValueMismatch_NotDeduplicated) {
+  personal_context::proto::TypedValue datetime1;
+  datetime1.mutable_date_time()->set_year(2024);
+  datetime1.mutable_date_time()->set_month(6);
+  datetime1.mutable_date_time()->set_day(7);
+  datetime1.mutable_date_time()->set_hours(15);
+  datetime1.mutable_date_time()->set_minutes(30);
+
+  personal_context::proto::TypedValue datetime2;
+  datetime2.mutable_date_time()->set_year(2024);
+  datetime2.mutable_date_time()->set_month(6);
+  datetime2.mutable_date_time()->set_day(8);
+  datetime2.mutable_date_time()->set_hours(15);
+  datetime2.mutable_date_time()->set_minutes(30);
+
+  MemorySearchResult result1(MemoryDataType::kFlightReservationFlightNumber,
+                             u"Flight Number", u"FL123");
+  result1.metadata_list.emplace_back(
+      MemoryDataType::kFlightReservationDepartureDate, u"Departure Date",
+      u"2024-06-07 15:30", datetime1);
+
+  MemorySearchResult result2(MemoryDataType::kFlightReservationFlightNumber,
+                             u"Flight Number", u"FL123");
+  result2.metadata_list.emplace_back(
+      MemoryDataType::kFlightReservationDepartureDate, u"Departure Date",
+      u"2024-06-08 3:30 PM", datetime2);
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 2u);
+}
+
 // Tests that Autofill AI entities are not deduplicated if their merge
 // constraints are not satisfied, even if their main values match.
 TEST_F(AtMemoryQueryServiceTest,
@@ -1212,7 +1307,7 @@ struct QueryClassificationTestCase {
 
 class AtMemoryQueryServiceClassificationTest
     : public AtMemoryQueryServiceTest,
-      public ::testing::WithParamInterface<QueryClassificationTestCase> {};
+      public WithParamInterface<QueryClassificationTestCase> {};
 
 // Verifies that each query classification is correctly mapped to a search
 // status.
@@ -1557,7 +1652,7 @@ struct ReorderMetadataTestCase {
 
 class AtMemoryQueryServiceReorderMetadataTest
     : public AtMemoryQueryServiceTest,
-      public ::testing::WithParamInterface<ReorderMetadataTestCase> {};
+      public WithParamInterface<ReorderMetadataTestCase> {};
 
 // Tests that secondary metadata attributes in query search results are
 // reordered by uniqueness across all suggestions (more unique values of the
@@ -1693,6 +1788,151 @@ INSTANTIATE_TEST_SUITE_P(
                   u"Arrival Airport", u"SFO"},
                  {MemoryDataType::kFlightReservationDepartureAirport,
                   u"Departure Airport", u"LAX"}}}}));
+
+class MatchesStringFilterParamTest
+    : public testing::TestWithParam<
+          AutofillFetchSpecification::StringFilter::StringFilterMode> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    MatchesStringFilterParamTest,
+    Values(
+        AutofillFetchSpecification::StringFilter::
+            STRING_FILTER_MODE_UNSPECIFIED,
+        AutofillFetchSpecification::StringFilter::STRING_FILTER_MODE_SUBSTRING,
+        AutofillFetchSpecification::StringFilter::STRING_FILTER_MODE_FUZZY));
+
+// Tests that empty string filters match anything in non-exact modes.
+TEST_P(MatchesStringFilterParamTest, EmptyFilter) {
+  AutofillFetchSpecification::StringFilter filter;
+  filter.set_value("");
+  filter.set_mode(GetParam());
+  EXPECT_TRUE(internal::MatchesStringFilter(u"California", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"", filter));
+}
+
+// Tests that non-exact string filter modes match substrings case-insensitively.
+TEST_P(MatchesStringFilterParamTest, SubstringMode) {
+  AutofillFetchSpecification::StringFilter filter;
+  filter.set_value("Cal");
+  filter.set_mode(GetParam());
+  EXPECT_TRUE(internal::MatchesStringFilter(u"California", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"california", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"Cal", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"Southern Cal", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"New York", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"", filter));
+}
+
+// Tests that exact string filter mode matches only full strings
+// case-insensitively.
+TEST(MatchesStringFilterTest, ExactMode) {
+  AutofillFetchSpecification::StringFilter filter;
+  filter.set_value("California");
+  filter.set_mode(
+      AutofillFetchSpecification::StringFilter::STRING_FILTER_MODE_EXACT);
+
+  EXPECT_TRUE(internal::MatchesStringFilter(u"California", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"california", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"Cal", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"California State", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"NY", filter));
+  EXPECT_FALSE(internal::MatchesStringFilter(u"", filter));
+
+  filter.set_value("");
+  EXPECT_FALSE(internal::MatchesStringFilter(u"California", filter));
+  EXPECT_TRUE(internal::MatchesStringFilter(u"", filter));
+}
+
+// Tests that string filters apply Autofill normalization when comparing
+// strings.
+TEST(MatchesStringFilterTest, NormalizedComparison) {
+  AutofillFetchSpecification::StringFilter filter;
+  filter.set_value("Timothé");
+  filter.set_mode(
+      AutofillFetchSpecification::StringFilter::STRING_FILTER_MODE_EXACT);
+  EXPECT_TRUE(internal::MatchesStringFilter(u"timothe", filter));
+}
+
+// Tests that an unset typed filter matches any typed value.
+TEST(MatchesTypedFilterTest, UnsetFilter) {
+  TypedValueFilter filter;
+  TypedValue entry_unset;
+  TypedValue entry_country;
+  entry_country.set_country_code("US");
+  TypedValue entry_date;
+  entry_date.mutable_date()->set_year(2024);
+
+  EXPECT_TRUE(internal::MatchesTypedFilter(entry_unset, filter));
+  EXPECT_TRUE(internal::MatchesTypedFilter(entry_country, filter));
+  EXPECT_TRUE(internal::MatchesTypedFilter(entry_date, filter));
+}
+
+// Tests that country code typed filter matches case-insensitively.
+TEST(MatchesTypedFilterTest, CountryCode) {
+  TypedValueFilter filter;
+  filter.mutable_typed_value()->set_country_code("US");
+
+  TypedValue entry_us;
+  entry_us.set_country_code("US");
+  TypedValue entry_us_lower;
+  entry_us_lower.set_country_code("us");
+  TypedValue entry_ca;
+  entry_ca.set_country_code("CA");
+  TypedValue entry_unset;
+  TypedValue entry_date;
+  entry_date.mutable_date()->set_year(2024);
+
+  EXPECT_TRUE(internal::MatchesTypedFilter(entry_us, filter));
+  EXPECT_TRUE(internal::MatchesTypedFilter(entry_us_lower, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(entry_ca, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(entry_unset, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(entry_date, filter));
+}
+
+// Tests that date typed filter matches with zero fields acting as wildcards.
+TEST(MatchesTypedFilterTest, Date) {
+  TypedValueFilter filter;
+  filter.mutable_typed_value()->mutable_date()->set_year(2024);
+  filter.mutable_typed_value()->mutable_date()->set_month(5);
+  // day is 0 (wildcard)
+
+  TypedValue match1;
+  match1.mutable_date()->set_year(2024);
+  match1.mutable_date()->set_month(5);
+  match1.mutable_date()->set_day(15);
+
+  TypedValue match2;
+  match2.mutable_date()->set_year(2024);
+  match2.mutable_date()->set_month(5);
+  match2.mutable_date()->set_day(1);
+
+  TypedValue no_match_month;
+  no_match_month.mutable_date()->set_year(2024);
+  no_match_month.mutable_date()->set_month(6);
+  no_match_month.mutable_date()->set_day(15);
+
+  TypedValue no_match_year;
+  no_match_year.mutable_date()->set_year(2023);
+  no_match_year.mutable_date()->set_month(5);
+  no_match_year.mutable_date()->set_day(15);
+
+  TypedValue entry_unset;
+  TypedValue entry_country;
+  entry_country.set_country_code("US");
+
+  EXPECT_TRUE(internal::MatchesTypedFilter(match1, filter));
+  EXPECT_TRUE(internal::MatchesTypedFilter(match2, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(no_match_month, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(no_match_year, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(entry_unset, filter));
+  EXPECT_FALSE(internal::MatchesTypedFilter(entry_country, filter));
+
+  TypedValueFilter wildcard_filter;
+  wildcard_filter.mutable_typed_value()->mutable_date();  // year=0, month=0,
+                                                          // day=0
+  EXPECT_TRUE(internal::MatchesTypedFilter(match1, wildcard_filter));
+}
 
 }  // namespace
 

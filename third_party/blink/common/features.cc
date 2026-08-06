@@ -672,9 +672,6 @@ BASE_FEATURE(kFetchDestinationJsonCssModules,
              "kFetchDestinationJsonCssModules",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// File handling icons. https://crbug.com/1218213
-BASE_FEATURE(kFileHandlingIcons, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kFileSystemUrlNavigation, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kFilteringScrollPrediction,
@@ -733,7 +730,7 @@ BASE_FEATURE_PARAM(int,
 
 BASE_FEATURE(kFrameMetadataObserver, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kFreezeSharedWorker, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kFreezeSharedWorker, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables the frequency capping for detecting large sticky ads.
 // Large-sticky-ads are those ads that stick to the bottom of the page
@@ -1982,6 +1979,8 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kRustyBmpFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kRustyIcoFeature, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kUnrestrictSpellingAndGrammarForTesting,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -2290,8 +2289,8 @@ BASE_FEATURE(kEmulateLoadStartedForInspectorOncePerResource,
              "kEmulateLoadStartedForInspectorOncePerResource",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Whether force-showing popovers is enabled.
-BASE_FEATURE(kDevToolsAllowPopoverForcing, base::FEATURE_ENABLED_BY_DEFAULT);
+// Whether force-showing interest is enabled.
+BASE_FEATURE(kDevToolsAllowInterestForcing, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enable the 'unframed' display override for IWAs. go/unframed-explainer-doc.
 BASE_FEATURE(kUnframedIwa, base::FEATURE_ENABLED_BY_DEFAULT);

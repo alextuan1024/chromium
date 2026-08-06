@@ -36,12 +36,22 @@ export function getHtml(this: AiTaskboxElement) {
                           .id="${todo.id}"
                           .heading="${todo.title}"
                           .description="${todo.description}"
-                          .actionableUrl="${todo.actionableUrl}"
-                          .sourceReferences="${todo.sourceReferences}"
+                          .actionableUrl="${
+                  todo.data.firstParty?.actionableUrl || ''}"
+                          .sourceReferences="${
+                  todo.data.firstParty?.sourceReferences || []}"
                           .score="${todo.score}">
                       </todo-item>
                     `) :
-                              html`
+                              this.hasGmailGenerationError_ ? html`
+                      <div class="placeholder-card">
+                        <p class="placeholder-text error-text">Failed to generate Gmail Todos. Please try again.</p>
+                      </div>
+                    ` : this.hasGeneratedGmail_ ? html`
+                      <div class="placeholder-card">
+                        <p class="placeholder-text">You're all caught up! No Gmail Todos found.</p>
+                      </div>
+                    ` : html`
                       <div class="placeholder-card">
                         <p class="placeholder-text">No Gmail Todos yet.</p>
                       </div>
@@ -53,8 +63,9 @@ export function getHtml(this: AiTaskboxElement) {
             <section class="todo-column">
                 <div class="column-header">
                     <h2>Tab-based Todos</h2>
-                    <cr-button class="tonal-button" disabled>
-                      Generate my Tab Todos
+                    <cr-button class="tonal-button" disabled
+                        @click="${this.onGenerateTabTodosClick_}">
+                      ${this.isGeneratingTabTodos_ ? 'Generating...' : 'Generate my Tab Todos'}
                     </cr-button>
                 </div>
 
@@ -67,8 +78,10 @@ export function getHtml(this: AiTaskboxElement) {
                           .id="${todo.id}"
                           .heading="${todo.title}"
                           .description="${todo.description}"
-                          .actionableUrl="${todo.actionableUrl}"
-                          .sourceReferences="${todo.sourceReferences}"
+                          .actionableUrl="${
+                  todo.data.firstParty?.actionableUrl || ''}"
+                          .sourceReferences="${
+                  todo.data.firstParty?.sourceReferences || []}"
                           .score="${todo.score}">
                       </todo-item>
                     `) :

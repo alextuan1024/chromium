@@ -49,6 +49,14 @@ NET_EXPORT extern const base::FeatureParam<bool>
 
 // Caches UDP connect() results in AddressSorterPosix.
 NET_EXPORT BASE_DECLARE_FEATURE(kAddressSorterConnectCache);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
+                                      kAddressSorterConnectCacheMaxNetworks);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    size_t,
+    kAddressSorterConnectCacheMaxNaksPerNetwork);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    size_t,
+    kAddressSorterConnectCacheMaxPredictionsPerPartition);
 
 // Support for altering the parameters used for DNS transaction timeout. See
 // ResolveContext::SecureTransactionTimeout().
@@ -421,6 +429,10 @@ NET_EXPORT extern const base::FeatureParam<int>
 
 // A flag to use asynchronous session creation for new QUIC sessions.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncQuicSession);
+
+// A flag to use QuicSessionPool::AsyncDnsJob, which resolves hostnames with
+// HostResolver::ServiceEndpointRequest, for direct QUIC sessions.
+NET_EXPORT BASE_DECLARE_FEATURE(kAsyncDnsQuicJob);
 
 // A flag to make multiport context creation asynchronous.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncMultiPortPath);
@@ -1003,6 +1015,22 @@ NET_EXPORT BASE_DECLARE_FEATURE(kEnableBackendCleanupTrackerOnHttpCache);
 // once it has been verified safe.
 NET_EXPORT BASE_DECLARE_FEATURE(
     kPartitionWebSocketEndpointLocksByNetworkAnonymizationKey);
+
+// Controls initial delay for broken alternative services.
+NET_EXPORT BASE_DECLARE_FEATURE(kInitialDelayForBrokenAlternativeService);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    base::TimeDelta,
+    kInitialDelayForBrokenAlternativeServiceParam);
+
+// Controls whether broken alternative services should be persisted to disk
+// cache.
+NET_EXPORT BASE_DECLARE_FEATURE(kPersistBrokenAlternativeServices);
+
+// Controls maximum delay for broken alternative services.
+NET_EXPORT BASE_DECLARE_FEATURE(kMaxDelayForBrokenAlternativeService);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    base::TimeDelta,
+    kMaxDelayForBrokenAlternativeServiceParam);
 
 }  // namespace net::features
 

@@ -38,6 +38,7 @@
 #include "components/paint_preview/buildflags/buildflags.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/sessions/core/session_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/fullscreen_types.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
@@ -57,12 +58,7 @@
 #error This file should only be included on desktop.
 #endif
 
-#if BUILDFLAG(IS_OZONE)
-#include "ui/ozone/public/platform_session_manager.h"
-#endif
-
 class BackgroundContents;
-class BrowserActions;
 class BrowserInitState;
 class BrowserView;
 class BrowserWindow;
@@ -113,10 +109,6 @@ class Browser : public TabStripModelObserver,
                 public WebContentsCollection::Observer,
                 public BrowserWindowInterface {
  public:
-  // Possible elements of the Browser window.
-  using WindowFeature = WindowFeatureController::WindowFeature;
-
-
   // Represents the source of a browser creation request.
   enum class CreationSource {
     kUnknown,
@@ -263,6 +255,18 @@ class Browser : public TabStripModelObserver,
     // Specifies the width for the uncollapsed Vertical Tab Strip.
     std::optional<int> vertical_tab_strip_uncollapsed_width;
 
+    // The application name that is also the name of the window to the shell.
+    // Do not set this value directly, use CreateForApp/CreateForAppPopup.
+    // This name will be set for:
+    // 1) v1 applications launched via an application shortcut or extension API.
+    // 2) undocked devtool windows.
+    // 3) popup windows spawned from v1 applications.
+    std::string app_name;
+
+    // Specifies the focused tab group ID, if the window should be created in a
+    // focused state.
+    std::optional<tab_groups::TabGroupId> focused_tab_group_id;
+
    private:
     friend class Browser;
     friend class WindowSizerChromeOSTest;
@@ -273,14 +277,6 @@ class Browser : public TabStripModelObserver,
                                          const gfx::Rect& window_bounds,
                                          Profile* profile,
                                          bool user_gesture);
-
-    // The application name that is also the name of the window to the shell.
-    // Do not set this value directly, use CreateForApp/CreateForAppPopup.
-    // This name will be set for:
-    // 1) v1 applications launched via an application shortcut or extension API.
-    // 2) undocked devtool windows.
-    // 3) popup windows spawned from v1 applications.
-    std::string app_name;
   };
 
   // Constructors, Creation, Showing //////////////////////////////////////////
@@ -320,27 +316,8 @@ class Browser : public TabStripModelObserver,
 
   // Accessors ////////////////////////////////////////////////////////////////
 
-  Type type() const { return type_; }
-  const std::string& app_name() const { return app_name_; }
-  // In production code, each instance of Browser will always instantiate an
-  // instance of BrowserView in the constructor. Some tests instantiate a
-  // Browser without a BrowserView: this is an anti-pattern and should be
-  // avoided.
-  BrowserView& GetBrowserView();
-
-  BrowserActions* browser_actions() { return GetActions(); }
-
-  SessionID session_id() const { return session_id_; }
-  BrowserWindowFeatures* browser_window_features() const {
-    return features_.get();
-  }
-
   base::WeakPtr<Browser> AsWeakPtr();
   base::WeakPtr<const Browser> AsWeakPtr() const;
-
-  // State Storage and Retrieval for UI ///////////////////////////////////////
-
-  GURL GetNewTabURL() const;
 
   // OnBeforeUnload handling //////////////////////////////////////////////////
 
@@ -355,28 +332,6 @@ class Browser : public TabStripModelObserver,
 
 
   // External state change handling ////////////////////////////////////////////
-
-  // Invoked at the end of a fullscreen transition.
-  void WindowFullscreenStateChanged();
-
-  // Only used on Mac. Called when the top ui style has been changed since this
-  // may trigger bookmark bar state change.
-  void FullscreenTopUIStateChanged();
-
-  void OnFindBarVisibilityChanged();
-
-  // Assorted browser commands ////////////////////////////////////////////////
-
-  // NOTE: Within each of the following sections, the IDs are ordered roughly by
-  // how they appear in the GUI/menus (left to right, top to bottom, etc.).
-
-  // Deprecated: Use capabilities()->SupportsWindowFeature instead.
-  bool SupportsWindowFeature(WindowFeature feature) const;
-
-  // Deprecated: Use capabilities()->CanSupportWindowFeature instead.
-  bool CanSupportWindowFeature(WindowFeature feature) const;
-
-  /////////////////////////////////////////////////////////////////////////////
 
   // Called by Navigate() when a navigation has occurred in a tab in
   // this Browser. Updates the UI for the start of this navigation.
@@ -393,16 +348,9 @@ class Browser : public TabStripModelObserver,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
   void TabStripEmpty() override;
-
-  bool is_type_popup() const { return type_ == TYPE_POPUP; }
-
-  // Called each time the browser window is shown.
-  void OnWindowDidShow();
-
-  // Gets the browser for opening chrome:// pages. This will return the opener
-  // browser if the current browser is in picture-in-picture mode, otherwise
-  // returns the current browser.
-  BrowserWindowInterface* GetBrowserForOpeningWebUi();
+  void OnTabGroupFocusChanged(
+      std::optional<tab_groups::TabGroupId> new_focused_group,
+      std::optional<tab_groups::TabGroupId> old_focused_group) override;
 
   std::vector<StatusBubble*> GetStatusBubblesForTesting();
   UnloadController* GetUnloadControllerForTesting() {
@@ -443,7 +391,6 @@ class Browser : public TabStripModelObserver,
       DidBecomeActiveCallback callback) override;
   base::CallbackListSubscription RegisterDidBecomeInactive(
       DidBecomeInactiveCallback callback) override;
-  BrowserActions* GetActions() override;
   Type GetType() const override;
   std::vector<tabs::TabInterface*> GetAllTabInterfaces() override;
   Browser* GetBrowserForMigrationOnly() override;
@@ -468,13 +415,6 @@ class Browser : public TabStripModelObserver,
   // requesting the browser close via BrowserWindow::Close(), which happens
   // async and allows graceful teardown of the tab strip and associated data.
   void SynchronouslyDestroyBrowser();
-
-#if BUILDFLAG(IS_OZONE)
-  const std::optional<ui::PlatformSessionWindowData>& platform_session_data()
-      const {
-    return platform_session_data_;
-  }
-#endif
 
  private:
   friend class BrowserTest;
@@ -624,7 +564,7 @@ class Browser : public TabStripModelObserver,
 
   // Notifies the tab UI that it should update when the browser schedule or
   // process UI updates.
-  void NotifyTabUIChanged(int tab_index, TabChangeType change_type);
+  void NotifyTabUIChanged(tabs::TabInterface* tab, TabChangeType change_type);
 
   // Data members /////////////////////////////////////////////////////////////
 
@@ -648,12 +588,6 @@ class Browser : public TabStripModelObserver,
   std::unique_ptr<TabStripModelDelegate> const tab_strip_model_delegate_;
   std::unique_ptr<TabStripModel> const tab_strip_model_;
 
-  // The application name that is also the name of the window to the shell.
-  // This name should be set when:
-  // 1) we launch an application via an application shortcut or extension API.
-  // 2) we launch an undocked devtool window.
-  const std::string app_name_;
-
   // Unique identifier of this browser for session restore. This id is only
   // unique within the current session, and is not guaranteed to be unique
   // across sessions.
@@ -673,17 +607,10 @@ class Browser : public TabStripModelObserver,
 
   /////////////////////////////////////////////////////////////////////////////
 
-  // True if the browser window has been shown at least once.
-  bool window_has_shown_;
-
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
 
   // If true, immediately updates the UI when scheduled.
   bool update_ui_immediately_for_testing_ = false;
-
-  // The opener browser of the document picture-in-picture browser. Null if the
-  // current browser is a regular browser.
-  raw_ptr<BrowserWindowInterface> opener_browser_ = nullptr;
 
   WebContentsCollection web_contents_collection_{this};
 
@@ -724,14 +651,6 @@ class Browser : public TabStripModelObserver,
   std::unique_ptr<BrowserInitState> init_state_;
 
   std::unique_ptr<BrowserWindowFeatures> features_;
-
-#if BUILDFLAG(IS_OZONE)
-  // If supported by the platform, this stores stores data related to the
-  // windowing system level session. E.g: session and window IDs. See
-  // ui/ozone/public/platform_session_manager.h for more details.
-  std::optional<ui::PlatformSessionWindowData> platform_session_data_ =
-      std::nullopt;
-#endif
 
   // Tracks whether the browser object is fully initialized.
   bool is_initialized_ = false;

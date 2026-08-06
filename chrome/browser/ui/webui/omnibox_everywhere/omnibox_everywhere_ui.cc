@@ -19,7 +19,9 @@
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
+#include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/composebox_everywhere_handler.h"
+#include "chrome/browser/ui/webui/omnibox_everywhere/debug/omnibox_everywhere_debug_page_handler.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/omnibox_everywhere_handler.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
@@ -36,6 +38,7 @@
 #include "components/omnibox/common/omnibox_features.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/webui/webui_util.h"
 
 namespace {
@@ -56,7 +59,8 @@ bool IsFuseboxEligible(Profile* profile) {
 
 bool OmniboxEverywhereUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere);
+  Profile* profile = Profile::FromBrowserContext(browser_context);
+  return omnibox::IsOmniboxEverywhereEnabled(profile);
 }
 
 bool OmniboxEverywhereUIConfig::ShouldCrashOnJavascriptErrorInDevelopmentBuild()
@@ -74,6 +78,9 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
 
   webui::SetupWebUIDataSource(source, kOmniboxEverywhereResources,
                               IDR_OMNIBOX_EVERYWHERE_OMNIBOX_EVERYWHERE_HTML);
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::MediaSrc,
+      "media-src blob: data: 'self';");
 
   std::string profile_avatar_url =
       "chrome://theme/IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE";
@@ -171,8 +178,11 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
                      omnibox::kShowComposeboxImageSuggestions.Get());
 
   source->AddBoolean("searchboxShowComposeEntrypoint", IsAimEligible(profile_));
-  source->AddBoolean("ntpRealboxNextEnabled", IsFuseboxEligible(profile_));
-
+  source->AddBoolean("isFuseboxEnabled", IsFuseboxEligible(profile_));
+  source->AddBoolean("ntpRealboxDynamicAiModeButton",
+                     IsFuseboxEligible(profile_) &&
+                         base::FeatureList::IsEnabled(
+                             ntp_realbox::kNtpRealboxDynamicAiModeButton));
   source->AddBoolean("composeboxShowTypedSuggest",
                      omnibox::kShowComposeboxTypedSuggest.Get());
   source->AddBoolean("composeboxShowZps", omnibox::kShowComposeboxZps.Get());
@@ -206,12 +216,11 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddBoolean("composeboxAnimationDisabled",
                      base::FeatureList::IsEnabled(
                          omnibox::kWebUIOmniboxAimPopupDisableAnimation));
-  source->AddBoolean(
-      "energyEffectEnabled",
-      base::FeatureList::IsEnabled(omnibox::kEnergyEffectInOmnibox));
-  source->AddBoolean(
-      "energyEffectAnimationEnabled",
-      base::FeatureList::IsEnabled(omnibox::kEnergyEffectInOmnibox));
+  // Disable the energy effect in Omnibox Everywhere so the AIM compose button
+  // renders the outer conic rainbow glow animation instead of the subtle
+  // energy plate effect.
+  source->AddBoolean("energyEffectEnabled", false);
+  source->AddBoolean("energyEffectAnimationEnabled", false);
   source->AddBoolean("contextButtonShapeIsOblong",
                      omnibox::kContextButtonShapeIsOblong.Get());
 
@@ -226,7 +235,7 @@ OmniboxEverywhereUI::~OmniboxEverywhereUI() = default;
 
 void OmniboxEverywhereUI::BindInterface(
     mojo::PendingReceiver<composebox::mojom::PageHandlerFactory> receiver) {
-  if (!base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere)) {
+  if (!omnibox::IsOmniboxEverywhereEnabled(profile_)) {
     return;
   }
   if (composebox_page_factory_receiver_.is_bound()) {
@@ -256,6 +265,9 @@ void OmniboxEverywhereUI::BindInterface(
     content::RenderFrameHost* host,
     mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory>
         pending_page_handler) {
+  if (!omnibox::IsOmniboxEverywhereEnabled(profile_)) {
+    return;
+  }
   if (searchbox_page_factory_receiver_.is_bound()) {
     searchbox_page_factory_receiver_.reset();
   }
@@ -276,6 +288,24 @@ void OmniboxEverywhereUI::CreatePageHandler(
       base::BindRepeating(
           &OmniboxEverywhereUI::GetOrCreateContextualSessionHandle,
           base::Unretained(this)));
+}
+
+void OmniboxEverywhereUI::BindInterface(
+    mojo::PendingReceiver<omnibox_everywhere_debug::mojom::PageHandlerFactory>
+        receiver) {
+  if (debug_page_factory_receiver_.is_bound()) {
+    debug_page_factory_receiver_.reset();
+  }
+  debug_page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void OmniboxEverywhereUI::CreatePageHandler(
+    mojo::PendingRemote<omnibox_everywhere_debug::mojom::Page> page,
+    mojo::PendingReceiver<omnibox_everywhere_debug::mojom::PageHandler>
+        handler) {
+  debug_page_handler_ = std::make_unique<
+      omnibox_everywhere_debug::OmniboxEverywhereDebugPageHandler>(
+      profile_, std::move(page), std::move(handler));
 }
 
 contextual_search::ContextualSearchSessionHandle*

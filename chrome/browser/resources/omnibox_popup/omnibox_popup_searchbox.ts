@@ -13,6 +13,7 @@ import type {SearchboxInputElement} from '//resources/cr_components/searchbox/se
 import {kDefaultSelection} from '//resources/cr_components/searchbox/searchbox_match.js';
 import type {SearchboxMixinInterface} from '//resources/cr_components/searchbox/searchbox_mixin.js';
 import {SearchboxMixin} from '//resources/cr_components/searchbox/searchbox_mixin.js';
+import {sanitizeTextForPaste} from '//resources/cr_components/searchbox/utils.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
@@ -27,7 +28,6 @@ import {browserProxyFactory, OmniboxEscapeAction} from './omnibox_popup.mojom-we
 import type {OmniboxInputState, PageCallbackRouter as PopupPageCallbackRouter, PageHandlerInterface as PopupPageHandlerInterface} from './omnibox_popup.mojom-webui.js';
 import {getCss} from './omnibox_popup_searchbox.css.js';
 import {getHtml} from './omnibox_popup_searchbox.html.js';
-import {sanitizeTextForPaste} from './utils.js';
 
 /**
  * Focus actions deferred when `document.visibilityState` is hidden.
@@ -487,6 +487,9 @@ export class OmniboxPopupSearchboxElement extends
 
     e.preventDefault();
     const sanitizedText = sanitizeTextForPaste(text);
+    if (!sanitizedText) {
+      return;
+    }
 
     const input = this.getInputElement().inputElement;
     const start = input.selectionStart || 0;
@@ -494,16 +497,22 @@ export class OmniboxPopupSearchboxElement extends
     const newValue = input.value.substring(0, start) + sanitizedText +
         input.value.substring(end);
 
+    this.userInputInProgress_ = true;
+    this.hasUserInput_ = !!newValue.trim();
     this.getInputElement().setInput({text: newValue, inline: ''});
     const cursorPos = start + sanitizedText.length;
     this.getInputElement().setSelectionRange(cursorPos, cursorPos);
-    this.getInputElement().dispatchEvent(
-        new CustomEvent('searchbox-input-text-updated', {
-          detail: {
-            value: newValue,
-            isComposing: false,
-          },
-        }));
+
+    const selectionRange = {start: cursorPos, end: cursorPos};
+    this.popupPageHandler_.onPaste(
+        newValue, selectionRange, this.currentSequenceNum_);
+
+    if (newValue.trim()) {
+      this.queryAutocomplete(
+          newValue, /*preventInlineAutocomplete=*/ true, /*isOnFocus=*/ false);
+    } else {
+      this.clearAutocompleteMatches();
+    }
   }
 
   protected showFullUrlOnDeselect_() {
@@ -748,6 +757,13 @@ export class OmniboxPopupSearchboxElement extends
   }
 
   override handleKeyNavigation(e: KeyboardEvent) {
+    // Ignore key navigation (including ESC) during active IME text composition
+    // (e.g. Japanese/Chinese/Korean) so the OS IME engine handles the key
+    // first.
+    if (e.isComposing) {
+      return;
+    }
+
     if (e.key === 'Escape') {
       e.preventDefault();
       this.handleEscapeKey_();
@@ -764,10 +780,7 @@ export class OmniboxPopupSearchboxElement extends
     // (selectedMatchIndex > 0 or non-default match/action highlighted),
     // restores typed query and resets match selection to index 0. Dropdown
     // stays open and focus stays in Omnibox.
-    const hasTemporaryText =
-        (this.lastQueriedInput !== null &&
-         inputEl.inputElement.value !== this.lastQueriedInput) ||
-        this.selectedMatchIndex > 0 ||
+    const hasTemporaryText = this.selectedMatchIndex > 0 ||
         (dropdown && dropdown.selection &&
          dropdown.selection.state !== SelectionLineState.kNormal);
     if (this.dropdownIsVisible && hasTemporaryText) {
@@ -801,12 +814,11 @@ export class OmniboxPopupSearchboxElement extends
     // selects all text (or closes UI if already empty on NTP). Focus stays in
     // Omnibox.
     const isInputDirty = this.userInputInProgress_ ||
-        (inputEl.inputElement.value !== this.permanentDisplayText_ &&
-         inputEl.inputElement.value !== this.fullUrl_);
+        inputEl.inputElement.value !== this.permanentDisplayText_;
     if (isInputDirty) {
       const wasAlreadyEmpty = inputEl.inputElement.value.length === 0;
-      const restoredText =
-          this.fullUrlShown_ ? this.fullUrl_ : this.permanentDisplayText_;
+      const restoredText = this.permanentDisplayText_;
+      this.fullUrlShown_ = false;
       inputEl.setInput({
         text: restoredText,
         inline: '',

@@ -129,6 +129,14 @@ public class PageZoomManager {
         return mDelegate.isCurrentTabNull();
     }
 
+    /**
+     * Returns true if the window/activity for this manager currently has window focus and the
+     * overflow menu is not showing.
+     */
+    public boolean canShowPopupWindow() {
+        return mDelegate.canShowPopupWindow();
+    }
+
     // Snaps the zoom level of the current WebContents to the zoom factor at the given index in the
     // cached available values.
     @VisibleForTesting

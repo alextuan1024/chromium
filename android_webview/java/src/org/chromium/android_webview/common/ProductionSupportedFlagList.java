@@ -260,6 +260,9 @@ public final class ProductionSupportedFlagList {
                 "Allows autofill to offer filling again on fields that were autofilled and now hold"
                         + " autocomplete=unrecognized value."),
         Flag.baseFeature(
+                AutofillFeatures.AUTOFILL_FIX_IFRAME_OWNERSHIP,
+                "Make Autofill's iframe ownership consistent with form control ownership."),
+        Flag.baseFeature(
                 AutofillFeatures.AUTOFILL_FIX_STATE_COUNTRY_MISCLASSIFICATION,
                 "When enabled, the rationalization engine will fix misclassifications where"
                         + " a field is detected as a COUNTRY when it should be a STATE or vice"
@@ -326,10 +329,6 @@ public final class ProductionSupportedFlagList {
                 "If enabled, the missing merge modes will be re-enabled on nodes. To do that,"
                         + "MergeMode::kMergeChildrenAndReformatIfNeeded will be also added to all"
                         + "the nodes where required."),
-        Flag.baseFeature(
-                AutofillFeatures.AUTOFILL_ANDROID_FORM_DATA_COMPARE_FIELD_GLOBAL_ID,
-                "If enabled, form fields are retrieved by comparing FormFieldIds"
-                        + "instead of the set of attributes."),
         Flag.baseFeature(
                 FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_FEATURE,
                 "When enabled, merchant bound virtual cards will be offered in the keyboard "
@@ -444,9 +443,6 @@ public final class ProductionSupportedFlagList {
                 "WebRtcEncodedTransformsPerStreamCreation",
                 "Allows creating WebRTC Encoded Transforms without the "
                         + "encodedInsertableStreams RTCPeerConnection Parameter."),
-        Flag.baseFeature(
-                "IdbSqliteBackingStoreInMemoryContexts",
-                "Enables the SQLite backing store for in-memory contexts."),
         Flag.baseFeature(
                 "WebRtcEncodedTransformDirectCallback",
                 "Directly invoke WebRTC Encoded Transform callbacks in a worker."),
@@ -722,9 +718,6 @@ public final class ProductionSupportedFlagList {
                 "BatteryStatusManagerBroadcastReceiverInBackground",
                 "Register, unregister Battery Status Manager broadcast receiver on a background"
                         + " thread."),
-        Flag.baseFeature(
-                BaseFeatures.PARTITION_ALLOC_WITH_ADVANCED_CHECKS,
-                "Enables PartitionAlloc with advanced safety checks"),
         Flag.baseFeature(
                 BaseFeatures.PARTITION_ALLOC_SCHEDULER_LOOP_QUARANTINE,
                 "Enables PartitionAlloc's FreeFlags::kSchedulerLoopQuarantine"),
@@ -1404,6 +1397,9 @@ public final class ProductionSupportedFlagList {
                 "PrefetchCancelUnrelatedPrefetch",
                 "Cancels unrelated prefetch when a navigation is started."),
         Flag.baseFeature(
+                "PrefetchMatchResolverUnblockAsync",
+                "Making PrefetchMatchResolver::UnblockInternal() async."),
+        Flag.baseFeature(
                 BlinkFeatures.ANDROID_SYSTEM_FONT_PREWARMING,
                 "Prewarms system fonts on Android to improve initial rendering latency."),
         Flag.baseFeature(
@@ -1436,6 +1432,10 @@ public final class ProductionSupportedFlagList {
         Flag.baseFeature(
                 "ConversionMeasurement",
                 "Controls whether the Attribution Reporting API stub is enabled."),
+        Flag.baseFeature(
+                AwFeatures.WEBVIEW_USE_WVLES_FOR_LAYERED_STUDY,
+                "When enabled, WebView uses the nonembedded low entropy source for layered studies."
+                        + " This requires 2 restarts of the WebView-based app to take effect."),
         Flag.baseFeature(
                 PaymentFeatureList.PAYMENT_HANDLER_DIALOG_USE_INITIATOR_IN_URL_LOAD,
                 "When enabled, the merchant site is set as the initiator for the web payment"

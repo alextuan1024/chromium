@@ -4,6 +4,7 @@
 
 #include "content/common/features.h"
 
+#include "base/feature.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
@@ -252,9 +253,6 @@ BASE_FEATURE(kEnforceSameDocumentOriginInvariants,
 // experimental Content Security Policy features ('navigate-to').
 BASE_FEATURE(kExperimentalContentSecurityPolicyFeatures,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables NonString Tokens
-BASE_FEATURE(kFedCmNonStringToken, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Controls whether FedCM preserves ports in well-known URLs during testing.
 // When enabled, well-known URLs retain the original port from the provider URL
@@ -760,6 +758,11 @@ BASE_FEATURE(kServiceWorkerStaticRouterConsolidateMainScriptResponse,
 // fallback.
 BASE_FEATURE(kServiceWorkerStaticRouterStartServiceWorker,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, the browser sends `ServiceWorkerVersion.typedRouterRules`
+// instead of `routerRules` in CDP.
+BASE_FEATURE(kServiceWorkerStaticRouterTypedRulesForDevTools,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, suppresses the service worker timeout when a payment handler
 // window is open.

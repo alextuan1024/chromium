@@ -803,6 +803,15 @@ bool SiteInfo::ShouldUseProcessPerSite(BrowserContext* browser_context) const {
     return true;
   }
 
+  // Privileged content (see //chrome's PrivilegedWebContents) uses the
+  // process-per-site model so that privileged WebContents of the same feature
+  // coalesce into a shared process instead of each getting its own. Distinct
+  // features carry distinct feature ids in their SiteInfo, so they still land
+  // in separate processes.
+  if (embedder_isolation_info_.is_privileged()) {
+    return true;
+  }
+
   // Otherwise let the content client decide, defaulting to false.
   return GetContentClient()->browser()->ShouldUseProcessPerSite(browser_context,
                                                                 *this);
@@ -951,6 +960,24 @@ AgentClusterKey SiteInfo::GetAgentClusterKeyForURL(
         OriginAgentClusterIsolationState::CreateForOriginAgentCluster(
             /*had_oac_request=*/false,
             /*requires_origin_keyed_process=*/false);
+  }
+
+  // A WebContents created with PrivilegedParams isolates every frame it hosts
+  // to its own origin -- stronger than the default site-keyed process model.
+  // This ensures that a compromise in a same-site but cross-origin subframe
+  // lands in a different process than the main frame and so cannot reach the
+  // privileged capabilities bound there. Force origin-keyed process isolation,
+  // as if the origin had sent an `Origin-Agent-Cluster: ?1` header, overriding
+  // any opt-out. This is only possible where OAC process isolation is available
+  // (see the CHECK below); on configurations where it is disabled (e.g. Android
+  // below the site-isolation memory threshold) privileged frames fall back to
+  // the site-keyed process, which still isolates them from ordinary content.
+  if (url_info.embedder_isolation_info.is_privileged() &&
+      SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled()) {
+    oac_isolation_state =
+        OriginAgentClusterIsolationState::CreateForOriginAgentCluster(
+            /*had_oac_request=*/true,
+            /*requires_origin_keyed_process=*/true);
   }
 
   // Now check if the requested isolation state should be overridden by an OAC

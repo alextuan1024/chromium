@@ -40,6 +40,7 @@ import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.dragdrop.ChromeDragAndDropBrowserDelegate;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.PaneId;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
@@ -87,6 +88,7 @@ import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateMa
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.dragdrop.DragAndDropDelegate;
 import org.chromium.ui.dragdrop.DragAndDropDelegateImpl;
@@ -114,7 +116,7 @@ public class VerticalTabListCoordinator {
     private final TabListFaviconProvider mTabListFaviconProvider;
     private final TabListModel mModelList;
     private final TabListMediator mMediator;
-    private final TabListRecyclerView mRecyclerView;
+    private final VerticalTabListRecyclerView mRecyclerView;
     private final TabListModel mPinnedTabsModelList;
     private final StaticPinnedTabsMediator mPinnedTabsMediator;
     private final TabListRecyclerView mPinnedTabsRecyclerView;
@@ -122,6 +124,7 @@ public class VerticalTabListCoordinator {
     private final GridLayoutManager mPinnedLayoutManager;
     private final TabModelSelector mTabModelSelector;
     private final WindowAndroid mWindowAndroid;
+    private final ActivityResultTracker mActivityResultTracker;
     private final MultiInstanceManager mMultiInstanceManager;
     private final SnackbarManager mSnackbarManager;
     private final TabModelSelectorObserver mTabModelSelectorObserver;
@@ -211,6 +214,7 @@ public class VerticalTabListCoordinator {
             Profile profile,
             VerticalTabsActionDelegate verticalTabsActionDelegate,
             WindowAndroid windowAndroid,
+            ActivityResultTracker activityResultTracker,
             MultiInstanceManager multiInstanceManager,
             SnackbarManager snackbarManager,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
@@ -226,6 +230,7 @@ public class VerticalTabListCoordinator {
         mVerticalTabsActiveSupplier = verticalTabsActiveSupplier;
         mTabModelSelector = tabModelSelector;
         mWindowAndroid = windowAndroid;
+        mActivityResultTracker = activityResultTracker;
         mMultiInstanceManager = multiInstanceManager;
         mSnackbarManager = snackbarManager;
         mShareDelegateSupplier = shareDelegateSupplier;
@@ -305,9 +310,9 @@ public class VerticalTabListCoordinator {
                         nullableSupplier,
                         this::isAnyContextMenuShowing);
 
-        TabListRecyclerView recyclerView = mContainerView.getRecyclerView();
+        VerticalTabListRecyclerView recyclerView = mContainerView.getRecyclerView();
         mRecyclerView = recyclerView;
-        mContainerView.initRecyclerView(adapter);
+        mRecyclerView.initialize(adapter);
         mOnScrollListener =
                 new RecyclerView.OnScrollListener() {
                     @Override
@@ -748,7 +753,7 @@ public class VerticalTabListCoordinator {
         int uiIndex = getIndexForTabScroll(activeTabId);
 
         if (uiIndex != TabModel.INVALID_TAB_INDEX) {
-            mContainerView.scrollToPositionWithOffset(uiIndex);
+            mRecyclerView.scrollToPositionWithOffset(uiIndex);
         }
     }
 
@@ -785,6 +790,10 @@ public class VerticalTabListCoordinator {
         }
     }
 
+    /**
+     * Resets the vertical tab list and container models with tabs from the given tab model. Updates
+     * incognito container styling when running in a shared activity window.
+     */
     private void resetWithListOfTabs(@Nullable TabModel tabModel) {
         if (tabModel == null) return;
 
@@ -793,6 +802,9 @@ public class VerticalTabListCoordinator {
                 /* tabGroupSyncIds */ null,
                 /* quickMode */ false);
         mPinnedTabsMediator.updateTabModel(tabModel);
+        boolean isIncognito =
+                !IncognitoUtils.shouldOpenIncognitoAsWindow() && tabModel.isIncognitoBranded();
+        mContainerModel.set(VerticalTabListProperties.IS_INCOGNITO, isIncognito);
     }
 
     private void handleNewTabButtonClick() {
@@ -870,6 +882,10 @@ public class VerticalTabListCoordinator {
 
         touchHelperCallback.setOnDragOutListener(
                 (viewHolder, dX, dY) -> {
+                    if (!VerticalTabUtils.isExternalDragEnabled()) {
+                        return;
+                    }
+
                     if (!(viewHolder
                             instanceof SimpleRecyclerViewAdapter.ViewHolder simpleViewHolder)) {
                         return;
@@ -885,10 +901,6 @@ public class VerticalTabListCoordinator {
                     PointF startPoint = new PointF(mLastTouchPoint.x + dX, mLastTouchPoint.y + dY);
 
                     if (isGroupHeader) {
-                        if (!VerticalTabUtils.isGroupHeaderDragEnabled()) {
-                            return;
-                        }
-
                         Token tabGroupId =
                                 assumeNonNull(model.get(TabProperties.TAB_GROUP_HEADER_ID));
 
@@ -1224,7 +1236,7 @@ public class VerticalTabListCoordinator {
                                 // TODO(crbug.com/521982129): Implement tab reordering for a11y.
                             },
                             mSnackbarManager,
-                            /* activityResultTracker= */ null,
+                            mActivityResultTracker,
                             /* modalDialogManager= */ mWindowAndroid.getModalDialogManager(),
                             TabClosingSource.VERTICAL_TAB_STRIP,
                             mCanActivateTabLayoutToggleMenuSupplier,

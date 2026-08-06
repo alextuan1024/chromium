@@ -2801,6 +2801,11 @@ size_t NetworkContext::NumOpenWebTransports() const {
   return std::ranges::count(web_transports_, false, &WebTransport::torn_down);
 }
 
+WebTransport* NetworkContext::GetWebTransportForTesting() {
+  CHECK_EQ(web_transports_.size(), 1u);
+  return web_transports_.begin()->get();
+}
+
 bool NetworkContext::AllURLLoaderFactoriesAreBoundToNetworkForTesting(
     net::handles::NetworkHandle target_network) const {
   for (const auto& factory : url_loader_factories_) {
@@ -3909,18 +3914,26 @@ bool NetworkContext::IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
   auto restriction_allowed = [&](const NetworkRestriction& r, bool enforced) {
     const auto& patterns = enforced ? r.enforced_allowlisted_patterns
                                     : r.report_only_allowlisted_patterns;
-    const auto& redirect_behavior = enforced ? r.enforced_redirect_behavior
-                                             : r.report_only_redirect_behavior;
+    if (!patterns.has_value()) {
+      // A null pattern implies the response does not contain the corresponding
+      // header at all. No restriction should be applied.
+      return true;
+    }
 
     if (is_redirect) {
+      // For redirects, the URL is not matched against the patterns. Connection
+      // allowlist's redirect directive specifies the behavior.
+      const auto& redirect_behavior = enforced
+                                          ? r.enforced_redirect_behavior
+                                          : r.report_only_redirect_behavior;
       return redirect_behavior == ConnectionAllowlist::RedirectBehavior::kAllow;
     }
-    return !patterns.has_value() ||
-           std::ranges::any_of(
-               *patterns,
-               [&url](
-                   const std::unique_ptr<url_pattern::SimpleUrlPatternMatcher>&
-                       matcher) { return matcher->Match(url); });
+
+    // Match the URL against the patterns.
+    return std::ranges::any_of(
+        *patterns,
+        [&url](const std::unique_ptr<url_pattern::SimpleUrlPatternMatcher>&
+                   matcher) { return matcher->Match(url); });
   };
 
   // First, check against the report-only allowlist, reporting violations:

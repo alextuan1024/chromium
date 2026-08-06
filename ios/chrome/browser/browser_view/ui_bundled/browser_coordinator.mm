@@ -236,7 +236,8 @@
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_ui_provider.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
@@ -298,6 +299,7 @@
 #import "ios/chrome/browser/shared/public/commands/save_to_photos_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/search_engine_choice_commands.h"
+#import "ios/chrome/browser/shared/public/commands/send_tab_to_self_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/share_highlight_command.h"
 #import "ios/chrome/browser/shared/public/commands/shared_tab_group_last_tab_closed_alert_command.h"
@@ -470,6 +472,7 @@ const char kChromeAppStoreUrl[] =
     PriceTrackedItemsCommands,
     PromosManagerCommands,
     QuickDeleteCommands,
+    ReSigninPresenter,
     ReaderModeBrowserAgentDelegate,
     ReaderModeCommands,
     ReaderModeCoordinatorDelegate,
@@ -479,20 +482,20 @@ const char kChromeAppStoreUrl[] =
     ReminderNotificationsCoordinatorDelegate,
     RepostFormCoordinatorDelegate,
     RepostFormTabHelperDelegate,
-    ReSigninPresenter,
     SaveToDriveCommands,
     SaveToPhotosCommands,
     SearchEngineChoiceCommands,
     SearchEngineChoiceCoordinatorDelegate,
+    SendTabToSelfCommands,
     SendTabToSelfCoordinatorDelegate,
     SharedTabGroupLastTabAlertCommands,
     SigninPresenter,
     SnackbarCoordinatorDelegate,
     SnapshotGeneratorDelegate,
     StoreKitCoordinatorDelegate,
+    SyncPresenterCommands,
     SyncedSetUpCommands,
     SyncedSetUpCoordinatorDelegate,
-    SyncPresenterCommands,
     TabPickerCommands,
     TextZoomCommands,
     TipsPasswordsCommands,
@@ -1392,6 +1395,7 @@ const char kChromeAppStoreUrl[] =
     @protocol(SaveToDriveCommands),
     @protocol(SaveToPhotosCommands),
     @protocol(SearchEngineChoiceCommands),
+    @protocol(SendTabToSelfCommands),
     @protocol(SharedTabGroupLastTabAlertCommands),
     @protocol(SyncedSetUpCommands),
     @protocol(SyncPresenterCommands),
@@ -1486,7 +1490,7 @@ const char kChromeAppStoreUrl[] =
 
   _toolbarAccessoryPresenter = [[ToolbarAccessoryPresenter alloc]
       initWithIsIncognito:profile->IsOffTheRecord()
-              layoutState:browser->GetSceneState().layoutState];
+       browserLayoutState:browser->GetBrowserLayoutState()];
   _toolbarAccessoryPresenter.topToolbarLayoutGuide =
       [_layoutGuideCenter makeLayoutGuideNamed:kPrimaryToolbarGuide];
   _toolbarAccessoryPresenter.bottomToolbarLayoutGuide =
@@ -2812,11 +2816,24 @@ const char kChromeAppStoreUrl[] =
   [self.addCreditCardCoordinator start];
 }
 
+#pragma mark - SendTabToSelfCommands
+
 - (void)showSendTabToSelfUI:(const GURL&)url
                       title:(NSString*)title
                  entryPoint:(send_tab_to_self::ShareEntryPoint)entryPoint {
-  // According to crbug.com/472243358 a second coordinator can be opened while
-  // the first one is not stopped. In doubt, let’s stop the first one.
+  [self sendTabToSelfToDeviceWithURL:url
+                               title:title
+                            deviceID:nil
+                          deviceName:nil
+                          entryPoint:entryPoint];
+}
+
+- (void)sendTabToSelfToDeviceWithURL:(const GURL&)url
+                               title:(NSString*)title
+                            deviceID:(NSString*)deviceID
+                          deviceName:(NSString*)deviceName
+                          entryPoint:
+                              (send_tab_to_self::ShareEntryPoint)entryPoint {
   [_sendTabToSelfCoordinator stop];
   _sendTabToSelfCoordinator = [[SendTabToSelfCoordinator alloc]
       initWithBaseViewController:self.viewController
@@ -2824,13 +2841,11 @@ const char kChromeAppStoreUrl[] =
                  signinPresenter:self
                              url:url
                            title:title
+           targetDeviceCacheGUID:deviceID
+                targetDeviceName:deviceName
                       entryPoint:entryPoint];
   _sendTabToSelfCoordinator.delegate = self;
 
-  // If there is another transition going on (e.g. dismissal of the context
-  // menu from which the Send-tab-to-self action was triggered), postpone the
-  // start of the coordinator to allow the other transition to complete first.
-  // This is necessary to prevent a UIKit transition deadlock.
   __weak SendTabToSelfCoordinator* weakSendTabToSelfCoordinator =
       _sendTabToSelfCoordinator;
   ExecuteWhenTransitionsComplete(
@@ -4199,10 +4214,6 @@ const char kChromeAppStoreUrl[] =
 #pragma mark - Private WebState management methods
 
 - (web::WebState*)activeWebStateOrReaderMode {
-  if (!IsReaderModeAvailable()) {
-    return self.activeWebState;
-  }
-
   if (self.activeWebState) {
     ReaderModeTabHelper* tabHelper =
         ReaderModeTabHelper::FromWebState(self.activeWebState);

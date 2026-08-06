@@ -964,6 +964,12 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       <message name="IDS_BOOKMARK_BAR_SETTING" desc="Title for the bookmark bar setting.">
         Show bookmarks bar
       </message>
+      <message name="IDS_BOOKMARK_BAR_SETTING_ALWAYS_SHOW" desc="Title for option to always show the bookmark bar." translateable="false">
+        Always show
+      </message>
+      <message name="IDS_BOOKMARK_BAR_SETTING_ALWAYS_HIDE" desc="Title for option to always hide the bookmark bar." translateable="false">
+        Always hide
+      </message>
       <message name="IDS_BOOKMARK_BAR_SETTING_SUBTITLE" desc="Subtitle hint for the bookmark bar setting.">
         Hidden on narrow screens
       </message>
@@ -1038,16 +1044,6 @@ For example, some websites may respond to this request by showing you ads that a
       </message>
       <message name="IDS_CAN_MAKE_PAYMENT_TITLE" desc="Title for preference to allow websites to know whether you have payment methods available through PaymentRequest.CanMakePayment interface">
         Access payment methods
-      </message>
-
-      <!-- Privacy Sandbox Settings. Used by //chrome/browser/privacy_sandbox. -->
-      <message name="IDS_PRIVACY_SANDBOX_SNACKBAR_MESSAGE" desc="The text displayed in the snackbar, which gives the user an option to navigate to the Privacy Sandbox settings page. 'Privacy sandbox' has TC ID 5753235213964358658.">
-        Learn about and control new technologies that aim to replace third-party cookies
-      </message>
-
-      <!-- Privacy Sandbox v4 - Ad Privacy Page -->
-      <message name="IDS_AD_PRIVACY_PAGE_TITLE" desc="A new page title for a page that includes 3 settings. This same text appears as a label on chrome://settings/privacy between 'Third-party cookies' and 'Security'. This same pair of words is used in the Consent and Notice flow and must be consistently translated in both contexts. We mean privacy associated with ads, and not privacy from ads. **** CONTEXT PRIVACY SANDBOX **** Chrome’s Privacy Sandbox initiative 1) deprecates third-party cookies in Chrome, 2) supports free and open content on the web (by finding better ways to support ads online), 3) while providing stronger privacy protections for users. You can see a high-level description of this public project at www.privacysanbox.com. **** NEW SETTINGS SECTION IN CHROME **** 3 new ad-specific settings appear on an “Ad privacy” page in Chrome settings. For an equivalent structure, see “Security” on chrome://settings/privacy that opens chrome://settings/security. Likewise, “Ad privacy” on chrome://settings/privacy will open chrome://settings/AdPrivacy.">
-        Ad privacy
       </message>
 
       <!-- Secure DNS Settings.  Used by //chrome/browser/privacy. -->
@@ -1176,6 +1172,9 @@ Your Google account may have other forms of browsing history like searches and a
       </message>
             <message name="IDS_SEARCH_HISTORY_LINK_OUT_TITLE" desc="Title for the link out button in Clear Browsing Data settings that redirects to the Google Search History page." translateable="false">
         Search history
+      </message>
+      <message name="IDS_SEARCH_HISTORY_LINK_OUT_DESCRIPTION_OTHER_DSE" desc="Description for the button in Clear Browsing Data settings that instruct the user to manage their search history in their default search engine." translateable="false">
+        Your search engine is <ph name="DSE_NAME">%1$s<ex>Google</ex></ph>. See their instructions for deleting your search history, if applicable.
       </message>
       <message name="IDS_MY_ACTIVITY_LINK_OUT_TITLE" desc="Title for the link out button in Clear Browsing Data settings that redirects to the Google My Activity page." translateable="false">
         My Activity
@@ -4244,6 +4243,12 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_CONTEXTMENU_SHOW_BOOKMARKS_BAR" desc="Menu item for showing the bookmarks bar. [CHAR_LIMIT=27]">
         Show bookmarks bar
       </message>
+      <message name="IDS_CONTEXTMENU_ALWAYS_HIDE_BOOKMARKS_BAR" desc="Menu item for always hiding the bookmarks bar. [CHAR_LIMIT=27]" translateable="false">
+        Always hide
+      </message>
+      <message name="IDS_CONTEXTMENU_ALWAYS_SHOW_BOOKMARKS_BAR" desc="Menu item for always showing the bookmarks bar. [CHAR_LIMIT=27]" translateable="false">
+        Always show
+      </message>
       <message name="IDS_CONTEXTMENU_EDIT_BOOKMARK_ELLIPSIS" desc="Menu item for editing a bookmark from the context menu. [CHAR_LIMIT=27]">
         Edit…
       </message>
@@ -5805,8 +5810,10 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_KEYBOARD_SHORTCUT_CLOSE_TAB" desc="A text label that appears next to the keyboard shortcut that will close the current tab in Chrome. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55]">
         Close current tab
       </message>
-      <message name="IDS_KEYBOARD_SHORTCUT_CLOSE_PINNED_TAB" desc="A text label that appears when user tries to close a pinned tab via Ctrl+W shortcut. The warning informs the user that confirming the closure requires a second press of the keyboard shortcut. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55]">
-        Press ^W again to close the pinned tab
+      <message name="IDS_KEYBOARD_SHORTCUT_CLOSE_PINNED_TAB" desc="A text label that appears when user tries to close a pinned tab via Ctrl+W shortcut. The warning informs the user that confirming the closure requires a second press of the keyboard shortcut. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55] [ICU Syntax]">
+        {NUM_TABS, plural,
+          =1 {Press ^W again to close the pinned tab}
+          other {Press ^W again to close the pinned tabs}}
       </message>
       <message name="IDS_KEYBOARD_SHORTCUT_FIND_BAR" desc="A text label that appears next to the keyboard shortcut that will open the find bar that searches what is on the screen. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55]">
         Open Find Bar

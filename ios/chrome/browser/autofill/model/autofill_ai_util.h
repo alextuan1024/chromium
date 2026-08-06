@@ -27,8 +27,15 @@ bool CanPerformAutofillAiAction(
     AutofillAiAction action,
     std::optional<EntityType> entity_type = std::nullopt);
 
-// Returns whether Ambient Autofill is enabled.
-bool IsAmbientAutofillEnabled();
+// Returns whether Ambient Autofill is enabled for the given profile.
+// Required to be called with a non-nil profile.
+bool IsAmbientAutofillEnabled(ProfileIOS* profile);
+
+// Returns whether the Ambient Autofill feature flag is enabled.
+bool IsAmbientAutofillFeatureEnabled();
+
+// Returns whether Autofill order and shipment entities are supported.
+bool IsAutofillShoppingEnabled();
 
 // Returns whether Autofill AI (AtMemory) is enabled.
 bool IsAutofillAtMemoryEnabled();

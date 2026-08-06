@@ -100,6 +100,8 @@ export enum ActorTaskInterruptReason {
   WAITING_IRRELEVANT_USER_INPUT = 6,
   // Actor task was waiting for user to respond to unsafe counter-abuse verdict.
   WAITING_UNSAFE_COUNTER_ABUSE_VERDICT = 7,
+  // Actor task was waiting for user to consent on experimental triggering.
+  WAITING_FOR_EXPERIMENTAL_TRIGGERING_CONSENT = 8,
 }
 
 // Reason why capturing desktop screenshot failed. NOTE: This may be extended in
@@ -204,6 +206,10 @@ export enum SkillSource {
   USER_CREATED = 2,
   // Skill derived from a first party skill.
   DERIVED_FROM_FIRST_PARTY = 3,
+  // Skill sourced from the EnterprisePublishedSkills enterprise policy.
+  ENTERPRISE = 4,
+  // Skill derived from an enterprise skill.
+  DERIVED_FROM_ENTERPRISE = 5,
 }
 
 // Enum to specify the skills web client event for metrics recording.

@@ -62,6 +62,7 @@ class MockVisitor : public WebTransportClientVisitor {
               (const std::optional<WebTransportCloseInfo>&),
               (override));
   MOCK_METHOD(void, OnError, (const WebTransportError&), (override));
+  MOCK_METHOD(void, OnDraining, (), (override));
 
   MOCK_METHOD0(OnIncomingBidirectionalStreamAvailable, void());
   MOCK_METHOD0(OnIncomingUnidirectionalStreamAvailable, void());
@@ -329,6 +330,48 @@ TEST_F(DedicatedWebTransportHttp3Test, CloseReason) {
   EXPECT_THAT(received_close_info, Optional(close_info));
 }
 
+TEST_F(DedicatedWebTransportHttp3Test, SessionDraining) {
+  StartServer();
+  client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
+      GetURL("/session-close"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
+
+  EXPECT_CALL(visitor_, OnBeforeConnect);
+  EXPECT_CALL(visitor_, OnConnected).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnClosed(_)).Times(0);
+  EXPECT_CALL(visitor_, OnDraining()).WillOnce(StopRunning());
+  client_->Connect();
+  Run();
+  ASSERT_TRUE(client_->session() != nullptr);
+
+  // The "/session-close" endpoint sends a DRAIN_WEBTRANSPORT_SESSION capsule
+  // when it receives the string "DRAIN" on a stream.
+  quic::WebTransportStream* stream =
+      client_->session()->OpenOutgoingUnidirectionalStream();
+  ASSERT_TRUE(stream != nullptr);
+  EXPECT_TRUE(stream->Write("DRAIN"));
+  EXPECT_TRUE(stream->SendFin());
+
+  Run();
+}
+
+TEST_F(DedicatedWebTransportHttp3Test,
+       DrainingAfterConnectionFailureIsIgnored) {
+  StartServer();
+  client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
+      GetURL("/not-found"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
+
+  EXPECT_CALL(visitor_, OnBeforeConnect);
+  EXPECT_CALL(visitor_, OnConnectionFailed).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnDraining()).Times(0);
+  client_->Connect();
+  Run();
+  ASSERT_EQ(client_->state(), WebTransportState::FAILED);
+
+  client_->OnSessionDraining();
+}
+
 // Test negotiation of the application protocol via
 // https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-12.html#name-application-protocol-negoti
 TEST_F(DedicatedWebTransportHttp3Test, SubprotocolHeader) {
@@ -391,6 +434,13 @@ class HeaderCapturingBackend : public quic::test::QuicTestBackend {
 class DedicatedWebTransportHttp3HeadersTest
     : public DedicatedWebTransportHttp3Test {
  public:
+  ~DedicatedWebTransportHttp3HeadersTest() override {
+    if (server_ != nullptr) {
+      server_->Shutdown();
+      server_.reset();
+    }
+  }
+
   void StartServerWithCapture() {
     capturing_backend_.set_enable_webtransport(true);
     server_ = std::make_unique<QuicSimpleServer>(
@@ -406,20 +456,10 @@ class DedicatedWebTransportHttp3HeadersTest
   HeaderCapturingBackend capturing_backend_;
 };
 
-#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
-// TODO(https://crbug.com/541015755): Destructor order causes MSan
-// use-of-uninitialized-value.
-#define MAYBE_AdditionalHeadersCasingAndDuplicates \
-  DISABLED_AdditionalHeadersCasingAndDuplicates
-#else
-#define MAYBE_AdditionalHeadersCasingAndDuplicates \
-  AdditionalHeadersCasingAndDuplicates
-#endif
-
 // Verify that additional_headers with mixed casing are lowercased and that
 // duplicate names (differing only in case) have their values combined.
 TEST_F(DedicatedWebTransportHttp3HeadersTest,
-       MAYBE_AdditionalHeadersCasingAndDuplicates) {
+       AdditionalHeadersCasingAndDuplicates) {
   StartServerWithCapture();
   WebTransportParameters parameters;
   parameters.additional_headers = {

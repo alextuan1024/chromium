@@ -242,6 +242,8 @@ class CORE_EXPORT LayoutBox : public LayoutBoxModelObject {
     return StyleRef().IsHorizontalWritingMode() ? size.height : size.width;
   }
 
+  LayoutUnit StitchedBlockSize() const;
+
   // Return the size of all fragments stitched together in the block direction.
   //
   // <div style="columns:2; column-fill:auto; height:100px;">
@@ -856,11 +858,10 @@ class CORE_EXPORT LayoutBox : public LayoutBoxModelObject {
   //
   // When applying offsets and not clips, the TransformAccumulation is
   // respected. If there is a clip, the TransformState is flattened first.
-  bool MapContentsRectToBoxSpace(
-      TransformState&,
-      TransformState::TransformAccumulation,
-      const LayoutObject& contents,
-      VisualRectFlags = kDefaultVisualRectFlags) const;
+  bool MapContentsRectToBoxSpace(TransformState&,
+                                 TransformState::TransformAccumulation,
+                                 const LayoutObject& contents,
+                                 VisualRectFlags = {}) const;
 
   // True if the contents scroll relative to this object. |this| must be a
   // containing block for |contents|.
@@ -920,7 +921,6 @@ class CORE_EXPORT LayoutBox : public LayoutBoxModelObject {
   void EnsureIsReadyForPaintInvalidation() override;
   void ClearPaintFlags() override;
 
-  bool HasControlClip() const;
 
   class MutableForPainting : public LayoutObject::MutableForPainting {
    public:

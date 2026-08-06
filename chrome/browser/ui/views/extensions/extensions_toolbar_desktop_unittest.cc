@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/views/extensions/extension_view_utils.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_unittest.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
@@ -312,14 +313,14 @@ TEST_F(ExtensionsToolbarDesktopUnitTest,
        PinnedExtensionAppearsInAnotherWindow) {
   const std::string& extension_id = InstallExtension("Extension")->id();
   const auto is_action_visible_on_toolbar = [&extension_id](Browser* browser) {
-    return browser->GetBrowserView()
-        .toolbar()
+    return BrowserView::GetBrowserViewForBrowser(browser)
+        ->toolbar()
         ->extensions_container()
         ->IsActionVisibleOnToolbar(extension_id);
   };
 
-  Browser* browser2 =
-      CreateBrowserWithBrowserView(browser()->GetProfile(), browser()->type());
+  Browser* browser2 = CreateBrowserWithBrowserView(browser()->GetProfile(),
+                                                   browser()->GetType());
 
   // Verify extension is unpinned in both windows.
   EXPECT_FALSE(is_action_visible_on_toolbar(browser()));
@@ -334,8 +335,8 @@ TEST_F(ExtensionsToolbarDesktopUnitTest,
   EXPECT_TRUE(is_action_visible_on_toolbar(browser()));
   EXPECT_TRUE(is_action_visible_on_toolbar(browser2));
 
-  Browser* browser3 =
-      CreateBrowserWithBrowserView(browser()->GetProfile(), browser()->type());
+  Browser* browser3 = CreateBrowserWithBrowserView(browser()->GetProfile(),
+                                                   browser()->GetType());
 
   // Brand-new window also gets the pinned extension.
   EXPECT_TRUE(is_action_visible_on_toolbar(browser3));
@@ -1270,4 +1271,52 @@ TEST_F(ExtensionsToolbarDesktopWithPermittedSitesUnitTest,
   // Request access button visibility is the same for other site settings, which
   // is already tested, regardless of whether permitted sites are supported or
   // not.
+}
+
+class ExtensionsToolbarDesktopAccessControlDisabledUnitTest
+    : public ExtensionsToolbarUnitTest {
+ public:
+  ExtensionsToolbarDesktopAccessControlDisabledUnitTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        extensions_features::kExtensionsMenuAccessControl);
+  }
+  ExtensionsToolbarDesktopAccessControlDisabledUnitTest(
+      const ExtensionsToolbarDesktopAccessControlDisabledUnitTest&) = delete;
+  ExtensionsToolbarDesktopAccessControlDisabledUnitTest& operator=(
+      const ExtensionsToolbarDesktopAccessControlDisabledUnitTest&) = delete;
+  ~ExtensionsToolbarDesktopAccessControlDisabledUnitTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Tests that when #extensions-menu-access-control is disabled, hovering over a
+// pinned extension highlights the container and button and deactivating the
+// browser widget clears container highlight.
+TEST_F(ExtensionsToolbarDesktopAccessControlDisabledUnitTest,
+       HighlightClearedOnDeactivation) {
+  auto extension = InstallExtension("Extension");
+  auto* toolbar_model = ToolbarActionsModel::Get(profile());
+  toolbar_model->SetActionVisibility(extension->id(), true);
+  WaitForAnimation();
+
+  ToolbarActionView* action_view =
+      extensions_container()->GetViewForId(extension->id());
+  ASSERT_TRUE(action_view);
+
+  // Activate the widget.
+  views::Widget* widget = extensions_container()->GetWidget();
+  widget->OnNativeWidgetActivationChanged(true);
+  EXPECT_TRUE(widget->ShouldPaintAsActive());
+
+  // Hover over the pinned extension action.
+  action_view->SetState(views::Button::ButtonState::STATE_HOVERED);
+  EXPECT_EQ(action_view->GetState(), views::Button::ButtonState::STATE_HOVERED);
+  EXPECT_TRUE(extensions_container()->GetHighlighted());
+
+  // Deactivate the widget.
+  widget->OnNativeWidgetActivationChanged(false);
+
+  // Verify container highlight is cleared.
+  EXPECT_FALSE(extensions_container()->GetHighlighted());
 }

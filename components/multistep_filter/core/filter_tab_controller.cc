@@ -130,7 +130,7 @@ void LogSuggestionApplicationOutcome(
 
   std::string_view outcome_str =
       SuggestionApplicationResultToString(result.outcome);
-  if (result.outcome == SuggestionApplicationResult::kFailedAttributeMismatch) {
+  if (!result.missing_keys.empty()) {
     MULTISTEP_FILTER_LOG(log_router, metadata.navigation_id,
                          LogEventType::kSuggestionApplied,
                          metadata.url.GetHost())
@@ -246,6 +246,12 @@ void FilterTabController::OnNavigationFinished(
     return;
   }
 
+  if (!service_->IsSmartSuggestionsEnabled()) {
+    LogUrlEligibilityCheck(log_router_, metadata, /*eligible=*/false,
+                           "smart_suggestions_disabled");
+    return;
+  }
+
   if (!service_->HasUserProvidedConsent(metadata.navigation_id,
                                         metadata.url.GetHost())) {
     LogUrlEligibilityCheck(log_router_, metadata, /*eligible=*/false,
@@ -318,7 +324,7 @@ void FilterTabController::OnSupportedTasksFetched(
 void FilterTabController::OnSuggestionGenerated(
     std::optional<UrlFilterSuggestion> suggestion) {
   if (suggestion) {
-    delegate_->OnSuggestionGenerated(
+    delegate_->ShowSuggestion(
         suggestion,
         MultistepFilterUiDelegate::SuggestionUiCallbacks{
             .on_suggestion_shown =
@@ -330,7 +336,7 @@ void FilterTabController::OnSuggestionGenerated(
                 &FilterTabController::OnUserDecision, GetWeakPtr()),
         });
   } else {
-    delegate_->OnSuggestionGenerated(std::nullopt, {});
+    delegate_->ShowSuggestion(std::nullopt, {});
     metrics_tracker_.OnPreservedSuggestionCleared();
   }
   if (observer_for_test_) {
@@ -343,6 +349,8 @@ void FilterTabController::OnExtractionFinished(
     std::optional<FilterAnnotation> annotation) {
   LogSuggestionApplicationOutcome(log_router_, metrics_tracker_, metadata,
                                   metadata.applied_suggestion, annotation);
+  metrics_tracker_.OnExtractionFinished(metadata, annotation);
+
   if (observer_for_test_) {
     observer_for_test_->OnExtractionFinishedForTest(  // IN-TEST
         annotation ? std::optional(annotation->id) : std::nullopt);

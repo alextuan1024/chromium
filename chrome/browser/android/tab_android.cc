@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "base/notimplemented.h"
+#include "base/scoped_observation.h"
 #include "base/token.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/slim/layer.h"
@@ -37,6 +38,7 @@
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/notifications/notification_permission_context.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/renderer_preferences_util.h"
 #include "chrome/browser/resource_coordinator/tab_helper.h"
 #include "chrome/browser/resource_coordinator/tab_load_tracker.h"
@@ -51,6 +53,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/startup/bad_flags_prompt.h"
 #include "chrome/browser/ui/tab_helpers.h"
+#include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "components/android_autofill/browser/android_autofill_client.h"
 #include "components/android_autofill/browser/android_autofill_manager.h"
 #include "components/android_autofill/browser/android_autofill_provider.h"
@@ -418,10 +421,22 @@ void TabAndroid::InitWebContents(
   ShowBadFlagsPrompt(web_contents());
 
   MediaStateObserver::CreateForWebContents(web_contents_.get());
+  tab_alert_controller_ = std::make_unique<tabs::TabAlertController>(*this);
 
   for (Observer& observer : observers_) {
     observer.OnInitWebContents(this);
   }
+}
+
+std::optional<int> TabAndroid::GetAlertState(JNIEnv* env) {
+  if (!tab_alert_controller_) {
+    return std::nullopt;
+  }
+  std::optional<tabs::TabAlert> alert = tab_alert_controller_->GetAlertToShow();
+  if (!alert.has_value()) {
+    return std::nullopt;
+  }
+  return std::to_underlying(*alert);
 }
 
 void TabAndroid::GetMemoryUsageBytes(
@@ -530,13 +545,21 @@ void WillRemoveWebContentsFromTab(content::WebContents* contents,
   }
 }
 
+// TODO(crbug.com/542647852): Move this to its own file.
 class TabWebContentsDestroyer : public content::WebContentsDelegate,
-                                public content::WebContentsObserver {
+                                public content::WebContentsObserver,
+                                public ProfileObserver {
  public:
   explicit TabWebContentsDestroyer(
       std::unique_ptr<content::WebContents> web_contents)
       : content::WebContentsObserver(web_contents.get()),
         web_contents_(std::move(web_contents)) {
+    if (web_contents_) {
+      if (Profile* profile =
+              Profile::FromBrowserContext(web_contents_->GetBrowserContext())) {
+        profile_observation_.Observe(profile);
+      }
+    }
     web_contents_->SetDelegate(this);
     // Cancel any pre-existing in-flight navigations before ClosePage() cancels
     // NavigationRequests.
@@ -614,9 +637,15 @@ class TabWebContentsDestroyer : public content::WebContentsDelegate,
   // content::WebContentsObserver:
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override {
-    if (web_contents_) {
-      web_contents_->Stop();
+    if (!web_contents_) {
+      return;
     }
+    // Synchronously stopping the navigation is not safe as some other callers
+    // in the observer chain may try to access the navigation which we want to
+    // stop.
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&TabWebContentsDestroyer::StopNavigation,
+                                  weak_ptr_factory_.GetWeakPtr()));
   }
 
   void PrimaryMainFrameRenderProcessGone(
@@ -624,8 +653,21 @@ class TabWebContentsDestroyer : public content::WebContentsDelegate,
     Destroy();
   }
 
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override {
+    if (profile_observation_.GetSource() == profile) {
+      Destroy();
+    }
+  }
+
  private:
+  void StopNavigation() {
+    if (web_contents_) {
+      web_contents_->Stop();
+    }
+  }
   void Destroy() {
+    profile_observation_.Reset();
     Observe(nullptr);
     if (web_contents_) {
       if (auto* dialog_manager =
@@ -639,6 +681,7 @@ class TabWebContentsDestroyer : public content::WebContentsDelegate,
   }
 
   std::unique_ptr<content::WebContents> web_contents_;
+  base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
   base::WeakPtrFactory<TabWebContentsDestroyer> weak_ptr_factory_{this};
 };
 }  // namespace
@@ -658,6 +701,7 @@ tabs::TabDestroyStatus TabAndroid::DestroyWebContents() {
     return DestroyWebContentsSlowShutdown();
   }
 
+  tab_alert_controller_.reset();
   tab_features_.reset();
   web_contents_.reset();
   synced_tab_delegate_->ResetWebContents();
@@ -689,6 +733,7 @@ std::unique_ptr<content::WebContents> TabAndroid::ReleaseWebContentsInternal(
     bool clear_delegate) {
   WillRemoveWebContentsFromTab(web_contents(), clear_delegate);
 
+  tab_alert_controller_.reset();
   tab_features_.reset();
   std::unique_ptr<content::WebContents> released_contents =
       std::move(web_contents_);

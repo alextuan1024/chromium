@@ -129,7 +129,7 @@ source_set("application_storage_metrics") {
   deps = [
     "//base",
     "//components/history/core/browser",
-    "//components/optimization_guide/core:features",
+    "//components/optimization_guide/core:prediction",
     "//ios/chrome/browser/sessions/model:session_constants",
     "//ios/chrome/browser/shared/model/paths",
     "//ios/chrome/browser/snapshots/model:constants",
@@ -365,6 +365,7 @@ source_set("welcome_back_profile_agent") {
     "//ios/chrome/browser/promos_manager/model:constants",
     "//ios/chrome/browser/promos_manager/model:factory",
     "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/utils",
     "//ios/chrome/browser/shared/public/features:system_flags",

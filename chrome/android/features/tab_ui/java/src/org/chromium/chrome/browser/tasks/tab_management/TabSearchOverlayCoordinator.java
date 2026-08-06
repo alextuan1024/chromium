@@ -59,6 +59,7 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -99,22 +100,24 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
     private final BackPressManager mBackPressManager;
     private final MonotonicObservableSupplier<CompositorViewHolder> mCompositorViewHolderSupplier;
     private final OneshotSupplier<TabGroupUiActionHandler> mTabGroupUiActionHandlerSupplier;
-    // Recursion guard to prevent event dispatch loops when forwarding scrim scroll/drag events
-    // to the underlying compositor view hierarchy.
-    private boolean mIsForwardingScroll;
     private final SettableNonNullObservableSupplier<Boolean> mBackPressStateSupplier =
             ObservableSuppliers.createNonNull(false);
     private final PropertyModel mModel;
     private final SearchBoxDataProvider mSearchBoxDataProvider;
     private final Callback<Profile> mProfileObserver;
+    private final Callback<TabModelSelector> mTabModelSelectorObserver;
+    private final Callback<Boolean> mSuggestionsObserver = this::onSuggestionsChanged;
 
+    // Recursion guard to prevent event dispatch loops when forwarding scrim scroll/drag events
+    // to the underlying compositor view hierarchy.
+    private boolean mIsForwardingScroll;
     private @Nullable
             PropertyModelChangeProcessor<
                     PropertyModel, TabSearchOverlayViewBinder.ViewHolder, PropertyKey>
             mChangeProcessor;
     private @Nullable LinearLayout mPanelContainer;
     private @Nullable SearchUiCoordinator mSearchUiCoordinator;
-    private final Callback<Boolean> mSuggestionsObserver = this::onSuggestionsChanged;
+    private @Nullable TabModelSelectorTabModelObserver mTabModelObserver;
 
     /**
      * Constructs a new TabSearchOverlayCoordinator.
@@ -161,6 +164,7 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
         mModel.set(TabSearchOverlayProperties.VISIBLE, false);
         mModel.set(TabSearchOverlayProperties.ON_SCRIM_CLICK, (v) -> hide());
         mModel.set(TabSearchOverlayProperties.ON_CLOSE_CLICK, (v) -> hide());
+        mModel.set(TabSearchOverlayProperties.ON_HIDE_FINISHED, this::onHideFinished);
 
         mSearchBoxDataProvider = new SearchBoxDataProvider();
         mSearchBoxDataProvider.setPageClassification(
@@ -168,11 +172,19 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
 
         mProfileObserver = this::onProfileChanged;
         mProfileSupplier.addSyncObserverAndCallIfNonNull(mProfileObserver);
+
+        mTabModelSelectorObserver = this::onTabModelSelectorChanged;
+        mTabModelSelectorSupplier.addSyncObserverAndCallIfNonNull(mTabModelSelectorObserver);
     }
 
     /** Destroys the coordinator, cleaning up resources and child coordinators. */
     public void destroy() {
         mProfileSupplier.removeObserver(mProfileObserver);
+        mTabModelSelectorSupplier.removeObserver(mTabModelSelectorObserver);
+        if (mTabModelObserver != null) {
+            mTabModelObserver.destroy();
+            mTabModelObserver = null;
+        }
         mBackPressManager.removeHandler(this);
         if (mChangeProcessor != null) {
             mChangeProcessor.destroy();
@@ -239,7 +251,11 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
                         }
                         return forwardEvent(v, event, false);
                     }
-                    return false;
+                    // Consume non-scroll generic motion events (such as pointer clicks or hover)
+                    // to prevent them from falling through to the background web contents and
+                    // stealing focus from the UrlBar, which would cause the suggestions dropdown to
+                    // dismiss on focus loss and cause animation flicker during panel hide.
+                    return true;
                 });
 
         if (mSearchUiCoordinator == null) {
@@ -349,11 +365,11 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
     }
 
     private void onSuggestionsChanged(boolean hasSuggestions) {
-        String query =
-                assumeNonNull(mSearchUiCoordinator)
-                        .getLocationBarCoordinator()
-                        .getUrlBarCoordinator()
-                        .getTextWithoutAutocomplete();
+        // Guard against empty-state updates from input clearing during the hide animation.
+        if (!isVisible()) return;
+
+        var locationBar = assumeNonNull(mSearchUiCoordinator).getLocationBarCoordinator();
+        String query = locationBar.getUrlBarCoordinator().getTextWithoutAutocomplete();
         boolean showEmptyState = query != null && !query.isEmpty() && !hasSuggestions;
         mModel.set(TabSearchOverlayProperties.EMPTY_STATE_VISIBLE, showEmptyState);
     }
@@ -442,6 +458,9 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
         ensureInitialized();
         if (mModel.get(TabSearchOverlayProperties.VISIBLE)) return;
 
+        // Ensure that transient properties (like empty state visibility) are reset to their
+        // default states before showing the search UI.
+        mModel.set(TabSearchOverlayProperties.EMPTY_STATE_VISIBLE, false);
         mModel.set(TabSearchOverlayProperties.VISIBLE, true);
         mBackPressStateSupplier.set(true);
         assumeNonNull(mSearchUiCoordinator)
@@ -453,10 +472,6 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
     public void hide() {
         mModel.set(TabSearchOverlayProperties.VISIBLE, false);
         mBackPressStateSupplier.set(false);
-        if (mSearchUiCoordinator != null) {
-            var locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
-            locationBar.clearOmniboxFocus();
-        }
         updateExclusionRects();
     }
 
@@ -510,6 +525,30 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
         if (mSearchUiCoordinator != null) {
             mSearchUiCoordinator.setColorScheme(isIncognito);
         }
+    }
+
+    private void onHideFinished() {
+        // Clear focus only after the hide animation finishes to prevent animation flicker.
+        if (mSearchUiCoordinator != null) {
+            var locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
+            locationBar.clearOmniboxFocus();
+        }
+    }
+
+    private void onTabModelSelectorChanged(TabModelSelector selector) {
+        // Listens to tab model selector changes to perform updates for multi-window switching.
+        if (mTabModelObserver != null) {
+            mTabModelObserver.destroy();
+        }
+        mTabModelObserver =
+                new TabModelSelectorTabModelObserver(selector) {
+                    @Override
+                    public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
+                        if (isVisible()) {
+                            hide();
+                        }
+                    }
+                };
     }
 
     // BackPressHandler implementation.

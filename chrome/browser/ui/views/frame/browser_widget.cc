@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+#include "chrome/browser/ui/sessions/session_service_browser_helper.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget.h"
@@ -174,7 +175,9 @@ void BrowserWidget::InitBrowserWidget() {
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP ||
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP;
 
-  params.session_data = browser->platform_session_data();
+  params.session_data = browser->GetFeatures()
+                            .session_service_browser_helper()
+                            ->platform_session_data();
 #endif
 
   if (browser_native_widget_->ShouldRestorePreviousBrowserWidgetState()) {
@@ -312,6 +315,18 @@ bool BrowserWidget::GetAccelerator(int command_id,
 }
 
 const ui::ThemeProvider* BrowserWidget::GetThemeProvider() const {
+  // If there is a user color override (e.g., Focus Mode is active),
+  // fallback to the un-themed baseline provider so custom extension
+  // theme images are suppressed.
+  if (user_color_override().has_value()) {
+    Profile* profile = browser_view_->browser()->GetProfile();
+    return &ThemeServiceFactory::GetForProfile(profile)
+                ->GetDefaultThemeProvider();
+  }
+  return GetBaseThemeProvider();
+}
+
+const ui::ThemeProvider* BrowserWidget::GetBaseThemeProvider() const {
   Browser* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);
   // Ignore the system theme for web apps with window-controls-overlay as the
@@ -327,8 +342,9 @@ const ui::ThemeProvider* BrowserWidget::GetThemeProvider() const {
 
 ui::ColorProviderKey::ThemeInitializerSupplier* BrowserWidget::GetCustomTheme()
     const {
-  // Do not return any custom theme if this is an incognito browser.
-  if (IsIncognitoBrowser()) {
+  // Do not return any custom theme if this is an incognito browser or if there
+  // is a user color override (e.g. Focus Mode).
+  if (IsIncognitoBrowser() || user_color_override().has_value()) {
     return nullptr;
   }
 
@@ -456,6 +472,7 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
   CHECK(theme_service);
 
   key = theme_service->GetColorProviderKey(key, profile);
+  key.custom_theme = GetCustomTheme();
 
   // Re-apply Widget overrides because GetColorProviderKey might have
   // overwritten them.

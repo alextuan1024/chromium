@@ -77,10 +77,6 @@ enum class DanglingPtrType {
   // Note: This will be extended with LongLived
 };
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(DanglingPtrType, kDanglingPtrTypeParam);
-
-using PartitionAllocWithAdvancedChecksEnabledProcesses =
-    internal::PAFeatureEnabledProcesses;
-
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocLargeThreadCacheSize);
 
@@ -89,10 +85,6 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
     int,
     kPartitionAllocLargeEmptySlotSpanRingSize);
 
-BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocWithAdvancedChecks);
-BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
-    PartitionAllocWithAdvancedChecksEnabledProcesses,
-    kPartitionAllocWithAdvancedChecksEnabledProcessesParam);
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocSchedulerLoopQuarantine);
 // See "base/allocator/scheduler_loop_quarantine_config.h" for details.
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
@@ -175,6 +167,19 @@ BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocUseDenserDistribution);
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocMemoryReclaimer);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(TimeDelta,
                                        kPartitionAllocMemoryReclaimerInterval);
+BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocAdaptiveMemoryReclaimInterval);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    TimeDelta,
+    kPartitionAllocAdaptiveMemoryReclaimMinInterval);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    TimeDelta,
+    kPartitionAllocAdaptiveMemoryReclaimMaxInterval);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    TimeDelta,
+    kPartitionAllocAdaptiveMemoryReclaimDefaultInterval);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kPartitionAllocAdaptiveMemoryReclaimMinDecommittableBytes);
 BASE_EXPORT BASE_DECLARE_FEATURE(
     kPartitionAllocStraightenLargerSlotSpanFreeLists);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(

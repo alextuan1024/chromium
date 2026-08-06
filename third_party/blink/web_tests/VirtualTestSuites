@@ -1081,7 +1081,7 @@
     "args": [
       "--enable-features=FedCmLightweightMode"
     ],
-    "expires": "Aug 1, 2026"
+    "expires": "Feb 1, 2027"
   },
   {
     "prefix": "fedcm-navigation-interception",
@@ -1103,27 +1103,6 @@
       "goto@chromium.org"
     ],
     "expires": "Dec 1, 2026"
-  },
-  {
-    "prefix": "fedcm-flexible-tokens",
-    "platforms": [
-      "Linux",
-      "Mac",
-      "Win"
-    ],
-    "bases": [
-      "external/wpt/fedcm/fedcm-flexible-token/"
-    ],
-    "exclusive_tests": "ALL",
-    "args": [
-      "--enable-features=FedCmNonStringToken"
-    ],
-    "owners": [
-      "npm@chromium.org",
-      "cbiesinger@chromium.org",
-      "goto@chromium.org"
-    ],
-    "expires": "Aug 1, 2026"
   },
   {
     "prefix": "fedcm-well-known-validation",
@@ -1186,7 +1165,7 @@
       "cbiesinger@chromium.org",
       "goto@chromium.org"
     ],
-    "expires": "Aug 1, 2026"
+    "expires": "Feb 1, 2027"
   },
   {
     "prefix": "fedcm-error-attribute",
@@ -1721,9 +1700,9 @@
       "external/wpt/html/semantics/forms/the-select-element/customizable-select/select-parsing.html"
     ],
     "args": [
-      "--enable-features=InputClosesSelect,SelectParserRelaxation"
+      "--enable-features=InputClosesSelect"
     ],
-    "expires": "Aug 1, 2026",
+    "expires": "Aug 1, 2027",
     "owners": [
       "jarhar@chromium.org",
       "dom-dev@google.com"
@@ -2758,6 +2737,10 @@
       "external/wpt/element-timing",
       "external/wpt/css/filter-effects",
       "external/wpt/css/css-grid/animation",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-mixed-interpolation.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-polygon-mixed-change.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-view-transition-mixed-change.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-transition.html",
       "external/wpt/css/css-sizing/responsive-iframe/responsive-iframe.html",
       "external/wpt/css/css-sizing/responsive-iframe/responsive-iframe-dom-content-loaded.html",
       "external/wpt/css/css-sizing/responsive-iframe/responsive-iframe-navigation.html",
@@ -2786,6 +2769,10 @@
       "external/wpt/css/css-overflow/scroll-axis-lock.html"
     ],
     "exclusive_tests": [
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-mixed-interpolation.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-polygon-mixed-change.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-animation-view-transition-mixed-change.html",
+      "external/wpt/css/css-masking/clip-path/animations/clip-path-transition.html",
       "fast/hidpi/static"
     ],
     "args": [
@@ -5015,6 +5002,15 @@
     ],
     "args": ["--use-gpu-in-tests", "--enable-threaded-compositing"],
     "expires": "never"
+  },
+  {
+    "prefix": "disable-tcp-port-randomization-mac",
+    "owners": ["arichiv@chromium.org", "awillia@chromium.org"],
+    "platforms": ["Mac"],
+    "bases": ["external/wpt/resource-timing/response-status-code.html"],
+    "exclusive_tests": "ALL",
+    "args": ["--disable-features=TcpPortRandomizationMac"],
+    "expires": "Oct 31, 2026"
   },
   {
     "prefix": "disable-css-line-clamp-longhands",

@@ -43,6 +43,9 @@ BASE_DECLARE_FEATURE(kApiActionSetBadgeTextByteLimit);
 // Controls the limit for alarms.create() API input.
 BASE_DECLARE_FEATURE(kApiAlarmsCreateLengthLimit);
 
+// Controls the availability of SplitView Extension APIs.
+BASE_DECLARE_FEATURE(kApiTabsSplitView);
+
 // Controls the availability of contentSettings.clipboard.
 BASE_DECLARE_FEATURE(kApiContentSettingsClipboard);
 
@@ -124,6 +127,10 @@ BASE_DECLARE_FEATURE(kCheckingNoExtensionIdInExtensionIpcs);
 // Controls whether component extensions are allowed to use chrome://resources/
 // URLs in worker scripts and subresources.
 BASE_DECLARE_FEATURE(kComponentExtensionAllowWorkerChromeResources);
+
+// Gates native UI affordances for leaving reviews on installed Chrome Web Store
+// extensions.
+BASE_DECLARE_FEATURE(kCWSReviewPromptingNativeUI);
 
 // If enabled, <webview>s will be allowed to request permission from an
 // embedding Chrome App to request access to Human Interface Devices.

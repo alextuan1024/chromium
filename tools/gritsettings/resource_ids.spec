@@ -654,7 +654,7 @@
     "includes": [4460],
   },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/omnibox_everywhere/resources.grd": {
-    "META": {"sizes": {"includes": [15]}},
+    "META": {"sizes": {"includes": [30]}},
     "includes": [4470],
   },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/omnibox_popup/resources.grd": {
@@ -680,10 +680,6 @@
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/pdf/resources.grd": {
     "META": {"sizes": {"includes": [200]}},
     "includes": [4540],
-  },
-  "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/personal_context_internals/resources.grd": {
-    "META": {"sizes": {"includes": [10]}},
-    "includes": [4555],
   },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/predictors/resources.grd": {
     "META": {"sizes": {"includes": [5],}},
@@ -1271,17 +1267,6 @@
   "components/omnibox/resources/omnibox_pedal_synonyms.grd": {
     "META": {"join": 2},
     "messages": [7140],
-  },
-  # plus_addresses_internal_strings.grd and plus_addresses_strings.grd must
-  # share the same id because they define the same strings, but only one of them
-  # is built depending on whether src_internal is available.
-  "components/plus_addresses/core/browser/resources/internal/strings/plus_addresses_internal_strings.grd": {
-    "META": {"sizes": {"messages": [130]}},
-    "messages": [7160],
-  },
-  "components/plus_addresses/core/browser/resources/strings/plus_addresses_strings.grd": {
-    "META": {"sizes": {"messages": [130]}},
-    "messages": [7160],
   },
   # components/policy/resources/policy_templates.grd and
   # components/policy/resources/policy_templates.build.grd must share the same

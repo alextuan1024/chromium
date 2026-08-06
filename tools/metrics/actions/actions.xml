@@ -617,6 +617,10 @@ should be able to be added at any place in this file.
       summary="For iOSPromoPostRestore feature"/>
   <variant name="_iOSPromoPostRestoreDefaultBrowser"
       summary="For iOSPromoPostRestoreDefaultBrowser feature"/>
+  <variant name="_iOSPromoSettingsCardDefaultBrowser"
+      summary="For iOSPromoSettingsCardDefaultBrowser feature"/>
+  <variant name="_iOSPromoSettingsCellDefaultBrowser"
+      summary="For iOSPromoSettingsCellDefaultBrowser feature"/>
   <variant name="_iOSPromoSigninFullscreen"
       summary="For iOSPromoSigninFullscreen feature"/>
   <variant name="_iOSPromoStaySafe"
@@ -669,7 +673,7 @@ should be able to be added at any place in this file.
   <variant name="_LensOverlay" summary="For Lens Overlay IPH feature."/>
   <variant name="_LensOverlayTranslateButton"
       summary="For LensOverlay translate button feature."/>
-  <variant name="_LiveCaption" summary="For LiveCaption feature."/>
+  <variant name="_LiveCaption" summary="For LiveCaption feature. (obsolete)"/>
   <variant name="_LongPressToolbarTip" summary="For LongPressToolbar feature."/>
   <variant name="_LowUserEngagementDetector"
       summary="For LowUserEngagementDetector feature."/>
@@ -6875,6 +6879,8 @@ should be able to be added at any place in this file.
     <variant name=".ProgressScreen.Dismissed"
         summary="Progress screen dismissed."/>
     <variant name=".ProgressScreen.Shown" summary="Progress screen shown."/>
+    <variant name=".TabbedHomeScreen.Dismissed"
+        summary="Tabbed home screen dismissed."/>
     <variant name=".ZipTosScreen.Accepted"
         summary="BNPL ToS screen for Zip accepted."/>
     <variant name=".ZipTosScreen.Dismissed"
@@ -11753,6 +11759,15 @@ should be able to be added at any place in this file.
   </description>
 </action>
 
+<action name="ContextualTasks.EphemeralToolbarButton.Shown">
+  <owner>dianaou@chromium.org</owner>
+  <owner>chrome-contextual-tasks-eng@google.com</owner>
+  <description>
+    Recorded when the ephemeral contextual tasks toolbar button becomes visible
+    in the browser toolbar.
+  </description>
+</action>
+
 <action name="ContextualTasks.HistoryNavigation.UserAction.NavigatedInFullTab">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-contextual-tasks-eng@google.com</owner>
@@ -11824,18 +11839,6 @@ should be able to be added at any place in this file.
   </token>
 </action>
 
-<action name="ContextualTasks.ToolbarButton.UserAction{ActionType}">
-  <owner>sophiechang@chromium.org</owner>
-  <owner>chrome-contextual-tasks-eng@google.com</owner>
-  <description>
-    The user interacted with the contextual tasks toolbar button. {ActionType}
-  </description>
-  <token key="ActionType">
-    <variant name=".CloseSidePanel" summary="The user closed the side panel."/>
-    <variant name=".OpenSidePanel" summary="The user opened the side panel."/>
-  </token>
-</action>
-
 <action
     name="ContextualTasks.ToolbarCloseTabButton.UserAction.CloseTabAndExpandSidePanel">
   <owner>yuhengh@chromium.org</owner>
@@ -11872,6 +11875,29 @@ should be able to be added at any place in this file.
         summary="The user clicked on a tab from the sources menu."/>
     <variant name=".UnpinSidePanel"
         summary="The user unpinned the side panel."/>
+  </token>
+</action>
+
+<action name="ContextualTasks.{EntrypointType}.UserAction{ActionType}">
+  <owner>sophiechang@chromium.org</owner>
+  <owner>chrome-contextual-tasks-eng@google.com</owner>
+  <description>
+    Recorded when the user clicks {EntrypointType} in the Chrome toolbar to
+    toggle the Contextual Tasks side panel. {ActionType}
+  </description>
+  <token key="ActionType">
+    <variant name=".CloseSidePanel"
+        summary="Recorded when this click closes the side panel."/>
+    <variant name=".OpenSidePanel"
+        summary="Recorded when this click opens the side panel."/>
+  </token>
+  <token key="EntrypointType">
+    <variant name="EphemeralToolbarButton"
+        summary="the ephemeral contextual tasks toolbar button"/>
+    <variant name="PermanentToolbarButton"
+        summary="the permanently pinned contextual tasks toolbar button"/>
+    <variant name="ToolbarButton"
+        summary="the contextual tasks toolbar button"/>
   </token>
 </action>
 
@@ -17292,9 +17318,19 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="Hub.BackButtonPressed">
+  <obsolete>
+    Removed because the Hub toolbar does not have a back button.
+  </obsolete>
   <owner>ckitagawa@chromium.org</owner>
   <owner>skym@chromium.org</owner>
   <description>The user pressed the back button to close the Hub.</description>
+</action>
+
+<action name="Hub.CloseButtonPressed">
+  <owner>agazal@chromium.org</owner>
+  <owner>ckitagawa@chromium.org</owner>
+  <owner>skym@chromium.org</owner>
+  <description>The user pressed the close button to close the Hub.</description>
 </action>
 
 <action name="HubSearch.KeyboardEnterPressed">
@@ -19151,7 +19187,6 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="IOS.CreditCardScanner.DismissedByUser">
-  <owner>yiwenqian@google.com</owner>
   <owner>qihuizhao@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <description>
@@ -19161,7 +19196,6 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="IOS.CreditCardScanner.Error">
-  <owner>yiwenqian@google.com</owner>
   <owner>qihuizhao@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <description>
@@ -19170,7 +19204,6 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="IOS.CreditCardScanner.ScannedCard">
-  <owner>yiwenqian@google.com</owner>
   <owner>qihuizhao@google.com</owner>
   <owner>payments-autofill-team@google.com</owner>
   <description>
@@ -38810,6 +38843,7 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="PageInfo.AdPersonalization.ManageInterestClicked">
+  <obsolete>Obsolete as of 2026/08.</obsolete>
   <owner>olesiamarukhno@google.com</owner>
   <owner>dullweber@chromium.org</owner>
   <owner>sauski@google.com</owner>
@@ -38820,6 +38854,7 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="PageInfo.AdPersonalization.OpenedWithFledge">
+  <obsolete>Obsolete as of 2026/08.</obsolete>
   <owner>olesiamarukhno@google.com</owner>
   <owner>dullweber@chromium.org</owner>
   <owner>sauski@google.com</owner>
@@ -38829,6 +38864,7 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="PageInfo.AdPersonalization.OpenedWithFledgeAndTopics">
+  <obsolete>Obsolete as of 2026/08.</obsolete>
   <owner>olesiamarukhno@google.com</owner>
   <owner>dullweber@chromium.org</owner>
   <owner>sauski@google.com</owner>
@@ -38838,6 +38874,7 @@ should be able to be added at any place in this file.
 </action>
 
 <action name="PageInfo.AdPersonalization.OpenedWithTopics">
+  <obsolete>Obsolete as of 2026/08.</obsolete>
   <owner>olesiamarukhno@google.com</owner>
   <owner>dullweber@chromium.org</owner>
   <owner>sauski@google.com</owner>
@@ -44595,6 +44632,23 @@ should be able to be added at any place in this file.
   <owner>gambard@chromium.org</owner>
   <description>
     Reported when user opens the Default Browser Settings page. iOS only.
+  </description>
+</action>
+
+<action name="Settings.SuggestionsFromGemini">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when user navigates to Suggestions from Gemini Settings. iOS only.
+  </description>
+</action>
+
+<action name="Settings.SuggestionsFromGeminiHelpImprove">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when user navigates to Suggestions from Gemini Help Improve Notice
+    UI. iOS only.
   </description>
 </action>
 
@@ -51495,6 +51549,68 @@ should be able to be added at any place in this file.
     recorded when 1) user clicks on most visited tiles; 2) long press on most
     visited tiles to open in a new incognito tab. This is consistent with
     Suggestions.Tile.Tapped.NewTabPage on NTP. Android-only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiHelpImproveBack">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when the user goes back from Suggestions from Gemini Help Improve
+    Notice UI. iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiHelpImproveClose">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when Suggestions from Gemini Help Improve notice UI was dismissed.
+    iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiSettingsBack">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when the user goes back from Suggestions from Gemini Settings UI to
+    root Settings screen. iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiSettingsClose">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when Suggestions from Gemini Settings UI was dismissed. iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiSettingsManageConnectedAppsClick">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when the user taps on the Manage Connected Apps row in the
+    Suggestions from Gemini Settings UI. iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiSettingsToggleOff">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when the user toggles off the Suggestions from Gemini preference
+    switch. iOS only.
+  </description>
+</action>
+
+<action name="SuggestionsFromGeminiSettingsToggleOn">
+  <owner>alimariam@google.com</owner>
+  <owner>bling-transactions@google.com</owner>
+  <description>
+    Reported when the user toggles on the Suggestions from Gemini preference
+    switch. iOS only.
   </description>
 </action>
 

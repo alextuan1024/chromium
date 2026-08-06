@@ -39,6 +39,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/profiles/profile_colors_util.h"
 #include "chrome/browser/ui/tabs/split_tab_util.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar_controller_util.h"
@@ -463,6 +464,8 @@ void WebUIToolbarWebView::AddedToWidget() {
 
 void WebUIToolbarWebView::OnThemeChanged() {
   views::View::OnThemeChanged();
+  UpdateProfileThemeColors(browser_->GetBrowserForMigrationOnly(),
+                           GetColorProvider());
   avatar_control_.UpdateIcon();
   if (location_bar_) {
     location_bar_->OnThemeChanged();
@@ -471,6 +474,7 @@ void WebUIToolbarWebView::OnThemeChanged() {
     pinned_toolbar_actions_.OnThemeChanged();
   }
   extensions_container_.OnThemeChanged();
+  icon_table_.OnThemeChanged();
 }
 
 gfx::Size WebUIToolbarWebView::GetMinimumSize() const {
@@ -589,17 +593,26 @@ void WebUIToolbarWebView::HandleContextMenu(
 
 void WebUIToolbarWebView::ShowContentSettingsBubble(
     ::toolbar_ui_api::mojom::ContentSettingImageType type,
+    bool is_pointer_interaction,
     toolbar_ui_api::ToolbarUIService::ShowContentSettingsBubbleCallback
         callback) {
   if (location_bar_) {
     location_bar_->content_setting_image_control().ShowContentSettingsBubble(
-        type, std::move(callback));
+        type, is_pointer_interaction, std::move(callback));
   } else {
     std::move(callback).Run(base::unexpected(Error::New(
         Code::kFailedPrecondition,
         base::StringPrintf("WebUIToolbarWebView: cannot create bubble without "
                            "location_bar_ for type: %d",
                            static_cast<int32_t>(type)))));
+  }
+}
+
+void WebUIToolbarWebView::OnContentSettingImagePointerDown(
+    ::toolbar_ui_api::mojom::ContentSettingImageType type) {
+  if (location_bar_) {
+    location_bar_->content_setting_image_control()
+        .OnContentSettingImagePointerDown(type);
   }
 }
 
@@ -813,6 +826,10 @@ chrome::BrowserCommandController* WebUIToolbarWebView::GetCommandController() {
 
 views::View* WebUIToolbarWebView::GetView() {
   return this;
+}
+
+views::View* WebUIToolbarWebView::GetInternalWebView() {
+  return web_view_.get();
 }
 
 content::WebContents* WebUIToolbarWebView::GetWebContents() {

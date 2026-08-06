@@ -10,7 +10,6 @@
 #include <variant>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/no_destructor.h"
@@ -65,7 +64,7 @@ base::flat_map<ui::ElementIdentifier, int> CalculateFlexOrder(
 
   // Loop in reverse order to ensure the first element gets the largest flex
   // order and overflows the first.
-  for (auto it : base::Reversed(elements_in_overflow_order)) {
+  for (auto it : std::views::reverse(elements_in_overflow_order)) {
     id_to_order_map[it] = element_flex_order_start++;
   }
 
@@ -273,7 +272,7 @@ ToolbarController::GetDefaultResponsiveElements(Browser* browser) {
   };
 
   // Support actions items.
-  const auto* const browser_actions = browser->browser_actions();
+  const auto* const browser_actions = BrowserActions::From(browser);
   if (browser_actions) {
     auto* root_item = browser_actions->root_action_item();
     if (root_item) {

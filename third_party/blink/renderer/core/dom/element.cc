@@ -2015,6 +2015,11 @@ bool Element::InterestGained(Element* target, InterestState state) {
 bool Element::InterestLost(Element* target,
                            InterestLostCancelable cancelable,
                            InterestLostPopoverBehavior behavior) {
+  bool force_interest = false;
+  probe::WillLoseInterest(this, &force_interest);
+  if (force_interest) {
+    return false;
+  }
   if (!ShouldContinueWithInterest(*this, target, InterestState::kNoInterest)) {
     return false;
   }
@@ -2278,8 +2283,8 @@ ScriptPromise<ScrollResult> Element::scrollIntoView(
 void Element::scrollIntoViewWithOptions(const ScrollIntoViewOptions* options,
                                         ScrollPromiseResolver* resolver) {
   ActivateDisplayLockIfNeeded(DisplayLockActivationReason::kScrollIntoView);
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
 
   if (!GetLayoutObject() || !GetDocument().GetPage()) {
     return;
@@ -2343,8 +2348,8 @@ void Element::ScrollIntoViewNoVisualUpdate(
 }
 
 void Element::scrollIntoViewIfNeeded(bool center_if_needed) {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
 
   if (!GetLayoutObject()) {
     return;
@@ -2367,8 +2372,8 @@ void Element::scrollIntoViewIfNeeded(bool center_if_needed) {
 }
 
 int Element::OffsetLeft() {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   if (const auto* layout_object = GetLayoutBoxModelObject()) {
     return AdjustForAbsoluteZoom::AdjustLayoutUnit(
                layout_object->OffsetPoint(OffsetParent()).left,
@@ -2379,8 +2384,8 @@ int Element::OffsetLeft() {
 }
 
 int Element::OffsetTop() {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   if (const auto* layout_object = GetLayoutBoxModelObject()) {
     return AdjustForAbsoluteZoom::AdjustLayoutUnit(
                layout_object->OffsetPoint(OffsetParent()).top,
@@ -2391,8 +2396,8 @@ int Element::OffsetTop() {
 }
 
 int Element::OffsetWidth() {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   if (const auto* layout_object = GetLayoutBoxModelObject()) {
     return AdjustForAbsoluteZoom::AdjustLayoutUnit(layout_object->OffsetWidth(),
                                                    layout_object->StyleRef())
@@ -2402,8 +2407,8 @@ int Element::OffsetWidth() {
 }
 
 int Element::OffsetHeight() {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   if (const auto* layout_object = GetLayoutBoxModelObject()) {
     return AdjustForAbsoluteZoom::AdjustLayoutUnit(
                layout_object->OffsetHeight(), layout_object->StyleRef())
@@ -3177,8 +3182,8 @@ bool Element::HandleScrollByPageCommand(CommandEventType command) {
 }
 
 gfx::Rect Element::BoundsInWidget() const {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kUnknown);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kUnknown);
 
   LocalFrameView* view = GetDocument().View();
   if (!view) {
@@ -3230,7 +3235,7 @@ Vector<gfx::Rect> Element::OutlineRectsInWidget(
     return rects;
   }
 
-  GetDocument().EnsurePaintLocationDataValidForNode(this, reason);
+  GetDocument().UpdateStyleAndLayoutForNode(this, reason);
 
   LayoutBoxModelObject* layout_object = GetLayoutBoxModelObject();
   if (!layout_object) {
@@ -3366,8 +3371,8 @@ Vector<gfx::RectF> Element::GetClientRectsNoAdjustment() {
   // TODO(crbug.com/1499981): This should be removed once synchronized scrolling
   // impact is understood.
   SyncScrollAttemptHeuristic::DidAccessScrollOffset();
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
 
   Vector<gfx::QuadF> quads;
   ClientQuads(quads);
@@ -3409,8 +3414,8 @@ gfx::RectF Element::GetBoundingClientRectNoLifecycleUpdate() const {
 }
 
 DOMRect* Element::GetBoundingClientRect() {
-  GetDocument().EnsurePaintLocationDataValidForNode(
-      this, DocumentUpdateReason::kJavaScript);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   return DOMRect::FromRectF(GetBoundingClientRectNoLifecycleUpdate());
 }
 
@@ -13891,7 +13896,7 @@ bool Element::RecalcSelfOrAncestorHasContainerTiming() const {
   if (IsHTMLElement()) {
     if (FastHasAttribute(html_names::kContainertimingAttr)) {
       return true;
-    } else if (FastHasAttribute(html_names::kContainertimingIgnoreAttr)) {
+    } else if (HasContainerTimingIgnoreAttribute()) {
       return false;
     }
   }
@@ -13908,7 +13913,7 @@ void Element::UpdateDescendantHasContainerTiming(bool has_container_timing) {
   while (element) {
     if (element->IsHTMLElement()) {
       if (element->FastHasAttribute(html_names::kContainertimingAttr) ||
-          element->FastHasAttribute(html_names::kContainertimingIgnoreAttr)) {
+          element->HasContainerTimingIgnoreAttribute()) {
         element = ElementTraversal::NextSkippingChildren(*element, this);
         continue;
       }
@@ -13932,11 +13937,16 @@ void Element::UpdateDescendantHasContainerTiming(bool has_container_timing) {
   }
 }
 
+bool Element::HasContainerTimingIgnoreAttribute() const {
+  return FastHasAttribute(html_names::kContainertimingignoreAttr) ||
+         FastHasAttribute(html_names::kContainertimingIgnoreAttr);
+}
+
 bool Element::DoesChildContainerTimingNeedChange(const Node& node) const {
   auto* element = DynamicTo<Element>(node);
   if (element && element->IsHTMLElement() &&
       (element->FastHasAttribute(html_names::kContainertimingAttr) ||
-       element->FastHasAttribute(html_names::kContainertimingIgnoreAttr))) {
+       element->HasContainerTimingIgnoreAttribute())) {
     return false;
   }
   return SelfOrAncestorHasContainerTiming() !=

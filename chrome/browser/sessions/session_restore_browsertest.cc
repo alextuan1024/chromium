@@ -8,13 +8,13 @@
 
 #include <array>
 #include <memory>
+#include <ranges>
 #include <set>
 #include <string_view>
 #include <vector>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -3358,7 +3358,7 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreWithIncompleteFileTest, LogsReadError) {
 
   // Ensure there is a restore event
   auto events = GetSessionServiceEvents(browser()->GetProfile());
-  for (const SessionServiceEvent& event : base::Reversed(events)) {
+  for (const SessionServiceEvent& event : std::views::reverse(events)) {
     // For normal shutdown (as this test triggers) kRestore should always occur
     // after kExit. This iterates in reverse, so that kRestore should occur
     // first.
@@ -5078,4 +5078,50 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreTest, PinnedAndSplitTabsRestored) {
   EXPECT_TRUE(new_browser->GetTabStripModel()->GetSplitForTab(1).has_value());
   EXPECT_EQ(new_browser->GetTabStripModel()->GetSplitForTab(0),
             new_browser->GetTabStripModel()->GetSplitForTab(1));
+}
+
+class SessionRestoreFocusModeTest : public SessionRestoreTest {
+ public:
+  SessionRestoreFocusModeTest() {
+    feature_override_.InitAndEnableFeature(features::kTabGroupsFocusing);
+  }
+  SessionRestoreFocusModeTest(const SessionRestoreFocusModeTest&) = delete;
+  SessionRestoreFocusModeTest& operator=(const SessionRestoreFocusModeTest&) =
+      delete;
+
+  BrowserWindowInterface* QuitBrowserAndRestore(Browser* browser) {
+    SessionService* const session_service =
+        SessionServiceFactory::GetForProfile(browser->GetProfile());
+    session_service->ResetFromCurrentBrowsers();
+
+    return SessionRestoreTest::QuitBrowserAndRestore(browser);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_override_;
+};
+
+IN_PROC_BROWSER_TEST_F(SessionRestoreFocusModeTest, RestoreFocusedTabGroup) {
+  ASSERT_TRUE(browser()->tab_strip_model()->SupportsTabGroups());
+
+  // Open a second tab.
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GetUrl1(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+
+  // Group the tabs and enter Focus Mode for the group.
+  const tab_groups::TabGroupId group =
+      browser()->tab_strip_model()->AddToNewGroup({0, 1});
+  browser()->tab_strip_model()->SetFocusedGroup(group);
+  EXPECT_EQ(group, browser()->tab_strip_model()->GetFocusedGroup());
+
+  // Quit and restore the session.
+  BrowserWindowInterface* new_browser = QuitBrowserAndRestore(browser());
+  TabStripModel* new_tab_strip_model = new_browser->GetTabStripModel();
+
+  // Verify that Focus Mode is restored for the group in the new browser.
+  EXPECT_TRUE(new_tab_strip_model->GetFocusedGroup().has_value());
+  EXPECT_EQ(new_tab_strip_model->GetTabGroupForTab(0),
+            new_tab_strip_model->GetFocusedGroup());
 }

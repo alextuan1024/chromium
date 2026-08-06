@@ -188,7 +188,9 @@ BASE_FEATURE(kAutofillAiAlwaysTriggerServerModel,
 // If enabled Autofill AI becomes available by default and the previous enable
 // toggle controls whether online model runs and MQLS logging are allowed.
 // TODO(crbug.com/440488776): Remove once clean up happens.
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 DEFINE_FEATURE_WITH_MOBILE_COUNTRY_RESTRICTION(kAutofillAiAvailableByDefault);
+#endif
 
 // If enabled, AutofillAi entities will be deduped on every major milestone.
 DEFINE_FEATURE_WITH_MOBILE_COUNTRY_RESTRICTION(kAutofillAiDedupeEntities);
@@ -231,6 +233,12 @@ BASE_FEATURE_PARAM(std::string,
                    &kAutofillAiIgnoreGeoIp,
                    "autofill_ai_geo_ip_blocklist",
                    "");
+
+// When enabled, the entity-specific import constraints are enforced for data
+// received through AUTOFILL_VALUABLE.
+// TODO(crbug.com/542468992): Clean up when launched.
+BASE_FEATURE(kAutofillAiImportConstraintsForSync,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, Autofill AI suggestion width can be limited.
 BASE_FEATURE(kAutofillAiLimitSuggestionWidth,
@@ -377,8 +385,10 @@ BASE_FEATURE_WITH_COUNTRY_RESTRICTIONS(kAutofillAiWalletPrivatePasses,
                                        WALLET_UNSUPPORTED_COUNTRIES);
 #endif
 
-// When enabled, account location rather than geo-location is used to determine
-// the eligiblity to save Wallet private passes.
+// When enabled, account-related eligibility criteria (minor status, location)
+// are determined based on a capability, rather than approximated through
+// signals that were readily available in Chrome prior to the Autofill-specific
+// capability (e.g., using geo-location).
 BASE_FEATURE(kAutofillAiWalletPrivatePassesCapability,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -386,6 +396,11 @@ BASE_FEATURE(kAutofillAiWalletPrivatePassesCapability,
 // details page rather than the generic pass overview page.
 BASE_FEATURE(kAutofillAiWalletPrivatePassesDeepLink,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, orders and shipments from Google Wallet become available in
+// Autofill for filling as read-only AutofillAi entities.
+// TODO(crbug.com/542022094): Clean up when launched.
+BASE_FEATURE(kAutofillAiWalletShopping, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, AutofillAi supports vehicle registration entities from Google
 // Wallet.
@@ -448,13 +463,6 @@ BASE_FEATURE(kAutofillAndroidDesktopSuppressAccessoryOnEmpty,
 BASE_FEATURE(kAutofillAndroidDisableSuggestionsOnJSFocus,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// If enabled, on Android, form fields are retrieved
-// by comparing FormFieldIds instead of the set of attributes. This flag affects
-// some of the logic in AndroidAutofillProvider.
-// TODO(crbug.com/456526604): Remove when launched.
-BASE_FEATURE(kAutofillAndroidFormDataCompareFieldGlobalId,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // If enabled, on Android, the Autofill keyboard accessory will not be
 // displayed attached to the keyboard but will be placed below or above the
 // focused field. It works only for large form factor devices like tablets or
@@ -495,9 +503,18 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 BASE_FEATURE(kAutofillAtMemoryInactivityNudge,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Controls whether contenteditable fields on Android are supported for
+// AtMemory.
+BASE_FEATURE(kAutofillAtMemorySupportContenteditableOnAndroid,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled, AtMemory can be triggered with a keyboard shortcut like
 // Ctrl+Space.
 BASE_FEATURE(kAutofillAtMemoryTriggerShortcut,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Controls whether AtMemory uses the strongly-typed AutofillFetchPlan.
+BASE_FEATURE(kAutofillAtMemoryTypedFetchPlan,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, the placeholder is not considered a label fallback on the
@@ -697,6 +714,12 @@ BASE_FEATURE(kAutofillExtractOnlyNonAdFrames,
 // TODO(crbug.com/485170688): Remove when launched.
 BASE_FEATURE(kAutofillFilterPlaceholderValuesOnImport,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, iframes are associated with the outermost ancestor form
+// (analogous to form control ownership) rather than the closest ancestor form
+// (analogous to form control association).
+// TODO(crbug.com/536963555): Clean up when launched.
+BASE_FEATURE(kAutofillFixIframeOwnership, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Prioritizes ADDRESS_HOME_STREET_ADDRESS over postal code in inferred labels.
 // See crbug.com/540151895.

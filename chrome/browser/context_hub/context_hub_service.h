@@ -24,7 +24,6 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/personal_context/core/personal_context_types.h"
-#include "components/personal_context/proto/features/auto_todos.pb.h"
 #include "url/gurl.h"
 
 namespace optimization_guide {
@@ -68,12 +67,24 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
   // AutoTodosStore::Observer:
   void OnAutoTodosChanged(base::span<const AutoTodoEntry> entries) override;
 
-  using AutoTodosCallback = base::OnceCallback<void(
-      std::optional<personal_context::proto::AutoTodosResponse>)>;
-
   // Generates 1P AutoTodos and saves them in the AutoTodos store. Invokes
-  // `callback` on completion with the response if successful, or std::nullopt.
-  void GenerateFirstPartyAutoTodos(AutoTodosCallback callback);
+  // `callback` on completion indicating whether the generation was successful.
+  void GenerateFirstPartyAutoTodos(AutoTodosStore::OperationCallback callback);
+
+  // Generates tab-based todos and saves them in the AutoTodos store. Invokes
+  // `callback` on completion indicating whether the generation was successful.
+  void GenerateTabBasedTodos(std::vector<TabData> tabs,
+                             AutoTodosStore::OperationCallback callback);
+
+  using GetAutoTodosCallback =
+      base::OnceCallback<void(std::vector<AutoTodoEntry>)>;
+  // Returns all stored AutoTodos.
+  void GetAutoTodos(GetAutoTodosCallback callback) const;
+
+  // Updates a todo item in the AutoTodos store. Designed to be called with a
+  // single complete todo item from the UI.
+  void UpdateAutoTodo(AutoTodoEntry item,
+                      AutoTodosStore::OperationCallback callback);
 
   // Stores or updates a todo feedback item in the in-memory cache.
   void SetTodoFeedback(
@@ -159,7 +170,7 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
 
   // Handles the async response from the AutoTodos fetch.
   void OnFirstPartyAutoTodosFetched(
-      AutoTodosCallback callback,
+      AutoTodosStore::OperationCallback callback,
       personal_context::FetchContextResult result);
 
   // Handles the result of the model execution from `GenerateTabGroups`.

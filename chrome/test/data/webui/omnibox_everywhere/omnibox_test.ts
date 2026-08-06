@@ -9,12 +9,13 @@ import type {OmniboxEverywhereAppElement, OmniboxEverywhereComposeboxElement, Om
 import {TabUploadOrigin} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxState} from 'chrome://resources/cr_components/composebox/common.js';
 import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
+import {GlowAnimationState} from 'chrome://resources/cr_components/search/constants.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
-import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestSearchboxBrowserProxy} from './test_searchbox_browser_proxy.js';
 
@@ -25,7 +26,12 @@ suite('OmniboxEverywhereOmniboxTest', () => {
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
+      isFuseboxEnabled: true,
       searchboxVoiceSearch: true,
+      searchboxLensSearch: true,
+      searchboxShowComposeEntrypoint: true,
+      ntpRealboxDynamicAiModeButton: true,
+      composeboxContextDragAndDropEnabled: true,
     });
     testProxy = new TestSearchboxBrowserProxy();
     SearchboxBrowserProxy.setInstance(testProxy);
@@ -67,6 +73,59 @@ suite('OmniboxEverywhereOmniboxTest', () => {
   });
 
   test(
+      'sets is-dragging-file attribute on dragenter and removes on dragleave',
+      async () => {
+        const inputWrapper = omnibox.shadowRoot.querySelector('#inputWrapper');
+        assertTrue(!!inputWrapper);
+
+        assertFalse(omnibox.hasAttribute('is-dragging-file'));
+
+        inputWrapper?.dispatchEvent(new DragEvent('dragenter', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertTrue(omnibox.hasAttribute('is-dragging-file'));
+        assertEquals(GlowAnimationState.DRAGGING, omnibox.animationState);
+
+        inputWrapper?.dispatchEvent(new DragEvent('dragleave', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(omnibox.hasAttribute('is-dragging-file'));
+        assertEquals(GlowAnimationState.NONE, omnibox.animationState);
+      });
+
+  test(
+      'pasting files into searchbox opens composebox with pasted files', () => {
+        let openComposeboxCalled = false;
+        const detailHolder: {state?: ComposeboxState} = {};
+        omnibox.addEventListener('open-composebox', (e: Event) => {
+          openComposeboxCalled = true;
+          detailHolder.state = (e as CustomEvent).detail as ComposeboxState;
+        });
+
+        const file = new File(['foo'], 'foo.png', {type: 'image/png'});
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+
+        const input = omnibox.shadowRoot.querySelector('#input')!;
+        input.dispatchEvent(new CustomEvent('searchbox-input-files-pasted', {
+          detail: {files: dataTransfer.files},
+          bubbles: true,
+          composed: true,
+        }));
+
+        assertTrue(openComposeboxCalled);
+        const files = detailHolder.state!.files;
+        assertEquals(1, files.length);
+        assertEquals(file, (files[0] as {file: File}).file);
+      });
+
+  test(
       'clicking voice search button dispatches open-voice-search event',
       async () => {
         let eventFired = false;
@@ -82,6 +141,75 @@ suite('OmniboxEverywhereOmniboxTest', () => {
 
         assertTrue(eventFired);
       });
+
+  test(
+      'configures animated glow and compose button properties correctly',
+      () => {
+        const glow = omnibox.shadowRoot.querySelector('search-animated-glow');
+        assertTrue(!!glow);
+
+        const composeButton =
+            omnibox.shadowRoot.querySelector('#composeButton');
+        assertTrue(!!composeButton);
+      });
+
+  test(
+      'updates has-user-input on compose button when text changes',
+      async () => {
+        const composeButton =
+            omnibox.shadowRoot.querySelector('#composeButton')!;
+        assertTrue(!!composeButton);
+        assertFalse(composeButton.hasAttribute('has-user-input'));
+
+        const input = omnibox.shadowRoot.querySelector('#input')!;
+        input.dispatchEvent(new CustomEvent('searchbox-input-text-updated', {
+          detail: {value: 'test query', isComposing: false},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertTrue(composeButton.hasAttribute('has-user-input'));
+
+        input.dispatchEvent(new CustomEvent('searchbox-input-text-updated', {
+          detail: {value: '', isComposing: false},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(composeButton.hasAttribute('has-user-input'));
+      });
+
+  test('clicking compose button dispatches open-composebox event', async () => {
+    const whenOpenComposebox = eventToPromise('open-composebox', omnibox);
+
+    const composeButton =
+        omnibox.shadowRoot.querySelector<HTMLElement>('#composeButton')!;
+    assertTrue(!!composeButton);
+    composeButton.dispatchEvent(new CustomEvent('compose-click', {
+      bubbles: true,
+      composed: true,
+    }));
+
+    await whenOpenComposebox;
+  });
+
+  test('respects isFuseboxEnabled false', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      isFuseboxEnabled: false,
+      searchboxVoiceSearch: true,
+      searchboxLensSearch: true,
+    });
+    const element = document.createElement('omnibox-everywhere-omnibox');
+    document.body.appendChild(element);
+    await microtasksFinished();
+
+    assertFalse(!!element.shadowRoot.querySelector('#context'));
+    assertFalse(!!element.shadowRoot.querySelector('#lensSearchButton'));
+    assertTrue(!!element.shadowRoot.querySelector('#voiceSearchButton'));
+  });
 });
 
 suite('OmniboxEverywhereComposeboxTest', () => {
@@ -91,6 +219,9 @@ suite('OmniboxEverywhereComposeboxTest', () => {
 
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      composeboxContextDragAndDropEnabled: true,
+    });
     testProxy = new TestSearchboxBrowserProxy();
     SearchboxBrowserProxy.setInstance(testProxy);
     mockPageHandler = TestMock.fromClass(PageHandlerRemote);
@@ -159,6 +290,57 @@ suite('OmniboxEverywhereComposeboxTest', () => {
     await microtasksFinished();
     assertEquals('test composebox query', composebox.getInputElement().input);
   });
+
+  test(
+      'sets is-dragging-file attribute on dragenter and removes on dragleave',
+      async () => {
+        const dropZone = composebox.shadowRoot.querySelector('#composebox');
+        assertTrue(!!dropZone);
+
+        assertFalse(composebox.hasAttribute('is-dragging-file'));
+
+        dropZone?.dispatchEvent(new DragEvent('dragenter', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertTrue(composebox.hasAttribute('is-dragging-file'));
+
+        dropZone?.dispatchEvent(new DragEvent('dragleave', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(composebox.hasAttribute('is-dragging-file'));
+      });
+
+  test('pasting files into composebox processes files', async () => {
+    const mockToken = {high: 4567n, low: 8910n};
+    testProxy.handler.setPromiseResolveFor('addFileContext', mockToken);
+
+    const file = new File(['test content'], 'test.png', {type: 'image/png'});
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+
+    const pasteEvent = new CustomEvent('paste', {
+                         bubbles: true,
+                         composed: true,
+                       }) as unknown as ClipboardEvent;
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: dataTransfer,
+    });
+
+    const dropZone = composebox.shadowRoot.querySelector('#composebox')!;
+    assertTrue(!!dropZone);
+    dropZone.dispatchEvent(pasteEvent);
+
+    await testProxy.handler.whenCalled('addFileContext');
+    assertEquals(1, testProxy.handler.getCallCount('addFileContext'));
+    await microtasksFinished();
+    assertEquals(1, composebox.files.size);
+  });
 });
 
 declare global {
@@ -183,7 +365,7 @@ suite('OmniboxEverywhereAppTest', () => {
     window.webkitSpeechRecognition = MockSpeechRecognition;
 
     loadTimeData.overrideValues({
-      ntpRealboxNextEnabled: true,
+      isFuseboxEnabled: true,
       searchboxVoiceSearch: true,
       searchboxLensSearch: true,
       omniboxPopupDebugEnabled: false,

@@ -12,6 +12,7 @@
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/session_service_lookup.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
@@ -111,7 +112,7 @@ std::u16string WindowMetadataController::GetWindowTitleForTab(
 
   if (title.empty() &&
       (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-       browser_->is_type_popup())) {
+       browser_->GetType() == BrowserWindowInterface::Type::TYPE_POPUP)) {
     title = CoreTabHelper::GetDefaultTitle();
   }
 
@@ -171,7 +172,7 @@ std::u16string WindowMetadataController::GetWindowTitleForMaxWidth(
   // If there is no title, leave it empty for apps.
   if (title.empty() &&
       (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-       browser_->is_type_popup())) {
+       browser_->GetType() == BrowserWindowInterface::Type::TYPE_POPUP)) {
     title = CoreTabHelper::GetDefaultTitle();
   }
 
@@ -223,7 +224,7 @@ std::u16string WindowMetadataController::GetWindowTitleFromWebContents(
   // If there is no title, leave it empty for apps.
   if (title.empty() &&
       (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-       browser_->is_type_popup())) {
+       browser_->GetType() == BrowserWindowInterface::Type::TYPE_POPUP)) {
     title = CoreTabHelper::GetDefaultTitle();
   }
 
@@ -241,13 +242,16 @@ std::u16string WindowMetadataController::GetWindowTitleFromWebContents(
       include_app_name) {
     auto* const app_browser_controller =
         web_app::AppBrowserController::From(browser_);
-    return app_browser_controller ? app_browser_controller->GetAppShortName()
-                                  : base::UTF8ToUTF16(browser_->app_name());
+    return app_browser_controller
+               ? app_browser_controller->GetAppShortName()
+               : base::UTF8ToUTF16(BrowserInitState::From(browser_)
+                                       ->create_params()
+                                       .app_name);
   }
   // Include the app name in window titles for tabbed browser windows when
   // requested with |include_app_name|.
   return ((browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-           browser_->is_type_popup()) &&
+           browser_->GetType() == BrowserWindowInterface::Type::TYPE_POPUP) &&
           include_app_name)
              ? l10n_util::GetStringFUTF16(IDS_BROWSER_WINDOW_TITLE_FORMAT,
                                           title)
@@ -274,10 +278,10 @@ void WindowMetadataController::SetWindowUserTitle(
   user_title_ = user_title;
   BrowserWindow::FromBrowser(browser_)->UpdateTitleBar();
   // See comment in Browser::OnTabGroupChanged
-  DCHECK(!IsRelevantToAppSessionService(browser_->type()));
+  DCHECK(!IsRelevantToAppSessionService(browser_->GetType()));
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(browser_->GetProfile());
   if (session_service) {
-    session_service->SetWindowUserTitle(browser_->session_id(), user_title);
+    session_service->SetWindowUserTitle(browser_->GetSessionID(), user_title);
   }
 }

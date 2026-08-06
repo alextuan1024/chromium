@@ -100,8 +100,11 @@
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
 #include "chrome/browser/ui/webui/inspect/inspect_ui.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"
+#include "chrome/browser/ui/webui/util/webui_util_desktop.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
+#include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/content_restriction.h"
 #include "chrome/common/pref_names.h"
@@ -111,6 +114,7 @@
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/dom_distiller/core/dom_distiller_features.h"
+#include "components/enterprise/isolated_mode/settings.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/lens/buildflags.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
@@ -254,7 +258,7 @@ void InvokeAction(actions::ActionId id, actions::ActionItem* scope) {
 
 actions::ActionItem* FindAction(actions::ActionId action_id, Browser* browser) {
   actions::ActionItem* const root_action_item =
-      browser->GetActions()->root_action_item();
+      BrowserActions::From(browser)->root_action_item();
   if (!root_action_item) {
     return nullptr;
   }
@@ -514,7 +518,8 @@ bool BrowserCommandController::IsReservedCommandOrKey(
 #endif
 
   return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
-         command_id == IDC_NEW_INCOGNITO_WINDOW || command_id == IDC_NEW_TAB ||
+         command_id == IDC_NEW_INCOGNITO_WINDOW ||
+         command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
          command_id == IDC_NEW_WINDOW || command_id == IDC_RESTORE_TAB ||
          command_id == IDC_SELECT_NEXT_TAB ||
          command_id == IDC_SELECT_PREVIOUS_TAB ||
@@ -740,6 +745,9 @@ void BrowserCommandController::HandleCommandWithDisposition(
       NewWindow(browser_);
       break;
     case IDC_NEW_INCOGNITO_WINDOW:
+      NewIncognitoWindow(profile());
+      break;
+    case IDC_NEW_ISOLATED_WINDOW:
       NewIncognitoWindow(profile());
       break;
     case IDC_CLOSE_WINDOW:
@@ -1050,15 +1058,15 @@ void BrowserCommandController::HandleCommandWithDisposition(
     // Clipboard commands
     case IDC_CUT:
       InvokeAction(actions::kActionCut,
-                   browser_->GetActions()->root_action_item());
+                   BrowserActions::From(browser_)->root_action_item());
       break;
     case IDC_COPY:
       InvokeAction(actions::kActionCopy,
-                   browser_->GetActions()->root_action_item());
+                   BrowserActions::From(browser_)->root_action_item());
       break;
     case IDC_PASTE:
       InvokeAction(actions::kActionPaste,
-                   browser_->GetActions()->root_action_item());
+                   BrowserActions::From(browser_)->root_action_item());
       break;
 
     // Find-in-page
@@ -1231,15 +1239,15 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ToggleCaretBrowsing(browser_);
       break;
     case IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS:
-      ShowSettingsSubPage(browser_->GetBrowserForOpeningWebUi(),
+      ShowSettingsSubPage(webui::GetBrowserForOpeningWebUi(browser_),
                           chrome::kPeopleSubPage);
       break;
     case IDC_RECENT_TABS_SEE_DEVICE_TABS:
-      ShowHistorySubPage(browser_->GetBrowserForOpeningWebUi(),
+      ShowHistorySubPage(webui::GetBrowserForOpeningWebUi(browser_),
                          kChromeUIHistorySyncedTabs);
       break;
     case IDC_SHOW_BOOKMARK_MANAGER:
-      ShowBookmarkManager(browser_->GetBrowserForOpeningWebUi());
+      ShowBookmarkManager(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_BOOKMARK_SIDE_PANEL:
       browser_->GetFeatures().side_panel_ui()->Show(
@@ -1253,7 +1261,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ShowAvatarMenu(browser_);
       break;
     case IDC_SHOW_HISTORY:
-      ShowHistory(browser_->GetBrowserForOpeningWebUi());
+      ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
       browser_->GetFeatures().side_panel_ui()->Show(
@@ -1265,7 +1273,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
           SidePanelOpenTrigger::kAppMenu);
       break;
     case IDC_SHOW_DOWNLOADS:
-      ShowDownloads(browser_->GetBrowserForOpeningWebUi());
+      ShowDownloads(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_COMMENTS_SIDE_PANEL:
       browser_->GetFeatures().side_panel_ui()->Show(
@@ -1273,36 +1281,36 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     case IDC_MANAGE_EXTENSIONS:
     case IDC_SAFETY_HUB_MANAGE_EXTENSIONS:
-      ShowExtensions(browser_->GetBrowserForOpeningWebUi());
+      ShowExtensions(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_EXTENSIONS_SUBMENU_MANAGE_EXTENSIONS:
-      ShowExtensions(browser_->GetBrowserForOpeningWebUi());
+      ShowExtensions(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_EXTENSIONS_SUBMENU_VISIT_CHROME_WEB_STORE:
     case IDC_FIND_EXTENSIONS:
       ShowWebStore(browser_, extension_urls::kAppMenuUtmSource);
       break;
     case IDC_PERFORMANCE:
-      ShowSettingsSubPage(browser_->GetBrowserForOpeningWebUi(),
+      ShowSettingsSubPage(webui::GetBrowserForOpeningWebUi(browser_),
                           chrome::kPerformanceSubPage);
       break;
     case IDC_OPTIONS:
-      ShowSettings(browser_->GetBrowserForOpeningWebUi());
+      ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_EDIT_SEARCH_ENGINES:
-      ShowSearchEngineSettings(browser_->GetBrowserForOpeningWebUi());
+      ShowSearchEngineSettings(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_VIEW_PASSWORDS:
       NavigateToManagePasswordsPage(
-          browser_->GetBrowserForOpeningWebUi(),
+          webui::GetBrowserForOpeningWebUi(browser_),
           password_manager::ManagePasswordsReferrer::kChromeMenuItem);
       break;
     case IDC_CLEAR_BROWSING_DATA: {
       if (profile()->IsIncognitoProfile()) {
         ShowIncognitoClearBrowsingDataDialog(
-            browser_->GetBrowserForOpeningWebUi());
+            webui::GetBrowserForOpeningWebUi(browser_));
       } else {
-        ShowClearBrowsingDataDialog(browser_->GetBrowserForOpeningWebUi());
+        ShowClearBrowsingDataDialog(webui::GetBrowserForOpeningWebUi(browser_));
       }
 #if !BUILDFLAG(IS_ANDROID)
       ui::ElementContext context =
@@ -1325,13 +1333,13 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ToggleRequestTabletSite(browser_);
       break;
     case IDC_ABOUT:
-      ShowAboutChrome(browser_->GetBrowserForOpeningWebUi());
+      ShowAboutChrome(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_UPGRADE_DIALOG:
       OpenUpdateChromeDialog(browser_);
       break;
     case IDC_OPEN_SAFETY_HUB:
-      ShowSettingsSubPage(browser_->GetBrowserForOpeningWebUi(),
+      ShowSettingsSubPage(webui::GetBrowserForOpeningWebUi(browser_),
                           chrome::kSafetyHubSubPage);
       break;
     case IDC_HELP_PAGE_VIA_KEYBOARD:
@@ -1420,7 +1428,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
       AddNewTabToRecentGroup(browser_);
       break;
     case IDC_UNFOCUS_TAB_GROUP:
-      UnfocusTabGroup(browser_);
+      UnfocusTabGroup(browser_, TabGroupFocusExitReason::kTabStripButton);
       break;
     case IDC_WINDOW_CLOSE_TABS_TO_RIGHT:
       CloseTabsToRight(browser_);
@@ -1663,7 +1671,6 @@ void BrowserCommandController::TabGroupedStateChanged(
 }
 
 void BrowserCommandController::OnTabChangedAt(tabs::TabInterface* tab,
-                                              int index,
                                               TabChangeType change_type) {
   if (change_type == TabChangeType::kBlockedOnly) {
     PrintingStateChanged();
@@ -1700,13 +1707,13 @@ void BrowserCommandController::TabRestoreServiceLoaded(
 // BrowserCommandController, private:
 
 bool BrowserCommandController::IsShowingMainUI() {
-  return browser_->SupportsWindowFeature(
-      Browser::WindowFeature::kFeatureTabStrip);
+  return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+      WindowFeatureController::WindowFeature::kFeatureTabStrip);
 }
 
 bool BrowserCommandController::IsShowingLocationBar() {
-  return browser_->SupportsWindowFeature(
-      Browser::WindowFeature::kFeatureLocationBar);
+  return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+      WindowFeatureController::WindowFeature::kFeatureLocationBar);
 }
 
 void BrowserCommandController::InitCommandState() {
@@ -1958,7 +1965,8 @@ void BrowserCommandController::InitCommandState() {
 
   // Tab management commands
   const bool supports_tabs =
-      browser_->SupportsWindowFeature(Browser::WindowFeature::kFeatureTabStrip);
+      WindowFeatureController::From(browser_)->SupportsWindowFeature(
+          WindowFeatureController::WindowFeature::kFeatureTabStrip);
   command_updater_->UpdateCommandEnabled(IDC_SELECT_NEXT_TAB, supports_tabs);
   command_updater_->UpdateCommandEnabled(IDC_SELECT_PREVIOUS_TAB,
                                          supports_tabs);
@@ -2048,10 +2056,16 @@ void BrowserCommandController::UpdateSharedCommandsForIncognitoAvailability(
   command_updater->UpdateCommandEnabled(
       IDC_NEW_WINDOW,
       incognito_availability != policy::IncognitoModeAvailability::kForced);
+  bool isolated_mode_enabled =
+      enterprise_isolated_mode::IsolatedModeReplacesIncognito(
+          *profile->GetPrefs(), chrome::GetChannel());
+
   command_updater->UpdateCommandEnabled(
       IDC_NEW_INCOGNITO_WINDOW,
-      incognito_availability != policy::IncognitoModeAvailability::kDisabled &&
-          !profile->IsGuestSession());
+      IncognitoModePrefs::IsIncognitoAllowed(profile));
+
+  command_updater->UpdateCommandEnabled(IDC_NEW_ISOLATED_WINDOW,
+                                        isolated_mode_enabled);
 
   const bool forced_incognito =
       incognito_availability == policy::IncognitoModeAvailability::kForced;
@@ -2507,16 +2521,7 @@ void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
     // (only relevant for non-web browser scenarios).
     if (ash::boca::OnTaskLockedController::From(browser_)
             ->is_locked_for_on_task()) {
-      bool supports_tabs = browser_->SupportsWindowFeature(
-          Browser::WindowFeature::kFeatureTabStrip);
-      command_updater_->UpdateCommandEnabled(IDC_SELECT_NEXT_TAB,
-                                             supports_tabs);
-      command_updater_->UpdateCommandEnabled(IDC_SELECT_PREVIOUS_TAB,
-                                             supports_tabs);
-      command_updater_->UpdateCommandEnabled(IDC_CYCLE_TO_NEXT_TAB,
-                                             supports_tabs);
-      command_updater_->UpdateCommandEnabled(IDC_CYCLE_TO_PREV_TAB,
-                                             supports_tabs);
+      UpdateTabSwitchingCommandState();
       UpdateCommandsForFind();
     }
   } else {
@@ -2524,6 +2529,40 @@ void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
     // DisableAllCommands.
     InitCommandState();
   }
+}
+
+void BrowserCommandController::UpdateTabSwitchingCommandState() {
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_NEXT_TAB,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_PREVIOUS_TAB,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_CYCLE_TO_NEXT_TAB,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_CYCLE_TO_PREV_TAB,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_0,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_1,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_2,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_3,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_4,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_5,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_6,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_TAB_7,
+                                         is_tab_switching_enabled_);
+  command_updater_->UpdateCommandEnabled(IDC_SELECT_LAST_TAB,
+                                         is_tab_switching_enabled_);
+}
+
+void BrowserCommandController::SetTabSwitchCommandsEnabled(bool enabled) {
+  is_tab_switching_enabled_ = enabled;
+  UpdateTabSwitchingCommandState();
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -2725,7 +2764,7 @@ void BrowserCommandController::UpdateCommandsForEnableGlicChanged() {
 
   if (glic::GlicEnabling::IsEnabledByGlobalCriteria()) {
     actions::ActionItem* const root_action_item =
-        browser_->GetActions()->root_action_item();
+        BrowserActions::From(browser_)->root_action_item();
     if (root_action_item) {
       if (auto* const action = actions::ActionManager::Get().FindAction(
               kActionSidePanelShowGlic, root_action_item)) {
@@ -2751,7 +2790,7 @@ std::unique_ptr<CommandUpdater>
 BrowserCommandController::CreateCommandUpdater() {
   if (base::FeatureList::IsEnabled(features::kUseActionsForBrowserCommands)) {
     return std::make_unique<CommandActionUpdater>(
-        browser_->GetActions()->root_action_item());
+        BrowserActions::From(browser_)->root_action_item());
   }
   return std::make_unique<CommandUpdaterImpl>(this);
 }

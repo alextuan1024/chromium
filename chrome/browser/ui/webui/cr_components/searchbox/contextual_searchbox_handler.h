@@ -136,6 +136,7 @@ class ContextualSearchboxHandler
                       AddFileContextCallback callback) override;
   void AddTabContext(int32_t tab_id,
                      bool delay_upload,
+                     searchbox::mojom::TabAttachmentSource source,
                      AddTabContextCallback callback) override;
   void OnDriveUploadClicked(OnDriveUploadClickedCallback callback) override;
   void DeleteContext(const base::UnguessableToken& file_token,
@@ -178,7 +179,8 @@ class ContextualSearchboxHandler
                          bool prevent_inline_autocomplete,
                          uint32_t cursor_position,
                          omnibox::SuggestInventory suggest_inventory,
-                         bool is_on_focus) override;
+                         bool is_on_focus,
+                         const std::string& keyword) override;
 
 #if !BUILDFLAG(IS_ANDROID)
   // drive_picker_host::mojom::DrivePickerResultHandler:

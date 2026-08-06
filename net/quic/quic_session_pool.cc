@@ -68,6 +68,7 @@
 #include "net/quic/quic_server_info.h"
 #include "net/quic/quic_session_attempt_manager.h"
 #include "net/quic/quic_session_key.h"
+#include "net/quic/quic_session_pool_async_dns_job.h"
 #include "net/quic/quic_session_pool_direct_job.h"
 #include "net/quic/quic_session_pool_job.h"
 #include "net/quic/quic_session_pool_proxy_job.h"
@@ -528,6 +529,10 @@ base::TimeDelta QuicSessionRequest::GetTimeDelayForWaitingJob() const {
   return pool_->GetTimeDelayForWaitingJob(session_key_);
 }
 
+base::WeakPtr<QuicSessionRequest> QuicSessionRequest::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
+
 void QuicSessionRequest::SetPriority(RequestPriority priority) {
   if (pool_) {
     pool_->SetRequestPriority(this, priority);
@@ -747,12 +752,13 @@ QuicSessionPool::QuicSessionPool(
 QuicSessionPool::~QuicSessionPool() {
   UMA_HISTOGRAM_COUNTS_1000("Net.NumQuicSessionsAtShutdown",
                             all_sessions_.size());
+
+  // Destroy attempts before sessions because attempts can hold non-owning
+  // session pointers. This also ensures there is no active crypto config map.
+  session_attempt_manager_.reset();
+
   CloseAllSessions(ERR_ABORTED, quic::QUIC_CONNECTION_CANCELLED);
   all_sessions_.clear();
-
-  // Reset session attempt manager to ensure there is no active crypto config
-  // map.
-  session_attempt_manager_.reset();
 
   // Clear the active jobs, first moving out of the instance variable so that
   // calls to CancelRequest for any pending requests do not cause recursion.
@@ -960,13 +966,23 @@ int QuicSessionPool::RequestSession(
     if (session_key.session_usage() == SessionUsage::kProxy) {
       proxy_connect_start_time = base::TimeTicks::Now();
     }
-    job = std::make_unique<DirectJob>(
-        this, quic_version, host_resolver_, std::move(key),
-        CreateCryptoConfigHandle(QuicCryptoClientConfigKey(session_key)),
-        params_.retry_on_alternate_network_before_handshake, priority,
-        use_dns_aliases, session_key.require_dns_https_alpn(),
-        cert_verify_flags, session_creation_initiator, management_config,
-        net_log);
+    if (base::FeatureList::IsEnabled(features::kAsyncDnsQuicJob)) {
+      job = std::make_unique<AsyncDnsJob>(
+          this, quic_version, host_resolver_, std::move(key),
+          CreateCryptoConfigHandle(QuicCryptoClientConfigKey(session_key)),
+          params_.retry_on_alternate_network_before_handshake, priority,
+          use_dns_aliases, session_key.require_dns_https_alpn(),
+          cert_verify_flags, session_creation_initiator, management_config,
+          net_log);
+    } else {
+      job = std::make_unique<DirectJob>(
+          this, quic_version, host_resolver_, std::move(key),
+          CreateCryptoConfigHandle(QuicCryptoClientConfigKey(session_key)),
+          params_.retry_on_alternate_network_before_handshake, priority,
+          use_dns_aliases, session_key.require_dns_https_alpn(),
+          cert_verify_flags, session_creation_initiator, management_config,
+          net_log);
+    }
   } else {
     job = std::make_unique<ProxyJob>(
         this, quic_version, std::move(key), *proxy_annotation_tag,
@@ -1790,6 +1806,13 @@ void QuicSessionPool::OnJobComplete(
     }
     request->OnRequestComplete(rv);
   }
+}
+
+bool QuicSessionPool::IsSessionActive(
+    const QuicChromiumClientSession* session) const {
+  return std::ranges::any_of(active_sessions_, [session](const auto& entry) {
+    return entry.second.get() == session;
+  });
 }
 
 bool QuicSessionPool::HasActiveSession(

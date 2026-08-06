@@ -226,6 +226,8 @@
     IDC_CONTENT_CONTEXT_OPENLINKNEWWINDOW) \
   E(kActionContentContextOpenLinkOffTheRecord, \
     IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD) \
+  E(kActionContentContextOpenLinkIsolated, \
+    IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED) \
   E(kActionContentContextSaveLinkAs, IDC_CONTENT_CONTEXT_SAVELINKAS) \
   E(kActionContentContextCopyLinkLocation, \
     IDC_CONTENT_CONTEXT_COPYLINKLOCATION) \
@@ -498,6 +500,7 @@
   E(kActionHome, IDC_HOME) \
   E(kActionForward, IDC_FORWARD) \
   E(kActionNewIncognitoWindow, IDC_NEW_INCOGNITO_WINDOW) \
+  E(kActionNewIsolatedWindow, IDC_NEW_ISOLATED_WINDOW) \
   E(kActionSendSharedTabGroupFeedback, IDC_SEND_SHARED_TAB_GROUP_FEEDBACK) \
   E(kActionShowPasswordManager, IDC_SHOW_PASSWORD_MANAGER) \
   E(kActionShowPaymentMethods, IDC_SHOW_PAYMENT_METHODS) \
