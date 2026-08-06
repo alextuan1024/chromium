@@ -404,6 +404,7 @@ static_library("test_support") {
     "//chrome/browser/search_engine_choice",
     "//chrome/browser/supervised_user",
     "//chrome/browser/supervised_user:test_support",
+    "//chrome/browser/ui/browser_window:create_browser_window",
     "//chrome/child",
     "//chrome/common:non_code_constants",
     "//chrome/common:test_support",
@@ -4159,8 +4160,6 @@ if (!is_android) {
         "//chrome/browser/ash/platform_keys",
         "//chrome/browser/ash/platform_keys:test_support",
         "//chrome/browser/ash/platform_keys/key_permissions",
-        "//chrome/browser/ash/plugin_vm",
-        "//chrome/browser/ash/plugin_vm:test_support",
         "//chrome/browser/ash/policy/affiliation:test_support",
         "//chrome/browser/ash/policy/core",
         "//chrome/browser/ash/policy/core:test_support",
@@ -4268,7 +4267,6 @@ if (!is_android) {
         "//chrome/browser/ui/views/frame:app_menu_button_observer",
         "//chrome/browser/ui/views/frame:top_controls_slide_controller",
         "//chrome/browser/ui/views/mahi",
-        "//chrome/browser/ui/views/plugin_vm:browser_tests",
         "//chrome/browser/ui/views/select_file_dialog_extension:browser_tests",
         "//chrome/browser/ui/webui/ash:browser_tests",
         "//chrome/browser/ui/webui/ash/add_supervision",
@@ -4320,7 +4318,6 @@ if (!is_android) {
         "//chromeos/ash/components/dbus/system_proxy:system_proxy_proto",
         "//chromeos/ash/components/dbus/update_engine",
         "//chromeos/ash/components/dbus/upstart",
-        "//chromeos/ash/components/dbus/vm_plugin_dispatcher",
         "//chromeos/ash/components/disks",
         "//chromeos/ash/components/disks:test_support",
         "//chromeos/ash/components/editor_menu/public/cpp",
@@ -7833,7 +7830,7 @@ test("unit_tests") {
       ]
       deps += [ "//ui/linux:linux_ui" ]
     }
-    if (is_win) {
+    if (is_win || (is_linux && use_dbus)) {
       deps += [ "//chrome/browser/ui/views/status_icons:unit_tests" ]
     }
     if (is_mac) {
@@ -8042,6 +8039,7 @@ if (!is_android) {
       "//chrome/browser/privacy_sandbox:attestations_mixin",
       "//chrome/browser/profiles:profile_test_util",
       "//chrome/browser/renderer_context_menu:test_support",
+      "//chrome/browser/ui/browser_window:create_browser_window",
       "//chrome/browser/ui/exclusive_access",
       "//chrome/browser/ui/test:dialog",
       "//chrome/browser/ui/views/frame:toolbar_button_provider",

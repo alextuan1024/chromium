@@ -1088,7 +1088,6 @@ void PartitionRoot::Init(PartitionOptions opts) {
 #if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
     settings_.brp_enabled_ = opts.backup_ref_ptr == PartitionOptions::kEnabled;
     if (opts.backup_ref_ptr == PartitionOptions::kEnabled) {
-      settings_.in_slot_metadata_size = internal::kInSlotMetadataSizeAdjustment;
       settings_.extras_size += internal::kInSlotMetadataSizeAdjustment;
       settings_.extras_size += opts.backup_ref_ptr_extra_extras_size;
       PA_CHECK(settings_.pool_handle == internal::kNullPoolHandle);
@@ -1474,7 +1473,7 @@ size_t PartitionRoot::AllocationCapacityFromRequestedSize(size_t size) const {
 
   if (!bucket.is_direct_mapped()) [[likely]] {
     size = bucket.slot_size;
-  } else if (size > internal::MaxDirectMapped()) {
+  } else if (size > MaxAllocationSize()) {
     // Too large to allocate => return the size unchanged.
   } else {
     size = GetDirectMapSlotSize(size);

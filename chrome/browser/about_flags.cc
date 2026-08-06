@@ -2850,6 +2850,16 @@ const FeatureEntry::Choice kSendTabToSelfEnhancedHandoffChoices[] = {
      "SyncSessionsUsePreferredDisplayName"},
 };
 
+const FeatureEntry::Choice kPrerender2CrossOriginIframesChoices[] = {
+    {flags_ui::kGenericExperimentChoiceDefault, "", ""},
+    {"Enabled (Version 1)", switches::kEnableFeatures,
+     "Prerender2CrossOriginIframes"},
+    {"Enabled (Version 2:nesting/true)", switches::kEnableFeatures,
+     "Prerender2CrossOriginIframes:nesting/true"},
+    {flags_ui::kGenericExperimentChoiceDisabled, switches::kDisableFeatures,
+     "Prerender2CrossOriginIframes"},
+};
+
 // The choices for --enable-experimental-cookie-features. This really should
 // just be a SINGLE_VALUE_TYPE, but it is misleading to have the choices be
 // labeled "Disabled"/"Enabled". So instead this is made to be a
@@ -3460,7 +3470,7 @@ const FeatureEntry::FeatureVariation kComposeSelectionNudgeVariations[] = {
     {"30 char - 2sec", kComposeSelectionNudge_30_2s, nullptr}};
 #endif  // ENABLE_COMPOSE
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 const FeatureEntry::FeatureParam kLocationProviderManagerModeNetworkOnly[] = {
     {"LocationProviderManagerMode", "NetworkOnly"}};
 const FeatureEntry::FeatureParam kLocationProviderManagerModePlatformOnly[] = {
@@ -3476,7 +3486,7 @@ const FeatureEntry::FeatureVariation kLocationProviderManagerVariations[] = {
     {"Wi-Fi fallback", kLocationProviderManagerModeHybridPlatform, nullptr},
     {"Fallback on error", kLocationProviderManagerModeHybridPlatform2,
      nullptr}};
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 
 const FeatureEntry::FeatureParam kVisitedURLRankingDomainDeduplicationParam[] =
     {{"url_deduplication_include_title", "false"}};
@@ -8362,14 +8372,15 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kViewportSegmentsDescription, kOsAll,
      FEATURE_VALUE_TYPE(blink::features::kViewportSegments)},
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
     {"enable-location-provider-manager",
      flag_descriptions::kLocationProviderManagerName,
-     flag_descriptions::kLocationProviderManagerDescription, kOsMac | kOsWin,
+     flag_descriptions::kLocationProviderManagerDescription,
+     kOsMac | kOsWin | kOsLinux,
      FEATURE_WITH_PARAMS_VALUE_TYPE(features::kLocationProviderManager,
                                     kLocationProviderManagerVariations,
                                     "LocationProviderManager")},
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 
 #if !BUILDFLAG(IS_ANDROID)
     {"mute-notification-snooze-action",
@@ -8915,7 +8926,7 @@ const FeatureEntry kFeatureEntries[] = {
     {"prerender2-cross-origin-iframes",
      flag_descriptions::kPrerender2CrossOriginIframesName,
      flag_descriptions::kPrerender2CrossOriginIframesDescription, kOsAll,
-     FEATURE_VALUE_TYPE(blink::features::kPrerender2CrossOriginIframes)},
+     MULTI_VALUE_TYPE(kPrerender2CrossOriginIframesChoices)},
 
     {"prerender-until-script", flag_descriptions::kPrerenderUntilScriptName,
      flag_descriptions::kPrerenderUntilScriptDescription, kOsAll,
