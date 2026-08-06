@@ -54,9 +54,6 @@
 
 namespace {
 
-// Minimum area next to caption buttons to use as a grab handle.
-constexpr int kVerticalTabsGrabHandleSize = 40;
-
 // Maximum portion of the window a "size-restricted" contents-height side panel
 // can take up. This is not the only limit on side panel size.
 constexpr float kMaxContentsHeightSidePanelFraction = 2.f / 3.f;
