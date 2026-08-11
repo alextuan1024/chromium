@@ -18,7 +18,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "third_party/lens_server_proto/aim_communication.pb.h"
 #include "ui/base/interaction/element_tracker.h"
 
 namespace base {
@@ -26,7 +25,10 @@ class Uuid;
 }
 
 namespace lens {
+class ClientToAimMessage;
+class InjectInput;
 class InputPlateParametersRequest;
+class UpdateThreadContextLibrary;
 }
 
 namespace contextual_tasks {
@@ -80,6 +82,7 @@ class ContextualTasksPageHandler
                              GetCommonSearchParamsCallback callback) override;
   void OnboardingTooltipDismissed() override;
   void LensSearchTooltipDismissed() override;
+  void AskGTooltipDismissed() override;
   void ReopenTabs() override;
   void PinSidePanel() override;
   void UnpinSidePanel() override;

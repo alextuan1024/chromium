@@ -84,6 +84,8 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.signin.SigninFeatures;
+import org.chromium.components.signin.test.util.TestAccounts;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.DeviceRestriction;
@@ -212,7 +214,7 @@ public class SendTabToSelfCoordinatorTest {
     // flow is complete.
     public void testShowSigninPromoIfSignedOut() {
         // An account must be added to the device so the promo is offered.
-        mSyncTestRule.addTestAccount();
+        mSyncTestRule.addAccount(TestAccounts.ACCOUNT1);
         buildAndShowCoordinator();
 
         // Check the promo is displayed, in particular the sign-in button.
@@ -239,7 +241,7 @@ public class SendTabToSelfCoordinatorTest {
     @DisableFeatures({ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET})
     public void testShowSigninPromoIfSignedOut_activitylessSignin() {
         // An account must be added to the device so the promo is offered.
-        mSyncTestRule.addTestAccount();
+        mSyncTestRule.addAccount(TestAccounts.ACCOUNT1);
         // Two samples are expected because:
         // 1. Initial invocation while signed out records 0 (kNoTargetDevicesBecauseSignedOut).
         // 2. Sign-in completion automatically triggers a second show() invocation, which
@@ -852,6 +854,7 @@ public class SendTabToSelfCoordinatorTest {
      */
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/543459081
     @EnableFeatures({
         SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
         SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,

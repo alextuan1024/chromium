@@ -17,6 +17,7 @@
 #include "base/functional/function_ref.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/run_until.h"
@@ -42,6 +43,7 @@
 #include "chrome/browser/glic/test_support/test_result.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
 #include "chrome/common/chrome_switches.h"
@@ -81,6 +83,11 @@
 #endif
 
 namespace glic {
+
+#if BUILDFLAG(IS_ANDROID)
+void SetActivityOrientationForTesting(content::WebContents* web_contents,
+                                      int orientation);
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 #define SKIP_TEST_FOR_NON_DESKTOP_ANDROID()            \
@@ -148,6 +155,37 @@ template <typename T>
 }
 
 template <typename T>
+[[nodiscard]] TestResult<> RunUntilNotEqual(
+    base::FunctionRef<std::type_identity_t<T>()> get_value,
+    const T& unexpected_value,
+    std::string_view message = std::string_view()) {
+  return RunUntilComparisonPasses<T>(get_value, unexpected_value,
+                                     std::not_equal_to<T>(), "!=", message);
+}
+
+template <typename Callable>
+[[nodiscard]] TestResult<> RunUntilNull(
+    Callable&& get_value,
+    std::string_view message = std::string_view()) {
+  using ReturnType = std::invoke_result_t<Callable>;
+  static_assert(std::is_pointer_v<ReturnType>, "ReturnType must be a pointer");
+  return RunUntilComparisonPasses<ReturnType>(
+      std::forward<Callable>(get_value), nullptr, std::equal_to<ReturnType>(),
+      "==", message);
+}
+
+template <typename Callable>
+[[nodiscard]] TestResult<> RunUntilNotNull(
+    Callable&& get_value,
+    std::string_view message = std::string_view()) {
+  using ReturnType = std::invoke_result_t<Callable>;
+  static_assert(std::is_pointer_v<ReturnType>, "ReturnType must be a pointer");
+  return RunUntilComparisonPasses<ReturnType>(
+      std::forward<Callable>(get_value), nullptr,
+      std::not_equal_to<ReturnType>(), "!=", message);
+}
+
+template <typename T>
 [[nodiscard]] TestResult<> RunUntilGreaterThan(
     base::FunctionRef<std::type_identity_t<T>()> get_value,
     const T& threshold,
@@ -172,6 +210,12 @@ template <typename Trigger>
   }
   LOG(ERROR) << message;
   return false;
+}
+
+[[nodiscard]] inline TestResult<> WaitForWindowActive(
+    BrowserWindowInterface* browser) {
+  return RunUntilEqual([&]() { return browser->GetWindow()->IsActive(); }, true,
+                       "Window did not become active");
 }
 
 [[nodiscard]] inline TestResult<> WaitForSidePanelState(
@@ -245,15 +289,22 @@ class GlicBrowserTestMixin : public T {
     if (!glic::GlicEnabling::IsOsVersionSupported()) {
       GTEST_SKIP() << "OS version not supported by Glic";
     }
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+    // Instantiate the MockActivationController early before calling T::SetUp().
+    // During T::SetUp(), InProcessBrowserTest creates and shows the default
+    // startup browser window. If the mock controller is already active at that
+    // time, DesktopWindowTreeHostPlatform skips acquiring its native
+    // paint-as-active lock. This prevents the default window from being
+    // permanently locked active, allowing mock deactivation to work correctly
+    // during the test.
+    activation_controller_ =
+        std::make_unique<views::test::MockActivationController>();
+#endif
     T::SetUp();
   }
 
   void SetUpOnMainThread() override {
     T::SetUpOnMainThread();
-#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
-    activation_controller_ =
-        std::make_unique<views::test::MockActivationController>();
-#endif
 
     // Disable side panel animations on supported platforms.
     if (IsSidePanelEnabled()) {
@@ -270,7 +321,6 @@ class GlicBrowserTestMixin : public T {
         ->GetBrowserWindowInterface()
         ->GetWindow()
         ->Activate();
-    LOG(INFO) << "GlicBrowserTest: done setting up";
   }
 
   void TearDownOnMainThread() override {
@@ -300,6 +350,30 @@ class GlicBrowserTestMixin : public T {
     return WaitForGlicOpen(T::GetTabListInterface()->GetActiveTab());
   }
 
+  // Opens the Glic UI on the given tab and returns the instance.
+  [[nodiscard]] TestResult<GlicInstanceImpl*> OpenGlicForTab(
+      tabs::TabInterface* tab) {
+    auto* service = GlicKeyedService::Get(T::GetProfile());
+    service->ToggleUI(tab->GetBrowserWindowInterface(), /*prevent_close=*/true,
+                      mojom::InvocationSource::kTopChromeButton);
+    return WaitForGlicOpen(tab);
+  }
+
+  // Simulates a user input submission, triggering OnUserInputSubmitted on the
+  // client handler.
+  void SimulateUserInputSubmitted(
+      GlicInstanceImpl* instance = nullptr,
+      mojom::WebClientMode mode = mojom::WebClientMode::kText) {
+    if (!instance) {
+      instance = GetOnlyGlicInstance();
+    }
+    CHECK(instance);
+    ASSERT_OK(WaitForGlicClient(instance));
+    GlicWebClientAccess* client = instance->host().GetPrimaryWebClient();
+    CHECK(client);
+    client->OnUserInputSubmittedForTesting(mode);
+  }
+
   [[nodiscard]] TestResult<> WaitForInstanceDeletion(
       base::WeakPtr<GlicInstanceImpl> instance) {
     return RunUntilEqual<GlicInstanceImpl*>([&]() { return instance.get(); },
@@ -312,6 +386,37 @@ class GlicBrowserTestMixin : public T {
     return RunUntilEqual<bool>(
         [&]() { return instance_impl->IsHibernated(); }, false,
         "WaitForInstanceAwakened: instance did not wake up");
+  }
+
+  [[nodiscard]] TestResult<> WaitForInstanceActive(
+      GlicInstance* instance = nullptr) {
+    auto* instance_impl = GetInstanceImpl(instance);
+    if (!instance_impl) {
+      return base::unexpected("WaitForInstanceActive: instance is null");
+    }
+    return RunUntilEqual<bool>(
+        [&]() { return instance_impl->IsActive(); }, true,
+        "WaitForInstanceActive: instance did not become active");
+  }
+
+  [[nodiscard]] TestResult<GlicInstanceImpl*> WaitForInstanceWithConversationId(
+      tabs::TabInterface* tab,
+      const std::string& expected_conversation_id) {
+    auto result = RunUntilEqual<std::string>(
+        [&]() {
+          auto* instance = GetInstanceForTab(tab);
+          if (!instance) {
+            return std::string("no instance bound to tab");
+          }
+          return instance->conversation_id().value_or("");
+        },
+        expected_conversation_id,
+        "WaitForInstanceWithConversationId: timeout waiting for conversation "
+        "ID");
+    if (!result) {
+      return base::unexpected(result.error());
+    }
+    return GetInstanceForTab(tab);
   }
 
   void RegisterConversation(GlicInstance* instance,
@@ -539,11 +644,45 @@ class GlicBrowserTestMixin : public T {
   }
 
   // Opens a new tab with the given URL and wait for load to complete.
-  tabs::TabInterface* CreateAndActivateTab(const GURL& url) {
-    tabs::TabInterface* new_tab = T::GetTabListInterface()->OpenTab(url, -1);
-    T::GetTabListInterface()->ActivateTab(new_tab->GetHandle());
+  tabs::TabInterface* CreateAndActivateTab(TabListInterface* tab_list,
+                                           const GURL& url) {
+    CHECK(tab_list);
+    tabs::TabInterface* new_tab = tab_list->OpenTab(url, -1);
+    tab_list->ActivateTab(new_tab->GetHandle());
     CHECK(content::WaitForLoadStop(new_tab->GetContents()));
     return new_tab;
+  }
+
+  tabs::TabInterface* CreateAndActivateTab(const GURL& url) {
+    return CreateAndActivateTab(T::GetTabListInterface(), url);
+  }
+
+  tabs::TabInterface* CreateAndActivateTab(BrowserWindowInterface* browser,
+                                           const GURL& url) {
+    return CreateAndActivateTab(TabListInterface::From(browser), url);
+  }
+
+  // Creates a new browser window and returns it. On Desktop, it will also
+  // automatically create a blank tab.
+  // TODO(crbug.com/530318599): CreateBrowserWindow() does not create a tab on
+  // Desktop. Fix the Desktop implementation of CreateBrowserWindow() to match
+  // Android, then remove the #if/#else and just use the #if part.
+  [[nodiscard]] BrowserWindowInterface* CreateAdditionalBrowserWindow() {
+    BrowserWindowInterface* browser = nullptr;
+#if BUILDFLAG(IS_ANDROID)
+    BrowserWindowCreateParams create_params = BrowserWindowCreateParams(
+        BrowserWindowInterface::Type::TYPE_NORMAL, *T::GetProfile(),
+        /*from_user_gesture=*/false);
+    base::test::TestFuture<BrowserWindowInterface*> future;
+    CreateBrowserWindow(std::move(create_params), future.GetCallback());
+    browser = future.Get();
+#else
+    browser = T::CreateBrowser(T::GetProfile());
+#endif
+    CHECK(browser);
+    CHECK(WaitForWindowActive(browser).has_value());
+    CHECK(TabListInterface::From(browser)->GetActiveTab());
+    return browser;
   }
 
   content::Visibility GetContentsVisibility(GlicInstanceImpl* instance) {
@@ -748,7 +887,6 @@ class GlicBrowserTestMixin : public T {
   }
 
   GURL GetGuestURL() { return glic_test_environment_.GetGuestURL(); }
-
 
   [[nodiscard]] TestResult<void> WaitForGlicClient(
       GlicInstance* instance = nullptr) {

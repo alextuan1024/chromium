@@ -48,6 +48,8 @@
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
+#include "third_party/lens_server_proto/added_inputs.pb.h"
+#include "third_party/lens_server_proto/aim_communication.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_contextual_inputs.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_interaction_request_metadata.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_lens_file.pb.h"
@@ -532,10 +534,9 @@ ComposeboxQueryController::MimeTypeStringFromFileInfo(
     case lens::MimeType::kPlainText:
       return "text/plain";
     case lens::MimeType::kImage:
-      // Images always use jpeg encoding.
-      // TODO(crbug.com/481835802): Update this logic if webp encoding is
-      // turned on.
-      return "image/jpeg";
+      // This function is only used to populate Lens Added Inputs, which
+      // explicitly exclude image uploads.
+      NOTREACHED();
     case lens::MimeType::kAnnotatedPageContent:
       return "application/x-protobuf";
     case lens::MimeType::kUnknown:
@@ -1038,6 +1039,12 @@ lens::ClientToAimMessage ComposeboxQueryController::CreateClientToAimRequest(
           lens_image_query_data->set_contextual_input_upload_type(
               *file_info->input_data->upload_type);
         }
+      }
+
+      if (file_info->input_data &&
+          file_info->input_data->drive_id.has_value() &&
+          !file_info->input_data->drive_id->empty()) {
+        lens_image_query_data->set_drive_id(*file_info->input_data->drive_id);
       }
 
       // Only force interaction data for region searches when the overlay is

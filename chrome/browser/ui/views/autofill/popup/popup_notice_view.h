@@ -29,19 +29,6 @@ namespace autofill {
 
 class AutofillPopupController;
 
-// Outcomes of interaction with an Autofill popup notice.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(PopupNoticeInteractions)
-enum class PopupNoticeInteractions {
-  kShown = 0,
-  kAcknowledged = 1,
-  kDismissed = 2,
-  kLinkButtonClicked = 3,
-  kMaxValue = kLinkButtonClicked,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/personal_context/enums.xml:PopupNoticeInteractions)
-
 // The view that displays an informational notice (such as for Personal Context
 // or Ambient Autofill) at the bottom of the Autofill popup.
 class PopupNoticeView : public PopupInteractiveRowView {
@@ -73,16 +60,9 @@ class PopupNoticeView : public PopupInteractiveRowView {
   PopupNoticeView& operator=(const PopupNoticeView&) = delete;
   ~PopupNoticeView() override;
 
-  views::StyledLabel* description_for_testing() const { return description_; }
-  views::MdTextButton* accept_button_for_testing() const {
-    return accept_button_;
-  }
-  bool is_link_focused_for_testing() const { return is_link_focused_; }
-  bool is_accept_button_focused_for_testing() const {
-    return is_accept_button_focused_;
-  }
-
  private:
+  friend class PopupNoticeViewTestApi;
+
   // Marks the notice as acknowledged and removes it from the parent view.
   void OnAcceptButtonClicked();
 
@@ -146,6 +126,22 @@ class PopupNoticeView : public PopupInteractiveRowView {
   const raw_ref<PopupRowView::AccessibilitySelectionDelegate>
       a11y_selection_delegate_;
 };
+
+// Creates a `PopupNoticeView` for the Personal Context notice.
+std::unique_ptr<PopupNoticeView> CreatePersonalContextNoticeView(
+    PopupRowView::AccessibilitySelectionDelegate& a11y_selection_delegate,
+    base::RepeatingCallback<void(const std::u16string&, bool)>
+        announce_callback,
+    base::WeakPtr<AutofillPopupController> controller,
+    int line_number);
+
+// Creates a `PopupNoticeView` for the Autofill AI Private Inference Notice.
+std::unique_ptr<PopupNoticeView> CreateAutofillAiPrivateInferenceNoticeView(
+    PopupRowView::AccessibilitySelectionDelegate& a11y_selection_delegate,
+    base::RepeatingCallback<void(const std::u16string&, bool)>
+        announce_callback,
+    base::WeakPtr<AutofillPopupController> controller,
+    int line_number);
 
 }  // namespace autofill
 

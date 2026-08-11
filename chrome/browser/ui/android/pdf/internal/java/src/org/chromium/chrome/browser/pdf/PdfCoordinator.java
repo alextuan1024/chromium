@@ -322,7 +322,8 @@ public class PdfCoordinator
 
             if (getView() != null && mViewTag != null) getView().setTag(mViewTag);
             if (PdfUtils.isInlinePdfV2Enabled()) {
-                pdfView.setFormFillingEnabled(!isEditModeEnabled());
+                pdfView.setFormFillingEnabled(
+                        PdfUtils.isInlinePdfV2FormFillingEnabled() && !isEditModeEnabled());
             }
             maybeSetupPdfView();
         }
@@ -789,7 +790,8 @@ public class PdfCoordinator
             super.onLoadDocumentSuccess(pdfDocument);
             maybeHideToolBoxForUnsupportedEdit();
             if (PdfUtils.isInlinePdfV2Enabled() && mPdfView != null) {
-                mPdfView.setFormFillingEnabled(!isEditModeEnabled());
+                mPdfView.setFormFillingEnabled(
+                        PdfUtils.isInlinePdfV2FormFillingEnabled() && !isEditModeEnabled());
             }
             if (mRestorePositionPending && mPdfView != null) {
                 mRestorePositionPending = false;
@@ -985,7 +987,7 @@ public class PdfCoordinator
                                 () -> {
                                     pdfView.setZoom(newZoom);
                                     // Scroll to the top of the page after zooming.
-                                    if (fitToPageHeight) scrollToPage(pageIndex);
+                                    scrollToPage(pageIndex);
                                 });
                     });
         }
@@ -1604,7 +1606,7 @@ public class PdfCoordinator
                                 ModalDialogProperties.ButtonStyles.PRIMARY_FILLED_NO_NEGATIVE)
                         .build();
 
-        manager.showDialog(model, ModalDialogType.APP);
+        manager.showDialog(model, ModalDialogType.TAB);
     }
 
     private void showAlertDialog(View dialogView) {

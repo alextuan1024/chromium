@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Point;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.Pair;
@@ -36,6 +37,8 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.widget.AnchoredPopupWindow;
@@ -130,6 +133,7 @@ public class BookmarkBarPopupCoordinatorTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_CONTEXT_MENU)
     public void testDismiss_dismissesBothPopups() {
         AnchoredPopupWindow folderPopup = mock(AnchoredPopupWindow.class);
         AnchoredPopupWindow contextMenuPopup = mock(AnchoredPopupWindow.class);
@@ -143,6 +147,7 @@ public class BookmarkBarPopupCoordinatorTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_CONTEXT_MENU)
     public void testShowContextMenuPopup_setsSelectedStateOnSubitem() {
         View rootView = new View(mActivity);
         when(mBookmarkBarView.getRootView()).thenReturn(rootView);
@@ -156,7 +161,7 @@ public class BookmarkBarPopupCoordinatorTest {
         mCoordinator.showFolderItemsPopup(mAnchorView, new ModelList(), /* isIncognito= */ false);
 
         mCoordinator.showContextMenuPopup(
-                new ModelList(), subitemView, /* offset= */ null, /* isIncognito= */ false);
+                new ModelList(), subitemView, new Point(0, 0), /* isIncognito= */ false);
 
         verify(subitemView).setSelected(true);
 
@@ -174,13 +179,14 @@ public class BookmarkBarPopupCoordinatorTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_CONTEXT_MENU)
     public void testShowContextMenuPopup_doesNotSetSelectedStateOnBookmarkBar() {
         View rootView = new View(mActivity);
         when(mBookmarkBarView.getRootView()).thenReturn(rootView);
         when(mBookmarkBarView.getViewTreeObserver()).thenReturn(rootView.getViewTreeObserver());
 
         mCoordinator.showContextMenuPopup(
-                new ModelList(), mBookmarkBarView, /* offset= */ null, /* isIncognito= */ false);
+                new ModelList(), mBookmarkBarView, new Point(0, 0), /* isIncognito= */ false);
 
         verify(mBookmarkBarView, never()).setSelected(true);
     }

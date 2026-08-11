@@ -353,12 +353,14 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       const url::SchemeHostPort& destination) const;
 
   // Returns a session when an existing session can be used for `destination`
-  // that is resolved with `service_endpoint`.
+  // that is resolved with `service_endpoint`. When `log_negative_result` is
+  // false, a miss is not recorded in metrics.
   QuicChromiumClientSession* HasMatchingIpSessionForServiceEndpoint(
       const QuicSessionAliasKey& session_alias_key,
       const ServiceEndpoint& service_endpoint,
       const std::set<std::string>& dns_aliases,
-      bool use_dns_aliases);
+      bool use_dns_aliases,
+      bool log_negative_result);
 
   // Requests a QuicChromiumClientSession to |host_port_pair|, a handle for
   // which will be owned by |request|.
@@ -601,7 +603,8 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       const QuicSessionAliasKey& key,
       const std::vector<IPEndPoint>& ip_endpoints,
       const std::set<std::string>& aliases,
-      bool use_dns_aliases);
+      bool use_dns_aliases,
+      bool log_negative_result = true);
   // Returns true if IP matching can be waived when trying to send requests to
   // |destination| on |session|.
   bool CanWaiveIpMatching(const url::SchemeHostPort& destination,
@@ -613,6 +616,9 @@ class NET_EXPORT_PRIVATE QuicSessionPool
   bool IsSessionActive(const QuicChromiumClientSession* session) const;
   bool HasActiveSession(const QuicSessionKey& session_key) const;
   bool HasActiveJob(const QuicSessionKey& session_key) const;
+
+  QuicSessionEstablishmentReason DetermineQuicSessionEstablishmentReason(
+      const QuicSessionKey& session_key) const;
 
   // Methods to notify the ConnectionChangeObserver about connection changing
   // events. `NotifyOnNetworkEvent` will notify all of the notifiers on network
@@ -648,8 +654,10 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       const NetLogWithSource& net_log,
       raw_ptr<QuicChromiumClientSession>* session,
       handles::NetworkHandle* network,
-      MultiplexedSessionCreationInitiator preconnet_origin,
-      std::optional<ConnectionManagementConfig> connection_management_config);
+      MultiplexedSessionCreationInitiator session_creation_initiator,
+      QuicSessionEstablishmentReason quic_session_establishment_reason,
+      std::optional<ConnectionManagementConfig> connection_management_config =
+          std::nullopt);
   // Note: QUIC session create methods that complete asynchronously, we can't
   // pass raw pointers as parameters because we can't guarantee that these raw
   // pointers outlive `this` since we use nested callbacks in these methods. See
@@ -670,7 +678,9 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       const NetLogWithSource& net_log,
       handles::NetworkHandle network,
       MultiplexedSessionCreationInitiator session_creation_initiator,
-      std::optional<ConnectionManagementConfig> connection_management_config);
+      QuicSessionEstablishmentReason quic_session_establishment_reason,
+      std::optional<ConnectionManagementConfig> connection_management_config =
+          std::nullopt);
   // TODO(crbug.com/518753285): Proxied connections do not currently support
   // connection migration. This means that this is never called with
   // `network` != handles::kInvalidNetworkHandle. Drop the `network` parameter
@@ -687,7 +697,8 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       std::unique_ptr<QuicChromiumClientStream::Handle> proxy_stream,
       std::string user_agent,
       const NetLogWithSource& net_log,
-      handles::NetworkHandle network);
+      handles::NetworkHandle network,
+      QuicSessionEstablishmentReason quic_session_establishment_reason);
   void FinishCreateSession(
       CreateSessionCallback callback,
       QuicSessionAliasKey key,
@@ -704,6 +715,7 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       handles::NetworkHandle network,
       std::unique_ptr<DatagramClientSocket> socket,
       MultiplexedSessionCreationInitiator session_creation_initiator,
+      QuicSessionEstablishmentReason quic_session_establishment_reason,
       std::optional<ConnectionManagementConfig> connection_management_config,
       int rv);
   // TODO(crbug.com/518753285): Stop accepting a `network` parameter. Instead,
@@ -724,6 +736,7 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       handles::NetworkHandle network,
       std::unique_ptr<DatagramClientSocket> socket,
       MultiplexedSessionCreationInitiator session_creation_initiator,
+      QuicSessionEstablishmentReason quic_session_establishment_reason,
       std::optional<ConnectionManagementConfig> connection_management_config);
 
   // Called when the Job for the given key has created and confirmed a session.

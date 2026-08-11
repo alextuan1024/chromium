@@ -70,7 +70,6 @@
 #import "ios/public/provider/chrome/browser/lottie/lottie_animation_api.h"
 #import "ios/public/provider/chrome/browser/lottie/lottie_animation_configuration.h"
 #import "ui/base/l10n/l10n_util.h"
-#import "ui/gfx/ios/uikit_util.h"
 
 namespace {
 
@@ -895,7 +894,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
   CGFloat maxTopMarginDiff = fakeOmniboxHeight - locationBarHeight -
                              kAdaptiveLocationBarVerticalMargin;
   topMarginConstraint.constant =
-      -content_suggestions::SearchFieldTopMargin(self.searchEngineLogoState) -
+      -content_suggestions::LogoToFakeboxPadding(self.searchEngineLogoState) -
       maxTopMarginDiff * progress;
   heightConstraint.constant =
       ntp_header::kFakeLocationBarTopConstraint -
@@ -1538,7 +1537,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
     if (canShowTabStrip || !isSplitToolbarMode) {
       offset += content_suggestions::FakeOmniboxHeight();
       if (canShowTabStrip) {
-        offset -= content_suggestions::SearchFieldTopMargin(
+        offset -= content_suggestions::LogoToFakeboxPadding(
             self.searchEngineLogoState);
       }
     }
@@ -1568,7 +1567,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
 
   if (canShowTabStrip) {
     offset -=
-        content_suggestions::SearchFieldTopMargin(self.searchEngineLogoState);
+        content_suggestions::LogoToFakeboxPadding(self.searchEngineLogoState);
   } else {
     offset -= self.safeAreaInsets.top + topToolbarHeight;
   }
@@ -1970,7 +1969,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
   self.searchEngineLogoState = logoState;
 
   self.fakeOmniboxTopMarginConstraint.constant =
-      -content_suggestions::SearchFieldTopMargin(self.searchEngineLogoState);
+      -content_suggestions::LogoToFakeboxPadding(self.searchEngineLogoState);
 
   [self updateFakeboxDisplay];
 
@@ -2091,9 +2090,8 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
 }
 
 - (void)updateFakeboxDisplay {
-  self.doodleTopMarginConstraint.constant =
-      content_suggestions::DoodleTopMargin(self.searchEngineLogoState,
-                                           self.traitCollection);
+  self.doodleTopMarginConstraint.constant = content_suggestions::LogoTopPadding(
+      self.searchEngineLogoState, self.traitCollection);
   [self.doodleHeightConstraint
       setConstant:content_suggestions::DoodleHeight(self.searchEngineLogoState,
                                                     self.traitCollection)];
@@ -2111,7 +2109,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
                     andHeaderView:(UIView*)headerView {
   self.doodleTopMarginConstraint = [logoView.topAnchor
       constraintEqualToAnchor:headerView.topAnchor
-                     constant:content_suggestions::DoodleTopMargin(
+                     constant:content_suggestions::LogoTopPadding(
                                   self.searchEngineLogoState,
                                   self.traitCollection)];
   self.doodleHeightConstraint = [logoView.heightAnchor
@@ -2126,7 +2124,7 @@ CGFloat Interpolate(CGFloat from, CGFloat to, CGFloat percent) {
       [fakeOmnibox.widthAnchor constraintEqualToConstant:initialWidth];
   self.fakeOmniboxTopMarginConstraint = [logoView.bottomAnchor
       constraintEqualToAnchor:fakeOmnibox.topAnchor
-                     constant:-content_suggestions::SearchFieldTopMargin(
+                     constant:-content_suggestions::LogoToFakeboxPadding(
                                   self.searchEngineLogoState)];
   self.headerViewHeightConstraint =
       [headerView.heightAnchor constraintEqualToConstant:[self headerHeight]];

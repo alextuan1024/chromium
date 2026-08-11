@@ -264,9 +264,9 @@ class SyncSchedulerImplTest : public testing::Test {
         data_type_registry_.get(), "fake_cache_guid", "fake_birthday",
         "fake_bag_of_chips",
         /*poll_interval=*/base::Minutes(30),
+        /*account_email=*/"test@example.com",
         /*sync_access_token_fetcher=*/nullptr);
     context_->set_notifications_enabled(true);
-    context_->set_account_name("Test");
     RebuildScheduler();
   }
 
@@ -292,9 +292,9 @@ class SyncSchedulerImplTest : public testing::Test {
         std::vector<SyncEngineEventListener*>(), nullptr,
         data_type_registry_.get(), "fake_cache_guid", "fake_birthday",
         "fake_bag_of_chips",
-        /*poll_interval=*/base::Minutes(30), access_token_fetcher);
+        /*poll_interval=*/base::Minutes(30),
+        /*account_email=*/"test@example.com", access_token_fetcher);
     context_->set_notifications_enabled(true);
-    context_->set_account_name("Test");
     RebuildScheduler();
   }
 
@@ -2034,11 +2034,6 @@ TEST_F(SyncSchedulerImplTest, NoCachedAccessToken) {
 
 TEST_F(SyncSchedulerImplTest, CanRunJobWithoutCachedAccessToken) {
   base::test::ScopedFeatureList feature_list(kSyncUsePropagatedAccessToken);
-
-  // Clear cached access token in connection manager to verify that
-  // CanRunJobNow() does not block when the feature is enabled.
-  connection()->SetAccessTokenInfo(signin::AccessTokenInfo());
-  ASSERT_FALSE(connection()->HasCachedAccessToken());
 
   testing::NiceMock<MockSyncAccessTokenFetcher> fetcher;
   EXPECT_CALL(fetcher, FetchAccessToken)

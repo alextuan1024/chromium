@@ -35,7 +35,6 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkShader.h"
-#include "ui/base/cursor/cursor_factory.h"
 #include "ui/base/glib/glib_cast.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/linux/fake_input_method_context.h"
@@ -368,8 +367,6 @@ bool GtkUi::Initialize() {
   GtkSettings* settings = gtk_settings_get_default();
   SanitizeIconThemeName();
   SanitizeThemeName();
-  SanitizeCursorThemeName();
-  SanitizeCursorThemeSize();
   InstallGtkSettingsInterceptor();
 
   if (!GtkCheckVersion(4)) {
@@ -694,6 +691,13 @@ void GtkUi::SetDarkTheme(bool dark) {
   // notify::gtk-application-prefer-dark-theme handler to update the colors.
 }
 
+void GtkUi::SetColorScheme(std::optional<bool> prefer_dark) {
+  // Route the color scheme through the OS settings provider, which sources the
+  // web `NativeTheme::preferred_color_scheme()` via
+  // `UpdateVariablesForToolkitSettings()`.
+  os_settings_provider_->SetColorScheme(prefer_dark);
+}
+
 void GtkUi::SetAccentColor(std::optional<SkColor> accent_color) {
   accent_color_ = accent_color;
   // Route the accent color through the OS settings provider. This updates
@@ -850,26 +854,6 @@ bool GtkUi::SanitizeKeyThemeName() {
   return false;
 }
 
-bool GtkUi::SanitizeCursorThemeName() {
-  std::string theme = GetCursorThemeName();
-  if (!IsValidThemeName(ThemeProperty::kCursorThemeName, theme.c_str())) {
-    g_object_set(gtk_settings_get_default(), "gtk-cursor-theme-name", "Adwaita",
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-bool GtkUi::SanitizeCursorThemeSize() {
-  int size = GetCursorThemeSize();
-  if (!ui::IsValidCursorThemeSize(size)) {
-    g_object_set(gtk_settings_get_default(), "gtk-cursor-theme-size", 24,
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
 void GtkUi::OnKeyThemeNameChanged(GtkSettings* settings, GtkParamSpec* param) {
   SanitizeKeyThemeName();
 }
@@ -936,9 +920,6 @@ void GtkUi::OnThemeChanged(GtkSettings* settings, GtkParamSpec* param) {
 
 void GtkUi::OnCursorThemeNameChanged(GtkSettings* settings,
                                      GtkParamSpec* param) {
-  if (SanitizeCursorThemeName()) {
-    return;
-  }
   std::string cursor_theme_name = GetCursorThemeName();
   if (cursor_theme_name.empty()) {
     return;
@@ -950,9 +931,6 @@ void GtkUi::OnCursorThemeNameChanged(GtkSettings* settings,
 
 void GtkUi::OnCursorThemeSizeChanged(GtkSettings* settings,
                                      GtkParamSpec* param) {
-  if (SanitizeCursorThemeSize()) {
-    return;
-  }
   int cursor_theme_size = GetCursorThemeSize();
   if (!cursor_theme_size) {
     return;
@@ -964,7 +942,7 @@ void GtkUi::OnCursorThemeSizeChanged(GtkSettings* settings,
 
 void GtkUi::OnEnableAnimationsChanged(GtkSettings* settings,
                                       GtkParamSpec* param) {
-  gfx::Animation::UpdatePrefersReducedMotion();
+  NotifyAnimationsEnabledChanged();
 }
 
 void GtkUi::OnPrimaryPasteChanged(GtkSettings* settings, GtkParamSpec* param) {

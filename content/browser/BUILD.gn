@@ -81,6 +81,7 @@ rust_static_library("child_process_security_policy_impl") {
   deps = [
     ":browser_id_types",
     "//base:feature",
+    "//base:file_path",
     "//base:unguessable_token",
     "//content/common:common_id_types",
     "//storage/common:storage_common_rust",
@@ -231,6 +232,7 @@ source_set("browser") {
     "//content/public/common:common_sources",
     "//content/public/common:content_descriptor_keys",
     "//content/public/common/zygote:buildflags",
+    "//content/services/devtools_media_encoding_service/public/mojom",
     "//crypto",
     "//device/base",
     "//device/bluetooth",
@@ -897,6 +899,8 @@ source_set("browser") {
     "devtools/protocol/io_handler.h",
     "devtools/protocol/log_handler.cc",
     "devtools/protocol/log_handler.h",
+    "devtools/protocol/media_recorder.cc",
+    "devtools/protocol/media_recorder.h",
     "devtools/protocol/memory_handler.cc",
     "devtools/protocol/memory_handler.h",
     "devtools/protocol/native_input_event_builder.h",
@@ -3414,10 +3418,7 @@ source_set("browser") {
         "speech/soda_speech_recognition_engine_impl.h",
       ]
 
-      deps += [
-        "//components/crash/content/browser/error_reporting",
-        "//media/mojo/mojom:web_speech_recognition",
-      ]
+      deps += [ "//media/mojo/mojom:web_speech_recognition" ]
     }
 
     deps += [
@@ -3433,6 +3434,10 @@ source_set("browser") {
       "//media/mojo/mojom:speech_recognition",
       "//ui/base",
     ]
+  }
+
+  if (!is_fuchsia) {
+    deps += [ "//components/crash/content/browser/error_reporting" ]
   }
 
   # For platforms that support extension service workers.

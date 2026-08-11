@@ -454,6 +454,7 @@
 <translation id="2422174748424038845">ਜੇ ਤੁਸੀਂ ਇਸ ਨੂੰ ਮਿਟਾਉਂਦੇ ਹੋ, ਤਾਂ ਹਰ ਕੋਈ "<ph name="GROUP_NAME" />" ਟੈਬ ਗਰੁੱਪ ਤੱਕ ਤੁਰੰਤ ਪਹੁੰਚ ਗੁਆ ਦੇਵੇਗਾ ਅਤੇ ਇਸ ਨੂੰ ਸਾਰੇ ਡੀਵਾਈਸਾਂ ਤੋਂ ਮਿਟਾ ਦਿੱਤਾ ਜਾਵੇਗਾ।</translation>
 <translation id="2424805048070062787">ਇਸ ਟੈਬ ਨਾਲ ਜਾਰੀ ਰੱਖੋ</translation>
 <translation id="2426805022920575512">ਕੋਈ ਹੋਰ ਖਾਤਾ ਚੁਣੋ</translation>
+<translation id="2428543302546523788">ਪੜ੍ਹਨ ਸੰਬੰਧੀ ਮੋਡ ਚਾਲੂ ਹੋਣ 'ਤੇ ਲਿੰਕ ਦਿਖਾਓ</translation>
 <translation id="243275146591958220">ਡਾਊਨਲੋਡ ਰੱਦ ਕਰੋ</translation>
 <translation id="2434405374328098816">ਤੁਸੀਂ ਪਹਿਲਾਂ ਹੀ "<ph name="USERNAME" />" ਲਈ <ph name="WEBSITE" /> 'ਤੇ ਪਾਸਵਰਡ ਰੱਖਿਅਤ ਕਰ ਲਿਆ ਹੈ</translation>
 <translation id="2434918313224755415">ਤੁਸੀਂ ਇਨਕੋਗਨਿਟੋ ਵਿੱਚ ਬ੍ਰਾਊਜ਼ ਕਰਨ ਲਈ ਖੱਬੇ ਪਾਸੇ ਵੱਲ ਸਕ੍ਰੋਲ ਕਰ ਸਕਦੇ ਹੋ।</translation>
@@ -468,6 +469,7 @@
 <translation id="2470654816840674524">ਮੇਰੇ ਵੱਲੋਂ Chrome ਵਿੱਚ Gemini ਨਾਲ ਕੀ ਕੀਤਾ ਜਾ ਸਕਦਾ ਹੈ?</translation>
 <translation id="2473876017985765807">ਤੁਸੀਂ ਪਹਿਲਾਂ ਹੀ <ph name="WEBSITE" /> ਲਈ ਪਾਸਵਰਡ ਰੱਖਿਅਤ ਕਰ ਲਿਆ ਹੈ</translation>
 <translation id="247430852844518481">ਤੁਸੀਂ ਇਸ ਪੰਨੇ 'ਤੇ ਬਾਅਦ ਵਿੱਚ ਦੁਬਾਰਾ ਜਾਣ ਲਈ ਰਿਮਾਈਂਡਰ ਸੈੱਟ ਕਰ ਸਕਦੇ ਹੋ</translation>
+<translation id="2476554421818031422">ਤੁਸੀਂ ਵਿਸਤ੍ਰਿਤ ਆਟੋਫਿਲ ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਵਿੱਚ ਮਦਦ ਕਰ ਰਹੇ ਹੋ</translation>
 <translation id="2479148705183875116">ਸੈਟਿੰਗਾਂ 'ਤੇ ਜਾਓ</translation>
 <translation id="2482878487686419369">ਸੂਚਨਾਵਾਂ</translation>
 <translation id="2484459871750294497">ਮੈਂ ਇਸ ਵਿਸ਼ੇਸ਼ਤਾ ਨੂੰ ਕਿਵੇਂ ਚਾਲੂ ਕਰਾਂ?</translation>
@@ -570,7 +572,6 @@
 <translation id="2816489851009559785">ਮੀਨੂ → ਸੈਟਿੰਗਾਂ → ਪੂਰਵ-ਨਿਰਧਾਰਿਤ ਬ੍ਰਾਊਜ਼ਰ</translation>
 <translation id="2818821771744632548">ਤੁਹਾਨੂੰ ਤੁਹਾਡੇ iPhone ਰੀਸੈੱਟ ਕਰਨ ਦੇ ਹਿੱਸੇ ਵਜੋਂ ਆਪਣੇ ਖਾਤੇ <ph name="USER_NAME" /> ਤੋਂ ਸਾਈਨ-ਆਊਟ ਕੀਤਾ ਗਿਆ ਸੀ। ਦੁਬਾਰਾ ਸਾਈਨ-ਇਨ ਕਰਨ ਲਈ, ਹੇਠਾਂ "ਜਾਰੀ ਰੱਖੋ" 'ਤੇ ਟੈਪ ਕਰੋ।</translation>
 <translation id="2819667972867209401">ਚਾਲੂ ਹੋਣ 'ਤੇ, ਡਾਟਾ ਤੁਹਾਡੇ Google ਖਾਤੇ ਵਿੱਚ ਰੱਖਿਅਤ ਕੀਤਾ ਜਾਂਦਾ ਹੈ। ਬੰਦ ਹੋਣ 'ਤੇ, ਡਾਟਾ ਸਿਰਫ਼ ਇਸ ਡੀਵਾਈਸ 'ਤੇ ਰੱਖਿਅਤ ਕੀਤਾ ਜਾਂਦਾ ਹੈ ਅਤੇ ਸਾਈਨ-ਆਊਟ ਕਰਨ 'ਤੇ ਮਿਟਾ ਦਿੱਤਾ ਜਾਂਦਾ ਹੈ।</translation>
-<translation id="2825777862277359739">ਆਪਣੇ ਪਾਸਵਰਡ, ਟੈਬਾਂ, ਬੁੱਕਮਾਰਕ ਅਤੇ ਹੋਰ ਬਹੁਤ ਕੁਝ ਪ੍ਰਾਪਤ ਕਰਨ ਲਈ ਸਾਈਨ-ਇਨ ਕਰੋ।</translation>
 <translation id="2827760117436553203">ਕੀ ਡਾਟੇ ਨੂੰ ਵੱਖ ਰੱਖਣਾ ਹੈ?</translation>
 <translation id="2829172210806130158">ਆਪਣੀ ਸਕ੍ਰੀਨ ਖੋਜੋ</translation>
 <translation id="2831109159746537587">ਖੋਜਣ ਲਈ ਤਸਵੀਰ 'ਤੇ ਚੱਕਰ ਲਗਾਓ ਜਾਂ ਉਸ 'ਤੇ ਟੈਪ ਕਰੋ</translation>
@@ -691,6 +692,7 @@
 <translation id="3259451381796379533">ਇਹ ਖਾਤਾ Gemini ਨਾਲ ਕੰਮ ਨਹੀਂ ਕਰੇਗਾ। ਕਿਸੇ ਵੱਖਰੇ Google ਖਾਤੇ ਨਾਲ ਸਾਈਨ-ਇਨ ਕਰੋ।</translation>
 <translation id="3265736395246760288">ਆਪਣੇ ਕਿਸੇ ਵੀ ਸਿੰਕ ਕੀਤੇ ਡੀਵਾਈਸ ਤੋਂ ਤੇਜ਼ੀ ਨਾਲ ਸਾਈਨ-ਇਨ ਕਰੋ।</translation>
 <translation id="3272527697863656322">ਰੱਦ ਕਰੋ</translation>
+<translation id="3272955648592358996">ਤੁਹਾਡਾ ਡਾਟਾ Google AI ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਂਦਾ ਹੈ</translation>
 <translation id="3273510436356991673">ਆਪਣੀ ਹੋਮ ਸਕ੍ਰੀਨ ਨੂੰ ਵਿਉਂਤਬੱਧ ਕਰੋ</translation>
 <translation id="3277021493514034324">ਸਾਈਟ ਦਾ ਪਤਾ ਕਾਪੀ ਕੀਤਾ ਗਿਆ</translation>
 <translation id="3280562213547448728">ਅਵਾਜ਼ੀ ਖੋਜ</translation>
@@ -717,7 +719,6 @@
 <translation id="3377063233124932127">ਹੁਣ ਤੁਹਾਡੇ ਰੱਖਿਅਤ ਕੀਤੇ ਬੁੱਕਮਾਰਕ, ਪਾਸਵਰਡ ਅਤੇ ਹੋਰ ਚੀਜ਼ਾਂ ਸਿਖਰ 'ਤੇ ਹਨ।</translation>
 <translation id="3378214228000661758">ਇਸ ਲਈ ਪਾਸਕੀ ਬਣਾਓ</translation>
 <translation id="3380352560400387991">ਇਹ ਸਾਈਟ ਕਿਸੇ ਐਪਲੀਕੇਸ਼ਨ ਨੂੰ ਖੋਲ੍ਹਣ ਦੀ ਕੋਸ਼ਿਸ਼ ਕਰ ਰਹੀ ਹੈ। ਇਹ ਤੁਹਾਨੂੰ ਇਨਕੋਗਨਿਟੋ ਤੋਂ ਬਾਹਰ ਲੈ ਜਾਵੇਗੀ।</translation>
-<translation id="3385742921291399323">ਆਪਣੇ ਰੱਖਿਅਤ ਕੀਤੇ ਪਾਸਵਰਡ, ਟੈਬਾਂ, ਬੁੱਕਮਾਰਕ ਅਤੇ ਹੋਰ ਬਹੁਤ ਕੁਝ ਪ੍ਰਾਪਤ ਕਰੋ।</translation>
 <translation id="3391765987934722383">ਕੀਮਤ ਘਟਣ ਨੂੰ ਨਾ ਖੁੰਝਾਓ</translation>
 <translation id="3392923070107623576">ਟੈਬ ਗਰੁੱਪ ਨੂੰ ਬਣਾ ਕੇ ਵਿਵਸਥਿਤ ਰਹੋ</translation>
 <translation id="3404232721752787413">Google Photos ਵਿੱਚ ਰੱਖਿਅਤ ਕਰੋ</translation>
@@ -725,6 +726,7 @@
 <translation id="340669334496430859">ਪਿਛਲੀ ਵਾਰ ਸੋਧਣ ਦਾ ਸਮਾਂ</translation>
 <translation id="3409785640040772790">Maps</translation>
 <translation id="3416023309465857378">25 ਅਕਤੂਬਰ 2023</translation>
+<translation id="3419787211763835342">ਵਿਸਤ੍ਰਿਤ ਆਟੋਫਿਲ ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਵਿੱਚ ਮਦਦ ਕਰੋ</translation>
 <translation id="3426715535827854458">'ਟੂਲਬਾਰ ਲੁਕਾਓ' ਨੂੰ ਲੁਕਾਓ</translation>
 <translation id="3435738964857648380">ਸੁਰੱਖਿਆ</translation>
 <translation id="3441673211568148613">ਆਪਣੀ ਬ੍ਰਾਊਜ਼ਿੰਗ ਨੂੰ ਨਿੱਜੀ ਰੱਖੋ</translation>
@@ -858,6 +860,7 @@
 <translation id="3888863481921783344">ਇਸਦੀ ਵਰਤੋਂ ਤੁਹਾਨੂੰ ਤੁਹਾਡੇ ਇਵੈਂਟ ਲਈ ਸੰਭਾਵਿਤ ਨਿਮੰਤਰਿਤ ਵਿਅਕਤੀ ਦਿਖਾਉਣ ਲਈ ਕੀਤੀ ਜਾਵੇਗੀ।</translation>
 <translation id="3891414008432200754">ਕੀਮਤ</translation>
 <translation id="3892144330757387737">ਤੁਹਾਨੂੰ ਆਪਣਾ ਇਤਿਹਾਸ ਇੱਥੇ ਮਿਲੇਗਾ</translation>
+<translation id="3892695492576181257">ਇਸਦੇ ਚਾਲੂ ਹੋਣ 'ਤੇ, ਤੁਹਾਡੀ ਸਰਗਰਮੀ Gemini ਐਪਾਂ ਸੰਬੰਧੀ ਸਰਗਰਮੀ ਵਿੱਚ 18 ਮਹੀਨਿਆਂ ਲਈ ਰੱਖਿਅਤ ਕੀਤੀ ਜਾਂਦੀ ਹੈ, ਜਿਸ ਨੂੰ ਤੁਸੀਂ ਬਦਲ ਕੇ 3 ਜਾਂ 36 ਮਹੀਨਿਆਂ ਲਈ ਵੀ ਕਰ ਸਕਦੇ ਹੋ। Google ਆਪਣੀਆਂ ਸੇਵਾਵਾਂ (Gemini ਮਾਡਲਾਂ ਸਮੇਤ) ਦਾ ਵਿਕਾਸ ਕਰਨ ਅਤੇ ਉਨ੍ਹਾਂ ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਦੇ ਨਾਲ-ਨਾਲ ਮਨੁੱਖੀ ਸਮੀਖਿਅਕਾਂ ਦੀ ਮਦਦ ਨਾਲ Google, ਆਪਣੇ ਵਰਤੋਂਕਾਰਾਂ ਅਤੇ ਜਨਤਾ ਦੀ ਸੁਰੱਖਿਆ ਲਈ ਤੁਹਾਡੀ ਸਰਗਰਮੀ ਦੀ ਵਰਤੋਂ ਕਰਦਾ ਹੈ। ਸੇਵਾ ਪ੍ਰਦਾਨਕਾਂ ਵੱਲੋਂ ਸਮੀਖਿਆ ਕੀਤਾ ਗਿਆ ਡਾਟਾ ਤੁਹਾਡੇ ਖਾਤੇ ਤੋਂ ਡਿਸਕਨੈਕਟ ਕੀਤਾ ਜਾਂਦਾ ਹੈ ਅਤੇ 3 ਸਾਲਾਂ ਲਈ ਰੱਖਿਅਤ ਕੀਤਾ ਜਾਂਦਾ ਹੈ।</translation>
 <translation id="3893858854379998374">ਆਪਣੇ ਖਾਤੇ ਵਿੱਚ ਬੁੱਕਮਾਰਕਾਂ ਨੂੰ ਰੱਖਿਅਤ ਕਰਨ ਲਈ, ਆਪਣੇ ਅਣਵਰਤੇ ਬੁੱਕਮਾਰਕਾਂ ਨੂੰ ਮਿਟਾਓ</translation>
 <translation id="3897092660631435901">ਮੀਨੂ</translation>
 <translation id="3904270275864974753">ਕੈਰੋਸਲ ਦਾ ਸੰਪਾਦਨ ਕਰੋ</translation>
@@ -1008,6 +1011,7 @@
 <translation id="4378154925671717803">ਫ਼ੋਨ</translation>
 <translation id="4380677808580146413">ਚੁਣੋ</translation>
 <translation id="4389019817280890563">ਭਾਸ਼ਾ ਬਦਲਣ ਲਈ ਟੈਪ ਕਰੋ।</translation>
+<translation id="4390649422783033958"><ph name="USER_NAME" /> ਵਜੋਂ ਸਾਈਨ-ਇਨ ਕੀਤਾ ਗਿਆ। <ph name="USER_EMAIL" />, Google ਮੈਂਬਰਸ਼ਿਪ। ਖਾਤਾ ਮੀਨੂ ਖੋਲ੍ਹੋ।</translation>
 <translation id="4393294364304621138">{COUNT,plural, =1{1 ਦਿਨ ਬਾਅਦ}one{{COUNT} ਦਿਨ ਬਾਅਦ}other{{COUNT} ਦਿਨਾਂ ਬਾਅਦ}}</translation>
 <translation id="4402672425188312225">{COUNT,plural, =1{1 ਟੈਬ}one{# ਟੈਬ}other{# ਟੈਬਾਂ}}</translation>
 <translation id="4404790787924017676">ਤੁਹਾਡੇ ਵੱਲੋਂ ਟਰੈਕ ਕੀਤੇ ਜਾਣ ਵਾਲੇ ਉਤਪਾਦਾਂ ਲਈ ਕੀਮਤਾਂ ਘਟਣ ਸੰਬੰਧੀ ਅਲਰਟ ਪ੍ਰਾਪਤ ਕਰੋ</translation>
@@ -1246,7 +1250,6 @@
 <translation id="5148717509369231739">Safari ਆਯਾਤ</translation>
 <translation id="5152483358138813104">ਆਪਣੇ ਡੀਵਾਈਸਾਂ 'ਤੇ ਤੇਜ਼ੀ ਨਾਲ ਸਾਈਨ-ਇਨ ਕਰੋ</translation>
 <translation id="515315847398512535">ਤੁਹਾਡੇ ਖਾਤੇ ਲਈ ਖੋਜ ਸਕ੍ਰੀਨ ਬੰਦ ਹੈ। ਹੋਰ ਜਾਣਕਾਰੀ ਲਈ ਆਪਣੇ ਪ੍ਰਸ਼ਾਸਕ ਨਾਲ ਸੰਪਰਕ ਕਰੋ।</translation>
-<translation id="5155502059906700593">ਆਪਣੇ ਪਤਾ ਬਾਰ ਦੀ ਸਥਿਤੀ ਨੂੰ ਸਭ ਤੋਂ ਹੇਠਾਂ ਤੋਂ ਉੱਪਰ ਵੱਲ ਬਦਲੋ।</translation>
 <translation id="5157638238828697074">ਕੋਈ ਗੜਬੜ ਹੋ ਗਈ। ਐਪਲੀਕੇਸ਼ਨ ਨੂੰ ਖੋਲ੍ਹਿਆ ਨਹੀਂ ਜਾ ਸਕਿਆ।</translation>
 <translation id="5163417375525818870">PDF</translation>
 <translation id="5168414296986405587">iPadOS ਲਈ ਬਣਾਇਆ ਗਿਆ</translation>
@@ -1365,6 +1368,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="5559567453458728487">ਵੈੱਬ 'ਤੇ ਮਿਲੀਆਂ ਮਾਪ ਇਕਾਈਆਂ ਨੂੰ ਰੂਪਾਂਤਰਿਤ ਕਰੋ</translation>
 <translation id="5560088892362098740">ਮਿਆਦ ਸਮਾਪਤੀ ਦੀ ਮਿਤੀ</translation>
 <translation id="556042886152191864">ਬਟਨ</translation>
+<translation id="5563910365456880646">"Google Lens ਨਾਲ ਖੋਜਣ ਲਈ ਫ਼ੋਟੋ ਦੀ ਵਰਤੋਂ ਕਰੋ" ਨੂੰ ਪੂਰਾ ਕਰਨ ਤੋਂ ਬਾਅਦ</translation>
 <translation id="5565871407246142825">ਕ੍ਰੈਡਿਟ ਕਾਰਡ</translation>
 <translation id="5567439033041178034">ਹੋਰ ਜਾਣੋ</translation>
 <translation id="5578795271662203820">ਇਸ ਚਿੱਤਰ ਲਈ <ph name="SEARCH_ENGINE" /> ਖੋਜੋ</translation>
@@ -1492,6 +1496,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="5971459446352190251">QR ਕੋਡ ਖੋਜੋ</translation>
 <translation id="5971872012779224351">{count,plural, =1{1 ਬੁੱਕਮਾਰਕ ਮਿਟਾਇਆ ਗਿਆ}one{{count} ਬੁੱਕਮਾਰਕ ਮਿਟਾਇਆ ਗਿਆ}other{{count} ਬੁੱਕਮਾਰਕ ਮਿਟਾਏ ਗਏ}}</translation>
 <translation id="5972844218283131174">ਸਾਰਿਆਂ ਨੂੰ ਅਣ-ਚੁਣਿਆ ਕਰੋ</translation>
+<translation id="597482816780655631">Gemini ਇੱਕ AI ਹੈ ਅਤੇ ਇਹ ਗਲਤੀਆਂ ਕਰ ਸਕਦਾ ਹੈ, ਜਿਸ ਵਿੱਚ ਲੋਕਾਂ ਬਾਰੇ ਜਾਣਕਾਰੀ ਵੀ ਸ਼ਾਮਲ ਹੈ। ਹੋ ਸਕਦਾ ਹੈ ਕਿ ਕੁਝ ਸਮੱਗਰੀ ਹਰੇਕ ਲਈ ਢੁਕਵੀਂ ਨਾ ਹੋਵੇ। ਚੈਟਾਂ ਦੀ ਸਮੀਖਿਆ ਕੀਤੀ ਜਾਂਦੀ ਹੈ ਅਤੇ ਇਨ੍ਹਾਂ ਦੀ ਵਰਤੋਂ Google AI ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਲਈ ਕੀਤੀ ਜਾਂਦੀ ਹੈ। <ph name="BEGIN_LINK" />ਆਪਣੇ ਵਿਕਲਪਾਂ ਬਾਰੇ ਜਾਣੋ।<ph name="END_LINK" /> ਸਾਡੇ <ph name="BEGIN_LINK" />ਨਿਯਮ<ph name="END_LINK" /> ਅਤੇ <ph name="BEGIN_LINK" />ਪਰਦੇਦਾਰੀ ਨੋਟਿਸ<ph name="END_LINK" /> ਲਾਗੂ ਹੁੰਦੇ ਹਨ।</translation>
 <translation id="5976160379964388480">ਹੋਰ</translation>
 <translation id="5977976211062815271">ਇਸ ਡੀਵਾਈਸ 'ਤੇ</translation>
 <translation id="5986043348928676121">ਅੱਗੇ</translation>
@@ -1564,7 +1569,6 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="6193448654517602979">ਟੈਬਾਂ ਚੁਣੋ</translation>
 <translation id="6196207969502475924">ਅਵਾਜ਼ੀ ਖੋਜ</translation>
 <translation id="6198252989419008588">PIN ਬਦਲੋ</translation>
-<translation id="6199783146233591178">ਵਿਸਤ੍ਰਿਤ ਸੁਰੱਖਿਅਤ ਬ੍ਰਾਊਜ਼ਿੰਗ ਨਾਲ ਅਸਲ-ਸਮੇਂ ਦੀ ਸੁਰੱਖਿਆ ਪ੍ਰਾਪਤ ਕਰੋ</translation>
 <translation id="6210079381482819663"><ph name="THRESHOLD" /> ਜਾਂ ਇਸ ਤੋਂ ਵੱਧ ਦਿਨਾਂ ਤੱਕ ਨਾ ਵਰਤੀਆਂ ਗਈਆਂ ਟੈਬਾਂ ਨੂੰ ਇੱਥੇ ਲਿਜਾਇਆ ਜਾਂਦਾ ਹੈ। ਤੁਸੀਂ ਕਿਸੇ ਵੇਲੇ ਵੀ <ph name="BEGIN_LINK" />ਸੈਟਿੰਗਾਂ<ph name="END_LINK" /> ਵਿੱਚ ਜਾ ਕੇ ਇਸਨੂੰ ਬਦਲ ਸਕਦੇ ਹੋ।</translation>
 <translation id="6213281885682386884">ਕੋਈ ਪਤਾ ਨਹੀਂ ਮਿਲਿਆ</translation>
 <translation id="6218508144653756827">ਫਿਊਸ਼ਾ ਥੀਮ</translation>
@@ -1715,7 +1719,6 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="6626281667717553020">CPS URI</translation>
 <translation id="6627583120233659107">ਫੋਲਡਰ ਸੰਪਾਦਿਤ ਕਰੋ</translation>
 <translation id="6629759408545977279">ਵੱਲੋਂ: <ph name="ORIGINATING_HOST" /></translation>
-<translation id="66306952800092318">ਆਨਲਾਈਨ ਖਤਰਿਆਂ ਤੋਂ ਬਚਣ ਲਈ ਸੁਰੱਖਿਆ ਦੀ ਇੱਕ ਵਾਧੂ ਲੇਅਰ ਸ਼ਾਮਲ ਕਰੋ।</translation>
 <translation id="6634432609054530164">ਤੁਹਾਡੀ ਸੰਸਥਾ ਨੇ ਇਨਕੋਗਨਿਟੋ ਮੋਡ ਨੂੰ ਬੰਦ ਕਰ ਦਿੱਤਾ ਹੈ</translation>
 <translation id="6637478299472506933">ਡਾਊਨਲੋਡ ਅਸਫਲ</translation>
 <translation id="6638511529934826365">ਲਿਖਤ ਨੂੰ ਜ਼ੂਮ ਕਰੋ…</translation>
@@ -1815,6 +1818,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="6930162026494574854">ਅਨੁਵਾਦ ਸੈਟਿੰਗਾਂ ਰੀਸੈੱਟ ਕਰੋ</translation>
 <translation id="6930799952781667037">ਇਸ ਭਾਸ਼ਾ ਨੂੰ ਬਦਲਣ ਲਈ ਟੈਪ ਕਰੋ।</translation>
 <translation id="6932739965694346873"><ph name="USER_NAME" />, <ph name="EMAIL" />। <ph name="MANAGED_STATUS" />।</translation>
+<translation id="6937083164784433305">{count,plural, =1{ਤੁਸੀਂ ਖੋਜਣ ਲਈ 1 ਫ਼ੋਟੋ ਦੀ ਵਰਤੋਂ ਕੀਤੀ}one{ਤੁਸੀਂ ਖੋਜਣ ਲਈ # ਫ਼ੋਟੋ ਦੀ ਵਰਤੋਂ ਕੀਤੀ}other{ਤੁਸੀਂ ਖੋਜਣ ਲਈ # ਫ਼ੋਟੋਆਂ ਦੀ ਵਰਤੋਂ ਕੀਤੀ}}</translation>
 <translation id="693761253105515415">ਕੋਈ ਪਾਸਕੋਡ ਸੈੱਟ ਕਰੋ</translation>
 <translation id="6945221475159498467">ਚੁਣੋ</translation>
 <translation id="6946722113367118030">ਸੋਚਣਾ</translation>
@@ -1859,6 +1863,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="7102005569666697658">ਡਾਊਨਲੋਡ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ… <ph name="FILE_SIZE" /></translation>
 <translation id="7104701424653979232">ਮੀਨੂ → ਸੈਟਿੰਗਾਂ → ਭੁਗਤਾਨ ਵਿਧੀਆਂ</translation>
 <translation id="7108338896283013870">ਲੁਕਾਓ</translation>
+<translation id="7119533351103192286">Gemini ਦੀ ਵਰਤੋਂ ਕਰੋ</translation>
 <translation id="7127922377013221748">ਟੂਲਬਾਰ ਲੁਕਾਓ</translation>
 <translation id="7128693485119315539">ਤੁਹਾਡੀ ਸੰਸਥਾ ਨੂੰ ਤੁਹਾਡੇ ਪ੍ਰਬੰਧਿਤ ਕੀਤੇ ਖਾਤੇ ਨਾਲ ਸੰਬੰਧਿਤ ਬ੍ਰਾਊਜ਼ਿੰਗ ਡਾਟੇ ਨੂੰ ਦੇਖਣ ਅਤੇ ਉਸਦਾ ਪ੍ਰਬੰਧਨ ਕਰਨ ਦੀ ਲੋੜ ਹੋ ਸਕਦੀ ਹੈ, ਜਿਵੇਂ ਕਿ ਤੁਹਾਡਾ ਬ੍ਰਾਊਜ਼ਿੰਗ ਇਤਿਹਾਸ ਅਤੇ ਪਾਸਵਰਡ।</translation>
 <translation id="713215255510512027"><ph name="FILENAME" /> (<ph name="FILESIZE" />)</translation>
@@ -2020,6 +2025,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="7662316065255305764">ਸਾਈਟ ਜਾਣਕਾਰੀ</translation>
 <translation id="7665369617277396874">ਖਾਤਾ ਸ਼ਾਮਲ ਕਰੋ</translation>
 <translation id="7666861622396822790">ਤੁਸੀਂ <ph name="BEGIN_LINK" />ਸਮੱਗਰੀ ਸੈਟਿੰਗਾਂ<ph name="END_LINK" /> ਵਿੱਚ ਜਾ ਕੇ ਇਸਦਾ ਪ੍ਰਬੰਧਨ ਕਰ ਸਕਦੇ ਹੋ।</translation>
+<translation id="7669448795744969014"><ph name="USER_EMAIL" /> ਵਜੋਂ ਸਾਈਨ-ਇਨ ਹਨ, Google ਮੈਂਬਰਸ਼ਿਪ। ਖਾਤਾ ਮੀਨੂ ਖੋਲ੍ਹੋ।</translation>
 <translation id="7669493687462784703">ਕੀ <ph name="WEBSITE" /> ਤੋਂ ਸੰਰੂਪਣ ਪ੍ਰੋਫਾਈਲ ਨੂੰ ਡਾਊਨਲੋਡ ਕਰਨਾ ਜਾਰੀ ਰੱਖਣਾ ਹੈ?</translation>
 <translation id="7673346542062368520">ਤੁਸੀਂ ਇਨਕੋਗਨਿਟੋ ਵਿੱਚ ਬ੍ਰਾਊਜ਼ ਕਰਨ ਲਈ ਖੱਬੇ ਸਵਾਈਪ ਕਰ ਸਕਦੇ ਹੋ।</translation>
 <translation id="7679915578945954324">ਸਾਈਟ ਦੇ ਪਤੇ ਕਾਪੀ ਕੀਤੇ ਗਏ</translation>
@@ -2063,6 +2069,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="78146569776629510">ਡਾਊਨਲੋਡ</translation>
 <translation id="7815852444315004084">ਫ਼ਿਲਹਾਲ ਲੁਕਾਓ</translation>
 <translation id="7825973332242257878">ਟੈਬ ਗਰੁੱਪ</translation>
+<translation id="7828344837949522075">ਸੁਝਾਅ ਦਿਖਾਓ</translation>
 <translation id="7839994177130598711">ਤੁਹਾਡੇ ਪਰਿਵਾਰਕ ਮੈਂਬਰਾਂ ਵੱਲੋਂ ਹੁਣ <ph name="BEGIN_BOLD" /><ph name="WEBSITE" /><ph name="END_BOLD" /> ਵਿੱਚ ਸਾਈਨ-ਇਨ ਕਰਨ ਲਈ Google Password Manager ਦੀ ਵਰਤੋਂ ਕਰਨ 'ਤੇ ਤੁਹਾਡੇ ਵਰਤੋਂਕਾਰ ਨਾਮ ਅਤੇ ਪਾਸਵਰਡ ਦੀ ਵਰਤੋਂ ਕੀਤੀ ਜਾ ਸਕਦੀ ਹੈ।</translation>
 <translation id="7841180087127694526">ਕਾਪੀ ਕੀਤੀ ਲਿਖਤ ਖੋਜੋ</translation>
 <translation id="7841418003178675048">ਚੁਣੋ ਕਿ ਤੁਸੀਂ ਆਪਣੇ ਨਵੇਂ ਟੈਬ ਪੰਨੇ 'ਤੇ ਕਿਹੜੇ ਕਾਰਡ ਦੇਖਣੇ ਹਨ।</translation>
@@ -2383,6 +2390,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="8796634520835503150">ਪੜ੍ਹਨ ਸੰਬੰਧੀ ਮੋਡ ਉਪਲਬਧ ਹੈ</translation>
 <translation id="8803526663383843427">ਚਾਲੂ ਹੋਣ 'ਤੇ</translation>
 <translation id="8803639129939845298">ਸੁਰੱਖਿਅਤ</translation>
+<translation id="8809212245338455710"><ph name="AI_TIER_NAME" /> ਮੈਂਬਰਸ਼ਿਪ</translation>
 <translation id="8813277370772331957">ਮੈਨੂੰ ਬਾਅਦ ਵਿੱਚ ਯਾਦ ਕਰਵਾਓ</translation>
 <translation id="8814308045751067027">ਲਾਈਵ ਦੀ ਵਰਤੋਂ ਕਰਨ ਲਈ, ਸੈਟਿੰਗਾਂ ਵਿੱਚ ਜਾ ਕੇ Chrome ਨੂੰ ਆਪਣੇ ਮਾਈਕ੍ਰੋਫ਼ੋਨ ਤੱਕ ਪਹੁੰਚ ਦਿਓ</translation>
 <translation id="8814719628147284151">ਜਾਰੀ ਰੱਖੋ</translation>
@@ -2394,6 +2402,7 @@ Handoff ਨੂੰ ਵੀ ਸੈਟਿੰਗਾਂ ਦੇ 'ਆਮ' ਸੈਕਸ਼�
 <translation id="882557203579758546">ਪੰਨੇ ਵਿੱਚ ਲੱਭੋ…</translation>
 <translation id="8829809207373502270">ਇਹ ਪਾਸਕੀ ਹੁਣ ਕੰਮ ਨਹੀਂ ਕਰਦੀ। ਇਸਨੂੰ <ph name="WEBSITE" /> ਤੋਂ ਮਿਟਾ ਦਿੱਤਾ ਗਿਆ ਸੀ ਅਤੇ ਜਲਦ ਹੀ ਇਸਨੂੰ ਇੱਥੋਂ ਵੀ ਮਿਟਾ ਦਿੱਤਾ ਜਾਵੇਗਾ। <ph name="BEGIN_LINK" />ਪਾਸਕੀਆਂ ਬਾਰੇ<ph name="END_LINK" /></translation>
 <translation id="8831208860914609320">ਸਾਰੀਆਂ ਅਕਿਰਿਆਸ਼ੀਲ ਟੈਬਾਂ ਨੂੰ ਬੰਦ ਕਰੋ</translation>
+<translation id="8831871601813227635">ਸਾਡੇ <ph name="BEGIN_LINK" />ਨਿਯਮ<ph name="END_LINK" />, <ph name="BEGIN_LINK" />ਕੋਰੀਆਈ ਟਿਕਾਣੇ ਸੰਬੰਧੀ ਨਿਯਮ<ph name="END_LINK" /> ਅਤੇ <ph name="BEGIN_LINK" />ਪਰਦੇਦਾਰੀ ਨੋਟਿਸ<ph name="END_LINK" /> ਲਾਗੂ ਹੁੰਦੇ ਹਨ। ਚੈਟਾਂ ਦੀ ਸਮੀਖਿਆ ਕੀਤੀ ਜਾਂਦੀ ਹੈ ਅਤੇ ਇਨ੍ਹਾਂ ਦੀ ਵਰਤੋਂ Google AI ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਲਈ ਕੀਤੀ ਜਾਂਦੀ ਹੈ। Gemini ਇੱਕ AI ਹੈ ਅਤੇ ਇਹ ਗਲਤੀਆਂ ਕਰ ਸਕਦਾ ਹੈ, ਜਿਸ ਵਿੱਚ ਲੋਕਾਂ ਬਾਰੇ ਜਾਣਕਾਰੀ ਵੀ ਸ਼ਾਮਲ ਹੈ। ਹੋ ਸਕਦਾ ਹੈ ਕਿ ਕੁਝ ਸਮੱਗਰੀ ਹਰੇਕ ਲਈ ਢੁਕਵੀਂ ਨਾ ਹੋਵੇ। ਤੁਸੀਂ ਆਪਣੇ ਟਿਕਾਣੇ ਬਾਰੇ ਜਾਣਕਾਰੀ ਸਮੇਤ <ph name="BEGIN_LINK" />ਆਪਣੀ ਸਰਗਰਮੀ ਦਾ ਪ੍ਰਬੰਧਨ<ph name="END_LINK" /> ਕਰ ਸਕਦੇ ਹੋ। <ph name="BEGIN_LINK" />ਆਪਣੀਆਂ ਚੋਣਾਂ ਬਾਰੇ ਹੋਰ ਜਾਣੋ<ph name="END_LINK" /></translation>
 <translation id="8837654851594567190">ਪ੍ਰਕਾਸ਼ਕ ਮੁਤਾਬਕ ਕ੍ਰਮ-ਬੱਧ ਕਰੋ</translation>
 <translation id="884351711508006491">ਤੁਹਾਡੀ ਜਾਣਕਾਰੀ ਤੁਹਾਡੇ ਡੀਵਾਈਸ 'ਤੇ ਰੱਖਿਅਤ ਕੀਤੀ ਜਾਂਦੀ ਹੈ।</translation>
 <translation id="8844136307393039959">ਤੁਹਾਡੇ ਟਰੈਕ ਕੀਤੇ ਉਤਪਾਦ ਦੀ ਕੀਮਤ ਘਟੀ ਹੈ</translation>

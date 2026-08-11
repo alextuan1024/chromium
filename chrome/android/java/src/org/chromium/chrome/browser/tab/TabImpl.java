@@ -65,7 +65,6 @@ import org.chromium.chrome.browser.compositor.CompositorViewHolderSupplier;
 import org.chromium.chrome.browser.content.ContentUtils;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.desktop_site.DesktopSiteUtils;
-import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.native_page.NativePageAssassin;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
@@ -327,6 +326,7 @@ class TabImpl implements Tab, TabInternal {
     private @Nullable Token mTabGroupId;
     private boolean mTabHasSensitiveContent;
     private boolean mIsPinned;
+    private @Nullable @TabAlert Integer mAlertState;
     private @MediaState int mMediaState;
     private @TabUserAgent int mUserAgent = TabUserAgent.DEFAULT;
 
@@ -1006,7 +1006,7 @@ class TabImpl implements Tab, TabInternal {
     @CalledByNative
     @Override
     public boolean loadIfNeeded(boolean forceBackingSize) {
-        if (getActivity(/* withLogs= */ true) == null) {
+        if (getActivityForLoadLogs() == null) {
             Log.e(
                     TAG,
                     "Tab couldn't be loaded because getActivity() was null. mIsArchived: %b,"
@@ -1170,9 +1170,11 @@ class TabImpl implements Tab, TabInternal {
         var webContents = getWebContents();
         if (webContents == null) return;
 
-        if (mIsHidden) {
+        boolean isOffscreenRendering = mIsOffscreenRenderingSupplier.get();
+        if (mIsHidden && !isOffscreenRendering) {
             webContents.updateWebContentsVisibility(Visibility.HIDDEN);
         } else if (!mIsDetachedFromActivity
+                && !isOffscreenRendering
                 && assumeNonNull(mWindowAndroid).getOcclusionSupplier().get()) {
             // If we are not attached to a window, occlusion does not make sense.
             webContents.updateWebContentsVisibility(Visibility.OCCLUDED);
@@ -1183,11 +1185,22 @@ class TabImpl implements Tab, TabInternal {
 
     @Override
     public void show(@TabSelectionType int type) {
-        // Batch service binding updates for the tab including the subframes. TabImpl.show() is
-        // triggered not only on tab switch, but also when the window is shown.
         try (ScopedServiceBindingBatch scope = ScopedServiceBindingBatch.scoped()) {
+
             TraceEvent.begin("Tab.show");
-            if (!isHidden()) return;
+            if (!isHidden()) {
+                var wc = getWebContents();
+                if (wc == null) {
+                    Log.i(TAG, "TabImpl.show early return: WebContents is null.");
+                } else {
+                    Log.i(
+                            TAG,
+                            "TabImpl.show early return: WebContents visibility=%d",
+                            wc.getVisibility());
+                }
+                return;
+            }
+
             // Keep unsetting mIsHidden above loadIfNeeded(), so that we pass correct visibility
             // when spawning WebContents in loadIfNeeded().
             mIsHidden = false;
@@ -1362,17 +1375,14 @@ class TabImpl implements Tab, TabInternal {
      * WARNING: This method is deprecated. Consider other ways such as passing the dependencies to
      * the constructor, rather than accessing ChromeActivity from Tab and using getters.
      *
-     * @param withLogs Whether to log the activity state.
      * @return {@link ChromeActivity} that currently contains this {@link Tab} in its {@link
      *     TabModel}.
      */
     @Deprecated
-    @Nullable ChromeActivity getActivity(boolean withLogs) {
+    private @Nullable ChromeActivity getActivityForLoadLogs() {
         WindowAndroid windowAndroid = getWindowAndroid();
         if (windowAndroid == null) {
-            if (withLogs) {
-                Log.e(TAG, "WindowAndroid is null when requesting activity.");
-            }
+            Log.e(TAG, "WindowAndroid is null when requesting activity.");
             return null;
         }
         WeakReference<Context> contextRef = windowAndroid.getContext();
@@ -1381,44 +1391,30 @@ class TabImpl implements Tab, TabInternal {
         if (activity instanceof ChromeActivity chromeActivity) {
             return chromeActivity;
         }
-        if (withLogs) {
-            if (contextRef == null) {
-                Log.e(
-                        TAG,
-                        "Context weak reference in WindowAndroid is null when requesting"
-                                + " activity.");
-            } else if (context == null) {
-                Log.e(
-                        TAG,
-                        "Context weak reference target in WindowAndroid is null when requesting"
-                                + " activity (host Activity was destroyed / GC'd).");
-            } else if (activity == null) {
-                Log.e(
-                        TAG,
-                        "Context is not an Activity when requesting activity (e.g."
-                                + " ApplicationContext or detached tab). Context class: %s",
-                        context.getClass().getName());
-            } else {
-                Log.e(
-                        TAG,
-                        "Activity is not a ChromeActivity when requesting activity. Activity"
-                                + " class: %s",
-                        activity.getClass().getName());
-            }
+        if (contextRef == null) {
+            Log.e(
+                    TAG,
+                    "Context weak reference in WindowAndroid is null when requesting"
+                            + " activity.");
+        } else if (context == null) {
+            Log.e(
+                    TAG,
+                    "Context weak reference target in WindowAndroid is null when requesting"
+                            + " activity (host Activity was destroyed / GC'd).");
+        } else if (activity == null) {
+            Log.e(
+                    TAG,
+                    "Context is not an Activity when requesting activity (e.g."
+                            + " ApplicationContext or detached tab). Context class: %s",
+                    context.getClass().getName());
+        } else {
+            Log.e(
+                    TAG,
+                    "Activity is not a ChromeActivity when requesting activity. Activity"
+                            + " class: %s",
+                    activity.getClass().getName());
         }
         return null;
-    }
-
-    /**
-     * WARNING: This method is deprecated. Consider other ways such as passing the dependencies to
-     * the constructor, rather than accessing ChromeActivity from Tab and using getters.
-     *
-     * @return {@link ChromeActivity} that currently contains this {@link Tab} in its {@link
-     *     TabModel}.
-     */
-    @Deprecated
-    @Nullable ChromeActivity getActivity() {
-        return getActivity(/* withLogs= */ false);
     }
 
     /**
@@ -1535,7 +1531,7 @@ class TabImpl implements Tab, TabInternal {
         RevenueStats.getInstance().tabCreated(this);
 
         boolean needsInitWebContents = true;
-        boolean createWebContents = webContents == null;
+        boolean createWebContents = webContents == null && !mIsArchived;
         // Headless and archived tabs will never load and thus don't need a WebContents. The reason
         // all tabs need a WebContents is when used in C++ via BrowserWindowInterface. Since
         // headless and archived tabs are not associated with a window they can avoid initializing
@@ -1922,7 +1918,9 @@ class TabImpl implements Tab, TabInternal {
         String host = url.getHost();
         if (!UrlConstants.SETTINGS_HOST.equals(host)) return false;
 
-        if (SettingsInTab.isEnabled()) return false;
+        // For incognito we fall through to startSettings(), which will redirect to the original
+        // profile's window, similar to Win/Mac/Linux.
+        if (SettingsInTab.isEnabled() && !isIncognito()) return false;
 
         // TODO(crbug.com/456164910): Use the URL path to open deeplinks into Settings.
         SettingsNavigationFactory.createSettingsNavigation().startSettings(getContext());
@@ -2689,26 +2687,17 @@ class TabImpl implements Tab, TabInternal {
     @CalledByNative
     @Override
     public boolean isCustomTab() {
-        ChromeActivity activity = getActivity();
-        return activity != null && activity.isCustomTab();
+        return mDelegateFactory != null && mDelegateFactory.isCustomTab();
     }
 
     @Override
     public boolean isTabInPWA() {
-        // TODO(crbug.com/417720713): replace deprecated getActivity with something else.
-        ChromeActivity activity = getActivity();
-        if (activity == null) return false;
-        @ActivityType int activityType = activity.getActivityType();
-        return activityType == ActivityType.WEB_APK
-                || activityType == ActivityType.TRUSTED_WEB_ACTIVITY;
+        return mDelegateFactory != null && mDelegateFactory.isTabInPwa();
     }
 
     @Override
     public boolean isTabInBrowser() {
-        // TODO(crbug.com/417720713): replace deprecated getActivity with something else.
-        ChromeActivity activity = getActivity();
-        if (activity == null) return false;
-        return activity.getActivityType() == ActivityType.TABBED;
+        return mDelegateFactory != null && mDelegateFactory.isTabInBrowser();
     }
 
     @Override
@@ -3065,8 +3054,17 @@ class TabImpl implements Tab, TabInternal {
 
     @Override
     public @Nullable @TabAlert Integer getAlertState() {
-        if (mNativeTabAndroid == 0) return null;
-        return TabImplJni.get().getAlertState(mNativeTabAndroid);
+        return mAlertState;
+    }
+
+    @CalledByNative
+    public void onAlertStateChanged(
+            @JniType("std::optional<int32_t>") @Nullable @TabAlert Integer alertState) {
+        if (Objects.equals(mAlertState, alertState)) return;
+        mAlertState = alertState;
+        for (TabObserver observer : mObservers) {
+            observer.onAlertStateChanged(this, alertState);
+        }
     }
 
     @Override
@@ -3159,6 +3157,7 @@ class TabImpl implements Tab, TabInternal {
         assert !mIsOffscreenRenderingSupplier.get();
         assert mWebContents != null : "WebContents must exist to start offscreen rendering";
         mIsOffscreenRenderingSupplier.set(true);
+        updateWebContentsVisibility();
     }
 
     @Override
@@ -3172,6 +3171,7 @@ class TabImpl implements Tab, TabInternal {
                             ? mWindowAndroid
                             : null;
             mWebContents.setTopLevelNativeWindow(window);
+            updateWebContentsVisibility();
         }
     }
 
@@ -3283,11 +3283,6 @@ class TabImpl implements Tab, TabInternal {
         void initializeAutofillIfNecessary(long nativeTabAndroid);
 
         void getMemoryUsageBytes(long nativeTabAndroid, Callback<Long> callback);
-
-        @JniType("std::optional<int>")
-        @Nullable
-        @TabAlert
-        Integer getAlertState(long nativeTabAndroid);
 
         void updateDelegates(
                 long nativeTabAndroid,

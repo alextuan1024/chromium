@@ -627,10 +627,10 @@ void LayoutBox::WillBeRemovedFromTree() {
 }
 
 void LayoutBox::StyleWillChange(StyleDifference diff,
+                                const ComputedStyle* old_style,
                                 const ComputedStyle& new_style,
                                 StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  const ComputedStyle* old_style = Style();
   if (old_style) {
     // When a layout hint happens and an object's position style changes, we
     // have to do a layout to dirty the layout tree using the old position
@@ -644,14 +644,17 @@ void LayoutBox::StyleWillChange(StyleDifference diff,
         IsInsideMulticol() && ShouldPreventColumnSpannerDescendants();
   }
 
-  LayoutBoxModelObject::StyleWillChange(diff, new_style, style_change_context);
+  LayoutBoxModelObject::StyleWillChange(diff, old_style, new_style,
+                                        style_change_context);
 }
 
 void LayoutBox::StyleDidChange(StyleDifference diff,
                                const ComputedStyle* old_style,
+                               const ComputedStyle& new_style,
                                const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBoxModelObject::StyleDidChange(diff, old_style, style_change_context);
+  LayoutBoxModelObject::StyleDidChange(diff, old_style, new_style,
+                                       style_change_context);
 
   // Reflection works through PaintLayer. Some child classes e.g. LayoutSVGBlock
   // don't create layers and ignore reflections.
@@ -665,7 +668,6 @@ void LayoutBox::StyleDidChange(StyleDifference diff,
   // scroll offset may be outside the normal min/max range of the scrollable
   // area, which is weird but OK, because the scrollable area will update its
   // min/max in updateAfterLayout().
-  const ComputedStyle& new_style = StyleRef();
   if (IsScrollContainer() && old_style &&
       old_style->EffectiveZoom() != new_style.EffectiveZoom()) {
     PaintLayerScrollableArea* scrollable_area = GetScrollableArea();
@@ -778,14 +780,14 @@ void LayoutBox::StyleDidChange(StyleDifference diff,
 
   if (diff.NeedsFullLayout()) {
     if (IsValidColumnSpannerInTree(*old_style) !=
-        IsValidColumnSpannerInTree(StyleRef())) {
+        IsValidColumnSpannerInTree(new_style)) {
       MarkParentForSpannerOrOutOfFlowPositionedChange();
     }
   }
 
   // Update the script style map, from the new computed style.
   if (IsCustomItem())
-    GetCustomLayoutChild()->styleMap()->UpdateStyle(GetDocument(), StyleRef());
+    GetCustomLayoutChild()->styleMap()->UpdateStyle(GetDocument(), new_style);
 }
 
 void LayoutBox::UpdateShapeOutsideInfoAfterStyleChange(
@@ -1104,7 +1106,8 @@ LayoutBlock* LayoutBox::ScrollerFromScrollMarkerGroup() const {
 
 void LayoutBox::QuadsInAncestorInternal(Vector<gfx::QuadF>& quads,
                                         const LayoutBoxModelObject* ancestor,
-                                        MapCoordinatesFlags mode) const {
+                                        MapCoordinatesFlags mode,
+                                        BoxQuadType box_type) const {
   NOT_DESTROYED();
   const PhysicalBoxFragment* first_fragment = nullptr;
   for (const PhysicalBoxFragment& fragment : PhysicalFragments()) {
@@ -1117,7 +1120,8 @@ void LayoutBox::QuadsInAncestorInternal(Vector<gfx::QuadF>& quads,
       offset = fragment.OffsetFromRootFragmentationContext() -
                first_fragment->OffsetFromRootFragmentationContext();
     }
-    PhysicalRect rect(offset, fragment.Size());
+    PhysicalRect rect = LocalRectForBoxQuad(fragment, box_type);
+    rect.offset += offset;
     quads.push_back(LocalRectToAncestorQuad(rect, ancestor, mode));
   }
 }
@@ -2165,7 +2169,8 @@ ResourcePriority LayoutBox::ComputeResourcePriority() const {
   // TODO(japhet): Is this IgnoreTransforms correct? Would it be better to use
   // the visual rect (which has ancestor clips and transforms applied)? Should
   // we map to the top-level viewport instead of the current (sub) frame?
-  object_bounds.Move(LocalToAbsolutePoint(PhysicalOffset(), kIgnoreTransforms));
+  object_bounds.Move(LocalToAbsolutePoint(
+      PhysicalOffset(), {MapCoordinatesMode::kIgnoreTransforms}));
 
   // The object bounds might be empty right now, so intersects will fail since
   // it doesn't deal with empty rects. Use PhysicalRect::Contains in that case.

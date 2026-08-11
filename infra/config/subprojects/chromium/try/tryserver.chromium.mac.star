@@ -286,6 +286,8 @@ try_.builder(
             "skip_generate_fuzzer_owners",
         ],
     ),
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     contact_team_email = "chrome-fuzzing-core@google.com",
 )
 
@@ -304,6 +306,8 @@ try_.builder(
         "ci/mac-ubsan-fyi-rel",
     ],
     gn_args = "ci/mac-ubsan-fyi-rel",
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
 )
 
 try_.builder(
@@ -526,6 +530,8 @@ try_.builder(
             "x64",
         ],
     ),
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
 
@@ -620,6 +626,8 @@ try_.builder(
     name = "mac_upload_clang",
     executable = "recipe:chromium_toolchain/package_clang",
     builderless = False,
+    # Mac 15 is the last mac version widely supported on x64.
+    os = os.MAC_15,
     execution_timeout = 8 * time.hour,
 )
 
@@ -635,6 +643,8 @@ try_.builder(
     name = "mac_upload_rust",
     executable = "recipe:chromium_toolchain/package_rust",
     builderless = False,
+    # Mac 15 is the last mac version widely supported on x64.
+    os = os.MAC_15,
     execution_timeout = 8 * time.hour,
 )
 
@@ -660,6 +670,8 @@ try_.builder(
         "ci/mac-treesinviz-disabled-rel",
     ],
     gn_args = "ci/mac-treesinviz-disabled-rel",
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     contact_team_email = "chrome-gpu-team@google.com",
 )
 
@@ -919,7 +931,7 @@ ios_builder(
     execution_timeout = 10 * time.hour,
 )
 
-gpu.try_.optional_tests_builder(
+gpu.try_.mac_optional_builder(
     name = "mac_optional_gpu_tests_rel",
     branch_selector = branches.selector.MAC_BRANCHES,
     description_html = ("Runs GPU tests on Mac Minis with Intel UHD 630 GPUs and Macbook Pros with AMD GPUs. " +
@@ -960,11 +972,6 @@ gpu.try_.optional_tests_builder(
         browser_config = targets.browser_config.RELEASE,
         os_type = targets.os_type.MAC,
     ),
-    pool = "luci.chromium.gpu.try",
-    builderless = True,
-    cpu = "arm64",
-    ssd = None,
-    free_space = None,
     alerts_enabled = False,
     contact_team_email = "chrome-gpu-infra@google.com",
     cq_settings = try_.cq_settings(
@@ -977,7 +984,7 @@ gpu.try_.optional_tests_builder(
     max_concurrent_builds = 7,
 )
 
-gpu.try_.optional_tests_builder(
+gpu.try_.mac_optional_builder(
     name = "gpu-fyi-cq-mac-arm64",
     branch_selector = branches.selector.MAC_BRANCHES,
     description_html = ("Runs GPU tests on M2 Macbook Pros. Only automatically added to CLs that " +
@@ -990,11 +997,6 @@ gpu.try_.optional_tests_builder(
         retry_failed_shards = False,
     ),
     gn_args = "ci/GPU FYI Mac arm64 Builder",
-    pool = "luci.chromium.gpu.try",
-    builderless = True,
-    cpu = "arm64",
-    ssd = None,
-    free_space = None,
     alerts_enabled = False,
     contact_team_email = "chrome-gpu-infra@google.com",
     cq_settings = try_.cq_settings(
@@ -1020,6 +1022,8 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     contact_team_email = "toyoshim@chromium.org",
     cq_settings = try_.cq_settings(
         includable_only = True,

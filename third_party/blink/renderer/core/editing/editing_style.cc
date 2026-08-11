@@ -979,9 +979,7 @@ EditingTriState EditingStyle::TriStateOfStyle(
 
   if (selection.IsCaret()) {
     EditingStyle* style_at_start =
-        RuntimeEnabledFeatures::
-                    ConsiderSubOrSuperScriptAncestorAlignForCaretSelectionEnabled() &&
-                is_vertical_align_
+        is_vertical_align_
             ? EditingStyleUtilities::CreateStyleAtSelectionStart(selection,
                                                                  false, Style())
             : EditingStyleUtilities::CreateStyleAtSelectionStart(selection);
@@ -1822,13 +1820,7 @@ static void ReconcileTextDecorationProperties(
 }
 
 StyleChange::StyleChange(EditingStyle* style, const Position& position)
-    : apply_bold_(false),
-      apply_italic_(false),
-      apply_underline_(false),
-      apply_line_through_(false),
-      apply_subscript_(false),
-      apply_superscript_(false),
-      bold_tag_(html_names::kBTag),
+    : bold_tag_(html_names::kBTag),
       italic_tag_(html_names::kITag),
       underline_tag_(html_names::kUTag),
       line_through_tag_(html_names::kStrikeTag),

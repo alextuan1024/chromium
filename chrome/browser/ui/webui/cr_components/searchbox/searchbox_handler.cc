@@ -57,6 +57,7 @@
 #include "components/omnibox/browser/contextual_search_provider.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
+#include "components/omnibox/browser/omnibox_metrics_constants.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/browser/searchbox_utils.h"
@@ -1104,7 +1105,8 @@ void SearchboxHandler::QueryAutocomplete(
     uint32_t cursor_position,
     omnibox::SuggestInventory suggest_inventory,
     bool is_on_focus,
-    const std::string& keyword) {
+    const std::string& keyword,
+    searchbox::mojom::InputMethod input_method) {
   current_query_id_ = query_id;
 
   std::u16string input_with_keyword = input;
@@ -1182,10 +1184,14 @@ void SearchboxHandler::QueryAutocomplete(
   autocomplete_input.set_input_state(GetInputState());
   autocomplete_input.set_previous_query(GetPreviousQuery());
   autocomplete_input.set_suggest_inventory(suggest_inventory);
-  // Reset input method on browser so the UI doesn't have to send another
-  // mojom request to clear it.
-  autocomplete_input.set_input_method(input_method_);
-  input_method_ = omnibox::metrics::ChromeSearchboxStats::KEYBOARD;
+  // TODO(crbug.com/543112749): Support other input methods for Smart Compose.
+  autocomplete_input.set_input_method(
+      static_cast<omnibox::metrics::ChromeSearchboxStats::InputMethod>(
+          input_method));
+  autocomplete_input.set_has_previous_submitted_thread_context(
+      client()->HasPreviousSubmittedThreadContext());
+  autocomplete_input.set_has_auto_suggested_tab(
+      client()->HasAutoSuggestedTab());
 
   if (base::FeatureList::IsEnabled(
           omnibox::kWebUISearchboxWithoutModelController)) {
@@ -1196,15 +1202,7 @@ void SearchboxHandler::QueryAutocomplete(
   }
 }
 
-void SearchboxHandler::SetInputMethod(
-    searchbox::mojom::InputMethod input_method) {
-  input_method_ =
-      static_cast<omnibox::metrics::ChromeSearchboxStats::InputMethod>(
-          input_method);
-}
-
 void SearchboxHandler::StopAutocomplete(bool clear_result) {
-  input_method_ = omnibox::metrics::ChromeSearchboxStats::KEYBOARD;
   if (base::FeatureList::IsEnabled(
           omnibox::kWebUISearchboxWithoutModelController)) {
     autocomplete_controller()->Stop(clear_result
@@ -1704,7 +1702,9 @@ void SearchboxHandler::OnDefaultSearchExtensionDialogDone(
     base::TimeTicks match_selection_timestamp,
     OmniboxClient::ExtensionControlledDialogResult dialog_result) {
   if (dialog_result ==
-      OmniboxClient::ExtensionControlledDialogResult::kAccept) {
+          OmniboxClient::ExtensionControlledDialogResult::kAccept ||
+      dialog_result ==
+          OmniboxClient::ExtensionControlledDialogResult::kNoDialogShown) {
     OpenMatch(selection, match, disposition, match_selection_timestamp);
   } else if (dialog_result ==
              OmniboxClient::ExtensionControlledDialogResult::kReject) {

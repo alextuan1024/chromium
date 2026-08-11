@@ -25,6 +25,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.Process;
 import android.os.SystemClock;
+import android.util.ArraySet;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.KeyEvent;
@@ -81,8 +82,8 @@ import org.chromium.ui.widget.Toast;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -105,8 +106,6 @@ public class WindowAndroid
     private static final long PERIODIC_METRIC_DELAY_MS = TimeUnit.MINUTES.toMillis(5);
 
     private static int sOccludedCount;
-
-    private static ThreadUtils.@Nullable ThreadChecker sThreadChecker;
 
     private static long sTotalOccludedPixels;
     private static long sAccumulatedPixelMilliseconds;
@@ -193,7 +192,8 @@ public class WindowAndroid
     private @Nullable ComponentCallbacks mComponentCallbacks;
 
     // We track all animations over content and provide a drawing placeholder for them.
-    private final HashSet<Animator> mAnimationsOverContent = new HashSet<>();
+    // ArraySet avoids heap entry overhead for tracking the small active animation set.
+    private final Set<Animator> mAnimationsOverContent = new ArraySet<>();
     private @Nullable View mAnimationPlaceholderView;
 
     /** A mechanism for observing and updating the application window's bottom inset. */
@@ -378,10 +378,6 @@ public class WindowAndroid
             boolean activityTopResumedSupported,
             boolean occlusionTrackingAllowed) {
 
-        if (sThreadChecker == null) {
-            sThreadChecker = new ThreadUtils.ThreadChecker();
-        }
-
         // When the first occlusion tracked window is created, start periodic metrics collection.
         if (occlusionTrackingAllowed
                 && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
@@ -538,7 +534,7 @@ public class WindowAndroid
      * @param isOcclusionTracked Whether occlusion is tracked for this window.
      */
     public void setIsOcclusionTracked(boolean isOcclusionTracked) {
-        assumeNonNull(sThreadChecker).assertOnValidThread();
+        ThreadUtils.assertOnUiThread();
         assert !shouldTrackOcclusionWithTrustedPresentationApi();
         mIsOcclusionTracked = isOcclusionTracked;
     }
@@ -557,7 +553,7 @@ public class WindowAndroid
      */
     public void setOccluded(
             boolean isOccluded, @Nullable Rect windowBounds, @Nullable Region visibleRegion) {
-        assumeNonNull(sThreadChecker).assertOnValidThread();
+        ThreadUtils.assertOnUiThread();
         // If the Trusted Presentation API is already tracking occlusion, it takes precedence.
         if (!mOcclusionTrackingAllowed || shouldTrackOcclusionWithTrustedPresentationApi()) {
             return;

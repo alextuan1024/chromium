@@ -8,11 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/types/expected.h"
@@ -34,18 +36,19 @@
 namespace autofill {
 
 struct MemorySearchResults;
+class AutofillClient;
 class BrowserAutofillManager;
 
 // Manager for the AtMemory feature. It handles queries to the
 // `AtMemoryQueryService` and manages session-based metrics. Owned by
-// `BrowserAutofillManager`, its lifetime is tied to it.
+// `AutofillClient`, its lifetime is tied to it.
 class AtMemoryManager : public CreditCardAccessManager::Observer {
  public:
   using UpdateSuggestionsCallback =
       base::RepeatingCallback<void(std::vector<Suggestion>,
                                    AutofillSuggestionTriggerSource)>;
 
-  explicit AtMemoryManager(BrowserAutofillManager* manager);
+  explicit AtMemoryManager(AutofillClient* client);
 
   AtMemoryManager(const AtMemoryManager&) = delete;
   AtMemoryManager& operator=(const AtMemoryManager&) = delete;
@@ -116,6 +119,27 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
   void MaybeAppendPersonalContextNotice(
       std::vector<Suggestion>& suggestions) const;
 
+  // Creates the AI disclosure suggestion.
+  static Suggestion CreateAiDisclosureSuggestion();
+
+  // Creates the fetching / loading throbber suggestion.
+  static Suggestion CreateFetchingSuggestion();
+
+  // Creates a catch-all suggestion to display when AtMemory search fails due to
+  // an unexpected or generic error.
+  static Suggestion CreateGenericErrorSuggestion();
+
+  // Creates a suggestion to display when AtMemory search fails to connect to
+  // the server.
+  static Suggestion CreateNoConnectionSuggestion(std::u16string query);
+
+  // Creates the search affordance suggestion.
+  static Suggestion CreateSearchAffordanceSuggestion(std::u16string query);
+
+  void set_target_field_origin(const url::Origin& origin) {
+    target_field_origin_ = origin;
+  }
+
   // Creates a source attribution suggestion ("Suggested by Gemini").
   static Suggestion CreateSourceAttributionSuggestion();
 
@@ -132,12 +156,6 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
 
   // Creates a suggestion to display when the query is not supported.
   Suggestion CreateUnsupportedQuerySuggestion(const std::u16string& query);
-
-  // Creates the search affordance suggestion.
-  Suggestion CreateSearchAffordanceSuggestion(std::u16string query);
-
-  // Creates the AI disclosure suggestion.
-  Suggestion CreateAiDisclosureSuggestion() const;
 
   // Cancels any pending search queries and resets searching states.
   void CancelPendingQueries();
@@ -226,8 +244,12 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
       std::unique_ptr<AtMemoryMetricsRecorder> metrics,
       base::expected<EntityInstance, AutofillAiAccessManager::FailureReason>
           result,
-      bool did_fetch_from_server,
-      bool reauth_attempted);
+      bool reauth_attempted,
+      bool did_fetch_from_server);
+
+  BrowserAutofillManager* GetBrowserAutofillManager(
+      const FormGlobalId& form_id,
+      const FieldGlobalId& field_id);
 
   // Encapsulates active session state for an AtMemory UI interaction.
   struct SessionState {
@@ -241,7 +263,7 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
     bool is_searching = false;
   };
 
-  const raw_ptr<BrowserAutofillManager> owner_;
+  const raw_ref<AutofillClient> client_;
 
   std::optional<SessionState> session_state_;
 
@@ -251,6 +273,8 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
 
   bool credit_card_fetch_in_progress_ = false;
 
+  // Origin of the target field for the active search session.
+  url::Origin target_field_origin_;
   // Factory for search queries, used to identify currently active query and
   // discard the old ones.
   base::WeakPtrFactory<AtMemoryManager> query_weak_ptr_factory_{this};

@@ -12,14 +12,22 @@
 #include <stdint.h>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/types/expected.h"
 #include "crypto/crypto_export.h"
+#include "crypto/tpm.rs.h"
 
 namespace crypto::tpm {
+
+using enum TpmAlg;
+using enum TpmCc;
+using enum TpmConstant;
+using enum TpmRh;
+using enum TpmSt;
 
 // Various errors returned during TPM response parsing.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -92,10 +100,25 @@ struct CRYPTO_EXPORT CertifyResponse {
                          const CertifyResponse&) = default;
 };
 
+// Response components extracted from a parsed TPM2_Hash response.
+struct CRYPTO_EXPORT HashResponse {
+  std::vector<uint8_t> digest;
+  std::vector<uint8_t> validation_ticket;
+
+  friend bool operator==(const HashResponse&, const HashResponse&) = default;
+};
+
+// Response components extracted from a parsed TPM2_Sign response.
+struct CRYPTO_EXPORT SignResponse {
+  std::vector<uint8_t> signature;
+
+  friend bool operator==(const SignResponse&, const SignResponse&) = default;
+};
+
 // TPM algorithm IDs returned by the parser, solely for telemetry.
 struct CRYPTO_EXPORT SignatureAlgorithms {
-  uint16_t sig_alg = 0;
-  uint16_t hash_alg = 0;
+  TpmAlg sig_alg = TPM_ALG_NULL;
+  TpmAlg hash_alg = TPM_ALG_NULL;
 
   friend bool operator==(const SignatureAlgorithms&,
                          const SignatureAlgorithms&) = default;
@@ -118,9 +141,49 @@ CRYPTO_EXPORT std::vector<uint8_t> BuildCertifyCommand(
 // * `response_blob` - The raw byte response from the TPM2_Certify command.
 // * `challenge` - The challenge expected in the attestation's extra data to
 // prevent replay.
+//
+// If the TPM returns an error code, an error of type `kTpmErrorResponse` will
+// be returned containing the error code, and no statement or signature will be
+// extracted.
 CRYPTO_EXPORT TpmParseErrorOr<CertifyResponse> ParseCertifyResponse(
     base::span<const uint8_t> response_blob,
     base::span<const uint8_t> challenge);
+
+// Builds a serialized TPM2_Hash command buffer.
+//
+// * `data` - The byte buffer to be hashed.
+// * `hash_alg` - The TPM algorithm of the hash function (e.g. TPM_ALG_SHA256).
+// * `hierarchy` - The TPM hierarchy handle for the ticket (e.g. TPM_RH_OWNER
+// for storage/test tickets, or TPM_RH_ENDORSEMENT for AIKs).
+CRYPTO_EXPORT std::vector<uint8_t> BuildHashCommand(
+    base::span<const uint8_t> data,
+    TpmAlg hash_alg,
+    TpmRh hierarchy);
+
+// Parses a serialized TPM2_Hash response.
+//
+// If the TPM returns an error code, an error of type `kTpmErrorResponse` will
+// be returned containing the error code, and no digest or validation ticket
+// will be extracted.
+CRYPTO_EXPORT TpmParseErrorOr<HashResponse> ParseHashResponse(
+    base::span<const uint8_t> response_blob);
+
+// Builds a serialized TPM2_Sign command buffer.
+CRYPTO_EXPORT std::vector<uint8_t> BuildSignCommand(
+    uint32_t key_handle,
+    base::span<const uint8_t> digest,
+    TpmAlg sig_alg,
+    TpmAlg hash_alg,
+    base::span<const uint8_t> validation_ticket);
+
+// Parses a serialized TPM2_Sign response.
+CRYPTO_EXPORT TpmParseErrorOr<SignResponse> ParseSignResponse(
+    base::span<const uint8_t> response_blob);
+
+// Parses a serialized `TPMT_SIGNATURE` and returns the normalized signature
+// (DER-encoded for ECDSA, raw bytes for RSA).
+CRYPTO_EXPORT std::optional<std::vector<uint8_t>> ParseTpmSignature(
+    base::span<const uint8_t> signature_blob);
 
 // Parses a serialized `TPMT_SIGNATURE` and returns the signature and hash
 // algorithms used, solely for telemetry.

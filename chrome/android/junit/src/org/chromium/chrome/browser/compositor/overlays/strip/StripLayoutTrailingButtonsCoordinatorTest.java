@@ -74,6 +74,8 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiShowability;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
+import org.chromium.components.prefs.PrefChangeRegistrar;
+import org.chromium.components.prefs.PrefChangeRegistrarJni;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
@@ -99,6 +101,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     @Mock private ActivityWindowAndroid mWindowAndroid;
     @Mock private Profile mProfile;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
+    @Mock private PrefChangeRegistrar.Natives mPrefChangeRegistrarJniMock;
     @Mock private PrefService mPrefService;
     @Mock private StripLayoutTrailingButtonsObserver mObserver;
     @Mock private ChromeAndroidTaskTracker mTaskTracker;
@@ -133,6 +136,9 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
         CompositorAnimationHandler.setTestingMode(true);
         when(mUpdateHost.getAnimationHandler())
                 .thenReturn(new CompositorAnimationHandler(CallbackUtils.emptyRunnable()));
+
+        PrefChangeRegistrarJni.setInstanceForTesting(mPrefChangeRegistrarJniMock);
+        when(mPrefChangeRegistrarJniMock.init(any(), any())).thenReturn(1L);
 
         UserPrefsJni.setInstanceForTesting(mUserPrefsJniMock);
         when(mUserPrefsJniMock.get(mProfile)).thenReturn(mPrefService);
@@ -443,6 +449,61 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     public void testSetGlicButtonText() {
         showGlicButton();
         doTestSetButtonText(mGlicButton, "Glic Text", /* isActor= */ false);
+    }
+
+    @Test
+    public void testGlicHighlightedState_GlicUiShowHide() {
+        assertNotNull("Glic button should be created.", mGlicButton);
+        assertFalse(
+                "Glic button should not be highlighted initially.", mGlicButton.isHighlighted());
+
+        // Simulate Glic UI opening event.
+        mCoordinator.getGlicSplitButtonDelegateForTesting().setGlicPanelIsOpen(true);
+
+        // Verify button is in highlighted state.
+        assertTrue(
+                "Glic button should be highlighted when UI is shown globally.",
+                mGlicButton.isHighlighted());
+
+        // Simulate Glic UI hiding event.
+        mCoordinator.getGlicSplitButtonDelegateForTesting().setGlicPanelIsOpen(false);
+
+        // Verify button returns to non-highlighted state.
+        assertFalse(
+                "Glic button should not be highlighted when UI is hidden globally.",
+                mGlicButton.isHighlighted());
+    }
+
+    @Test
+    public void testGlicActorHighlightedState_TaskMenuShowHide() {
+        showGlicActorButton();
+        assertNotNull("Glic Actor button should be created.", mGlicActorButton);
+        assertFalse(
+                "Glic Actor button should not be highlighted initially.",
+                mGlicActorButton.isHighlighted());
+
+        // Mock active tasks to ensure the menu actually opens
+        when(mActorTask.getTitle()).thenReturn("Test Task");
+        when(mActorKeyedService.getActiveTasks()).thenReturn(Collections.singletonList(mActorTask));
+
+        // Simulate clicking the actor button to open the task menu
+        float actorX = mGlicActorButton.getDrawX() + mGlicActorButton.getWidth() / 2;
+        float actorY = mGlicActorButton.getDrawY() + mGlicActorButton.getHeight() / 2;
+        mCoordinator.click(0L, actorX, actorY, 0, 0);
+
+        // Verify button is in highlighted state and task menu is showing
+        assertTrue(
+                "Glic Actor button should be highlighted after task menu is shown.",
+                mGlicActorButton.isHighlighted());
+        assertTrue("Glic task menu should be showing.", mCoordinator.isMenuShowing());
+
+        // Simulate dismissing the task menu
+        mCoordinator.dismissTrailingButtonsMenu();
+
+        // Verify button returns to non-highlighted state
+        assertFalse(
+                "Glic Actor button should not be highlighted after task menu is dismissed.",
+                mGlicActorButton.isHighlighted());
     }
 
     @Test
@@ -1097,5 +1158,31 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
                 initialWidth,
                 button.getWidth(),
                 MathUtils.EPSILON);
+    }
+
+    @Test
+    public void testGlicButton_PrefChangeUpdatesVisibility_Incognito() {
+        mCoordinator.onTabModelSwitched(true);
+        assertTrue(
+                "Glic button should initially be visible when pinned.",
+                mCoordinator.shouldGlicBeVisible());
+
+        // Simulate unpinning in preferences.
+        when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(false);
+        mCoordinator.onGlicPrefChanged();
+
+        assertFalse(
+                "Glic button should be hidden after unpinning.",
+                mCoordinator.shouldGlicBeVisible());
+        assertFalse("Glic button visible property should be false.", mGlicButton.isVisible());
+
+        // Simulate re-pinning in preferences.
+        when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(true);
+        mCoordinator.onGlicPrefChanged();
+
+        assertTrue(
+                "Glic button should be visible again after pinning.",
+                mCoordinator.shouldGlicBeVisible());
+        assertTrue("Glic button visible property should be true.", mGlicButton.isVisible());
     }
 }

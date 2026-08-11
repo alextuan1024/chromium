@@ -996,12 +996,11 @@ export const ComposeboxEmbedderMixin =
               this.smartComposeStats.acceptedCount++;
               this.smartComposeStats.charactersAccepted +=
                   this.smartComposeInlineHint.length;
-              this.getSearchboxHandler().setInputMethod(
-                  InputMethod.kSmartCompose);
               this.input = this.input + this.smartComposeInlineHint;
               this.smartComposeInlineHint = '';
               e.preventDefault();
-              this.queryAutocomplete(/* clearMatches= */ false);
+              this.queryAutocomplete(
+                  /* clearMatches= */ false, InputMethod.kSmartCompose);
             }
             return;
           }
@@ -1156,11 +1155,12 @@ export const ComposeboxEmbedderMixin =
           }
           this.handleToolModeUpdate(newToolMode);
         }
-        handleToolModeUpdate(newTool: ToolMode) {
+        handleToolModeUpdate(
+            newTool: ToolMode, isSetByServer: boolean = false) {
           // If it is canvas added/removed, browser process will notify
           // AIM webpage (client side) so it can respond to these changes.
           // Server is not notified of these changes; side effects are local.
-          this.getSearchboxHandler().setActiveToolMode(newTool);
+          this.getSearchboxHandler().setActiveToolMode(newTool, isSetByServer);
 
           this.queryAutocomplete(/* clearMatches= */ true);
           this.updateInputPlaceholder();
@@ -1867,7 +1867,8 @@ export const ComposeboxEmbedderMixin =
 
         resetToolsAndModels() {
           if (this.inputState) {
-            this.getSearchboxHandler().setActiveToolMode(ToolMode.kUnspecified);
+            this.getSearchboxHandler().setActiveToolMode(
+                ToolMode.kUnspecified, /*isSetByServer=*/ false);
             this.getSearchboxHandler().setActiveModelMode(
                 ModelMode.kUnspecified);
           }
@@ -2024,7 +2025,9 @@ export const ComposeboxEmbedderMixin =
           };
         }
 
-        queryAutocomplete(clearMatches: boolean) {
+        queryAutocomplete(
+            clearMatches: boolean,
+            inputMethod: InputMethod = InputMethod.kKeyboard) {
           if (clearMatches) {
             this.clearAutocompleteMatches();
           }
@@ -2044,7 +2047,7 @@ export const ComposeboxEmbedderMixin =
               this.activeQueryId, this.input,
               /*preventInlineAutocomplete=*/ false, cursorPosition,
               this.suggestInventory ?? SuggestInventory.kDefault,
-              /*isOnFocus=*/ !this.input, /*keyword=*/ '');
+              /*isOnFocus=*/ !this.input, /*keyword=*/ '', inputMethod);
         }
 
         clearAutocompleteMatches() {
@@ -2888,7 +2891,7 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   isTogglingOff(tool: ToolMode): boolean;
   onToolClick(e: CustomEvent<{toolMode: ToolMode}>): void;
   handleToolClick(tool: ToolMode): void;
-  handleToolModeUpdate(newTool: ToolMode): void;
+  handleToolModeUpdate(newTool: ToolMode, isSetByServer?: boolean): void;
   onModelClick(e: CustomEvent<{model: ModelMode}>): void;
   onOpenImageUpload(): void;
   onOpenFileUpload(): void;
@@ -2927,7 +2930,7 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   hasFiles(): boolean;
   hasTabs(): boolean;
   resetSmartComposeStats(): void;
-  queryAutocomplete(clearMatches: boolean): void;
+  queryAutocomplete(clearMatches: boolean, inputMethod?: InputMethod): void;
   clearAutocompleteMatches(): void;
   computeSubmitEnabled(): boolean;
   hasValidQuery(): boolean;

@@ -429,6 +429,9 @@ base::OnceCallback<void(RenderViewContextMenu*)>* GetMenuShownCallback() {
   return callback.get();
 }
 
+// This IDC_ "value" is a sentinel for the UMA max value.
+constexpr int kUmaMaxValueKey = 0;
+
 // LINT.IfChange(GlicWebContentsContextMenuResult)
 enum class GlicWebContentsContextMenuResult {
   kShownAndIgnored = 0,
@@ -651,7 +654,7 @@ const std::map<int, int>& GetIdcToUmaMap(UmaEnumIdLookupType type) {
        //   - Increment the UMA value in that latter line.
        //   - Add the new item to the RenderViewContextMenuItem enum in
        //     tools/metrics/histograms/metadata/ui/enums.xml.
-       {0, 170}});
+       {kUmaMaxValueKey, 170}});
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:RenderViewContextMenuItem)
 
   // LINT.IfChange(ContextMenuOptionDesktop)
@@ -698,7 +701,7 @@ const std::map<int, int>& GetIdcToUmaMap(UmaEnumIdLookupType type) {
        //   - Increment the UMA value in that latter line.
        //   - Add the new item to the ContextMenuOptionDesktop enum in
        //     tools/metrics/histograms/metadata/ui/enums.xml.
-       {0, 35}});
+       {kUmaMaxValueKey, 35}});
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:ContextMenuOptionDesktop)
 
   return *(type == UmaEnumIdLookupType::GeneralEnumId ? kGeneralMap
@@ -706,8 +709,7 @@ const std::map<int, int>& GetIdcToUmaMap(UmaEnumIdLookupType type) {
 }
 
 int GetUmaValueMax(UmaEnumIdLookupType type) {
-  // The IDC_ "value" of 0 is really a sentinel for the UMA max value.
-  return GetIdcToUmaMap(type).find(0)->second;
+  return GetIdcToUmaMap(type).find(kUmaMaxValueKey)->second;
 }
 
 // Collapses large ranges of ids before looking for UMA enum.
@@ -1354,8 +1356,12 @@ void RenderViewContextMenu::InitMenu() {
   } else {
     show_glic = !params_.selection_text.empty() || !params_.link_url.is_empty();
   }
+  show_glic = show_glic && !use_simplified_menu_for_text_selection;
 
-  if (show_glic && !use_simplified_menu_for_text_selection) {
+  const bool glic_below_search =
+      base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
+
+  if (show_glic && !glic_below_search) {
     MaybeAppendOpenGlicItem(/*add_separator=*/false);
   }
 
@@ -1368,6 +1374,10 @@ void RenderViewContextMenu::InitMenu() {
        params_.page_url != chrome::kChromeUIPasswordManagerCheckupURL &&
        params_.page_url != chrome::kChromeUIPasswordManagerSettingsURL)) {
     AppendSearchProvider();
+  }
+
+  if (show_glic && glic_below_search) {
+    MaybeAppendOpenGlicItem(/*add_separator=*/false);
   }
 
   if (!use_simplified_menu_for_text_selection &&
@@ -1674,56 +1684,56 @@ void RenderViewContextMenu::RecordUsedItem(int id) {
     return;
   }
 
+  const int uma_value_max =
+      GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId);
   if (content_type_->SupportsGroup(
           ContextMenuContentType::ITEM_GROUP_MEDIA_VIDEO)) {
-    UMA_HISTOGRAM_EXACT_LINEAR(
-        "ContextMenu.SelectedOptionDesktop.Video", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+    UMA_HISTOGRAM_EXACT_LINEAR("ContextMenu.SelectedOptionDesktop.Video",
+                               enum_id, uma_value_max);
   } else if (content_type_->SupportsGroup(
                  ContextMenuContentType::ITEM_GROUP_LINK) &&
              content_type_->SupportsGroup(
                  ContextMenuContentType::ITEM_GROUP_MEDIA_IMAGE)) {
-    UMA_HISTOGRAM_EXACT_LINEAR(
-        "ContextMenu.SelectedOptionDesktop.ImageLink", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+    UMA_HISTOGRAM_EXACT_LINEAR("ContextMenu.SelectedOptionDesktop.ImageLink",
+                               enum_id, uma_value_max);
   } else if (content_type_->SupportsGroup(
                  ContextMenuContentType::ITEM_GROUP_MEDIA_IMAGE)) {
-    UMA_HISTOGRAM_EXACT_LINEAR(
-        "ContextMenu.SelectedOptionDesktop.Image", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+    UMA_HISTOGRAM_EXACT_LINEAR("ContextMenu.SelectedOptionDesktop.Image",
+                               enum_id, uma_value_max);
   } else if (!params_.misspelled_word.empty()) {
     UMA_HISTOGRAM_EXACT_LINEAR(
         "ContextMenu.SelectedOptionDesktop.MisspelledWord", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+        uma_value_max);
   } else if ((!params_.selection_text.empty() ||
               params_.annotation_type.has_value()) &&
              params_.media_type == ContextMenuDataMediaType::kNone) {
     // Probably just text.
-    UMA_HISTOGRAM_EXACT_LINEAR(
-        "ContextMenu.SelectedOptionDesktop.SelectedText", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+    UMA_HISTOGRAM_EXACT_LINEAR("ContextMenu.SelectedOptionDesktop.SelectedText",
+                               enum_id, uma_value_max);
   } else {
-    UMA_HISTOGRAM_EXACT_LINEAR(
-        "ContextMenu.SelectedOptionDesktop.Other", enum_id,
-        GetUmaValueMax(UmaEnumIdLookupType::ContextSpecificEnumId));
+    UMA_HISTOGRAM_EXACT_LINEAR("ContextMenu.SelectedOptionDesktop.Other",
+                               enum_id, uma_value_max);
   }
 }
 
 void RenderViewContextMenu::RecordShownItem(int id, bool is_submenu) {
   // The "RenderViewContextMenu.Shown" histogram is not recorded for submenus.
-  if (!is_submenu) {
-    int enum_id =
-        FindUMAEnumValueForCommand(id, UmaEnumIdLookupType::GeneralEnumId);
-    if (enum_id != -1) {
-      UMA_HISTOGRAM_EXACT_LINEAR(
-          "RenderViewContextMenu.Shown", enum_id,
-          GetUmaValueMax(UmaEnumIdLookupType::GeneralEnumId));
-    } else {
-      // Just warning here. It's harder to maintain list of all possibly
-      // visible items than executable items.
-      DLOG(ERROR) << "Update GetIdcToUmaMap. Unhandled IDC: " << id;
-    }
+  if (is_submenu) {
+    return;
   }
+
+  int enum_id =
+      FindUMAEnumValueForCommand(id, UmaEnumIdLookupType::GeneralEnumId);
+  if (enum_id == -1) {
+    // Just warning here. It's harder to maintain list of all possibly
+    // visible items than executable items.
+    DLOG(ERROR) << "Update GetIdcToUmaMap. Unhandled IDC: " << id;
+    return;
+  }
+
+  UMA_HISTOGRAM_EXACT_LINEAR(
+      "RenderViewContextMenu.Shown", enum_id,
+      GetUmaValueMax(UmaEnumIdLookupType::GeneralEnumId));
 }
 
 bool RenderViewContextMenu::IsHTML5Fullscreen() const {
@@ -2502,6 +2512,9 @@ void RenderViewContextMenu::AppendPluginItems() {
 void RenderViewContextMenu::AppendPageItems() {
   AppendExitFullscreenItem();
 
+  const bool glic_below_search =
+      base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
+
   if (features::IsMenuSimplificationEnabled() &&
       params_.selection_text.empty() && !params_.is_editable) {
     // Navigation
@@ -2518,22 +2531,28 @@ void RenderViewContextMenu::AppendPageItems() {
     AppendLiveCaptionItem();
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
 
-    // Ask gemini
-    size_t count_before = menu_model_.GetItemCount();
-    MaybeAppendOpenGlicItem();
-    // Remove separator to group with Lens
-    if (menu_model_.GetItemCount() > count_before &&
-        menu_model_.GetTypeAt(menu_model_.GetItemCount() - 1) ==
-            ui::MenuModel::TYPE_SEPARATOR) {
-      menu_model_.RemoveItemAt(menu_model_.GetItemCount() - 1);
-    }
+    if (!glic_below_search) {
+      // Ask gemini
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
 
-    // Save to Memory Banks
-    AppendSaveToMemoryBanksItem();
+      // Save to Memory Banks
+      AppendSaveToMemoryBanksItem();
 
-    // Search with google lens
-    if (IsRegionSearchEnabled()) {
-      AppendRegionSearchItem();
+      // Search with google lens
+      if (IsRegionSearchEnabled()) {
+        AppendRegionSearchItem();
+      }
+    } else {
+      // Search with google lens
+      if (IsRegionSearchEnabled()) {
+        AppendRegionSearchItem();
+      }
+
+      // Ask gemini
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+
+      // Save to Memory Banks
+      AppendSaveToMemoryBanksItem();
     }
 
     // Open in reading mode & Listen to this page
@@ -2568,7 +2587,9 @@ void RenderViewContextMenu::AppendPageItems() {
   menu_model_.AddItemWithStringId(IDC_FORWARD, IDS_CONTENT_CONTEXT_FORWARD);
   menu_model_.AddItemWithStringId(IDC_RELOAD, IDS_CONTENT_CONTEXT_RELOAD);
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
-  MaybeAppendOpenGlicItem();
+  if (!glic_below_search) {
+    MaybeAppendOpenGlicItem();
+  }
   menu_model_.AddItemWithStringId(IDC_SAVE_PAGE,
                                   IDS_CONTENT_CONTEXT_SAVEPAGEAS);
   menu_model_.AddItemWithStringId(IDC_PRINT, IDS_CONTENT_CONTEXT_PRINT);
@@ -2582,6 +2603,9 @@ void RenderViewContextMenu::AppendPageItems() {
 
     if (IsRegionSearchEnabled()) {
       AppendRegionSearchItem();
+    }
+    if (glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
     }
 
     if (experiment_group ==
@@ -2601,6 +2625,9 @@ void RenderViewContextMenu::AppendPageItems() {
     if (!features::IsMenuSimplificationEnabled()) {
       if (IsRegionSearchEnabled()) {
         AppendRegionSearchItem();
+      }
+      if (glic_below_search) {
+        MaybeAppendOpenGlicItem(/*add_separator=*/false);
       }
     }
     if (!use_simplified_text_selection) {
@@ -2948,10 +2975,15 @@ void RenderViewContextMenu::AppendSpellingAndSearchSuggestionItems() {
       !features::IsMenuSimplificationEnabled()) {
     bool show_glic =
         !params_.selection_text.empty() || !params_.link_url.is_empty();
-    if (show_glic) {
+    const bool glic_below_search =
+        base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
+    if (show_glic && !glic_below_search) {
       MaybeAppendOpenGlicItem(/*add_separator=*/false);
     }
     AppendSearchProvider();
+    if (show_glic && glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
   }
   bool render_separator = false;
@@ -3056,9 +3088,16 @@ void RenderViewContextMenu::AppendOtherEditableItems() {
 
   if (features::IsMenuSimplificationEnabled() &&
       !params_.selection_text.empty()) {
+    const bool glic_below_search =
+        base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
-    MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    if (!glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendSearchProvider();
+    if (glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendPrintItem();
     if (CanPartiallyTranslateTargetLanguage()) {
       AppendPartialTranslateItem();
@@ -5916,12 +5955,19 @@ void RenderViewContextMenu::AppendLensGeminiSection() {
 }
 
 void RenderViewContextMenu::AppendRevisedTextSelectionSection() {
+  const bool glic_below_search =
+      base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
   if (!params_.link_url.is_empty()) {
     // Link + Selection case
     AppendCopyItem();
     AppendLinkToTextItems();
-    MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    if (!glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendSearchProvider();
+    if (glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendSaveToMemoryBanksItem();
     AppendPrintItem();
 
@@ -5938,8 +5984,13 @@ void RenderViewContextMenu::AppendRevisedTextSelectionSection() {
 
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
 
-    MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    if (!glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendSearchProvider();
+    if (glic_below_search) {
+      MaybeAppendOpenGlicItem(/*add_separator=*/false);
+    }
     AppendReadAnythingItem();
     AppendSaveToMemoryBanksItem();
 

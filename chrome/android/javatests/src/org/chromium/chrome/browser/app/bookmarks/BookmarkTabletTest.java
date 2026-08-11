@@ -54,7 +54,7 @@ import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.TabStripUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
-import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.DeviceInput;
 
@@ -98,7 +98,8 @@ public class BookmarkTabletTest {
                     mBookmarkManagerCoordinator =
                             ((BookmarkPage) mActivityTestRule.getActivityTab().getNativePage())
                                     .getManagerForTesting();
-                    AccessibilityState.setIsAnyAccessibilityServiceEnabledForTesting(false);
+                    AccessibilityStateTestHelper.setIsAnyAccessibilityServiceEnabledForTesting(
+                            false);
                 });
     }
 
@@ -206,7 +207,7 @@ public class BookmarkTabletTest {
         onView(allOf(isDescendantOfA(withId(R.id.action_bar)), withText("Mobile bookmarks")))
                 .check(matches(isDisplayed()));
 
-        // After navigating to a new folder, the search bar should be focused again.
+        // After navigating to a new folder, the search bar should not be focused.
         BookmarkTestUtil.getSearchBoxViewInteraction().check(matches(not(isFocused())));
         // And the search text should be cleared.
         BookmarkTestUtil.getSearchBoxViewInteraction().check(matches(withText("")));

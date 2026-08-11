@@ -202,17 +202,6 @@ BASE_FEATURE(kBackForwardCacheMemoryControls,
 BASE_FEATURE(kBackForwardCacheCCNSIgnoreUnchangedCookies,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-#if BUILDFLAG(IS_ANDROID)
-// Enables getting screenshots as shared images for back forward transitions
-// in cross-document navigations.
-BASE_FEATURE(kBackForwardTransitionsCrossDocSharedImage,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-// Enables getting screenshots as shared images for back forward transitions
-// to native pages.
-BASE_FEATURE(kBackForwardTransitionsNativePageSharedImage,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 // If enabled, skips over ad-related entries that were silently inserted into
 // session history when navigating via back/forward buttons. This extends the
 // existing history manipulation intervention logic.
@@ -258,6 +247,11 @@ BASE_FEATURE(kClearCrossSiteCrossBrowsingContextGroupWindowName,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCompositeBGColorAnimation, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Defer Session Storage scavenging to avoid LevelDB initialization blocking
+// the critical path of startup.
+BASE_FEATURE(kDeferSessionStorageScavengingOnStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables deferring the creation of the speculative RFH when the navigation
 // starts. The creation of a speculative RFH consumes about 2ms and is blocking

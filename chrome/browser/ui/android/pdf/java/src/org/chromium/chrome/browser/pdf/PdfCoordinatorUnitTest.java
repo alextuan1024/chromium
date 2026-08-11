@@ -523,6 +523,58 @@ public class PdfCoordinatorUnitTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(shadows = {ShadowPdfView.class})
+    @SuppressWarnings("unchecked")
+    public void testToggleFitToPage_FitToWidth() {
+        createPdfCoordinator();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(mPdfView);
+        ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
+        PdfDocument mockPdfDocument =
+                (PdfDocument)
+                        Proxy.newProxyInstance(
+                                PdfDocument.class.getClassLoader(),
+                                new Class[] {PdfDocument.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("getPageInfo")
+                                            && args != null
+                                            && args.length == 2) {
+                                        Continuation<PageInfo> continuation =
+                                                (Continuation<PageInfo>) args[1];
+                                        PageInfo realPageInfo =
+                                                new PageInfo(
+                                                        2,
+                                                        400,
+                                                        200,
+                                                        java.util.Collections.emptyList());
+                                        continuation.resumeWith(realPageInfo);
+                                        return null;
+                                    }
+                                    if (method.getName().equals("getPageCount")) {
+                                        return 5;
+                                    }
+                                    Class<?> returnType = method.getReturnType();
+                                    if (returnType.equals(Void.TYPE)) return null;
+                                    if (returnType.equals(Boolean.TYPE)) return false;
+                                    if (returnType.equals(Integer.TYPE)) return 0;
+                                    if (returnType.equals(Long.TYPE)) return 0L;
+                                    if (returnType.equals(Float.TYPE)) return 0f;
+                                    return null;
+                                });
+        shadowPdfView.mPdfDocument = mockPdfDocument;
+
+        // Toggle Fit to Width (fitToPageHeight = false) for page index 2.
+        mPdfCoordinator.toggleFitToPage(/* fitToPageHeight= */ false, 2);
+        ShadowLooper.idleMainLooper();
+
+        // viewportWidth = 500, contentWidth = 200 => zoom = 500 / 200 = 2.5f
+        assertEquals(2.5f, shadowPdfView.mZoom, 0.001f);
+        float expectedYOffsetPoints = (mPdfView.getHeight() / 2f) / 2.5f;
+        assertEquals(new PdfPoint(2, 0f, expectedYOffsetPoints), shadowPdfView.mPdfPoint);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
     public void testCalculateFitToPageZoomWithRatio() {
         createPdfCoordinator();
 
@@ -652,7 +704,7 @@ public class PdfCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2 + ":enable_form_filling/true")
     @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
     public void testFormFillingEnabledWhenInlinePdfV2IsEnabled() {
         createPdfCoordinator();
@@ -684,6 +736,25 @@ public class PdfCoordinatorUnitTest {
         mPdfCoordinator.mChromePdfViewerFragment.onLoadDocumentSuccess(pdfDocument);
         assertFalse(
                 "Form filling should not be enabled on reload when edit mode is true",
+                shadowPdfView.isFormFillingEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2 + ":enable_form_filling/false")
+    @Config(shadows = {ShadowEditablePdfViewerFragment.class, ShadowPdfView.class})
+    public void testFormFillingDisabledWhenFormFillingParamIsDisabled() {
+        createPdfCoordinator();
+        mPdfCoordinator.mChromePdfViewerFragment.onPdfViewCreated(mPdfView);
+        ShadowPdfView shadowPdfView = Shadow.extract(mPdfView);
+        assertFalse(
+                "Form filling should not be enabled when enable_form_filling is" + " false",
+                shadowPdfView.isFormFillingEnabled());
+
+        PdfDocument pdfDocument = Mockito.mock(PdfDocument.class);
+        mPdfCoordinator.mChromePdfViewerFragment.onLoadDocumentSuccess(pdfDocument);
+        assertFalse(
+                "Form filling should still not be enabled after document load success when"
+                        + " enable_form_filling is false",
                 shadowPdfView.isFormFillingEnabled());
     }
 

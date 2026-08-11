@@ -105,8 +105,8 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kTitle";
     case SuggestionType::kSeparator:
       return "kSeparator";
-    case SuggestionType::kUndoOrClear:
-      return "kUndoOrClear";
+    case SuggestionType::kUndo:
+      return "kUndo";
     case SuggestionType::kMixedFormMessage:
       return "kMixedFormMessage";
     case SuggestionType::kDevtoolsTestAddresses:
@@ -161,6 +161,8 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kAtMemorySourceAttribution";
     case SuggestionType::kAtMemoryFetching:
       return "kAtMemoryFetching";
+    case SuggestionType::kRemoveAutofillAi:
+      return "kRemoveAutofillAi";
   }
   NOTREACHED();
 }

@@ -78,6 +78,7 @@ class SyncerProtoUtilTest : public testing::Test {
         /*birthday=*/"",
         /*bag_of_chips=*/"",
         /*poll_internal=*/base::Seconds(1),
+        /*account_email=*/"",
         /*sync_access_token_fetcher=*/nullptr);
   }
 
@@ -227,9 +228,6 @@ TEST_F(SyncerProtoUtilTest, PostAndProcessHeadersWithPropagatedToken) {
 
   sync_pb::ClientToServerResponse response;
   FakeConnectionManager dcm;
-  // Clear the cached token to ensure PostAndProcessHeaders relies on the
-  // propagated access token rather than cached auth.
-  dcm.SetAccessTokenInfo(signin::AccessTokenInfo());
 
   // Calling PostAndProcessHeaders with an empty token should fail due to auth
   // error.

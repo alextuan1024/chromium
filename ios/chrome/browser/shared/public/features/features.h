@@ -626,24 +626,6 @@ bool ShouldShowEditMenuItemsSynchronously();
 BASE_DECLARE_FEATURE(kIOSTipsNotificationsAlternativeStrings);
 bool IsTipsNotificationsAlternativeStringsEnabled();
 
-// Name of the parameter that controls tips notifications alternative string
-// version.
-extern const char kTipsNotificationsAlternativeStringVersion[];
-
-// Tips notifications alternative string version for
-// ```kIOSTipsNotificationsAlternativeStrings``` experiment.
-enum class TipsNotificationsAlternativeStringVersion {
-  kDefault = 0,
-  kAlternative1 = 1,
-  kAlternative2 = 2,
-  kAlternative3 = 3,
-};
-
-// Returns the string alternative version for
-// ```kIOSTipsNotificationsAlternativeStrings``` experiment.
-TipsNotificationsAlternativeStringVersion
-GetTipsNotificationsAlternativeStringVersion();
-
 // Enables the DisableKeyboardAccessory feature.
 BASE_DECLARE_FEATURE(kDisableKeyboardAccessory);
 
@@ -803,14 +785,6 @@ BASE_DECLARE_FEATURE(kDisableComposeboxFromAIMNTP);
 
 // Returns true if the DisableComposeboxFromAIMNTP feature is enabled.
 bool IsDisableComposeboxFromAIMNTPEnabled();
-
-extern const char kAIMCobrowseHeaderParam[];
-extern const char kAIMCobrowseHeaderParamOptionA[];
-extern const char kAIMCobrowseHeaderParamOptionB[];
-extern const char kAIMCobrowseHeaderParamOptionC[];
-
-// Variation for the Cobrowse header.
-BASE_DECLARE_FEATURE(kAIMCobrowseHeader);
 
 // Enables recording the number of recent days with active sessions.
 BASE_DECLARE_FEATURE(kRecordRecentActiveDays);

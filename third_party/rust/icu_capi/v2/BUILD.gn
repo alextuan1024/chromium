@@ -86,6 +86,7 @@ cargo_crate("lib") {
     "//third_party/rust/diplomat_runtime/v0_15:lib",
     "//third_party/rust/icu_locale/v2:lib",
     "//third_party/rust/icu_locale_core/v2:lib",
+    "//third_party/rust/icu_normalizer/v2:lib",
     "//third_party/rust/icu_provider/v2:lib",
     "//third_party/rust/icu_provider_adapters/v2:lib",
     "//third_party/rust/writeable/v0_6:lib",
@@ -93,10 +94,11 @@ cargo_crate("lib") {
   features = [
     "compiled_data",
     "locale",
+    "normalizer",
   ]
 
   visibility = []
-  visibility += [ "//base/i18n:*" ]
+  visibility += [ "//base/i18n/*" ]
 
   #####################################################################
   # Tweaking which GN `config`s apply to this target.

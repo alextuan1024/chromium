@@ -19,9 +19,6 @@ source_set("omnibox_everywhere") {
     "omnibox_everywhere_controller.h",
     "omnibox_everywhere_ui_manager.h",
   ]
-  if (is_mac) {
-    public += [ "omnibox_everywhere_mac_utils.h" ]
-  }
   public_deps = [
     ":prefs",
     "//base",
@@ -59,6 +56,8 @@ source_set("impl") {
     "//ui/base",
     "//ui/base/accelerators/global_accelerator_listener",
     "//ui/gfx",
+    "//ui/menus",
+    "//ui/strings:ui_strings",
     "//ui/views",
     "//ui/views/controls/webview",
   ]
@@ -67,13 +66,6 @@ source_set("impl") {
       "omnibox_everywhere_event_handler_aura.cc",
       "omnibox_everywhere_event_handler_aura.h",
     ]
-  }
-  if (is_mac) {
-    sources += [
-      "omnibox_everywhere_mac_utils.h",
-      "omnibox_everywhere_mac_utils.mm",
-    ]
-    deps += [ "//components/remote_cocoa/app_shim" ]
   }
 }
 
@@ -102,6 +94,7 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//ui/display:test_support",
     "//ui/views",
+    "//ui/views:test_support",
   ]
 }
 

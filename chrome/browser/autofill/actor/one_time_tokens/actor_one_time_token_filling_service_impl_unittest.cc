@@ -24,6 +24,8 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/actor/core/actor_switches.h"
+#include "components/actor/core/aggregated_journal.h"
+#include "components/actor/core/task_id.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_autofill_driver_injector.h"
@@ -76,6 +78,8 @@ class FakeOneTimeTokenService : public one_time_tokens::OneTimeTokenService {
  public:
   FakeOneTimeTokenService() = default;
   ~FakeOneTimeTokenService() override = default;
+
+  one_time_tokens::OneTimeTokenLogSink* log_sink() override { return nullptr; }
 
   void GetRecentOneTimeTokens(
       one_time_tokens::OneTimeTokenService::Callback callback) override {}
@@ -140,8 +144,7 @@ class TestActorContentAutofillDriver : public TestContentAutofillDriver {
        const FillId& fill_id,
        bool supports_refill,
        const url::Origin& triggered_origin,
-       (const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map),
-       const Section& section_for_clear_form_on_ios),
+       (const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map)),
       (override));
 };
 
@@ -180,13 +183,11 @@ class ActorOneTimeTokenFillingServiceImplTest
                            const FillId& fill_id, bool supports_refill,
                            const url::Origin& triggered_origin,
                            const absl::flat_hash_map<FieldGlobalId, FieldType>&
-                               field_type_map,
-                           const Section& section_for_clear_form_on_ios) {
+                               field_type_map) {
           base::flat_set<FieldGlobalId> filled_fields =
               driver().TestContentAutofillDriver::ApplyFormAction(
                   action_type, action_persistence, fields, fill_id,
-                  supports_refill, triggered_origin, field_type_map,
-                  section_for_clear_form_on_ios);
+                  supports_refill, triggered_origin, field_type_map);
           for (const FormFieldData& field : fields) {
             if (filled_fields.contains(field.global_id())) {
               last_filled_values_[field.global_id()] = field.value();
@@ -206,7 +207,8 @@ class ActorOneTimeTokenFillingServiceImplTest
           return std::make_unique<FakeOneTimeTokenService>();
         }));
 
-    service_ = std::make_unique<ActorOneTimeTokenFillingServiceImpl>(profile());
+    service_ = std::make_unique<ActorOneTimeTokenFillingServiceImpl>(
+        profile(), journal_.GetSafeRef(), ::actor::TaskId(1));
   }
 
   void TearDown() override {
@@ -267,6 +269,7 @@ class ActorOneTimeTokenFillingServiceImplTest
       autofill_driver_injector_;
 
  protected:
+  ::actor::AggregatedJournal journal_;
   std::unique_ptr<ActorOneTimeTokenFillingServiceImpl> service_;
   absl::flat_hash_map<FieldGlobalId, std::u16string> last_filled_values_;
   base::HistogramTester histogram_tester_;

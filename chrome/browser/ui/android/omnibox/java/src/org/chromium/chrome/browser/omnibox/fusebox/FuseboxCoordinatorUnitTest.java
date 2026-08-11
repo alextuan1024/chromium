@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.omnibox.fusebox;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -47,6 +48,7 @@ import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.Callback;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -71,6 +73,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteRequestType;
@@ -115,6 +118,7 @@ public class FuseboxCoordinatorUnitTest {
     @Mock private InsetObserver mInsetObserver;
     @Mock private WindowInsetsCompat mWindowInsetsCompat;
     @Mock private WindowAndroid mWindowAndroid;
+    @Mock private Callback<Boolean> mOnInteractionCompletedCallback;
 
     private AutocompleteInput mAutocompleteInput;
     private ActivityController<TestActivity> mActivityController;
@@ -170,6 +174,8 @@ public class FuseboxCoordinatorUnitTest {
                 mActivityController.get(),
                 mWindowAndroid,
                 mParent,
+                new OmniboxResourceProvider(
+                        mActivityController.get(), BrandedColorScheme.APP_DEFAULT),
                 mTabModelSelectorSupplier,
                 mTemplateUrlServiceSupplier,
                 mSnackbarManager,
@@ -374,14 +380,38 @@ public class FuseboxCoordinatorUnitTest {
 
     @Test
     @EnableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
-    public void testPopupDismissed() {
+    public void testPopupDismissed_noPopupItemSelected_plusButtonFocused() {
         mCoordinator.beginInput(createSession());
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         mCoordinator.setMediatorForTesting(mMediator);
+        doReturn(false).when(mMediator).wasPopupItemSelected();
+
+        mCoordinator.setOnInteractionCompletedCallback(mOnInteractionCompletedCallback);
+
         var viewHolder = assumeNonNull(mCoordinator.getViewHolderForTesting());
         viewHolder.plusButton.setVisibility(View.VISIBLE);
         mCoordinator.onContextPopupDismissed();
+
         assertTrue(viewHolder.plusButton.isFocused());
+        verify(mOnInteractionCompletedCallback).onResult(false);
+    }
+
+    @Test
+    @EnableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
+    public void testPopupDismissed_popupItemSelected_plusButtonNotFocused() {
+        mCoordinator.beginInput(createSession());
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        mCoordinator.setMediatorForTesting(mMediator);
+        doReturn(true).when(mMediator).wasPopupItemSelected();
+
+        mCoordinator.setOnInteractionCompletedCallback(mOnInteractionCompletedCallback);
+
+        var viewHolder = assumeNonNull(mCoordinator.getViewHolderForTesting());
+        viewHolder.plusButton.setVisibility(View.VISIBLE);
+        mCoordinator.onContextPopupDismissed();
+
+        assertFalse(viewHolder.plusButton.isFocused());
+        verify(mOnInteractionCompletedCallback).onResult(true);
     }
 
     @Test

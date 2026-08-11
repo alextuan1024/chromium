@@ -19,6 +19,7 @@ inline extern const char kContextualTasksName[] = "contextual_tasks";
 inline extern const char kBrowserActuatorName[] = "browser_actuator";
 inline extern const char kTabContextContainersServiceName[] =
     "tab_context_containers_service";
+inline extern const char kSiteTokenProviderName[] = "site_token_provider";
 }  // namespace oauth_consumer_name
 
 // LINT.IfChange(OAuthConsumerId)
@@ -84,7 +85,7 @@ enum class OAuthConsumerId {
   kArcBackgroundAuthCodeFetcher = 55,
   kGcmAccountTracker = 56,
   kPolicyTokenForwarder = 57,
-  kPluginVmLicenseChecker = 58,  // Deprecated. Do not reuse.
+  // kPluginVmLicenseChecker = 58,  // Removed due to deprecation.
   kDrivefsAuth = 59,
   kNearbyPresenceServerClient = 60,
   kCryptAuthClient = 61,
@@ -134,7 +135,8 @@ enum class OAuthConsumerId {
   kRemoteActorLoginCredentialsService = 105,
   kBrowserActuator = 106,
   kTabContextContainersService = 107,
-  kMaxValue = kTabContextContainersService,
+  kSiteTokenProvider = 108,
+  kMaxValue = kSiteTokenProvider,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:OAuthConsumerId)
 

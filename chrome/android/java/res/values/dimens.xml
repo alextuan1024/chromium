@@ -168,14 +168,11 @@ found in the LICENSE file.
     <dimen name="find_in_page_popup_margin_end">62dp</dimen>
 
     <!-- NTP dimensions -->
-    <!-- Spacing between sections. -->
-    <dimen name="ntp_section_bottom_margin">4dp</dimen>
     <!-- Specific margins and paddings, ordered by appearance. -->
     <dimen name="ntp_search_box_transition_start_offset">16dp</dimen>
     <dimen name="ntp_search_box_transition_end_offset">4dp</dimen>
     <dimen name="ntp_search_box_max_width">680dp</dimen>
     <dimen name="ntp_search_box_action_button_margin">8dp</dimen>
-    <dimen name="composeplate_view_margin_top">4dp</dimen>
     <dimen name="mvt_container_top_padding">16dp</dimen>
     <dimen name="mvt_container_top_padding_small">8dp</dimen>
     <dimen name="mvt_container_bottom_padding">22dp</dimen>
@@ -221,12 +218,10 @@ found in the LICENSE file.
 
     <!-- Bookmarks Desktop Layout dimensions -->
     <dimen name="bookmark_desktop_navigation_pane_width">240dp</dimen>
-    <dimen name="bookmark_desktop_navigation_header_top_margin">34dp</dimen>
-    <dimen name="bookmark_desktop_navigation_header_start_margin">32dp</dimen>
+    <dimen name="bookmark_desktop_navigation_header_top_margin">24dp</dimen>
+    <dimen name="bookmark_desktop_navigation_header_bot_margin">8dp</dimen>
     <dimen name="bookmark_desktop_navigation_header_end_margin">16dp</dimen>
     <dimen name="bookmark_desktop_navigation_header_bottom_margin">36dp</dimen>
-    <dimen
-        name="bookmark_desktop_navigation_list_horizontal_padding">24dp</dimen>
     <dimen name="bookmark_desktop_content_padding">24dp</dimen>
 
      <!-- Improved bookmark row properties. -->

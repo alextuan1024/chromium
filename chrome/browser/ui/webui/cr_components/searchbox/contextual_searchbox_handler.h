@@ -84,6 +84,20 @@ class ContextualOmniboxClient : public SearchboxOmniboxClient {
   void SetSuggestInputsCallback(GetSuggestInputsCallback callback) {
     suggest_inputs_callback_ = std::move(callback);
   }
+  using HasPreviousSubmittedThreadContextCallback =
+      base::RepeatingCallback<bool()>;
+  using HasAutoSuggestedTabCallback = base::RepeatingCallback<bool()>;
+  void SetHasPreviousSubmittedThreadContextCallback(
+      HasPreviousSubmittedThreadContextCallback callback) {
+    has_previous_submitted_thread_context_callback_ = std::move(callback);
+  }
+  void SetHasAutoSuggestedTabCallback(HasAutoSuggestedTabCallback callback) {
+    has_auto_suggested_tab_callback_ = std::move(callback);
+  }
+
+  bool HasPreviousSubmittedThreadContext() const override;
+  bool HasAutoSuggestedTab() const override;
+
   std::optional<lens::proto::LensOverlaySuggestInputs>
   GetLensOverlaySuggestInputsForTesting() const {
     return GetLensOverlaySuggestInputs();
@@ -95,6 +109,9 @@ class ContextualOmniboxClient : public SearchboxOmniboxClient {
 
  private:
   GetSuggestInputsCallback suggest_inputs_callback_;
+  HasPreviousSubmittedThreadContextCallback
+      has_previous_submitted_thread_context_callback_;
+  HasAutoSuggestedTabCallback has_auto_suggested_tab_callback_;
 };
 
 // This just allows declaration in class to avoid cluttering global namespace.
@@ -180,7 +197,8 @@ class ContextualSearchboxHandler
                          uint32_t cursor_position,
                          omnibox::SuggestInventory suggest_inventory,
                          bool is_on_focus,
-                         const std::string& keyword) override;
+                         const std::string& keyword,
+                         searchbox::mojom::InputMethod input_method) override;
 
 #if !BUILDFLAG(IS_ANDROID)
   // drive_picker_host::mojom::DrivePickerResultHandler:
@@ -202,6 +220,8 @@ class ContextualSearchboxHandler
 
   // Returns the list of selected tab IDs that should be transferred.
   virtual std::vector<int32_t> GetSelectedTabIds() const;
+
+  virtual bool SessionHandleHasPreviousSubmittedThreadContext();
 
   // Continues the process of adding tab context for a given `tab_id`.
   // This method is used when a `context_token` has already been generated
@@ -255,7 +275,8 @@ class ContextualSearchboxHandler
 
   // Resets `input_state_model_`.
   void ResetInputStateModel();
-  void SetActiveToolMode(omnibox::ToolMode tool) override;
+  void SetActiveToolMode(omnibox::ToolMode tool,
+                         bool is_set_by_server) override;
   void RecordToolSelectionAction(omnibox::ToolMode tool) override;
   void SetActiveModelMode(omnibox::ModelMode model) override;
   void RecordModelSelectionAction(omnibox::ModelMode model) override;

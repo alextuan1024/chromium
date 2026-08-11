@@ -13,6 +13,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -172,6 +173,13 @@ class TestVisualGuidedSetterControllerWin
   bool IsChromeWindowActive() const override { return chrome_window_active_; }
   void LaunchSettings() override {}
 
+  // Simulates the asynchronous reply of the real LaunchSettings(), which
+  // posts ShellUtil::ShowMakeChromeDefaultSystemUI() to a COM STA task runner
+  // and replies with its result on the UI sequence.
+  void SimulateLaunchSettingsResult(bool succeeded) {
+    OnLaunchSettingsResult(succeeded);
+  }
+
   std::unique_ptr<SettingsWindowFinderWin> CreateSettingsWindowFinder()
       override {
     auto finder = std::make_unique<TestSettingsWindowFinderWin>();
@@ -184,7 +192,24 @@ class TestVisualGuidedSetterControllerWin
     return dpi_compatible_;
   }
 
+  void ShowOverlayArrow(const gfx::Point& start,
+                        const gfx::Point& end) override {
+    ++show_overlay_count_;
+  }
+  void HideOverlayArrow() override { ++hide_overlay_count_; }
+  std::optional<gfx::Rect> GetSettingsWindowScreenRect() const override {
+    return gfx::Rect(1000, 300, 800, 600);
+  }
+  int show_overlay_count() const { return show_overlay_count_; }
+  int hide_overlay_count() const { return hide_overlay_count_; }
+  void clear_overlay_counts() {
+    show_overlay_count_ = 0;
+    hide_overlay_count_ = 0;
+  }
+
  private:
+  int show_overlay_count_ = 0;
+  int hide_overlay_count_ = 0;
   std::optional<gfx::Rect> anchor_rect_;
 
   bool settings_window_valid_ = true;
@@ -196,6 +221,59 @@ class TestVisualGuidedSetterControllerWin
   std::vector<HWND> applied_z_orders_;
   base::OnceClosure run_loop_quit_closure_;
   mutable raw_ptr<TestSettingsWindowFinderWin> test_finder_ = nullptr;
+};
+
+// Routes the window-state predicates back to the REAL implementations and
+// fakes the low-level Win32 probes underneath.
+class WindowStateTestControllerWin
+    : public TestVisualGuidedSetterControllerWin {
+ public:
+  explicit WindowStateTestControllerWin(views::Widget* parent_widget)
+      : TestVisualGuidedSetterControllerWin(parent_widget) {}
+
+  bool IsSettingsWindowAlive() const override {
+    return VisualGuidedSetterControllerWin::IsSettingsWindowAlive();
+  }
+
+  bool IsSettingsWindowValid() const override {
+    return VisualGuidedSetterControllerWin::IsSettingsWindowValid();
+  }
+
+  bool IsSettingsWindowClosed() const override {
+    return VisualGuidedSetterControllerWin::IsSettingsWindowClosed();
+  }
+
+  // Fake probes.
+  void set_settings_probe_hwnd(HWND hwnd) { settings_probe_hwnd_ = hwnd; }
+  void set_settings_alive(bool value) { settings_alive_ = value; }
+  void set_settings_on_screen(bool value) { settings_on_screen_ = value; }
+  void set_settings_cloaked(bool value) { settings_cloaked_ = value; }
+  void set_settings_minimized(bool value) { settings_minimized_ = value; }
+  void set_chrome_cloaked(bool value) { chrome_cloaked_ = value; }
+
+  bool IsWindowAlive(HWND hwnd) const override {
+    return hwnd == settings_probe_hwnd_ ? settings_alive_ : true;
+  }
+  bool IsWindowOnScreen(HWND hwnd) const override {
+    return hwnd == settings_probe_hwnd_ ? settings_on_screen_ : true;
+  }
+  bool IsWindowCloaked(HWND hwnd) const override {
+    return hwnd == settings_probe_hwnd_ ? settings_cloaked_ : chrome_cloaked_;
+  }
+  bool IsWindowMinimized(HWND hwnd) const override {
+    return hwnd == settings_probe_hwnd_ ? settings_minimized_ : false;
+  }
+
+  bool settings_window_closed() const { return IsSettingsWindowClosed(); }
+  bool settings_window_valid() const { return IsSettingsWindowValid(); }
+
+ private:
+  HWND settings_probe_hwnd_ = nullptr;
+  bool settings_alive_ = true;
+  bool settings_on_screen_ = true;
+  bool settings_cloaked_ = false;
+  bool settings_minimized_ = false;
+  bool chrome_cloaked_ = false;
 };
 
 }  // namespace
@@ -233,6 +311,15 @@ class VisualGuidedSetterControllerWinTest : public ChromeViewsTestBase {
     profile_.reset();
     widget_.reset();
     ChromeViewsTestBase::TearDown();
+  }
+
+  std::unique_ptr<WindowStateTestControllerWin> MakeWindowStateController() {
+    auto controller =
+        std::make_unique<WindowStateTestControllerWin>(widget_.get());
+    controller->SetWebContents(web_contents_.get());
+    controller->SetAnchorRect(gfx::Rect(400, 300, 600, 400));
+    controller->SetAnchorRectInWebUi(gfx::Rect(0, 0, 600, 400));
+    return controller;
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -276,6 +363,62 @@ TEST_F(VisualGuidedSetterControllerWinTest, FindSettingsTimeout) {
   histograms.ExpectUniqueSample(
       "DefaultBrowser.VisualGuide.Outcome",
       TestVisualGuidedSetterControllerWin::Outcome::kSettingsWindowNotFound, 1);
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest, LaunchSettingsFailureFailsFast) {
+  base::HistogramTester histograms;
+  bool error_state = false;
+  controller_->SetErrorCallback(base::BindLambdaForTesting(
+      [&](bool is_error) { error_state = is_error; }));
+
+  controller_->Start();
+  EXPECT_TRUE(controller_->is_running());
+  EXPECT_EQ(controller_->test_finder()->start_called_count(), 1);
+
+  // The launch reply arrives asynchronously after Start().
+  controller_->SimulateLaunchSettingsResult(false);
+
+  EXPECT_FALSE(controller_->is_running());
+  EXPECT_TRUE(error_state);
+  EXPECT_GE(controller_->test_finder()->stop_called_count(), 1);
+  histograms.ExpectUniqueSample(
+      "DefaultBrowser.VisualGuide.Outcome",
+      TestVisualGuidedSetterControllerWin::Outcome::kSettingsLaunchFailed, 1);
+
+  // The finder was stopped, so no timeout can double-record an outcome.
+  controller_->test_finder()->TriggerFound(nullptr);
+  histograms.ExpectUniqueSample(
+      "DefaultBrowser.VisualGuide.Outcome",
+      TestVisualGuidedSetterControllerWin::Outcome::kSettingsLaunchFailed, 1);
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest, LaunchSettingsSuccessKeepsRunning) {
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+
+  controller_->Start();
+  controller_->SimulateLaunchSettingsResult(true);
+
+  EXPECT_TRUE(controller_->is_running());
+  EXPECT_EQ(controller_->test_finder()->start_called_count(), 1);
+
+  controller_->test_finder()->TriggerFound(fake_hwnd);
+  EXPECT_GT(controller_->applied_rects().size(), 0u);
+
+  controller_->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest,
+       LaunchSettingsFailureAfterStopIsIgnored) {
+  base::HistogramTester histograms;
+
+  controller_->Start();
+  controller_->Stop();
+
+  controller_->SimulateLaunchSettingsResult(false);
+
+  histograms.ExpectBucketCount(
+      "DefaultBrowser.VisualGuide.Outcome",
+      TestVisualGuidedSetterControllerWin::Outcome::kSettingsLaunchFailed, 0);
 }
 
 TEST_F(VisualGuidedSetterControllerWinTest, DpiMismatchDegrades) {
@@ -621,4 +764,139 @@ TEST_F(VisualGuidedSetterControllerWinTest,
   EXPECT_EQ(controller_->applied_rects().size(), 0u);
 
   controller_->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest, RealValidityPredicateCloakAware) {
+  auto controller = MakeWindowStateController();
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+  controller->set_settings_probe_hwnd(fake_hwnd);
+  // Nothing latched yet: not valid.
+  EXPECT_FALSE(controller->settings_window_valid());
+  EXPECT_FALSE(controller->settings_window_closed());
+
+  controller->Start();
+  controller->test_finder()->TriggerFound(fake_hwnd);
+
+  // Latched, alive, on screen, not cloaked: valid.
+  EXPECT_TRUE(controller->settings_window_valid());
+  EXPECT_FALSE(controller->settings_window_closed());
+
+  // Destroyed window: invalid and closed.
+  controller->set_settings_alive(false);
+  EXPECT_FALSE(controller->settings_window_valid());
+  EXPECT_TRUE(controller->settings_window_closed());
+  controller->set_settings_alive(true);
+
+  // Hidden (WS_VISIBLE cleared): invalid.
+  controller->set_settings_on_screen(false);
+  EXPECT_FALSE(controller->settings_window_valid());
+  controller->set_settings_on_screen(true);
+
+  // DWM-cloaked: invalid.
+  controller->set_settings_cloaked(true);
+  EXPECT_FALSE(controller->settings_window_valid());
+
+  controller->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest,
+       OverlayNotShownBeforeSettingsWindowFound) {
+  controller_->Start();
+  task_environment()->FastForwardBy(base::Milliseconds(500));
+  EXPECT_EQ(controller_->show_overlay_count(), 0);
+  controller_->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest, RealClosedPredicateUwpSemantics) {
+  auto controller = MakeWindowStateController();
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+  controller->set_settings_probe_hwnd(fake_hwnd);
+  controller->Start();
+  controller->test_finder()->TriggerFound(fake_hwnd);
+
+  // Latched, alive, on screen, not cloaked: not closed.
+  EXPECT_FALSE(controller->settings_window_closed());
+
+  // Destroyed window: closed.
+  controller->set_settings_alive(false);
+  EXPECT_TRUE(controller->settings_window_closed());
+  controller->set_settings_alive(true);
+
+  // Hidden (WS_VISIBLE cleared): closed.
+  controller->set_settings_on_screen(false);
+  EXPECT_TRUE(controller->settings_window_closed());
+  controller->set_settings_on_screen(true);
+
+  // DWM-cloaked (typical UWP close): closed.
+  controller->set_settings_cloaked(true);
+  EXPECT_TRUE(controller->settings_window_closed());
+
+  controller->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest,
+       CloakedSettingsWindowTearsDownFlow) {
+  base::HistogramTester histograms;
+  auto controller = MakeWindowStateController();
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+  controller->set_settings_probe_hwnd(fake_hwnd);
+  controller->Start();
+  controller->test_finder()->TriggerFound(fake_hwnd);
+
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+  EXPECT_TRUE(controller->is_running());
+
+  controller->set_settings_cloaked(true);
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+  EXPECT_FALSE(controller->is_running());
+
+  histograms.ExpectUniqueSample(
+      "DefaultBrowser.VisualGuide.Outcome",
+      TestVisualGuidedSetterControllerWin::Outcome::kSettingsWindowClosed, 1);
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest,
+       OverlayShownWhenDockedAndHiddenWhenInvalid) {
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+  controller_->Start();
+  controller_->test_finder()->TriggerFound(fake_hwnd);
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+
+  EXPECT_GT(controller_->show_overlay_count(), 0);
+  controller_->clear_overlay_counts();
+  controller_->SetSettingsWindowValid(false);
+
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+  EXPECT_GT(controller_->hide_overlay_count(), 0);
+  EXPECT_EQ(controller_->show_overlay_count(), 0);
+
+  controller_->Stop();
+}
+
+TEST_F(VisualGuidedSetterControllerWinTest,
+       RealClosedPredicateMinimizeAndVirtualDesktopExemptions) {
+  auto controller = MakeWindowStateController();
+  HWND fake_hwnd = reinterpret_cast<HWND>(0x12345);
+  controller->set_settings_probe_hwnd(fake_hwnd);
+  controller->Start();
+  controller->test_finder()->TriggerFound(fake_hwnd);
+
+  // Minimized (shell cloaks minimized UWP windows): not closed, not valid.
+  controller->set_settings_cloaked(true);
+  controller->set_settings_minimized(true);
+  EXPECT_FALSE(controller->settings_window_closed());
+  EXPECT_FALSE(controller->settings_window_valid());
+  controller->set_settings_minimized(false);
+
+  // Virtual desktop switch: Chrome's window is cloaked too, so the cloaked
+  // Settings window says nothing about a close.
+  controller->set_chrome_cloaked(true);
+  EXPECT_FALSE(controller->settings_window_closed());
+  EXPECT_FALSE(controller->settings_window_valid());
+
+  // Back on the active desktop with Settings still cloaked: now it is closed.
+  controller->set_chrome_cloaked(false);
+  EXPECT_TRUE(controller->settings_window_closed());
+
+  controller->Stop();
 }

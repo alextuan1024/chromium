@@ -33,6 +33,7 @@
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/location_bar/selected_keyword_view.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_omnibox_client.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
@@ -77,6 +78,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/resource_path.h"
 #include "ui/base/window_open_disposition_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 
@@ -205,6 +207,27 @@ void WebuiOmniboxHandler::ActivateKeyword(
   }
 }
 
+void WebuiOmniboxHandler::QueryAutocomplete(
+    int32_t query_id,
+    const std::u16string& input,
+    bool prevent_inline_autocomplete,
+    uint32_t cursor_position,
+    omnibox::SuggestInventory suggest_inventory,
+    bool is_on_focus,
+    const std::string& keyword,
+    searchbox::mojom::InputMethod input_method) {
+  SearchboxHandler::QueryAutocomplete(
+      query_id, input, prevent_inline_autocomplete, cursor_position,
+      suggest_inventory, is_on_focus, keyword, input_method);
+
+  if (auto* omnibox_view_views =
+          static_cast<OmniboxViewViews*>(edit_model()->view())) {
+    omnibox_view_views->SetWindowTextAndCaretPos(input, cursor_position,
+                                                 /*update_popup=*/false,
+                                                 /*notify_text_changed=*/false);
+  }
+}
+
 void WebuiOmniboxHandler::OpenLensSearch() {
   edit_model()->OpenLensSearch();
 }
@@ -214,11 +237,17 @@ void WebuiOmniboxHandler::AddTabContext(
     bool delay_upload,
     searchbox::mojom::TabAttachmentSource source,
     AddTabContextCallback callback) {
+  if (!contextual_search::ContextualSearchService::IsContextSharingEnabled(
+          profile_->GetPrefs())) {
+    std::move(callback).Run(base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError));
+    return;
+  }
   auto* browser_window_interface =
       webui::GetBrowserWindowInterface(web_contents_.get());
   const tabs::TabHandle handle = tabs::TabHandle(tab_id);
   tabs::TabInterface* const tab = handle.Get();
-  if (!tab) {
+  if (!tab || tab->GetProfile() != profile_) {
     std::move(callback).Run(base::unexpected(
         contextual_search::ContextUploadErrorType::kBrowserProcessingError));
     return;
@@ -369,7 +398,7 @@ WebuiOmniboxHandler::CreateAutocompleteMatch(
 
     // Populate `keyword_model`.
     if (has_keyword) {
-      auto keyword_model = searchbox::mojom::KeywordModel::New();
+      auto keyword_model = searchbox::mojom::MatchKeywordModel::New();
       keyword_model->type = keyword_type;
       keyword_model->keyword = base::UTF16ToUTF8(keyword);
       keyword_model->placeholder = base::UTF16ToUTF8(keyword_placeholder);

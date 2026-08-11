@@ -843,6 +843,7 @@ SelectorChecker::FeaturelessMatch SelectorChecker::MatchShadowHost(
     case CSSSelector::kPseudoSelectContainsInput:
     case CSSSelector::kPseudoOverscrollBackdrop:
     case CSSSelector::kPseudoSelectHasSlottedButton:
+    case CSSSelector::kPseudoSkeleton:
       // These pseudos are not allowed to match featureless elements. When
       // adding new pseudos here, they would typically be allowed if they are
       // logical pseudos which take selector arguments.
@@ -2278,9 +2279,9 @@ bool SelectorChecker::CheckPseudoHas(const SelectorCheckingContext& context,
 bool SelectorChecker::CheckPseudoLinkTo(const SelectorCheckingContext& context,
                                         MatchResult& result) const {
   DCHECK(context.selector);
-  DCHECK(context.selector->GetRouteLocation());
+  DCHECK(context.selector->GetNavigationLocation());
   Element& element = GetCandidateElement(context, result);
-  return context.selector->GetRouteLocation()->CheckSelectorMatch(element);
+  return context.selector->GetNavigationLocation()->CheckSelectorMatch(element);
 }
 
 bool SelectorChecker::CheckPseudoClass(const SelectorCheckingContext& context,

@@ -24,6 +24,8 @@
 #include "contextual_search_context_controller.h"
 #include "contextual_search_types.h"
 #include "pref_names.h"
+#include "third_party/lens_server_proto/aim_communication.pb.h"
+#include "third_party/lens_server_proto/modality_chip_props.pb.h"
 
 namespace contextual_search {
 
@@ -485,6 +487,10 @@ void ContextualSearchSessionHandle::CreateSearchUrl(
     }
   }
 
+  if (!search_url_request_info->file_tokens.empty()) {
+    has_submitted_context_ = true;
+  }
+
   // Copy the tokens from this request to the list of all submitted tokens.
   submitted_context_tokens_.insert(submitted_context_tokens_.end(),
                                    search_url_request_info->file_tokens.begin(),
@@ -740,6 +746,10 @@ ContextualSearchSessionHandle::CreateClientToAimRequest(
   create_client_to_aim_request_info->file_tokens =
       std::move(file_tokens_set).extract();
 
+  if (!create_client_to_aim_request_info->file_tokens.empty()) {
+    has_submitted_context_ = true;
+  }
+
   // Copy the tokens from this request to the list of all submitted tokens.
   submitted_context_tokens_.insert(
       submitted_context_tokens_.end(),
@@ -794,6 +804,9 @@ void ContextualSearchSessionHandle::ClearSubmittedContextTokens() {
 
 void ContextualSearchSessionHandle::set_submitted_context_tokens(
     const std::vector<base::UnguessableToken>& tokens) {
+  if (!tokens.empty()) {
+    has_submitted_context_ = true;
+  }
   submitted_context_tokens_ = tokens;
 }
 

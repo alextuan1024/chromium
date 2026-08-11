@@ -1224,6 +1224,12 @@ BASE_FEATURE(kPlatformHEVCDecoderSupport, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kPlatformHEVCEncoderSupport, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_APPLE)
+// Enables HEVC Main10 (10-bit) hardware accelerated encoding on macOS.
+BASE_FEATURE(kPlatformHEVCMain10EncoderSupport,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_APPLE)
+
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 
 #if BUILDFLAG(ENABLE_SYMPHONIA)
@@ -1365,6 +1371,12 @@ BASE_FEATURE(kRequestSystemAudioFocus, base::FEATURE_ENABLED_BY_DEFAULT);
 // are already met.
 BASE_FEATURE(kSkipMediaCodecReallocation, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Allow the video decoder (MediaCodecVideoDecoder) to query the MediaCrypto
+// object with a mime type to see if a secure decoder component is required.
+// If disabled, we use the fallback Widevine L1/L3 security level check.
+BASE_FEATURE(kUseMediaCryptoRequiresSecureDecoderComponent,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Use the (hacky) AudioManager.getOutputLatency() call to get the estimated
 // hardware latency for a stream for OpenSLES playback.  This is normally not
 // needed, except for some Android TV devices.
@@ -1393,6 +1405,11 @@ BASE_FEATURE(kUseSecurityLevelWhenCheckingMediaDrmVersion,
 #if BUILDFLAG(IS_APPLE)
 // Enables VideoToolbox Quality Metrics (MSE / PSNR) generation.
 BASE_FEATURE(kVTVideoEncodeAcceleratorCalculatePSNR,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables VideoToolbox zero-copy encode of opaque SharedImage-backed
+// VideoFrames.
+BASE_FEATURE(kVTVideoEncodeAcceleratorOpaqueSharedImageEncode,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(IS_APPLE)

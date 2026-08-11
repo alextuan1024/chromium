@@ -375,18 +375,10 @@ HEADLESS_MODE_PROTOCOL_TEST(OzoneScreenSizeOverride,
                             "sanity/ozone-screen-size-override.js")
 #endif
 
-// This currently results in an unexpected screen orientation type,
-// see http://crbug.com/398150465.
 HEADLESS_MODE_PROTOCOL_TEST(MultipleScreenDetails,
                             "shared/multiple-screen-details.js")
 
-// TODO(crbug.com/543203215): Re-enable this test.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_MoveWindowBetweenScreens DISABLED_MoveWindowBetweenScreens
-#else
-#define MAYBE_MoveWindowBetweenScreens MoveWindowBetweenScreens
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_MoveWindowBetweenScreens,
+HEADLESS_MODE_PROTOCOL_TEST(MoveWindowBetweenScreens,
                             "shared/move-window-between-screens.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenOnSecondaryScreen,
@@ -401,13 +393,7 @@ HEADLESS_MODE_PROTOCOL_TEST(WindowOpenNoopenerClickOpenerId,
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenShiftClickOpenerId,
                             "shared/window-open-shift-click-opener-id.js")
 
-// TODO(crbug.com/40283476): CreateTargetSecondaryScreen is failing on Mac
-#if !BUILDFLAG(IS_MAC)
-#define MAYBE_CreateTargetSecondaryScreen CreateTargetSecondaryScreen
-#else
-#define MAYBE_CreateTargetSecondaryScreen DISABLED_CreateTargetSecondaryScreen
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_CreateTargetSecondaryScreen,
+HEADLESS_MODE_PROTOCOL_TEST(CreateTargetSecondaryScreen,
                             "shared/create-target-secondary-screen.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenPopupPlacement,
@@ -440,7 +426,8 @@ HEADLESS_MODE_PROTOCOL_TEST(WindowZoomOnSecondaryScreen,
 
 // On macOS fullscreen uses display bounds rather than work area.
 #if BUILDFLAG(IS_MAC)
-HEADLESS_MODE_PROTOCOL_TEST(, "shared/window-zoom-size-matches-screen.js")
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesScreen,
+                            "shared/window-zoom-size-matches-screen.js")
 #else
 HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesWorkArea,
                             "shared/window-zoom-size-matches-work-area.js")

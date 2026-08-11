@@ -327,11 +327,13 @@ bool WebUILocationBar::ShouldCloseOmniboxPopup(ui::MouseEvent* event) {
     return false;
   }
 
-  if (BoundsInScreen().Contains(event->root_location())) {
+  auto* const view = static_cast<views::View*>(event->target());
+  auto event_coords =
+      views::View::ConvertPointToScreen(view, event->location());
+  if (BoundsInScreen().Contains(event_coords)) {
     return false;
   }
 
-  auto* const view = static_cast<views::View*>(event->target());
   if (omnibox_popup_view_->presenter()->GetOuterView()->Contains(view)) {
     return false;
   }
@@ -523,6 +525,24 @@ void WebUILocationBar::UpdateLhsChipsState(bool icon_known) {
             toolbar_delegate_->GetIconTable().RegisterImageModelTryReuse(
                 maybe_new_icon, location_icon_);
       }
+    }
+  }
+
+  if (is_editing_or_empty) {
+    // Permission requests get cancelled if user edits the URL.
+    // (And won't show up if it was already edited when they occurred).
+    bool has_visible_chip = GetChipController()->chip()->GetVisible();
+    bool has_permission_prompt =
+        GetChipController()->active_permission_request_manager().has_value() &&
+        GetChipController()
+            ->active_permission_request_manager()
+            .value()
+            ->GetCurrentPrompt();
+
+    if (has_visible_chip || has_permission_prompt) {
+      // If a user starts typing, a permission request should be ignored and the
+      // chip finalized.
+      GetChipController()->ResetPermissionPromptChip();
     }
   }
 

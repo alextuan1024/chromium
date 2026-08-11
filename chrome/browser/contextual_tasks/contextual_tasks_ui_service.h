@@ -79,6 +79,7 @@ struct StartTaskUiOptions {
       omnibox::ChromeAimEntryPoint::UNKNOWN_AIM_ENTRY_POINT;
   bool use_mstk_for_task_association = false;
   bool use_no_animation = false;
+  std::optional<base::TimeTicks> open_time_ticks = std::nullopt;
 };
 
 // A service used to coordinate all of the side panel instances showing an AI
@@ -246,16 +247,6 @@ class ContextualTasksUiService : public KeyedService {
                              const std::optional<base::Uuid>& old_task_id,
                              const std::optional<base::Uuid>& new_task_id,
                              bool is_shown_in_tab);
-
-  // Called when the WebUI is ready.
-  virtual void OnWebUIReady(BrowserWindowInterface* browser_window_interface,
-                            const base::Uuid& task_id,
-                            content::WebContents* web_contents);
-
-  // Called when the WebUI controller is destroyed.
-  virtual void OnWebUIDestroyed(
-      BrowserWindowInterface* browser_window_interface,
-      const std::optional<base::Uuid>& task_id);
 
   // Turns on smart tab sharing in the specified browser window's active WebUI.
   virtual void TurnOnSmartTabSharing(BrowserWindowInterface* browser);

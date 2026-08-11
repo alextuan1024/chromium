@@ -17,7 +17,7 @@ source_set("on_device_category_classifier") {
   ]
   deps = [
     "//base",
-    "//components/history/core/browser",
+    "//components/download/public/background_service:public",
     "//components/keyed_service/core",
     "//components/keyed_service/ios",
     "//components/optimization_guide/core:features",
@@ -25,6 +25,7 @@ source_set("on_device_category_classifier") {
     "//components/passage_embeddings/core",
     "//components/ukm/ios:ukm_url_recorder",
     "//ios/chrome/browser/intelligence/actor/tools/model:page_stability",
+    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/proto_wrappers",
     "//ios/chrome/browser/optimization_guide/model",
     "//ios/chrome/browser/shared/model/profile",
@@ -32,6 +33,7 @@ source_set("on_device_category_classifier") {
     "//ios/web/public",
     "//ios/web/public/js_messaging",
     "//services/metrics/public/cpp:metrics_cpp",
+    "//services/metrics/public/cpp:ukm_builders",
     "//services/passage_embeddings",
   ]
 }
@@ -48,14 +50,18 @@ source_set("unit_tests") {
     ":on_device_category_classifier",
     "//base",
     "//base/test:test_support",
+    "//components/download/public/background_service:public",
     "//components/optimization_guide/core:test_support",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/page_content_annotations/core",
     "//components/passage_embeddings/core",
+    "//components/ukm:test_support",
+    "//ios/chrome/browser/optimization_guide/model",
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/web/public/test",
     "//ios/web/public/test/fakes",
     "//services/metrics/public/cpp:metrics_cpp",
+    "//services/metrics/public/cpp:ukm_builders",
     "//testing/gmock",
     "//testing/gtest",
     "//url",

@@ -291,7 +291,7 @@ class KeyboardAccessoryMediator
             // The insecure context warning has a replacement in the fallback sheet.
             case SuggestionType.TITLE:
             case SuggestionType.SEPARATOR:
-            case SuggestionType.UNDO_OR_CLEAR:
+            case SuggestionType.UNDO:
             case SuggestionType.ALL_SAVED_PASSWORDS_ENTRY:
             case SuggestionType.AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE:
             case SuggestionType.GENERATE_PASSWORD_ENTRY:
@@ -370,7 +370,7 @@ class KeyboardAccessoryMediator
                     if (suggestion.showLoadingOnAcceptance()) {
                         showLoadingUIOnSuggestion(suggestion);
                     }
-                    delegate.suggestionSelected(pos, suggestion.showLoadingOnAcceptance());
+                    delegate.suggestionAccepted(pos, suggestion.showLoadingOnAcceptance());
                 },
                 result -> {
                     if (maybeShowDialogOnLongPress(delegate, suggestion)) {
@@ -463,16 +463,16 @@ class KeyboardAccessoryMediator
     }
 
     private void updateListState(
-            ListModel<BarItem> list, @Nullable AutofillSuggestion clickedSuggestion) {
+            ListModel<BarItem> list, @Nullable AutofillSuggestion acceptedSuggestion) {
         for (int i = 0; i < list.size(); i++) {
             BarItem barItem = list.get(i);
-            barItem.updateStateOnItemSelection(clickedSuggestion);
+            barItem.updateStateOnItemAcceptance(acceptedSuggestion);
             list.update(i, barItem);
         }
     }
 
-    private void showLoadingUIOnSuggestion(AutofillSuggestion clickedSuggestion) {
-        updateListState(mModel.get(BAR_ITEMS), clickedSuggestion);
+    private void showLoadingUIOnSuggestion(AutofillSuggestion acceptedSuggestion) {
+        updateListState(mModel.get(BAR_ITEMS), acceptedSuggestion);
         updateListState(mModel.get(BAR_ITEMS_FIXED), null);
     }
 

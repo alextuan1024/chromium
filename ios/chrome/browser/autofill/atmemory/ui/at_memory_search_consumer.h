@@ -25,6 +25,19 @@ enum class AtMemoryErrorType {
   kUnsupportedQueryError,
 };
 
+enum class AtMemoryViewState {
+  // Initial state when opening AtMemory search.
+  kInitialState,
+  // Search state when searching for items.
+  kSearchState,
+  // Fetching state while waiting for search results.
+  kFetchingState,
+  // Error state when an error occurs.
+  kErrorState,
+  // Result state when displaying search results.
+  kResultState,
+};
+
 // Consumer for the AtMemory search feature.
 @protocol AtMemorySearchConsumer <NSObject>
 
@@ -34,6 +47,9 @@ enum class AtMemoryErrorType {
 // TODO(crbug.com/541237598): Will be implemented in a separate CL.
 // Sets the progress indicator while fetching results from Gemini.
 - (void)setFetchingSubtitle;
+
+// Sets whether the informational notice is visible.
+- (void)setNoticeVisible:(BOOL)noticeVisible;
 
 // TODO(crbug.com/540877897): Will be implemented once the backend is ready.
 // Sets the previously filled results on the same page.

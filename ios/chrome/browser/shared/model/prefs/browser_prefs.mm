@@ -731,6 +731,12 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
       enterprise_reporting::kUserSecurityAuthenticatedReporting, false);
   registry->RegisterBooleanPref(
       enterprise_reporting::kUserSecuritySignalsReporting, false);
+  registry->RegisterTimePref(
+      enterprise_reporting::kLastSignalsUploadAttemptTimestamp, base::Time());
+  registry->RegisterTimePref(
+      enterprise_reporting::kLastSignalsUploadSucceededTimestamp, base::Time());
+  registry->RegisterStringPref(
+      enterprise_reporting::kLastSignalsUploadSucceededConfig, std::string());
 
   // Register prefs related to Enterprise Isolated Mode.
   enterprise_isolated_mode::RegisterProfilePrefs(registry);
@@ -984,6 +990,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   // Deprecated 07/2026.
   registry->RegisterTimePref(kObsoleteManagementProfileLastLogTime,
                              base::Time());
+
+  // Deprecated 08/2026.
+  registry->RegisterBooleanPref("autofill.wallet_import_enabled", true);
+  registry->RegisterBooleanPref("sync.autofill_wallet_import_enabled_migrated",
+                                false);
 }
 
 // This method should be periodically pruned of year+ old migrations.
@@ -1086,6 +1097,10 @@ void MigrateObsoleteProfilePrefs(PrefService* prefs) {
 
   // Added 07/2026.
   prefs->ClearPref(kObsoleteManagementProfileLastLogTime);
+
+  // Added 08/2026.
+  prefs->ClearPref("autofill.wallet_import_enabled");
+  prefs->ClearPref("sync.autofill_wallet_import_enabled_migrated");
 }
 
 void MigrateObsoleteUserDefault() {

@@ -22,7 +22,6 @@
 #include "components/sessions/core/session_id.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "third_party/lens_server_proto/lens_overlay_request_id.pb.h"
-#include "third_party/lens_server_proto/modality_chip_props.pb.h"
 
 class GURL;
 class PrefService;
@@ -32,8 +31,10 @@ struct ThreadTurn;
 }  // namespace contextual_tasks
 
 namespace lens {
-enum class MimeType;
+class ClientToAimMessage;
 struct ContextualInputData;
+class ModalityChipProps;
+enum class MimeType;
 namespace proto {
 class LensOverlaySuggestInputs;
 }  // namespace proto
@@ -288,6 +289,10 @@ class ContextualSearchSessionHandle {
   // confirmation that they are available on the server.
   std::vector<base::UnguessableToken> GetSubmittedContextTokens() const;
 
+  // Returns true if any context tokens were submitted in any query in this
+  // session.
+  bool has_submitted_context() const { return has_submitted_context_; }
+
   // Clears the list of submitted context tokens for this particular instance of
   // the session. This is intended to be invoked when the server has responded
   // that it has received the submitted context.
@@ -365,6 +370,9 @@ class ContextualSearchSessionHandle {
   // instance of the session handle, meaning that it is unique per instance of
   // the contextual tasks ui.
   std::vector<base::UnguessableToken> submitted_context_tokens_;
+
+  // Whether any context tokens were submitted in a query in this session.
+  bool has_submitted_context_ = false;
 
   // Map of tab session IDs to their latest submitted token and request ID.
   // Tracks active tabs in the session to detect their deletion or removal.

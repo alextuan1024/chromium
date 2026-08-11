@@ -68,6 +68,7 @@
 #include "third_party/blink/renderer/core/paint/view_painter.h"
 #include "third_party/blink/renderer/core/svg/svg_document_extensions.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_skip_reason.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
@@ -320,7 +321,9 @@ void LayoutView::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
                                     TransformState& transform_state,
                                     MapCoordinatesFlags mode) const {
   NOT_DESTROYED();
-  if (!ancestor && !(mode & kIgnoreTransforms) &&
+  CHECK_EQ(transform_state.Direction(),
+           TransformState::kApplyTransformDirection);
+  if (!ancestor && !mode.Has(MapCoordinatesMode::kIgnoreTransforms) &&
       ShouldUseTransformFromContainer(nullptr)) {
     gfx::Transform t;
     GetTransformFromContainer(nullptr, PhysicalOffset(), t);
@@ -330,7 +333,7 @@ void LayoutView::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
   if (ancestor == this)
     return;
 
-  if (mode & kTraverseDocumentBoundaries) {
+  if (mode.Has(MapCoordinatesMode::kTraverseDocumentBoundaries)) {
     auto* parent_doc_layout_object = GetFrame()->OwnerLayoutObject();
     if (parent_doc_layout_object) {
       transform_state.Move(
@@ -339,10 +342,11 @@ void LayoutView::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
                                                    mode);
     } else {
       DCHECK(!ancestor);
-      if (mode &
-          (kApplyRemoteMainFrameTransform | kApplyRemoteViewportTransform)) {
+      if (mode.HasAny({MapCoordinatesMode::kApplyRemoteMainFrameTransform,
+                       MapCoordinatesMode::kApplyRemoteViewportTransform})) {
         GetFrameView()->MapLocalToRemoteMainFrame(
-            transform_state, mode & kApplyRemoteViewportTransform);
+            transform_state,
+            mode.Has(MapCoordinatesMode::kApplyRemoteViewportTransform));
       }
     }
   }
@@ -352,10 +356,11 @@ void LayoutView::MapAncestorToLocal(const LayoutBoxModelObject* ancestor,
                                     TransformState& transform_state,
                                     MapCoordinatesFlags mode) const {
   NOT_DESTROYED();
-  if (this != ancestor && (mode & kTraverseDocumentBoundaries)) {
+  CHECK_EQ(transform_state.Direction(),
+           TransformState::kUnapplyInverseTransformDirection);
+  if (this != ancestor &&
+      mode.Has(MapCoordinatesMode::kTraverseDocumentBoundaries)) {
     if (auto* parent_doc_layout_object = GetFrame()->OwnerLayoutObject()) {
-      // A LayoutView is a containing block for fixed-position elements, so
-      // don't carry this state across frames.
       parent_doc_layout_object->MapAncestorToLocal(ancestor, transform_state,
                                                    mode);
 
@@ -364,12 +369,13 @@ void LayoutView::MapAncestorToLocal(const LayoutBoxModelObject* ancestor,
     } else {
       DCHECK(!ancestor);
       // Note that MapLocalToRemoteMainFrame is correct here because
-      // transform_state will be set to kUnapplyInverseTransformDirection.
-      if ((mode &
-           (kApplyRemoteMainFrameTransform | kApplyRemoteViewportTransform)) &&
+      // transform_state has kUnapplyInverseTransformDirection.
+      if (mode.HasAny({MapCoordinatesMode::kApplyRemoteMainFrameTransform,
+                       MapCoordinatesMode::kApplyRemoteViewportTransform}) &&
           GetFrame()->IsLocalRoot()) {
         GetFrameView()->MapLocalToRemoteMainFrame(
-            transform_state, mode & kApplyRemoteViewportTransform);
+            transform_state,
+            mode.Has(MapCoordinatesMode::kApplyRemoteViewportTransform));
       }
     }
   } else {
@@ -530,7 +536,8 @@ PhysicalOffset LayoutView::OffsetForFixedPosition() const {
 
 void LayoutView::QuadsInAncestorInternal(Vector<gfx::QuadF>& quads,
                                          const LayoutBoxModelObject* ancestor,
-                                         MapCoordinatesFlags mode) const {
+                                         MapCoordinatesFlags mode,
+                                         BoxQuadType) const {
   NOT_DESTROYED();
   quads.push_back(LocalRectToAncestorQuad(
       PhysicalRect(PhysicalOffset(), GetScrollableArea()->Size()), ancestor,
@@ -581,7 +588,9 @@ PhysicalRect LayoutView::ViewRect() const {
         // layout is deferred during a resize or rotation, causing a temporary
         // mismatch. We need skip the transition which would have happened later
         // anyway.
-        transition->SkipTransitionSoon();
+        transition->SkipTransitionSoon(
+            ViewTransition::PromiseResponse::kRejectInvalidState,
+            ViewTransitionSkipReason::kSnapshotRootChangedSize);
         return PhysicalRect(PhysicalOffset(),
                             PhysicalSize(frame_view_->Size()));
       }
@@ -723,13 +732,8 @@ void LayoutView::CalculateScrollbarModes(
       RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
     }
 
-    LayoutObject* viewport = viewport_defining_element->GetLayoutObject();
+    const LayoutObject* viewport = viewport_defining_element->GetLayoutObject();
     if (!viewport) {
-      RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
-    }
-
-    const ComputedStyle* style = viewport->Style();
-    if (!style) {
       RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
     }
 
@@ -746,8 +750,10 @@ void LayoutView::CalculateScrollbarModes(
         RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAlwaysOff);
       }
     }
-    overflow_x = style->OverflowX();
-    overflow_y = style->OverflowY();
+
+    const ComputedStyle& style = viewport->StyleRef();
+    overflow_x = style.OverflowX();
+    overflow_y = style.OverflowY();
   }
 
   h_mode = v_mode = mojom::blink::ScrollbarMode::kAuto;
@@ -1048,9 +1054,11 @@ void LayoutView::CacheScrollDimensions() {
 void LayoutView::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBlockFlow::StyleDidChange(diff, old_style, style_change_context);
+  LayoutBlockFlow::StyleDidChange(diff, old_style, new_style,
+                                  style_change_context);
 
   LocalFrame& frame = GetFrameView()->GetFrame();
   VisualViewport& visual_viewport = frame.GetPage()->GetVisualViewport();
@@ -1077,9 +1085,11 @@ CompositingReasons LayoutView::AdditionalCompositingReasons() const {
   NOT_DESTROYED();
   // TODO(lfg): Audit for portals
   const LocalFrame& frame = frame_view_->GetFrame();
-  if (frame.OwnerLayoutObject() && frame.IsCrossOriginToParentOrOuterDocument())
-    return CompositingReason::kIFrame;
-  return CompositingReason::kNone;
+  if (frame.OwnerLayoutObject() &&
+      frame.IsCrossOriginToParentOrOuterDocument()) {
+    return {CompositingReason::kIFrame};
+  }
+  return {};
 }
 
 bool LayoutView::AffectedByResizedInitialContainingBlock(

@@ -810,18 +810,6 @@
       status: "stable",
     },
     {
-      // Fix for https://crbug.com/471876082
-      name: "AvoidMergingStyledSpanWithSiblings",
-      status: "stable",
-    },
-    {
-      // If the start and end positions are the same in MoveParagraph,
-      // there is no need to collapse the whitespace between them.
-      // https://crbug.com/406053617
-      name: "AvoidNormalizingVisiblePositionsWhenStartEqualsEnd",
-      status: "stable",
-    },
-    {
       // Disables the synchronous focus blur behavior when a focused form control
       // is disabled.
       name: "AvoidSynchronousBlurOnDisabledAttributeChange",
@@ -1156,13 +1144,6 @@
       status: "stable",
     },
     {
-      // Clamps word boundary detection to the contenteditable scope when
-      // adjacent contenteditable spans have no whitespace between them.
-      // See https://crbug.com/40848794.
-      name: "ClampWordBoundaryToContentEditableScope",
-      status: "stable",
-    },
-    {
       // Set currentTarget to null after dispatch for EventTarget.
       // This was added in M142 and can be removed after M144.
       // https://issues.chromium.org/issues/346766786
@@ -1369,14 +1350,6 @@
       name: "ConnectionAllowlistEmbeddedEnforcement",
       origin_trial_feature_name: "ConnectionAllowlistEmbeddedEnforcement",
       status: "experimental",
-    },
-    {
-      // Fix for https://crbug.com/40659076. When enabled, queryCommandState for
-      // 'subscript' or 'superscript' with a caret selection will consider
-      // ancestor <sub> or <sup> elements, matching the behavior for range
-      // selections.
-      name: "ConsiderSubOrSuperScriptAncestorAlignForCaretSelection",
-      status: "stable"
     },
     {
       name: "ContactsManager",
@@ -1999,6 +1972,10 @@
       implied_by: ["CSSScrollSnapChangeEvent", "CSSScrollSnapChangingEvent"],
     },
     {
+      name: "CSSScrollSnapTypePair",
+      status: "test",
+    },
+    {
       // scroll-target-group property
       // https://drafts.csswg.org/css-overflow-5/#scroll-target-group
       name: "CSSScrollTargetGroup",
@@ -2237,17 +2214,12 @@
     },
     {
       name: "DeclarativeSkeletons",
+      status: "test",
     },
     {
       // Killswitch for https://crbug.com/400317114 fix.
       // This lands in M142, and the flag can be removed in M144.
       name: "DelegatesFocusTextControlInputFix",
-      status: "stable",
-    },
-    {
-      // Delete text from descendant text nodes before removing children of
-      // a root editable element to ensure selectionchange event fires.
-      name: "DeleteTextInContentEditableBeforeRemovingChildren",
       status: "stable",
     },
     // This allows pages to opt out of the unload deprecation. Enabling this
@@ -2384,11 +2356,6 @@
       origin_trial_allows_insecure: true,
       origin_trial_allows_third_party: true,
       base_feature: "none",
-    },
-    {
-      // Disables removeFormat command on Plaintext-only content editable div
-      name: "DisableRemoveFormatForPlainTextOnlyEditableDiv",
-      status: "stable",
     },
     {
       // Disconnected <area> elements should not trigger navigation.
@@ -2748,6 +2715,7 @@
     },
     {
       name: "ExperimentalJSProfilerMarkers",
+      origin_trial_feature_name: "JSSelfProfilingMarkers",
       status: "experimental",
     },
     {
@@ -3068,15 +3036,6 @@
       status: "stable",
     },
     {
-      // Returns alignment value instead of a boolean
-      name: "FixJustifyQueryCommandValue",
-      status: "stable",
-    },
-    {
-      name: "FixLinebreakForPreTag",
-      status: "stable",
-    },
-    {
       // Fix a bug in the <map> element's caching of the name attribute. This
       // flag was added in M148, and can be removed in M150.
       name: "FixMapElementEmptyNameBug",
@@ -3090,22 +3049,11 @@
       name: "FixMarkerSuppressionForAppearanceAuto",
     },
     {
-      // crbug.com/411739501
-      name: "FixNextPositionCalculationInInsertList",
-      status: "stable",
-    },
-    {
       // Guard the kStart / kEnd / kStartAndEnd branches of
       // LayoutSelection::ComputeSelectionStatus against std::nullopt
       // start_offset / end_offset in SelectionPaintRange.
       // See https://crbug.com/489028874
       name: "FixSelectionPaintRangeNullOpt",
-      status: "stable",
-    },
-    {
-      // Fix for strikethrough toggle not working in empty
-      // contenteditable. See https://crbug.com/427915243
-      name: "FixStrikethroughToggleInEmptyContentEditable",
       status: "stable",
     },
     // Fix LayoutView viewport mapping in the GeometryMapper fast path for
@@ -3214,10 +3162,8 @@
       status: "stable",
     },
     {
-      // 2-D grid navigation functionality of focusgroup is considered out of
-      // scope for the initial implementation.
-      // crbug.com/445992558
-      name: "FocusgroupGrid",
+      // https://open-ui.org/components/focusgroup-v2.explainer/
+      name: "FocusgroupV2",
       depends_on: ["Focusgroup"],
       status: "experimental",
     },
@@ -3435,11 +3381,18 @@
     },
     {
       name: "GlobalPrivacyControl",
-      implied_by: ["GlobalPrivacyControlForce"],
+      implied_by: [
+        "GlobalPrivacyControlForce",
+        "GlobalPrivacyControlTest"
+      ],
       base_feature: "none",
     },
     {
       name: "GlobalPrivacyControlForce",
+    },
+    {
+      name: "GlobalPrivacyControlTest",
+      status: "experimental",
     },
     {
       name: "GraphemeClusterBoundsCheck",
@@ -3448,16 +3401,6 @@
     {
       name: "GroupEffect",
       status: "test",
-    },
-    {
-      // Enables Skipping children for invisible select elements containing
-      // non-editable node while calculating end of paragraph.
-      name: "HandleDeletionAtStartAndEndBoundaryContainingHiddenElement",
-      status: "stable",
-    },
-    {
-      name: "HandleDisconnectedSelectionDuringDOMChanges",
-      status: "stable",
     },
     {
       name: "HandleShadowDOMInSubstringUtil",
@@ -3694,20 +3637,6 @@
       status: "stable",
     },
     {
-      // Enable DataTransfer propagation to input events for insertFromPaste,
-      // insertFromDrop, and insertReplacementText operations on content-editables.
-      name: "InputEventDataTransferForInsertCmd",
-      status: "stable",
-    },
-    {
-      // When enabled, deletion commands like Ctrl+Backspace (deleteWordBackward)
-      // with selected text will correctly report deleteContentBackward instead of
-      // deleteWordBackward in both beforeinput and input events, conforming to
-      // the W3C Input Events spec.
-      name: "InputEventsDeleteNonCollapsedSelection",
-      status: "stable",
-    },
-    {
       // The HTML parser inserts a </select> end tag before inserting <input>
       // when parsing inside of a <select> tag. We want to allow <input> inside
       // <select>, but it isn't web compatible enough. This flag allows <input>
@@ -3917,21 +3846,6 @@
       base_feature: "none",
     },
     {
-      // Reverse origin trial allowing Local Network Access requests on
-      // non-secure contexts (but still requiring a permission grant from the
-      // user).
-      name: "LocalNetworkAccessNonSecureContextAllowed",
-      origin_trial_feature_name: "LocalNetworkAccessNonSecureContextAllowed",
-      origin_trial_type: "deprecation",
-      origin_trial_allows_insecure: true,
-      status: "experimental",
-      base_feature: "none",
-      // No status because this blink runtime feature doesn't work by itself.
-      // It's controlled by network::features::kLocalNetworkAccessChecks which
-      // needs to be enabled to make the whole feature work (see
-      // crbug.com/394009026).
-    },
-    {
       name: "LocalNetworkAccessPermissionPolicy",
       base_feature: "none",
       // No status because this blink runtime feature doesn't work by itself.
@@ -4018,14 +3932,6 @@
       base_feature: "none",
     },
     {
-      // Enables macOS system-level clipboard permission checking using
-      // NSPasteboard.accessBehavior API (available on macOS 15.4+).
-      // This allows web applications to respect user's clipboard privacy
-      // settings in System Settings > Privacy & Security > Clipboard.
-      name: "MacSystemClipboardPermissionCheck",
-      status: {"Mac": "stable", "default": ""},
-    },
-    {
       name: "ManagedConfiguration",
       status: "stable",
     },
@@ -4060,20 +3966,6 @@
       status: "stable",
     },
     {
-      // Enables MathML ancestor context preservation during copy-paste
-      // serialization. When enabled, copying partial MathML content includes
-      // the containing <math> element to preserve semantic context and
-      // namespace declarations.
-      name: "MathMLSerializationOnCopy",
-      status: "stable",
-    },
-    {
-      // Enables skipping <mtr> wrapping during ancestor wrapping in
-      // serialization. When enabled duplicate <mtr> wrapping are absent.
-      name: "MathMLSkipMtrTagInAncestorWrapping",
-      status: "stable",
-    },
-    {
       name:"MeasureMemory",
       status:"stable",
     },
@@ -4084,6 +3976,15 @@
     {
       name: "MediaCapabilitiesSpatialAudio",
       status: "test",
+    },
+    {
+      name: "MediaCaptionSettingsButton",
+      status: {
+        "Win": "experimental",
+        "Mac": "experimental",
+        "Linux": "experimental",
+        "ChromeOS": "experimental",
+      },
     },
     {
       name: "MediaCapture",
@@ -4296,6 +4197,12 @@
       status: "stable",
     },
     {
+      // Support <navigation-type-test> and <navigation-phase-test>.
+      name: "NavigationTypeAndPhase",
+      status: "experimental",
+      depends_on: ["RouteMatching"],
+    },
+    {
       name: "NavigatorContentUtils",
       // Android does not yet support NavigatorContentUtils.
       status: {"Android": "", "default": "stable"},
@@ -4473,10 +4380,10 @@
     {
       // The OpaqueRange interface provides a live AbstractRange subtype
       // for encapsulated content within <textarea> and <input> elements.
-      // crbug.com/421421332
+      // "This can be removed in M155. crbug.com/421421332
       name: "OpaqueRange",
       public: true,
-      status: "experimental",
+      status: "stable",
     },
     {
       // Restrict popover invoker lookup to the same TreeScope as the element.
@@ -5171,14 +5078,6 @@
       status: "stable",
     },
     {
-      // Fix for removeFormat command incorrectly preserving background-color
-      // when removing styles from elements. Prevents background-color from being
-      // re-applied to child elements during style removal.
-      // See https://crbug.com/41438799
-      name: "RemoveFormatFilterBackgroundColor",
-      status: "stable",
-    },
-    {
       // Remove non-allowlisted event interfaces from document.createEvent().
       // This was added in M148 and can be removed after M150.
       // https://chromestatus.com/feature/5095987863486464
@@ -5388,15 +5287,6 @@
       status: "stable",
     },
     {
-      // https://wicg.github.io/webcomponents/proposals/Scoped-Custom-Element-Registries
-      // https://github.com/whatwg/html/issues/10854
-      // Spec PRs:
-      // https://github.com/whatwg/html/pull/10869
-      // https://github.com/whatwg/dom/pull/1341
-      name: "ScopedCustomElementRegistry",
-      status: "stable",
-    },
-    {
       name: "ScopedViewTransitionSizeContainment",
       status: "stable",
     },
@@ -5574,6 +5464,10 @@
       },
     },
     {
+      name: "SelectAutofillPopoverPreview",
+      status: "stable",
+    },
+    {
       // The selectedcontentelement attribute is for connecting select elements
       // to arbitrary <selectedcontent> elements.
       // https://github.com/openui/open-ui/issues/1063
@@ -5640,20 +5534,6 @@
       name: "SelectionSetBaseAndExtentNonNullNode",
       status: "experimental",
       settable_from_internals: true,
-    },
-    {
-      // Enables skipping user-select: none content
-      // in DOMSelection::toString()
-      name: "SelectionToStringSkipsUserSelectNone",
-      status: "stable",
-    },
-    {
-      // Conditionally update selection only when autoscroll actually scrolls.
-      // This prevents infinite selection updates during autoscroll when the
-      // scroll position doesn't change.
-      // See https://crbug.com/412578722
-      name: "SelectionUpdateOnlyAfterAutoscroll",
-      status: "stable",
     },
     {
       // See https://chromestatus.com/feature/5203433409871872
@@ -5815,12 +5695,10 @@
       name: "SharedStorageAPI",
       base_feature: "none",
       public: true,
-      status: "stable",
     },
     {
       name: "SharedStorageWebLocks",
       depends_on: ["SharedStorageAPI"],
-      status: "stable",
     },
     {
       name: "SharedWorker",
@@ -5871,22 +5749,7 @@
       status: "stable",
     },
     {
-      // When enabled, cursor movement (arrow keys) will skip over non-editable
-      // atomic or empty inline elements within editable content, instead of
-      // getting stuck or moving into the non-editable content.
-      name: "SkipNonEditableInAtomicMove",
-      status: "stable",
-    },
-    {
       name: "SkipOofItemForBreakCandidate",
-      status: "stable",
-    },
-    {
-      // Skips paragraph split in insertHTML when the fragment contains only
-      // inline content, preventing inline elements from being inserted
-      // outside their containing block.
-      // See https://crbug.com/41024699.
-      name: "SkipParagraphSplitForInlineInsertHTML",
       status: "stable",
     },
     {
@@ -5902,11 +5765,6 @@
       // renderer cc touch event filter, ensuring that events will be passed
       // onto the renderer main thread.
       name: "SkipTouchEventFilter",
-      status: "stable",
-    },
-    // Fix for crbug.com/41393366
-    {
-      name: "SkipUnselectableContentInSerialization",
       status: "stable",
     },
     {
@@ -6572,13 +6430,6 @@
       public: true,
     },
     {
-      // Traverse flat tree to find start and end of paragraph in delete
-      // selection to handle slot distribution in details.
-      // See https://crbug.com/413595949
-      name: "TraverseFlatTreeToHandleSlots",
-      status: "stable",
-    },
-    {
       // When enabled, treats the initial navigation to about:blank#fragment in
       // an MHTML document as a cross-document navigation.
       //
@@ -6628,7 +6479,12 @@
     },
     {
       // The Unbounded Element API. See crbug.com/508672616.
+      // Note that this flag is enabled by default, to enable WebUI and other
+      // privileged UI to depend on this feature. The flag is here as a kill
+      // switch. Importantly, open web content still requires
+      // UnboundedElementOnTheOpenWeb to be enabled.
       name: "UnboundedElement",
+      status: "stable",
       implied_by: ["UnboundedElementOnTheOpenWeb"],
     },
     {
@@ -6681,13 +6537,6 @@
     {
       name: "UpdateSelectionOnNodeInsertion"
     },
-    // Fix for https://crbug.com/436624850
-    // Ensures trivial_text_ is updated after fragment creation from text
-    // by calling UpdateTrivialReplacementText()
-    {
-      name: "UpdateTrivalTextAfterFragmentCreationFromText",
-      status: "stable",
-    },
     {
       name: "URLPatternCompareComponent",
       status: "experimental",
@@ -6705,11 +6554,6 @@
       status: {
         "ChromeOS": "stable",
       },
-    },
-    {
-      // Fix for https://crbug.com/454639396
-      name: "UseBoundedSelectionOffsetsInEditContextDeleteOperations",
-      status: "stable"
     },
     {
       name: "UseLargestPaintedImageForLCPCandidate",
@@ -6760,17 +6604,11 @@
       // the 'type' attribute carried over from older permission element
       // implementations).
       name: "UserMediaElementLegacy",
-      status: "experimental",
       // By mapping this new flag to the existing "UserMediaElement" origin
       // trial name, both features can be evaluated concurrently during the
       // trial phase while preserving a partner-less-effort path for future
       // deprecation.
       origin_trial_feature_name: "UserMediaElement",
-    },
-    {
-      // Fix for https://crbug.com/421314614
-      name: "UseSelectionInDOMTreeAnchorInExtendSelection",
-      status: "stable"
     },
     {
       name: "UseShadowHostStyleCheckEditable",
@@ -7026,7 +6864,7 @@
       // Off for URL/Email/Password inputs (and an `autocorrect=off` form owner).
       // https://html.spec.whatwg.org/multipage/interaction.html#autocorrection
       name: "WebAutocorrectByDefault",
-      status: "experimental",
+      status: "stable",
     },
 
     // WebBluetooth is enabled by default on Android, ChromeOS, iOS, macOS and

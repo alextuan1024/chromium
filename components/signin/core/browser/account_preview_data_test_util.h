@@ -8,11 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "base/strings/string_number_conversions.h"
 #include "components/signin/core/browser/account_preview_data_fetcher.h"
 #include "net/base/net_errors.h"
-#include "net/base/url_util.h"
-#include "url/gurl.h"
 
 namespace network {
 class TestURLLoaderFactory;
@@ -20,20 +17,11 @@ class TestURLLoaderFactory;
 
 namespace signin {
 
+struct DevicePreview;
+
 // In tests, we dynamically build the URL to represent the same appended params.
-inline std::string GetTestStatsUrl() {
-  GURL url(
-      "https://alpha-chromesyncpreview-googleapis.pa.sandbox.google.com/v1/"
-      "dataTypes/-/dataTypesStatistics");
-  for (int data_type : signin::kRequestedDataTypes) {
-    url = net::AppendQueryParameter(url, "dataTypes",
-                                    base::NumberToString(data_type));
-  }
-  return url.spec();
-}
-inline constexpr char kTestPreviewsUrl[] =
-    "https://alpha-chromesyncpreview-googleapis.pa.sandbox.google.com/v1/"
-    "dataTypes/154522/entitiesPreviews";
+std::string GetTestStatsUrl();
+std::string GetTestPreviewsUrl();
 
 // Subset of all data types for testing purposes.
 struct DataTypeCounts {
@@ -50,12 +38,12 @@ void MockSuccessfulStatsFetch(
 // Mocks a successful response from the previews endpoint.
 void MockSuccessfulPreviewsFetch(
     network::TestURLLoaderFactory* test_url_loader_factory,
-    const std::vector<std::string>& domains = {});
+    const std::vector<DevicePreview>& devices = {});
 
 // Mocks successful responses for both stats and previews endpoints.
 void MockSuccessfulFetch(network::TestURLLoaderFactory* test_url_loader_factory,
                          const DataTypeCounts& counts = {},
-                         const std::vector<std::string>& domains = {});
+                         const std::vector<DevicePreview>& devices = {});
 
 // Mocks a failed response from the stats endpoint.
 void MockFailedStatsFetch(
@@ -72,7 +60,7 @@ void MockFailedPreviewsFetch(
 void SimulateSuccessfulFetch(
     network::TestURLLoaderFactory* test_url_loader_factory,
     const DataTypeCounts& counts = {},
-    const std::vector<std::string>& domains = {});
+    const std::vector<DevicePreview>& devices = {});
 
 }  // namespace signin
 

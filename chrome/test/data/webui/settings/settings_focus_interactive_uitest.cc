@@ -15,8 +15,8 @@ class SettingsFocusTest : public WebUIMochaFocusTest {
   SettingsFocusTest() { set_test_loader_host(chrome::kChromeUISettingsHost); }
 };
 
-IN_PROC_BROWSER_TEST_F(SettingsFocusTest, AutofillSectionFocus) {
-  RunTest("settings/autofill_section_focus_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, ContactInfoPageFocus) {
+  RunTest("settings/contact_info_page_focus_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, PaymentsSectionInteractive) {
@@ -46,6 +46,13 @@ IN_PROC_BROWSER_TEST_F(SettingsFocusTest, SecureDns) {
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, StartupUrlsPage) {
   RunTest("settings/startup_urls_page_focus_test.js", "mocha.run()");
 }
+
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, EditDictionaryPage) {
+  RunTest("settings/edit_dictionary_page_test.js",
+          "runMochaSuite('EditDictionaryPageFocus')");
+}
+#endif
 
 // Times out on Mac. See https://crbug.com/40679346.
 #if BUILDFLAG(IS_MAC)

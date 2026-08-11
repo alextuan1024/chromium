@@ -8,12 +8,17 @@
 #include <string>
 
 #include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_auto_reset.h"
 
 class AccountId;
 
 namespace ash {
 
+class Authenticator;
 class FakeSessionManagerClient;
+class ScreenLocker;
+class ScreenLockerController;
 
 // ScreenLockerTester provides a high-level API to test the lock screen.
 // Must be created after the SessionManager is initialized.
@@ -26,7 +31,8 @@ class ScreenLockerTester {
   // plumbing for browser tests.
   class ScopedRequestLockScreenOverride {
    public:
-    // FakeSessionManagerClient must outlive this instance.
+    // FakeSessionManagerClient and ScreenLockerController must outlive this
+    // instance.
     ScopedRequestLockScreenOverride();
     ScopedRequestLockScreenOverride(const ScopedRequestLockScreenOverride&) =
         delete;
@@ -36,6 +42,7 @@ class ScreenLockerTester {
 
    private:
     const raw_ref<FakeSessionManagerClient> fake_session_manager_client_;
+    const raw_ref<ScreenLockerController> screen_locker_controller_;
   };
 
   ScreenLockerTester();
@@ -74,6 +81,10 @@ class ScreenLockerTester {
   // Same as UnlockWithPassword but submits even if the password auth disabled.
   void ForceSubmitPassword(const AccountId& account_id,
                            const std::string& password);
+
+ private:
+  base::WeakAutoReset<ScreenLocker, scoped_refptr<Authenticator>>
+      authenticator_reset_;
 };
 
 }  // namespace ash

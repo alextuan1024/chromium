@@ -527,7 +527,7 @@ Refer to README.md for content description and update process.
  <item id="partial_translate_one_platform" added_in_milestone="150" content_hash_code="0356ccc0" os_list="linux,windows,android,chromeos" file_path="components/translate/content/browser/contextual_translate_delegate.cc" />
  <item id="contextual_search_fpop_service" added_in_milestone="150" content_hash_code="07a1f58b" os_list="linux,windows,android,chromeos" file_path="components/contextual_search/footprints/internal/fpop_service_impl.cc" />
  <item id="web_install_manifest_fetcher" added_in_milestone="151" content_hash_code="0593db17" os_list="linux,windows,chromeos" file_path="chrome/browser/web_applications/web_install_manifest_fetcher.cc" />
- <item id="private_insights_fcp_http" added_in_milestone="151" content_hash_code="0459da1c" os_list="linux,windows,android,chromeos" file_path="components/metrics/private_metrics/private_insights/fcp_http_client.cc" />
+ <item id="private_insights_fcp_http" added_in_milestone="151" content_hash_code="05f37c08" os_list="linux,windows,android,chromeos" file_path="components/private_insights/fcp_http_client.cc" />
  <item id="doodle_impression_android" added_in_milestone="152" content_hash_code="00cd483d" os_list="android" file_path="chrome/browser/ui/android/logo/logo_bridge.cc" />
  <item id="enterprise_proxy_pvd_fetch" added_in_milestone="152" content_hash_code="038d0700" os_list="linux,windows,chromeos,android" file_path="components/enterprise/net/core/provisioning_domain_client.cc" />
  <item id="read_aloud_generate_text" added_in_milestone="152" content_hash_code="004d1146" os_list="linux,windows,android,chromeos" file_path="components/optimization_guide/core/model_execution/model_execution_fetcher_impl.cc" />
@@ -536,6 +536,8 @@ Refer to README.md for content description and update process.
  <item id="tab_context_ephemeral_key_fetch" added_in_milestone="152" content_hash_code="01f989a9" os_list="linux,windows,chromeos,android" file_path="components/sync_tab_context/http_rpc_based_ephemeral_key_fetcher.cc" />
  <item id="remote_actor_passbox_client" added_in_milestone="152" content_hash_code="017774a4" os_list="linux,windows,chromeos" file_path="chrome/browser/password_manager/remote_actor/remote_actor_credential_store_client.cc" />
  <item id="remote_actor_permission_service" added_in_milestone="152" content_hash_code="0360a4f9" os_list="linux,windows,chromeos" file_path="chrome/browser/password_manager/remote_actor/remote_actor_credential_permission_client.cc" />
- <item id="enterprise_skills_fetcher" added_in_milestone="152" content_hash_code="059461db" os_list="linux,windows,android,chromeos" file_path="components/skills/internal/enterprise_skills_provider.cc" />
+ <item id="enterprise_skills_fetcher" added_in_milestone="152" content_hash_code="059461db" os_list="windows,android,chromeos,linux" file_path="components/skills/internal/enterprise_skills_provider.cc" />
  <item id="iwa_dev_ui_update_manifest" added_in_milestone="153" type="partial" second_id="iwa_update_manifest_fetcher" content_hash_code="03008323" os_list="linux,windows,chromeos" semantics_fields="1,2,3,6" policy_fields="3,5" file_path="chrome/browser/ui/webui/iwa_dev/iwa_dev_page_handler.cc" />
+ <item id="notebooks_service_create_notebook" added_in_milestone="152" content_hash_code="00b284b0" os_list="linux,windows,android,chromeos" file_path="components/notebooks/internal/notebooks_network_service_impl.cc" />
+ <item id="notebooks_service_create_notebook_source" added_in_milestone="152" content_hash_code="02552ad6" os_list="linux,windows,android,chromeos" file_path="components/notebooks/internal/notebooks_network_service_impl.cc" />
 </annotations>

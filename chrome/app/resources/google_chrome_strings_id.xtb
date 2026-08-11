@@ -346,7 +346,6 @@ Jika halaman ini tidak berfungsi sebagaimana mestinya, coba izinkan pengoptimala
 <translation id="4437295824090654417">Bagikan dokumen ini ke Gemini di Chrome untuk mendapatkan ringkasan singkat dan mengajukan pertanyaan lanjutan</translation>
 <translation id="4450664632294415862">Chrome - Login Jaringan - <ph name="PAGE_TITLE" /></translation>
 <translation id="4458462641685292929">Operasi lain di Google Chrome sedang berlangsung. Coba lagi nanti.</translation>
-<translation id="4459234553906210702">Pengukuran iklan memungkinkan situs yang Anda buka untuk meminta informasi dari Chrome yang membantu situs mengukur performa iklannya. Pengukuran iklan membatasi pelacakan lintas situs dengan mentransfer sesedikit mungkin informasi antar-situs.</translation>
 <translation id="4493028449971051158">Error saat sistem dimulai: jalankan penginstal sebagai administrator.</translation>
 <translation id="4501471624619070934">Penginstalan gagal karena akses dibatasi untuk negara ini.</translation>
 <translation id="4571503333518166079">Buka setelan notifikasi Chrome</translation>
@@ -739,6 +738,7 @@ Jika halaman ini tidak berfungsi sebagaimana mestinya, coba izinkan pengoptimala
 <translation id="8367705492654390392">Tanyakan apa saja</translation>
 <translation id="8367950957770994118">Buka Gemini dengan cepat di Chrome kapan pun Anda membutuhkannya</translation>
 <translation id="8370517070665726704">Hak cipta <ph name="YEAR" /> Google LLC. Semua hak dilindungi undang-undang.</translation>
+<translation id="8370748943308169953">Kode QR untuk login ke Chrome sebagai <ph name="USER_NAME" /></translation>
 <translation id="8377158135256176353">Aktifkan/nonaktifkan Gemini di Chrome Canary</translation>
 <translation id="8387459386171870978">Terus gunakan Chrome</translation>
 <translation id="8394720698884623075">Memeriksa kesesuaian URL dengan daftar situs tidak aman yang disimpan di Chrome</translation>

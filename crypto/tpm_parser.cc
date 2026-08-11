@@ -164,6 +164,70 @@ TpmParseErrorOr<CertifyResponse> ParseCertifyResponse(
       });
 }
 
+std::vector<uint8_t> BuildHashCommand(base::span<const uint8_t> data,
+                                      TpmAlg hash_alg,
+                                      TpmRh hierarchy) {
+  return base::ToVector(
+      build_hash_command(base::SpanToRustSlice(data), hash_alg, hierarchy));
+}
+
+TpmParseErrorOr<HashResponse> ParseHashResponse(
+    base::span<const uint8_t> response_blob) {
+  RawHashResponse raw_response =
+      parse_hash_response(base::SpanToRustSlice(response_blob));
+
+  return MapParseResult(raw_response.result, raw_response.tpm_response_code)
+      .transform([&] {
+        return HashResponse{
+            .digest = base::ToVector(raw_response.digest),
+            .validation_ticket = base::ToVector(raw_response.validation_ticket),
+        };
+      });
+}
+
+std::vector<uint8_t> BuildSignCommand(
+    uint32_t key_handle,
+    base::span<const uint8_t> digest,
+    TpmAlg sig_alg,
+    TpmAlg hash_alg,
+    base::span<const uint8_t> validation_ticket) {
+  return base::ToVector(
+      build_sign_command(key_handle, base::SpanToRustSlice(digest), sig_alg,
+                         hash_alg, base::SpanToRustSlice(validation_ticket)));
+}
+
+TpmParseErrorOr<SignResponse> ParseSignResponse(
+    base::span<const uint8_t> response_blob) {
+  RawSignResponse raw_response =
+      parse_sign_response(base::SpanToRustSlice(response_blob));
+
+  return MapParseResult(raw_response.result, raw_response.tpm_response_code)
+      .transform([&] {
+        return SignResponse{
+            .signature = base::ToVector(raw_response.signature),
+        };
+      });
+}
+
+std::optional<std::vector<uint8_t>> ParseTpmSignature(
+    base::span<const uint8_t> signature_blob) {
+  RawSignatureComponents raw_sig =
+      parse_tpm_signature(base::SpanToRustSlice(signature_blob));
+
+  if (raw_sig.status != SignatureParseResult::Ok) {
+    return std::nullopt;
+  }
+
+  switch (raw_sig.sig_alg) {
+    case TpmAlg::TPM_ALG_RSASSA:
+      return base::ToVector(raw_sig.rsa_sig);
+    case TpmAlg::TPM_ALG_ECDSA:
+      return ConvertEcdsaRawComponentsToDer(raw_sig.ecdsa_r, raw_sig.ecdsa_s);
+    default:
+      return std::nullopt;
+  }
+}
+
 SignatureErrorOr<SignatureAlgorithms> GetSignatureAlgorithms(
     base::span<const uint8_t> signature_blob) {
   RawSignatureComponents raw_sig =
@@ -172,8 +236,8 @@ SignatureErrorOr<SignatureAlgorithms> GetSignatureAlgorithms(
   RETURN_IF_ERROR(MapSignatureParseResult(raw_sig.status));
 
   return SignatureAlgorithms{
-      .sig_alg = std::to_underlying(raw_sig.sig_alg),
-      .hash_alg = std::to_underlying(raw_sig.hash_alg),
+      .sig_alg = raw_sig.sig_alg,
+      .hash_alg = raw_sig.hash_alg,
   };
 }
 

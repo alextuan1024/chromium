@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.settings;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.verify;
 
@@ -18,6 +19,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import androidx.appcompat.widget.SearchView;
 import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.slidingpanelayout.widget.SlidingPaneLayout;
@@ -36,12 +38,13 @@ import org.chromium.base.Callback;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.language.settings.SelectLanguageFragment;
+import org.chromium.components.browser_ui.settings.SearchViewProvider;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.widget.ChromeImageButton;
 
@@ -51,7 +54,6 @@ import java.util.List;
 /** Unit tests for {@link MultiColumnTitleUpdater}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(qualifiers = "sw600dp")
-@Batch(Batch.UNIT_TESTS)
 public class MultiColumnTitleUpdaterTest {
 
     /** Fake PreferenceFragment for testing. */
@@ -252,5 +254,190 @@ public class MultiColumnTitleUpdaterTest {
 
         // Clicking parent title ("Appearance") should pop to previous title and trigger callback.
         verify(mTitleTapCallback).onResult("appearance_entry");
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    public void testSearchResults_settingsInTabEnabled_noBackButton() {
+        List<MultiColumnSettings.Title> titles = new ArrayList<>();
+        titles.add(
+                new MultiColumnSettings.Title("uuid1", createTitleSupplier("Appearance"), 0, null));
+        titles.add(
+                new MultiColumnSettings.Title(
+                        "uuid2", createTitleSupplier("Search results"), 1, null));
+        mMultiColumnSettings.setFakeTitles(titles);
+
+        MultiColumnTitleUpdater updater =
+                new MultiColumnTitleUpdater(
+                        /* savedInstanceState= */ null,
+                        mMultiColumnSettings,
+                        mActivity,
+                        mContainer,
+                        /* mainTitleSetter= */ (t) -> {},
+                        /* titleTapCallback= */ mTitleTapCallback,
+                        /* initialBreadcrumbPath= */ null);
+
+        updater.setFirstVisibleTitleIndex(1);
+        updater.onTitleUpdated();
+
+        // When viewing Search results (mFirstVisibleTitleIndex = 1), back button should be hidden.
+        // Container should only contain 1 DetailedTitle ("Search results").
+        assertEquals(1, mContainer.getChildCount());
+        assertTrue(mContainer.getChildAt(0) instanceof TextView);
+        assertEquals("Search results", ((TextView) mContainer.getChildAt(0)).getText().toString());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    public void
+            testDetailPageFromSearchResults_settingsInTabEnabled_showsBackButtonToSearchResults() {
+        List<MultiColumnSettings.Title> titles = new ArrayList<>();
+        titles.add(
+                new MultiColumnSettings.Title("uuid1", createTitleSupplier("Appearance"), 0, null));
+        titles.add(
+                new MultiColumnSettings.Title(
+                        "uuid2", createTitleSupplier("Search results"), 1, null));
+        titles.add(new MultiColumnSettings.Title("uuid3", createTitleSupplier("Theme"), 2, null));
+        mMultiColumnSettings.setFakeTitles(titles);
+
+        MultiColumnTitleUpdater updater =
+                new MultiColumnTitleUpdater(
+                        /* savedInstanceState= */ null,
+                        mMultiColumnSettings,
+                        mActivity,
+                        mContainer,
+                        /* mainTitleSetter= */ (t) -> {},
+                        /* titleTapCallback= */ mTitleTapCallback,
+                        /* initialBreadcrumbPath= */ null);
+
+        updater.setFirstVisibleTitleIndex(1);
+        updater.onTitleUpdated();
+
+        // When viewing detail page from search results, back button should be shown pointing to
+        // Search results.
+        assertEquals(2, mContainer.getChildCount());
+        assertTrue(mContainer.getChildAt(0) instanceof ChromeImageButton);
+        assertTrue(mContainer.getChildAt(1) instanceof TextView);
+        assertEquals("Theme", ((TextView) mContainer.getChildAt(1)).getText().toString());
+    }
+
+    public static class TestSearchViewProviderFragment extends Fragment
+            implements SearchViewProvider {
+        private @Nullable SearchView mSearchView;
+        private SearchViewProvider.@Nullable Observer mObserver;
+
+        @Override
+        public View onCreateView(
+                LayoutInflater inflater,
+                @Nullable ViewGroup container,
+                @Nullable Bundle savedInstanceState) {
+            return new View(inflater.getContext());
+        }
+
+        @Override
+        public void setSearchViewObserver(SearchViewProvider.Observer observer) {
+            mObserver = observer;
+        }
+
+        @Override
+        public void initSearchView(SearchView searchView) {
+            mSearchView = searchView;
+        }
+
+        public @Nullable SearchView getSearchView() {
+            return mSearchView;
+        }
+    }
+
+    public static class TestSelectLanguageFragment extends SelectLanguageFragment {
+        private @Nullable SearchView mSearchView;
+
+        @Override
+        public View onCreateView(
+                LayoutInflater inflater,
+                @Nullable ViewGroup container,
+                @Nullable Bundle savedInstanceState) {
+            return new View(inflater.getContext());
+        }
+
+        @Override
+        public void initSearchView(SearchView searchView) {
+            mSearchView = searchView;
+        }
+
+        public @Nullable SearchView getSearchView() {
+            return mSearchView;
+        }
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.SETTINGS_IN_TAB,
+        ChromeFeatureList.DETAILED_LANGUAGE_SETTINGS
+    })
+    public void testSelectLanguageFragment_addsSearchButtonAndSearchView() {
+        TestSelectLanguageFragment selectLanguageFragment = new TestSelectLanguageFragment();
+        mMultiColumnSettings
+                .getChildFragmentManager()
+                .beginTransaction()
+                .replace(R.id.preferences_detail, selectLanguageFragment)
+                .commitNow();
+
+        List<MultiColumnSettings.Title> titles = new ArrayList<>();
+        titles.add(
+                new MultiColumnSettings.Title(
+                        "uuid1", createTitleSupplier("Select language"), 0, null));
+        mMultiColumnSettings.setFakeTitles(titles);
+
+        MultiColumnTitleUpdater updater =
+                new MultiColumnTitleUpdater(
+                        /* savedInstanceState= */ null,
+                        mMultiColumnSettings,
+                        mActivity,
+                        mContainer,
+                        /* mainTitleSetter= */ (t) -> {},
+                        /* titleTapCallback= */ mTitleTapCallback,
+                        /* initialBreadcrumbPath= */ null);
+
+        updater.onTitleUpdated();
+
+        // 1 DetailedTitle ("Select language") + 1 search button + 1 search view = 3 views in
+        // mContainer.
+        assertEquals(3, mContainer.getChildCount());
+        assertNotNull(selectLanguageFragment.getSearchView());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.SETTINGS_IN_TAB})
+    public void testSearchViewProvider_addsSearchButtonAndSearchView() {
+        TestSearchViewProviderFragment searchViewProviderFragment =
+                new TestSearchViewProviderFragment();
+        mMultiColumnSettings
+                .getChildFragmentManager()
+                .beginTransaction()
+                .replace(R.id.preferences_detail, searchViewProviderFragment)
+                .commitNow();
+
+        List<MultiColumnSettings.Title> titles = new ArrayList<>();
+        titles.add(
+                new MultiColumnSettings.Title("uuid1", createTitleSupplier("All Sites"), 0, null));
+        mMultiColumnSettings.setFakeTitles(titles);
+
+        MultiColumnTitleUpdater updater =
+                new MultiColumnTitleUpdater(
+                        /* savedInstanceState= */ null,
+                        mMultiColumnSettings,
+                        mActivity,
+                        mContainer,
+                        /* mainTitleSetter= */ (t) -> {},
+                        /* titleTapCallback= */ mTitleTapCallback,
+                        /* initialBreadcrumbPath= */ null);
+
+        updater.onTitleUpdated();
+
+        // 1 DetailedTitle ("All Sites") + 1 search button + 1 search view = 3 views in
+        // mContainer.
+        assertEquals(3, mContainer.getChildCount());
+        assertNotNull(searchViewProviderFragment.getSearchView());
     }
 }

@@ -52,6 +52,7 @@ source_set("skills") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/toasts/api:toasts",
     "//chrome/browser/ui/webui",
+    "//chrome/browser/ui/webui:chrome_web_contents_handler",
     "//chrome/browser/ui/webui/sanitized_image:sanitized_image_source",
     "//chrome/common",
     "//components/application_locale_storage",
@@ -100,6 +101,12 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
+  if (is_chromeos) {
+    deps += [
+      "//chrome/browser/chromeos/policy/dlp",
+      "//chrome/browser/chromeos/policy/dlp/test:test_support",
+    ]
+  }
 }
 
 if (!is_android) {

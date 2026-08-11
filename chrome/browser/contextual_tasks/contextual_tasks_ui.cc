@@ -390,6 +390,11 @@ ContextualTasksUI::ContextualTasksUI(content::WebUI* web_ui)
   source->AddLocalizedStrings(SearchboxHandler::GetWebUIDataSourceDict(
       profile, {.enable_voice_search = true,
                 .session_allows_drag_and_drop = session_allows_drag_and_drop}));
+  // Re-apply the Contextual Tasks coherence override after the searchbox
+  // overwrite above; see GetContextualTasksLoadTimeData().
+  source->AddBoolean(
+      "voiceSearchCoherenceComposeboxesEnabled",
+      SearchboxHandler::GetVoiceSearchCoherenceCobrowsingComposeboxEnabled());
 #endif  // BUILDFLAG(ENABLE_WEBUI_CONTEXTUAL_TASKS_COMPOSEBOX)
 
   // Determine and cache contextual tasks eligibility on initialization. This
@@ -422,11 +427,7 @@ ContextualTasksUI::ContextualTasksUI(content::WebUI* web_ui)
       this, std::move(tracked_element_ids));
 }
 
-ContextualTasksUI::~ContextualTasksUI() {
-  if (ui_service_) {
-    ui_service_->OnWebUIDestroyed(GetBrowser(), task_id_);
-  }
-}
+ContextualTasksUI::~ContextualTasksUI() = default;
 
 content::WebUIDataSource* ContextualTasksUI::RegisterWebUIDataSource(
     Profile* profile) {
@@ -496,6 +497,12 @@ base::DictValue ContextualTasksUI::GetContextualTasksLoadTimeData(
   dict.Merge(SearchboxHandler::GetWebUIDataSourceDict(
       profile, {.enable_voice_search = true,
                 .session_allows_drag_and_drop = session_allows_drag_and_drop}));
+  // Contextual Tasks follows the cobrowsing coherence key on all composebox
+  // paths; the flag-off legacy <cr-composebox> reads the all-surfaces key via
+  // the shared mixin default, so here that key carries the cobrowsing value.
+  dict.Set(
+      "voiceSearchCoherenceComposeboxesEnabled",
+      SearchboxHandler::GetVoiceSearchCoherenceCobrowsingComposeboxEnabled());
 #endif  // BUILDFLAG(ENABLE_WEBUI_CONTEXTUAL_TASKS_COMPOSEBOX)
 
   int stsDefaultOnHeaderId = IDS_STS_IPH_DEFAULT_ON_HEADER;
@@ -602,6 +609,14 @@ base::DictValue ContextualTasksUI::GetContextualTasksLoadTimeData(
   dict.Set("lensSearchTooltipSessionImpressionCap",
            contextual_tasks::
                GetContextualTasksLensSearchTooltipSessionImpressionCap());
+  dict.Set(
+      "isAskGTooltipDismissCountBelowCap",
+      profile->GetPrefs()->GetInteger(
+          contextual_tasks::kContextualTasksAskGTooltipDismissedCount) <
+          contextual_tasks::GetContextualTasksAskGTooltipDismissedCap());
+  dict.Set("askGTooltipSessionImpressionCap",
+           contextual_tasks::
+               GetContextualTasksAskGTooltipSessionImpressionCap());
   dict.Set("askGCoBrowseEnabled", omnibox::kAskGCoBrowse.Get());
   dict.Set("contextualTasksSidePanelRearchitectureEnabled",
            contextual_tasks::IsContextualTasksSidePanelRearchitectureEnabled());
@@ -903,11 +918,6 @@ bool ContextualTasksUI::IsInitComplete() {
 }
 
 void ContextualTasksUI::OnInitComplete() {
-  if (task_id_ && ui_service_) {
-    ui_service_->OnWebUIReady(GetBrowser(), *task_id_,
-                              web_ui()->GetWebContents());
-  }
-
   for (auto& observer : observers_) {
     observer.OnInitComplete();
   }
@@ -1688,7 +1698,8 @@ void ContextualTasksUI::FrameNavObserver::DidFinishNavigation(
            "FrameNavObserver::DidFinishNavigation zero state logic";
     base::Uuid new_task_id;
     if (old_task_id && old_task_id->is_valid() &&
-        !task_info_delegate_->GetThreadId().has_value()) {
+        !task_info_delegate_->GetThreadId().has_value() &&
+        !has_zero_state_changed) {
       // Reuse the existing task ID if it is valid and has no thread ID yet
       // (it represents an unassociated zero-state task).
       new_task_id = *old_task_id;
@@ -1787,7 +1798,6 @@ void ContextualTasksUI::FrameNavObserver::DidFinishNavigation(
     bool should_create_new_task = pending_task_title_mismatch ||
                                   is_thread_switch ||
                                   (is_new_conversation && !has_reusable_task);
-
     if (should_create_new_task) {
       OMNIBOX_LOG("nav_trace") << "ContextualTasks navigation trace: "
                                   "FrameNavObserver::DidFinishNavigation "
@@ -1844,21 +1854,23 @@ bool ContextualTasksUI::IsZeroState(
   std::string smstk_value;
   std::string vsrid_value;
   std::string cinpts_value;
+  std::string mtid_value;
   net::GetValueForKeyInQuery(url, "q", &query_value);
   net::GetValueForKeyInQuery(url, "mstk", &mstk_value);
   net::GetValueForKeyInQuery(url, "smstk", &smstk_value);
   net::GetValueForKeyInQuery(url, "vsrid", &vsrid_value);
   net::GetValueForKeyInQuery(url, "cinpts", &cinpts_value);
+  net::GetValueForKeyInQuery(url, "mtid", &mtid_value);
 
-  // If the URL is an AI URL and there's no query or (s)mstk, it's zero state.
-  // If there is either a query or (s)mstk, assume it's not zero state. If there
-  // is a vsrid/cinpts, assume it's not zero state since there will soon be an
-  // mstk.
+  // If the URL is an AI URL and there's no query or (s)mstk/mtid, it's zero
+  // state. If there is either a query or (s)mstk/mtid, assume it's not zero
+  // state. If there is a vsrid/cinpts, assume it's not zero state since there
+  // will soon be an mstk.
   // TODO(crbug.com/472336339): Find a more robust way to determine if the page
   // is zero state instead of query params.
   return ui_service->IsAiUrl(url) && query_value.empty() &&
          mstk_value.empty() && smstk_value.empty() && vsrid_value.empty() &&
-         cinpts_value.empty();
+         cinpts_value.empty() && mtid_value.empty();
 }
 
 ContextualTasksUI::InnerFrameCreationObvserver::InnerFrameCreationObvserver(

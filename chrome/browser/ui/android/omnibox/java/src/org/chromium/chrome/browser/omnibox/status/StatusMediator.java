@@ -92,6 +92,7 @@ public class StatusMediator
     private final OneshotSupplier<TemplateUrlService> mTemplateUrlServiceSupplier;
     private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final Context mContext;
+    private final OmniboxResourceProvider mResourceProvider;
     private final LocationBarDataProvider mLocationBarDataProvider;
     private final PermissionStatusHandler mPermissionStatusHandler;
     private final Handler mIconTaskHandler = new Handler();
@@ -144,6 +145,7 @@ public class StatusMediator
     private @DrawableRes int mStatusIconOverrideResId = Resources.ID_NULL;
 
     /**
+     * @param resourceProvider Provides omnibox-specific resources.
      * @param model The {@link PropertyModel} for this mediator.
      * @param context The {@link Context} for this Status component.
      * @param locationBarDataProvider Provides data to the location bar.
@@ -159,6 +161,7 @@ public class StatusMediator
      * @param previewMatchUrlSupplier Holds the url of a preview match, null otherwise.
      */
     public StatusMediator(
+            OmniboxResourceProvider resourceProvider,
             PropertyModel model,
             Context context,
             LocationBarDataProvider locationBarDataProvider,
@@ -172,6 +175,7 @@ public class StatusMediator
             NonNullObservableSupplier<Integer> fuseboxLayoutModeSupplier,
             Runnable onPlusButtonClicked) {
         mContext = context;
+        mResourceProvider = resourceProvider;
         initBackgroundDrawables(context);
         mModel = model;
         mModel.set(StatusProperties.USE_WIDE_STATUS_ICON, false);
@@ -417,13 +421,12 @@ public class StatusMediator
                         && UrlUtilities.isNtpUrl(url)
                         && !mLocationBarDataProvider.isIncognitoBranded();
 
+        int pageClassification =
+                mLocationBarDataProvider.getPageClassification(/* prefetch= */ false);
         mModel.set(
                 StatusProperties.USE_WIDE_STATUS_ICON,
-                mUrlHasFocus
-                        || isRegularNtpUrl
-                        || PageClassificationUtils.isHubOrTabSearch(
-                                mLocationBarDataProvider.getPageClassification(
-                                        /* prefetch= */ false)));
+                pageClassification != PageClassification.ANDROID_TAB_SEARCH_OVERLAY_VALUE
+                        && (mUrlHasFocus || isRegularNtpUrl));
     }
 
     public void setUseSmallWidget(boolean useSmallWidget) {
@@ -485,8 +488,7 @@ public class StatusMediator
 
     /** Update color theme for all status components. */
     private void updateColorTheme() {
-        final @ColorInt int separatorColor =
-                OmniboxResourceProvider.getStatusSeparatorColor(mContext, mBrandedColorScheme);
+        final @ColorInt int separatorColor = mResourceProvider.getStatusSeparatorColor();
         mModel.set(StatusProperties.SEPARATOR_COLOR, separatorColor);
         mNavigationIconTintRes = ThemeUtils.getThemedToolbarIconTintRes(mBrandedColorScheme);
 
@@ -500,10 +502,10 @@ public class StatusMediator
 
     private @ColorInt int getTextColor() {
         if (mPageIsPaintPreview) {
-            return OmniboxResourceProvider.getStatusPreviewTextColor(mContext, mBrandedColorScheme);
+            return mResourceProvider.getStatusPreviewTextColor();
         }
         if (mPageIsOffline) {
-            return OmniboxResourceProvider.getStatusOfflineTextColor(mContext, mBrandedColorScheme);
+            return mResourceProvider.getStatusOfflineTextColor();
         }
         return 0;
     }
@@ -562,7 +564,7 @@ public class StatusMediator
     public void showPermissionIcon(PermissionIconResource icon) {
         mModel.set(StatusProperties.STATUS_ICON_RESOURCE, icon);
         mModel.set(StatusProperties.STATUS_ICON_DESCRIPTION_RES, icon.getContentDescriptionRes());
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, this::onClickOpenPageInfo);
+        setStatusClickListener(this::onClickOpenPageInfo);
 
         updateStatusViewVisibility();
     }
@@ -627,7 +629,6 @@ public class StatusMediator
             mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
             tintRes = mNavigationIconTintRes;
             iconRes = R.drawable.search_spark_black_24dp;
-            descRes = R.string.accessibility_omnibox_open_context_popup;
             doubleTapDescriptionRes = Resources.ID_NULL;
         } else if (mFuseboxLayoutModeSupplier.get() == FuseboxLayoutMode.TOOLBAR
                 && (mFuseboxStateSupplier.get() == FuseboxState.COMPACT
@@ -700,9 +701,14 @@ public class StatusMediator
         mModel.set(
                 StatusProperties.STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES,
                 doubleTapDescriptionRes);
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, clickListener);
+        setStatusClickListener(clickListener);
 
         updateStatusViewVisibility();
+    }
+
+    private void setStatusClickListener(@Nullable OnClickListener listener) {
+        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, listener);
+        mModel.set(StatusProperties.STATUS_VIEW_HOVER_ENABLED, listener != null);
     }
 
     private void onFuseboxStateChanged(@FuseboxState int state) {
@@ -721,7 +727,7 @@ public class StatusMediator
 
         mModel.set(
                 StatusProperties.STATUS_ICON_RESOURCE, getStatusIconResourceForSearchEngineIcon());
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, null);
+        setStatusClickListener(null);
         updateStatusViewVisibility();
         return true;
     }

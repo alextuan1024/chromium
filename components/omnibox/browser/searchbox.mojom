@@ -44,7 +44,13 @@ enum KeywordType {
   kInstant,
 };
 
-struct KeywordModel {
+struct InputKeywordModel {
+  KeywordType type;
+  string keyword;
+  string display_text;
+};
+
+struct MatchKeywordModel {
   KeywordType type;
   string chip_hint;
   string chip_a11y;
@@ -104,7 +110,7 @@ struct AutocompleteMatch {
   // would be the text following "sale".
   mojo_base.mojom.String16? tail_suggest_common_prefix;
   // Keyword UI state for this match. Empty if not a keyword suggestion.
-  KeywordModel? keyword_model;
+  MatchKeywordModel? keyword_model;
 };
 
 // Information about a suggested tab in the WebUI.
@@ -324,6 +330,9 @@ enum SuggestInventory {
   kAimTakeover = 2,
   kImageGenTakeover = 3,
   kConversationStarters = 4,
+  kBrainstorm = 5,
+  kHelpMeLearn = 6,
+  kWriteOrEdit = 7,
 };
 
 // LINT.IfChange(InputMethod)
@@ -384,7 +393,8 @@ interface PageHandler {
                     uint32 cursor_position,
                     SuggestInventory suggest_inventory,
                     bool is_on_focus,
-                    string keyword);
+                    string keyword,
+                    InputMethod input_method);
 
   // Cancels the current autocomplete query. Clears the result set if
   // |clear_result| is true.
@@ -405,9 +415,6 @@ interface PageHandler {
   // Sets the Smart Compose stats to be passed during the next navigation.
   SetSmartComposeStats(SmartComposeStats smart_compose_stats);
 
-  // Sets the WebUI-specific input method. Used to for querying autocomplete
-  // and gets reset in the browser every time autocomplete is queried.
-  SetInputMethod(InputMethod input_method);
 
   // Sets the native OmniboxEditModel popup selection.
   // TODO(crbug.com/483117840): This drives some omnibox state affecting
@@ -526,8 +533,10 @@ interface PageHandler {
   // Opens the Lens search UI.
   OpenLensSearch();
 
-  // Called when a user enables a tool.
-  SetActiveToolMode(composebox_query.mojom.ToolMode tool);
+  // Called when a tool is enabled (either manually or via server auto tool
+  // add).
+  SetActiveToolMode(composebox_query.mojom.ToolMode tool,
+                    bool is_set_by_server);
 
   // Called when a user enables a model.
   SetActiveModelMode(composebox_query.mojom.ModelMode model);

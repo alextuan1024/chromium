@@ -52,9 +52,9 @@ inline constexpr char kAiAvatarRingIosName[] = "AiAvatarRing";
 inline constexpr char kAiAvatarRingIosDescription[] =
     "Display a ring around the avatar if the primary account has a AI Tier";
 
-inline constexpr char kAimCobrowseHeaderName[] = "AimCobrowseHeader";
-inline constexpr char kAimCobrowseHeaderDescription[] =
-    "Changes the design of the AIM cobrowse header.";
+inline constexpr char kAimCobrowseName[] = "AimCobrowse";
+inline constexpr char kAimCobrowseDescription[] =
+    "Enables the AimCobrowse feature.";
 
 inline constexpr char kAimUrlNavigationFetchEnabledName[] =
     "AimUrlNavigationFetchEnabled";
@@ -133,6 +133,12 @@ inline constexpr char kAutofillAcrossIframesName[] =
 inline constexpr char kAutofillAcrossIframesDescription[] =
     "When enabled, Autofill will fill and save information on forms that "
     "spread across multiple iframes.";
+
+inline constexpr char kAutofillAiAlwaysShowPrivateAiNoticeName[] =
+    "Autofill AI always show Private AI notice";
+inline constexpr char kAutofillAiAlwaysShowPrivateAiNoticeDescription[] =
+    "Forces the Autofill AI Private AI notice suggestion to be shown for "
+    "testing.";
 
 inline constexpr char kAutofillAiAvailableByDefaultName[] =
     "Autofill AI available by default";
@@ -401,6 +407,11 @@ inline constexpr char kComposeboxAdditionalAdvancedToolsName[] =
 inline constexpr char kComposeboxAdditionalAdvancedToolsDescription[] =
     "When enabled, the additional tools in the input plate are shown, such as "
     "canvas and the model picker";
+
+inline constexpr char kComposeboxAimRichAPCExtractionName[] =
+    "Composebox AIM Rich APC Extraction";
+inline constexpr char kComposeboxAimRichAPCExtractionDescription[] =
+    "Enables rich APC (v2) extraction when attaching tabs in Composebox (AIM).";
 
 inline constexpr char kComposeboxAttachmentsTypedStateName[] =
     "Enable contextual suggestions for typed state";
@@ -1367,6 +1378,11 @@ inline constexpr char kLockBottomToolbarDescription[] =
     "When enabled, the bottom toolbar will not get collapsed when scrolling "
     "into fullscreen mode.";
 
+inline constexpr char kMVTInBottomSheetName[] = "NTP MVT in Bottom Sheet";
+inline constexpr char kMVTInBottomSheetDescription[] =
+    "Places the Most Visited Tiles inside the bottom sheet card for the NTP "
+    "Redesign.";
+
 inline constexpr char kManualLogUploadsInFREName[] =
     "Manual log uploads in the FRE";
 inline constexpr char kManualLogUploadsInFREDescription[] =
@@ -1590,6 +1606,12 @@ inline constexpr char kOmniboxOnDeviceTailSuggestionsDescription[] =
     "Google tail non personalized search suggestions provided by a compact on "
     "device model.";
 
+inline constexpr char kOmniboxPastePromoExperimentName[] =
+    "Omnibox Paste Flow Default Browser Promo Experiment";
+inline constexpr char kOmniboxPastePromoExperimentDescription[] =
+    "Enables non-modal default browser promo experiment arms for Omnibox "
+    "navigation.";
+
 inline constexpr char kOmniboxSuggestionAnswerMigrationName[] =
     "Omnibox suggestion answer migration";
 inline constexpr char kOmniboxSuggestionAnswerMigrationDescription[] =
@@ -1671,10 +1693,6 @@ inline constexpr char kPageContextIPCOptimizationDescription[] =
 inline constexpr char kPageContextPdfName[] = "Page Context PDF";
 inline constexpr char kPageContextPdfDescription[] =
     "Enables PDF support for Page Context in Gemini.";
-
-inline constexpr char kPageStabilityMetricsName[] = "Page Stability Metrics";
-inline constexpr char kPageStabilityMetricsDescription[] =
-    "Enables metrics to track DOM mutation frequency after user interactions.";
 
 inline constexpr char kPageToolsFeatureUnavailabilityName[] =
     "PageToolsFeatureUnavailability";
@@ -1862,13 +1880,6 @@ inline constexpr char kSupervisedUserEmitLogRecordSeparatelyName[] =
 inline constexpr char kSupervisedUserEmitLogRecordSeparatelyDescription[] =
     "Emit supervised user log record separately for Family Link and device "
     "parental controls users (no user-visible effect).";
-
-inline constexpr char kSupervisedUserUseUrlFilteringServiceName[] =
-    "Use URL filtering service";
-inline constexpr char kSupervisedUserUseUrlFilteringServiceDescription[] =
-    "Use the SupervisedUserUrlFilteringService to get URL filtering settings "
-    "directly from supervision services instead of using PrefService (no "
-    "user-visible effect).";
 
 inline constexpr char kSupportGoogleOneDeepLinkName[] =
     "Support Google One Deep Link";

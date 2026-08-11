@@ -86,6 +86,7 @@ import org.chromium.base.task.BackgroundOnlyAsyncTask;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorFromHexInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
@@ -598,7 +599,7 @@ public class NtpCustomizationUtils {
 
     /** Returns whether a white background should be applied on fake search box. */
     public static boolean shouldApplyWhiteBackgroundOnSearchBox() {
-        if (ChromeFeatureList.sNtpAurora.isEnabled() && !OmniboxCapabilities.isDesktopPlatform()) {
+        if (NewTabPageUtils.isNtpAuroraEnabled() && !OmniboxCapabilities.isDesktopPlatform()) {
             return true;
         }
 
@@ -607,7 +608,9 @@ public class NtpCustomizationUtils {
 
     /** Returns whether a white background should be applied on the composeplate. */
     public static boolean shouldApplyWhiteBackgroundOnComposeplate() {
-        if (!NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) return false;
+        if (!NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
+            return false;
+        }
 
         return shouldApplyWhiteBackgroundForNtpBackgroundType(
                 NtpCustomizationConfigManager.getInstance().getBackgroundType());
@@ -667,6 +670,24 @@ public class NtpCustomizationUtils {
         }
 
         return new File(themeImageDir, fileName);
+    }
+
+    /** Returns a unique file name from the path. */
+    public static @Nullable String getFileName(@Nullable String path) {
+        if (path == null || path.isEmpty()) {
+            return null;
+        }
+
+        // Find the position of the last File.separator ("/").
+        int lastFileSeparatorIndex = path.lastIndexOf(File.separator);
+
+        // If lastFileSeparatorIndex is -1, it means file separator wasn't found in the string.
+        if (lastFileSeparatorIndex == -1) {
+            return path;
+        }
+
+        // Extract everything after the last file separator.
+        return path.substring(lastFileSeparatorIndex + 1);
     }
 
     /**

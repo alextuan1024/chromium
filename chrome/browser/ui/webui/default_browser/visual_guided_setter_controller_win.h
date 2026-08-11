@@ -62,7 +62,11 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
     kStageTooSmall = 3,
     // The user manually closed the Settings window before flow completion.
     kSettingsWindowClosed = 4,
-    kMaxValue = kSettingsWindowClosed,
+    // Launching the Windows Settings default-apps UI failed, e.g. because the
+    // install mode does not support set-as-default (canary) or registration
+    // failed.
+    kSettingsLaunchFailed = 5,
+    kMaxValue = kSettingsLaunchFailed,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:DefaultBrowserVisualGuideOutcome)
 
@@ -108,6 +112,25 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
                                          const gfx::Rect& target_rect) const;
   virtual void CloseSettingsWindow();
   virtual bool IsValidSettingsProcess(HWND hwnd) const;
+
+  // Low-level Win32 window probes backing the predicates above. Virtual for
+  // testing.
+  virtual bool IsWindowAlive(HWND hwnd) const;
+  virtual bool IsWindowOnScreen(HWND hwnd) const;
+  virtual bool IsWindowCloaked(HWND hwnd) const;
+  virtual bool IsWindowMinimized(HWND hwnd) const;
+  // Screen bounds of the latched Settings window, or nullopt when they are
+  // unavailable or empty. Virtual for testing.
+  virtual std::optional<gfx::Rect> GetSettingsWindowScreenRect() const;
+  // Overlay forwarding. Virtual for testing, so tests can observe when the
+  // guidance arrow is shown or hidden.
+  virtual void ShowOverlayArrow(const gfx::Point& start, const gfx::Point& end);
+  virtual void HideOverlayArrow();
+
+  // Called on the UI sequence with the result of the Settings launch posted
+  // by LaunchSettings(). A failed launch tears the flow down immediately with
+  // Outcome::kSettingsLaunchFailed instead of waiting for the finder timeout.
+  void OnLaunchSettingsResult(bool succeeded);
 
  private:
   // views::WidgetObserver:

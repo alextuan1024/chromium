@@ -454,6 +454,7 @@
 <translation id="2422174748424038845">Se o eliminas, todas as persoas perderán inmediatamente o acceso ao grupo de pestanas "<ph name="GROUP_NAME" />", que se eliminará de todos os dispositivos.</translation>
 <translation id="2424805048070062787">Continuar con esta pestana</translation>
 <translation id="2426805022920575512">Escoller outra conta</translation>
+<translation id="2428543302546523788">Mostra as ligazóns cando o modo de lectura estea activado</translation>
 <translation id="243275146591958220">Cancelar descarga</translation>
 <translation id="2434405374328098816">Xa gardaches un contrasinal de <ph name="USERNAME" /> para <ph name="WEBSITE" /></translation>
 <translation id="2434918313224755415">Podes desprazarte cara á esquerda para navegar no modo de incógnito.</translation>
@@ -468,6 +469,7 @@
 <translation id="2470654816840674524">Que podo facer con Gemini en Chrome?</translation>
 <translation id="2473876017985765807">Xa gardaches un contrasinal para <ph name="WEBSITE" /></translation>
 <translation id="247430852844518481">Podes definir un recordatorio para volver visitar esta páxina máis tarde</translation>
+<translation id="2476554421818031422">Estás axudando a mellorar a función de autocompletar mellorada</translation>
 <translation id="2479148705183875116">Ir a Configuración</translation>
 <translation id="2482878487686419369">Notificacións</translation>
 <translation id="2484459871750294497">Como podo activar esta función?</translation>
@@ -570,7 +572,6 @@
 <translation id="2816489851009559785">Menú → Configuración → Navegador predeterminado</translation>
 <translation id="2818821771744632548">Para poder restablecer o iPhone, pechouse a sesión da túa conta (<ph name="USER_NAME" />). Se queres volver iniciar a sesión, toca Continuar máis abaixo.</translation>
 <translation id="2819667972867209401">Cando a opción está activada, os datos gárdanse na túa Conta de Google. Cando está desactivada, os datos gárdanse só neste dispositivo e elimínanse ao pechar a sesión.</translation>
-<translation id="2825777862277359739">Inicia sesión para poder acceder aos teus contrasinais, as pestanas, os marcadores e outros datos.</translation>
 <translation id="2827760117436553203">Queres manter os datos separados?</translation>
 <translation id="2829172210806130158">Busca na pantalla</translation>
 <translation id="2831109159746537587">Proba a rodear ou tocar a imaxe que queiras buscar</translation>
@@ -691,6 +692,7 @@
 <translation id="3259451381796379533">Esta conta non funciona con Gemini. Inicia sesión con outra Conta de Google.</translation>
 <translation id="3265736395246760288">Inicia sesión máis rápido desde calquera dos teus dispositivos sincronizados.</translation>
 <translation id="3272527697863656322">Cancelar</translation>
+<translation id="3272955648592358996">Os teus datos melloran a IA de Google</translation>
 <translation id="3273510436356991673">Personalizar a pantalla de inicio</translation>
 <translation id="3277021493514034324">Copiouse o enderezo do sitio</translation>
 <translation id="3280562213547448728">Busca por voz</translation>
@@ -717,7 +719,6 @@
 <translation id="3377063233124932127">Agora os marcadores e os contrasinais que teñas gardados, ademais doutros elementos, aparecen na parte superior.</translation>
 <translation id="3378214228000661758">Crea unha clave de acceso para</translation>
 <translation id="3380352560400387991">Este sitio está tentando abrir unha aplicación. Con esta acción, sairás do modo de incógnito.</translation>
-<translation id="3385742921291399323">Accede aos contrasinais, as pestanas e os marcadores que teñas gardados, entre outras cousas.</translation>
 <translation id="3391765987934722383">Mantente ao tanto de todas as baixadas de prezo</translation>
 <translation id="3392923070107623576">Organízate creando grupos de pestanas</translation>
 <translation id="3404232721752787413">Gardar en Google Fotos</translation>
@@ -725,6 +726,7 @@
 <translation id="340669334496430859">Última modificación</translation>
 <translation id="3409785640040772790">Maps</translation>
 <translation id="3416023309465857378">25 de outubro de 2023</translation>
+<translation id="3419787211763835342">Axuda a mellorar a función de autocompletar mellorada</translation>
 <translation id="3426715535827854458">Ocultar a opción Ocultar barra de ferramentas</translation>
 <translation id="3435738964857648380">Seguranza</translation>
 <translation id="3441673211568148613">Mantén a túa navegación privada</translation>
@@ -858,6 +860,7 @@
 <translation id="3888863481921783344">Usarase para mostrarche posibles invitados ao teu evento.</translation>
 <translation id="3891414008432200754">Prezo</translation>
 <translation id="3892144330757387737">Aquí atoparás o teu historial</translation>
+<translation id="3892695492576181257">Nese estado, o que fagas gardarase na actividade nas aplicacións Gemini durante 18 meses, aínda que tes a posibilidade de cambiar a duración a 3 ou 36 meses. Google utiliza a túa actividade para desenvolver e mellorar os seus servizos (por exemplo, os modelos de Gemini), así como para protexer a plataforma, as persoas que a utilizan e o público en xeral, coa axuda dun equipo de revisión. Os datos revisados por fornecedores de servizos desvincúlanse da túa conta e gárdanse durante 3 anos.</translation>
 <translation id="3893858854379998374">Para gardar marcadores na túa conta, elimina os que non uses</translation>
 <translation id="3897092660631435901">Menú</translation>
 <translation id="3904270275864974753">Editar carrusel</translation>
@@ -1008,6 +1011,7 @@
 <translation id="4378154925671717803">Teléfono</translation>
 <translation id="4380677808580146413">Seleccionar</translation>
 <translation id="4389019817280890563">Toca para cambiar de idioma.</translation>
+<translation id="4390649422783033958">Tes a sesión iniciada como <ph name="USER_NAME" />. <ph name="USER_EMAIL" />, subscrición a Google. Abre o menú da conta.</translation>
 <translation id="4393294364304621138">{COUNT,plural, =1{Despois de 1 día}other{Despois de {COUNT} días}}</translation>
 <translation id="4402672425188312225">{COUNT,plural, =1{1 pestana}other{# pestanas}}</translation>
 <translation id="4404790787924017676">Recibe alertas se os produtos que segues baixan de prezo</translation>
@@ -1246,7 +1250,6 @@
 <translation id="5148717509369231739">Importación de Safari</translation>
 <translation id="5152483358138813104">Inicia sesión máis rápido en todos os dispositivos</translation>
 <translation id="515315847398512535">A función de buscar na pantalla está desactivada para a túa conta. Fala con quen a administra se necesitas máis información.</translation>
-<translation id="5155502059906700593">Cambia a posición da barra de enderezos á parte superior ou á inferior.</translation>
 <translation id="5157638238828697074">Produciuse un erro. Non se puido abrir a aplicación.</translation>
 <translation id="5163417375525818870">PDF</translation>
 <translation id="5168414296986405587">Creado para iPadOS</translation>
@@ -1365,6 +1368,7 @@ Handoff tamén debe estar activado na sección Xeral da configuración e os teus
 <translation id="5559567453458728487">Converte as unidades de medida que se atopen na Web</translation>
 <translation id="5560088892362098740">Data de caducidade</translation>
 <translation id="556042886152191864">Botón</translation>
+<translation id="5563910365456880646">desde que completaches o titorial sobre como usar unha foto para facer buscas con Google Lens</translation>
 <translation id="5565871407246142825">Tarxetas de crédito</translation>
 <translation id="5567439033041178034">MÁIS INFORMACIÓN</translation>
 <translation id="5578795271662203820">Busca esta imaxe en <ph name="SEARCH_ENGINE" /></translation>
@@ -1492,6 +1496,7 @@ Handoff tamén debe estar activado na sección Xeral da configuración e os teus
 <translation id="5971459446352190251">Busca de códigos QR</translation>
 <translation id="5971872012779224351">{count,plural, =1{Eliminouse 1 marcador}other{Elimináronse {count} marcadores}}</translation>
 <translation id="5972844218283131174">Anular toda a selección</translation>
+<translation id="597482816780655631">Gemini é unha IA e pode cometer erros (mesmo no referente á información sobre persoas). É posible que algúns contidos non sexan adecuados para todo o mundo. Os chats revísanse e úsanse para mellorar a IA de Google. <ph name="BEGIN_LINK" />Máis información sobre as opcións que tes ao teu dispor<ph name="END_LINK" />. Aplícanse as nosas <ph name="BEGIN_LINK" />Condicións<ph name="END_LINK" /> e o noso <ph name="BEGIN_LINK" />Aviso de privacidade<ph name="END_LINK" />.</translation>
 <translation id="5976160379964388480">Outros</translation>
 <translation id="5977976211062815271">Neste dispositivo</translation>
 <translation id="5986043348928676121">Seguinte</translation>
@@ -1564,7 +1569,6 @@ Handoff tamén debe estar activado na sección Xeral da configuración e os teus
 <translation id="6193448654517602979">Selecciona pestanas</translation>
 <translation id="6196207969502475924">Busca por voz</translation>
 <translation id="6198252989419008588">Cambiar PIN</translation>
-<translation id="6199783146233591178">Desfruta de protección en tempo real con Navegación segura mellorada</translation>
 <translation id="6210079381482819663">As pestanas que non se usen durante <ph name="THRESHOLD" /> días ou máis moveranse aquí. Podes cambiar esta opción en calquera momento en <ph name="BEGIN_LINK" />Configuración<ph name="END_LINK" />.</translation>
 <translation id="6213281885682386884">Non se atopou ningún enderezo</translation>
 <translation id="6218508144653756827">Tema fucsia</translation>
@@ -1715,7 +1719,6 @@ Handoff tamén debe estar activado na sección Xeral da configuración e os teus
 <translation id="6626281667717553020">URI de CPS</translation>
 <translation id="6627583120233659107">Editar cartafol</translation>
 <translation id="6629759408545977279">Desde: <ph name="ORIGINATING_HOST" /></translation>
-<translation id="66306952800092318">Engade esta capa adicional de protección contra as ameazas en liña.</translation>
 <translation id="6634432609054530164">A túa organización desactivou o modo de incógnito</translation>
 <translation id="6637478299472506933">Erro ao descargar</translation>
 <translation id="6638511529934826365">Aplicar zoom ao texto…</translation>
@@ -1815,6 +1818,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="6930162026494574854">Restaurar config. tradución</translation>
 <translation id="6930799952781667037">Toca para cambiar a este idioma.</translation>
 <translation id="6932739965694346873"><ph name="USER_NAME" />, <ph name="EMAIL" />. <ph name="MANAGED_STATUS" />.</translation>
+<translation id="6937083164784433305">{count,plural, =1{Usaches 1 foto para facer unha busca}other{Usaches # fotos para facer unha busca}}</translation>
 <translation id="693761253105515415">Define un contrasinal</translation>
 <translation id="6945221475159498467">Seleccionar</translation>
 <translation id="6946722113367118030">Pensar</translation>
@@ -1859,6 +1863,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="7102005569666697658">Descargando… <ph name="FILE_SIZE" /></translation>
 <translation id="7104701424653979232">Menú → Configuración → Métodos de pago</translation>
 <translation id="7108338896283013870">Ocultar</translation>
+<translation id="7119533351103192286">Usar Gemini</translation>
 <translation id="7127922377013221748">Ocultar barra de ferramentas</translation>
 <translation id="7128693485119315539">É posible que a túa organización necesite consultar e administrar os datos de navegación asociados á túa conta xestionada, como o teu historial de navegación e os contrasinais.</translation>
 <translation id="713215255510512027"><ph name="FILENAME" /> (<ph name="FILESIZE" />)</translation>
@@ -2020,6 +2025,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="7662316065255305764">Información sobre o sitio</translation>
 <translation id="7665369617277396874">Engadir conta</translation>
 <translation id="7666861622396822790">Podes xestionar esta opción en <ph name="BEGIN_LINK" />Configuración de contido<ph name="END_LINK" />.</translation>
+<translation id="7669448795744969014">Tes a sesión iniciada como <ph name="USER_EMAIL" /> (subscrición a Google). Abre o menú da conta.</translation>
 <translation id="7669493687462784703">Queres seguir descargando un perfil de configuración de <ph name="WEBSITE" />?</translation>
 <translation id="7673346542062368520">Podes pasar o dedo cara á esquerda para navegar no modo de incógnito.</translation>
 <translation id="7679915578945954324">Copiáronse os enderezos dos sitios</translation>
@@ -2063,6 +2069,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="78146569776629510">Descargas</translation>
 <translation id="7815852444315004084">Ocultar por agora</translation>
 <translation id="7825973332242257878">Grupos de pestanas</translation>
+<translation id="7828344837949522075">Mostrar suxestión</translation>
 <translation id="7839994177130598711">Os membros da túa familia agora poden usar o teu nome de usuario e contrasinal para iniciar sesión en <ph name="BEGIN_BOLD" /><ph name="WEBSITE" /><ph name="END_BOLD" /> se usan o xestor de contrasinais de Google.</translation>
 <translation id="7841180087127694526">Buscar texto copiado</translation>
 <translation id="7841418003178675048">Selecciona que cartas queres que se mostren na páxina Nova pestana.</translation>
@@ -2383,6 +2390,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="8796634520835503150">Modo de lectura dispoñible</translation>
 <translation id="8803526663383843427">Se a función está activada</translation>
 <translation id="8803639129939845298">Seguro</translation>
+<translation id="8809212245338455710">Subscrición a <ph name="AI_TIER_NAME" /></translation>
 <translation id="8813277370772331957">Lembrarmo máis tarde</translation>
 <translation id="8814308045751067027">Para usar Live, permite que Chrome acceda ao teu micrófono na configuración</translation>
 <translation id="8814719628147284151">Continuar</translation>
@@ -2394,6 +2402,7 @@ Para continuar desde o ordenador, cambia a <ph name="OTHER_EMAIL" />. Obterás o
 <translation id="882557203579758546">Buscar o contido na páxina…</translation>
 <translation id="8829809207373502270">Esta clave de acceso xa non funciona. Eliminouse de <ph name="WEBSITE" /> e dentro de pouco tamén se eliminará desta sección. <ph name="BEGIN_LINK" />Claves de acceso<ph name="END_LINK" /></translation>
 <translation id="8831208860914609320">Pechar todas as pestanas inactivas</translation>
+<translation id="8831871601813227635">Aplícanse as nosas <ph name="BEGIN_LINK" />Condicións<ph name="END_LINK" />, as <ph name="BEGIN_LINK" />Condicións de localización de Corea<ph name="END_LINK" /> e o <ph name="BEGIN_LINK" />Aviso de privacidade<ph name="END_LINK" />. Os chats revísanse e úsanse para mellorar a IA de Google. Gemini é unha IA e pode cometer erros (mesmo no referente á información sobre persoas). É posible que algúns contidos non sexan adecuados para todo o mundo. Podes <ph name="BEGIN_LINK" />xestionar a túa actividade<ph name="END_LINK" />, incluída a información sobre a túa localización. <ph name="BEGIN_LINK" />Máis información acerca das túas escollas<ph name="END_LINK" /></translation>
 <translation id="8837654851594567190">Ordenar por editor</translation>
 <translation id="884351711508006491">A túa información gárdase no teu dispositivo.</translation>
 <translation id="8844136307393039959">Baixada de prezo do produto seguido</translation>

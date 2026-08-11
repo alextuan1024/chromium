@@ -323,6 +323,7 @@ public class LocationBarCoordinator
                         context,
                         windowAndroid,
                         mLocationBarLayout,
+                        mResourceProvider,
                         tabModelSelectorSupplier,
                         templateUrlServiceSupplier,
                         snackbarManager,
@@ -464,6 +465,7 @@ public class LocationBarCoordinator
         StatusView statusView = mLocationBarLayout.findViewById(R.id.location_bar_status);
         mStatusCoordinator =
                 new StatusCoordinator(
+                        mResourceProvider,
                         isTabletWindow(),
                         statusView,
                         locationBarDataProvider,

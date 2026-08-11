@@ -6628,6 +6628,48 @@ TEST_F(RequestTest, ContinuationPopupCallingClose) {
   histogram_tester_.ExpectTotalCount("Blink.FedCm.Timing.TurnaroundTime", 0);
 }
 
+// Test the continuation popup being resolved by a native app token response.
+TEST_F(RequestTest, ContinuationPopupNativeAppToken) {
+  RequestParameters parameters = kDefaultRequestParameters;
+
+  MockConfiguration config = kConfigurationValid;
+  // Expect an access token to be produced, rather the typical idtoken.
+  config.token = "a-native-token";
+
+  // Set up the network expectations to return a "continue_on" response
+  // rather than the typical idtoken response.
+  GURL continue_on = GURL(kProviderUrlFull).Resolve("/more-permissions.php");
+  config.continue_on = std::move(continue_on);
+
+  // Set up the UI dialog controller to show a pop-up window, rather
+  // than the typical mediated authorization prompt that generates
+  // an idtoken.
+  auto dialog_controller =
+      std::make_unique<TestDialogController>(kConfigurationValid);
+  base::WeakPtr<TestDialogController> weak_dialog_controller =
+      dialog_controller->AsWeakPtr();
+  SetDialogController(std::move(dialog_controller));
+
+  // When the pop-up window is opened, resolve it by
+  // invoking the token_callback with our token.
+  std::unique_ptr<WebContents> modal(CreateTestWebContents());
+  EXPECT_CALL(*weak_dialog_controller, ShowModalDialog)
+      .WillOnce(::testing::WithArg<4>(
+          [&modal](
+              IdentityRequestDialogController::TokenCallback token_callback) {
+            std::move(token_callback).Run("a-native-token");
+            return modal.get();
+          }));
+
+  RequestExpectations expectations = {
+      RequestTokenStatus::kSuccess, FederatedRequestResult::kSuccess,
+      /*standalone_console_message=*/std::nullopt,
+      /*selected_idp_config_url=*/kProviderUrlFull};
+
+  RunTest(parameters, expectations, config);
+  ExpectStatusMetrics(TokenStatus::kSuccessUsingIdentityProviderResolve);
+}
+
 // Test successful AuthZ request that request the opening of pop-up
 // windows.
 TEST_F(RequestTest, FailsLoadingAContinueOnForADifferentOrigin) {
@@ -7858,6 +7900,102 @@ TEST_F(RequestTest, IdPClaimedSignUpTakesPrecedenceOverBrowserObservedSignIn) {
             LoginState::kSignUp);
 
   ExpectUkmValue("HasSigninAccount", true);
+}
+
+// Test that when an account has an obsolete browser sharing permission (i.e.
+// browser has a last_used_timestamp but IdP claimed SignUp via
+// approved_clients), the permission is revoked.
+TEST_F(RequestTest, RevokeObsoleteSharingPermission) {
+  // Pretend the sharing permission has been granted for all accounts.
+  EXPECT_CALL(
+      *test_permission_delegate_,
+      GetLastUsedTimestamp(OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                           OriginFromString(kProviderUrlFull), _))
+      .WillRepeatedly(
+          Return(std::make_optional<base::Time>(base::Time::Now())));
+
+  // Expect RevokeSharingPermission to be called for the accounts where
+  // approved_clients indicates kSignUp.
+  EXPECT_CALL(*test_permission_delegate_,
+              RevokeSharingPermission(
+                  OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                  OriginFromString(kProviderUrlFull), kAccountIdNicolas));
+  EXPECT_CALL(*test_permission_delegate_,
+              RevokeSharingPermission(
+                  OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                  OriginFromString(kProviderUrlFull), kAccountIdZach));
+  EXPECT_CALL(*test_permission_delegate_,
+              RevokeSharingPermission(
+                  OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                  OriginFromString(kProviderUrlFull), kAccountIdPeter))
+      .Times(0);
+
+  static_cast<TestRenderFrameHost*>(web_contents()->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  MockConfiguration configuration = kConfigurationValid;
+  configuration.idp_info[kProviderUrlFull].accounts = kMultipleAccounts;
+
+  RunDontWaitForCallback(kDefaultRequestParameters, configuration);
+
+  ASSERT_EQ(all_accounts_for_display().size(), 3u);
+}
+
+// Test that when an IdP does not provide approved_clients (so
+// idp_claimed_login_state is std::nullopt), the sharing permission is NOT
+// revoked, even if the browser observed login state is kSignIn.
+TEST_F(RequestTest, DoNotRevokeSharingPermissionWithoutApprovedClients) {
+  EXPECT_CALL(
+      *test_permission_delegate_,
+      GetLastUsedTimestamp(OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                           OriginFromString(kProviderUrlFull), _))
+      .WillRepeatedly(
+          Return(std::make_optional<base::Time>(base::Time::Now())));
+
+  EXPECT_CALL(*test_permission_delegate_, RevokeSharingPermission(_, _, _, _))
+      .Times(0);
+
+  MockConfiguration configuration = kConfigurationValid;
+  configuration.idp_info[kProviderUrlFull].accounts = kSingleAccount;
+
+  RunDontWaitForCallback(kDefaultRequestParameters, configuration);
+
+  ASSERT_EQ(all_accounts_for_display().size(), 1u);
+  EXPECT_EQ(all_accounts_for_display()[0]->idp_claimed_login_state,
+            std::nullopt);
+  EXPECT_EQ(all_accounts_for_display()[0]->browser_trusted_login_state,
+            LoginState::kSignIn);
+}
+
+// Test that when the browser observed login state is kSignUp, the sharing
+// permission is NOT revoked, regardless of whether the IdP claimed login state
+// is kSignIn or kSignUp.
+TEST_F(RequestTest, DoNotRevokeSharingPermissionWhenBrowserObservedIsSignUp) {
+  // Pretend the sharing permission has NOT been granted for any account,
+  // so browser_observed_login_state is kSignUp.
+  EXPECT_CALL(
+      *test_permission_delegate_,
+      GetLastUsedTimestamp(OriginFromString(kRpUrl), OriginFromString(kRpUrl),
+                           OriginFromString(kProviderUrlFull), _))
+      .WillRepeatedly(Return(std::nullopt));
+
+  EXPECT_CALL(*test_permission_delegate_, RevokeSharingPermission(_, _, _, _))
+      .Times(0);
+
+  MockConfiguration configuration = kConfigurationValid;
+  configuration.idp_info[kProviderUrlFull].accounts = kMultipleAccounts;
+
+  RunDontWaitForCallback(kDefaultRequestParameters, configuration);
+
+  ASSERT_EQ(all_accounts_for_display().size(), 3u);
+  EXPECT_EQ(all_accounts_for_display()[1]->idp_claimed_login_state,
+            LoginState::kSignUp);
+  EXPECT_EQ(all_accounts_for_display()[1]->browser_trusted_login_state,
+            LoginState::kSignUp);
+  EXPECT_EQ(all_accounts_for_display()[2]->idp_claimed_login_state,
+            LoginState::kSignUp);
+  EXPECT_EQ(all_accounts_for_display()[2]->browser_trusted_login_state,
+            LoginState::kSignUp);
 }
 
 // Test that IdP claimed SignIn does not affect browser observed SignUp.
@@ -9185,6 +9323,106 @@ TEST_F(RequestTest, DisconnectViaFederatedRequestService) {
         run_loop.Quit();
       }));
   run_loop.Run();
+}
+
+TEST_F(RequestTest, DisconnectFromOpaqueOrigin) {
+  base::HistogramTester histogram_tester;
+  ResetAndDeleteRequest();
+
+  static_cast<TestWebContents*>(web_contents())
+      ->NavigateAndCommit(GURL("data:text/html,hi"), ui::PAGE_TRANSITION_LINK);
+
+  mojo::Remote<FederatedRequestService> federated_request_service;
+  RequestService* service =
+      RequestService::GetOrCreateForCurrentDocument(main_test_rfh());
+  service->BindFederatedRequestService(
+      federated_request_service.BindNewPipeAndPassReceiver());
+
+  auto options = blink::mojom::IdentityCredentialDisconnectOptions::New();
+  options->config = blink::mojom::IdentityProviderConfig::New();
+  options->config->config_url = GURL(kProviderUrlFull);
+  options->config->client_id = kClientId;
+  options->account_hint = "hint";
+
+  base::RunLoop run_loop;
+  federated_request_service->Disconnect(
+      std::move(options),
+      base::BindLambdaForTesting([&](blink::mojom::DisconnectStatus status) {
+        EXPECT_EQ(blink::mojom::DisconnectStatus::kError, status);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  histogram_tester.ExpectTotalCount("Blink.FedCm.Status.Disconnect", 0);
+}
+
+TEST_F(RequestTest, DisconnectFromFencedFrame) {
+  base::HistogramTester histogram_tester;
+  ResetAndDeleteRequest();
+
+  RenderFrameHost* fenced_frame =
+      RenderFrameHostTester::For(main_test_rfh())->AppendFencedFrame();
+  ASSERT_TRUE(fenced_frame);
+
+  GURL fenced_frame_url = GURL("https://fencedframe.com");
+  std::unique_ptr<NavigationSimulator> navigation_simulator =
+      NavigationSimulator::CreateRendererInitiated(fenced_frame_url,
+                                                   fenced_frame);
+  navigation_simulator->Commit();
+  fenced_frame = navigation_simulator->GetFinalRenderFrameHost();
+  ASSERT_TRUE(fenced_frame);
+
+  mojo::Remote<FederatedRequestService> federated_request_service;
+  RequestService* service =
+      RequestService::GetOrCreateForCurrentDocument(fenced_frame);
+  service->BindFederatedRequestService(
+      federated_request_service.BindNewPipeAndPassReceiver());
+
+  auto options = blink::mojom::IdentityCredentialDisconnectOptions::New();
+  options->config = blink::mojom::IdentityProviderConfig::New();
+  options->config->config_url = GURL(kProviderUrlFull);
+  options->config->client_id = kClientId;
+  options->account_hint = "hint";
+
+  base::RunLoop run_loop;
+  federated_request_service->Disconnect(
+      std::move(options),
+      base::BindLambdaForTesting([&](blink::mojom::DisconnectStatus status) {
+        EXPECT_EQ(blink::mojom::DisconnectStatus::kError, status);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  histogram_tester.ExpectTotalCount("Blink.FedCm.Status.Disconnect", 0);
+}
+
+TEST_F(RequestTest, DisconnectFromNonPrimaryPage) {
+  base::HistogramTester histogram_tester;
+  ResetAndDeleteRequest();
+
+  mojo::Remote<FederatedRequestService> federated_request_service;
+  RequestService* service =
+      RequestService::GetOrCreateForCurrentDocument(main_test_rfh());
+  service->BindFederatedRequestService(
+      federated_request_service.BindNewPipeAndPassReceiver());
+
+  static_cast<RenderFrameHostImpl*>(main_test_rfh())
+      ->SetLifecycleState(
+          RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+
+  auto options = blink::mojom::IdentityCredentialDisconnectOptions::New();
+  options->config = blink::mojom::IdentityProviderConfig::New();
+  options->config->config_url = GURL(kProviderUrlFull);
+  options->config->client_id = kClientId;
+  options->account_hint = "hint";
+
+  base::RunLoop run_loop;
+  federated_request_service->Disconnect(
+      std::move(options),
+      base::BindLambdaForTesting([&](blink::mojom::DisconnectStatus status) {
+        EXPECT_EQ(blink::mojom::DisconnectStatus::kError, status);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  histogram_tester.ExpectTotalCount("Blink.FedCm.Status.Disconnect", 0);
 }
 
 TEST_F(RequestTest, ResolveViaFederatedRequestService) {

@@ -117,10 +117,6 @@ BASE_DECLARE_FEATURE(kGlicOptInImpressionMetrics);
 BASE_DECLARE_FEATURE(kGlicContentsInitiallyHidden);
 BASE_DECLARE_FEATURE(kGlicShowForSignedOut);
 
-BASE_DECLARE_FEATURE(kGlicSetWebContentsVisibilityWhenToggling);
-
-BASE_DECLARE_FEATURE(kGlicSetWebContentsVisibilityWhenToggling);
-
 BASE_DECLARE_FEATURE(kGlicAnchorEntryPointForOnboardedUsers);
 BASE_DECLARE_FEATURE(kGlicProcessCounterAbuseVerdict);
 BASE_DECLARE_FEATURE(kGlicNoWebUiLoader);
@@ -131,7 +127,6 @@ BASE_DECLARE_FEATURE(kGlicHotkeyLocalScope);
 
 BASE_DECLARE_FEATURE(kGlicPasteEligibilityCheck);
 BASE_DECLARE_FEATURE(kGlicWebPasteEligibilityCheck);
-BASE_DECLARE_FEATURE(kGlicOptInDialogLinkA11yFix);
 
 BASE_DECLARE_FEATURE(kGlicTabGroups);
 extern const base::FeatureParam<bool> kGlicTabGroupsUseFullTabEmbedder;
@@ -143,6 +138,8 @@ BASE_DECLARE_FEATURE(kGlicStructuredYieldMetadata);
 BASE_DECLARE_FEATURE(kGlicEnableMojoJs);
 
 BASE_DECLARE_FEATURE(kGlicNoWebview);
+
+BASE_DECLARE_FEATURE(kGlicShakeTrigger);
 
 }  // namespace features
 

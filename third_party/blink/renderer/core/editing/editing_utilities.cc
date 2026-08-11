@@ -436,9 +436,7 @@ static PositionTemplate<Strategy> NextVisuallyDistinctCandidateAlgorithm(
   // Only skip non-editable content when explicitly requested via
   // kCanSkipOverEditingBoundary (used for caret navigation).
   const bool skip_non_editable =
-      rule == kCanSkipOverEditingBoundary &&
-      RuntimeEnabledFeatures::SkipNonEditableInAtomicMoveEnabled() &&
-      IsEditablePosition(position);
+      rule == kCanSkipOverEditingBoundary && IsEditablePosition(position);
   const EditingBoundaryCrossingRule boundary_rule =
       skip_non_editable ? kCanCrossEditingBoundary : rule;
   const PositionTemplate<Strategy> downstream_start =
@@ -531,9 +529,7 @@ PositionTemplate<Strategy> PreviousVisuallyDistinctCandidateAlgorithm(
   // Only skip non-editable content when explicitly requested via
   // kCanSkipOverEditingBoundary (used for caret navigation).
   const bool skip_non_editable =
-      rule == kCanSkipOverEditingBoundary &&
-      RuntimeEnabledFeatures::SkipNonEditableInAtomicMoveEnabled() &&
-      IsEditablePosition(position);
+      rule == kCanSkipOverEditingBoundary && IsEditablePosition(position);
   const EditingBoundaryCrossingRule boundary_rule =
       skip_non_editable ? kCanCrossEditingBoundary : rule;
   const PositionTemplate<Strategy> downstream_start =
@@ -1407,9 +1403,9 @@ PositionWithAffinity PositionRespectingEditingBoundary(
   // TODO(yosin): Is this kIgnoreTransforms correct here?
   PhysicalOffset selection_end_point = hit_test_result.LocalPoint();
   PhysicalOffset absolute_point = target_object->LocalToAbsolutePoint(
-      selection_end_point, kIgnoreTransforms);
-  selection_end_point =
-      editable_object->AbsoluteToLocalPoint(absolute_point, kIgnoreTransforms);
+      selection_end_point, {MapCoordinatesMode::kIgnoreTransforms});
+  selection_end_point = editable_object->AbsoluteToLocalPoint(
+      absolute_point, {MapCoordinatesMode::kIgnoreTransforms});
   target_object = editable_object;
   // TODO(kojii): Support fragment-based |PositionForPoint|. LayoutObject-based
   // |PositionForPoint| may not work if NG block fragmented.
@@ -1858,16 +1854,10 @@ void InsertTextAndSendInputEventsOfTypeInsertReplacementText(
   if (is_canceled) {
     return;
   }
-  if (RuntimeEnabledFeatures::InputEventDataTransferForInsertCmdEnabled()) {
-    frame.GetEditor().InsertTextWithoutSendingTextEvent(
-        replacement, false, nullptr,
-        InputEvent::InputType::kInsertReplacementText,
-        EditCommand::PasswordEchoBehavior::kDoNotEcho, data_transfer);
-  } else {
-    frame.GetEditor().InsertTextWithoutSendingTextEvent(
-        replacement, false, nullptr,
-        InputEvent::InputType::kInsertReplacementText);
-  }
+  frame.GetEditor().InsertTextWithoutSendingTextEvent(
+      replacement, false, nullptr,
+      InputEvent::InputType::kInsertReplacementText,
+      EditCommand::PasswordEchoBehavior::kDoNotEcho, data_transfer);
 }
 
 // |IsEmptyNonEditableNodeInEditable()| is introduced for fixing

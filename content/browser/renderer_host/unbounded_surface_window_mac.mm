@@ -125,6 +125,10 @@ gfx::NativeWindow UnboundedSurfaceWindowMac::GetNativeWindow() const {
 }
 
 UnboundedSurfaceWindowMac::~UnboundedSurfaceWindowMac() {
+  if (parent_view_ && parent_view_->host()) {
+    GetHostFrameSinkManager()->UnregisterFrameSinkHierarchy(
+        parent_view_->host()->GetFrameSinkId(), frame_sink_id_);
+  }
   if (recyclable_compositor_) {
     GetHostFrameSinkManager()->UnregisterFrameSinkHierarchy(
         recyclable_compositor_->compositor()->frame_sink_id(), frame_sink_id_);
@@ -159,11 +163,13 @@ UnboundedSurfaceWindowMac::GetDisplayInfo() const {
     info.scale_factor = screen_info.device_scale_factor;
     info.display_color_spaces = screen_info.display_color_spaces;
     info.display_id = screen_info.display_id;
+    info.display_frequency = screen_info.display_frequency;
   } else {
     display::Display display = display::Screen::Get()->GetPrimaryDisplay();
     info.scale_factor = display.device_scale_factor();
     info.display_color_spaces = display.GetColorSpaces();
     info.display_id = display.id();
+    info.display_frequency = display.display_frequency();
   }
   return info;
 }
@@ -222,9 +228,9 @@ void UnboundedSurfaceWindowMac::InitWindow(const gfx::Rect& bounds_in_screen) {
   gfx::Size size_pixels = gfx::ToRoundedSize(gfx::ConvertSizeToPixels(
       bounds_in_screen.size(), display_info.scale_factor));
 
-  recyclable_compositor_->UpdateSurface(size_pixels, display_info.scale_factor,
-                                        display_info.display_color_spaces,
-                                        display_info.display_id);
+  recyclable_compositor_->UpdateSurface(
+      size_pixels, display_info.scale_factor, display_info.display_color_spaces,
+      display_info.display_id, display_info.display_frequency);
 
   recyclable_compositor_->compositor()->SetRootLayer(root_layer_.get());
   recyclable_compositor_->compositor()->SetBackgroundColor(SK_ColorTRANSPARENT);
@@ -233,6 +239,10 @@ void UnboundedSurfaceWindowMac::InitWindow(const gfx::Rect& bounds_in_screen) {
 
   GetHostFrameSinkManager()->RegisterFrameSinkHierarchy(
       recyclable_compositor_->compositor()->frame_sink_id(), frame_sink_id_);
+  if (parent_view_ && parent_view_->host()) {
+    GetHostFrameSinkManager()->RegisterFrameSinkHierarchy(
+        parent_view_->host()->GetFrameSinkId(), frame_sink_id_);
+  }
 
   root_layer_->SetShowSurface(
       viz::SurfaceId(frame_sink_id_, GetLocalSurfaceId()),
@@ -273,7 +283,8 @@ void UnboundedSurfaceWindowMac::SetBounds(const gfx::Rect& bounds_in_screen) {
 
       recyclable_compositor_->UpdateSurface(
           size_pixels, display_info.scale_factor,
-          display_info.display_color_spaces, display_info.display_id);
+          display_info.display_color_spaces, display_info.display_id,
+          display_info.display_frequency);
     }
 
     if (root_layer_) {
@@ -353,7 +364,8 @@ void UnboundedSurfaceWindowMac::EnsureSurfaceSynchronizedForWebTest() {
         root_layer_->bounds().size(), display_info.scale_factor));
     recyclable_compositor_->UpdateSurface(
         size_pixels, display_info.scale_factor,
-        display_info.display_color_spaces, display_info.display_id);
+        display_info.display_color_spaces, display_info.display_id,
+        display_info.display_frequency);
   }
 }
 

@@ -381,8 +381,7 @@ struct Suggestion {
     // Generic icons start
     kAccount,
     kAndroidMessages,
-    // TODO(crbug.com/40266549): Rename to Undo.
-    kClear,
+    kClose,
     kCode,
     kDelete,
     kDevice,
@@ -542,6 +541,7 @@ struct Suggestion {
         return std::holds_alternative<Guid>(payload) ||
                std::holds_alternative<InstrumentId>(payload);
       case SuggestionType::kFillAutofillAi:
+      case SuggestionType::kRemoveAutofillAi:
         return std::holds_alternative<AutofillAiPayload>(payload);
       case SuggestionType::kCreditCardEntry:
       case SuggestionType::kVirtualCreditCardEntry:

@@ -101,9 +101,9 @@
     "expiry_milestone": 160
   },
   {
-    "name": "aim-cobrowse-header",
-    "owners": [ "radunitescu@google.com", "bling-search@google.com" ],
-    "expiry_milestone": 153
+    "name": "aim-cobrowse",
+    "owners": [ "ameurhosni@google.com", "bling-search@google.com" ],
+    "expiry_milestone": 170
   },
   {
     "name": "aim-eligibility-component-extension",
@@ -296,18 +296,17 @@
     "expiry_milestone": 160
   },
   {
-    "name": "android-context-menu-new-actions",
-    "owners": [
-      "hitarthkothari@google.com",
-      "ckitagawa@google.com",
-      "clank-tab-dev@google.com"
-    ],
-    "expiry_milestone": 155
-  },
-  {
     "name": "android-desktop-aim-gate",
     "owners": [ "skym@chromium.org", "chrome-mobile-search@google.com" ],
     "expiry_milestone": 160
+  },
+  {
+    "name": "android-desktop-bookmark-layout",
+    "owners": [
+      "wylieb@google.com",
+      "clank-app-team@google.com"
+    ],
+    "expiry_milestone": 165
   },
   {
     "name": "android-desktop-bookmark-popup",
@@ -315,7 +314,7 @@
       "wylieb@google.com",
       "clank-app-team@google.com"
     ],
-    "expiry_milestone": 150
+    "expiry_milestone": 165
   },
   {
     "name": "android-desktop-ua-platform",
@@ -618,15 +617,6 @@
     "expiry_milestone": 160
   },
   {
-    "name": "app-launch-shortcut",
-    "owners": [
-      "jimmyxgong@chromium.org",
-      "michaelcheco@google.com",
-      "cros-device-enablement@google.com"
-    ],
-    "expiry_milestone": 150
-  },
-  {
     "name": "app-specific-history",
     "owners": [ "katzz@google.com", "jinsukkim@google.com" ],
     "expiry_milestone": 142
@@ -736,15 +726,6 @@
     "expiry_milestone": 200
   },
   {
-    "name": "ash-modifier-split",
-    "owners": [
-      "dpad@google.com",
-      "wangdanny@chromium.org",
-      "cros-device-enablement@google.com"
-    ],
-    "expiry_milestone": 140
-  },
-  {
     "name": "ash-picker-gifs",
     "owners": [ "shend@chromium.org", "e14s-eng@google.com" ],
     "expiry_milestone": 135
@@ -846,6 +827,11 @@
     "expiry_milestone": 165
   },
   {
+    "name": "autofill-ai-always-show-private-ai-notice",
+    "owners": [ "brunobraga@google.com", "tchudakov@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "autofill-ai-always-trigger-server-model",
     "owners": [ "brunobraga@google.com", "tchudakov@google.com" ],
     "expiry_milestone": 160
@@ -923,17 +909,22 @@
   {
     "name": "autofill-android-desktop-keyboard-accessory-revamp",
     "owners": [ "piotrkotynia@google.com", "luchenpeng@google.com" ],
-    "expiry_milestone": 153
+    "expiry_milestone": 156
   },
   {
     "name": "autofill-android-desktop-suppress-accessory-on-empty",
     "owners": [ "luchenpeng@google.com", "piotrkotynia@google.com" ],
-    "expiry_milestone": 153
+    "expiry_milestone": 156
   },
   {
     "name": "autofill-android-keyboard-accessory-dynamic-positioning",
     "owners": [ "piotrkotynia@google.com" ],
-    "expiry_milestone": 153
+    "expiry_milestone": 156
+  },
+  {
+    "name": "autofill-android-keyboard-accessory-hover-preview",
+    "owners": [ "lkuba@google.com", "piotrkotynia@google.com" ],
+    "expiry_milestone": 155
   },
   {
     "name": "autofill-bottom-sheet-new-blur",
@@ -1132,6 +1123,11 @@
     "expiry_milestone": 160
   },
   {
+    "name": "autofill-ignore-payments-churned-users-strikes-for-testing",
+    "owners": [ "vinnypersky@google.com", "payments-autofill-team@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "autofill-manual-testing-data",
     "owners": ["fleimgruber@google.com", "chrome-autofill@google.com"],
     "expiry_milestone": 146
@@ -1303,11 +1299,6 @@
     "name": "bookmark-pane-android",
     "owners": [ "wylieb@google.com", "clank-tab-dev@google.com" ],
     "expiry_milestone": 160
-  },
-  {
-    "name": "bookmark-tab-group-conversion",
-    "owners": [ "dominicaustria@google.com", "top-chrome-desktop-ui@google.com" ],
-    "expiry_milestone": 155
   },
   {
     "name": "bookmarks-bar-context-menu",
@@ -1878,6 +1869,11 @@
     "expiry_milestone": 160
   },
   {
+    "name": "composebox-aim-rich-apc-extraction",
+    "owners": [ "fikremengistu@google.com", "bling-ai-foundations@google.com", "bling-search@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "composebox-attachments-typed-state",
     "owners": [ "ameurhosni@google.com", "bling-search@google.com" ],
     "expiry_milestone": 160
@@ -2142,11 +2138,6 @@
     "expiry_milestone": 160
   },
   {
-    "name": "contextual-tasks-java-fusebox",
-    "owners": ["shaktisahu@chromium.org", "chrome-contextual-tasks-eng@google.com"],
-    "expiry_milestone": 155
-  },
-  {
     "name": "contextual-tasks-override-show-bottom-sheet-on-large-screen",
     "owners": ["shaktisahu@chromium.org", "chrome-contextual-tasks-eng@google.com"],
     "expiry_milestone": 155
@@ -2200,14 +2191,6 @@
     "name": "cras-processor-wav-dump",
     "owners": ["aaronyu@google.com", "chromeos-audio@google.com" ],
     "expiry_milestone": 150
-  },
-  {
-    "name": "create-new-tab-group-app-menu-top-level",
-    "owners": [
-      "dominicaustria@google.com",
-      "yuhengh@chromium.org",
-      "top-chrome-desktop-ui@google.com"],
-    "expiry_milestone": 155
   },
   {
     "name": "credential-management-third-party-web-api-request-forwarding",
@@ -2588,6 +2571,11 @@
     "expiry_milestone": 160
   },
   {
+    "name": "devtools-aria-live-recording",
+    "owners": [ "migueloruiz@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "devtools-enable-durable-messages",
     "owners": [ "alexnj@chromium.org" ],
     "expiry_milestone": 160
@@ -2625,6 +2613,11 @@
     "name": "devtools-webmcp-support",
     "owners": [ "pfaffe@chromium.org" ],
     "expiry_milestone": 155
+  },
+  {
+    "name": "dialogs-on-large-form-factors",
+    "owners": [ "adelm@google.com" ],
+    "expiry_milestone": 170
   },
   {
     "name": "dictation",
@@ -3819,7 +3812,7 @@
   {
     "name": "enable-global-privacy-control",
     "owners": ["arichiv@chromium.org", "mcczarny@gmail.com"],
-    "expiry_milestone": 150
+    "expiry_milestone": 170
   },
   {
     "name": "enable-global-vaapi-lock",
@@ -3873,11 +3866,6 @@
     "name": "enable-headless-live-caption-early-start",
     "owners": [ "liberato@chromium.org", "media-dev@chromium.org" ],
     "expiry_milestone": 150
-  },
-  {
-    "name": "enable-heatmap-palm-detection",
-    "owners": [ "jiwan@chromium.org", "robsc@chromium.org", "hbarnor@chromium.org" ],
-    "expiry_milestone": 140
   },
   {
     "name": "enable-http-headers-injection",
@@ -4837,8 +4825,8 @@
   },
   {
     "name": "extensions-menu-access-control",
-    "owners": [ "emiliapaz@chromium.org" ],
-    "expiry_milestone": 152
+    "owners": [ "evasu@chromium.org" ],
+    "expiry_milestone": 160
   },
   {
     "name": "extensions-on-chrome-urls",
@@ -5588,9 +5576,17 @@
     "expiry_milestone": 150
   },
   {
+    "name": "glic-caa-guest-error",
+    "owners": [
+      "birnie@google.com",
+      "//chrome/browser/glic/OWNERS"
+    ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "glic-capture-region",
     "owners": [ "gklassen@chromium.org" ],
-    "expiry_milestone": 150
+    "expiry_milestone": 160
   },
   {
     "name": "glic-chrome-status-icon",
@@ -5724,14 +5720,6 @@
   },
   {
     "name": "glic-opt-in-dialog-a11y-fix",
-    "owners": [
-      "rosiey@google.com",
-      "//chrome/browser/glic/OWNERS"
-    ],
-    "expiry_milestone": 160
-  },
-  {
-    "name": "glic-opt-in-dialog-link-a11y-fix",
     "owners": [
       "rosiey@google.com",
       "//chrome/browser/glic/OWNERS"
@@ -6389,8 +6377,8 @@
   },
   {
     "name": "ios-tips-notifications-string-alternatives",
-    "owners": [ "gayane@google.com", "bling-mony-pod@google.com" ],
-    "expiry_milestone": 155
+    "owners": ["zijingl@google.com", "bling-mony-pod@google.com"],
+    "expiry_milestone": 160
   },
   {
     "name": "ios-trusted-vault-notification",
@@ -7114,11 +7102,6 @@
     "expiry_milestone": 138
   },
   {
-    "name": "new-tab-adds-to-active-group",
-    "owners": [ "dominicaustria@google.com", "top-chrome-desktop-ui@google.com" ],
-    "expiry_milestone": 155
-  },
-  {
     "name": "new-tab-page-customization-theme-sync",
     "owners": ["hanxi@google.com", "xinyiji@google.com", "clank-start@google.com"],
     "expiry_milestone": 160
@@ -7337,6 +7320,11 @@
   {
     "name": "ntp-mvc-refactor",
     "owners": ["hanxi@google.com", "yanlinghu@google.com", "clank-start@google.com"],
+    "expiry_milestone": 160
+  },
+  {
+    "name": "ntp-mvt-in-bottom-sheet",
+    "owners": [ "thegreenfrog@google.com", "bling-pandamonium@google.com" ],
     "expiry_milestone": 160
   },
   {
@@ -7715,6 +7703,11 @@
     "expiry_milestone": 159
   },
   {
+    "name": "omnibox-paste-promo-experiment",
+    "owners": [ "lilybalas@google.com", "bling-mony-pod@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "omnibox-rich-autocompletion-promising",
     "owners": [ "manukh@chromium.org", "chrome-omnibox-team@google.com" ],
     "expiry_milestone": 140
@@ -7845,6 +7838,11 @@
     "name": "open-edit-group-view-by-tapping-title",
     "owners": [ "achara@google.com", "bling-meridian@google.com" ],
     "expiry_milestone": 153
+  },
+  {
+    "name": "open-system-account-settings-directly",
+    "owners": [ "bsazonov@chromium.org", "chrome-signin-mobile-team@google.com" ],
+    "expiry_milestone": 160
   },
   {
     "name": "optimization-guide-debug-logs",
@@ -8032,6 +8030,11 @@
     "expiry_milestone": 156
   },
   {
+    "name": "partition-alloc-with-advanced-checks",
+    "owners": [ "mikt@google.com", "chrome-memory-safety@google.com" ],
+    "expiry_milestone": 156
+  },
+  {
     "name": "partition-visited-link-database-with-self-links",
     "owners": ["miketaylr@chromium.org", "kyraseevers@chromium.org"],
     "expiry_milestone": 150
@@ -8064,6 +8067,11 @@
   {
     "name": "payment-handler-camera-access",
     "owners": [ "smcgruer@chromium.org", "chrome-payments-eng@google.com" ],
+    "expiry_milestone": 160
+  },
+  {
+    "name": "payment-handler-camera-access-ux",
+    "owners": [ "luisantunes@google.com", "chrome-payments-eng@google.com" ],
     "expiry_milestone": 160
   },
   {
@@ -8304,15 +8312,6 @@
     "expiry_milestone": 135
   },
   {
-    "name": "print-preview-cros-app",
-    "owners": [
-      "jimmyxgong@chromium.org",
-      "gavinwill@chromium.org",
-      "cros-device-enablement@google.com"
-    ],
-    "expiry_milestone": 140
-  },
-  {
     "name": "print-with-postscript-type42-fonts",
     "owners": [ "thestig@chromium.org" ],
     "expiry_milestone": 146
@@ -8423,15 +8422,6 @@
     "expiry_milestone": -1
   },
   {
-    "name": "protected-tabs-android",
-    "owners": [
-      "kawasin@google.com",
-      "davidriley@google.com",
-      "clank-performance-team@google.com"
-    ],
-    "expiry_milestone": 150
-  },
-  {
     "name": "pull-to-refresh",
     "owners": [ "afakhry@chromium.org", "tclaiborne@chromium.org" ],
     "expiry_milestone": 99
@@ -8491,6 +8481,15 @@
     "owners": [
       "andresmolina@google.com",
       "read-aloud-tiger-team@google.com",
+      "//ui/accessibility/OWNERS"
+    ],
+    "expiry_milestone": 160
+  },
+  {
+    "name": "read-anything-distiller-refactor",
+    "owners": [
+      "gusmartin@google.com",
+      "chrome-reading-mode-eng@google.com",
       "//ui/accessibility/OWNERS"
     ],
     "expiry_milestone": 160
@@ -8928,12 +8927,12 @@
   {
     "name": "sensitive-content",
     "owners": ["jkeitel@google.com"],
-    "expiry_milestone": 145
+    "expiry_milestone": 163
   },
   {
     "name": "sensitive-content-while-switching-tabs",
     "owners": ["jkeitel@google.com"],
-    "expiry_milestone": 145
+    "expiry_milestone": 163
   },
   {
     "name": "separate-web-app-shortcut-badge-icon",
@@ -9065,11 +9064,6 @@
     "name": "show-spatial-audio-toggle",
     "owners": ["eddyhsu@chromium.org", "chromeos-audio@google.com"],
     "expiry_milestone": 140
-  },
-  {
-    "name": "show-tab-groups-mac-system-menu",
-    "owners": ["dominicaustria@google.com", "top-chrome-desktop-ui@google.com"],
-    "expiry_milestone": 155
   },
   {
     "name": "show-tab-list-animations",
@@ -9278,11 +9272,6 @@
     "expiry_milestone": 155
   },
   {
-    "name": "supervised-user-use-url-filtering-service",
-    "owners": [ "tju@google.com", "chrome-kids-eng@google.com" ],
-    "expiry_milestone": 155
-  },
-  {
     "name": "support-f11-and-f12-shortcuts",
     "owners": [
       "michaelcheco@chromium.org",
@@ -9351,6 +9340,14 @@
     "expiry_milestone": 155
   },
   {
+    "name": "sync-restore-on-startup-pref",
+    "owners": [
+      "aishwaryarj@google.com",
+      "clank-large-form-factors@google.com"
+    ],
+    "expiry_milestone": 160
+  },
+  {
     "name": "sync-search-engines-android-lff",
     "owners": ["ender@google.com", "kaiyilin@google.com", "oka@google.com"],
     "expiry_milestone": 160
@@ -9412,6 +9409,16 @@
     "expiry_milestone": 155
   },
   {
+    "name": "tab-bottom-sheet-full-height",
+    "owners": [ "mfiaz@google.com", "clank-tab-dev@google.com" ],
+    "expiry_milestone": 155
+  },
+  {
+    "name": "tab-bottom-sheet-half-height",
+    "owners": [ "mfiaz@google.com", "clank-tab-dev@google.com" ],
+    "expiry_milestone": 155
+  },
+  {
     "name": "tab-bottom-sheet-resize-webview",
     "owners": [ "mfiaz@google.com", "clank-tab-dev@google.com" ],
     "expiry_milestone": 155
@@ -9442,11 +9449,6 @@
   {
     "name": "tab-group-hover-cards",
     "owners": [ "dominicaustria@google.com", "top-chrome-desktop-ui@google.com" ],
-    "expiry_milestone": 155
-  },
-  {
-    "name": "tab-group-more-entry-points",
-    "owners": ["dominicaustria@google.com", "top-chrome-desktop-ui@google.com"],
     "expiry_milestone": 155
   },
   {
@@ -9891,11 +9893,6 @@
     "expiry_milestone": 153
   },
   {
-    "name": "use-primary-and-tonal-buttons-for-promos",
-    "owners": [ "kbajkiewicz@google.com", "chrome-signin-desktop-team@google.com" ],
-    "expiry_milestone": 152
-  },
-  {
     "name": "use-sc-content-sharing-picker",
     "owners": [ "agpalak@chromium.org", "tovep@chromium.org", "eladalon@chromium.org"],
     "expiry_milestone": 160
@@ -10277,6 +10274,11 @@
     "name": "web-request-security-info",
     "owners": ["vkrot@google.com", "bhaskarsharma@google.com", "//extensions/OWNERS"],
     "expiry_milestone": 160
+  },
+  {
+    "name": "web-speech-on-device-small-expert-model",
+    "owners": [ "evliu@google.com", "chrome-media-ux@google.com" ],
+    "expiry_milestone": 170
   },
   {
     "name": "webcrypto-pqc",

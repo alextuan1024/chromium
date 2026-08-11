@@ -508,6 +508,8 @@ class CONTENT_EXPORT RenderFrameHostImpl
   // TODO (crbug.com/1251545) : Frame tree node id should only be known for
   // subframes. As such, update this method.
   FrameTreeNodeId GetFrameTreeNodeId() const override;
+  blink::DOMNodeIdType GetFocusedDOMNodeId() const override;
+  EditableLevel GetFocusedEditableLevel() const override;
   const base::UnguessableToken& GetDevToolsFrameToken() override;
   std::optional<base::UnguessableToken> GetEmbeddingToken() override;
   const std::string& GetFrameName() override;
@@ -1558,7 +1560,7 @@ class CONTENT_EXPORT RenderFrameHostImpl
   // Indicates that this process wants the |untrusted_stack_trace| parameter of
   // FrameHost.DidAddMessageToConsole() to be filled in as much as possible for
   // log_level == kError messages.
-  void SetWantErrorMessageStackTrace();
+  void SetWantErrorMessageStackTrace() override;
 
   // Listens to the change events of the cookies associated with the domain of
   // the specified URL during initialization. It also contains the information
@@ -2444,10 +2446,6 @@ class CONTENT_EXPORT RenderFrameHostImpl
 
   int renderer_exit_count() const { return renderer_exit_count_; }
 
-  std::unique_ptr<base::UnguessableToken> TakeSandboxOriginToken() {
-    return std::move(sandbox_origin_token_);
-  }
-
   // Returns the sandbox origin token that was last consumed by
   // `SetOriginDependentStateOfNewFrame()`, for verification in tests.
   const std::optional<base::UnguessableToken>&
@@ -2587,6 +2585,7 @@ class CONTENT_EXPORT RenderFrameHostImpl
   void UpdateFaviconURL(std::vector<blink::mojom::FaviconURLPtr> favicon_urls,
                         blink::mojom::FaviconUpdateReason reason) override;
   void DownloadURL(blink::mojom::DownloadURLParamsPtr params) override;
+  void ShowCaptionSettings() override;
   void FocusedElementChanged(
       bool is_editable_element,
       bool is_richly_editable_element,
@@ -3042,7 +3041,7 @@ class CONTENT_EXPORT RenderFrameHostImpl
   // origin when the frame is sandboxed (i.e., has the `kOrigin` sandbox flag).
   // For child iframes, the token is passed in from frame creation. For
   // sandboxed popups via `window.open()`, it is null here and generated
-  // on-demand, then stored in `sandbox_origin_token_` to be sent to the
+  // on-demand, then stored in `PageImpl` to be sent to the
   // renderer.
   void SetOriginDependentStateOfNewFrame(
       RenderFrameHostImpl* creator_frame,
@@ -5072,6 +5071,9 @@ class CONTENT_EXPORT RenderFrameHostImpl
   // The editability level of the focused element in this frame's document.
   EditableLevel focused_editable_level_ = EditableLevel::kNotEditable;
 
+  // The DOMNodeId of the focused editable element in this frame's document.
+  blink::DOMNodeIdType focused_editable_dom_node_id_;
+
   std::unique_ptr<PendingNavigation> pending_navigate_;
 
   // Renderer-side states that blocks fast shutdown of the frame.
@@ -5671,21 +5673,6 @@ class CONTENT_EXPORT RenderFrameHostImpl
       tracing_track_;
 
   base::MemoryConsumerRegistration memory_consumer_registration_;
-
-  // Token used to deterministically generate the opaque origin for the initial
-  // empty document of a sandboxed popup (e.g.,
-  // `window.open('', '', 'sandbox=allow-scripts')`). Sent to the renderer via
-  // `mojom::CreateNewWindowReply` and `mojom::CreateViewParams` so both
-  // processes derive the same origin.
-  //
-  // Generated on-demand in `SetOriginDependentStateOfNewFrame()`
-  // when the main frame is sandboxed. Consumed (reset to nullptr) by
-  // `TakeSandboxOriginToken()` when building the reply.
-  //
-  // TODO(crbug.com/489973915): Move this to PageImpl, as it is only needed
-  // for main frames (popups). For iframes, the token is consumed immediately
-  // in `SetOriginDependentStateOfNewFrame()` and does not need to be stored.
-  std::unique_ptr<base::UnguessableToken> sandbox_origin_token_;
 
   // Stores the sandbox origin token value after it is consumed by
   // `SetOriginDependentStateOfNewFrame()`, for use in tests to verify the

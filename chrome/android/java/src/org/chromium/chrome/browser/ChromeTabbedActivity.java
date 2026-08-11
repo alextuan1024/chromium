@@ -197,6 +197,7 @@ import org.chromium.chrome.browser.multiwindow.MultiInstanceManagerFactory;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.multiwindow.TabbedCrashRecoveryDelegate;
+import org.chromium.chrome.browser.multiwindow.TabbedStartupWindowPolicyDelegate;
 import org.chromium.chrome.browser.multiwindow.TabbedWindowStateTracker;
 import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
 import org.chromium.chrome.browser.native_page.NativePageAssassin;
@@ -366,6 +367,7 @@ import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.browser.url_constants.UrlOverrideUtils;
 import org.chromium.chrome.browser.usage_stats.UsageStatsService;
+import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.chrome.browser.util.DefaultBrowserInfo;
 import org.chromium.chrome.browser.xr.scenecore.XrModule;
@@ -681,7 +683,8 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
     private CallbackController mCallbackController = new CallbackController();
     private TabbedModeTabDelegateFactory mTabDelegateFactory;
     private ReadingListBackPressHandler mReadingListBackPressHandler;
-    private MinimizeAppAndCloseTabBackPressHandler mMinimizeAppAndCloseTabBackPressHandler;
+    private @Nullable MinimizeAppAndCloseTabBackPressHandler
+            mMinimizeAppAndCloseTabBackPressHandler;
     private HomeSurfaceTracker mHomeSurfaceTracker;
     private final TabSwitcherBackPressHandlerManager mDragHandlerManager =
             new TabSwitcherBackPressHandlerManager();
@@ -774,10 +777,13 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                                 mRootUiCoordinator != null
                                         ? mRootUiCoordinator.getDesktopWindowStateManager()
                                         : null);
-        mBackPressManager.setFallbackOnBackPressed(
-                () -> {
-                    minimizeAppAndCloseTabOnBackPress(getActivityTab());
-                });
+        // On desktop Android, OS back presses should not close tabs or minimize the Chrome app.
+        if (!shouldUseDesktopBackConventions()) {
+            mBackPressManager.setFallbackOnBackPressed(
+                    () -> {
+                        minimizeAppAndCloseTabOnBackPress(getActivityTab());
+                    });
+        }
 
         if (IncognitoUtils.shouldOpenIncognitoAsWindow() && !mHasIncognitoExtra) {
             // Ensure that Incognito extras have been checked.
@@ -1171,11 +1177,7 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                     assertNonNull(getCompositorViewHolderSupplier().get());
 
             ViewStub tabHoverCardViewStub = findViewById(R.id.tab_hover_card_holder_stub);
-            View controlContainerView =
-                    findViewById(
-                            ChromeFeatureList.isEnabled(ChromeFeatureList.TOOLBAR_SNAPSHOT_REFACTOR)
-                                    ? R.id.control_container
-                                    : R.id.toolbar_container);
+            View controlContainerView = findViewById(R.id.control_container);
             mDragDropDelegate = new DragAndDropDelegateImpl();
             mDragDropDelegate.setDragAndDropBrowserDelegate(
                     new ChromeDragAndDropBrowserDelegate(() -> this));
@@ -1454,9 +1456,26 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
             return;
         }
 
-        ReturnToChromeUtil.recordClickTabSwitcher(getTabModelSelector().getCurrentTab());
+        boolean isBottomBarEnabledOnGts =
+                BottomBarConfigUtils.shouldShowOnGts()
+                        && BottomBarConfigUtils.isBottomBarEnabled(this);
+        if (isBottomBarEnabledOnGts) {
+            if (mLayoutManager != null
+                    && (mLayoutManager.isLayoutStartingToHide(LayoutType.HUB)
+                            || mLayoutManager.isLayoutStartingToShow(LayoutType.HUB))) {
+                return;
+            }
+        }
 
-        showOverview();
+        boolean isExit = isBottomBarEnabledOnGts && isInOverviewMode();
+        BrowserUiUtils.recordTabSwitcherButtonClicked(
+                isExit, isTabRegularNtp(getTabModelSelector().getCurrentTab()));
+
+        if (isExit) {
+            hideOverview(/* animate= */ true);
+        } else {
+            showOverview();
+        }
     }
 
     private void initializeToolbarManager() {
@@ -1474,7 +1493,8 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                             /* itemDelegate= */ null,
                             getShareDelegateSupplier(),
                             ChromeContextMenuPopulator.ContextMenuMode.THIN_WEB_VIEW,
-                            /* customContentActions= */ Collections.emptyList());
+                            /* customContentActions= */ Collections.emptyList(),
+                            mRootUiCoordinator.getLeftSideUiWidthSupplier());
             getToolbarManager()
                     .initializeWithNative(
                             mLayoutManager,
@@ -1627,22 +1647,22 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
     @Override
     public void finishNativeInitialization() {
         try (TraceEvent te = TraceEvent.scoped("ChromeTabbedActivity.finishNativeInitialization")) {
-            assert getProfileProviderSupplier().get() != null;
-            new NavigationPredictorBridge(
-                    getProfileProviderSupplier().get().getOriginalProfile(),
-                    getLifecycleDispatcher(),
-                    this::isWarmOnResume);
+            var profileProvider = assertNonNull(getProfileProviderSupplier().get());
+            var profile = profileProvider.getOriginalProfile();
+            new NavigationPredictorBridge(profile, getLifecycleDispatcher(), this::isWarmOnResume);
 
             if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled() && !isIncognitoWindow()) {
                 CrossDeviceThemeTracker themeTracker =
-                        CrossDeviceThemeTracker.getForProfile(
-                                getProfileProviderSupplier().get().getOriginalProfile());
+                        CrossDeviceThemeTracker.getForProfile(profile);
                 if (themeTracker != null) {
                     themeTracker.setActivity(this);
                 }
             }
 
             super.finishNativeInitialization();
+
+            TabbedStartupWindowPolicyDelegate.getInstance()
+                    .initializeWithNative(UserPrefs.get(profile));
 
             recordFirstAppLaunchTimestampIfNeeded();
             // TODO(jinsukkim): Let these classes handle the registration by themselves.
@@ -1689,7 +1709,6 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
             initiateArchivedTabsAutoDeletePromoManager();
 
             if (FindsFeatures.sChromeFinds.isEnabled()) {
-                Profile profile = getProfileProviderSupplier().get().getOriginalProfile();
                 FindsService findsService = FindsService.getForProfile(profile);
                 if (findsService != null) {
                     mFindsManager =
@@ -3920,7 +3939,8 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                             getStartupMetricsTracker(),
                             mRootUiCoordinator.getExclusiveAccessManager(),
                             mBackPressManager,
-                            mRecentlyClosedEntriesManager);
+                            mRecentlyClosedEntriesManager,
+                            mRootUiCoordinator.getLeftSideUiWidthSupplier());
         }
         return mTabDelegateFactory;
     }
@@ -4857,6 +4877,11 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
         return false;
     }
 
+    private boolean shouldUseDesktopBackConventions() {
+        return ChromeFeatureList.sBackGestureReflectsDesktopBehavior.isEnabled()
+                && DeviceInfo.isDesktop();
+    }
+
     private void initializeBackPressHandlers() {
         // Initialize some back press handlers early to reduce code duplication.
         mReadingListBackPressHandler =
@@ -4871,7 +4896,9 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
             mBackPressManager.addHandler(
                     mReadingListBackPressHandler, BackPressHandler.Type.SHOW_READING_LIST);
         }
-        if (mMinimizeAppAndCloseTabBackPressHandler == null) {
+        // On desktop Android, OS back presses should not close tabs or minimize the Chrome app,
+        // so we skip creating and registering this handler.
+        if (!shouldUseDesktopBackConventions() && mMinimizeAppAndCloseTabBackPressHandler == null) {
             mMinimizeAppAndCloseTabBackPressHandler =
                     new MinimizeAppAndCloseTabBackPressHandler(
                             getActivityTabProvider().asObservable(),

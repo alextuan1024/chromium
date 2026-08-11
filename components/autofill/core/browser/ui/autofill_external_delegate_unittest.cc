@@ -217,8 +217,7 @@ class MockAutofillDriver : public TestAutofillDriver {
                const FillId& fill_id,
                bool supports_refill,
                const url::Origin& triggered_origin,
-               (const absl::flat_hash_map<FieldGlobalId, FieldType>&),
-               (const Section&)),
+               (const absl::flat_hash_map<FieldGlobalId, FieldType>&)),
               (override));
   MOCK_METHOD(void,
               ApplyFieldAction,
@@ -300,6 +299,11 @@ class MockAutofillClient : public TestAutofillClient {
               GetDeviceAuthenticator,
               (std::string),
               (const, override));
+
+#if BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(void, ShowAutofillAiLoadingDialog, (), (override));
+  MOCK_METHOD(void, DismissAutofillAiLoadingDialog, (), (override));
+#endif
 
 #if BUILDFLAG(IS_IOS)
   // Mock the client query ID check.
@@ -709,9 +713,8 @@ TEST_F(AutofillExternalDelegateTest, GetMainFillingProduct) {
             FillingProduct::kDataList);
 
   // Show auxiliary helper suggestion in the popup.
-  OnSuggestionsReturned(
-      queried_field(),
-      {CreateAutofillSuggestion(SuggestionType::kUndoOrClear, u"undo")});
+  OnSuggestionsReturned(queried_field(), {CreateAutofillSuggestion(
+                                             SuggestionType::kUndo, u"undo")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(), FillingProduct::kNone);
 
   // Show auxiliary helper suggestion in the popup.
@@ -3254,16 +3257,22 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
   external_delegate().DidAcceptSuggestion(fill_suggestion,
                                           {.multi_index = {0}});
 }
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) ||
-        // BUILDFLAG(IS_IOS)
 
 class AutofillExternalDelegateWithAmbientAutofillTest
     : public AutofillExternalDelegateTest {
  public:
   AutofillExternalDelegateWithAmbientAutofillTest() {
-    scoped_feature_list_.InitWithFeatures({features::kAutofillAiWithDataSchema,
-                                           features::kAutofillAmbientAutofill},
-                                          {});
+    scoped_feature_list_.InitWithFeatures(
+        {
+            features::kAutofillAiWithDataSchema,
+            features::kAutofillAiReauthRequired,
+            features::kAutofillAmbientAutofill,
+            features::kAutofillAiWalletPrivatePasses,
+#if BUILDFLAG(IS_ANDROID)
+            features::kAutofillAiShowPersonalContextFillingYourInfoDialog,
+#endif  // BUILDFLAG(IS_ANDROID)
+        },
+        {});
   }
 
   void SetUp() override {
@@ -3272,6 +3281,8 @@ class AutofillExternalDelegateWithAmbientAutofillTest
         NiceMock<MockAutofillAiPersonalContextAccessManager>>();
     autofill_client().set_personal_context_access_manager(
         personal_context_manager_.get());
+    autofill_client().GetPrefs()->SetBoolean(
+        prefs::kAutofillAiReauthBeforeViewingSensitiveData, true);
   }
 
   void TearDown() override {
@@ -3318,6 +3329,14 @@ TEST_F(AutofillExternalDelegateWithAmbientAutofillTest,
   ON_CALL(autofill_client(), GetAutofillSuggestions)
       .WillByDefault(Return(suggestions));
 
+  // Authenticator is not supported by the platform.
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(false));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
+
   EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
       .Times(0);
 
@@ -3350,9 +3369,293 @@ TEST_F(AutofillExternalDelegateWithAmbientAutofillTest,
               HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
                               std::optional(FillingProduct::kAutofillAi)));
 
+#if BUILDFLAG(IS_ANDROID)
+  // The loading dialog should not be shown if the user doesn't need to
+  // authenticate.
+  EXPECT_CALL(autofill_client(), ShowAutofillAiLoadingDialog()).Times(0);
+  EXPECT_CALL(autofill_client(), DismissAutofillAiLoadingDialog()).Times(0);
+#endif  // BUILDFLAG(IS_ANDROID)
+
   ASSERT_FALSE(callback.is_null());
   std::move(callback).Run(full_passport);
 }
+
+// Tests that when accepting a `kFillAutofillAi` suggestion for pcontext entity
+// that requires re-authentication, the re-authentication flow is triggered and
+// the form is filled upon success. The loading dialog is shown on Android while
+// the data is fetched from the server.
+TEST_F(AutofillExternalDelegateWithAmbientAutofillTest,
+       AutofillAiReauthFlow_PersonalContextEntity_ReauthAccepted) {
+  EntityInstance full_passport = GetPassportEntityInstanceWithRandomGuid(
+      {.record_type = EntityInstance::RecordType::kPersonalContext});
+  EntityInstance masked_passport = MaskEntityInstance(full_passport);
+  autofill_client().GetEntityDataManager()->OnPrefetchContextComplete(
+      personal_context_manager(), std::vector<EntityInstance>{masked_passport});
+
+  // Create form with a passport number, which triggers obfuscation and thus
+  // re-auth.
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
+  std::vector<Suggestion> all_suggestions = {fill_suggestion};
+  OnSuggestionsReturned(queried_field(), all_suggestions);
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(Return(all_suggestions));
+
+  // Init the authenticator.
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  device_reauth::DeviceAuthenticator::AuthenticateCallback reauth_callback;
+  EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+      .WillOnce(MoveArg<1>(&reauth_callback));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
+
+  {
+    InSequence s;
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+
+    auto is_loading =
+        Field(&Suggestion::is_loading, Suggestion::IsLoading(true));
+    auto is_unacceptable =
+        Field(&Suggestion::acceptability,
+              Suggestion::Acceptability::kSelectableButUnacceptable);
+    EXPECT_CALL(
+        autofill_client(),
+        UpdateAutofillSuggestions(
+            ElementsAre(AllOf(is_loading, is_unacceptable)),
+            FillingProduct::kAutofillAi, kDefaultSuggestionTriggerSource,
+            AutofillSuggestionsIgnoreFocusLoss(true)));
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+    EXPECT_CALL(
+        autofill_manager(),
+        FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
+                          IsQueriedFieldId(), HasFillingPayload(full_passport),
+                          DefaultTriggerSource(), _));
+    EXPECT_CALL(autofill_client(),
+                HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                                std::optional(FillingProduct::kAutofillAi)));
+  }
+
+  // Simulate the user accepting the suggestion.
+  external_delegate().DidAcceptSuggestion(fill_suggestion,
+                                          {.multi_index = {0}});
+
+  // The `AutofillAiAccessManager` will fetch the personal context passport
+  // entity from the `AutofillAiPersonalContextAccessManager` after successful
+  // authentication.
+  AutofillAiPersonalContextAccessManager::GetUnmaskedSpiiEntityCallback
+      get_unmasked_entity_callback;
+  EXPECT_CALL(personal_context_manager(),
+              GetUnmaskedSpiiEntity(masked_passport.guid(), _))
+      .WillOnce(MoveArg<1>(&get_unmasked_entity_callback));
+
+#if BUILDFLAG(IS_ANDROID)
+  // The loading dialog is shown only on Android.
+  EXPECT_CALL(autofill_client(), ShowAutofillAiLoadingDialog());
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Simulate successful authentication.
+  ASSERT_FALSE(reauth_callback.is_null());
+  std::move(reauth_callback).Run(true);
+
+#if BUILDFLAG(IS_ANDROID)
+  // Dismiss the loading dialog after the entity is fetched.
+  EXPECT_CALL(autofill_client(), DismissAutofillAiLoadingDialog());
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Simulate the async response.
+  ASSERT_FALSE(get_unmasked_entity_callback.is_null());
+  std::move(get_unmasked_entity_callback).Run(full_passport);
+}
+
+// Tests that when accepting a `kFillAutofillAi` suggestion for pcontext entity
+// that requires re-authentication, the re-authentication flow is triggered and
+// the form is filled upon success. The entity is returned directly if it's
+// unmasked. The loading dialog is not shown on Android because there's no
+// server request for the entity.
+TEST_F(AutofillExternalDelegateWithAmbientAutofillTest,
+       AutofillAiReauthFlow_UnmaskedPersonalContextEntity_ReauthAccepted) {
+  EntityInstance full_passport = GetPassportEntityInstanceWithRandomGuid(
+      {.record_type = EntityInstance::RecordType::kPersonalContext});
+  autofill_client().GetEntityDataManager()->OnPrefetchContextComplete(
+      personal_context_manager(), std::vector<EntityInstance>{full_passport});
+
+  // Create form with a passport number, which triggers obfuscation and thus
+  // re-auth.
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      full_passport.guid(), /*requires_server_fetch=*/true);
+  std::vector<Suggestion> all_suggestions = {fill_suggestion};
+  OnSuggestionsReturned(queried_field(), all_suggestions);
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(Return(all_suggestions));
+
+  // Init the authenticator.
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  device_reauth::DeviceAuthenticator::AuthenticateCallback reauth_callback;
+  EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+      .WillOnce(MoveArg<1>(&reauth_callback));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
+
+  {
+    InSequence s;
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+
+    auto is_loading =
+        Field(&Suggestion::is_loading, Suggestion::IsLoading(true));
+    auto is_unacceptable =
+        Field(&Suggestion::acceptability,
+              Suggestion::Acceptability::kSelectableButUnacceptable);
+    EXPECT_CALL(
+        autofill_client(),
+        UpdateAutofillSuggestions(
+            ElementsAre(AllOf(is_loading, is_unacceptable)),
+            FillingProduct::kAutofillAi, kDefaultSuggestionTriggerSource,
+            AutofillSuggestionsIgnoreFocusLoss(true)));
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+    EXPECT_CALL(
+        autofill_manager(),
+        FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
+                          IsQueriedFieldId(), HasFillingPayload(full_passport),
+                          DefaultTriggerSource(), _));
+    EXPECT_CALL(autofill_client(),
+                HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                                std::optional(FillingProduct::kAutofillAi)));
+  }
+
+  // Simulate the user accepting the suggestion.
+  external_delegate().DidAcceptSuggestion(fill_suggestion,
+                                          {.multi_index = {0}});
+
+  // The `AutofillAiAccessManager` will return the unmaskes entity immediately,
+  // no call to the `PersonalContextAccessManager will be made.
+  EXPECT_CALL(personal_context_manager(), GetUnmaskedSpiiEntity).Times(0);
+
+#if BUILDFLAG(IS_ANDROID)
+  // The loading dialog won't be shown because no request to the
+  // `PersonalContextAccessManager` is made.
+  EXPECT_CALL(autofill_client(), ShowAutofillAiLoadingDialog()).Times(0);
+  EXPECT_CALL(autofill_client(), DismissAutofillAiLoadingDialog()).Times(0);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Simulate the successful authentication.
+  ASSERT_FALSE(reauth_callback.is_null());
+  std::move(reauth_callback).Run(true);
+}
+
+// Tests that when accepting a `kFillAutofillAi` suggestion for pcontext entity
+// that requires re-authentication, the re-authentication flow is triggered.
+// The loading dialog is shown on Android during the server request to fetch
+// the entity. The loading dialog is closed even if the
+// `AutofillAiAccessManager` is deleted.
+TEST_F(
+    AutofillExternalDelegateWithAmbientAutofillTest,
+    AutofillAiReauthFlow_PersonalContextEntity_AutofillAiAccessManagerIsReset) {
+  EntityInstance full_passport = GetPassportEntityInstanceWithRandomGuid(
+      {.record_type = EntityInstance::RecordType::kPersonalContext});
+  EntityInstance masked_passport = MaskEntityInstance(full_passport);
+  autofill_client().GetEntityDataManager()->OnPrefetchContextComplete(
+      personal_context_manager(), std::vector<EntityInstance>{masked_passport});
+
+  // Create form with a passport number, which triggers obfuscation and thus
+  // re-auth.
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
+  std::vector<Suggestion> all_suggestions = {fill_suggestion};
+  OnSuggestionsReturned(queried_field(), all_suggestions);
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(Return(all_suggestions));
+
+  // Init the authenticator.
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  device_reauth::DeviceAuthenticator::AuthenticateCallback reauth_callback;
+  EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+      .WillOnce(MoveArg<1>(&reauth_callback));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
+
+  {
+    InSequence s;
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+
+    auto is_loading =
+        Field(&Suggestion::is_loading, Suggestion::IsLoading(true));
+    auto is_unacceptable =
+        Field(&Suggestion::acceptability,
+              Suggestion::Acceptability::kSelectableButUnacceptable);
+    EXPECT_CALL(
+        autofill_client(),
+        UpdateAutofillSuggestions(
+            ElementsAre(AllOf(is_loading, is_unacceptable)),
+            FillingProduct::kAutofillAi, kDefaultSuggestionTriggerSource,
+            AutofillSuggestionsIgnoreFocusLoss(true)));
+
+    EXPECT_CALL(autofill_client(), ShowAutofillAiFetchEntityFailureNotification)
+        .Times(0);
+    EXPECT_CALL(autofill_manager(), FillOrPreviewForm).Times(0);
+    EXPECT_CALL(autofill_client(), HideSuggestions).Times(0);
+  }
+
+  // Simulate the user accepting the suggestion.
+  external_delegate().DidAcceptSuggestion(fill_suggestion,
+                                          {.multi_index = {0}});
+
+  // The `AutofillAiAccessManager` will fetch the personal context passport
+  // entity from the `AutofillAiPersonalContextAccessManager` after successful
+  // authentication.
+  AutofillAiPersonalContextAccessManager::GetUnmaskedSpiiEntityCallback
+      get_unmasked_entity_callback;
+  EXPECT_CALL(personal_context_manager(),
+              GetUnmaskedSpiiEntity(masked_passport.guid(), _))
+      .WillOnce(MoveArg<1>(&get_unmasked_entity_callback));
+
+#if BUILDFLAG(IS_ANDROID)
+  // The loading dialog is shown only on Android.
+  EXPECT_CALL(autofill_client(), ShowAutofillAiLoadingDialog());
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Simulate successful authentication.
+  ASSERT_FALSE(reauth_callback.is_null());
+  std::move(reauth_callback).Run(true);
+
+#if BUILDFLAG(IS_ANDROID)
+  // Dismiss the loading dialog after the entity is fetched.
+  EXPECT_CALL(autofill_client(), DismissAutofillAiLoadingDialog());
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Reset the access manager before the server request is complete.
+  test_api(autofill_manager()).set_autofill_ai_access_manager(nullptr);
+
+  // Simulate the async response.
+  ASSERT_FALSE(get_unmasked_entity_callback.is_null());
+  std::move(get_unmasked_entity_callback).Run(full_passport);
+}
+
+#endif
 
 TEST_F(AutofillExternalDelegateTest,
        ComposeSuggestion_ComposeProactiveNudge_ForwardsCaretBoundsToClient) {
@@ -3628,7 +3931,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateUndoForm) {
   IssueOnQuery();
   EXPECT_CALL(autofill_manager(), UndoAutofill);
   external_delegate().DidAcceptSuggestion(
-      Suggestion(SuggestionType::kUndoOrClear),
+      Suggestion(SuggestionType::kUndo),
       SuggestionPosition{.multi_index = {0}});
 }
 
@@ -3637,8 +3940,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateUndoForm) {
 TEST_F(AutofillExternalDelegateTest, ExternalDelegateUndoPreviewForm) {
   IssueOnQuery();
   EXPECT_CALL(autofill_manager(), UndoAutofill);
-  external_delegate().DidSelectSuggestion(
-      Suggestion(SuggestionType::kUndoOrClear));
+  external_delegate().DidSelectSuggestion(Suggestion(SuggestionType::kUndo));
 }
 #endif
 
@@ -4166,6 +4468,15 @@ TEST_F(AutofillExternalDelegateTest,
                   ->is_ambient_autofill_notice_acknowledged());
 }
 
+TEST_F(AutofillExternalDelegateTest,
+       RemoveSuggestion_AutofillAiPrivateInferenceNotice) {
+  EXPECT_TRUE(external_delegate().RemoveSuggestion(
+      Suggestion(SuggestionType::kAutofillAiPrivateInferenceNotice)));
+  EXPECT_NE(autofill_client().GetPrefs()->GetTime(
+                prefs::kAutofillAiPrivateInferenceNoticeAcknowledgedTimestamp),
+            base::Time());
+}
+
 // Tests that accepting a personal context notice suggestion is a no-op.
 TEST_F(AutofillExternalDelegateTest,
        DidAcceptSuggestion_PersonalContextNotice_NoOp) {
@@ -4258,7 +4569,8 @@ TEST_F(AutofillExternalDelegateTest, ShouldDiscardOutdatedSuggestions) {
 }
 #endif
 
-// Tests that @memory search results use the kReplaceAtMemoryTrigger action.
+// Tests that @memory search results use the kReplaceSelectionForAtMemory
+// action.
 TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_UsesSpecialAction) {
   StartAtMemorySession();
   Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
@@ -4269,8 +4581,8 @@ TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_UsesSpecialAction) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         std::u16string(u"pasted text"),
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, std::u16string(u"pasted text"),
                          FillingProduct::kAtMemory, _));
   external_delegate().DidSelectSuggestion(suggestion);
 
@@ -4278,8 +4590,8 @@ TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_UsesSpecialAction) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         std::u16string(u"pasted text"),
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, std::u16string(u"pasted text"),
                          FillingProduct::kAtMemory, _));
   external_delegate().DidAcceptSuggestion(
       suggestion, SuggestionPosition{.multi_index = {0}});
@@ -4346,8 +4658,8 @@ TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsIban) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         iban.value(), FillingProduct::kAtMemory, _));
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, iban.value(), FillingProduct::kAtMemory, _));
 
   external_delegate().DidAcceptSuggestion(
       suggestion, SuggestionPosition{.multi_index = {0}});
@@ -4384,8 +4696,8 @@ TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsCreditCard) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         card.number(), FillingProduct::kAtMemory, _));
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, card.number(), FillingProduct::kAtMemory, _));
 
   external_delegate().DidAcceptSuggestion(
       suggestion, SuggestionPosition{.multi_index = {0}});
@@ -4418,8 +4730,8 @@ TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsAutofillAi) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         passport_attribute->GetCompleteRawInfo(),
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, passport_attribute->GetCompleteRawInfo(),
                          FillingProduct::kAtMemory, _));
 
   external_delegate().DidAcceptSuggestion(
@@ -4464,8 +4776,8 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
-                         passport_attribute->GetCompleteRawInfo(),
+                         mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                         _, _, passport_attribute->GetCompleteRawInfo(),
                          FillingProduct::kAtMemory, _));
 
   external_delegate().DidAcceptSuggestion(

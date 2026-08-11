@@ -894,6 +894,9 @@ void AddGlicStrings(content::WebUIDataSource* html_source, Profile* profile) {
        IDS_SETTINGS_GLIC_KEEP_SIDEPANEL_OPEN_ON_NEW_TABS},
       {"glicKeepSidepanelOpenOnNewTabsToggleSublabel",
        IDS_SETTINGS_GLIC_KEEP_SIDEPANEL_OPEN_ON_NEW_TABS_SUBLABEL},
+      {"glicShakeTriggerToggle", IDS_SETTINGS_GLIC_SHAKE_TRIGGER_TOGGLE},
+      {"glicShakeTriggerToggleSublabel",
+       IDS_SETTINGS_GLIC_SHAKE_TRIGGER_TOGGLE_SUBLABEL},
       {"glicLocationToggle", IDS_SETTINGS_GLIC_PERMISSIONS_LOCATION_TOGGLE},
       {"glicLocationToggleSublabel",
        IDS_SETTINGS_GLIC_PERMISSIONS_LOCATION_TOGGLE_SUBLABEL},
@@ -982,6 +985,23 @@ void AddGlicStrings(content::WebUIDataSource* html_source, Profile* profile) {
        IDS_SETTINGS_GLIC_MEDIA_UNDERSTANDING_SUBLABEL},
       {"glicHotkeyScopeChrome", IDS_SETTINGS_GLIC_HOTKEY_SCOPE_CHROME},
       {"glicHotkeyScopeGlobal", IDS_SETTINGS_GLIC_HOTKEY_SCOPE_GLOBAL},
+      {"siteSettingsInlineCueMenu", IDS_SETTINGS_GLIC_INLINE_CUE_MENU},
+      {"siteSettingsInlineCueMenuDescription",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_DESCRIPTION},
+      {"siteSettingsInlineCueMenuBlockedExceptions",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_BLOCKED_EXCEPTIONS},
+      {"siteSettingsInlineCueMenuAddSite",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_ADD_SITE},
+      {"siteSettingsInlineCueMenuPreview",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_PREVIEW},
+      {"siteSettingsInlineCueMenuPreviewText",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_PREVIEW_TEXT},
+      {"siteSettingsInlineCueMenuPreviewPill",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_PREVIEW_PILL},
+      {"siteSettingsInlineCueMenuToggleLabel",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU},
+      {"siteSettingsInlineCueMenuToggleSublabel",
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_TOGGLE_SUBLABEL},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -1162,6 +1182,9 @@ void AddGlicStrings(content::WebUIDataSource* html_source, Profile* profile) {
   html_source->AddBoolean(
       "showGlicExperimentalTriggering",
       GlicHandler::ShouldShowExperimentalTriggeringToggle(profile));
+  html_source->AddBoolean(
+      "showGlicShakeTrigger",
+      base::FeatureList::IsEnabled(features::kGlicShakeTrigger));
 }
 
 void AddResetStrings(content::WebUIDataSource* html_source, Profile* profile) {
@@ -1809,7 +1832,6 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
       {"autofillAiAuthenticationToggleSubtitle",
        IDS_SETTINGS_AUTOFILL_AI_AUTHENTICATION_TOGGLE_SUBTITLE},
       {"autofillAiManageYourInfo", IDS_AUTOFILL_MANAGE_YOUR_INFO_LINK},
-      {"autofillAiToggleSubLabel", IDS_SETTINGS_AUTOFILL_AI_TOGGLE_SUB_LABEL},
       {"suggestionsFromGeminiQualityLoggingTitle",
        IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_QUALITY_LOGGING_TITLE},
       {"suggestionsFromGeminiQualityLoggingSubtitle",
@@ -1830,8 +1852,7 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_AUTOFILL_AI_WHEN_ON_CAN_FILL_DIFFICULT_FIELDS},
       {"autofillAiWhenOnUseToFill",
        IDS_SETTINGS_AUTOFILL_AI_WHEN_ON_USE_TO_FILL},
-      {"autofillAiToConsiderDataUsage",
-       IDS_SETTINGS_AUTOFILL_AI_TO_CONSIDER_DATA_USAGE},
+
       {"autofillAiEntityInstancesNone",
        IDS_SETTINGS_AUTOFILL_AI_ENTITY_INSTANCES_NONE},
       {"autofillAiMoreActionsForEntityInstance",
@@ -2006,6 +2027,16 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
           autofill::features::kAutofillAiOnlineModelToggleNewTitle)
           ? IDS_SETTINGS_AUTOFILL_AI_PAGE_TITLE_V2
           : IDS_SETTINGS_AUTOFILL_AI_PAGE_TITLE);
+  html_source->AddLocalizedString(
+      "autofillAiToggleSubLabel",
+      base::FeatureList::IsEnabled(autofill::features::kAutofillAiUsePrivateAi)
+          ? IDS_SETTINGS_AUTOFILL_AI_TOGGLE_SUB_LABEL_V2
+          : IDS_SETTINGS_AUTOFILL_AI_TOGGLE_SUB_LABEL);
+  html_source->AddLocalizedString(
+      "autofillAiToConsiderDataUsage",
+      base::FeatureList::IsEnabled(autofill::features::kAutofillAiUsePrivateAi)
+          ? IDS_SETTINGS_AUTOFILL_AI_TO_CONSIDER_DATA_USAGE_V2
+          : IDS_SETTINGS_AUTOFILL_AI_TO_CONSIDER_DATA_USAGE);
 
   html_source->AddBoolean(
       "emailVerificationProtocolEnabled",
@@ -3633,14 +3664,6 @@ void AddSiteSettingsStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_SITE_SETTINGS_AR_ALLOWED_EXCEPTIONS},
       {"siteSettingsArBlockedExceptions",
        IDS_SETTINGS_SITE_SETTINGS_AR_BLOCKED_EXCEPTIONS},
-      {"siteSettingsInlineCueMenuDescription",
-       IDS_SETTINGS_SITE_SETTINGS_INLINE_CUE_MENU_DESCRIPTION},
-      {"siteSettingsInlineCueMenuBlockedExceptions",
-       IDS_SETTINGS_SITE_SETTINGS_INLINE_CUE_MENU_BLOCKED_EXCEPTIONS},
-      {"siteSettingsInlineCueMenuAllowed",
-       IDS_SETTINGS_SITE_SETTINGS_INLINE_CUE_MENU_ALLOWED},
-      {"siteSettingsInlineCueMenuBlocked",
-       IDS_SETTINGS_SITE_SETTINGS_INLINE_CUE_MENU_BLOCKED},
       {"siteSettingsAutomaticDownloadsDescription",
        IDS_SETTINGS_SITE_SETTINGS_AUTOMATIC_DOWNLOADS_DESCRIPTION},
       {"siteSettingsAutomaticDownloadsAsk",
@@ -4007,9 +4030,9 @@ void AddSiteSettingsStrings(content::WebUIDataSource* html_source,
       {"siteSettingsArMidSentence", IDS_SITE_SETTINGS_TYPE_AR_MID_SENTENCE},
       {"siteSettingsArAsk", IDS_SETTINGS_SITE_SETTINGS_AR_ASK},
       {"siteSettingsArBlock", IDS_SETTINGS_SITE_SETTINGS_AR_BLOCK},
-      {"siteSettingsInlineCueMenu", IDS_SITE_SETTINGS_TYPE_INLINE_CUE_MENU},
+      {"siteSettingsInlineCueMenu", IDS_SETTINGS_GLIC_INLINE_CUE_MENU},
       {"siteSettingsInlineCueMenuMidSentence",
-       IDS_SITE_SETTINGS_TYPE_INLINE_CUE_MENU_MID_SENTENCE},
+       IDS_SETTINGS_GLIC_INLINE_CUE_MENU_MID_SENTENCE},
       {"siteSettingsVr", IDS_SITE_SETTINGS_TYPE_VR},
       {"siteSettingsVrMidSentence", IDS_SITE_SETTINGS_TYPE_VR_MID_SENTENCE},
       {"siteSettingsWebAppInstallation",

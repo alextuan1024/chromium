@@ -157,6 +157,7 @@ class AnimationClock;
 class AriaNotificationOptions;
 class Attr;
 class BeforeUnloadEventListener;
+class BoxQuadOptions;
 class ViewTransitionSupplement;
 class CaretPosition;
 class CaretPositionFromPointOptions;
@@ -168,9 +169,15 @@ class CheckPseudoHasCacheScope;
 class ChromeClient;
 class Comment;
 class ConsoleMessage;
+class ConvertCoordinateOptions;
 class CookieJar;
 class DOMFeaturePolicy;
 class DOMImplementation;
+class DOMPoint;
+class DOMPointInit;
+class DOMQuad;
+class DOMQuadInit;
+class DOMRectReadOnly;
 class DOMWindow;
 class DOMWrapperWorld;
 class DisplayLockDocumentState;
@@ -214,7 +221,6 @@ class HitTestRequest;
 class HttpRefreshScheduler;
 class IntersectionObserverController;
 class InvalidateNodeListCachesScope;
-class ImportNodeOptions;
 class LayoutUpgrade;
 class LayoutView;
 class LazyLoadMediaObserver;
@@ -269,6 +275,8 @@ class TreeWalker;
 class TrustedHTML;
 class V8DocumentReadyState;
 class V8NodeFilter;
+class V8UnionCSSPseudoElementOrDocumentOrElementOrText;
+class V8UnionBooleanOrImportNodeOptions;
 class V8UnionElementCreationOptionsOrString;
 class V8UnionStringOrTrustedHTML;
 class ViewportData;
@@ -458,6 +466,24 @@ class CORE_EXPORT Document : public ContainerNode,
   // ```
   Element* documentElement() const { return document_element_.Get(); }
 
+  HeapVector<Member<DOMQuad>> getBoxQuads(const BoxQuadOptions* options,
+                                          ExceptionState&) const;
+  DOMQuad* convertQuadFromNode(
+      DOMQuadInit* quad,
+      const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+      const ConvertCoordinateOptions* options,
+      ExceptionState&) const;
+  DOMQuad* convertRectFromNode(
+      DOMRectReadOnly* rect,
+      const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+      const ConvertCoordinateOptions* options,
+      ExceptionState&) const;
+  DOMPoint* convertPointFromNode(
+      DOMPointInit* point,
+      const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+      const ConvertCoordinateOptions* options,
+      ExceptionState&) const;
+
   Location* location() const;
 
   DocumentFragment* createDocumentFragment();
@@ -473,7 +499,7 @@ class CORE_EXPORT Document : public ContainerNode,
                           ExceptionState&);
 
   Node* importNode(Node* imported_node,
-                   ImportNodeOptions* options,
+                   V8UnionBooleanOrImportNodeOptions* options,
                    ExceptionState&);
   Node* importNode(Node* imported_node, bool deep, ExceptionState&);
 
@@ -2307,7 +2333,6 @@ class CORE_EXPORT Document : public ContainerNode,
   CustomElementRegistry* EffectiveGlobalCustomElementRegistry() const;
 
   void SetScopedCustomElementRegistryUsed() {
-    DCHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
     scoped_custom_element_registry_used_ = true;
   }
   bool ScopedCustomElementRegistryUsed() const {

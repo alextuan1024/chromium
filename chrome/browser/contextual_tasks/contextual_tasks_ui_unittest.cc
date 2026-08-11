@@ -16,6 +16,7 @@
 #include "chrome/browser/contextual_tasks/mock_contextual_tasks_ui_service.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -27,6 +28,7 @@
 #include "components/contextual_tasks/public/mock_contextual_tasks_service.h"
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
 #include "components/omnibox/common/composebox_features.h"
+#include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/variations/scoped_variations_ids_provider.h"
@@ -40,6 +42,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom.h"
+#include "ui/webui/buildflags.h"
 #include "url/gurl.h"
 
 using testing::_;
@@ -820,6 +823,35 @@ TEST_F(ContextualTasksUiTest, GetContextualTasksLoadTimeData) {
   EXPECT_EQ(is_system_voice_search_enabled.value(), !!BUILDFLAG(IS_ANDROID));
 }
 
+#if BUILDFLAG(ENABLE_WEBUI_CONTEXTUAL_TASKS_COMPOSEBOX)
+TEST_F(ContextualTasksUiTest,
+       GetContextualTasksLoadTimeData_CobrowsingOnlyCoherence) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      omnibox::kVoiceSearchCoherenceComposeboxes,
+      {{omnibox::kVoiceSearchCoherenceComposeboxCobrowsingOnly.name, "true"}});
+
+  // The plain searchbox dict keeps the diverging all-surfaces value.
+  base::DictValue searchbox_dict =
+      SearchboxHandler::GetWebUIDataSourceDict(profile_);
+  EXPECT_EQ(searchbox_dict.FindBool("voiceSearchCoherenceComposeboxesEnabled"),
+            false);
+  EXPECT_EQ(searchbox_dict.FindBool(
+                "voiceSearchCoherenceCobrowsingComposeboxEnabled"),
+            true);
+
+  // The Contextual Tasks dict overrides the all-surfaces key with the
+  // cobrowsing value.
+  base::DictValue load_time_data =
+      ContextualTasksUI::GetContextualTasksLoadTimeData(profile_);
+  EXPECT_EQ(load_time_data.FindBool("voiceSearchCoherenceComposeboxesEnabled"),
+            true);
+  EXPECT_EQ(load_time_data.FindBool(
+                "voiceSearchCoherenceCobrowsingComposeboxEnabled"),
+            true);
+}
+#endif  // BUILDFLAG(ENABLE_WEBUI_CONTEXTUAL_TASKS_COMPOSEBOX)
+
 TEST_F(ContextualTasksUiTest, DidFinishNavigation_ZeroState) {
   struct TestCase {
     GURL url;
@@ -847,6 +879,9 @@ TEST_F(ContextualTasksUiTest, DidFinishNavigation_ZeroState) {
        false},  // smstk present
       {GURL("https://www.google.com/search?udm=50&smstk="),
        true},  // smstk empty
+      {GURL("https://www.google.com/search?udm=50&mtid=test"),
+       false},  // mtid present
+      {GURL("https://www.google.com/search?udm=50&mtid="), true},  // mtid empty
   };
 
   ON_CALL(*service_for_nav_, IsAiUrl(GURL("https://google.com")))
@@ -879,6 +914,15 @@ TEST_F(ContextualTasksUiTest, DidFinishNavigation_ZeroState) {
       EXPECT_CALL(*contextual_tasks_service_, CreateTask())
           .WillOnce(Return(task));
       EXPECT_CALL(delegate, PrepareForTaskChange()).Times(1);
+    } else {
+      std::string temp;
+      if (net::GetValueForKeyInQuery(test_case.url, "mtid", &temp)) {
+        base::Uuid task_id = base::Uuid::ParseCaseInsensitive(kUuid);
+        ContextualTask task(task_id);
+        EXPECT_CALL(*contextual_tasks_service_,
+                    CreateTaskFromUrl(test_case.url))
+            .WillOnce(Return(task));
+      }
     }
 
     std::unique_ptr<content::MockNavigationHandle> nav_handle =
@@ -1113,36 +1157,6 @@ TEST_F(ContextualTasksUiTest, SetComposeboxHandler) {
   // Reset the handler in the controller before it goes out of scope to avoid
   // dangling pointer.
   controller.SetComposeboxHandler(nullptr);
-}
-
-TEST_F(ContextualTasksUiTest, OnWebUIReadyCalledOnInitComplete) {
-  base::Uuid task_id = base::Uuid::GenerateRandomV4();
-  GURL url(chrome::kChromeUIContextualTasksURL);
-  url = net::AppendQueryParameter(url, kTaskQueryParam,
-                                  task_id.AsLowercaseString());
-  content::WebContentsTester::For(embedded_web_contents_.get())
-      ->NavigateAndCommit(url);
-
-  content::TestWebUI web_ui;
-  web_ui.set_web_contents(embedded_web_contents_.get());
-
-  ContextualTasksUI controller(&web_ui);
-
-  // The signal should NOT be sent upon construction.
-  EXPECT_CALL(*service_for_nav_, OnWebUIReady(_, _, _)).Times(0);
-  testing::Mock::VerifyAndClearExpectations(service_for_nav_);
-
-  // The signal SHOULD be sent upon CreatePageHandler (which calls
-  // OnInitComplete).
-  EXPECT_CALL(*service_for_nav_, OnWebUIReady(_, task_id, _)).Times(1);
-  // Expect OnWebUIDestroyed when controller goes out of scope.
-  EXPECT_CALL(*service_for_nav_, OnWebUIDestroyed(_, std::optional(task_id)))
-      .Times(1);
-
-  testing::NiceMock<MockContextualTasksPage> page;
-  mojo::PendingReceiver<mojom::PageHandler> handler_receiver;
-  controller.CreatePageHandler(page.BindAndGetRemote(),
-                               std::move(handler_receiver));
 }
 
 TEST_F(ContextualTasksUiTest, CreatePageHandler_PushesTaskDetailsToPage) {
@@ -1559,6 +1573,62 @@ TEST_F(ContextualTasksUiTest, CreateToolbarPageHandlerRebindTest) {
 
   controller.CreatePageHandler(std::move(page_remote2),
                                std::move(handler_receiver2));
+}
+
+TEST_F(ContextualTasksUiTest,
+       FrameNavObserver_DidFinishNavigation_SearchToZeroState_ResetsTaskId) {
+  MockTaskInfoDelegate delegate;
+  std::optional<base::Uuid> task_id = base::Uuid::ParseCaseInsensitive(kUuid);
+  std::optional<std::string> thread_id = std::nullopt;
+  std::optional<std::string> title = std::nullopt;
+
+  SetupMockDelegate(&delegate, task_id, thread_id, title);
+  auto observer = std::make_unique<ContextualTasksUI::FrameNavObserver>(
+      embedded_web_contents_.get(), service_for_nav_.get(),
+      contextual_tasks_service_.get(), &delegate);
+
+  // 1. Navigate to a search URL (without mtid).
+  // This simulates the state where a search was performed but no thread ID
+  // was associated yet.
+  GURL search_url(kAiPageUrl);
+  search_url = net::AppendQueryParameter(search_url, "q", "test");
+
+  // We don't expect OnTaskChanged or UpdateThreadForTask because it returns
+  // early.
+  EXPECT_CALL(*service_for_nav_, OnTaskChanged(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*contextual_tasks_service_, UpdateThreadForTask(_, _, _, _, _))
+      .Times(0);
+
+  std::unique_ptr<content::MockNavigationHandle> nav_handle1 =
+      CreateMockNavigationHandle(search_url);
+  observer->DidFinishNavigation(nav_handle1.get());
+
+  // Verify that the observer's last committed URL is updated.
+  EXPECT_EQ(observer->last_committed_url(), search_url);
+
+  // 2. Navigate to zero state (e.g. clicking "New Thread").
+  // This should trigger a task change because we transition from search to zero
+  // state, even though the previous task had no thread ID.
+  GURL zero_state_url(kAiPageUrl);
+
+  base::Uuid new_task_id =
+      base::Uuid::ParseCaseInsensitive("20000000-0000-0000-0000-000000000000");
+  contextual_tasks::ContextualTask new_task(new_task_id);
+  EXPECT_CALL(*contextual_tasks_service_, CreateTask())
+      .WillOnce(Return(new_task));
+
+  // We expect OnTaskChanged to be called with the new task ID.
+  EXPECT_CALL(*service_for_nav_,
+              OnTaskChanged(_, _, Optional(task_id.value()),
+                            Optional(new_task_id), /*is_shown_in_tab=*/false))
+      .Times(1);
+  EXPECT_CALL(delegate, PrepareForTaskChange()).Times(1);
+
+  std::unique_ptr<content::MockNavigationHandle> nav_handle2 =
+      CreateMockNavigationHandle(zero_state_url);
+  observer->DidFinishNavigation(nav_handle2.get());
+
+  observer.reset();
 }
 
 }  // namespace contextual_tasks

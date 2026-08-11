@@ -19,6 +19,7 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#import "components/signin/public/identity_manager/identity_test_utils.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "components/tab_groups/tab_group_id.h"
@@ -1052,6 +1053,31 @@ TEST_F(AppBarMediatorTest, TestGeminiButtonDisabled_WhenInIncognito) {
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
+// Tests that the assistant button is in the ask state and enabled when signed
+// in with an unverified primary identity.
+TEST_F(AppBarMediatorTest, TestAssistantButtonStateAsk_UnverifiedIdentity) {
+  SetLocationEligible(true);
+  SignInAndSetCapability(false);
+
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(regular_profile_.get());
+  CoreAccountId account_id =
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, account_id,
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:YES]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
 // Tests that tapping the assistant button in the ask state dispatches the
 // Gemini entry flow command when ChromeNextIa is enabled.
 // Tests that the assistant button state is updated when the network connection
@@ -1612,10 +1638,22 @@ TEST_F(AppBarMediatorTest, TestSetButtonsEnabledByPolicy) {
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
-// Tests that the Gemini button is dimmed (disabled) when the user is signed out
+// Tests that the Gemini button is enabled when the user is signed out
 // but the GeminiSettings policy allows it.
 TEST_F(AppBarMediatorTest,
-       TestAssistantButtonStateAsk_DimmedByPolicyWhenSignedOut) {
+       TestAssistantButtonStateAsk_EnabledByPolicyWhenSignedOut) {
+  // Add active WebState with GeminiTabHelper.
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(regular_profile_.get());
+  web_state->SetContentsMimeType("text/html");
+  GeminiTabHelper::CreateForWebState(web_state.get());
+  web_state->SetVisibleURL(GURL("https://example.com"));
+  web_state->WasShown();
+
+  regular_web_state_list_->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
   SetLocationEligible(true);
 
   // Ensure GeminiSettings enterprise policy allows Gemini.
@@ -1625,7 +1663,7 @@ TEST_F(AppBarMediatorTest,
 
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
                                    highlighted:NO
-                                       enabled:NO
+                                       enabled:YES
                                         avatar:nil
                                       signedIn:NO]);
   [mediator_ updateAssistantButton];

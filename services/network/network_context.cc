@@ -44,6 +44,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "base/types/optional_util.h"
 #include "build/build_config.h"
 #include "build/chromecast_buildflags.h"
@@ -743,6 +744,7 @@ NetworkContext::NetworkContext(
       prefetch_cache_(prefetch_enabled_ ? std::make_unique<PrefetchCache>()
                                         : nullptr),
       variations_headers_(std::move(params_->initial_variations_headers)) {
+  TRACE_EVENT0("loading", "NetworkContext::NetworkContext");
 
   if (features::ShouldBindNetworkContextDirectReceiver()) {
     receiver_.emplace<DirectReceiver>(mojo::DirectReceiverKey{}, this);
@@ -958,6 +960,7 @@ NetworkContext::NetworkContext(
            net::handles::kInvalidNetworkHandle)),
       prefetch_cache_(prefetch_enabled_ ? std::make_unique<PrefetchCache>()
                                         : nullptr) {
+  TRACE_EVENT0("loading", "NetworkContext::NetworkContext");
 
   if (features::ShouldBindNetworkContextDirectReceiver()) {
     receiver_.emplace<DirectReceiver>(mojo::DirectReceiverKey{}, this);
@@ -2806,14 +2809,12 @@ WebTransport* NetworkContext::GetWebTransportForTesting() {
   return web_transports_.begin()->get();
 }
 
-bool NetworkContext::AllURLLoaderFactoriesAreBoundToNetworkForTesting(
+size_t NetworkContext::CountURLLoaderFactoriesBoundToNetworkForTesting(
     net::handles::NetworkHandle target_network) const {
-  for (const auto& factory : url_loader_factories_) {
-    if (factory->GetBoundNetworkForTesting() != target_network) {
-      return false;
-    }
-  }
-  return true;
+  return std::ranges::count_if(
+      url_loader_factories_, [target_network](const auto& factory) {
+        return factory->GetBoundNetworkForTesting() == target_network;
+      });
 }
 
 void NetworkContext::OnHttpAuthDynamicParamsChanged(
@@ -3582,6 +3583,7 @@ void NetworkContext::EnsureMounted(network::TransferableDirectory* directory) {
 #endif  // BUILDFLAG(IS_DIRECTORY_TRANSFER_REQUIRED)
 
 void NetworkContext::InitializeCorsParams() {
+  TRACE_EVENT0("loading", "NetworkContext::InitializeCorsParams");
   for (const auto& pattern : params_->cors_origin_access_list) {
     cors_origin_access_list_.SetAllowListForOrigin(pattern->source_origin,
                                                    pattern->allow_patterns);
@@ -3843,11 +3845,6 @@ void NetworkContext::Prefetch(
       client->BindNewPipeAndPassRemote(), traffic_annotation);
 }
 
-void NetworkContext::GetBoundNetworkForTesting(
-    GetBoundNetworkForTestingCallback callback) {
-  std::move(callback).Run(url_request_context()->bound_network());
-}
-
 void NetworkContext::GetDeviceBoundSessionManager(
     mojo::PendingReceiver<network::mojom::DeviceBoundSessionManager>
         device_bound_session_manager) {
@@ -4030,6 +4027,7 @@ bool NetworkContext::IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
 }
 
 void NetworkContext::InitializePrefetchURLLoaderFactory() {
+  TRACE_EVENT0("loading", "NetworkContext::InitializePrefetchURLLoaderFactory");
   auto pending_receiver =
       prefetch_url_loader_factory_remote_.BindNewPipeAndPassReceiver();
   CreateURLLoaderFactory(std::move(pending_receiver),
@@ -4049,6 +4047,11 @@ void NetworkContext::SetVariationsHeaders(
     variations::mojom::VariationsHeadersPtr variations_headers) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   variations_headers_ = std::move(variations_headers);
+}
+
+void NetworkContext::SetExpectedTargetNetworkForTesting(
+    std::optional<int64_t> target_network) {
+  url_request_context_->set_expected_target_network_for_testing(target_network);
 }
 
 bool NetworkContext::HasCookieAccessForDeviceBoundSession(

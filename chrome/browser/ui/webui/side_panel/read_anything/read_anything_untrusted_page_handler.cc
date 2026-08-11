@@ -34,6 +34,7 @@
 #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
@@ -530,6 +531,13 @@ bool ReadAnythingUntrustedPageHandler::AreInnerContentsPdfContent(
 #endif
 }
 
+bool ReadAnythingUntrustedPageHandler::IsGoogleDocs(const GURL& url) const {
+  return url.SchemeIsHTTPOrHTTPS() &&
+         (url.DomainIs("docs.google.com") ||
+          url.DomainIs("docs.sandbox.google.com")) &&
+         url.GetPath().starts_with("/document");
+}
+
 void ReadAnythingUntrustedPageHandler::WebContentsDestroyed() {
   translate_observation_.Reset();
   audible_closure_.RunAndReset();
@@ -563,6 +571,11 @@ void ReadAnythingUntrustedPageHandler::TreeRemoved(ui::AXTreeID ax_tree_id) {
 
 void ReadAnythingUntrustedPageHandler::GetDependencyParserModel(
     GetDependencyParserModelCallback callback) {
+  if (!features::IsReadAnythingReadAloudPhraseHighlightingEnabled()) {
+    std::move(callback).Run(base::File());
+    return;
+  }
+
   DependencyParserModelLoader* loader =
       DependencyParserModelLoaderFactory::GetForProfile(profile_);
   if (!loader) {
@@ -1023,6 +1036,21 @@ void ReadAnythingUntrustedPageHandler::OnLineFocusChanged(
   }
 }
 
+void ReadAnythingUntrustedPageHandler::ShouldShowLineFocusNewBadge(
+    ShouldShowLineFocusNewBadgeCallback callback) {
+  bool show = features::IsReadAnythingLineFocusEnabled() &&
+              UserEducationService::MaybeShowNewBadge(
+                  profile_, features::kReadAnythingLineFocus);
+  std::move(callback).Run(show);
+}
+
+void ReadAnythingUntrustedPageHandler::OnLineFocusFeatureUsed() {
+  if (features::IsReadAnythingLineFocusEnabled()) {
+    UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
+        profile_, features::kReadAnythingLineFocus);
+  }
+}
+
 void ReadAnythingUntrustedPageHandler::OnReadAloudAudioStateChange(
     bool playing) {
   // Show the tab audio icon when read aloud is playing, and hide it when it
@@ -1207,6 +1235,7 @@ void ReadAnythingUntrustedPageHandler::RequestReadabilityDistillation() {
   if (!features::IsReadAnythingWithReadabilityEnabled()) {
     return;
   }
+  readability_distillation_tree_change_start_time_ = base::TimeTicks();
   RequestDomDistillerDistillation(tab_->GetContents());
 }
 
@@ -1534,11 +1563,17 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
   // with the TS text segmentation method. Therefore, it doesn't work with
   // Readability. Until phrase highlighting works with TSTextSegmentation,
   // default to using Screen2x when the phrase highlighting flag is enabled.
+  // Google Docs enforces a strict TrustedHTML Content Security Policy that
+  // causes Readability script injection to fail. Avoid requesting Readability
+  // distillation when on Google Docs so the renderer can fall back cleanly to
+  // Screen2x.
   const bool use_readability =
       features::IsReadAnythingWithReadabilityEnabled() && !is_pdf_with_frame_ &&
+      !IsGoogleDocs(contents->GetLastCommittedURL()) &&
       !features::IsReadAnythingReadAloudPhraseHighlightingEnabled();
 
   if (use_readability) {
+    readability_distillation_tree_change_start_time_ = base::TimeTicks::Now();
     // We must emit `kDistillationInProgress` before sending the new tree ID
     // to the renderer with page_->OnActiveAXTreeIDChanged. This ensures the
     // renderer pauses its update processing
@@ -1566,7 +1601,8 @@ void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
     content::WebContents* content) {
   if (!features::IsReadAnythingWithReadabilityEnabled() ||
       features::IsReadAnythingReadAloudPhraseHighlightingEnabled() ||
-      is_pdf_with_frame_) {
+      is_pdf_with_frame_ ||
+      (content && IsGoogleDocs(content->GetLastCommittedURL()))) {
     return;
   }
 
@@ -1656,6 +1692,13 @@ void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
       if (features::IsReadAnythingDistillationQualityEvaluationEnabled()) {
         EvaluateDistillationQuality(dom_distiller_content().value());
       }
+      if (!readability_distillation_tree_change_start_time_.is_null()) {
+        base::UmaHistogramMediumTimes(
+            "Accessibility.ReadAnything."
+            "TimeFromTreeChangedToDistillationComplete",
+            base::TimeTicks::Now() -
+                readability_distillation_tree_change_start_time_);
+      }
     }
   } else {
     page_->OnReadabilityDistillationStateChanged(
@@ -1663,6 +1706,9 @@ void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
             kDistillationEmpty);
     page_->UpdateContent(/*title=*/"", /*content=*/"");
   }
+  // Reset the tree-change start time once distillation has finished,
+  // regardless of whether content was successfully produced.
+  readability_distillation_tree_change_start_time_ = base::TimeTicks();
 }
 
 void ReadAnythingUntrustedPageHandler::EvaluateDistillationQuality(

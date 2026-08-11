@@ -177,7 +177,6 @@
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_switches.h"
 #include "ipc/constants.mojom.h"
-#include "ipc/ipc_channel_factory.h"
 #include "ipc/ipc_channel_proxy.h"
 #include "media/base/media_switches.h"
 #include "media/capture/capture_switches.h"
@@ -1629,6 +1628,9 @@ RenderProcessHost* RenderProcessHostImpl::CreateRenderProcessHost(
     if (site_instance->IsPdf()) {
       flags |= RenderProcessFlags::kPdf;
     }
+    if (site_instance->IsPrivileged()) {
+      flags |= RenderProcessFlags::kPrivileged;
+    }
     if (site_instance->AreV8OptimizationsDisabled()) {
       flags |= RenderProcessFlags::kV8OptimizationsDisabled;
     }
@@ -2208,16 +2210,12 @@ void RenderProcessHostImpl::InitializeChannelProxy() {
   // Bootstrap the IPC Channel.
   mojo::ScopedMessagePipeHandle bootstrap =
       mojo_invitation_.AttachMessagePipe(kLegacyIpcBootstrapAttachmentName);
-  std::unique_ptr<IPC::ChannelFactory> channel_factory =
-      IPC::ChannelFactory::CreateServerFactory(
-          std::move(bootstrap), io_task_runner,
-          base::SingleThreadTaskRunner::GetCurrentDefault());
 
   ResetChannelProxy();
 
   CHECK(!channel_, base::NotFatalUntil::M152);
   channel_ = IPC::ChannelProxy::Create(
-      std::move(channel_factory), this,
+      std::move(bootstrap), IPC::Channel::MODE_SERVER, this,
       /*ipc_task_runner=*/io_task_runner.get(),
       /*listener_task_runner=*/
       base::SingleThreadTaskRunner::GetCurrentDefault());
@@ -3646,6 +3644,15 @@ bool RenderProcessHostImpl::IsForGuestsOnly() {
   return !!(flags_ & RenderProcessFlags::kForGuestsOnly);
 }
 
+bool RenderProcessHostImpl::IsPrivileged() {
+  // The flag is set at process creation (before the process lock is applied),
+  // so that this returns true even before LockProcessIfNeeded() runs. The lock
+  // is also checked as a fallback for processes that become privileged without
+  // going through CreateRenderProcessHost() (e.g. in tests).
+  return !!(flags_ & RenderProcessFlags::kPrivileged) ||
+         GetProcessLock().is_privileged();
+}
+
 bool RenderProcessHostImpl::IsForTopChromeWebUI() const {
   return (flags_ & RenderProcessFlags::kForTopChromeWebUI) != 0;
 }
@@ -4326,13 +4333,6 @@ void RenderProcessHostImpl::OnChannelError() {
   ProcessDied(info);
 }
 
-void RenderProcessHostImpl::OnBadMessageReceived() {
-  // Message de-serialization failed. We consider this a capital crime. Kill
-  // the renderer if we have one.
-  LOG(ERROR) << "bad message, terminating renderer.";
-  bad_message::ReceivedBadMessage(this,
-                                  bad_message::RPH_DESERIALIZATION_FAILED);
-}
 
 BrowserContext* RenderProcessHostImpl::GetBrowserContext() {
   return browser_context_;
@@ -4942,6 +4942,15 @@ bool RenderProcessHostImpl::IsSuitableHost(
   // PDF and non-PDF content cannot share processes.
   if (host->IsPdf() != site_info.is_pdf())
     return false;
+
+  // Privileged and non-privileged content cannot share processes. This also
+  // ensures a privileged SiteInstance always gets a freshly created process
+  // (which carries the kPrivileged flag) rather than reusing a spare or
+  // existing process.
+  if (host->IsPrivileged() !=
+      site_info.embedder_isolation_info().is_privileged()) {
+    return false;
+  }
 
   ProcessLock process_lock = host->GetProcessLock();
 

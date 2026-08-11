@@ -586,7 +586,6 @@
 <translation id="7288567540154601580">টেব আৰু এক্সটেনশ্বন</translation>
 <translation id="7295544978856094497">{NUM_EXTENSIONS,plural, =1{Chromiumএ আপুনি এইটো আঁতৰাবলৈ চুপাৰিছ কৰিছে}one{Chromiumএ আপুনি এইসমূহ আঁতৰাবলৈ চুপাৰিছ কৰিছে}other{Chromiumএ আপুনি এইসমূহ আঁতৰাবলৈ চুপাৰিছ কৰিছে}}</translation>
 <translation id="7296334833518879294">ছিষ্টেমৰ অডিঅ’ শ্বেয়াৰ কৰিবলৈ, ছিষ্টেমৰ ছেটিং খোলক আৰু Chromiumৰ বাবে 'কেৱল ছিষ্টেমৰ অডিঅ’ ৰেকৰ্ডিঙৰ অনুমতি দিয়ক'। আপুনি তাৰ পাছত Chromium ৰিষ্টাৰ্ট কৰিব লাগিব।</translation>
-<translation id="7309928523159922338">বিজ্ঞাপনৰ জোখ-মাখে আপুনি যিবিলাক ছাইটলৈ যায়, সেইবিলাকক Chromiumৰ পৰা তথ্য অনুৰোধ কৰাৰ অনুমতি দিয়ে, যিটোৱে ছাইটটোক নিজৰ বিজ্ঞাপনৰ কাৰ্যক্ষমতা জোখাত সহায় কৰে। বিজ্ঞাপনৰ জোখ-মাখে ছাইটবিলাকৰ মাজত যিমান পাৰি কম তথ্য স্থানান্তৰণৰ জৰিয়তে ক্ৰছ-ছাইট ট্ৰেকিং সীমিত কৰে।</translation>
 <translation id="731795002583552498">Chromium আপডে’ট কৰি থকা হৈছে</translation>
 <translation id="7318036098707714271">আপোনাৰ পচন্দৰ ফাইলটো ব্যৱহাৰযোগ্য নহয় বা অমান্য।
 
@@ -686,6 +685,7 @@ Chromiumএ আপোনাৰ ছেটিংসমূহ পুনৰুদ্
 <translation id="8286943863733751221">অসুৰক্ষিত ছাইট আৰু ডাউনল’ডৰ বিষয়ে<ph name="BEGIN_LINK" />Chromiumএ আপোনাক সকীয়নি দিয়ে<ph name="END_LINK" /></translation>
 <translation id="8295827201165805317">আপুনি শেহতীয়াকৈ চোৱা নাই। Chromiumএ <ph name="PERMISSION" /> আঁতৰাইছে।</translation>
 <translation id="8296236834352487533">Chromium iOS এপ্‌টোত আপোনাৰ কেমেৰাৰ জৰিয়তে আপুনি দেখা পোৱা বস্তু ক্ৰয়, অনুবাদ আৰু চিনাক্ত কৰক</translation>
+<translation id="8310603974518734211"><ph name="USER_NAME" /> হিচাপে Chromiumত ছাইন ইন কৰিবলৈ কিউআৰ ক’ড</translation>
 <translation id="8313851650939857356">ষ্টাৰ্টআপ সম্পৰ্কীয় আসোঁৱাহ: <ph name="STARTUP_ERROR" />।</translation>
 <translation id="8318772038038596122">Chromium <ph name="TIMEOUT_DURATION" />ৰ বাবে ব্যৱহাৰ নকৰিলে আপোনাৰ প্ৰতিষ্ঠানে ইয়াক বন্ধ কৰে।</translation>
 <translation id="8321888067342493336">প্ৰতিচ্ছবি হিচাপে ছেভ কৰক</translation>

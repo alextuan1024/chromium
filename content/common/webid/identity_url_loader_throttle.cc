@@ -8,14 +8,17 @@
 #include <string_view>
 
 #include "base/auto_reset.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_split.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "components/network_session_configurator/common/network_switches.h"
 #include "content/common/features.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "net/cert/cert_status_flags.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/structured_headers.h"
 #include "services/data_decoder/public/cpp/data_decoder.h"
@@ -139,6 +142,12 @@ void IdentityUrlLoaderThrottle::HandleResponseOrRedirect(
     return;
   }
 
+  if (net::IsCertStatusError(response_head.cert_status) &&
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kIgnoreCertificateErrors)) {
+    return;
+  }
+
   // TODO(crbug.com/40236764):
   // - Limit to toplevel frames
   // - Decide whether to limit to same-origin
@@ -173,14 +182,14 @@ void IdentityUrlLoaderThrottle::OnHeaderParsed(
     std::optional<net::structured_headers::ParameterizedItem> item) {
   is_header_parsed_ = true;
 
-  if (item && item->item.is_token()) {
-    const std::string& token = item->item.GetString();
-    if (token == kSetLoginHeaderValueLoggedIn) {
+  const std::string* token = item ? item->item.GetIfToken() : nullptr;
+  if (token) {
+    if (*token == kSetLoginHeaderValueLoggedIn) {
       // Mark IDP as logged in
       VLOG(1) << "IDP signed in: " << idp_origin.Serialize();
       set_idp_status_cb_.Run(request_initiator_, idp_origin,
                              IdpSigninStatus::kSignedIn);
-    } else if (token == kSetLoginHeaderValueLoggedOut) {
+    } else if (*token == kSetLoginHeaderValueLoggedOut) {
       // Mark IDP as logged out
       VLOG(1) << "IDP signed out: " << idp_origin.Serialize();
       set_idp_status_cb_.Run(request_initiator_, idp_origin,

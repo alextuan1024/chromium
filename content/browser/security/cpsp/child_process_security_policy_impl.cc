@@ -64,6 +64,7 @@
 #include "storage/browser/file_system/file_system_url.h"
 #include "storage/browser/file_system/isolated_context.h"
 #include "storage/common/file_system/file_system_util.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/blink/public/common/features.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
@@ -447,6 +448,15 @@ bool AllowProcessLockMismatchForNTP(const ProcessLock& expected_lock,
       expected_lock.GetProcessLockURL(), actual_lock.site_url());
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+GURL NormalizeExternalFileUrl(const GURL& url) {
+  GURL::Replacements replacements;
+  replacements.ClearQuery();
+  replacements.ClearRef();
+  return url.ReplaceComponents(replacements);
+}
+#endif
+
 }  // namespace
 
 ChildProcessSecurityPolicyImpl::Handle::Handle() = default;
@@ -710,6 +720,22 @@ class ChildProcessSecurityPolicyImpl::ProcessState {
     request_file_set_.insert(file.StripTrailingSeparators());
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  // Grant navigation to a specific external file URL.
+  void GrantRequestOfExternalFileUrl(const GURL& url) {
+    CHECK(url.SchemeIs(kExternalFileScheme));
+    request_externalfile_set_.insert(NormalizeExternalFileUrl(url));
+  }
+
+  void GrantCommitOfExternalFileUrl(const GURL& url) {
+    CHECK(url.SchemeIs(kExternalFileScheme));
+    commit_externalfile_set_.insert(NormalizeExternalFileUrl(url));
+
+    // Commit access automatically implies request access.
+    request_externalfile_set_.insert(NormalizeExternalFileUrl(url));
+  }
+#endif
+
   // Revokes all permissions granted to a file.
   void RevokeAllPermissionsForFile(const base::FilePath& file) {
     base::FilePath stripped = file.StripTrailingSeparators();
@@ -790,6 +816,12 @@ class ChildProcessSecurityPolicyImpl::ProcessState {
       return true;
     }
 
+#if BUILDFLAG(IS_CHROMEOS)
+    if (url.SchemeIs(kExternalFileScheme)) {
+      return commit_externalfile_set_.contains(NormalizeExternalFileUrl(url));
+    }
+#endif
+
     // Check for permission for specific origin.
     if (CanCommitOrigin(url::Origin::Create(url))) {
       return true;
@@ -825,6 +857,12 @@ class ChildProcessSecurityPolicyImpl::ProcessState {
 #if BUILDFLAG(IS_ANDROID)
     if (url.SchemeIs(url::kContentScheme)) {
       return request_file_set_.contains(base::FilePath(url.spec()));
+    }
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+    if (url.SchemeIs(kExternalFileScheme)) {
+      return request_externalfile_set_.contains(NormalizeExternalFileUrl(url));
     }
 #endif
 
@@ -996,6 +1034,7 @@ class ChildProcessSecurityPolicyImpl::ProcessState {
   typedef std::map<base::FilePath, FilePermissionFlags> FileMap;
   typedef std::map<std::string, FilePermissionFlags> FileSystemMap;
   typedef std::set<base::FilePath> FileSet;
+  using URLSet = absl::flat_hash_set<GURL>;
   typedef std::set<url::Origin> OriginSet;
 
   // Maps URL schemes to commit/request policies the child process has been
@@ -1029,6 +1068,12 @@ class ChildProcessSecurityPolicyImpl::ProcessState {
 
   // The set of files the child process is permitted to load.
   FileSet request_file_set_;
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // The set of specific URLs the child process is permitted to load.
+  URLSet request_externalfile_set_;
+  URLSet commit_externalfile_set_;
+#endif
 
   // The set of origins in Android WebView and <webview> tags that are allowed
   // to bypass some navigation checks. Limited to opaque origins loaded with
@@ -1423,6 +1468,16 @@ void ChildProcessSecurityPolicyImpl::GrantCommitURL(int child_id,
     GrantCommitURL(child_id, GURL(origin.Serialize()));
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  // `externalfile:` URLs, like `file:` URLs, should result in grants to the
+  // specific resource referenced, not the entire scheme:
+  if (url.SchemeIs(kExternalFileScheme)) {
+    GrantCommitOfExternalFileUrl(ChildProcessId::FromUnsafeValue(child_id),
+                                 url);
+    return;
+  }
+#endif
+
   // TODO(dcheng): In the future, URLs with opaque origins would ideally carry
   // around an origin with them, so we wouldn't need to grant commit access to
   // the entire scheme.
@@ -1482,6 +1537,40 @@ void ChildProcessSecurityPolicyImpl::GrantRequestOfSpecificFile(
     state->GrantRequestOfSpecificFile(canonical_path);
   }
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+void ChildProcessSecurityPolicyImpl::GrantRequestOfExternalFileUrl(
+    ChildProcessId child_id,
+    const GURL& url) {
+  if (!url.is_valid()) {
+    return;
+  }
+
+  base::AutoLock lock(lock_);
+  auto* state = process_states_.GetProcessStateForMutation(child_id);
+  if (!state) {
+    return;
+  }
+
+  state->GrantRequestOfExternalFileUrl(url);
+}
+
+void ChildProcessSecurityPolicyImpl::GrantCommitOfExternalFileUrl(
+    ChildProcessId child_id,
+    const GURL& url) {
+  if (!url.is_valid()) {
+    return;
+  }
+
+  base::AutoLock lock(lock_);
+  auto* state = process_states_.GetProcessStateForMutation(child_id);
+  if (!state) {
+    return;
+  }
+
+  state->GrantCommitOfExternalFileUrl(url);
+}
+#endif
 
 void ChildProcessSecurityPolicyImpl::GrantReadFile(ChildProcessId child_id,
                                                    const base::FilePath& file) {
@@ -1933,11 +2022,28 @@ bool ChildProcessSecurityPolicyImpl::CanReadFile(ChildProcessId child_id,
 void ChildProcessSecurityPolicyImpl::GrantFileForBrowserUpload(
     const base::UnguessableToken& owner_token,
     const base::FilePath& file) {
+  RUST_CPP_VOID_FUNCTION(
+      rust::child_process_security_policy::grant_file_for_browser_upload(
+          owner_token, file),
+      GrantFileForBrowserUpload_Cpp(owner_token, file));
+}
+
+void ChildProcessSecurityPolicyImpl::GrantFileForBrowserUpload_Cpp(
+    const base::UnguessableToken& owner_token,
+    const base::FilePath& file) {
   base::AutoLock lock(lock_);
   browser_granted_files_[file].push_back(owner_token);
 }
 
 void ChildProcessSecurityPolicyImpl::RevokeFileForBrowserUpload(
+    const base::UnguessableToken& owner_token) {
+  RUST_CPP_VOID_FUNCTION(
+      rust::child_process_security_policy::revoke_file_for_browser_upload(
+          owner_token),
+      RevokeFileForBrowserUpload_Cpp(owner_token));
+}
+
+void ChildProcessSecurityPolicyImpl::RevokeFileForBrowserUpload_Cpp(
     const base::UnguessableToken& owner_token) {
   base::AutoLock lock(lock_);
   for (auto it = browser_granted_files_.begin();
@@ -1952,6 +2058,14 @@ void ChildProcessSecurityPolicyImpl::RevokeFileForBrowserUpload(
 }
 
 bool ChildProcessSecurityPolicyImpl::CanReadFileForBrowserUpload(
+    const base::FilePath& file) {
+  RUST_CPP_RETURN_FUNCTION(
+      rust::child_process_security_policy::can_read_file_for_browser_upload(
+          file),
+      CanReadFileForBrowserUpload_Cpp(file));
+}
+
+bool ChildProcessSecurityPolicyImpl::CanReadFileForBrowserUpload_Cpp(
     const base::FilePath& file) {
   base::AutoLock lock(lock_);
   return browser_granted_files_.contains(file);

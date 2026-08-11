@@ -15,7 +15,7 @@ import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.util.ArrayMap;
 import android.view.Display;
-import android.view.ViewTreeObserver;
+import android.view.View;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.RequiresApi;
@@ -75,8 +75,7 @@ import java.util.function.Supplier;
 final class ChromeAndroidTaskImpl
         implements ChromeAndroidTask,
                 TopResumedActivityChangedWithNativeObserver,
-                TaskVisibilityListener,
-                ViewTreeObserver.OnGlobalLayoutListener {
+                TaskVisibilityListener {
 
     private static final String TAG = "ChromeAndroidTask";
 
@@ -350,6 +349,47 @@ final class ChromeAndroidTaskImpl
 
     private final AndroidBrowserWindowObserverNotifier mAndroidBrowserWindowObserverNotifier =
             new AndroidBrowserWindowObserverNotifier();
+
+    /**
+     * {@link View.OnLayoutChangeListener} for the top {@link Activity}'s decor {@link View}.
+     *
+     * <p>We use this as the primary signal to track window states without calling {@link
+     * WindowStateManager#update} too frequently.
+     */
+    private final View.OnLayoutChangeListener mDecorViewLayoutChangeListener =
+            new View.OnLayoutChangeListener() {
+                @Override
+                public void onLayoutChange(
+                        View v,
+                        int left,
+                        int top,
+                        int right,
+                        int bottom,
+                        int oldLeft,
+                        int oldTop,
+                        int oldRight,
+                        int oldBottom) {
+                    ThreadUtils.assertOnUiThread();
+                    useActivity(
+                            topActivityScopedObjects -> {
+                                var display =
+                                        topActivityScopedObjects.mActivityWindowAndroid
+                                                .getDisplay();
+
+                                if (!mWindowStateManager.updateForDecorViewLayoutChange(
+                                        topActivityScopedObjects.mActivity, display)) {
+                                    return;
+                                }
+
+                                for (var feature : mFeatures.values()) {
+                                    feature.onTaskBoundsChanged(
+                                            display.getDisplayId(),
+                                            mWindowStateManager.getWindowBoundsInDp(),
+                                            mWindowStateManager.getWindowBoundsInPx());
+                                }
+                            });
+                }
+            };
 
     private static final class IncognitoTabModelObserverImpl implements IncognitoTabModelObserver {
         private final ChromeAndroidTaskImpl mChromeAndroidTaskImpl;
@@ -851,27 +891,6 @@ final class ChromeAndroidTaskImpl
     }
 
     @Override
-    public void onGlobalLayout() {
-        ThreadUtils.assertOnUiThread();
-        useActivity(
-                topActivityScopedObjects -> {
-                    var display = topActivityScopedObjects.mActivityWindowAndroid.getDisplay();
-                    mWindowStateManager.update(topActivityScopedObjects.mActivity, display);
-
-                    if (!mWindowStateManager.boundsChangedInDp()) {
-                        return;
-                    }
-
-                    for (var feature : mFeatures.values()) {
-                        feature.onTaskBoundsChanged(
-                                display.getDisplayId(),
-                                mWindowStateManager.getCurrentBoundsInDp(),
-                                mWindowStateManager.getCurrentBoundsInPx());
-                    }
-                });
-    }
-
-    @Override
     public boolean isDestroyed() {
         ThreadUtils.assertOnUiThread();
         return mState == State.DESTROYED;
@@ -936,7 +955,7 @@ final class ChromeAndroidTaskImpl
                 topActivityScopedObjects -> {
                     Rect restoredBoundsInPx = mWindowStateManager.getRestoredBoundsInPx();
                     if (restoredBoundsInPx == null) {
-                        restoredBoundsInPx = mWindowStateManager.getCurrentBoundsInPx();
+                        restoredBoundsInPx = mWindowStateManager.getWindowBoundsInPx();
                     }
 
                     float dipScale =
@@ -965,7 +984,7 @@ final class ChromeAndroidTaskImpl
         var futureBounds = mPendingActionManager.getFutureBoundsInDp();
         if (futureBounds != null) return futureBounds;
 
-        return mWindowStateManager.getCurrentBoundsInDp();
+        return mWindowStateManager.getWindowBoundsInDp();
     }
 
     @Override
@@ -1459,7 +1478,12 @@ final class ChromeAndroidTaskImpl
             completePendingCreate();
         }
 
-        // Register Task VisibilityListener
+        // Register OnLayoutChangeListener for the decor View.
+        var window = getActivity(topActivityWindowAndroid).getWindow();
+        assert window != null;
+        window.getDecorView().addOnLayoutChangeListener(mDecorViewLayoutChangeListener);
+
+        // Register TaskVisibilityListener
         ApplicationStatus.registerTaskVisibilityListener(this);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -1475,11 +1499,6 @@ final class ChromeAndroidTaskImpl
                 .getCurrentTabModelSupplier()
                 .addSyncObserverAndPostIfNonNull(mOnTabModelSelectedCallback);
         onTabModelSelected(tabModelSelector.getCurrentModel());
-
-        getActivity(topActivityWindowAndroid)
-                .findViewById(android.R.id.content)
-                .getViewTreeObserver()
-                .addOnGlobalLayoutListener(this);
     }
 
     private void unregisterListenersForTopActivity() {
@@ -1493,7 +1512,13 @@ final class ChromeAndroidTaskImpl
         // Unregister Activity LifecycleObservers.
         getActivityLifecycleDispatcher(topActivityWindowAndroid).unregister(this);
 
-        // Unregister Task VisibilityListener.
+        // Unregister OnLayoutChangeListener for the decor View.
+        var window = getActivity(topActivityWindowAndroid).getWindow();
+        if (window != null) {
+            window.getDecorView().removeOnLayoutChangeListener(mDecorViewLayoutChangeListener);
+        }
+
+        // Unregister TaskVisibilityListener.
         ApplicationStatus.unregisterTaskVisibilityListener(this);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -1510,10 +1535,6 @@ final class ChromeAndroidTaskImpl
                     .getCurrentTabModelSupplier()
                     .removeObserver(mOnTabModelSelectedCallback);
         }
-        getActivity(topActivityWindowAndroid)
-                .findViewById(android.R.id.content)
-                .getViewTreeObserver()
-                .removeOnGlobalLayoutListener(this);
     }
 
     /**
@@ -1818,7 +1839,7 @@ final class ChromeAndroidTaskImpl
     private void setBoundsInDpInternal(
             TopActivityScopedObjects topActivityScopedObjects, Rect boundsInDp) {
         // Precondition 1: new bounds are not the same as the current bounds.
-        if (mWindowStateManager.getCurrentBoundsInDp().equals(boundsInDp)) return;
+        if (mWindowStateManager.getWindowBoundsInDp().equals(boundsInDp)) return;
 
         // Precondition 2: the Task (window) allows bounds change.
         if (canResizeInternal(topActivityScopedObjects) != WindowResizePrecheckResult.OK) {
@@ -1915,8 +1936,8 @@ final class ChromeAndroidTaskImpl
                     return new InitInfo(
                             nativeBrowserWindowPtr,
                             isTaskVisible,
-                            mWindowStateManager.getCurrentBoundsInPx(),
-                            mWindowStateManager.getCurrentBoundsInDp(),
+                            mWindowStateManager.getWindowBoundsInPx(),
+                            mWindowStateManager.getWindowBoundsInDp(),
                             displayId);
                 },
                 new InitInfo(
@@ -1930,6 +1951,10 @@ final class ChromeAndroidTaskImpl
     @VisibleForTesting
     static Rect convertBoundsInPxToDp(Rect boundsInPx, DisplayAndroid displayAndroid) {
         return DisplayUtil.scaleToEnclosingRect(boundsInPx, 1.0f / displayAndroid.getDipScale());
+    }
+
+    View.OnLayoutChangeListener getDecorViewLayoutChangeListenerForTesting() {
+        return mDecorViewLayoutChangeListener;
     }
 
     @Nullable Rect getRestoredBoundsInPxForTesting() {

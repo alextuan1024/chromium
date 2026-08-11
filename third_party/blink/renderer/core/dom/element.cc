@@ -45,7 +45,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_aria_notification_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_box_quad_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_check_visibility_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_convert_coordinate_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_get_animations_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_keyframe_animation_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_lock_options.h"
@@ -132,6 +134,7 @@
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/focusgroup_dom_token_list.h"
+#include "third_party/blink/renderer/core/dom/geometry_utils.h"
 #include "third_party/blink/renderer/core/dom/indexed_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/interest_invoker_target_data.h"
 #include "third_party/blink/renderer/core/dom/invalidate_node_list_caches_scope.h"
@@ -184,6 +187,8 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
+#include "third_party/blink/renderer/core/geometry/dom_point.h"
+#include "third_party/blink/renderer/core/geometry/dom_quad.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect_list.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
@@ -284,6 +289,7 @@
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_names.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_util.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_pseudo_element_base.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_skip_reason.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_transition_element.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
@@ -1118,19 +1124,17 @@ Node* Element::Clone(Document& factory,
                      ExceptionState& append_exception_state) const {
   Element* copy;
   CustomElementRegistry* registry = nullptr;
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
-    // 2-1. Let registry be node's custom element registry.
-    // 2-2. If registry is null, then set registry to fallbackRegistry
-    if (auto* node_registry = customElementRegistry()) {
-      registry = node_registry;
-    } else {
-      registry = fallback_registry;
-    }
-    // 2-3. If registry is a global custom element registry, then set
-    // registry to document's effective global custom element registry.
-    if (registry && registry->IsGlobalRegistry()) {
-      registry = factory.customElementRegistry();
-    }
+  // 2-1. Let registry be node's custom element registry.
+  // 2-2. If registry is null, then set registry to fallbackRegistry
+  if (auto* node_registry = customElementRegistry()) {
+    registry = node_registry;
+  } else {
+    registry = fallback_registry;
+  }
+  // 2-3. If registry is a global custom element registry, then set
+  // registry to document's effective global custom element registry.
+  if (registry && registry->IsGlobalRegistry()) {
+    registry = factory.customElementRegistry();
   }
   if (!data.Has(CloneOption::kIncludeDescendants)) {
     copy = &CloneWithoutChildren(data, registry, &factory);
@@ -1150,31 +1154,24 @@ Node* Element::Clone(Document& factory,
     if (shadow_root->GetMode() == ShadowRootMode::kOpen ||
         shadow_root->GetMode() == ShadowRootMode::kClosed) {
       CustomElementRegistry* shadow_root_registry = nullptr;
-      if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
-        // 6.2 Let shadowRootRegistry be node's shadow root's custom element
-        // registry
-        shadow_root_registry = shadow_root->customElementRegistry();
-        // 6.3 If shadowRootRegistry is a global custom element registry, then
-        // set shadowRootRegistry to document's effective global custom element
-        // registry
-        if (shadow_root_registry && shadow_root_registry->IsGlobalRegistry()) {
-          shadow_root_registry = factory.customElementRegistry();
-        }
+      // 6.2 Let shadowRootRegistry be node's shadow root's custom element
+      // registry
+      shadow_root_registry = shadow_root->customElementRegistry();
+      // 6.3 If shadowRootRegistry is a global custom element registry, then
+      // set shadowRootRegistry to document's effective global custom element
+      // registry
+      if (shadow_root_registry && shadow_root_registry->IsGlobalRegistry()) {
+        shadow_root_registry = factory.customElementRegistry();
       }
       // 6.4 Run attach a shadow root with copy, node's shadow root's mode,
       // true, node’s shadow root’s delegates focus, and node’s shadow root’s
       // slot assignment.
       CustomElementRegistryAssignment registry_assignment =
-          CustomElementRegistryAssignment::Inherit();
-      if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
-        registry_assignment =
-            shadow_root->IsWaitingForScopedRegistry()
-                ? CustomElementRegistryAssignment::Wait()
-                : CustomElementRegistryAssignment::ResolveNullableRegistry(
-                      shadow_root_registry,
-                      CustomElementRegistryAssignment::NullRegistryFallback::
-                          kInherit);
-      }
+          shadow_root->IsWaitingForScopedRegistry()
+              ? CustomElementRegistryAssignment::Wait()
+              : CustomElementRegistryAssignment::ResolveNullableRegistry(
+                    shadow_root_registry, CustomElementRegistryAssignment::
+                                              NullRegistryFallback::kInherit);
       ShadowRoot& cloned_shadow_root = copy->AttachShadowRootInternal(
           shadow_root->GetMode(),
           shadow_root->delegatesFocus() ? FocusDelegation::kDelegateFocus
@@ -2682,10 +2679,12 @@ double Element::scrollTop() {
   }
 
   // Don't disclose scroll position in preview state. See crbug.com/1261689.
-  auto* select_element = DynamicTo<HTMLSelectElement>(this);
-  if (select_element && !select_element->UsesMenuList() &&
-      select_element->IsPreviewed()) {
-    return 0;
+  if (!RuntimeEnabledFeatures::SelectAutofillPopoverPreviewEnabled()) {
+    auto* select_element = DynamicTo<HTMLSelectElement>(this);
+    if (select_element && !select_element->UsesMenuList() &&
+        select_element->IsPreviewed()) {
+      return 0;
+    }
   }
 
   LayoutBox* box = GetLayoutBoxForScrolling();
@@ -3288,8 +3287,9 @@ gfx::Rect Element::VisibleBoundsInLocalRoot() const {
              .GetFrame()
              ->LocalFrameRoot()
              .ContentLayoutObject()
-             ->AbsoluteToLocalRect(rect, kTraverseDocumentBoundaries |
-                                             kApplyRemoteMainFrameTransform);
+             ->AbsoluteToLocalRect(
+                 rect, {MapCoordinatesMode::kTraverseDocumentBoundaries,
+                        MapCoordinatesMode::kApplyRemoteMainFrameTransform});
 
   return ToPixelSnappedRect(rect);
 }
@@ -3312,7 +3312,8 @@ gfx::Rect Element::VisibleBoundsRespectingClipsInLocalRoot() const {
           .ContentLayoutObject()
           ->AbsoluteToLocalRect(
               PhysicalRect::EnclosingRect(rect_in_viewport),
-              kTraverseDocumentBoundaries | kApplyRemoteMainFrameTransform);
+              {MapCoordinatesMode::kTraverseDocumentBoundaries,
+               MapCoordinatesMode::kApplyRemoteMainFrameTransform});
 
   return ToPixelSnappedRect(rect_in_local_root);
 }
@@ -3365,6 +3366,43 @@ DOMRectList* Element::getClientRects() {
                                                      *element_layout_object);
   }
   return MakeGarbageCollected<DOMRectList>(rects);
+}
+
+HeapVector<Member<DOMQuad>> Element::getBoxQuads(
+    const BoxQuadOptions* options,
+    ExceptionState& exception_state) const {
+  return geometry_utils::GetBoxQuads(const_cast<Element*>(this), nullptr,
+                                     options, exception_state);
+}
+
+DOMQuad* Element::convertQuadFromNode(
+    DOMQuadInit* quad,
+    const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+    const ConvertCoordinateOptions* options,
+    ExceptionState& exception_state) const {
+  return geometry_utils::ConvertQuadFromNode(quad, const_cast<Element*>(this),
+                                             nullptr, from, options,
+                                             exception_state);
+}
+
+DOMQuad* Element::convertRectFromNode(
+    DOMRectReadOnly* rect,
+    const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+    const ConvertCoordinateOptions* options,
+    ExceptionState& exception_state) const {
+  return geometry_utils::ConvertRectFromNode(rect, const_cast<Element*>(this),
+                                             nullptr, from, options,
+                                             exception_state);
+}
+
+DOMPoint* Element::convertPointFromNode(
+    DOMPointInit* point,
+    const V8UnionCSSPseudoElementOrDocumentOrElementOrText* from,
+    const ConvertCoordinateOptions* options,
+    ExceptionState& exception_state) const {
+  return geometry_utils::ConvertPointFromNode(point, const_cast<Element*>(this),
+                                              nullptr, from, options,
+                                              exception_state);
 }
 
 Vector<gfx::RectF> Element::GetClientRectsNoAdjustment() {
@@ -4259,7 +4297,6 @@ Node::InsertionNotificationRequest Element::InsertedInto(
   // we only need to do such bookkeeping when scoped custom element registry
   // is actually used.
   if (GetDocument().ScopedCustomElementRegistryUsed()) {
-    DCHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
     if (NodeRareData* rare_data = RareData()) {
       if (rare_data->HasCustomElementRegistrySet() &&
           insertion_point.IsInTreeScope()) {
@@ -4549,7 +4586,6 @@ void Element::RemovedFrom(ContainerNode& insertion_point) {
   // before moved. Note that we only need to do such bookkeeping when
   // scoped custom element registry is actually used.
   if (GetDocument().ScopedCustomElementRegistryUsed()) {
-    DCHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
     EnsureRareData();
     NodeRareData* data = RareData();
     if (!data->HasCustomElementRegistrySet() &&
@@ -5108,6 +5144,9 @@ void Element::MarkNonSlottedHostChildrenForStyleRecalc() {
 }
 
 const ComputedStyle* Element::ParentComputedStyle() const {
+  if (IsSkeletonPseudoElement()) {
+    return GetDocument().GetStyleResolver().InitialStyleForElement();
+  }
   Element* parent = LayoutTreeBuilderTraversal::ParentElement(*this);
   auto is_rendered_as_sibling = [this] {
     return IsBackdropPseudoElement() || IsScrollButtonPseudoElement() ||
@@ -7429,8 +7468,7 @@ CustomElementRegistry* Element::customElementRegistry(
   // If scoped registry is not exercised at all in the document,
   // we can avoid the rare data lookup and just return the tree scope's
   // registry.
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      GetDocument().ScopedCustomElementRegistryUsed()) {
+  if (GetDocument().ScopedCustomElementRegistryUsed()) {
     if (const NodeRareData* data = RareData()) {
       if (data->HasCustomElementRegistrySet()) {
         CustomElementRegistry* registry = data->GetCustomElementRegistry();
@@ -7450,8 +7488,6 @@ CustomElementRegistry* Element::customElementRegistry(
 void Element::SetCustomElementRegistry(
     CustomElementRegistryAssignment assignment,
     bool always_retain_registry) {
-  DCHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
-
   const NodeRareData* data = RareData();
   if (assignment.IsInherit()) {
     DCHECK(!data || !data->HasCustomElementRegistrySet());
@@ -7642,9 +7678,7 @@ ShadowRoot* Element::attachShadow(const ShadowRootInit* shadow_root_init_dict,
 
   // 1. Let registry be this's custom element registry.
   // 2. If init["customElementRegistry"] exist then set registry to it.
-  bool scoped_registry =
-      RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      shadow_root_init_dict->hasCustomElementRegistry();
+  bool scoped_registry = shadow_root_init_dict->hasCustomElementRegistry();
   auto* registry = scoped_registry
                        ? shadow_root_init_dict->customElementRegistry()
                        : GetDocument().customElementRegistry();
@@ -7757,8 +7791,7 @@ bool Element::AttachDeclarativeShadowRoot(
   shadow_root.SetAvailableToElementInternals(true);
   // 10.8.8. If templateStartTag has a shadowrootcustomelementregistry
   // attribute, then set shadow's keep custom element registry null to true.
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      waiting_for_scoped_registry) {
+  if (waiting_for_scoped_registry) {
     shadow_root.SetKeepCustomElementRegistryNull(true);
     GetDocument().SetScopedCustomElementRegistryUsed();
   }
@@ -7816,9 +7849,7 @@ ShadowRoot& Element::AttachShadowRootInternal(
   shadow_root.SetIsDeclarativeShadowRoot(false);
 
   // 12. Set shadow's custom element registry to registry.
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
-    shadow_root.SetCustomElementRegistry(registry);
-  }
+  shadow_root.SetCustomElementRegistry(registry);
   // 11. Set shadow’s serializable to serializable.
   shadow_root.setSerializable(serializable);
   // 10. Set shadow’s clonable to clonable.
@@ -9522,8 +9553,7 @@ CustomElementRegistry* CustomElementRegistryForInnerHTML(Element* element) {
   // Use null registry to create fragment if the context element is a
   // template element as the container of the document fragment will be a
   // document fragment without browsing context.
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      IsA<HTMLTemplateElement>(element)) {
+  if (IsA<HTMLTemplateElement>(element)) {
     return nullptr;
   }
   return element->customElementRegistry();
@@ -9628,8 +9658,7 @@ void Element::SetOuterHTMLInternal(const String& html,
   // use, all elements share the tree scope's global registry so no distinction
   // is needed.
   CustomElementRegistry* registry;
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      GetDocument().ScopedCustomElementRegistryUsed()) {
+  if (GetDocument().ScopedCustomElementRegistryUsed()) {
     auto* parent_element = DynamicTo<Element>(p);
     registry = parent_element ? parent_element->customElementRegistry()
                               : p->GetTreeScope().customElementRegistry();
@@ -9922,8 +9951,7 @@ void Element::InsertAdjacentHTMLInternal(const String& where,
   // all elements share the tree scope's global registry so no distinction is
   // needed.
   CustomElementRegistry* registry;
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      GetDocument().ScopedCustomElementRegistryUsed()) {
+  if (GetDocument().ScopedCustomElementRegistryUsed()) {
     auto* context_element_for_registry = DynamicTo<Element>(context_node);
     registry = context_element_for_registry
                    ? context_element_for_registry->customElementRegistry()
@@ -10329,7 +10357,7 @@ const ComputedStyle* Element::EnsureOwnComputedStyle(
     LayoutObject* parent_layout_object =
         LayoutTreeBuilderTraversal::ParentLayoutObject(*this);
     if (parent_layout_object) {
-      layout_parent_style = parent_layout_object->Style();
+      layout_parent_style = &parent_layout_object->StyleRef();
     }
   }
 
@@ -11875,25 +11903,6 @@ void Element::UpdateFocusgroupInShadowRootIfNeeded() {
     return;
   }
 
-  Element* ancestor = this;
-  bool has_focusgroup_ancestor = false;
-  while (ancestor) {
-    if (ancestor->GetFocusgroupData().behavior !=
-        FocusgroupBehavior::kNoBehavior) {
-      has_focusgroup_ancestor = true;
-      break;
-    }
-    ancestor = ancestor->parentElement();
-  }
-
-  // We don't need to update the focusgroup value for the ShadowDOM elements if
-  // there is no ancestor with a focusgroup value, since the parsing would be
-  // exactly the same as the one that happened when we first built the
-  // ShadowDOM.
-  if (!has_focusgroup_ancestor) {
-    return;
-  }
-
   // In theory, we should only reach this point when at least one node within
   // the shadow tree has the focusgroup attribute. However, it's possible to get
   // here if a node initially had the focusgroup attribute but then lost it
@@ -13100,7 +13109,9 @@ void Element::UpdateTransitionPseudoElements(
         GetPseudoElement(kPseudoIdViewTransition);
     if (transition && transition->HasIncompatibleStyle() &&
         !transition->IsDone()) {
-      transition->SkipTransitionSoon();
+      transition->SkipTransitionSoon(
+          ViewTransition::PromiseResponse::kRejectInvalidState,
+          ViewTransitionSkipReason::kIncompatibleStyle);
       transition = nullptr;
     }
     if (old_transition_pseudo &&

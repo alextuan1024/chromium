@@ -5,18 +5,40 @@
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/on_device_category_classifier_tab_helper.h"
 
 #import <memory>
+#import <vector>
 
 #import "base/functional/bind.h"
+#import "base/no_destructor.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/types/expected.h"
+#import "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#import "components/page_content_annotations/core/page_content_annotation_type.h"
+#import "components/passage_embeddings/core/passage_embeddings_types.h"
+#import "components/ukm/test_ukm_recorder.h"
+#import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "services/metrics/public/cpp/ukm_builders.h"
 #import "services/metrics/public/cpp/ukm_source_id.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "url/gurl.h"
+
+namespace {
+
+std::unique_ptr<KeyedService> BuildTestCategoryClassificationService(
+    ProfileIOS* profile) {
+  static base::NoDestructor<
+      optimization_guide::TestOptimizationGuideModelProvider>
+      test_model_provider;
+  return std::make_unique<InProcessCategoryClassificationService>(
+      test_model_provider.get());
+}
+
+}  // namespace
 
 class OnDeviceCategoryClassifierTabHelperTest : public PlatformTest {
  protected:
@@ -24,9 +46,22 @@ class OnDeviceCategoryClassifierTabHelperTest : public PlatformTest {
 
   void SetUp() override {
     PlatformTest::SetUp();
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        InProcessCategoryClassificationService::GetFactory(),
+        base::BindRepeating(&BuildTestCategoryClassificationService));
+    profile_ = std::move(builder).Build();
     web_state_ = std::make_unique<web::FakeWebState>();
     web_state_->SetBrowserState(profile_.get());
+  }
+
+  void CallExtractPageContext(OnDeviceCategoryClassifierTabHelper* tab_helper) {
+    tab_helper->ExtractPageContext();
+  }
+
+  PageContextWrapper* GetPageContextWrapper(
+      OnDeviceCategoryClassifierTabHelper* tab_helper) {
+    return tab_helper->page_context_wrapper_;
   }
 
   void CallOnPageContextResponse(
@@ -183,13 +218,112 @@ TEST_F(OnDeviceCategoryClassifierTabHelperTest,
                              GURL("https://example.com"));
 }
 
-// Tests OnCategoriesClassified invocation.
+// Tests OnCategoriesClassified records UMA and UKM correctly.
 TEST_F(OnDeviceCategoryClassifierTabHelperTest,
-       OnCategoriesClassifiedHandling) {
+       OnCategoriesClassifiedRecordsUkmAndUma) {
+  base::HistogramTester histogram_tester;
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
   web_state_->SetCurrentURL(GURL("https://example.com"));
   OnDeviceCategoryClassifierTabHelper::CreateForWebState(web_state_.get());
   auto* tab_helper =
       OnDeviceCategoryClassifierTabHelper::FromWebState(web_state_.get());
 
-  CallOnCategoriesClassified(tab_helper, ukm::SourceId(), {});
+  ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
+  std::vector<page_content_annotations::Category> categories = {
+      {page_content_annotations::CategoryType::kEducation, 0.75f},
+      {page_content_annotations::CategoryType::kShopping, 0.20f},
+  };
+
+  CallOnCategoriesClassified(tab_helper, source_id, categories);
+
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.PageContentAnnotations.CategoryClassifier."
+      "EducationScore",
+      75, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.PageContentAnnotations.CategoryClassifier."
+      "ShoppingScore",
+      20, 1);
+
+  auto entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::PageContentAnnotations2::kEntryName);
+  EXPECT_EQ(1u, entries.size());
+  for (const ukm::mojom::UkmEntry* const entry : entries) {
+    EXPECT_EQ(source_id, entry->source_id);
+    EXPECT_TRUE(ukm::TestUkmRecorder::EntryHasMetric(
+        entry, ukm::builders::PageContentAnnotations2::
+                   kCategoryClassifier_EducationScoreName));
+    EXPECT_TRUE(ukm::TestUkmRecorder::EntryHasMetric(
+        entry, ukm::builders::PageContentAnnotations2::
+                   kCategoryClassifier_ShoppingScoreName));
+  }
+}
+
+// Tests that empty categories list does not record UKM.
+TEST_F(OnDeviceCategoryClassifierTabHelperTest,
+       OnCategoriesClassifiedEmptyDoesNotRecordUkm) {
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  web_state_->SetCurrentURL(GURL("https://example.com"));
+  OnDeviceCategoryClassifierTabHelper::CreateForWebState(web_state_.get());
+  auto* tab_helper =
+      OnDeviceCategoryClassifierTabHelper::FromWebState(web_state_.get());
+
+  CallOnCategoriesClassified(tab_helper, ukm::UkmRecorder::GetNewSourceID(),
+                             {});
+
+  auto entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::PageContentAnnotations2::kEntryName);
+  EXPECT_EQ(0u, entries.size());
+}
+
+// Tests that ExtractPageContext uses cached embeddings when available.
+TEST_F(OnDeviceCategoryClassifierTabHelperTest,
+       ExtractPageContextWithCachedEmbeddings) {
+  const GURL url("https://example.com");
+  web_state_->SetCurrentURL(url);
+
+  InProcessCategoryClassificationService* service =
+      InProcessCategoryClassificationService::GetForProfile(profile_.get());
+  ASSERT_NE(service, nullptr);
+
+  std::vector<float> title_vec(768, 0.0f);
+  title_vec[0] = 1.0f;
+  std::vector<float> passage_vec(768, 0.0f);
+  passage_vec[1] = 1.0f;
+
+  InProcessCategoryClassificationService::CachedEmbeddings cached_embeddings{
+      .title_url_embedding =
+          passage_embeddings::Embedding(std::move(title_vec)),
+      .passage_embeddings = {passage_embeddings::Embedding(
+          std::move(passage_vec))},
+  };
+  service->SetCachedEmbeddingsForTesting(url, std::move(cached_embeddings));
+  ASSERT_TRUE(service->HasCachedEmbeddings(url));
+
+  OnDeviceCategoryClassifierTabHelper::CreateForWebState(web_state_.get());
+  auto* tab_helper =
+      OnDeviceCategoryClassifierTabHelper::FromWebState(web_state_.get());
+
+  CallExtractPageContext(tab_helper);
+  // Successfully handled via cache without allocating page_context_wrapper_.
+  EXPECT_EQ(GetPageContextWrapper(tab_helper), nil);
+}
+
+// Tests that ExtractPageContext returns early for off-the-record profile.
+TEST_F(OnDeviceCategoryClassifierTabHelperTest,
+       ExtractPageContextOffTheRecordProfile) {
+  ProfileIOS* otr_profile =
+      profile_->CreateOffTheRecordProfileWithTestingFactories();
+  auto otr_web_state = std::make_unique<web::FakeWebState>();
+  otr_web_state->SetBrowserState(otr_profile);
+  otr_web_state->SetCurrentURL(GURL("https://example.com"));
+
+  OnDeviceCategoryClassifierTabHelper::CreateForWebState(otr_web_state.get());
+  auto* tab_helper =
+      OnDeviceCategoryClassifierTabHelper::FromWebState(otr_web_state.get());
+
+  CallExtractPageContext(tab_helper);
+  EXPECT_EQ(GetPageContextWrapper(tab_helper), nil);
 }

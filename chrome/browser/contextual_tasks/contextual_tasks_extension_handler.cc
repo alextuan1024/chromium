@@ -149,7 +149,8 @@ void ContextualTasksExtensionHandler::QueryAutocomplete(
     uint32_t cursor_position,
     omnibox::SuggestInventory suggest_inventory,
     bool is_on_focus,
-    const std::string& keyword) {}
+    const std::string& keyword,
+    searchbox::mojom::InputMethod input_method) {}
 void ContextualTasksExtensionHandler::StopAutocomplete(bool clear_result) {}
 void ContextualTasksExtensionHandler::OpenAutocompleteMatch(
     uint8_t line,
@@ -164,8 +165,6 @@ void ContextualTasksExtensionHandler::SetSmartComposeStats(
     searchbox::mojom::SmartComposeStatsPtr smart_compose_stats) {}
 void ContextualTasksExtensionHandler::SetPopupSelection(
     searchbox::mojom::OmniboxPopupSelectionPtr selection) {}
-void ContextualTasksExtensionHandler::SetInputMethod(
-    searchbox::mojom::InputMethod input_method) {}
 void ContextualTasksExtensionHandler::OpenPopupSelection(
     uint32_t result_sequence_id,
     searchbox::mojom::OmniboxPopupSelectionPtr selection,
@@ -267,8 +266,8 @@ void ContextualTasksExtensionHandler::SubmitQuery(const std::string& query_text,
                                             session_handle, this);
 }
 void ContextualTasksExtensionHandler::OpenLensSearch() {}
-void ContextualTasksExtensionHandler::SetActiveToolMode(
-    omnibox::ToolMode tool) {
+void ContextualTasksExtensionHandler::SetActiveToolMode(omnibox::ToolMode tool,
+                                                        bool is_set_by_server) {
   active_tool_ = tool;
 }
 void ContextualTasksExtensionHandler::RecordToolSelectionAction(

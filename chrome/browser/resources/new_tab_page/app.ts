@@ -49,6 +49,7 @@ import {SidePanelOpenTrigger} from './customize_buttons.mojom-webui.js';
 import {CustomizeButtonsProxy} from './customize_buttons_proxy.js';
 import {CustomizeChromeSection} from './customize_chrome.mojom-webui.js';
 import {CustomizeDialogPage} from './customize_dialog_types.js';
+import type {FuseboxAction} from './fusebox_action.mojom-webui.js';
 import type {IframeElement} from './iframe.js';
 import type {LogoElement} from './logo.js';
 import {recordBoolean, recordDuration, recordEnumeration, recordLinearValue, recordLoadDuration, recordSparseValueWithPersistentHash} from './metrics_utils.js';
@@ -977,34 +978,50 @@ export class AppElement extends AppElementBase {
   protected onActionChipClick_(e: CustomEvent<ActionChipClickDetail>) {
     this.pageHandler_.onContextualSearchIPHEngaged();
     const detail = e.detail;
-    this.composeboxState_ = {
+    this.openComposebox_({
       text: detail.suggestion,
       files: detail.files,
       mode: detail.fuseboxAction?.preselectedTool,
       model: detail.fuseboxAction?.preselectedModel,
       suggestInventory: detail.fuseboxAction?.preferredInventory,
-    } as ComposeboxState;
-    this.toggleComposebox_();
+    } as ComposeboxState);
+    this.handleFuseboxAction_(detail.fuseboxAction);
   }
 
   protected onOpenComposebox_(e: CustomEvent<ComposeboxState>) {
-    this.composeboxState_ = e.detail;
+    this.openComposebox_(e.detail);
+  }
 
-    this.toggleComposebox_();
+  protected async handleFuseboxAction_(action?: FuseboxAction|null) {
+    if (action) {
+      await this.updateComplete;
+      const composebox =
+          this.shadowRoot?.querySelector<NtpComposeboxElement>('#composebox');
+      if (composebox) {
+        composebox.handleFuseboxAction(action);
+      }
+    }
   }
 
   protected onContextMenuEntrypointClick_() {
     this.pageHandler_.onContextualSearchIPHEngaged();
   }
 
-  protected toggleComposebox_() {
-    this.showComposebox_ = !this.showComposebox_;
+  protected openComposebox_(state: ComposeboxState) {
+    this.composeboxState_ = state;
+    if (!this.showComposebox_) {
+      this.showComposebox_ = true;
+    }
     if (!this.wasComposeboxOpened_) {
       recordLoadDuration(
           'NewTabPage.Composebox.FromNTPLoadToSessionStart',
           WindowProxy.getInstance().now());
       this.wasComposeboxOpened_ = true;
     }
+  }
+
+  protected closeComposebox_() {
+    this.showComposebox_ = false;
   }
 
   protected onScrimClick_() {
@@ -1038,11 +1055,9 @@ export class AppElement extends AppElementBase {
   }
 
   protected onCloseComposebox_(e: CustomEvent<{composeboxText?: string}>) {
-    const composeboxDialog =
-        this.shadowRoot.querySelector<HTMLDialogElement>('#composeboxDialog');
-    assert(composeboxDialog);
-    composeboxDialog.close();
-
+    if (!this.showComposebox_) {
+      return;
+    }
     const composeboxText = e.detail.composeboxText;
 
     if (composeboxText && composeboxText.trim()) {
@@ -1056,7 +1071,7 @@ export class AppElement extends AppElementBase {
     if (this.ntpRealboxNextEnabled_) {
       composebox.closeDropdown();
     }
-    this.toggleComposebox_();
+    this.closeComposebox_();
     this.logoColor_ = this.computeLogoColor_();
     this.singleColoredLogo_ = this.computeSingleColoredLogo_();
     this.updateOneGoogleBarAppearance_();
@@ -1812,13 +1827,6 @@ export class AppElement extends AppElementBase {
   }
 
   private onShowComposeboxChange_() {
-    if (this.showComposebox_) {
-      const composeboxDialog =
-          this.shadowRoot.querySelector<HTMLDialogElement>('#composeboxDialog');
-      assert(composeboxDialog);
-      composeboxDialog.show();
-    }
-
     const notSelector =
         COMPOSEBOX_INERT_ALLOWLIST.map(s => `:not(${s})`).join('');
     const blockedElements = this.shadowRoot.querySelectorAll<HTMLElement>(

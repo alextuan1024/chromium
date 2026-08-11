@@ -30,7 +30,7 @@ hmac-sha256 = "1.1.12"
 incremental-font-transfer = "0.5.0"
 indexmap = "2.12.1"
 itertools = "0.14.0"
-jpeg-encoder = "=0.7.0"
+jpeg-encoder = "=0.7.1"
 lazy_static = "1"
 libafl = "0.15.4"
 libc = "0.2"
@@ -51,7 +51,7 @@ small_ctor = "0.1"
 smallvec = "1"
 static_assertions = "1"
 xml = "1.3.0"
-zune-jpeg = "0.5.15"
+zune-jpeg = "=0.5.16-rc1"
 
 [dependencies.bytemuck]
 version = "1"
@@ -78,6 +78,7 @@ version = "2.2"
 default-features = false
 features = [
     "locale",
+    "normalizer",
     "compiled_data",
 ]
 
@@ -198,3 +199,7 @@ features = ["zeroize_derive"]
 version = "8.2.0"
 default-features = false
 features = ["deflate-flate2"]
+
+[dependencies.zune-core]
+version = "0.5.3"
+features = ["std"]

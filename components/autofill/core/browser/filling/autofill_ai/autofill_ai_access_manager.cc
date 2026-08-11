@@ -36,6 +36,8 @@ AutofillAiAccessManager::~AutofillAiAccessManager() = default;
 bool AutofillAiAccessManager::FetchEntityInstance(
     EntityInstance entity,
     bool will_fill_sensitive_info,
+    const url::Origin& origin,
+    OnAuthenticationCompleteCallback on_auth_complete_callback,
     OnEntityInstanceFetchedCallback on_fetched_callback) {
   // Invalidate any pending operations from prior flows, ensuring that only one
   // flow is active at a time.
@@ -47,10 +49,10 @@ bool AutofillAiAccessManager::FetchEntityInstance(
       [](base::WeakPtr<AutofillAiAccessManager> self,
          OnEntityInstanceFetchedCallback on_fetched_callback,
          base::expected<EntityInstance, FailureReason> result,
-         bool did_fetch_from_server, bool reauth_attempted) {
+         bool reauth_attempted, bool did_fetch_from_server) {
         if (self) {
           std::move(on_fetched_callback)
-              .Run(std::move(result), did_fetch_from_server, reauth_attempted);
+              .Run(std::move(result), reauth_attempted, did_fetch_from_server);
         }
       },
       weak_ptr_factory_.GetWeakPtr(), std::move(on_fetched_callback));
@@ -67,7 +69,8 @@ bool AutofillAiAccessManager::FetchEntityInstance(
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(on_fetched_callback), should_fetch);
 
-  MaybeAuthenticate(std::move(entity), should_reauth,
+  MaybeAuthenticate(std::move(entity), should_reauth, should_fetch, origin,
+                    std::move(on_auth_complete_callback),
                     std::move(on_unmask_callback));
   return should_fetch || should_reauth;
 }
@@ -84,16 +87,40 @@ void AutofillAiAccessManager::Reset() {
 void AutofillAiAccessManager::MaybeAuthenticate(
     EntityInstance entity,
     bool should_reauth,
+    bool should_fetch_from_server,
+    const url::Origin& origin,
+    OnAuthenticationCompleteCallback on_auth_complete_callback,
     OnUnmaskCallback on_unmask_callback) {
   if (!should_reauth) {
+    std::move(on_auth_complete_callback)
+        .Run(/*reauth_attempted=*/false, should_fetch_from_server);
+    std::move(on_unmask_callback)
+        .Run(std::move(entity), /*reauth_attempted=*/false);
+    return;
+  }
+
+  if (!authenticator_) {
+    authenticator_ =
+        manager_->client().GetDeviceAuthenticator("Autofill.Ai.ReauthToFill");
+  }
+  if (!authenticator_ ||
+      !authenticator_->CanAuthenticateWithBiometricOrScreenLock()) {
+    // If the device is not capable of reauth or not set up, we assume success
+    // to avoid blocking the user. Reauth is a best-effort security measure.
+    std::move(on_auth_complete_callback)
+        .Run(/*reauth_attempted=*/false, should_fetch_from_server);
     std::move(on_unmask_callback)
         .Run(std::move(entity), /*reauth_attempted=*/false);
     return;
   }
 
   base::OnceCallback<void(bool)> on_auth_complete = base::BindOnce(
-      [](EntityInstance entity, OnUnmaskCallback on_unmask_callback,
-         bool auth_succeeded) {
+      [](EntityInstance entity, bool should_fetch_from_server,
+         OnAuthenticationCompleteCallback on_auth_complete_callback,
+         OnUnmaskCallback on_unmask_callback, bool auth_succeeded) {
+        std::move(on_auth_complete_callback)
+            .Run(/*reauth_attempted=*/true,
+                 should_fetch_from_server && auth_succeeded);
         if (auth_succeeded) {
           std::move(on_unmask_callback)
               .Run(std::move(entity), /*reauth_attempted=*/true);
@@ -109,27 +136,16 @@ void AutofillAiAccessManager::MaybeAuthenticate(
                    /*reauth_attempted=*/true);
         }
       },
-      std::move(entity), std::move(on_unmask_callback));
+      std::move(entity), should_fetch_from_server,
+      std::move(on_auth_complete_callback), std::move(on_unmask_callback));
 
-  Authenticate(manager_->client().GetLastCommittedPrimaryMainFrameOrigin(),
-               std::move(on_auth_complete));
+  Authenticate(origin, std::move(on_auth_complete));
 }
 
 void AutofillAiAccessManager::Authenticate(
     const url::Origin& origin,
     base::OnceCallback<void(bool)> callback) {
-  if (!authenticator_) {
-    authenticator_ =
-        manager_->client().GetDeviceAuthenticator("Autofill.Ai.ReauthToFill");
-  }
-  if (!authenticator_ ||
-      !authenticator_->CanAuthenticateWithBiometricOrScreenLock()) {
-    // If the device is not capable of reauth or not set up, we assume success
-    // to avoid blocking the user. Reauth is a best-effort security measure.
-    std::move(callback).Run(/*auth_succeeded=*/true);
-    return;
-  }
-
+  CHECK(authenticator_);
   is_authentication_in_progress_ = true;
   authenticator_->AuthenticateWithMessage(
       GetAuthenticationMessage(origin),
@@ -157,8 +173,8 @@ void AutofillAiAccessManager::MaybeUnmaskServerEntity(
     bool reauth_attempted) {
   if (!should_fetch || !result.has_value()) {
     std::move(on_fetched_callback)
-        .Run(std::move(result), /*did_fetch_from_server=*/false,
-             reauth_attempted);
+        .Run(std::move(result), reauth_attempted,
+             /*did_fetch_from_server=*/false);
     return;
   }
 
@@ -177,12 +193,12 @@ void AutofillAiAccessManager::MaybeUnmaskServerEntity(
         }
         if (fetched_entity) {
           std::move(on_fetched_callback)
-              .Run(std::move(*fetched_entity),
-                   /*did_fetch_from_server=*/true, reauth_attempted);
+              .Run(std::move(*fetched_entity), reauth_attempted,
+                   /*did_fetch_from_server=*/true);
         } else {
           std::move(on_fetched_callback)
               .Run(base::unexpected(FailureReason::kFetchFailed),
-                   /*did_fetch_from_server=*/true, reauth_attempted);
+                   reauth_attempted, /*did_fetch_from_server=*/true);
         }
       },
       weak_ptr_factory_.GetWeakPtr(), std::move(on_fetched_callback),

@@ -24,8 +24,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.DrawableRes;
 import androidx.annotation.Px;
-import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
@@ -125,12 +125,9 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                 resources.getDimensionPixelOffset(R.dimen.location_bar_icon_width);
         mMicButtonWidth = locationBarIconWidth;
         mLensButtonWidth = locationBarIconWidth;
-        mFocusedPopupDrawable =
-                (LayerDrawable)
-                        assumeNonNull(
-                                context.getDrawable(
-                                        R.drawable
-                                                .modern_toolbar_tablet_text_box_background_focused_popup));
+        @DrawableRes
+        int popupBgRes = R.drawable.modern_toolbar_tablet_text_box_background_focused_popup;
+        mFocusedPopupDrawable = (LayerDrawable) assumeNonNull(context.getDrawable(popupBgRes));
         mFocusedPopupDrawable.mutate();
         mOuterRect =
                 (GradientDrawable)
@@ -154,12 +151,8 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         mAiChipMarginEnd =
                 resources.getDimensionPixelSize(R.dimen.location_bar_desktop_popover_margin_end);
 
-        mHoverDrawable =
-                (LayerDrawable)
-                        assumeNonNull(
-                                AppCompatResources.getDrawable(
-                                        getContext(),
-                                        R.drawable.modern_toolbar_text_box_background_highlight));
+        @DrawableRes int highlightRes = R.drawable.modern_toolbar_text_box_background_highlight;
+        mHoverDrawable = (LayerDrawable) assumeNonNull(getContext().getDrawable(highlightRes));
         mHoverDrawable.mutate();
 
         @Px float strokeWidth = resources.getDimension(R.dimen.fusebox_glif_stroke_width);
@@ -496,6 +489,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         mBrandedColorScheme = brandedColorScheme;
         Context context = getContext();
         if (mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER) {
+            @ColorInt
             int popoverColor =
                     OmniboxResourceProvider.getPopoverSuggestionBackgroundColor(
                             context, mBrandedColorScheme);
@@ -587,6 +581,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         // SUGGESTIONS_POPOVER (it depends only on flags set at build time and startup) and thus
         // don't handle that case.
         if (layoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER) {
+            @ColorInt
             int popoverColor =
                     OmniboxResourceProvider.getPopoverSuggestionBackgroundColor(
                             getContext(), mBrandedColorScheme);
@@ -665,8 +660,8 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         // LocationBar can be in a transient reparenting / activity-recreation state where it is
         // temporarily attached to an unexpected parent, so getLayoutParams() no longer returns
         // FrameLayout.LayoutParams (and mHolder's params are not LinearLayout.LayoutParams).
-        // Casting blindly then throws a ClassCastException. Bail out until the view settles back
-        // into its normal parent; a subsequent layout pass will refresh correctly. The assert
+        // Casting unconditionally then throws a ClassCastException. Bail out until the view settles
+        // back into its normal parent; a subsequent layout pass will refresh correctly. The assert
         // fires in dcheck-enabled builds so we can still collect stack traces for the scenarios
         // that reach this state, while release builds gracefully return.
         if (mHolder == null
@@ -689,10 +684,13 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         LinearLayout.LayoutParams parentParams =
                 (LinearLayout.LayoutParams) mHolder.getLayoutParams();
         boolean isPopoverMode = mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
-        if (!mShowStandbyRing
-                && (mFuseboxState == FuseboxState.COMPACT
-                        || mFuseboxState == FuseboxState.EXPANDED
-                        || mIsReparentedToPopover)) {
+        boolean isToolbarFuseboxActive =
+                !isPopoverMode
+                        && (mFuseboxState == FuseboxState.COMPACT
+                                || mFuseboxState == FuseboxState.EXPANDED);
+        boolean shouldExpandLayout =
+                !mShowStandbyRing && (mIsReparentedToPopover || isToolbarFuseboxActive);
+        if (shouldExpandLayout) {
             parentParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
             int expansionPx = isPopoverMode ? 0 : mLocationBarTabletFuseboxPopupInset;
             int additionalWidth =
@@ -747,7 +745,8 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         MarginLayoutParams statusViewLayoutParams =
                 (MarginLayoutParams) mStatusView.getLayoutParams();
         Resources resources = getResources();
-        if (state == FuseboxState.COMPACT && !mShowStandbyRing && !mIsReparentedToPopover) {
+        boolean isPopoverMode = mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
+        if (state == FuseboxState.COMPACT && !mShowStandbyRing && !isPopoverMode) {
             // In the compact fusebox state, the location bar is taller than its inner background,
             // creating the appearance of vertical misalignment. We resolve this by translating
             // constituent views to be centered withing the 56 dp inner background, shifting them

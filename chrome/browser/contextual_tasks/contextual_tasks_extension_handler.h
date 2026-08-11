@@ -109,7 +109,8 @@ class ContextualTasksExtensionHandler
                    bool meta_key,
                    bool shift_key,
                    bool is_voice_search) override;
-  void SetActiveToolMode(omnibox::ToolMode tool) override;
+  void SetActiveToolMode(omnibox::ToolMode tool,
+                         bool is_set_by_server) override;
   void SetActiveModelMode(omnibox::ModelMode model) override;
 
   // These are stubs required to implement searchbox::mojom::PageHandler
@@ -122,7 +123,8 @@ class ContextualTasksExtensionHandler
                          uint32_t cursor_position,
                          omnibox::SuggestInventory suggest_inventory,
                          bool is_on_focus,
-                         const std::string& keyword) override;
+                         const std::string& keyword,
+                         searchbox::mojom::InputMethod input_method) override;
   void StopAutocomplete(bool clear_result) override;
   void OpenAutocompleteMatch(uint8_t line,
                              const GURL& url,
@@ -134,7 +136,6 @@ class ContextualTasksExtensionHandler
       searchbox::mojom::SmartComposeStatsPtr smart_compose_stats) override;
   void SetPopupSelection(
       searchbox::mojom::OmniboxPopupSelectionPtr selection) override;
-  void SetInputMethod(searchbox::mojom::InputMethod input_method) override;
   void OpenPopupSelection(uint32_t result_sequence_id,
                           searchbox::mojom::OmniboxPopupSelectionPtr selection,
                           WindowOpenDisposition disposition) override;

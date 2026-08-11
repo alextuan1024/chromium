@@ -454,6 +454,7 @@
 <translation id="2422174748424038845">Ukikifuta, kila mtu atapoteza idhini ya kufikia kikundi cha vichupo cha “<ph name="GROUP_NAME" />" papo hapo na kitafutwa kwenye vifaa vyote.</translation>
 <translation id="2424805048070062787">Endelea ukitumia kichupo hiki</translation>
 <translation id="2426805022920575512">Chagua akaunti nyingine</translation>
+<translation id="2428543302546523788">Onyesha viungo unapowasha hali ya kusoma</translation>
 <translation id="243275146591958220">Ghairi upakuaji</translation>
 <translation id="2434405374328098816">Tayari umehifadhi nenosiri la "<ph name="USERNAME" />" unalotumia katika <ph name="WEBSITE" /></translation>
 <translation id="2434918313224755415">Unaweza kutelezesha kidole kushoto ili uvinjari katika Hali ya faraghani.</translation>
@@ -468,6 +469,7 @@
 <translation id="2470654816840674524">Ninaweza kufanya mambo gani nikitumia Gemini kwenye Chrome?</translation>
 <translation id="2473876017985765807">Tayari umehifadhi nenosiri unalotumia katika <ph name="WEBSITE" /></translation>
 <translation id="247430852844518481">Unaweza kuweka kikumbusho ili utembelee tena ukurasa huu baadaye</translation>
+<translation id="2476554421818031422">Unasaidia kuboresha kipengele cha kujaza kiotomatiki kulikoboreshwa</translation>
 <translation id="2479148705183875116">Nenda kwenye Mipangilio</translation>
 <translation id="2482878487686419369">Arifa</translation>
 <translation id="2484459871750294497">Ninawezaje kuwasha kipengele hiki?</translation>
@@ -570,7 +572,6 @@
 <translation id="2816489851009559785">Menyu → Mipangilio → Kivinjari chaguomsingi</translation>
 <translation id="2818821771744632548">Uliondolewa kwenye akaunti yako, <ph name="USER_NAME" />, ikiwa ni sehemu ya kuweka upya mipangilio ya iPhone yako. Ili uingie tena katika akaunti, bofya "Endelea" hapa chini.</translation>
 <translation id="2819667972867209401">Ukiwasha, data inahifadhiwa kwenye Akaunti yako ya Google. Ukizima, inahifadhi data kwenye kifaa hiki pekee na inafutwa iwapo utaondoka kwenye akaunti.</translation>
-<translation id="2825777862277359739">Ingia katika akaunti ili upate manenosiri, vichupo, alamisho zako na zaidi.</translation>
 <translation id="2827760117436553203">Ungependa kuhifadhi data kivyake?</translation>
 <translation id="2829172210806130158">Tafuta maudhui kwenye skrini yako</translation>
 <translation id="2831109159746537587">Jaribu kuchora mviringo au kugusa picha ili utafute</translation>
@@ -691,6 +692,7 @@
 <translation id="3259451381796379533">Akaunti hii haitatumika kwenye Gemini. Ingia katika akaunti ukitumia Akaunti tofauti ya Google.</translation>
 <translation id="3265736395246760288">Ingia katika akaunti haraka kwenye kifaa chochote ulichosawazisha.</translation>
 <translation id="3272527697863656322">Ghairi</translation>
+<translation id="3272955648592358996">Data yako huboresha Google AI</translation>
 <translation id="3273510436356991673">Weka mapendeleo kwenye skrini yako ya kwanza</translation>
 <translation id="3277021493514034324">Anwani ya tovuti imenakiliwa</translation>
 <translation id="3280562213547448728">Kutafuta kwa kutamka</translation>
@@ -717,7 +719,6 @@
 <translation id="3377063233124932127">Sasa alamisho, manenosiri yako yaliyohifadhiwa na zaidi huonekana juu ya ukurasa.</translation>
 <translation id="3378214228000661758">Unda ufunguo wa siri wa</translation>
 <translation id="3380352560400387991">Tovuti hii inajaribu kufungua programu. Hatua hii itakuondoa kwenye hali ya faraghani.</translation>
-<translation id="3385742921291399323">Pata manenosiri, vichupo, alamisho ulizohifadhi na zaidi.</translation>
 <translation id="3391765987934722383">Usikose punguzo la bei</translation>
 <translation id="3392923070107623576">Panga shughuli zako kwa kuanzisha vikundi vya vichupo</translation>
 <translation id="3404232721752787413">Hifadhi katika Picha kwenye Google</translation>
@@ -725,6 +726,7 @@
 <translation id="340669334496430859">Ilibadilishwa Mara ya Mwisho</translation>
 <translation id="3409785640040772790">Ramani</translation>
 <translation id="3416023309465857378">Tarehe 25 Oktoba, 2023</translation>
+<translation id="3419787211763835342">Saidia kuboresha kipengele cha kujaza kiotomatiki kulikoboreshwa</translation>
 <translation id="3426715535827854458">Ficha chaguo la Kuficha Upau wa Vidhibiti</translation>
 <translation id="3435738964857648380">Usalama</translation>
 <translation id="3441673211568148613">Weka hali yako ya kuvinjari iwe ya faragha</translation>
@@ -858,6 +860,7 @@
 <translation id="3888863481921783344">Hii itatumika kukuonyesha watu unaoweza kuwaalika kwenye tukio lako.</translation>
 <translation id="3891414008432200754">Bei</translation>
 <translation id="3892144330757387737">Utapata historia yako hapa</translation>
+<translation id="3892695492576181257">Ikiwashwa, shughuli zako huhifadhiwa katika Shughuli kwenye Programu za Gemini kwa miezi 18 na unaweza kubadilisha muda huu uwe miezi 3 au 36. Google hutumia data ya shughuli zako kusanidi na kuboresha huduma zake (ikiwa ni pamoja na mifumo ya Gemini) pamoja na kuilinda Google, watumiaji wake na umma kwa usaidizi wa wahakiki wanadamu. Data inayokaguliwa na watoa huduma hutenganishwa na akaunti yako na kuhifadhiwa kwa miaka 3.</translation>
 <translation id="3893858854379998374">Ili uhifadhi alamisho kwenye akaunti yako, futa alamisho zako ambazo hazitumiki</translation>
 <translation id="3897092660631435901">Menyu</translation>
 <translation id="3904270275864974753">Kubadilisha utepe</translation>
@@ -1008,6 +1011,7 @@
 <translation id="4378154925671717803">Simu</translation>
 <translation id="4380677808580146413">Chagua</translation>
 <translation id="4389019817280890563">Gusa ili ubadilishe lugha.</translation>
+<translation id="4390649422783033958">Umeingia katika akaunti ukitumia <ph name="USER_NAME" />. <ph name="USER_EMAIL" />, uanachama wa Google. Fungua menyu ya akaunti.</translation>
 <translation id="4393294364304621138">{COUNT,plural, =1{Baada ya siku 1}other{Baada ya siku {COUNT}}}</translation>
 <translation id="4402672425188312225">{COUNT,plural, =1{Kichupo 1}other{Vichupo #}}</translation>
 <translation id="4404790787924017676">Pokea arifa za punguzo la bei za bidhaa unazofuatilia</translation>
@@ -1246,7 +1250,6 @@
 <translation id="5148717509369231739">Upakiaji kwenye Safari</translation>
 <translation id="5152483358138813104">Ingia katika akaunti haraka ukitumia vifaa vyako</translation>
 <translation id="515315847398512535">Kipengele cha kutafuta kwenye skrini kimezimwa katika akaunti yako. Wasiliana na msimamizi wako ili upate maelezo zaidi.</translation>
-<translation id="5155502059906700593">Badilisha nafasi ya sehemu yako ya anwani iwe juu au chini.</translation>
 <translation id="5157638238828697074">Hitilafu fulani imetokea. Imeshindwa kufungua programu.</translation>
 <translation id="5163417375525818870">PDF</translation>
 <translation id="5168414296986405587">Imetengenezwa kwa ajili ya iPadOS</translation>
@@ -1365,6 +1368,7 @@ Lazima Handoff iwashwe pia katika sehemu ya Jumla ya Mipangilio, na lazima vifaa
 <translation id="5559567453458728487">Geuza vipimo vinavyopatikana kwenye wavuti</translation>
 <translation id="5560088892362098740">Tarehe ya Mwisho wa Matumizi</translation>
 <translation id="556042886152191864">Kitufe</translation>
+<translation id="5563910365456880646">tangu ulipokamilisha "Tumia picha kutafuta ukitumia Lenzi ya Google"</translation>
 <translation id="5565871407246142825">Kadi za malipo</translation>
 <translation id="5567439033041178034">PATA MAELEZO ZAIDI</translation>
 <translation id="5578795271662203820">Tafuta picha hii kwenye <ph name="SEARCH_ENGINE" /></translation>
@@ -1492,6 +1496,7 @@ Lazima Handoff iwashwe pia katika sehemu ya Jumla ya Mipangilio, na lazima vifaa
 <translation id="5971459446352190251">Tafuta msimbo wa QR</translation>
 <translation id="5971872012779224351">{count,plural, =1{Alamisho 1 imefutwa}other{Alamisho {count} zimefutwa}}</translation>
 <translation id="5972844218283131174">Acha kuchagua zote</translation>
+<translation id="597482816780655631">Gemini ni AI na inaweza kufanya makosa, yakiwemo makosa kuhusu watu. Huenda baadhi ya maudhui yasifae kwa kila mtu. Magumzo huhakikiwa na kutumiwa kuboresha Google. <ph name="BEGIN_LINK" />Pata maelezo kuhusu chaguo ulizo nazo<ph name="END_LINK" />. <ph name="BEGIN_LINK" />Masharti<ph name="END_LINK" /> na <ph name="BEGIN_LINK" />Ilani yetu ya Faragha<ph name="END_LINK" /> vinatumika.</translation>
 <translation id="5976160379964388480">Wengine </translation>
 <translation id="5977976211062815271">Kwenye kifaa hiki</translation>
 <translation id="5986043348928676121">Endelea</translation>
@@ -1564,7 +1569,6 @@ Lazima Handoff iwashwe pia katika sehemu ya Jumla ya Mipangilio, na lazima vifaa
 <translation id="6193448654517602979">Chagua vichupo</translation>
 <translation id="6196207969502475924">Utafutaji wa Sauti</translation>
 <translation id="6198252989419008588">Badilisha PIN</translation>
-<translation id="6199783146233591178">Pata ulinzi katika wakati halisi ukitumia Kipengele cha kuvinjari salama kilichoboreshwa</translation>
 <translation id="6210079381482819663">Vichupo ambavyo havijatumika kwa siku <ph name="THRESHOLD" /> au zaidi vinahamishiwa hapa. Unaweza kubadilisha hali hii wakati wowote katika <ph name="BEGIN_LINK" />mipangilio<ph name="END_LINK" />.</translation>
 <translation id="6213281885682386884">Hakuna anwani zinazopatikana</translation>
 <translation id="6218508144653756827">Mandhari ya rangi ya fushia</translation>
@@ -1715,7 +1719,6 @@ Lazima Handoff iwashwe pia katika sehemu ya Jumla ya Mipangilio, na lazima vifaa
 <translation id="6626281667717553020">URI ya CPS</translation>
 <translation id="6627583120233659107">Badilisha folda</translation>
 <translation id="6629759408545977279">Kutoka: <ph name="ORIGINATING_HOST" /></translation>
-<translation id="66306952800092318">Weka safu hii ya ziada ya ulinzi dhidi ya vitisho vya mtandaoni.</translation>
 <translation id="6634432609054530164">Shirika lako limezima Hali fiche</translation>
 <translation id="6637478299472506933">Upakuaji Umeshindwa</translation>
 <translation id="6638511529934826365">Kuza Maandishi…</translation>
@@ -1815,6 +1818,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="6930162026494574854">Weka upya mipangilio ya Tafsiri</translation>
 <translation id="6930799952781667037">Gusa ili utumie lugha hii.</translation>
 <translation id="6932739965694346873"><ph name="USER_NAME" />, <ph name="EMAIL" />. <ph name="MANAGED_STATUS" />.</translation>
+<translation id="6937083164784433305">{count,plural, =1{Umetumia picha 1 kutafuta}other{Umetumia picha # kutafuta}}</translation>
 <translation id="693761253105515415">Weka namba ya siri</translation>
 <translation id="6945221475159498467">Chagua</translation>
 <translation id="6946722113367118030">Kutafakari</translation>
@@ -1859,6 +1863,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="7102005569666697658">Inapakua… <ph name="FILE_SIZE" /></translation>
 <translation id="7104701424653979232">Menyu → Mipangilio → Njia za kulipa</translation>
 <translation id="7108338896283013870">Ficha</translation>
+<translation id="7119533351103192286">Tumia Gemini</translation>
 <translation id="7127922377013221748">Ficha Upau wa Vidhibiti</translation>
 <translation id="7128693485119315539">Huenda shirika lako likahitaji kuona na kudhibiti data ya kuvinjari inayohusishwa na akaunti yako inayosimamiwa, kama vile manenosiri na historia yako ya kuvinjari.</translation>
 <translation id="713215255510512027"><ph name="FILENAME" /> (<ph name="FILESIZE" />)</translation>
@@ -2020,6 +2025,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="7662316065255305764">Maelezo ya Tovuti</translation>
 <translation id="7665369617277396874">Ongeza akaunti</translation>
 <translation id="7666861622396822790">Unaweza kudhibiti hili kwenye <ph name="BEGIN_LINK" />Mipangilio ya Maudhui<ph name="END_LINK" />.</translation>
+<translation id="7669448795744969014">Umeingia ukitumia akaunti ya <ph name="USER_EMAIL" />, uanachama kwenye Google. Fungua menyu ya akaunti.</translation>
 <translation id="7669493687462784703">Ungependa kuendelea kupakua wasifu wa kuweka mipangilio kwenye <ph name="WEBSITE" />?</translation>
 <translation id="7673346542062368520">Unaweza kutelezesha kidole kushoto ili uvinjari katika Hali ya faraghani.</translation>
 <translation id="7679915578945954324">Anwani za tovuti zimenakiliwa</translation>
@@ -2063,6 +2069,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="78146569776629510">Vipakuliwa</translation>
 <translation id="7815852444315004084">Ficha Kwa Sasa</translation>
 <translation id="7825973332242257878">Vikundi vya vichupo</translation>
+<translation id="7828344837949522075">Onyesha pendekezo</translation>
 <translation id="7839994177130598711">Sasa wanafamilia wako wanaweza kutumia jina la mtumiaji na nenosiri lako wanapotumia Kidhibiti cha Manenosiri cha Google kuingia katika akaunti kwenye <ph name="BEGIN_BOLD" /><ph name="WEBSITE" /><ph name="END_BOLD" />.</translation>
 <translation id="7841180087127694526">Tafuta maandishi uliyonakili</translation>
 <translation id="7841418003178675048">Chagua kadi unazoona kwenye ukurasa wako wa kichupo kipya.</translation>
@@ -2383,6 +2390,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="8796634520835503150">Hali ya kusoma inapatikana</translation>
 <translation id="8803526663383843427">Ukiwa umekiwasha</translation>
 <translation id="8803639129939845298">Salama</translation>
+<translation id="8809212245338455710">Uanachama wa <ph name="AI_TIER_NAME" /></translation>
 <translation id="8813277370772331957">Nikumbushe baadaye</translation>
 <translation id="8814308045751067027">Ili utumie Live, ruhusu Chrome ifikie maikrofoni yako katika mipangilio</translation>
 <translation id="8814719628147284151">Endelea</translation>
@@ -2394,6 +2402,7 @@ Ili uendelee kwenye kompyuta yako, badilisha utumie <ph name="OTHER_EMAIL" />. U
 <translation id="882557203579758546">Pata katika Ukurasa…</translation>
 <translation id="8829809207373502270">Ufunguo huu wa siri hautumiki tena. Ulifutwa kwenye <ph name="WEBSITE" /> na utafutwa hapa hivi karibuni. <ph name="BEGIN_LINK" />Kuhusu funguo za siri<ph name="END_LINK" /></translation>
 <translation id="8831208860914609320">Kufunga vichupo visivyotumika</translation>
+<translation id="8831871601813227635"><ph name="BEGIN_LINK" />Masharti<ph name="END_LINK" /> yetu, <ph name="BEGIN_LINK" />Masharti ya Matumizi ya Data ya Mahali ya Korea<ph name="END_LINK" /> pamoja na <ph name="BEGIN_LINK" />Ilani ya Faragha<ph name="END_LINK" /> vinatumika. Magumzo huhakikiwa na kutumiwa kuboresha Google. Gemini ni AI na inaweza kufanya makosa, yakiwemo makosa kuhusu watu. Huenda baadhi ya maudhui yasifae kwa kila mtu. Unaweza <ph name="BEGIN_LINK" />kudhibiti shughuli zako<ph name="END_LINK" />, ikiwa ni pamoja na maelezo kuhusu mahali ulipo. <ph name="BEGIN_LINK" />Pata maelezo zaidi kuhusu chaguo ulizo nazo<ph name="END_LINK" /></translation>
 <translation id="8837654851594567190">Panga kulingana na mchapishaji</translation>
 <translation id="884351711508006491">Taarifa zako huhifadhiwa kwenye kifaa chako.</translation>
 <translation id="8844136307393039959">Punguzo la bei kwenye bidhaa unayofuatilia</translation>

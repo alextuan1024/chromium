@@ -125,7 +125,7 @@ void DOMURL::setHref(const String& value, ExceptionState& exception_state) {
 }
 
 void DOMURL::setSearch(const String& value) {
-  DOMURLUtils::setSearch(value);
+  UrlUtils::setSearch(value);
   if (value.starts_with('?')) {
     UpdateSearchParams(value.substr(1));
   } else {
@@ -135,12 +135,12 @@ void DOMURL::setSearch(const String& value) {
 
 String DOMURL::CreatePublicURL(ExecutionContext* execution_context,
                                Blob* blob) {
-  return execution_context->GetPublicURLManager().RegisterURL(blob);
+  return execution_context->GetPublicURLManager().RegisterUrl(blob);
 }
 
 String DOMURL::CreatePublicURL(ExecutionContext* execution_context,
                                URLRegistrable* registrable) {
-  return execution_context->GetPublicURLManager().RegisterURL(registrable);
+  return execution_context->GetPublicURLManager().RegisterUrl(registrable);
 }
 
 URLSearchParams* DOMURL::searchParams() {

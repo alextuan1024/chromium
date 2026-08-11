@@ -22,6 +22,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
 import android.widget.ImageView;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
@@ -181,7 +182,6 @@ public abstract class BaseSuggestionViewBinder<T extends View>
             actionView.setContentDescription(action.accessibilityDescription);
             actionView.enableShowOnlyOnFocus(action.showOnlyOnFocus);
             updateIcon(
-                    model,
                     actionView,
                     action.icon,
                     ChromeColors.getPrimaryIconTintRes(isIncognito(model)));
@@ -226,7 +226,6 @@ public abstract class BaseSuggestionViewBinder<T extends View>
             ImageView actionView = actionViews.get(index);
 
             updateIcon(
-                    model,
                     actionView,
                     actions.get(index).icon,
                     ChromeColors.getPrimaryIconTintRes(isIncognito(model)));
@@ -267,7 +266,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
 
         rciv.setVisibility(sds == null ? View.GONE : View.VISIBLE);
-        updateIcon(model, rciv, sds, ChromeColors.getSecondaryIconTintRes(isIncognito(model)));
+        updateIcon(rciv, sds, ChromeColors.getSecondaryIconTintRes(isIncognito(model)));
     }
 
     /**
@@ -302,6 +301,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         Drawable background;
 
         if (sFocusableDrawableState == null) {
+            @ColorInt
             int suggestionBgColor =
                     resourceProvider.getSuggestionBackgroundColor(
                             model.get(SuggestionCommonProperties.FUSEBOX_LAYOUT_MODE),
@@ -344,7 +344,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
 
     /** Update image view using supplied drawable state object. */
     private static void updateIcon(
-            PropertyModel model, ImageView view, OmniboxDrawableState sds, @ColorRes int tintRes) {
+            ImageView view, OmniboxDrawableState sds, @ColorRes int tintRes) {
         if (sds == null) {
             // Release any drawable that is still attached to this view to reclaim memory.
             view.setImageDrawable(null);
@@ -356,7 +356,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
             tint = view.getContext().getColorStateList(tintRes);
         }
 
-        view.setImageDrawable(isIncognito(model) ? sds.incognitoDrawable : sds.drawable);
+        view.setImageDrawable(sds.drawable);
         view.setForegroundTintList(tint);
         ImageViewCompat.setImageTintList(view, tint);
     }

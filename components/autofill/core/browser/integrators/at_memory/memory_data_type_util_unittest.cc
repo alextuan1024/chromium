@@ -437,9 +437,12 @@ TEST(MemoryDataTypeUtilTest, ConvertToMemorySearchResultDateTime) {
   date_time->set_hours(14);
   date_time->set_minutes(30);
 
-  // ICU inserts a "narrow space" between the time and the "PM".
+  // ICU inserts a "narrow space" between the time and the "PM" for 12h locales.
   EXPECT_EQ(ConvertToMemorySearchResult(proto_result, "en-US").value,
             u"2026-12-31 2:30\u202FPM");
+  // 24h locale formatting (German).
+  EXPECT_EQ(ConvertToMemorySearchResult(proto_result, "de").value,
+            u"2026-12-31 14:30");
 }
 
 // Tests formatting of DateTime attribute values when FromLocalExploded fails
@@ -575,8 +578,18 @@ TEST(MemoryDataTypeUtilTest, FormatMemoryDataTypeLabelValueFlightDate) {
   // FormatMemoryDataTypeLabelValue formats flight dates as "MMM d" for labels
   EXPECT_EQ(FormatMemoryDataTypeLabelValue(
                 MemoryDataType::kFlightReservationDepartureDate, u"2024-06-07",
-                date_typed),
+                date_typed, "en-US"),
             u"Jun 7");
+
+  // Localized date formatting (German and Polish).
+  EXPECT_EQ(FormatMemoryDataTypeLabelValue(
+                MemoryDataType::kFlightReservationDepartureDate, u"2024-06-07",
+                date_typed, "de"),
+            u"7. Juni");
+  EXPECT_EQ(FormatMemoryDataTypeLabelValue(
+                MemoryDataType::kFlightReservationDepartureDate, u"2024-06-07",
+                date_typed, "pl"),
+            u"7 cze");
 
   personal_context::proto::TypedValue datetime_typed;
   datetime_typed.mutable_date_time()->set_year(2024);
@@ -587,25 +600,25 @@ TEST(MemoryDataTypeUtilTest, FormatMemoryDataTypeLabelValueFlightDate) {
 
   EXPECT_EQ(FormatMemoryDataTypeLabelValue(
                 MemoryDataType::kFlightReservationArrivalDate,
-                u"2024-06-07 3:30 PM", datetime_typed),
+                u"2024-06-07 3:30 PM", datetime_typed, "en-US"),
             u"Jun 7");
 
   // String fallback test with space separator
   EXPECT_EQ(FormatMemoryDataTypeLabelValue(
                 MemoryDataType::kFlightReservationDepartureDate,
-                u"2024-06-07 3:30 PM", std::nullopt),
+                u"2024-06-07 3:30 PM", std::nullopt, "en-US"),
             u"Jun 7");
 
   // String fallback test with 'T' separator
   EXPECT_EQ(FormatMemoryDataTypeLabelValue(
                 MemoryDataType::kFlightReservationArrivalDate,
-                u"2024-06-07T03:30:39", std::nullopt),
+                u"2024-06-07T03:30:39", std::nullopt, "en-US"),
             u"Jun 7");
 
   // Non-flight date types should return the value untouched
   EXPECT_EQ(FormatMemoryDataTypeLabelValue(
                 MemoryDataType::kFlightReservationPassengerName, u"John Doe",
-                std::nullopt),
+                std::nullopt, "en-US"),
             u"John Doe");
 }
 

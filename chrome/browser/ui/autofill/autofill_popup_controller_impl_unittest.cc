@@ -69,6 +69,13 @@ class AutofillPopupControllerImplTest
     : public AutofillSuggestionControllerTestBase<
           TestAutofillPopupControllerAutofillClient<>> {
  public:
+  AutofillPopupControllerImplTest() {
+    feature_list_.InitWithFeatures(
+        {features::kAutofillAtMemory,
+         features::debug::kAtMemorySkipEnablementChecks},
+        {});
+  }
+
   // Encapsulates the setup required to get the controller and its associated
   // AtMemoryController into a search-ready state for @memory tests.
   void ShowAtMemoryPopup() {
@@ -141,6 +148,9 @@ class AutofillPopupControllerImplTest
                  client().suggestion_controller(manager())))
         .SetSuggestions(std::move(suggestions));
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(AutofillPopupControllerImplTest, AcceptSuggestionRespectsTimeout) {
@@ -583,7 +593,6 @@ INSTANTIATE_TEST_SUITE_P(
     All,
     AutofillPopupControllerImplTestWithTriggerSource,
     ::testing::Values(
-        AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess,
         AutofillSuggestionTriggerSource::kAtMemoryTriggerString,
         AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut,
         AutofillSuggestionTriggerSource::kAtMemoryContextMenu,
@@ -894,7 +903,7 @@ TEST_F(AutofillPopupControllerImplTest,
 
   Suggestion footer_suggestion1 = Suggestion(kSeparator);
   footer_suggestion1.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
-  Suggestion footer_suggestion2 = Suggestion(kUndoOrClear);
+  Suggestion footer_suggestion2 = Suggestion(kUndo);
   footer_suggestion2.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
 
   AutofillPopupController& controller =
@@ -913,7 +922,7 @@ TEST_F(AutofillPopupControllerImplTest,
               ElementsAre(Field(&Suggestion::type, kAddressEntry),
                           Field(&Suggestion::type, kAddressEntry),
                           Field(&Suggestion::type, kSeparator),
-                          Field(&Suggestion::type, kUndoOrClear)));
+                          Field(&Suggestion::type, kUndo)));
   EXPECT_THAT(
       controller.GetSuggestionFilterMatches(),
       ElementsAre(std::optional<AutofillPopupController::SuggestionFilterMatch>(
@@ -932,7 +941,7 @@ TEST_F(AutofillPopupControllerImplTest,
   EXPECT_THAT(controller.GetSuggestions(),
               ElementsAre(Field(&Suggestion::type, kAddressEntry),
                           Field(&Suggestion::type, kSeparator),
-                          Field(&Suggestion::type, kUndoOrClear)));
+                          Field(&Suggestion::type, kUndo)));
   EXPECT_THAT(
       controller.GetSuggestionFilterMatches(),
       ElementsAre(std::optional<AutofillPopupController::SuggestionFilterMatch>(
@@ -946,7 +955,7 @@ TEST_F(AutofillPopupControllerImplTest,
   EXPECT_EQ(controller.GetSuggestions().size(), 2u);
   EXPECT_THAT(controller.GetSuggestions(),
               ElementsAre(Field(&Suggestion::type, kSeparator),
-                          Field(&Suggestion::type, kUndoOrClear)));
+                          Field(&Suggestion::type, kUndo)));
   EXPECT_THAT(controller.GetSuggestionFilterMatches(),
               ElementsAre(std::nullopt, std::nullopt));
 }

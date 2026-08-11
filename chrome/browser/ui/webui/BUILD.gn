@@ -93,6 +93,7 @@ source_set("configs") {
     "//chrome/browser/ui/webui/regional_capabilities_internals",
     "//chrome/browser/ui/webui/saved_tab_groups_unsupported",
     "//chrome/browser/ui/webui/segmentation_internals",
+    "//chrome/browser/ui/webui/suggest_internals",
     "//chrome/browser/ui/webui/sync_internals",
     "//chrome/browser/ui/webui/translate_internals",
     "//chrome/browser/ui/webui/usb_internals",
@@ -590,7 +591,6 @@ source_set("chrome_web_ui_controller_factory") {
     "//chrome/browser/ui/webui/flags",
     "//chrome/browser/ui/webui/version",
     "//chrome/common",
-    "//chrome/common:buildflags",
     "//chrome/common:constants",
     "//components/commerce/core:commerce_constants",
     "//components/favicon/core",
@@ -642,10 +642,6 @@ source_set("chrome_web_ui_controller_factory") {
     deps += [ "//chrome/browser/ui/webui/conflicts" ]
   }
 
-  if (is_win || is_mac || is_linux || is_chromeos) {
-    deps += [ "//components/webapps/isolated_web_apps:scheme" ]
-  }
-
   if (is_win || is_linux || is_chromeos || is_android) {
     deps += [ "//chrome/browser/ui/webui/sandbox" ]
   }
@@ -679,7 +675,6 @@ source_set("chrome_web_ui_controller_factory") {
       "//ash/webui/help_app_ui",
       "//ash/webui/mall:url_constants",
       "//ash/webui/multidevice_debug",
-      "//ash/webui/print_preview_cros:url_constants",
       "//ash/webui/recorder_app_ui",
       "//ash/webui/vc_background_ui",
     ]
@@ -1018,6 +1013,7 @@ if (!is_android) {
       "//chrome/browser/resource_coordinator",
       "//chrome/browser/ui",
       "//chrome/browser/ui/webui/top_chrome:test_support",
+      "//chrome/browser/ui/webui/tracked_element:browser_tests",
       "//chrome/common",
       "//chrome/test:test_support",
       "//components/local_state",

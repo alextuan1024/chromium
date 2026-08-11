@@ -33,7 +33,8 @@
 #include "components/password_manager/core/browser/password_generation_frame_helper.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
-#include "components/password_manager/core/browser/ui/credential_ui_entry.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
@@ -120,36 +121,32 @@ std::string GetReachFormPrompt(const std::string& domain,
 #endif
 }
 
+constexpr char kDefaultPostSubmissionPrompt[] =
+    "Verify password change submission.";
+
 std::string GetPostSubmissionPrompt() {
 #if defined(IDR_APC_PROMPTS_JSON)
   std::string json_data =
       ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
           IDR_APC_PROMPTS_JSON);
 
-  if (json_data.empty()) {
-    return std::string();
+  if (!json_data.empty()) {
+    std::optional<base::Value> parsed_json =
+        base::JSONReader::Read(json_data, base::JSON_PARSE_RFC);
+
+    if (parsed_json.has_value() && parsed_json->is_dict()) {
+      const std::string* system_prompt =
+          parsed_json->GetDict().FindStringByDottedPath(
+              "prompts.verify_password_change_submission.system_prompt");
+
+      if (system_prompt && !system_prompt->empty()) {
+        return *system_prompt;
+      }
+    }
   }
-
-  std::optional<base::Value> parsed_json =
-      base::JSONReader::Read(json_data, base::JSON_PARSE_RFC);
-
-  if (!parsed_json.has_value() || !parsed_json->is_dict()) {
-    return std::string();
-  }
-
-  const std::string* system_prompt =
-      parsed_json->GetDict().FindStringByDottedPath(
-          "prompts.verify_password_change_submission.system_prompt");
-
-  if (!system_prompt) {
-    return std::string();
-  }
-
-  return *system_prompt;
-
-#else
-  return std::string();
 #endif
+
+  return kDefaultPostSubmissionPrompt;
 }
 
 std::u16string GeneratePassword(
@@ -184,7 +181,7 @@ PasswordChangeFromCheckupDelegate::~PasswordChangeFromCheckupDelegate() {
 }
 
 void PasswordChangeFromCheckupDelegate::StartPasswordChangeFlow(
-    const password_manager::CredentialUIEntry& credential,
+    password_manager::StoredCredential credential,
     base::WeakPtr<content::WebContents> web_contents,
     StateChangeCallback callback) {
   if (!web_contents) {
@@ -194,13 +191,11 @@ void PasswordChangeFromCheckupDelegate::StartPasswordChangeFlow(
   originator_ = std::move(web_contents);
 
   // TODO(crbug.com/485620841): Handle non-web URLs for Android passwords.
-  credential_url_ = credential.GetURL();
-  std::string site_domain(credential_url_.host());
-  username_ = credential.username;
-  current_password_ = credential.password;
+  credential_ = std::move(credential);
+  std::string site_domain(credential_.url.host());
 
-  std::string reach_form_prompt =
-      GetReachFormPrompt(site_domain, base::UTF16ToUTF8(username_));
+  std::string reach_form_prompt = GetReachFormPrompt(
+      site_domain, base::UTF16ToUTF8(credential_.username_value));
 
   tabs::TabInterface* tab_interface =
       tabs::TabInterface::MaybeGetFromContents(originator_.get());
@@ -214,7 +209,7 @@ void PasswordChangeFromCheckupDelegate::StartPasswordChangeFlow(
   }
 
   content::OpenURLParams open_url_params(
-      credential_url_.GetWithEmptyPath(), content::Referrer(),
+      credential_.url.GetWithEmptyPath(), content::Referrer(),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
       /*is_renderer_initiated=*/false);
@@ -265,12 +260,7 @@ void PasswordChangeFromCheckupDelegate::StartPasswordChangeFlow(
 
 void PasswordChangeFromCheckupDelegate::Stop(
     actor::ActorTask::StoppedReason stop_reason) {
-  glic::GlicKeyedService* glic_service = GetGlicService();
   if (actuation_web_contents_) {
-    if (glic_service) {
-      glic_service->CloseAndShutdown(
-          actuation_web_contents_->GetPrimaryMainFrame());
-    }
     actor::ActorKeyedService* actor_service =
         actor::ActorKeyedService::Get(Profile::FromBrowserContext(
             actuation_web_contents_->GetBrowserContext()));
@@ -286,7 +276,7 @@ void PasswordChangeFromCheckupDelegate::Stop(
     }
   }
 
-  StopDummyTask();
+  CloseGlicSessionAndStopDummyTask();
 
   form_filler_.reset();
   form_waiter_.reset();
@@ -334,7 +324,7 @@ void PasswordChangeFromCheckupDelegate::OnFindFormTaskStateChanged(
       task.GetExecutionEngine().SetActorLoginService(
           std::make_unique<
               actor_login::PasswordChangeFromCheckupActorLoginService>(
-              username_, current_password_, credential_url_));
+              password_manager::CloneStoredCredential(credential_)));
     } else {
       return;
     }
@@ -358,6 +348,7 @@ void PasswordChangeFromCheckupDelegate::OnFindFormTaskStateChanged(
     }
     task.Stop(actor::ActorTask::StoppedReason::kShutdown);
     actor_task_state_subscription_ = {};
+    CloseGlicSessionAndStopDummyTask();
     if (state_change_callback_) {
       state_change_callback_.Run(PasswordAutomaticChangeState::kError);
     }
@@ -409,7 +400,8 @@ void PasswordChangeFromCheckupDelegate::OnChangePasswordFormManagerFound(
       /*logs_uploader=*/nullptr);
 
   form_filler_->FillForm(
-      form_manager, username_, current_password_, generated_password_,
+      form_manager, credential_.username_value,
+      credential_.password_value.value(), generated_password_,
       base::BindOnce(
           &PasswordChangeFromCheckupDelegate::OnChangePasswordFormFilled,
           weak_ptr_factory_.GetWeakPtr()));
@@ -482,7 +474,7 @@ void PasswordChangeFromCheckupDelegate::OnVerificationTaskStateChanged(
       task.GetExecutionEngine().SetActorLoginService(
           std::make_unique<
               actor_login::PasswordChangeFromCheckupActorLoginService>(
-              username_, current_password_, credential_url_));
+              password_manager::CloneStoredCredential(credential_)));
       if (auto logger = GetLoggerIfAvailable(client_)) {
         logger->LogMessage(
             Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_VERIFICATION_CREATED);
@@ -508,6 +500,11 @@ void PasswordChangeFromCheckupDelegate::OnVerificationTaskStateChanged(
     task.Stop(actor::ActorTask::StoppedReason::kShutdown);
     actor_task_state_subscription_ = {};
     saved_form_manager_.reset();
+    verification_timer_.Stop();
+    CloseGlicSessionAndStopDummyTask();
+    if (state_change_callback_) {
+      state_change_callback_.Run(PasswordAutomaticChangeState::kError);
+    }
     return;
   }
 
@@ -518,12 +515,7 @@ void PasswordChangeFromCheckupDelegate::OnVerificationTaskStateChanged(
       logger->LogMessage(
           Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_VERIFICATION_FINISHED);
     }
-    glic::GlicKeyedService* glic_service = GetGlicService();
-    if (glic_service && actuation_web_contents_) {
-      glic_service->CloseAndShutdown(
-          actuation_web_contents_->GetPrimaryMainFrame());
-    }
-    StopDummyTask();
+    CloseGlicSessionAndStopDummyTask();
     HandleMaybeSuccessfulPasswordChange();
   }
 }
@@ -533,12 +525,7 @@ void PasswordChangeFromCheckupDelegate::OnVerificationTimeout() {
     logger->LogMessage(Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_TIMEOUT);
   }
   actor_task_state_subscription_ = {};
-  glic::GlicKeyedService* glic_service = GetGlicService();
-  if (glic_service && actuation_web_contents_) {
-    glic_service->CloseAndShutdown(
-        actuation_web_contents_->GetPrimaryMainFrame());
-  }
-  StopDummyTask();
+  CloseGlicSessionAndStopDummyTask();
   HandleMaybeSuccessfulPasswordChange();
 }
 
@@ -619,4 +606,13 @@ void PasswordChangeFromCheckupDelegate::StopDummyTask() {
   }
 
   dummy_task_id_ = std::nullopt;
+}
+
+void PasswordChangeFromCheckupDelegate::CloseGlicSessionAndStopDummyTask() {
+  glic::GlicKeyedService* glic_service = GetGlicService();
+  if (glic_service && actuation_web_contents_) {
+    glic_service->CloseAndShutdown(
+        actuation_web_contents_->GetPrimaryMainFrame());
+  }
+  StopDummyTask();
 }

@@ -284,7 +284,8 @@ export enum DeleteBrowsingDataAction {
   HISTORY_PAGE_ENTRIES = 5,
   QUICK_DELETE = 6,
   PAGE_INFO_RESET_PERMISSIONS = 7,
-  MAX_VALUE = 8,
+  RWS_DELETE_ALL_DATA = 8,
+  MAX_VALUE = 9,
 }
 
 /**
@@ -415,7 +416,8 @@ export enum AutofillSettingsReferrer {
   SETTINGS_MENU = 1,
   AUTOFILL_AND_PASSWORDS_PAGE = 2,
   // FILLING_FLOW_DROPDOWN = 3,
-  MAX_VALUE = 4,
+  // SETTINGS_SEARCH = 4,
+  MAX_VALUE = 5,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillSettingsReferrer)
 

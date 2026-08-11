@@ -345,7 +345,6 @@
 <translation id="4437295824090654417">Поделитесь этим документом с Gemini в Chrome, чтобы получить краткий обзор и задать дополнительные вопросы.</translation>
 <translation id="4450664632294415862">Chrome – вход в сеть – "<ph name="PAGE_TITLE" />"</translation>
 <translation id="4458462641685292929">Google Chrome выполняет другую операцию. Повторите попытку позже.</translation>
-<translation id="4459234553906210702">Сайты, которые вы посещаете, смогут проводить оценку эффективности рекламы, запрашивая информацию у Chrome. Оценка эффективности рекламы ограничивает межсайтовое отслеживание, сокращая объем информации, передаваемой между сайтами, до минимума.</translation>
 <translation id="4493028449971051158">Ошибка. Запустите установщик от имени администратора.</translation>
 <translation id="4501471624619070934">Не удалось выполнить установку из-за ограничения доступа в этой стране.</translation>
 <translation id="4571503333518166079">Открыть настройки уведомлений Chrome</translation>
@@ -740,6 +739,7 @@
 <translation id="8367705492654390392">Задать вопрос</translation>
 <translation id="8367950957770994118">Позволяет быстро запускать Gemini в Chrome, когда он нужен</translation>
 <translation id="8370517070665726704">© Google LLC, <ph name="YEAR" />. Все права защищены.</translation>
+<translation id="8370748943308169953">QR-код для входа в Chrome с аккаунтом <ph name="USER_NAME" /></translation>
 <translation id="8377158135256176353">Включить или отключить Gemini в Chrome Canary</translation>
 <translation id="8387459386171870978">Продолжить работу в Chrome</translation>
 <translation id="8394720698884623075">Сверяет URL со списком небезопасных сайтов в Chrome.</translation>

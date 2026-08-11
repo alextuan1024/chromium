@@ -722,6 +722,8 @@ should be able to be added at any place in this file.
   <variant name="_PdfSearchifyFeature" summary="For PDF Searchify feature."/>
   <variant name="_PdfTextAnnotations"
       summary="For PDF Text Annotations feature."/>
+  <variant name="_PdfTranslateBubble"
+      summary="For PDF translate bubble feature."/>
   <variant name="_PerformanceInterventionDialog"
       summary="For triggering the performance intervention dialog and toolbar
                button feature."/>
@@ -803,6 +805,9 @@ should be able to be added at any place in this file.
       summary="For the gesture navigation in RTL mode."/>
   <variant name="_SearchPromotionFeature"
       summary="IPH for Search extension promo on Windows"/>
+  <variant name="_SendTabToSelfOmnibox"
+      summary="IPH for Send Tab to Self entry point in the omnibox long-press
+               menu"/>
   <variant name="_SharedHighlightingBuilder"
       summary="For SharedHighlightingBuilder feature."/>
   <variant name="_SharedHighlightingReceiver"
@@ -29082,6 +29087,14 @@ should be able to be added at any place in this file.
   </description>
 </action>
 
+<action name="MobileHubExitViaButton">
+  <owner>polardz@google.com</owner>
+  <owner>clank-tab-dev@google.com</owner>
+  <description>
+    User exited the Hub (Grid Tab Switcher) by clicking the tab switcher button.
+  </description>
+</action>
+
 <action name="MobileIdentityDocsSettingsBack">
   <owner>jsobiech@google.com</owner>
   <owner>chrome-autofill-team@google.com</owner>
@@ -36604,6 +36617,15 @@ should be able to be added at any place in this file.
   <owner>lzbylut@google.com</owner>
   <description>
     User tapped on the cut button after long-pressing on the omnibox on Android.
+  </description>
+</action>
+
+<action name="Omnibox.LongPress.PasteAndGo">
+  <owner>mdjones@chromium.org</owner>
+  <owner>lzbylut@google.com</owner>
+  <description>
+    User tapped on the &quot;paste and go&quot; button after long-pressing on
+    the omnibox on Android.
   </description>
 </action>
 

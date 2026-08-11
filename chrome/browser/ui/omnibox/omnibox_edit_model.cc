@@ -46,7 +46,10 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
 #include "components/contextual_search/contextual_search_service.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_context_service.h"
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
+#include "components/contextual_tasks/public/features.h"
+#include "components/contextual_tasks/public/prefs.h"
 #include "components/dom_distiller/core/url_constants.h"
 #include "components/dom_distiller/core/url_utils.h"
 #include "components/grit/components_scaled_resources.h"
@@ -2631,7 +2634,13 @@ void OmniboxEditModel::OnDefaultSearchExtensionDialogDone(
   //
   // When `proceed` is kCancel, the dialog was closed without making a choice,
   // and we don't do a search.
-  if (proceed == OmniboxClient::ExtensionControlledDialogResult::kAccept) {
+  //
+  // kNoDialogShown means the confirmation turned out to be unnecessary and the
+  // user was never asked anything. The navigation we withheld must proceed
+  // exactly as originally requested.
+  if (proceed == OmniboxClient::ExtensionControlledDialogResult::kAccept ||
+      proceed ==
+          OmniboxClient::ExtensionControlledDialogResult::kNoDialogShown) {
     OpenMatch(selection, match, disposition, alternate_nav_url, pasted_text,
               match_selection_timestamp);
   } else if (proceed ==
@@ -3467,8 +3476,17 @@ void OmniboxEditModel::
     new_handle = service->GetSession(session_handle->session_id(),
                                      session_handle->invocation_source());
     if (new_handle) {
+      new_handle->set_smart_tab_sharing_active(
+          session_handle->smart_tab_sharing_active());
+      new_handle->set_smart_tab_sharing_toggled_since_last_turn(
+          session_handle->smart_tab_sharing_toggled_since_last_turn());
+      new_handle->set_sts_toggled_removed_contexts(
+          session_handle->sts_toggled_removed_contexts());
       new_handle->set_submitted_context_tokens(
           session_handle->GetSubmittedContextTokens());
+      new_handle->set_persisted_tabs(session_handle->persisted_tabs());
+      new_handle->set_deselected_tabs_urls(
+          session_handle->deselected_tabs_urls());
       new_handle->CheckSearchContentSharingSettings(
           chrome_omnibox_client->profile()->GetPrefs());
     }

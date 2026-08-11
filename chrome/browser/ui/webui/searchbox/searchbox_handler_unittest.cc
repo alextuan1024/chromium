@@ -62,6 +62,7 @@
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/test_web_ui_data_source.h"
 #include "content/public/test/web_contents_tester.h"
+#include "extensions/common/extension_features.h"
 #include "lens_searchbox_handler.h"
 #include "realbox_handler.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -361,7 +362,8 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/true, /*keyword=*/"");
+        /*is_on_focus=*/true, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
@@ -390,7 +392,8 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/false, /*keyword=*/"");
+        /*is_on_focus=*/false, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -438,7 +441,8 @@ TEST_F(RealboxHandlerTest, AutocompleteController_StartWithSuggestInventory) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false, /*keyword=*/"");
+        /*is_on_focus=*/false, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -455,7 +459,7 @@ TEST_F(RealboxHandlerTest, AutocompleteController_StartWithSuggestInventory) {
   }
 }
 
-TEST_F(RealboxHandlerTest, SetInputMethodTest) {
+TEST_F(RealboxHandlerTest, InputMethodTest) {
   // Stop observing the `AutocompleteController` instance which will be
   // destroyed.
   handler_->autocomplete_controller_observation_.Reset();
@@ -486,12 +490,11 @@ TEST_F(RealboxHandlerTest, SetInputMethodTest) {
         .Times(1)
         .WillOnce(SaveArg<0>(&input));
 
-    handler_->SetInputMethod(searchbox::mojom::InputMethod::kSmartCompose);
-
     handler_->QueryAutocomplete(
         0, u"test query", /*prevent_inline_autocomplete=*/false, 10,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false, /*keyword=*/"");
+        /*is_on_focus=*/false, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kSmartCompose);
 
     EXPECT_EQ(input_text, u"test query");
     EXPECT_EQ(input.text(), u"test query");
@@ -514,12 +517,11 @@ TEST_F(RealboxHandlerTest, SetInputMethodTest) {
         .Times(1)
         .WillOnce(SaveArg<0>(&input));
 
-    // No SetInputMethod call - should default to KEYBOARD.
-
     handler_->QueryAutocomplete(
         0, u"another query", /*prevent_inline_autocomplete=*/false, 13,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_TRAVEL,
-        /*is_on_focus=*/false, /*keyword=*/"");
+        /*is_on_focus=*/false, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"another query");
     EXPECT_EQ(input.text(), u"another query");
@@ -730,7 +732,8 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/true, /*keyword=*/"");
+        /*is_on_focus=*/true, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
@@ -785,7 +788,8 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
     handler_->QueryAutocomplete(
         0, u"a", /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
-        /*is_on_focus=*/false, /*keyword=*/"");
+        /*is_on_focus=*/false, /*keyword=*/"",
+        searchbox::mojom::InputMethod::kKeyboard);
 
     EXPECT_EQ(input_text, u"a");
     EXPECT_EQ(input.text(), u"a");
@@ -1093,6 +1097,67 @@ TEST_F(WebuiOmniboxHandlerTest, OpenLensSearch) {
   EXPECT_CALL(*mock_client_ptr, OpenLensOverlay(true)).Times(1);
 
   handler_->OpenLensSearch();
+}
+
+TEST_F(WebuiOmniboxHandlerTest, OpenMatchResumesNavigationWhenNoDialogShown) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      extensions_features::kSearchEngineExplicitChoiceDialog);
+  auto* client = static_cast<TestOmniboxClient*>(omnibox_controller_->client());
+  AutocompleteMatch match(nullptr, 500, false,
+                          AutocompleteMatchType::SEARCH_SUGGEST);
+  match.destination_url = GURL("https://www.example.com/?q=foo");
+  match.keyword = u"example";
+  EXPECT_CALL(*client, ShowConfirmationDialogIfDefaultSearchExtensionControlled(
+                           match.destination_url, testing::_))
+      .WillOnce([](const GURL&,
+                   base::OnceCallback<void(
+                       OmniboxClient::ExtensionControlledDialogResult)> cb) {
+        // No dialog is shown; report that rather than a user decision.
+        std::move(cb).Run(
+            OmniboxClient::ExtensionControlledDialogResult::kNoDialogShown);
+        return true;
+      })
+      .WillRepeatedly(testing::Return(false));
+
+  // The withheld navigation must still happen.
+  EXPECT_CALL(*client, OnAutocompleteAccept(match.destination_url, testing::_,
+                                            testing::_, testing::_, testing::_,
+                                            testing::_, testing::_, testing::_,
+                                            testing::_, testing::_, testing::_))
+      .Times(1);
+  handler_->OpenMatch(OmniboxPopupSelection(0), match,
+                      WindowOpenDisposition::CURRENT_TAB,
+                      base::TimeTicks::Now());
+}
+
+TEST_F(WebuiOmniboxHandlerTest, OpenMatchDropsNavigationWhenDialogCancelled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      extensions_features::kSearchEngineExplicitChoiceDialog);
+  auto* client = static_cast<TestOmniboxClient*>(omnibox_controller_->client());
+  AutocompleteMatch match(nullptr, 500, false,
+                          AutocompleteMatchType::SEARCH_SUGGEST);
+  match.destination_url = GURL("https://www.example.com/?q=foo");
+  match.keyword = u"example";
+  EXPECT_CALL(*client, ShowConfirmationDialogIfDefaultSearchExtensionControlled(
+                           match.destination_url, testing::_))
+      .WillOnce([](const GURL&,
+                   base::OnceCallback<void(
+                       OmniboxClient::ExtensionControlledDialogResult)> cb) {
+        std::move(cb).Run(
+            OmniboxClient::ExtensionControlledDialogResult::kCancel);
+        return true;
+      });
+  EXPECT_CALL(*client, OnAutocompleteAccept(testing::_, testing::_, testing::_,
+                                            testing::_, testing::_, testing::_,
+                                            testing::_, testing::_, testing::_,
+                                            testing::_, testing::_))
+      .Times(0);
+
+  handler_->OpenMatch(OmniboxPopupSelection(0), match,
+                      WindowOpenDisposition::CURRENT_TAB,
+                      base::TimeTicks::Now());
 }
 
 #endif

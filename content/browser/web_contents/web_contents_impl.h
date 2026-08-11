@@ -499,6 +499,7 @@ class CONTENT_EXPORT WebContentsImpl
   base::TerminationStatus GetCrashedStatus() override;
   int GetCrashedErrorCode() override;
   bool IsBeingDestroyed() override;
+  bool IsPrivileged() override;
   void NotifyNavigationStateChanged(InvalidateTypes changed_flags) override;
   void OnAudioStateChanged() override;
   base::TimeTicks GetLastActiveTimeTicks() override;
@@ -1105,6 +1106,8 @@ class CONTENT_EXPORT WebContentsImpl
       FrameTree& frame_tree) override;
   void CreateThrottlesForNavigation(
       NavigationThrottleRegistry& registry) override;
+  void CreateThrottlesForCommitWithoutUrlLoader(
+      NavigationThrottleRegistry& registry) override;
   std::vector<std::unique_ptr<CommitDeferringCondition>>
   CreateDeferringConditionsForNavigationCommit(
       NavigationHandle& navigation_handle,
@@ -1659,6 +1662,10 @@ class CONTENT_EXPORT WebContentsImpl
     return current_fullscreen_frame_id_;
   }
 
+  void set_target_network_for_testing(net::handles::NetworkHandle network) {
+    target_network_ = network;
+  }
+
   ui::mojom::VirtualKeyboardMode GetVirtualKeyboardMode() const;
 
   const std::optional<base::Location>& ownership_location() const {
@@ -1685,6 +1692,9 @@ class CONTENT_EXPORT WebContentsImpl
   // Called when the number of active capturers for this WebContents has
   // changed.
   void OnCapturerCountChanged();
+
+  // base::trace_event::TraceSessionObserver implementation:
+  void OnStart(const perfetto::DataSourceBase::StartArgs&) override;
 
  private:
   using FrameTreeIterationCallback = base::FunctionRef<void(FrameTree&)>;
@@ -2488,9 +2498,14 @@ class CONTENT_EXPORT WebContentsImpl
       delegated_ink_point_renderer_;
 
   // The visibility of the WebContents. Initialized from
-  // |CreateParams::initially_hidden|. Updated from
+  // `CreateParams::initially_hidden` and
+  // `CreateParams::initially_hidden_but_painting`. Updated from
   // UpdateWebContentsVisibility(), WasShown(), WasHidden(), WasOccluded().
   Visibility visibility_ = Visibility::VISIBLE;
+
+  // Whether this WebContents was created with
+  // `CreateParams::initially_hidden_but_painting`.
+  bool initially_hidden_but_painting_ = false;
 
   // Whether there has been a call to UpdateWebContentsVisibility(VISIBLE).
   bool did_first_set_visible_ = false;
@@ -2879,8 +2894,6 @@ class CONTENT_EXPORT WebContentsImpl
   void SetDragSource(const DragId& drag_id,
                      const GlobalRenderFrameHostToken& source_rfh_token);
 
-  // base::trace_event::TraceSessionObserver implementation:
-  void OnStart(const perfetto::DataSourceBase::StartArgs&) override;
 
   std::optional<DragId> active_drag_id_;
 

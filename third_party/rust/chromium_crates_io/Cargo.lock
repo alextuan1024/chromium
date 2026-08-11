@@ -294,6 +294,7 @@ dependencies = [
  "xml",
  "zeroize",
  "zip",
+ "zune-core",
  "zune-jpeg",
 ]
 
@@ -1028,6 +1029,9 @@ dependencies = [
  "icu_properties",
  "icu_provider",
  "smallvec",
+ "utf16_iter",
+ "utf8_iter",
+ "write16",
  "zerovec",
 ]
 
@@ -1207,7 +1211,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "jpeg-encoder"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -2634,6 +2638,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "write16"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2790,12 +2799,12 @@ dependencies = [
 
 [[package]]
 name = "zune-core"
-version = "0.5.1"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "zune-jpeg"
-version = "0.5.15"
+version = "0.5.16-rc1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "zune-core",

@@ -118,15 +118,16 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         return new ChromeManagedPreferenceDelegate(getProfile()) {
             @Override
             public boolean isPreferenceControlledByPolicy(Preference preference) {
-                return BookmarkBarUtils.isBookmarkBarManagedByPolicy(getProfile());
+                return BookmarkBarUtils.isUserPrefsShowBookmarkBarManagedByPolicy(getProfile());
             }
 
             @Override
             public @Nullable Boolean isPreferenceRecommendation(Preference preference) {
-                if (!BookmarkBarUtils.isBookmarkBarRecommended(getProfile())) {
+                if (!BookmarkBarUtils.isUserPrefsShowBookmarkBarRecommended(getProfile())) {
                     return null;
                 }
-                return BookmarkBarUtils.isFollowingBookmarkBarRecommendation(getProfile());
+                return BookmarkBarUtils.isUserPrefsShowBookmarkBarFollowingRecommendation(
+                        getProfile());
             }
         };
     }
@@ -164,9 +165,7 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
             mBookmarkBarPref.setOnPreferenceChangeListener(
                     (pref, newValue) -> {
                         BookmarkBarUtils.setDevicePrefShowBookmarksBar(
-                                getProfile(),
-                                (boolean) newValue,
-                                /* fromKeyboardShortcut= */ false);
+                                (boolean) newValue, /* fromKeyboardShortcut= */ false);
                         return true;
                     });
         }

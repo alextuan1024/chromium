@@ -253,6 +253,10 @@ class WebContents : public PageNavigator, public base::SupportsUserData {
     // True if the contents should be initially hidden.
     bool initially_hidden = false;
 
+    // True if the contents should initially be hidden but continue painting
+    // until shown. Mutually exclusive with `initially_hidden`.
+    bool initially_hidden_but_painting = false;
+
     // Returns true if the WebContents is never user-visible, thus the renderer
     // need never produce pixels for display.
     bool is_never_composited = false;
@@ -967,6 +971,14 @@ class WebContents : public PageNavigator, public base::SupportsUserData {
 
   // Whether the tab is in the process of being destroyed.
   virtual bool IsBeingDestroyed() = 0;
+
+  // Returns true if this WebContents was created with PrivilegedParams, i.e. it
+  // is a privileged-contents host (see PrivilegedParams). Immutable for the
+  // lifetime of the WebContents. Unlike RenderProcessHost::IsPrivileged(), this
+  // is available even when no renderer process exists yet -- e.g. when deciding
+  // whether a browser-initiated main-frame navigation request should be exempt
+  // from the extensions webRequest/DNR APIs.
+  virtual bool IsPrivileged() = 0;
 
   // Convenience method for notifying the delegate of a navigation state
   // change.

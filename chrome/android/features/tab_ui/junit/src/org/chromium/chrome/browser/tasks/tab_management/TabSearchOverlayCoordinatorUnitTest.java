@@ -26,6 +26,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
+
+import androidx.appcompat.content.res.AppCompatResources;
 
 import org.junit.After;
 import org.junit.Before;
@@ -61,6 +64,7 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.omnibox.OmniboxStub;
 import org.chromium.chrome.browser.omnibox.OverrideUrlLoadingDelegate;
+import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.omnibox.UrlBarCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -70,7 +74,6 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
@@ -105,6 +108,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
     @Mock private SearchUiCoordinator mSearchUiCoordinator;
     @Mock private LocationBarCoordinator mLocationBarCoordinator;
     @Mock private UrlBarCoordinator mUrlBarCoordinator;
+    @Mock private View mLocationBarContainerView;
+    @Mock private UrlBar mUrlBar;
     @Mock private OmniboxStub mOmniboxStub;
     @Mock private SearchActivityLocationBarLayout mSearchBox;
     @Mock private Profile mProfile;
@@ -158,6 +163,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
         when(mSearchUiCoordinator.getLocationBarCoordinator()).thenReturn(mLocationBarCoordinator);
         when(mLocationBarCoordinator.getUrlBarCoordinator()).thenReturn(mUrlBarCoordinator);
         when(mLocationBarCoordinator.getOmniboxStub()).thenReturn(mOmniboxStub);
+        when(mLocationBarCoordinator.getContainerView()).thenReturn(mLocationBarContainerView);
+        when(mLocationBarContainerView.findViewById(R.id.url_bar)).thenReturn(mUrlBar);
         when(mOmniboxStub.isUrlBarFocused()).thenReturn(true);
         when(mSearchUiCoordinator.getSearchBox()).thenReturn(mSearchBox);
         when(mLocationBarCoordinator.getSuggestionsListNonEmptySupplier())
@@ -226,6 +233,7 @@ public class TabSearchOverlayCoordinatorUnitTest {
         verify(mUrlBarCoordinator)
                 .setUrlBarHintText(
                         mActivity.getResources().getString(R.string.hub_search_empty_hint));
+        verify(mUrlBar).setTextAppearance(R.style.TextAppearance_TextMedium);
     }
 
     @Test
@@ -426,6 +434,9 @@ public class TabSearchOverlayCoordinatorUnitTest {
         showOverlay();
         verifySearchUiCoordinatorInitialized();
 
+        ImageButton closeButton = mPanelContainer.findViewById(R.id.tab_search_close_button);
+        assertNotNull(closeButton);
+
         // Switch to an incognito profile.
         when(mIncognitoProfile.isOffTheRecord()).thenReturn(true);
         mProfileSupplier.set(mIncognitoProfile);
@@ -433,12 +444,31 @@ public class TabSearchOverlayCoordinatorUnitTest {
         // Verify that setColorScheme was called with true.
         verify(mSearchUiCoordinator).setColorScheme(true);
 
+        // Verify close button colors in incognito.
+        assertEquals(
+                AppCompatResources.getColorStateList(mActivity, R.color.default_icon_color_light),
+                closeButton.getImageTintList());
+        assertEquals(
+                AppCompatResources.getColorStateList(
+                        mActivity, R.color.tab_strip_close_bg_incognito_tint_list),
+                closeButton.getBackgroundTintList());
+
         // Switch back to non-incognito profile.
         when(mProfile.isOffTheRecord()).thenReturn(false);
         mProfileSupplier.set(mProfile);
 
         // Verify that setColorScheme was called with false.
         verify(mSearchUiCoordinator).setColorScheme(false);
+
+        // Verify close button colors in standard.
+        assertEquals(
+                AppCompatResources.getColorStateList(
+                        mActivity, R.color.default_icon_color_tint_list),
+                closeButton.getImageTintList());
+        assertEquals(
+                AppCompatResources.getColorStateList(
+                        mActivity, R.color.tab_strip_close_bg_tint_list),
+                closeButton.getBackgroundTintList());
     }
 
     @Test
@@ -736,20 +766,21 @@ public class TabSearchOverlayCoordinatorUnitTest {
     }
 
     @Test
-    public void testTabSelectionHidesOverlay() {
+    public void testWindowFocusLost_hidesOverlay() {
         showOverlay();
         assertTrue(mCoordinator.isVisible());
 
-        // Capture the registered TabModelObserver from the mock TabModel.
-        ArgumentCaptor<TabModelObserver> captor = ArgumentCaptor.forClass(TabModelObserver.class);
-        verify(mTabModel).addObserver(captor.capture());
-        TabModelObserver observer = captor.getValue();
-        assertNotNull(observer);
+        mCoordinator.getWindowFocusListenerForTesting().onWindowFocusChanged(false);
 
-        // Trigger didSelectTab.
-        observer.didSelectTab(mTab, TabSelectionType.FROM_USER, Tab.INVALID_TAB_ID);
-
-        // Verify the overlay is hidden.
         assertOverlayHidden();
+    }
+
+    @Test
+    public void testWindowFocusLostWhenHidden_doesNothing() {
+        assertFalse(mCoordinator.isVisible());
+
+        mCoordinator.getWindowFocusListenerForTesting().onWindowFocusChanged(false);
+
+        verify(mLocationBarCoordinator, never()).clearOmniboxFocus();
     }
 }

@@ -11,6 +11,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/web_identity.h"
+#include "net/cert/cert_status_flags.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/structured_headers.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
@@ -252,8 +253,9 @@ TEST_F(IdentityUrlLoaderThrottleTest, InProcessParserCallback) {
           },
           &result_item));
   ASSERT_TRUE(result_item);
-  EXPECT_TRUE(result_item->item.is_token());
-  EXPECT_EQ("logged-in", result_item->item.GetString());
+  EXPECT_EQ(result_item->item,
+            net::structured_headers::Item(
+                "logged-in", net::structured_headers::Item::kTokenType));
 
   result_item.reset();
   parse_cb.Run(
@@ -265,8 +267,9 @@ TEST_F(IdentityUrlLoaderThrottleTest, InProcessParserCallback) {
           },
           &result_item));
   ASSERT_TRUE(result_item);
-  EXPECT_TRUE(result_item->item.is_token());
-  EXPECT_EQ("logged-out", result_item->item.GetString());
+  EXPECT_EQ(result_item->item,
+            net::structured_headers::Item(
+                "logged-out", net::structured_headers::Item::kTokenType));
 
   result_item.reset();
   parse_cb.Run(
@@ -310,8 +313,9 @@ TEST_F(IdentityUrlLoaderThrottleTest, DataDecoderParserCallback) {
           &result_item));
   task_environment.RunUntilIdle();
   ASSERT_TRUE(result_item);
-  EXPECT_TRUE(result_item->item.is_token());
-  EXPECT_EQ("logged-in", result_item->item.GetString());
+  EXPECT_EQ(result_item->item,
+            net::structured_headers::Item(
+                "logged-in", net::structured_headers::Item::kTokenType));
 
   result_item.reset();
   parse_cb.Run(
@@ -324,8 +328,9 @@ TEST_F(IdentityUrlLoaderThrottleTest, DataDecoderParserCallback) {
           &result_item));
   task_environment.RunUntilIdle();
   ASSERT_TRUE(result_item);
-  EXPECT_TRUE(result_item->item.is_token());
-  EXPECT_EQ("logged-out", result_item->item.GetString());
+  EXPECT_EQ(result_item->item,
+            net::structured_headers::Item(
+                "logged-out", net::structured_headers::Item::kTokenType));
 
   result_item.reset();
   parse_cb.Run(
@@ -352,6 +357,31 @@ TEST_F(IdentityUrlLoaderThrottleTest, DataDecoderParserCallback) {
   task_environment.RunUntilIdle();
   ASSERT_TRUE(result_item);
   EXPECT_TRUE(result_item->item.is_integer());
+}
+
+TEST_F(IdentityUrlLoaderThrottleTest, CertError) {
+  TestDelegate delegate;
+  std::unique_ptr<blink::URLLoaderThrottle> throttle =
+      MaybeCreateIdentityUrlLoaderThrottle(CreateCallback(),
+                                           CreateParseCallback());
+  ASSERT_NE(nullptr, throttle);
+  throttle->set_delegate(&delegate);
+
+  network::ResourceRequest request;
+  request.url = GURL("https://accounts.idp.example/");
+  bool defer = false;
+
+  throttle->WillStartRequest(&request, &defer);
+  EXPECT_FALSE(defer);
+
+  network::mojom::URLResponseHead response_head;
+  response_head.cert_status = net::CERT_STATUS_DATE_INVALID;
+  response_head.headers = net::HttpResponseHeaders::TryToCreate(
+      "HTTP/1.1 200 OK\nSet-Login: logged-in\n");
+  throttle->WillProcessResponse(request.url, &response_head, &defer);
+  EXPECT_FALSE(defer);
+
+  EXPECT_EQ(0, cb_num_calls_);
 }
 
 }  // namespace content

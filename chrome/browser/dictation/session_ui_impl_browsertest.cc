@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
@@ -27,6 +28,7 @@
 #include "chrome/browser/ui/views/dictation/dictation_overlay_view.h"
 #include "chrome/browser/ui/views/dictation/ui_state.h"
 #include "chrome/browser/ui/views/dictation/waveform_view.h"
+#include "chrome/browser/ui/views/dictation/waveform_view_button.h"
 #include "chrome/common/extensions/api/dictation_private.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
@@ -161,6 +163,37 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest, UpdateAudioLevel) {
       ASSERT_TRUE(ui);
       ui->UpdateAudioLevel(0.5f);
     })
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
+                       ToastIsActivatableAfterCreation) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    // Ensure that showing the bubble did not steal focus from the page.
+    CheckView(DictationBubbleUi::kViewElementIdForTesting,
+              [](views::View* view) {
+                views::Widget* widget = view->GetWidget();
+                return widget && !widget->IsActive();
+              }),
+    // Ensure that the bubble can be activated. This is needed on Windows,
+    // otherwise we'd discard mouse activation messages from the OS and the
+    // buttons wouldn't be clickable. See https://crbug.com/542199776
+    CheckView(DictationBubbleUi::kViewElementIdForTesting,
+              [](views::View* view) {
+                views::Widget* widget = view->GetWidget();
+                return widget && widget->widget_delegate() &&
+                       widget->widget_delegate()->CanActivate();
+              })
   );
   // clang-format on
 }
@@ -566,7 +599,7 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
     InAnyContext(EnsureNotPresent(
         DictationOverlayView::kWaveformElementIdForTesting)),
     InAnyContext(EnsureNotPresent(
-        DictationOverlayView::kFinalizingButtonElementIdForTesting)),
+        DictationOverlayView::kFinalizingImageElementIdForTesting)),
 
     // Transition to kTranscribing: WaveformView shown, others absent.
     ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
@@ -576,15 +609,15 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
     InAnyContext(EnsureNotPresent(
         DictationOverlayView::kMicButtonElementIdForTesting)),
     InAnyContext(EnsureNotPresent(
-        DictationOverlayView::kFinalizingButtonElementIdForTesting)),
+        DictationOverlayView::kFinalizingImageElementIdForTesting)),
 
-    // Transition to kFinalizing: 3-dot finalizing button shown, others absent.
+    // Transition to kFinalizing: 3-dot finalizing image shown, others absent.
     Do([this] {
       dictation_service().session_controller()->EndDictationStream();
     }),
     CheckResult(GetSessionState(), SessionState::kFinalizing),
     InAnyContext(WaitForShow(
-        DictationOverlayView::kFinalizingButtonElementIdForTesting)),
+        DictationOverlayView::kFinalizingImageElementIdForTesting)),
     InAnyContext(EnsureNotPresent(
         DictationOverlayView::kMicButtonElementIdForTesting)),
     InAnyContext(EnsureNotPresent(
@@ -598,7 +631,7 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
     InAnyContext(EnsureNotPresent(
         DictationOverlayView::kWaveformElementIdForTesting)),
     InAnyContext(EnsureNotPresent(
-        DictationOverlayView::kFinalizingButtonElementIdForTesting))
+        DictationOverlayView::kFinalizingImageElementIdForTesting))
   );
   // clang-format on
 }
@@ -623,7 +656,52 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
     }),
     InAnyContext(CheckViewProperty(
         DictationOverlayView::kWaveformElementIdForTesting,
-        &WaveformView::audio_level_for_testing, 0.5f))
+        &WaveformViewButton::audio_level_for_testing, 0.5f))
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_F(DictationSessionUiImplBrowserTest,
+                       OverlayButtonsToggleStreamState) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+
+    CheckResult(GetSessionState(), SessionState::kStreamInitializing),
+    InAnyContext(WaitForShow(
+        DictationOverlayView::kMicButtonElementIdForTesting)),
+
+    // Pressing the mic button while initializing ends the stream.
+    InAnyContext(PressButton(
+        DictationOverlayView::kMicButtonElementIdForTesting)),
+    CheckResult(GetSessionState(), SessionState::kFinalizing),
+
+    ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+    CheckResult(GetSessionState(), SessionState::kInactive),
+
+    // Pressing the mic button while inactive starts a stream.
+    InAnyContext(WaitForShow(
+        DictationOverlayView::kMicButtonElementIdForTesting)),
+    InAnyContext(PressButton(
+        DictationOverlayView::kMicButtonElementIdForTesting)),
+    CheckResult(GetSessionState(), SessionState::kStreamInitializing),
+
+    ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+    CheckResult(GetSessionState(), SessionState::kTranscribing),
+    InAnyContext(WaitForShow(
+        DictationOverlayView::kWaveformElementIdForTesting)),
+
+    // Pressing the waveform button ends the stream.
+    InAnyContext(PressButton(
+        DictationOverlayView::kWaveformElementIdForTesting)),
+    CheckResult(GetSessionState(), SessionState::kFinalizing)
   );
   // clang-format on
 }

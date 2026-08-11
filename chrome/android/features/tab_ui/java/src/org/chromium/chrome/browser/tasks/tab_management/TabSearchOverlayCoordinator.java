@@ -19,6 +19,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -48,6 +49,7 @@ import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.omnibox.BackKeyBehaviorDelegate;
 import org.chromium.chrome.browser.omnibox.LocationBarEmbedder;
+import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -59,7 +61,6 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -105,7 +106,6 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
     private final PropertyModel mModel;
     private final SearchBoxDataProvider mSearchBoxDataProvider;
     private final Callback<Profile> mProfileObserver;
-    private final Callback<TabModelSelector> mTabModelSelectorObserver;
     private final Callback<Boolean> mSuggestionsObserver = this::onSuggestionsChanged;
 
     // Recursion guard to prevent event dispatch loops when forwarding scrim scroll/drag events
@@ -117,7 +117,7 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
             mChangeProcessor;
     private @Nullable LinearLayout mPanelContainer;
     private @Nullable SearchUiCoordinator mSearchUiCoordinator;
-    private @Nullable TabModelSelectorTabModelObserver mTabModelObserver;
+    private ViewTreeObserver.@Nullable OnWindowFocusChangeListener mWindowFocusListener;
 
     /**
      * Constructs a new TabSearchOverlayCoordinator.
@@ -162,8 +162,8 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
 
         mModel = TabSearchOverlayProperties.createDefaultModel();
         mModel.set(TabSearchOverlayProperties.VISIBLE, false);
-        mModel.set(TabSearchOverlayProperties.ON_SCRIM_CLICK, (v) -> hide());
-        mModel.set(TabSearchOverlayProperties.ON_CLOSE_CLICK, (v) -> hide());
+        mModel.set(TabSearchOverlayProperties.ON_SCRIM_CLICK, (_) -> hide());
+        mModel.set(TabSearchOverlayProperties.ON_CLOSE_CLICK, (_) -> hide());
         mModel.set(TabSearchOverlayProperties.ON_HIDE_FINISHED, this::onHideFinished);
 
         mSearchBoxDataProvider = new SearchBoxDataProvider();
@@ -172,19 +172,11 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
 
         mProfileObserver = this::onProfileChanged;
         mProfileSupplier.addSyncObserverAndCallIfNonNull(mProfileObserver);
-
-        mTabModelSelectorObserver = this::onTabModelSelectorChanged;
-        mTabModelSelectorSupplier.addSyncObserverAndCallIfNonNull(mTabModelSelectorObserver);
     }
 
     /** Destroys the coordinator, cleaning up resources and child coordinators. */
     public void destroy() {
         mProfileSupplier.removeObserver(mProfileObserver);
-        mTabModelSelectorSupplier.removeObserver(mTabModelSelectorObserver);
-        if (mTabModelObserver != null) {
-            mTabModelObserver.destroy();
-            mTabModelObserver = null;
-        }
         mBackPressManager.removeHandler(this);
         if (mChangeProcessor != null) {
             mChangeProcessor.destroy();
@@ -219,11 +211,10 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
                                         false);
         final LinearLayout panelContainer = mPanelContainer;
         View panelView = panelContainer.findViewById(R.id.tab_search_overlay_panel);
-        panelView.addOnLayoutChangeListener(
-                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-                    updateExclusionRects();
-                });
+        panelView.addOnLayoutChangeListener((_, _, _, _, _, _, _, _, _) -> updateExclusionRects());
         View searchActivityView = panelContainer.findViewById(R.id.search_activity_container);
+
+        setupWindowFocusListener(panelContainer);
         mParentContainer.addView(panelContainer);
 
         // Consume all unhandled touch, hover, generic motion, and context click events to prevent
@@ -336,9 +327,44 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
                         mModel, viewHolder, TabSearchOverlayViewBinder::bind);
     }
 
+    private void setupWindowFocusListener(LinearLayout panelContainer) {
+        // Dismiss the tab search panel when the window loses focus (e.g. on Alt-Tab).
+        mWindowFocusListener =
+                (hasFocus) -> {
+                    if (!hasFocus && isVisible()) {
+                        hide();
+                    }
+                };
+
+        panelContainer.addOnAttachStateChangeListener(
+                new View.OnAttachStateChangeListener() {
+                    @Override
+                    public void onViewAttachedToWindow(View v) {
+                        panelContainer
+                                .getViewTreeObserver()
+                                .addOnWindowFocusChangeListener(mWindowFocusListener);
+                    }
+
+                    @Override
+                    public void onViewDetachedFromWindow(View v) {
+                        panelContainer
+                                .getViewTreeObserver()
+                                .removeOnWindowFocusChangeListener(mWindowFocusListener);
+                    }
+                });
+    }
+
     private void setSearchUiElements() {
         var searchUiCoordinator = assumeNonNull(mSearchUiCoordinator);
         searchUiCoordinator.setDefaultStatusIconOverrideResId(R.drawable.ic_suggestion_magnifier);
+
+        // Shrink the size of the UrlBar text from the default (16sp) to medium (14sp) so the hint
+        // text fits within the given viewport given the tab search overlay has a fixed small width.
+        var locationBarCoordinator = searchUiCoordinator.getLocationBarCoordinator();
+        var urlBar = (UrlBar) locationBarCoordinator.getContainerView().findViewById(R.id.url_bar);
+        if (urlBar != null) {
+            urlBar.setTextAppearance(R.style.TextAppearance_TextMedium);
+        }
 
         // If the profile supplier is null (rare), default to the non-incognito state as it is the
         // safest choice in terms of incognito agnostic wording.
@@ -348,8 +374,7 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
                 isIncognito
                         ? R.string.hub_search_empty_hint_incognito
                         : R.string.hub_search_empty_hint;
-        searchUiCoordinator
-                .getLocationBarCoordinator()
+        locationBarCoordinator
                 .getUrlBarCoordinator()
                 .setUrlBarHintText(mActivity.getResources().getString(hintTextRes));
     }
@@ -521,6 +546,7 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
         // If the profile supplier is null (rare), default to the non-incognito state as it is the
         // safest choice for coloring since some features still do not support incognito colors.
         boolean isIncognito = profile != null && profile.isOffTheRecord();
+        mModel.set(TabSearchOverlayProperties.IS_INCOGNITO, isIncognito);
         mSearchBoxDataProvider.initialize(mActivity, isIncognito);
         if (mSearchUiCoordinator != null) {
             mSearchUiCoordinator.setColorScheme(isIncognito);
@@ -533,22 +559,6 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
             var locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
             locationBar.clearOmniboxFocus();
         }
-    }
-
-    private void onTabModelSelectorChanged(TabModelSelector selector) {
-        // Listens to tab model selector changes to perform updates for multi-window switching.
-        if (mTabModelObserver != null) {
-            mTabModelObserver.destroy();
-        }
-        mTabModelObserver =
-                new TabModelSelectorTabModelObserver(selector) {
-                    @Override
-                    public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
-                        if (isVisible()) {
-                            hide();
-                        }
-                    }
-                };
     }
 
     // BackPressHandler implementation.
@@ -733,10 +743,6 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
 
     // Testing methods.
 
-    @Nullable SearchUiCoordinator getSearchUiCoordinatorForTesting() {
-        return mSearchUiCoordinator;
-    }
-
     @Nullable LinearLayout getPanelContainerForTesting() {
         return mPanelContainer;
     }
@@ -747,5 +753,9 @@ public class TabSearchOverlayCoordinator implements BackPressHandler {
 
     void setSearchUiCoordinatorForTesting(SearchUiCoordinator searchUiCoordinator) {
         mSearchUiCoordinator = searchUiCoordinator;
+    }
+
+    ViewTreeObserver.@Nullable OnWindowFocusChangeListener getWindowFocusListenerForTesting() {
+        return mWindowFocusListener;
     }
 }

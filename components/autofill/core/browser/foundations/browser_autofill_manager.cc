@@ -63,6 +63,7 @@
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/phone_number.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
@@ -181,7 +182,7 @@ ValuePatternsMetric GetValuePattern(std::u16string_view value) {
   if (IsUPIVirtualPaymentAddress(value)) {
     return ValuePatternsMetric::kUpiVpa;
   }
-  if (IsInternationalBankAccountNumber(value)) {
+  if (Iban::IsValid(value)) {
     return ValuePatternsMetric::kIban;
   }
   if (IsAchRoutingTransitNumber(value)) {
@@ -325,13 +326,14 @@ FillDataType GetEventTypeFromSingleFieldSuggestionType(SuggestionType type) {
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
     case SuggestionType::kPersonalContextNotice:
+    case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
     case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
-    case SuggestionType::kUndoOrClear:
+    case SuggestionType::kUndo:
     case SuggestionType::kViewPasswordDetails:
     case SuggestionType::kVirtualCreditCardEntry:
     case SuggestionType::kWebauthnCredential:
@@ -433,7 +435,6 @@ bool IsTriggerSourceOnlyRelevantForCompose(
     case AutofillSuggestionTriggerSource::kiOS:
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
     case AutofillSuggestionTriggerSource::kGlic:
     case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
@@ -463,8 +464,6 @@ bool CanReplaceCurrentSuggestions(AutofillSuggestionTriggerSource source) {
     case mojom::AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case mojom::AutofillSuggestionTriggerSource::
         kPasswordManagerProcessedFocusedField:
-    case mojom::AutofillSuggestionTriggerSource::
-        kPlusAddressUpdatedInBrowserProcess:
     case mojom::AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
     case mojom::AutofillSuggestionTriggerSource::kGlic:
     case mojom::AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
@@ -565,7 +564,6 @@ FillingProductSet GetFillingProductsToSuggest(
     case kPasswordManagerProcessedFocusedField:
     case kManualFallbackPasswords:
       return {FillingProduct::kPassword, FillingProduct::kPasskey};
-    case kPlusAddressUpdatedInBrowserProcess:
     case kOpenTextDataListChooser:
     case kFormControlElementClicked:
     case kTextFieldValueChanged:
@@ -649,8 +647,7 @@ void MaybeImportFromSubmittedForm(AutofillClient& client,
         client.GetPaymentsAutofillClient()->IsAutofillPaymentMethodsEnabled(),
         ukm_source_id);
   }
-  client.GetSingleFieldFillRouter().OnWillSubmitForm(
-      form.ToFormData(), &form, client.IsAutocompleteEnabled());
+  client.GetSingleFieldFillRouter().OnWillSubmitForm(form.ToFormData(), &form);
 }
 
 // Generates a compose suggestion for the given `form` and `field` if conditions
@@ -760,13 +757,14 @@ bool IsManagementFooterOption(const Suggestion& suggestion) {
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
     case SuggestionType::kPersonalContextNotice:
+    case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
     case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
-    case SuggestionType::kUndoOrClear:
+    case SuggestionType::kUndo:
     case SuggestionType::kViewPasswordDetails:
     case SuggestionType::kVirtualCreditCardEntry:
     case SuggestionType::kWebauthnCredential:
@@ -837,7 +835,6 @@ BrowserAutofillManager::BrowserAutofillManager(AutofillDriver* driver)
           std::make_unique<AutofillAiAccessManager>(this)),
       otp_manager_(
           new OtpManagerImpl(*this, client().GetOneTimeTokenService())),
-      at_memory_manager_(std::make_unique<AtMemoryManager>(this)),
       account_name_email_strike_manager_(
           std::make_unique<AccountNameEmailStrikeManager>(*this)),
       address_on_typing_manager_(client()) {}
@@ -866,10 +863,6 @@ const CreditCardAccessManager*
 BrowserAutofillManager::GetCreditCardAccessManager() const {
   return const_cast<BrowserAutofillManager*>(this)
       ->GetCreditCardAccessManager();
-}
-
-AtMemoryManager& BrowserAutofillManager::GetAtMemoryManager() {
-  return *at_memory_manager_;
 }
 
 AutofillAiAccessManager& BrowserAutofillManager::GetAutofillAiAccessManager() {
@@ -985,8 +978,9 @@ void BrowserAutofillManager::OnFormSubmittedImpl(const FormData& form,
 
   if (!submitted_form) {
     // We always give Autocomplete a chance to save the data.
-    client().GetSingleFieldFillRouter().OnWillSubmitForm(
-        form, nullptr, client().IsAutocompleteEnabled());
+    if (!client().IsOffTheRecord()) {
+      client().GetSingleFieldFillRouter().OnWillSubmitForm(form, nullptr);
+    }
     return;
   }
 
@@ -1247,9 +1241,11 @@ void BrowserAutofillManager::OnAskForValuesToFillImpl(
 
   external_delegate_->OnQuery(form, field, caret_bounds, trigger_source);
 
-  if (IsAtMemoryTriggerSource(trigger_source)) {
+  if (AtMemoryManager* am = client().GetAtMemoryManager();
+      am && IsAtMemoryTriggerSource(trigger_source)) {
+    am->set_target_field_origin(field.origin());
     std::vector<Suggestion> suggestions;
-    GetAtMemoryManager().MaybeAppendPersonalContextNotice(suggestions);
+    am->MaybeAppendPersonalContextNotice(suggestions);
 
     // Show suggestions with a search bar to start the flow.
     external_delegate_->OnSuggestionsReturned(field, suggestions);
@@ -1451,6 +1447,20 @@ bool BrowserAutofillManager::TryToShowTouchToFillSuggestions(
              form, trigger_field);
 }
 
+bool BrowserAutofillManager::MaybeShowPrivateInferenceNotice(
+    base::span<const Suggestion> autofill_ai_suggestions) {
+  if (std::ranges::contains(autofill_ai_suggestions,
+                            SuggestionType::kAutofillAiPrivateInferenceNotice,
+                            &Suggestion::type)) {
+    // Shows a message-based UI on mobile instead of the private inference
+    // notice suggestion, because suggestions can't have buttons on mobile
+    // platforms.
+    client().ShowAutofillAiPrivateInferenceNotice();
+  }
+
+  return false;
+}
+
 std::vector<Suggestion> BrowserAutofillManager::MergeWithAddressSuggestions(
     std::map<FillingProduct, std::vector<Suggestion>>& suggestions_map,
     AutofillSuggestionTriggerSource trigger_source) {
@@ -1511,6 +1521,7 @@ void BrowserAutofillManager::GenerateSuggestionsAndMaybeShowUIPhase1(
       return;
     }
     otp_manager_->GetOtpSuggestions(
+        field.origin(),
         std::move(generate_suggestions_and_maybe_show_ui_phase2));
     return;
   }
@@ -1585,9 +1596,10 @@ void BrowserAutofillManager::GenerateSuggestionsAndMaybeShowUIPhase2(
       !context.do_not_generate_autofill_suggestions &&
       GetFieldsFillableByAutofillAi(*form_structure, client())
           .contains(field.global_id())) {
+    std::vector<Suggestion> autofill_ai_suggestions =
+        ai_manager->GetSuggestions(*form_structure, field);
     std::move(callback).Run(
-        /*show_suggestions=*/true,
-        ai_manager->GetSuggestions(*form_structure, field));
+        /*show_suggestions=*/true, std::move(autofill_ai_suggestions));
     return;
   } else if (suggestions.empty() && ai_manager && form_structure &&
              ai_manager->ShouldDisplayIph(*form_structure, field.global_id()) &&
@@ -1826,6 +1838,7 @@ void BrowserAutofillManager::OnGenerateSuggestionsComplete(
   }
 
   if (show_suggestions) {
+    MaybeShowPrivateInferenceNotice(suggestions);
     // Send Autofill suggestions (could be an empty list).
     external_delegate_->OnSuggestionsReturned(trigger_field, suggestions);
   }
@@ -2254,10 +2267,12 @@ void BrowserAutofillManager::DidShowSuggestions(
   auto [form_structure, autofill_field] =
       FindMutableFormAndField(form_id, field_id);
 
-  GetAtMemoryManager().OnPopupShown(
-      form_id, field_id, trigger_source, parent_suggestion_metadata,
-      client().IsContextSecure(), update_suggestions_callback,
-      driver().GetPageUkmSourceId());
+  if (AtMemoryManager* am = client().GetAtMemoryManager()) {
+    am->OnPopupShown(form_id, field_id, trigger_source,
+                     parent_suggestion_metadata, client().IsContextSecure(),
+                     update_suggestions_callback,
+                     driver().GetPageUkmSourceId());
+  }
   if (parent_suggestion_metadata.has_value()) {
     // The shown suggestions were in a sub-popup and the code below is not
     // relevant for those.
@@ -2785,7 +2800,6 @@ void BrowserAutofillManager::Reset() {
   // a navigation.
   otp_manager_ = std::make_unique<OtpManagerImpl>(
       *this, client().GetOneTimeTokenService());
-  at_memory_manager_ = std::make_unique<AtMemoryManager>(this);
   account_name_email_strike_manager_ =
       std::make_unique<AccountNameEmailStrikeManager>(*this);
   metrics_.reset();

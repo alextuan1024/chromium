@@ -350,7 +350,6 @@
 <translation id="4437295824090654417">Делите овај документ са Gemini-јем у Chrome-у да бисте добили брз преглед и постављали додатна питања</translation>
 <translation id="4450664632294415862">Chrome – пријављивање на мрежу – <ph name="PAGE_TITLE" /></translation>
 <translation id="4458462641685292929">Друга радња у Google Chrome-у је у току. Пробајте поново касније.</translation>
-<translation id="4459234553906210702">Мерење огласа омогућава сајтовима које посећујете да од Chrome-а затраже информације које сајту помажу да мери учинак огласа. Мерење огласа ограничава праћење на више сајтова тако што преноси што мање информација између сајтова.</translation>
 <translation id="4493028449971051158">Грешка при покретању: покрените програм за инсталацију као администратор.</translation>
 <translation id="4501471624619070934">Инсталација није успела јер је приступ у овој земљи ограничен.</translation>
 <translation id="4571503333518166079">Иди на подешавања обавештења за Chrome</translation>
@@ -749,6 +748,7 @@ Google Chrome не може да врати подешавања.</translation>
 <translation id="8367705492654390392">Упитајте било шта</translation>
 <translation id="8367950957770994118">Брзо отворите Gemini у Chrome-у кад год вам затреба</translation>
 <translation id="8370517070665726704">Ауторска права <ph name="YEAR" />. Google LLC. Сва права задржана.</translation>
+<translation id="8370748943308169953">QR кôд за пријављивање у Chrome као <ph name="USER_NAME" /></translation>
 <translation id="8377158135256176353">Укључите или искључите Gemini у Chrome Canary-ју</translation>
 <translation id="8387459386171870978">Наставите са коришћењем Chrome-а</translation>
 <translation id="8394720698884623075">Проверава URL-ове са листом небезбедних сајтова који се чувају у Chrome-у</translation>

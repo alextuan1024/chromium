@@ -72,6 +72,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -384,8 +385,7 @@ class SessionRestoreTest : public InProcessBrowserTest {
 
     // Ensure stale cookies are cleared immediately on startup for testing.
     profile->GetDefaultStoragePartition()
-        ->OverrideDeleteStaleSessionOnlyCookiesDelayForTesting(
-            base::Minutes(0));
+        ->OverrideDeleteStaleSessionCleanupDelayForTesting(base::Minutes(0));
 
     // Create a new window, which should trigger session restore.
     if (url.is_empty()) {
@@ -2165,11 +2165,11 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreTest, RestorePinnedSelectedTab) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(new_browser, GetUrl3()));
 
   // Restore the session again, clobbering the existing tab.
-  SessionRestore::RestoreSession(
-      profile, new_browser->GetBrowserForMigrationOnly(),
-      SessionRestore::CLOBBER_CURRENT_TAB | SessionRestore::SYNCHRONOUS |
-          SessionRestore::RESTORE_BROWSER,
-      StartupTabs());
+  SessionRestore::RestoreSession(profile, new_browser,
+                                 SessionRestore::CLOBBER_CURRENT_TAB |
+                                     SessionRestore::SYNCHRONOUS |
+                                     SessionRestore::RESTORE_BROWSER,
+                                 StartupTabs());
 
   // The pinned tab is the selected tab.
   ASSERT_EQ(2, new_browser->GetTabStripModel()->count());
@@ -2268,11 +2268,11 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreTest, ClobberRestoreTest) {
       new_browser->GetTabStripModel()->GetWebContentsAt(0));
 
   // Restore the session again, clobbering the existing tab.
-  SessionRestore::RestoreSession(
-      profile, new_browser->GetBrowserForMigrationOnly(),
-      SessionRestore::CLOBBER_CURRENT_TAB | SessionRestore::SYNCHRONOUS |
-          SessionRestore::RESTORE_BROWSER,
-      StartupTabs());
+  SessionRestore::RestoreSession(profile, new_browser,
+                                 SessionRestore::CLOBBER_CURRENT_TAB |
+                                     SessionRestore::SYNCHRONOUS |
+                                     SessionRestore::RESTORE_BROWSER,
+                                 StartupTabs());
 
   // Wait until the existing tab finished closing.
   existing_tab_destroyed_watcher.Wait();
@@ -3568,9 +3568,11 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreTest, OmitFromSessionRestore) {
 
   // Make a third window that is omitted from session restore; navigate it to
   // url 3.
-  Browser::CreateParams params(browser()->GetProfile(), true);
+  BrowserWindowCreateParams params(browser()->GetProfile(),
+                                   /*from_user_gesture=*/true);
   params.omit_from_session_restore = true;
-  Browser* browser3 = Browser::Create(params);
+  Browser* browser3 =
+      CreateBrowserWindow(std::move(params))->GetBrowserForMigrationOnly();
   content::WebContents* tab = chrome::AddSelectedTabWithURL(
       browser3, GURL(GetUrl3()), ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   content::TestNavigationObserver observer(tab);

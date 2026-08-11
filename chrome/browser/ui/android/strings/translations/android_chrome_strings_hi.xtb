@@ -85,6 +85,7 @@
 <translation id="1310482092992808703">टैब को समूह में लगाएं</translation>
 <translation id="1318262688555255786"><ph name="PAGE_TITLE" /> वेबपेज का लिंक शेयर करें. सोर्स: <ph name="PAGE_URL" /></translation>
 <translation id="1327257854815634930">नेविगेशन का इतिहास अपने पूरे आकार में खुला हुआ है</translation>
+<translation id="1330043879670259913">Chrome पर आपके काम को सुरक्षित रखने के लिए, Chrome में आपके साइन इन करने पर आपका संगठन कुछ खास जानकारी देख पाएगा या उसे मैनेज कर सकेगा. ज़्यादा जानें</translation>
 <translation id="1331212799747679585">Chrome अपडेट नहीं किया जा सकता. ज़्यादा विकल्प</translation>
 <translation id="1332501820983677155">Google Chrome सुविधा शॉर्टकट</translation>
 <translation id="1333491156693005331">हाल ही में जांच की गई</translation>
@@ -115,6 +116,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="1414919006379339073">मौजूदा विंडो बंद करें</translation>
 <translation id="1416550906796893042">ऐप्‍लिकेशन वर्शन</translation>
 <translation id="1430915738399379752">प्रिंट करें</translation>
+<translation id="1432581352905426595">सर्च इंजन प्रबंधित करें</translation>
 <translation id="1435593198351412143">PDF फ़ाइलें अपने-आप खुलें</translation>
 <translation id="1437543266176261764"><ph name="APP_NAME" /> में चल रही है</translation>
 <translation id="1448440926884431741">ट्रैक किए गए प्रॉडक्ट को Bookmarks में व्यवस्थित करें</translation>
@@ -296,6 +298,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="2233735624724508540">कोई समयावधि चुनें और फिर 'डेटा मिटाएं' पर टैप करें</translation>
 <translation id="2234031676056123135">शॉर्टकट को अपनी पसंद के मुताबिक बनाएं</translation>
 <translation id="2234827758954819389">निजता गाइड</translation>
+<translation id="2236949375853147973">मेरी गतिविधि</translation>
 <translation id="2238038374973843156">ग्रुप को दूसरी विंडो पर भेजें</translation>
 <translation id="2247789808226901522">कार्ड की समयसीमा खत्म हो चुकी है</translation>
 <translation id="2251809247798634662">नई गुप्त विंडो</translation>
@@ -573,6 +576,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="3385749568468586663">Gemini, गुप्त मोड में उपलब्ध नहीं है</translation>
 <translation id="3387650086002190359">सिस्‍टम त्रुटियों के कारण <ph name="FILE_NAME" /> डाउनलोड विफल रहा.</translation>
 <translation id="3391311825344469964">Chrome के विंडो मैनेजर में जाकर, विंडो मैनेज की जा सकती हैं</translation>
+<translation id="3410151451624226773">Google Password Manager में मैनेज करें</translation>
 <translation id="3417835166382867856">टैब खोजें</translation>
 <translation id="3430670036890315772">अपना प्रोफ़ाइल लॉक बंद करने पर, आपकी सेव की गई जानकारी हट जाएगी</translation>
 <translation id="3435575784518354875">अपने पासवर्ड का ऐक्सेस बनाए रखने के लिए, उन्हें अभी एक्सपोर्ट करें. इसके बाद, Google Play Services को अपडेट करें और फिर उन्हें Google Password Manager पर इंपोर्ट करें. <ph name="BEGIN_LINK" />पूरे निर्देश देखें<ph name="END_LINK" />.</translation>
@@ -941,6 +945,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="4877678010818027629">गुप्त मोड में जाएं</translation>
 <translation id="4878404682131129617">प्रॉक्सी सर्वर के ज़रिए सुरंग बनाना विफल रहा</translation>
 <translation id="4880127995492972015">अनुवाद करें…</translation>
+<translation id="4880827082731008257">खोज इतिहास</translation>
 <translation id="4881695831933465202">खोलें</translation>
 <translation id="488187801263602086">फ़ाइल का नाम बदलें</translation>
 <translation id="4885273946141277891">Chrome इंस्टेंस की असमर्थित संख्या.</translation>
@@ -990,6 +995,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="509429900233858213">कोई गड़बड़ी हुई.</translation>
 <translation id="5096775069898886423">सुरक्षित कनेक्शन की सुविधा न देने वाली साइटों पर विज़िट करने से पहले आपको चेतावनी मिलेगी</translation>
 <translation id="510275257476243843">1 घंटा शेष</translation>
+<translation id="5105442806410269908">Google का अन्य डेटा मैनेज करें</translation>
 <translation id="5114895953710637392">ऐप्लिकेशन फ़िल्टर करने वाली शीट बंद है.</translation>
 <translation id="5115811374190515607"><ph name="PRODUCT_NAME" /> में ले जाया गया</translation>
 <translation id="5116239826668864748">मैसेज, दस्तावेज़ों, और दूसरे ऐप्लिकेशन में मिले लिंक पर टैप करके, किसी भी समय Chrome का इस्तेमाल किया जा सकता है</translation>
@@ -1040,6 +1046,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="5316947901395241499">आपके एडमिन ने पासवर्ड सेव करने की सुविधा को बंद किया है</translation>
 <translation id="5317780077021120954">सेव करें</translation>
 <translation id="5319359161174645648">Google, Chrome का सुझाव देता है</translation>
+<translation id="5323501626199324454">अपने Google खाते में मैनेज करें</translation>
 <translation id="5326246328175179736">इस खाते का इस्तेमाल करके, साइन इन नहीं किया जा सकता</translation>
 <translation id="5327248766486351172">नाम</translation>
 <translation id="5328542107300944283"><ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE" /> का इस्तेमाल करें</translation>
@@ -1166,6 +1173,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="5869522115854928033">सेव किए गए पासवर्ड</translation>
 <translation id="5870416898561279542">डुप्लीकेट या <ph name="DAYS_INACTIVE" /> दिनों से इस्तेमाल नहीं किए गए टैब या ग्रुप को यहां मूव कर दिया जाता है <ph name="AUTODELETE_SECTION" />. <ph name="DECLUTTER_SETTINGS_TITLE" /> में जाकर, इसे किसी भी समय बदला जा सकता है.</translation>
 <translation id="5885378508678660271">सूचनाएं <ph name="SEPARATOR" /> Chrome ने इस साइट के लिए यह अनुमति हटा दी है, क्योंकि यह सुरक्षित नहीं है</translation>
+<translation id="5896944002928653773">एंटरप्राइज़ सिग्नल के डिसक्लेमर वाली बॉटम शीट बंद की गई</translation>
 <translation id="5899667542927581604">कोई पासकी शीट बंद नहीं की गई</translation>
 <translation id="5907542076239273525">बुकमार्क को <ph name="FOLDER_NAME" /> में सेव किया गया</translation>
 <translation id="5911301511366365629"><ph name="TAB_TITLE" />, चुना गया ऐसा गुप्त टैब जिसमें ऑडियो चल रहा है</translation>
@@ -1256,6 +1264,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="6251449557817521191">Chrome का अपना पूरा इतिहास यहां देखें</translation>
 <translation id="6254139308321626268">PDF फ़ाइल देखी जा रही है</translation>
 <translation id="6255809143828972562">Chrome के टूल के ज़रिए सुरक्षित तरीके से ब्राउज़िंग की जा सकती है. साथ ही, अपना डेटा भी कंट्रोल किया जा सकता है</translation>
+<translation id="6259107733340311168">एंटरप्राइज़ सिग्नल के डिसक्लेमर वाली बॉटम शीट, पूरी स्क्रीन पर खोली गई</translation>
 <translation id="6260260490042862943">साइट कंट्रोल</translation>
 <translation id="6264376385120300461">फिर भी डाउनलोड करें</translation>
 <translation id="6264485186158353794">वापस सुरक्षित पेज पर जाएं</translation>
@@ -1322,6 +1331,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="6461962085415701688">फ़ाइल नहीं खोली जा सकती</translation>
 <translation id="6464977750820128603">आप Chrome में जिन साइटों पर जाते हैं उन्हें देख सकते हैं और उनके लिए टाइमर लगा सकते हैं.\n\nGoogle उन साइटों की जानकारी लेता है जिनके लिए आप टाइमर लगाते हैं. साथ ही, यह जानकारी भी ली जाती है कि आप उन साइटों पर कितनी देर तक रहे. इस जानकारी का इस्तेमाल 'डिजिटल वेलबीइंग' को बेहतर बनाने के लिए किया जाता है.</translation>
 <translation id="6468703991511753953">फ़िलहाल, पता बार सबसे नीचे है</translation>
+<translation id="6469702164109431067">पासवर्ड और पासकी</translation>
 <translation id="6470181189905173055"><ph name="APP_LABEL" /> का इस्तेमाल करते समय, Chrome में खोले गए पेज यहां दिखेंगे.</translation>
 <translation id="6473086018775716761">शेयर करने के विकल्पों की सूची, आधी स्क्रीन पर खुली हुई है.</translation>
 <translation id="6475951671322991020">वीडियो डाउनलोड करें</translation>
@@ -1528,6 +1538,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="7182520625618447753">ब्राउज़िंग का मनमुताबिक अनुभव पाने के लिए, पता बार को सबसे ऊपर या नीचे ले जाएं</translation>
 <translation id="7183517696921903380">ऐप्लिकेशन फ़िल्टर करने वाली शीट खुली है.</translation>
 <translation id="7186568385131859684">यह मैनेज करें कि Google की अलग-अलग सेवाओं पर मौजूद आपके अन्य डेटा के साथ, आपके ब्राउज़िंग इतिहास का इस्तेमाल कैसे किया जाएगा</translation>
+<translation id="7189516830800112767">{NUM_TABS,plural, =1{पिन किया गया टैब बंद करने के लिए, ^W को फिर से दबाएं}one{पिन किया गया टैब बंद करने के लिए, ^W को फिर से दबाएं}other{पिन किए गए टैब बंद करने के लिए, ^W को फिर से दबाएं}}</translation>
 <translation id="7190921792980745354">क्या आपको <ph name="MEMBER_FULL_NAME" /> को ब्लॉक करना है?</translation>
 <translation id="7191430249889272776">पृष्ठभूमि में टैब खोला गया.</translation>
 <translation id="7192397795254933433">{NUM_PASSWORDS,plural, =1{इसे अभी बदलें}one{इसे अभी बदलें}other{इन्हें अभी बदलें}}</translation>
@@ -1962,6 +1973,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="8937772741022875483">'डिजिटल वेलबीइंग' से अपनी Chrome गतिविधि हटाना चाहते हैं?</translation>
 <translation id="8942627711005830162">दूसरी विंडो में खोलें</translation>
 <translation id="8945143127965743188"><ph name="LANG" /> - यह भाषा डाउनलोड नहीं की जा सकी. कुछ देर बाद कोशिश करें.</translation>
+<translation id="8945348199139712719">कॉपी किए गए टेक्स्ट को चिपकाकर उस पर जाएं</translation>
 <translation id="8946759102391960088">अपने पासवर्ड का ऐक्सेस बनाए रखें</translation>
 <translation id="895442993047180128">सलाह से जुड़ी सूचनाओं के लिए ऑप्ट इन करने का विकल्प उपलब्ध नहीं है</translation>
 <translation id="8957528460562961174">अपने पासवर्ड का ऐक्सेस बनाए रखने के लिए, उन्हें अभी एक्सपोर्ट करें. इसके बाद, उन्हें अपने पसंदीदा पासवर्ड मैनेजर पर इंपोर्ट करें. इस डिवाइस पर Google Play services उपलब्ध नहीं है. इसलिए, Google Password Manager की सेवा काम नहीं कर रही है.</translation>
@@ -1976,6 +1988,7 @@ Chrome के अनुभव को बेहतर बनाने के ल�
 <translation id="8995521496079646922">आपके चुने गए ऐप्लिकेशन, डिफ़ॉल्ट रूप से इस्तेमाल किए जाएंगे. अगर कोई ऐप्लिकेशन इस डिवाइस पर पहले से मौजूद नहीं है, तो उसे जल्द ही डाउनलोड कर लिया जाएगा.</translation>
 <translation id="8996847606757455498">सेवा देने वाली कोई और कंपनी चुनें</translation>
 <translation id="8998837250940831980">टैब छोटा नहीं किया जा सका. बाद में कोशिश करें.</translation>
+<translation id="9000089900434778519">आपका सर्च इंजन <ph name="DSE_NAME" /> है. अपना खोज इतिहास मिटाने के लिए निर्देश देखें.</translation>
 <translation id="9001604755921395912">Chrome के गुप्त टैब में खोलें</translation>
 <translation id="9010094279589497751">ज़रूरत पड़ने पर Gemini को तुरंत खोलें</translation>
 <translation id="9012585441087414258">ऐसे डाउनलोड, साइटों, और एक्सटेंशन से सुरक्षा करता है जो नुकसान पहुंचा सकते हैं. अगर किसी पेज में कुछ संदिग्ध मिलता है, तो उसके यूआरएल और पेज कॉन्टेंट के बिट, 'Google सुरक्षित ब्राउज़िंग' की सुविधा को भेजे जाते हैं.</translation>

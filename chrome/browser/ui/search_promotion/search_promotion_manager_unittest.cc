@@ -531,25 +531,36 @@ class SearchPromotionManagerTaskRunnerTest : public SearchPromotionManagerTest {
 };
 
 TEST_F(SearchPromotionManagerTaskRunnerTest, PerformArmASuccess) {
+  base::HistogramTester histogram_tester;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       feature_engagement::kIPHSearchPromotionFeature,
       {{"arm", "arm_a"}, {"store_url", "https://google.com/store"}});
 
   base::test::TestFuture<void> future;
-  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_))
+  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_, testing::_))
       .WillOnce(
           [&](std::unique_ptr<platform_experience::DelegatedTask> task,
+              std::string_view min_version,
               platform_experience::DelegatedTaskCompletionCallback callback) {
-            std::move(callback).Run({});
+            std::move(callback).Run(
+                {static_cast<int>(SearchPromotionExitCode::kUrlLaunchSuccess),
+                 base::Milliseconds(100)});
             future.GetCallback().Run();
           });
 
   manager()->OnPromoAccepted();
   EXPECT_TRUE(future.Wait());
+  histogram_tester.ExpectUniqueSample(
+      "Search.SearchPromotion.DelegatedTaskExitCode",
+      SearchPromotionExitCode::kUrlLaunchSuccess, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Search.SearchPromotion.Duration.UrlLaunchSuccess",
+      base::Milliseconds(100), 1);
 }
 
 TEST_F(SearchPromotionManagerTaskRunnerTest, PerformArmBSuccess) {
+  base::HistogramTester histogram_tester;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       feature_engagement::kIPHSearchPromotionFeature,
@@ -558,16 +569,25 @@ TEST_F(SearchPromotionManagerTaskRunnerTest, PerformArmBSuccess) {
        {"instructions_url", "https://google.com/instructions"}});
 
   base::test::TestFuture<void> future;
-  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_))
+  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_, testing::_))
       .WillOnce(
           [&](std::unique_ptr<platform_experience::DelegatedTask> task,
+              std::string_view min_version,
               platform_experience::DelegatedTaskCompletionCallback callback) {
-            std::move(callback).Run({});
+            std::move(callback).Run(
+                {static_cast<int>(SearchPromotionExitCode::kSuccessBackground),
+                 base::Milliseconds(200)});
             future.GetCallback().Run();
           });
 
   manager()->OnPromoAccepted();
   EXPECT_TRUE(future.Wait());
+  histogram_tester.ExpectUniqueSample(
+      "Search.SearchPromotion.DelegatedTaskExitCode",
+      SearchPromotionExitCode::kSuccessBackground, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Search.SearchPromotion.Duration.SuccessBackground",
+      base::Milliseconds(200), 1);
 }
 
 TEST_F(SearchPromotionManagerTaskRunnerTest, InvalidAndEmptyPostInstallUrl) {
@@ -577,7 +597,8 @@ TEST_F(SearchPromotionManagerTaskRunnerTest, InvalidAndEmptyPostInstallUrl) {
         feature_engagement::kIPHSearchPromotionFeature,
         {{"arm", "arm_a"}, {"store_url", "1234"}});
 
-    EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_, testing::_))
+        .Times(0);
 
     manager()->OnPromoAccepted();
   }
@@ -588,7 +609,8 @@ TEST_F(SearchPromotionManagerTaskRunnerTest, InvalidAndEmptyPostInstallUrl) {
         feature_engagement::kIPHSearchPromotionFeature,
         {{"arm", "arm_a"}, {"store_url", ""}});
 
-    EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_, testing::_))
+        .Times(0);
 
     manager()->OnPromoAccepted();
   }
@@ -599,7 +621,7 @@ TEST_F(SearchPromotionManagerTaskRunnerTest, PromoFeatureDisabled) {
   feature_list.InitAndDisableFeature(
       feature_engagement::kIPHSearchPromotionFeature);
 
-  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(*mock_runner_, Run(testing::_, testing::_, testing::_)).Times(0);
 
   manager()->OnPromoAccepted();
 }

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -18,6 +19,7 @@
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+#include "url/gurl.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -30,9 +32,13 @@ class IdentityManager;
 
 // Test and production exposed list of data types restricted for the statistics
 // API.
-inline constexpr int kRequestedDataTypes[] = {
-    31729, 32904, 37702,  41210,  45873,  48119,
-    48364, 50119, 154522, 330441, 411028, 1164238,
+inline constexpr syncer::DataType kRequestedDataTypes[] = {
+    syncer::AUTOFILL,     syncer::BOOKMARKS,
+    syncer::PREFERENCES,  syncer::THEMES,
+    syncer::PASSWORDS,    syncer::EXTENSIONS,
+    syncer::APPS,         syncer::SESSIONS,
+    syncer::DEVICE_INFO,  syncer::AUTOFILL_WALLET_METADATA,
+    syncer::READING_LIST, syncer::AUTOFILL_WALLET_CREDENTIAL,
 };
 
 // Helper class to fetch account preview data from the Sync Preview API.
@@ -66,11 +72,17 @@ class AccountPreviewDataFetcher {
       IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       version_info::Channel channel,
+      base::flat_set<std::string> current_device_cache_guids,
       FetchCompleteCallback callback);
   ~AccountPreviewDataFetcher();
 
   void Start();
   bool is_started() const { return is_started_; }
+
+  static GURL GetStatsUrlForChannel(version_info::Channel channel);
+  static GURL GetPreviewsUrlForChannel(version_info::Channel channel);
+
+  void SetOnFetchCompletedForTesting(base::OnceClosure closure);
 
  private:
   void OnAccessTokenReceived(GoogleServiceAuthError error,
@@ -79,11 +91,14 @@ class AccountPreviewDataFetcher {
   void OnStatsFetchCompleted(std::optional<std::string> response_body);
   void OnPreviewsFetchCompleted(std::optional<std::string> response_body);
   void OnFetchCompleted(std::vector<bool> results);
+  void CompleteFetch();
+  void RunCallback();
 
   const GaiaId gaia_id_;
   const raw_ptr<IdentityManager> identity_manager_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   const version_info::Channel channel_;
+  const base::flat_set<std::string> current_device_cache_guids_;
   FetchCompleteCallback callback_;
 
   std::unique_ptr<AccessTokenFetcher> token_fetcher_;
@@ -96,6 +111,8 @@ class AccountPreviewDataFetcher {
   base::RepeatingCallback<void(bool)> barrier_callback_;
 
   bool is_started_ = false;
+
+  base::OnceClosure on_fetch_completed_for_testing_;
 
   base::WeakPtrFactory<AccountPreviewDataFetcher> weak_ptr_factory_{this};
 };

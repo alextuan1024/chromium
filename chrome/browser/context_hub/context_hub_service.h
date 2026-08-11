@@ -7,8 +7,10 @@
 
 #include <memory>
 #include <optional>
+#include <queue>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/containers/lru_cache.h"
@@ -17,6 +19,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/types/id_type.h"
+#include "base/uuid.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
@@ -24,7 +27,12 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/personal_context/core/personal_context_types.h"
+#include "components/saved_tab_groups/public/types.h"
 #include "url/gurl.h"
+
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace optimization_guide {
 class ModelQualityLogEntry;
@@ -32,9 +40,17 @@ class RemoteModelExecutor;
 struct OptimizationGuideModelExecutionResult;
 }  // namespace optimization_guide
 
+namespace page_content_annotations {
+class PageContentExtractionService;
+}  // namespace page_content_annotations
+
 namespace personal_context {
 class PersonalContextService;
 }  // namespace personal_context
+
+namespace tab_groups {
+class TabGroupSyncService;
+}  // namespace tab_groups
 
 namespace context_hub {
 
@@ -52,6 +68,9 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
       personal_context::PersonalContextService* personal_context_service,
       optimization_guide::RemoteModelExecutor*
           optimization_guide_remote_model_executor,
+      tab_groups::TabGroupSyncService* tab_group_sync_service,
+      page_content_annotations::PageContentExtractionService*
+          page_content_extraction_service,
       std::unique_ptr<MemoryBank> memory_bank,
       std::unique_ptr<TabGroupStore> tab_group_store,
       std::unique_ptr<ContextHubBackend> context_hub_backend,
@@ -73,8 +92,9 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
 
   // Generates tab-based todos and saves them in the AutoTodos store. Invokes
   // `callback` on completion indicating whether the generation was successful.
-  void GenerateTabBasedTodos(std::vector<TabData> tabs,
-                             AutoTodosStore::OperationCallback callback);
+  void GenerateTabBasedTodos(
+      std::vector<base::WeakPtr<content::WebContents>> tabs,
+      AutoTodosStore::OperationCallback callback);
 
   using GetAutoTodosCallback =
       base::OnceCallback<void(std::vector<AutoTodoEntry>)>;
@@ -152,11 +172,51 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
                              const std::string& user_command,
                              MemoryBankChatCallback callback);
 
+  using ConfirmAllTabGroupsCallback =
+      base::OnceCallback<void(bool success,
+                              std::vector<base::Uuid> added_group_guids)>;
+  // Commits all unconfirmed tab groups to Chrome's native TabGroupSyncService as
+  // confirmed groups and clears in-memory storage.
+  void ConfirmAllTabGroups(ConfirmAllTabGroupsCallback callback);
+  // Returns all confirmed tab groups for the current profile.
+  std::vector<TabGroupEntry> GetConfirmedTabGroups() const;
+  // Returns the confirmed tab group for the given group_guid.
+  std::optional<TabGroupEntry> GetConfirmedTabGroup(
+      const base::Uuid& group_guid) const;
+  // Returns the local tab group ID for the confirmed group with the given
+  // group_guid.
+  std::optional<tab_groups::LocalTabGroupID> GetLocalGroupIdForConfirmedGroup(
+      const base::Uuid& group_guid) const;
+  // Removes the confirmed tab group with the specified group_guid.
+  // Returns true if the group was found and removed, false otherwise.
+  bool RemoveConfirmedTabGroup(const base::Uuid& group_guid);
+  // Removes all confirmed tab groups.
+  bool RemoveAllConfirmedTabGroups();
+  // Connects a local tab group to the confirmed tab group with group_guid.
+  void ConnectLocalTabGroup(const base::Uuid& group_guid,
+                            const tab_groups::LocalTabGroupID& local_id);
+
   base::WeakPtr<ContextHubService> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
 
  private:
+  // Adds a TabGroupEntry to TabGroupSyncService and returns its SavedTabGroup
+  // GUID if successful, or std::nullopt if conversion failed.
+  std::optional<base::Uuid> AddTabGroupToSyncService(
+      const TabGroupEntry& entry);
+
+  // Adds multiple TabGroupEntries to TabGroupSyncService and returns the added
+  // GUIDs.
+  std::vector<base::Uuid> AddTabGroupsToSyncService(
+      base::span<const TabGroupEntry> entries);
+
+  // Callback invoked when all tab groups are fetched from the store to confirm
+  // them into TabGroupSyncService.
+  void OnAllTabGroupsFetchedForConfirmation(
+      ConfirmAllTabGroupsCallback callback,
+      std::vector<TabGroupEntry> groups);
+
   // Callback invoked when memory bank entries are fetched for a chat request.
   void OnMemoryBankEntriesFetched(const std::string& user_command,
                                   MemoryBankChatCallback callback,
@@ -172,6 +232,28 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
   void OnFirstPartyAutoTodosFetched(
       AutoTodosStore::OperationCallback callback,
       personal_context::FetchContextResult result);
+
+  // Handles the async response when APC is fetched for tabs.
+  void OnTabContextsFetched(
+      std::vector<
+          std::pair<TabData,
+                    std::optional<optimization_guide::proto::PageContext>>>
+          tab_contexts);
+
+  // Dispatches pending tab-based todos MES requests up to the concurrency
+  // limit.
+  void ProcessNextTabBasedTodosMesBatch();
+
+  // Handles a single MES response for a tab in tab-based todos generation.
+  void OnTabBasedTodosMesResponseReceived(
+      int64_t tab_id,
+      base::Time last_active_time,
+      optimization_guide::OptimizationGuideModelExecutionResult result,
+      std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry);
+
+  // Cleans up tab-based todos generation state and invokes the completion
+  // callback.
+  void FinishTabBasedTodosGeneration(bool success);
 
   // Handles the result of the model execution from `GenerateTabGroups`.
   void HandleTabGroupModelExecutionResult(
@@ -190,6 +272,31 @@ class ContextHubService : public KeyedService, public AutoTodosStore::Observer {
       personal_context_service_;
   const raw_ref<optimization_guide::RemoteModelExecutor>
       optimization_guide_remote_model_executor_;
+  const raw_ref<tab_groups::TabGroupSyncService>
+      tab_group_sync_service_;
+  const raw_ref<page_content_annotations::PageContentExtractionService>
+      page_content_extraction_service_;
+
+  // Stores the client's callback during an in-flight `GenerateTabBasedTodos`
+  // request while page contexts are being extracted and model execution is
+  // pending. Also serves to prevent concurrent tab-based todo generation
+  // requests.
+  // TODO(crbug.com/543605762): Consider adding a timeout timer to ensure this
+  // callback is not held indefinitely if page content extraction stalls.
+  AutoTodosStore::OperationCallback pending_tab_todos_callback_;
+
+  // Number of concurrent Model Execution Service (MES) requests currently in
+  // flight for tab-based todos generation.
+  int active_tab_todos_requests_ = 0;
+
+  // Queue of candidate tabs and their extracted page contexts waiting to be
+  // dispatched for model execution.
+  std::queue<std::pair<TabData, optimization_guide::proto::PageContext>>
+      pending_tab_todos_requests_;
+
+  // Accumulates generated tab-based todos from completed MES requests during an
+  // in-flight generation session before batch-saving them to the store.
+  std::vector<AutoTodoEntry> generated_tab_todos_;
 
   using TabGroupChatHistoryTurnId =
       base::IdType64<class TabGroupChatHistoryTurnIdTag>;

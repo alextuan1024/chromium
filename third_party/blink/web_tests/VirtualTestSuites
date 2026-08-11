@@ -236,6 +236,25 @@
     "expires": "Sep 1, 2024"
   },
   {
+    "prefix": "capability-element-usermedia-legacy",
+    "platforms": [
+      "Linux",
+      "Mac",
+      "Win"
+    ],
+    "bases": [
+      "external/wpt/html/semantics/permission-element/usermedia/legacy-mode"
+    ],
+    "exclusive_tests": "ALL",
+    "args": [
+      "--enable-blink-features=UserMediaElement,UserMediaElementLegacy"
+    ],
+    "expires": "Jan 1, 2027",
+    "owners": [
+      "permissions-core@google.com"
+    ]
+  },
+  {
     "prefix": "content-extraction",
     "platforms": [
       "Linux",
@@ -2069,6 +2088,26 @@
     ],
     "expires": "Dec 1, 2024"
   },
+  {
+    "prefix": "media-caption-settings-button-disabled",
+    "owners": [
+      "media-dev@chromium.org",
+      "brpeters@microsoft.com"
+    ],
+    "platforms": [
+      "Linux",
+      "Mac",
+      "Win"
+    ],
+    "bases": [
+      "media/video-controls-labels.html",
+      "media/controls/overflow-menu-hide-on-click-item.html"
+    ],
+    "args": [
+      "--disable-blink-features=MediaCaptionSettingsButton"
+    ],
+    "expires": "Jul 24, 2027"
+  },
   "This suite is incompatible with the default WPT Origin Isolation mode of ",
   "Site Isolation (see",
   "WebTestContentBrowserClient::GetOriginsRequiringDedicatedProcess) which",
@@ -2391,38 +2430,6 @@
     "owners": [
       "wangxianzhu@chromium.org"
     ]
-  },
-  {
-    "prefix": "permission-element",
-    "platforms": [
-      "Linux",
-      "Mac",
-      "Win"
-    ],
-    "bases": [
-      "external/wpt/html/semantics/permission-element"
-    ],
-    "args": [
-      "--enable-blink-features=UserMediaElement,InstallElement,UserMediaElementLegacy"
-    ],
-    "owners": [
-      "permissions-core@google.com"
-    ],
-    "expires": "Jul 1, 2025"
-  },
-  {
-    "prefix": "permission-element-disabled",
-    "platforms": [
-      "Linux"
-    ],
-    "bases": [],
-    "args": [
-      "--disable-blink-features=UserMediaElement,GeolocationElement,InstallElement"
-    ],
-    "owners": [
-      "permissions-core@google.com"
-    ],
-    "expires": "Jul 1, 2026"
   },
   {
     "prefix": "port-bound-cookies",
@@ -4796,7 +4803,7 @@
     "owners": [
       "masonf@chromium.org"
     ],
-    "expires": "Aug 1, 2026"
+    "expires": "Dec 1, 2027"
   },
   "This suite just verifies that both XSLT-disabled flags work. The main ToT",
   "code verifies XSLTSpecialTrial, since it is enabled via fieldtrial testing",
@@ -4816,7 +4823,7 @@
     "owners": [
       "masonf@chromium.org"
     ],
-    "expires": "Aug 1, 2026"
+    "expires": "Dec 1, 2027"
   },
   {
     "prefix": "rust-xml",
@@ -4983,6 +4990,19 @@
     "args": [
       "--enable-features=UnboundedElement,UnboundedElementOnTheOpenWeb",
       "--disable-features=TreesInViz",
+      "--force-device-scale-factor=1.5"
+    ],
+    "owners": [
+      "masonf@chromium.org"
+    ],
+    "expires": "Jan 1, 2027"
+  },
+  {
+    "prefix": "unbounded-element-with-treesinviz",
+    "platforms": ["Linux", "Mac", "Win"],
+    "bases": ["wpt_internal/html/rendering/unbounded-element"],
+    "args": [
+      "--enable-features=UnboundedElement,UnboundedElementOnTheOpenWeb,TreesInViz",
       "--force-device-scale-factor=1.5"
     ],
     "owners": [

@@ -59,10 +59,9 @@ void RegisterInfoBars() {
             .AddOkButton(
                 l10n_util::GetStringUTF16(IDS_COLLECTED_COOKIES_INFOBAR_BUTTON),
                 base::BindRepeating([](content::WebContents* web_contents) {
-                  if (web_contents) {
-                    web_contents->GetController().Reload(
-                        content::ReloadType::NORMAL, true);
-                  }
+                  CHECK(web_contents);
+                  web_contents->GetController().Reload(
+                      content::ReloadType::NORMAL, true);
                 }))
             .Build();
     browser_infobar_manager->Register(std::move(spec));
@@ -111,12 +110,11 @@ void RegisterInfoBars() {
             .SetExpireOnNavigation(false)
             .SetDismissAction(
                 base::BindRepeating([](content::WebContents* web_contents) {
-                  if (web_contents) {
-                    Profile* profile = Profile::FromBrowserContext(
-                        web_contents->GetBrowserContext());
-                    KnownInterceptionDisclosureCooldown::GetInstance()
-                        ->Activate(profile);
-                  }
+                  CHECK(web_contents);
+                  Profile* profile = Profile::FromBrowserContext(
+                      web_contents->GetBrowserContext());
+                  KnownInterceptionDisclosureCooldown::GetInstance()->Activate(
+                      profile);
                 }))
             .Build();
     browser_infobar_manager->Register(std::move(spec));
@@ -144,6 +142,20 @@ void RegisterInfoBars() {
     browser_infobar_manager->Register(std::move(spec));
   }
 #endif
+
+  if (IsInfoBarMigrated(InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR)) {
+    auto spec = InfoBarSpec::Builder(
+                    InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR)
+                    .SetMessageText(l10n_util::GetStringUTF16(
+                        IDS_LOCAL_TEST_POLICIES_ENABLED))
+                    .SetScope(InfoBarScope::kGlobal)
+                    .SetExpireOnNavigation(false)
+                    .SetShouldAnimate(false)
+                    .SetIsCloseable(false)
+                    .SetPriority(InfoBarDelegate::InfobarPriority::kLow)
+                    .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
 }
 
 #if BUILDFLAG(CHROME_FOR_TESTING)

@@ -39,7 +39,6 @@ class AutofillClient;
 class AutofillDriverFactory;
 class AutofillManager;
 class FormStructure;
-class Section;
 
 namespace internal {
 class FormForest;
@@ -252,6 +251,9 @@ class AutofillDriver {
       base::OnceCallback<void(bool success)>
           form_extraction_finished_callback) = 0;
 
+  // Clears the form cache in all frames of the same frame tree.
+  virtual void ClearFormCacheInAllFrames() = 0;
+
   // Response handler for ExtractForm(). The `host_frame_driver` manages `form`,
   // i.e., `form.host_frame == host_frame_driver->GetFrameToken()`. The form is
   // the flattened representation of the form (see autofill_driver_router.h or
@@ -314,11 +316,6 @@ class AutofillDriver {
   // `triggered_origin` is the origin of the field that triggered the filling
   // operation currently being filled or undone.
   //
-  // `section_for_clear_form_on_ios` is a hack for iOS, where "Clear Form"
-  // resets the values of fields in a certain section.
-  // TODO(crbug.com/338201947): Remove `section_for_clear_form_on_ios` when iOS
-  // has "Undo Autofill" instead of "Clear Form".
-  //
   // Returns the FieldGlobalIds that were safe to modify according to Autofill's
   // security policy. This is a subset of the FieldGlobalIds of `form.fields`.
   //
@@ -330,8 +327,7 @@ class AutofillDriver {
       const FillId& fill_id,
       bool supports_refill,
       const url::Origin& triggered_origin,
-      const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map,
-      const Section& section_for_clear_form_on_ios) = 0;
+      const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map) = 0;
 
   // Tells the renderer to perform actions on the node text.
   // If the `action_type` is kSelectAll, then `value` needs to be empty.

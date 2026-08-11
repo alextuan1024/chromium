@@ -971,6 +971,8 @@ NET_EXPORT BASE_DECLARE_FEATURE(kIgnoreMemoryPressureForSslClientSessionCache);
 NET_EXPORT BASE_DECLARE_FEATURE(kCookieParseRejectEmptyNameAmbiguous);
 
 NET_EXPORT BASE_DECLARE_FEATURE(kEnablePrivateVerificationTokens);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(std::string,
+                                      kPrivateVerificationTokensCustomIssuer);
 
 // If enabled, request servers to add additional padding to TLS handshakes. The
 // amount requested is configurable by the parameter
@@ -1038,6 +1040,11 @@ NET_EXPORT BASE_DECLARE_FEATURE(kMaxDelayForBrokenAlternativeService);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
     base::TimeDelta,
     kMaxDelayForBrokenAlternativeServiceParam);
+
+#if BUILDFLAG(IS_WIN)
+// Disables SYN retransmissions for TCP loopback connections on Windows.
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableWindowsTcpLoopbackFastFail);
+#endif
 
 }  // namespace net::features
 

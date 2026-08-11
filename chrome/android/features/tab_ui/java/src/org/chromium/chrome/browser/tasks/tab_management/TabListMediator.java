@@ -21,6 +21,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.ComponentCallbacks;
+import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -115,6 +116,7 @@ import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTa
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.ChromeColors;
@@ -265,12 +267,7 @@ public class TabListMediator implements TabListNotificationHandler {
         void onTabSelecting(int tabId, boolean fromActionButton);
     }
 
-    /**
-     * Defines the layout structure used by the TabList. - FLAT: A linear list of tabs where groups
-     * are not supported or treated as single tabs. - GROUPED: A flat list where tab groups are
-     * permanently collapsed and represented as single interactive cards. - NESTED: A hierarchical
-     * list where tab groups can be expanded to show their children.
-     */
+    /** Defines the structural geometry and visual packaging policy for the TabList. */
     @IntDef({
         TabListLayoutType.FLAT,
         TabListLayoutType.GROUPED,
@@ -278,8 +275,28 @@ public class TabListMediator implements TabListNotificationHandler {
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface TabListLayoutType {
+        /**
+         * Standard flat grid or list. Does not visually package tabs into clusters or headers.
+         * Surfaces using this layout: - {@link TabGroupUiCoordinator} (Bottom Tab Strip) - {@link
+         * TabGridDialogCoordinator} (Inside the Group Popup) - {@link TabListEditorCoordinator}
+         * (Selection mode, when display groups are disabled)
+         */
         int FLAT = 0;
+
+        /**
+         * Clustered grid. Visually merges an entire group of tabs into a single proxy tile model.
+         * Surfaces using this layout: - {@link TabSwitcherPaneCoordinator} (Grid Tab Switcher) -
+         * {@link TabListEditorCoordinator} (Selection mode, when display groups are enabled) -
+         * {@link ArchivedTabsDialogCoordinator} (Implicitly uses TabListEditor with groups enabled)
+         */
         int GROUPED = 1;
+
+        /**
+         * Hierarchical list. Uses dedicated group header models with physically inline child
+         * models. Surfaces using this layout: - {@link
+         * org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListCoordinator}
+         * (Vertical Tabs)
+         */
         int NESTED = 2;
     }
 
@@ -403,11 +420,11 @@ public class TabListMediator implements TabListNotificationHandler {
     private final @Nullable Supplier<@Nullable PriceWelcomeMessageController>
             mPriceWelcomeMessageControllerSupplier;
     private final @Nullable DataSharingTabManager mDataSharingTabManager;
-    private final @Nullable Runnable mOnTabGroupCreation;
     private final TabModelObserver mTabModelObserver;
     private final TabListLayoutDelegate mTabListLayoutDelegate;
     private final TabActionListener mTabClosedListener;
     private final TabGridItemTouchHelperCallback mTabGridItemTouchHelperCallback;
+    private final TabMultiSelectHelper mMultiSelectHelper;
     private final @Nullable UndoBarExplicitTrigger mUndoBarExplicitTrigger;
     private final @Nullable SnackbarManager mSnackbarManager;
     private final @Nullable NonNullObservableSupplier<@RailCollapseState Integer>
@@ -489,7 +506,6 @@ public class TabListMediator implements TabListNotificationHandler {
 
                     mNextTabId = tabId;
 
-                    TabModel tabModel = getCurrentTabModelChecked();
                     if (mLayoutType == TabListLayoutType.FLAT
                             || mLayoutType == TabListLayoutType.NESTED) {
                         // We filtered the tab switching related metric for components that takes
@@ -505,14 +521,14 @@ public class TabListMediator implements TabListNotificationHandler {
                         //     here.
                         recordTabSelection(tabId);
                     }
-                    if (mTabListItemOnClickListenerProvider != null) {
-                        mTabListItemOnClickListenerProvider.onTabSelecting(
-                                tabId, /* fromActionButton= */ true);
-                    } else {
-                        tabModel.setIndex(
-                                TabModelUtils.getTabIndexById(tabModel, tabId),
-                                TabSelectionType.FROM_USER);
+                    if (VerticalTabUtils.isMultiSelectEnabled()
+                            && mComponentId == TabComponentId.VERTICAL_TABS) {
+                        int modifiers = triggeringMotion != null ? triggeringMotion.metaState : 0;
+                        if (mMultiSelectHelper.handleTabClick(tabId, modifiers)) {
+                            return;
+                        }
                     }
+                    handleTabSelection(tabId);
                 }
 
                 @Override
@@ -957,11 +973,12 @@ public class TabListMediator implements TabListNotificationHandler {
         mComponentId = componentId;
         mTabActionState = initialTabActionState;
         mDataSharingTabManager = dataSharingTabManager;
-        mOnTabGroupCreation = onTabGroupCreation;
         mUndoBarExplicitTrigger = undoBarExplicitTrigger;
         mSnackbarManager = snackbarManager;
         mAllowedSelectionCount = allowedSelectionCount;
         mIsSingleContextMode = isSingleContextMode;
+        mMultiSelectHelper =
+                new TabMultiSelectHelper(this::getCurrentTabModelChecked, this::handleTabSelection);
 
         switch (mLayoutType) {
             case TabListLayoutType.FLAT:
@@ -1072,6 +1089,24 @@ public class TabListMediator implements TabListNotificationHandler {
                                     == tabListModelIndex;
 
                             updateTab(tabListModelIndex, currentGroupSelectedTab, false, false);
+                        }
+                    }
+
+                    @Override
+                    public void onTabsSelectionChanged() {
+                        if (mComponentId != TabComponentId.VERTICAL_TABS) return;
+
+                        TabModel tabModel = mCurrentTabModelSupplier.get();
+                        if (tabModel == null) return;
+
+                        for (int i = 0; i < mModelList.size(); i++) {
+                            PropertyModel model = mModelList.get(i).model;
+                            if (model.getAllSetProperties().contains(TabProperties.TAB_ID)) {
+                                boolean isMultiSelected =
+                                        tabModel.isTabMultiSelected(
+                                                model.get(TabProperties.TAB_ID));
+                                model.set(TabProperties.IS_MULTI_SELECTED, isMultiSelected);
+                            }
                         }
                     }
 
@@ -1364,10 +1399,9 @@ public class TabListMediator implements TabListNotificationHandler {
                         if (shouldDisableItemAnimations) {
                             new Handler()
                                     .post(
-                                            () -> {
-                                                mRecyclerViewItemAnimationToggle
-                                                        .setDisableItemAnimations(false);
-                                            });
+                                            () ->
+                                                    mRecyclerViewItemAnimationToggle
+                                                            .setDisableItemAnimations(false));
                         }
                     }
 
@@ -1381,7 +1415,7 @@ public class TabListMediator implements TabListNotificationHandler {
 
         var tabGroupCreationDialogManager =
                 new TabGroupCreationDialogManager(
-                        activity, assumeNonNull(modalDialogManager), mOnTabGroupCreation);
+                        activity, assumeNonNull(modalDialogManager), onTabGroupCreation);
         mTabGridItemTouchHelperCallback =
                 new TabGridItemTouchHelperCallback(
                         activity,
@@ -1453,7 +1487,7 @@ public class TabListMediator implements TabListNotificationHandler {
             PropertyModel oldModel = mModelList.get(oldIndex).model;
             int lastId = oldModel.get(TAB_ID);
             oldModel.set(TabProperties.IS_SELECTED, false);
-            if (mLayoutType != TabListLayoutType.FLAT
+            if (mTabListLayoutDelegate.requiresThumbnailUpdateOnDeselect()
                     && mThumbnailProvider != null
                     && mShowingTabs) {
                 updateThumbnailFetcher(oldModel, lastId);
@@ -1464,7 +1498,9 @@ public class TabListMediator implements TabListNotificationHandler {
             PropertyModel newModel = mModelList.get(newIndex).model;
             int newId = newModel.get(TAB_ID);
             newModel.set(TabProperties.IS_SELECTED, true);
-            if (mThumbnailProvider != null && mShowingTabs) {
+            if (mTabListLayoutDelegate.requiresThumbnailUpdateOnSelect()
+                    && mThumbnailProvider != null
+                    && mShowingTabs) {
                 updateThumbnailFetcher(newModel, newId);
             }
         }
@@ -1848,10 +1884,10 @@ public class TabListMediator implements TabListNotificationHandler {
 
         boolean forceUpdate = isTabSelected && !quickMode;
         boolean forceUpdateLastSelected =
-                mLayoutType != TabListLayoutType.FLAT
+                mTabListLayoutDelegate.requiresThumbnailUpdateOnDeselect()
                         && index == mLastSelectedTabListModelIndex
                         && !quickMode;
-        // TODO(crbug.com/40273706): Fetching thumbnail for group is expansive, we should consider
+        // TODO(crbug.com/40273706): Fetching thumbnail for group is expensive, we should consider
         // to improve it.
         if (mThumbnailProvider != null
                 && mShowingTabs
@@ -1873,43 +1909,17 @@ public class TabListMediator implements TabListNotificationHandler {
                         : state);
     }
 
-    @VisibleForTesting
-    public boolean isTabInTabGroup(Tab tab) {
+    boolean isTabInTabGroup(Tab tab) {
         TabModel tabModel = getCurrentTabModelChecked();
         assert tabModel.isTabModelRestored();
 
         return tabModel.isTabInTabGroup(tab);
     }
 
-    // TODO(crbug.com/509226293): Delegate media state resolution to TabListLayoutDelegate.
     private @MediaState int getTabGridMediaIndicator(Tab representativeTab, PropertyModel model) {
-        if (mLayoutType == TabListLayoutType.NESTED) {
-            if (TabProperties.isTabGroupHeader(model)) {
-                return MediaState.NONE;
-            }
-            // For nested layout child tabs, we do not aggregate the media state of the entire
-            // group.
-            return representativeTab.getMediaState();
-        }
+        if (!TabProperties.isTabOrTabGroup(model)) return MediaState.MAX_VALUE;
 
-        @MediaState int stateToReturn = representativeTab.getMediaState();
-        // If the tab is not in a group, or the  state has the highest priority, then return
-        // the state of the representative tab.
-        if (mLayoutType == TabListLayoutType.FLAT
-                || !isTabInTabGroup(representativeTab)
-                || stateToReturn == MediaState.MAX_VALUE) {
-            return stateToReturn;
-        }
-
-        List<Tab> relatedTabs = getRelatedTabsForId(representativeTab.getId());
-        for (Tab tab : relatedTabs) {
-            @MediaState int currentState = tab.getMediaState();
-            if (currentState > stateToReturn) {
-                stateToReturn = currentState;
-            }
-            if (stateToReturn == MediaState.MAX_VALUE) return stateToReturn;
-        }
-        return stateToReturn;
+        return mTabListLayoutDelegate.getMediaIndicatorState(representativeTab, model);
     }
 
     /**
@@ -2130,7 +2140,7 @@ public class TabListMediator implements TabListNotificationHandler {
             mTabListGroupMenuCoordinator =
                     new TabListGroupMenuCoordinator(
                             mOnMenuItemClickedCallback,
-                            () -> getCurrentTabModelChecked(),
+                            this::getCurrentTabModelChecked,
                             tabGroupSyncService,
                             collaborationService,
                             mActivity);
@@ -2253,6 +2263,16 @@ public class TabListMediator implements TabListNotificationHandler {
             }
         }
         return tabSelectedListener;
+    }
+
+    private void handleTabSelection(int tabId) {
+        if (mTabListItemOnClickListenerProvider != null) {
+            mTabListItemOnClickListenerProvider.onTabSelecting(tabId, /* fromActionButton= */ true);
+        } else {
+            TabModel tabModel = getCurrentTabModelChecked();
+            tabModel.setIndex(
+                    TabModelUtils.getTabIndexById(tabModel, tabId), TabSelectionType.FROM_USER);
+        }
     }
 
     private boolean isTabSelected(
@@ -2668,10 +2688,10 @@ public class TabListMediator implements TabListNotificationHandler {
         }
 
         descriptionTextResolver =
-                (context) -> {
-                    return context.getString(
-                            R.string.accessibility_tabstrip_btn_close_tab, getTabTitleOrUrl(tab));
-                };
+                (Context context) ->
+                        context.getString(
+                                R.string.accessibility_tabstrip_btn_close_tab,
+                                getTabTitleOrUrl(tab));
         model.set(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER, descriptionTextResolver);
     }
 
@@ -3249,9 +3269,7 @@ public class TabListMediator implements TabListNotificationHandler {
         assert mMode == TabListMode.BOTTOM_STRIP;
 
         Callback<PropertyModel> updateTabStripItemCallback =
-                (model) -> {
-                    model.set(TabProperties.HAS_NOTIFICATION_BUBBLE, hasUpdate);
-                };
+                (model) -> model.set(TabProperties.HAS_NOTIFICATION_BUBBLE, hasUpdate);
 
         forAllTabListItems(tabIdsToBeUpdated, updateTabStripItemCallback);
     }

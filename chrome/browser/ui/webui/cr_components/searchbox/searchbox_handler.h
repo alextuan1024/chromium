@@ -124,7 +124,8 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                          uint32_t cursor_position,
                          omnibox::SuggestInventory suggest_inventory,
                          bool is_on_focus,
-                         const std::string& keyword) override;
+                         const std::string& keyword,
+                         searchbox::mojom::InputMethod input_method) override;
   void StopAutocomplete(bool clear_result) override;
   void OpenAutocompleteMatch(uint8_t line,
                              const GURL& url,
@@ -134,7 +135,6 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                              bool via_keyboard) override;
   void SetSmartComposeStats(
       searchbox::mojom::SmartComposeStatsPtr smart_compose_stats) override {}
-  void SetInputMethod(searchbox::mojom::InputMethod input_method) override;
   void SetPopupSelection(
       searchbox::mojom::OmniboxPopupSelectionPtr selection) override;
   void OpenPopupSelection(uint32_t result_sequence_id,
@@ -186,7 +186,8 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                    bool shift_key,
                    bool is_voice_search) override {}
   void OpenLensSearch() override {}
-  void SetActiveToolMode(omnibox::ToolMode tool) override {}
+  void SetActiveToolMode(omnibox::ToolMode tool,
+                         bool is_set_by_server) override {}
   void RecordToolSelectionAction(omnibox::ToolMode tool) override {}
   void SetActiveModelMode(omnibox::ModelMode model) override {}
   void RecordModelSelectionAction(omnibox::ModelMode model) override {}
@@ -208,7 +209,7 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
   FRIEND_TEST_ALL_PREFIXES(RealboxHandlerTest, AutocompleteController_Start);
   FRIEND_TEST_ALL_PREFIXES(RealboxHandlerTest,
                            AutocompleteController_StartWithSuggestInventory);
-  FRIEND_TEST_ALL_PREFIXES(RealboxHandlerTest, SetInputMethodTest);
+  FRIEND_TEST_ALL_PREFIXES(RealboxHandlerTest, InputMethodTest);
   FRIEND_TEST_ALL_PREFIXES(RealboxHandlerTest, RealboxUpdatesEditModelInput);
   FRIEND_TEST_ALL_PREFIXES(LensSearchboxHandlerTest,
                            Lens_AutocompleteController_Start);
@@ -219,6 +220,11 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                            QueryAutocomplete_SetsLensInputs);
   FRIEND_TEST_ALL_PREFIXES(ContextualSearchboxHandlerTest,
                            QueryAutocomplete_SetsLensInputs_InToolModes);
+  FRIEND_TEST_ALL_PREFIXES(WebuiOmniboxHandlerTest,
+                           OpenMatchResumesNavigationWhenNoDialogShown);
+  FRIEND_TEST_ALL_PREFIXES(WebuiOmniboxHandlerTest,
+                           OpenMatchDropsNavigationWhenDialogCancelled);
+
   SearchboxHandler(
       mojo::PendingReceiver<searchbox::mojom::PageHandler> pending_page_handler,
       mojo::PendingRemote<searchbox::mojom::Page> pending_page,
@@ -265,13 +271,6 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
                           AutocompleteController::Observer>
       autocomplete_controller_observation_{this};
 
-  // TODO(crbug.com/534328951): This is not ideal state to keep in the
-  //   SearchboxHandler since it related to the `AutocompleteInput`. Instead
-  //   create the AutocompleteInput first.
-  // This is needed in order to keep track of the last input method without
-  // needing to call an async getter from the `page_`.
-  omnibox::metrics::ChromeSearchboxStats::InputMethod input_method_ =
-      omnibox::metrics::ChromeSearchboxStats::KEYBOARD;
 
   mojo::Receiver<searchbox::mojom::PageHandler> page_handler_;
   mojo::Remote<searchbox::mojom::Page> page_;

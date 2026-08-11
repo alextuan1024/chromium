@@ -1452,8 +1452,7 @@ void BookmarkBarView::OnButtonPressed(const bookmarks::BookmarkNode* node,
   DCHECK(node->is_url());
   RecordAppLaunch(browser_->GetProfile(), node->url());
   bookmarks::OpenAllIfAllowed(
-      browser_->GetBrowserForMigrationOnly(), {node},
-      ui::DispositionFromEventFlags(event.flags()),
+      browser_, {node}, ui::DispositionFromEventFlags(event.flags()),
       bookmarks::OpenAllBookmarksContext::kNone,
       GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar),
       {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
@@ -1474,8 +1473,7 @@ void BookmarkBarView::OnMenuButtonPressed(const BookmarkParentFolder& folder,
     auto nodes = ToRawPtrVector(bookmark_service_->GetUnderlyingNodes(folder));
 
     bookmarks::OpenAllIfAllowed(
-        browser_->GetBrowserForMigrationOnly(), nodes,
-        ui::DispositionFromEventFlags(event.flags()),
+        browser_, nodes, ui::DispositionFromEventFlags(event.flags()),
         bookmarks::OpenAllBookmarksContext::kNone,
         GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar),
         {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
@@ -1581,9 +1579,9 @@ void BookmarkBarView::RunContextMenuAt(std::vector<int64_t> node_ids,
 
   context_menu_observation_.Reset();
   context_menu_ = std::make_unique<BookmarkContextMenu>(
-      GetWidget(), browser_->GetBrowserForMigrationOnly(),
-      browser_->GetProfile(), BookmarkLaunchLocation::kAttachedBar,
-      ToRawPtrVector(nodes), close_on_remove, can_paste);
+      GetWidget(), browser_, browser_->GetProfile(),
+      BookmarkLaunchLocation::kAttachedBar, ToRawPtrVector(nodes),
+      close_on_remove, can_paste);
   context_menu_observation_.Observe(context_menu_.get());
   context_menu_->RunMenuAt(point, source_type);
 }
@@ -2398,7 +2396,7 @@ void BookmarkBarView::PerformDrop(
                                                &parent_folder)
           .DropBookmarks(browser_->GetProfile(), data, index, copy,
                          chrome::BookmarkReorderDropTarget::kBookmarkBarView,
-                         browser_->GetBrowserForMigrationOnly());
+                         browser_);
 }
 
 int BookmarkBarView::GetDropLocationModelIndexForTesting() const {

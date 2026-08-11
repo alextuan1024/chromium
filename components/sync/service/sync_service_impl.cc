@@ -382,7 +382,9 @@ void SyncServiceImpl::Initialize(DataTypeController::TypeVector controllers) {
   const bool is_sync_feature_requested_for_metrics =
       IsLocalSyncEnabled() ||
 #if BUILDFLAG(IS_CHROMEOS)
-      !user_settings_->IsSyncFeatureDisabledViaDashboard();
+      (!user_settings_->IsSyncFeatureDisabledViaDashboard() &&
+       (!base::FeatureList::IsEnabled(kReplaceSyncPromosWithSignInPromos) ||
+        HasSyncConsent()));
 #else
       HasSyncConsent();
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -1379,11 +1381,12 @@ void SyncServiceImpl::SyncAuthCredentialsChanged() {
 
   if (!engine_) {
     TryStart();
-  } else {
+  } else if (!base::FeatureList::IsEnabled(kSyncUsePropagatedAccessToken)) {
+    // When kSyncUsePropagatedAccessToken is enabled, access tokens are fetched
+    // on demand and propagated via SyncCycle when needed rather than cached in
+    // the network sync layer.
     // If the engine already exists, just propagate the new credentials.
     SyncCredentials credentials = auth_manager_->GetCredentials();
-    // TODO(crbug.com/539471945): do not update credentials if
-    // kSyncUsePropagatedAccessToken is enabled.
     if (credentials.access_token_info.token.empty()) {
       engine_->InvalidateCredentials();
     } else {
@@ -2023,10 +2026,15 @@ SyncServiceImpl::CreateDeviceStatisticsRequest(const CoreAccountInfo& account,
       MakeUserAgentForSync(channel_), account, url);
 }
 
-std::vector<std::string>
-SyncServiceImpl::GetCurrentDeviceCacheGuidsForDeviceStatistics() {
-  return SyncTransportDataPrefs::GetCacheGuidsForAllGaiaIds(
+base::flat_set<std::string>
+SyncServiceImpl::GetCurrentDeviceCacheGuidsForAllGaiaIds() const {
+  return SyncTransportDataPrefs::GetCurrentDeviceCacheGuidsForAllGaiaIds(
       sync_client_->GetPrefService());
+}
+
+base::flat_set<std::string>
+SyncServiceImpl::GetCurrentDeviceCacheGuidsForDeviceStatistics() {
+  return GetCurrentDeviceCacheGuidsForAllGaiaIds();
 }
 
 void SyncServiceImpl::OnAccountsInCookieUpdatedWithCallback(

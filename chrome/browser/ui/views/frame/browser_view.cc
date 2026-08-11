@@ -81,6 +81,7 @@
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -1214,8 +1215,9 @@ ClientFrameElementInfo BrowserView::GetFrameElementInfo() const {
   // So return what the tabstrip height _ought_ to be right now.
   ClientFrameElementInfo info;
   info.tabstrip_preferred_height =
-      horizontal_tab_strip_region_view_ && ShouldDrawTabStrip() &&
-              !ShouldDrawVerticalTabStrip()
+      ShouldDrawTabStrip() && !ShouldDrawVerticalTabStrip() &&
+              horizontal_tab_strip_region_view_ &&
+              horizontal_tab_strip_region_view_->GetTabStripView()
           ? horizontal_tab_strip_region_view_->GetTabStripView()
                 ->GetPreferredSize()
                 .height()
@@ -1589,7 +1591,7 @@ void BrowserView::Show() {
   // OnWidgetActivationChanged() until we return to the runloop. Therefore any
   // calls to Browser::GetLastActive() will return the wrong result if we do not
   // explicitly set it here.
-  browser()->DidBecomeActive();
+  BrowserActiveStateManager::From(browser())->DidBecomeActive();
 #endif
 
   // If the window is already visible, just activate it.
@@ -1684,7 +1686,7 @@ void BrowserView::Activate() {
 #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
   // Update the list managed by `BrowserList` synchronously the same way
   // `BrowserView::Show()` does.
-  browser_->DidBecomeActive();
+  BrowserActiveStateManager::From(browser_)->DidBecomeActive();
 #endif
   browser_widget_->Activate();
 }
@@ -2827,6 +2829,28 @@ void BrowserView::TryNotifyWindowBoundsChanged(const gfx::Rect& widget_bounds) {
 void BrowserView::OnWidgetVisibilityChanged(views::Widget* widget,
                                             bool visible) {
   UpdateLoadingAnimations(visible);
+
+  if (visible &&
+      base::FeatureList::IsEnabled(
+          features::kDeferLayoutDuringBrowserStartup) &&
+      startup_layout_state_ != StartupLayoutState::kDisabled) {
+    // Once the browser window becomes visible for the first time during
+    // startup, transition to the disabled state and flush any layouts
+    // deferred while invisible to ensure the screen paints with correct
+    // bounds. We handle this in the visibility observer rather than
+    // high-level Show() paths to guarantee flushes happen regardless of how
+    // the widget was shown.
+    // We call InvalidateLayout() rather than a synchronous
+    // LayoutImmediately() because the upcoming paint tick will trigger
+    // Widget::LayoutRootViewIfNecessary() and synchronously lay out the view
+    // anyway. Invalidating asynchronously avoids redundant layout passes and
+    // blocks during the visibility transition.
+    startup_layout_state_ = StartupLayoutState::kDisabled;
+    if (layout_deferred_while_invisible_) {
+      layout_deferred_while_invisible_ = false;
+      InvalidateLayout();
+    }
+  }
 }
 
 std::optional<bool> BrowserView::GetWebApiWindowResizable() const {
@@ -3990,10 +4014,11 @@ bool BrowserView::GetSavedWindowPlacement(
 
     // Set a default popup origin if the x/y coordinates are 0 and the original
     // values were not known to be explicitly specified via window.open() in JS.
-    if (rect.origin().IsOrigin() && BrowserInitState::From(&*browser_)
-                                            ->create_params()
-                                            .initial_origin_specified !=
-                                        Browser::ValueSpecified::kSpecified) {
+    if (rect.origin().IsOrigin() &&
+        BrowserInitState::From(&*browser_)
+                ->create_params()
+                .initial_origin_specified !=
+            BrowserWindowCreateParams::ValueSpecified::kSpecified) {
       rect.set_origin(WindowSizer::GetDefaultPopupOrigin(rect.size()));
     }
 
@@ -4746,6 +4771,25 @@ void BrowserView::Layout(PassKey) {
     return;
   }
 
+  if (base::FeatureList::IsEnabled(
+          features::kDeferLayoutDuringBrowserStartup) &&
+      startup_layout_state_ == StartupLayoutState::kDeferring &&
+      browser_widget_ && !browser_widget_->IsVisible()) {
+    // If the browser window is invisible during early startup, defer any layout
+    // requests that occur after the first initial layout pass. This absorbs the
+    // storm of redundant layout calculations triggered by asynchronously
+    // loading components (such as the WebUI Toolbar) before they are painted.
+    //
+    // Note that the first initial layout pass (where state is kInitial) is NOT
+    // deferred. This initial pass establishes the starting bounds for all child
+    // views, including WebUIToolbarWebView (which sizes its child
+    // views::WebView via FillLayout). Subsequent layouts while invisible are
+    // safe to skip because the window size has not changed, meaning the initial
+    // bounds remain valid.
+    layout_deferred_while_invisible_ = true;
+    return;
+  }
+
   // Allow only a single layout operation once top controls sliding begins.
   if (top_controls_slide_controller_ &&
       top_controls_slide_controller_->IsEnabled() &&
@@ -4793,7 +4837,7 @@ void BrowserView::Layout(PassKey) {
 
   // Update dialog and bubble anchors.
 
-  if (dialog_anchor_) {
+  if (dialog_anchor_ || fallback_popup_anchor_) {
     // This needs to be enough that any bubble is visually overlapping the
     // toolbar, to keep it from rendering entirely in the contents area.
     constexpr int kAdditionalDialogToolbarOverlap = 3;
@@ -4803,20 +4847,34 @@ void BrowserView::Layout(PassKey) {
                    gfx::Size());
     // Move up and make its size nonzero.
     rect.Outset(gfx::Outsets::TLBR(1, 1, 0, 1));
-    rect.Offset(0, -kAdditionalDialogToolbarOverlap);
-    // When the dialog anchor is still within the bounds of the contents
-    // container, it is hidden. This handles immersive fullscreen cases,
-    // including "always show toolbar" mode on Mac, where it is not possible to
-    // position the dialog safely.
-    dialog_anchor_->SetHidden(
-        multi_contents_view_->bounds().Contains(rect.bottom_center()));
-    dialog_anchor_->MaybeUpdateAnchor(rect);
+
+    if (fallback_popup_anchor_) {
+      fallback_popup_anchor_->MaybeUpdateAnchor(rect);
+    }
+
+    if (dialog_anchor_) {
+      rect.Offset(0, -kAdditionalDialogToolbarOverlap);
+      // When the dialog anchor is still within the bounds of the contents
+      // container, it is hidden. This handles immersive fullscreen cases,
+      // including "always show toolbar" mode on Mac, where it is not possible
+      // to position the dialog safely.
+      dialog_anchor_->SetHidden(
+          multi_contents_view_->bounds().Contains(rect.bottom_center()));
+      dialog_anchor_->MaybeUpdateAnchor(rect);
+    }
   }
 
   if (auto* const user_education =
           UserEducationServiceFactory::GetForBrowserContext(GetProfile())) {
     user_education->help_bubble_factory_registry().NotifyAnchorBoundsChanged(
         GetElementContext());
+  }
+
+  // Mark the first layout pass as complete. This initial layout allows the
+  // window to calculate its starting bounds. Subsequent layouts while the
+  // window is invisible can then be safely deferred.
+  if (startup_layout_state_ == StartupLayoutState::kInitial) {
+    startup_layout_state_ = StartupLayoutState::kDeferring;
   }
 }
 
@@ -5031,6 +5089,8 @@ void BrowserView::AddedToWidget() {
 
   dialog_anchor_ = std::make_unique<views::ViewSubregionAnchor>(
       kBrowserDialogAnchorElementId, *this);
+  fallback_popup_anchor_ = std::make_unique<views::ViewSubregionAnchor>(
+      kFallbackPopupAnchorElementId, *this);
 
   initialized_ = true;
 }
@@ -5930,9 +5990,9 @@ void BrowserView::PaintAsActiveChanged() {
   // BrowserWindowInterface clients. The latter is more accurate definition
   // where the top level window or any of its child widgets can have focus.
   if (is_active) {
-    browser_->DidBecomeActive();
+    BrowserActiveStateManager::From(browser_)->DidBecomeActive();
   } else {
-    browser_->DidBecomeInactive();
+    BrowserActiveStateManager::From(browser_)->DidBecomeInactive();
   }
 
   if (web_app_frame_toolbar()) {

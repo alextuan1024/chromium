@@ -130,6 +130,7 @@ TAG_SPECIALIZATIONS = {
             'qualcomm-0x36333630',
             'qualcomm-0x36334330',
         ],
+        'samsung-electronics-co.-ltd.': [],
     },
 }
 
@@ -194,7 +195,7 @@ TAG_HEADER = """\
 # Devices
 # tags: [ android-pixel-2 android-pixel-4 android-pixel-6 android-pixel-10
 #             android-shield-android-tv android-sm-a137f android-sm-a236b
-#             android-sm-s911u1
+#             android-sm-s911u1 android-sm-s926b
 #         android-brya android-corsola
 #         chromeos-board-amd64-generic chromeos-board-eve chromeos-board-jacuzzi
 #             chromeos-board-octopus
@@ -231,6 +232,7 @@ TAG_HEADER = """\
 #         mesa_ge_24.2
 #         nvidia_ge_31.0.15.4601 nvidia_lt_31.0.15.4601
 #         nvidia_ge_32.0.15.8180 nvidia_lt_32.0.15.8180
+#         nvidia_ge_32.0.16.1074 nvidia_lt_32.0.16.1074
 #         nvidia_ge_535.183.01 nvidia_lt_535.183.01 ]
 # ASan
 # tags: [ asan no-asan ]

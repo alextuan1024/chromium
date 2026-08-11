@@ -1601,7 +1601,8 @@ coverage_builder(
     ),
     builderless = True,
     cores = None,
-    os = os.MAC_DEFAULT,
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     console_view_entry = [
         consoles.console_view_entry(
             category = "mac-fuzz",
@@ -1781,6 +1782,7 @@ coverage_builder(
     ),
     gn_args = gn_args.config(
         configs = [
+            "asan",
             "use_clang_coverage",
             "static",
             "mojo_fuzzer",

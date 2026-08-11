@@ -585,7 +585,6 @@
 <translation id="7288567540154601580">ٹیبز اور ایکسٹینشز</translation>
 <translation id="7295544978856094497">{NUM_EXTENSIONS,plural, =1{‏Chromium تجویز کرتا ہے کہ آپ اسے ہٹا دیں}other{‏Chromium تجویز کرتا ہے کہ آپ انہیں ہٹا دیں}}</translation>
 <translation id="7296334833518879294">‏سسٹم آڈیو کا اشتراک کرنے کے لیے، سسٹم کی ترتیبات کھولیں اور Chromium کے لیے 'صرف سسٹم آڈیو ریکارڈنگ' کی اجازت دیں۔ پھر آپ کو Chromium ری اسٹارٹ کرنے کی ضرورت ہوگی۔</translation>
-<translation id="7309928523159922338">‏Ad measurement آپ کی ملاحظہ کی جانے والی سائٹس کو Chromium سے معلومات کی درخواست کرنے کی اجازت دیتا ہے جس سے سائٹ کو اپنے اشتہارات کی کارکردگی کی پیمائش کرنے میں مدد ملتی ہے۔ Ad measurement سائٹس کے درمیان ممکنہ حد تک کم معلومات کی منتقلی کے ذریعے کراس سائٹ ٹریکنگ کو محدود کرتا ہے۔</translation>
 <translation id="731795002583552498">‏Chromium کو اپ ڈیٹ کیا جا رہا ہے</translation>
 <translation id="7318036098707714271">‏آپ کی ترجیحات کی فائل خراب یا غلط ہے۔
 
@@ -685,6 +684,7 @@ Chromium آپ کی ترتیبات کو بازیافت کرنے سے قاصر ہ�
 <translation id="8286943863733751221">‏<ph name="BEGIN_LINK" />Chromium<ph name="END_LINK" /> آپ کو غیر محفوظ سائٹس اور ڈاؤن لوڈز کے بارے میں خبردار کرتا ہے</translation>
 <translation id="8295827201165805317">‏آپ نے حال ہی میں ملاحظہ نہیں کیا ہے۔ ‫Chromium نے <ph name="PERMISSION" /> کو ہٹا دیا۔</translation>
 <translation id="8296236834352487533">‏‫Chromium iOS ایپ پر دکھائی دینے والی چیزوں کی خریداری کرنے، ترجمہ کرنے اور شناخت کرنے کیلئے اپنے کیمرے کا استعمال کریں</translation>
+<translation id="8310603974518734211">‏‫<ph name="USER_NAME" /> کے بطور Chromium میں سائن ان کرنے کے لیے QR کوڈ</translation>
 <translation id="8313851650939857356">اسٹارٹ کی اپ خرابی: <ph name="STARTUP_ERROR" />۔</translation>
 <translation id="8318772038038596122">‏آپ کی تنظیم Chromium کو بند کر دیتی ہے جب اسے <ph name="TIMEOUT_DURATION" /> کے لیے استعمال نہیں کیا جاتا ہے۔</translation>
 <translation id="8321888067342493336">بطور تصویر کے محفوظ کریں</translation>

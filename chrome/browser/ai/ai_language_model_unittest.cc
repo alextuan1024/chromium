@@ -27,14 +27,11 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
-#include "base/version_info/channel.h"
-#include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "chrome/browser/ai/ai_test_utils.h"
 #include "chrome/browser/ai/features.h"
 #include "chrome/browser/component_updater/optimization_guide_on_device_model_installer.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
-#include "chrome/common/channel_info.h"
 #include "components/on_device_ai/ai_utils.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
@@ -624,6 +621,45 @@ TEST_F(AILanguageModelTest, SamplingModeMappings) {
   // Test most-creative
   test_sampling_mode(blink::mojom::AILanguageModelSamplingMode::kMostCreative,
                      ElementsAre("UfooEM", IsPromptWithParams(100, 1.2)));
+
+  // Test custom presets configured in metadata.
+  optimization_guide::proto::OnDeviceModelExecutionFeatureConfig config =
+      CreateConfig();
+  optimization_guide::proto::PromptApiMetadata metadata;
+
+  // Fully overridden preset: predictable
+  auto* preset_predictable = metadata.add_sampling_presets();
+  preset_predictable->set_name("predictable");
+  preset_predictable->set_top_k(20);
+  preset_predictable->set_temperature(0.1f);
+
+  // Partial preset override: slightly-creative (overrides temperature only,
+  // top_k falls back to mode-specific default 72).
+  auto* preset_partial = metadata.add_sampling_presets();
+  preset_partial->set_name("slightly-creative");
+  preset_partial->set_temperature(0.5f);
+
+  *config.mutable_feature_metadata() =
+      optimization_guide::AnyWrapProto(metadata);
+
+  optimization_guide::FakeAdaptationAsset::Content content{.config = config};
+  auto custom_asset = std::make_unique<optimization_guide::FakeAdaptationAsset>(
+      std::move(content));
+  fake_broker_->UpdateModelAdaptation(*custom_asset);
+
+  // Test predictable (custom preset overrides both top_k and temperature)
+  test_sampling_mode(blink::mojom::AILanguageModelSamplingMode::kPredictable,
+                     ElementsAre("UfooEM", IsPromptWithParams(20, 0.1f)));
+
+  // Test slightly-creative (partial preset: custom temperature, default top_k
+  // fallback of 72)
+  test_sampling_mode(
+      blink::mojom::AILanguageModelSamplingMode::kSlightlyCreative,
+      ElementsAre("UfooEM", IsPromptWithParams(72, 0.5f)));
+
+  // Test balanced (unconfigured preset falls back to default C++ values)
+  test_sampling_mode(blink::mojom::AILanguageModelSamplingMode::kBalanced,
+                     ElementsAre("UfooEM", IsPromptWithParams(64, 1.0f)));
 }
 
 TEST_F(AILanguageModelTest, SamplingModeDefault) {
@@ -730,6 +766,25 @@ TEST_F(AILanguageModelTest, InitialPromptsTooLarge) {
 TEST_F(AILanguageModelTest, CreateResolvesAfterInitialPromptsAreAppended) {
   auto options = blink::mojom::AILanguageModelCreateOptions::New();
   options->initial_prompts.push_back(MakePrompt(Role::kSystem, "hi"));
+
+  fake_broker_->settings().set_append_delay(base::Seconds(5));
+
+  TestCreateLanguageModelClient language_model_client;
+  GetAIManagerRemote()->CreateLanguageModel(
+      language_model_client.BindNewPipeAndPassRemote(), std::move(options),
+      /*monitor=*/mojo::NullRemote());
+
+  // Creation will not be complete yet, because Append is delayed.
+  task_environment()->FastForwardBy(base::Seconds(1));
+  EXPECT_FALSE(language_model_client.result().IsReady());
+
+  // Fast forward time to allow Append to complete.
+  task_environment()->FastForwardBy(base::Seconds(5));
+  EXPECT_TRUE(language_model_client.result().IsReady());
+}
+
+TEST_F(AILanguageModelTest, CreateResolvesAfterEmptyInitialPromptsAreAppended) {
+  auto options = blink::mojom::AILanguageModelCreateOptions::New();
 
   fake_broker_->settings().set_append_delay(base::Seconds(5));
 
@@ -2522,28 +2577,19 @@ class AILanguageModelManifestTest : public AITestUtils::AITestManifestBase {
 };
 
 TEST_F(AILanguageModelManifestTest, CanCreateAndCreateWithManifestGemma4) {
-  version_info::Channel channel = chrome::GetChannel();
-  if (channel != version_info::Channel::CANARY &&
-      channel != version_info::Channel::DEV &&
-      channel != version_info::Channel::UNKNOWN &&
-      version_info::IsOfficialBuild()) {
-    GTEST_SKIP() << "Experimental use case support is limited to "
-                    "Canary/Dev/Unknown channels and unofficial builds.";
-  }
-
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
       kAIApiFoundationalModel, {{"model_version", "v4"}});
 
   fake_manifest_broker_->client().RequestAssetsFor("prompt_api_gemma4");
-  base::RunLoop().RunUntilIdle();
-
-  // Verify CanCreateLanguageModel check passes successfully.
-  base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
-  ai_manager_->CanCreateLanguageModel(
-      blink::mojom::AILanguageModelCreateOptions::New(), future.GetCallback());
-  EXPECT_EQ(future.Get(),
-            blink::mojom::ModelAvailabilityCheckResult::kAvailable);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateLanguageModel(
+        blink::mojom::AILanguageModelCreateOptions::New(),
+        future.GetCallback());
+    return future.Get() ==
+           blink::mojom::ModelAvailabilityCheckResult::kAvailable;
+  }));
 
   // Verify CreateLanguageModel can retrieve the model successfully.
   TestCreateLanguageModelClient language_model_client;
@@ -2557,15 +2603,6 @@ TEST_F(AILanguageModelManifestTest, CanCreateAndCreateWithManifestGemma4) {
 }
 
 TEST_F(AILanguageModelManifestTest, CanCreateBeforeDownloadGemma4) {
-  version_info::Channel channel = chrome::GetChannel();
-  if (channel != version_info::Channel::CANARY &&
-      channel != version_info::Channel::DEV &&
-      channel != version_info::Channel::UNKNOWN &&
-      version_info::IsOfficialBuild()) {
-    GTEST_SKIP() << "Experimental use case support is limited to "
-                    "Canary/Dev/Unknown channels and unofficial builds.";
-  }
-
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
       kAIApiFoundationalModel, {{"model_version", "v4"}});

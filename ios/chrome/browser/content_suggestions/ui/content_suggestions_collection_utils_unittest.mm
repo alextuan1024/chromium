@@ -283,13 +283,14 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, SameLogoAndDoodleHeight) {
 // Test padding helpers for kNewTabPagePaddingUpdate experiment arms.
 TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
   // Control (Disabled).
-  EXPECT_EQ(DoodleTopMargin(SearchEngineLogoState::kLogo, nil),
-            LogoTopPadding());
-  EXPECT_EQ(kLogoToFakeboxPaddingControl, LogoToFakeboxPadding());
-  EXPECT_EQ(kFakeboxToQuickActionsPaddingControl,
-            FakeboxToQuickActionsPadding());
-  EXPECT_EQ(kQuickActionsToMostVisitedPaddingControl,
-            QuickActionsToMostVisitedPadding());
+  EXPECT_EQ(DoodleTopMargin(SearchEngineLogoState::kLogo,
+                            IPhonePortraitTraitCollection()),
+            LogoTopPadding(SearchEngineLogoState::kLogo,
+                           IPhonePortraitTraitCollection()));
+  EXPECT_EQ(SearchFieldTopMargin(SearchEngineLogoState::kLogo),
+            LogoToFakeboxPadding(SearchEngineLogoState::kLogo));
+  EXPECT_EQ(kQuickActionsTopPaddingControl, QuickActionsTopPadding());
+  EXPECT_EQ(kMostVisitedTopPaddingControl, MostVisitedTopPadding());
   EXPECT_EQ(kReducedModuleSpacingControl, ReducedModuleSpacing());
 
   // Tight Padding (Arm 1).
@@ -297,12 +298,13 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPagePaddingUpdate, {{kNewTabPagePaddingUpdateArmParam, "1"}});
-    EXPECT_EQ(kLogoTopPaddingTight, LogoTopPadding());
-    EXPECT_EQ(kLogoToFakeboxPaddingTight, LogoToFakeboxPadding());
-    EXPECT_EQ(kFakeboxToQuickActionsPaddingTight,
-              FakeboxToQuickActionsPadding());
-    EXPECT_EQ(kQuickActionsToMostVisitedPaddingTight,
-              QuickActionsToMostVisitedPadding());
+    EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingTight,
+              LogoTopPadding(SearchEngineLogoState::kLogo,
+                             IPhonePortraitTraitCollection()));
+    EXPECT_EQ(kLogoToFakeboxPaddingTight,
+              LogoToFakeboxPadding(SearchEngineLogoState::kLogo));
+    EXPECT_EQ(kQuickActionsTopPaddingTight, QuickActionsTopPadding());
+    EXPECT_EQ(kMostVisitedTopPaddingTight, MostVisitedTopPadding());
     EXPECT_EQ(kReducedModuleSpacing, ReducedModuleSpacing());
   }
 
@@ -311,12 +313,13 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPagePaddingUpdate, {{kNewTabPagePaddingUpdateArmParam, "2"}});
-    EXPECT_EQ(kLogoTopPaddingMedium, LogoTopPadding());
-    EXPECT_EQ(kLogoToFakeboxPaddingMedium, LogoToFakeboxPadding());
-    EXPECT_EQ(kFakeboxToQuickActionsPaddingMedium,
-              FakeboxToQuickActionsPadding());
-    EXPECT_EQ(kQuickActionsToMostVisitedPaddingMedium,
-              QuickActionsToMostVisitedPadding());
+    EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingMedium,
+              LogoTopPadding(SearchEngineLogoState::kLogo,
+                             IPhonePortraitTraitCollection()));
+    EXPECT_EQ(kLogoToFakeboxPaddingMedium,
+              LogoToFakeboxPadding(SearchEngineLogoState::kLogo));
+    EXPECT_EQ(kQuickActionsTopPaddingMedium, QuickActionsTopPadding());
+    EXPECT_EQ(kMostVisitedTopPaddingMedium, MostVisitedTopPadding());
     EXPECT_EQ(kReducedModuleSpacing, ReducedModuleSpacing());
   }
 
@@ -325,12 +328,13 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPagePaddingUpdate, {{kNewTabPagePaddingUpdateArmParam, "3"}});
-    EXPECT_EQ(kLogoTopPaddingPreferred, LogoTopPadding());
-    EXPECT_EQ(kLogoToFakeboxPaddingPreferred, LogoToFakeboxPadding());
-    EXPECT_EQ(kFakeboxToQuickActionsPaddingPreferred,
-              FakeboxToQuickActionsPadding());
-    EXPECT_EQ(kQuickActionsToMostVisitedPaddingPreferred,
-              QuickActionsToMostVisitedPadding());
+    EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingPreferred,
+              LogoTopPadding(SearchEngineLogoState::kLogo,
+                             IPhonePortraitTraitCollection()));
+    EXPECT_EQ(kLogoToFakeboxPaddingPreferred,
+              LogoToFakeboxPadding(SearchEngineLogoState::kLogo));
+    EXPECT_EQ(kQuickActionsTopPaddingPreferred, QuickActionsTopPadding());
+    EXPECT_EQ(kMostVisitedTopPaddingPreferred, MostVisitedTopPadding());
     EXPECT_EQ(kReducedModuleSpacing, ReducedModuleSpacing());
   }
 
@@ -339,7 +343,10 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPagePaddingUpdate, {{kNewTabPagePaddingUpdateArmParam, "1"}});
-    EXPECT_EQ(162.0, LogoTopPadding(IPadTraitCollection()));
+    EXPECT_EQ(162.0, LogoTopPadding(SearchEngineLogoState::kLogo,
+                                    IPadTraitCollection()));
+    EXPECT_EQ(162.0, DoodleTopMargin(SearchEngineLogoState::kLogo,
+                                     IPadTraitCollection()));
     EXPECT_EQ(kReducedModuleSpacingRegularXRegular,
               ReducedModuleSpacing(IPadTraitCollection()));
   }

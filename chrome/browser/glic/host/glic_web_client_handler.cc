@@ -609,14 +609,6 @@ class GlicWebClientHandler
     }
   }
 
-  void GetZeroStateSuggestionsAndSubscribe(
-      bool has_active_subscription,
-      mojom::ZeroStateSuggestionsOptionsPtr options,
-      GetZeroStateSuggestionsAndSubscribeCallback callback) override {
-    host().instance_delegate().GetZeroStateSuggestionsAndSubscribe(
-        has_active_subscription, *options, std::move(callback));
-  }
-
   void CreateTab(const ::GURL& url,
                  glic::mojom::CreateTabOptionsPtr create_options,
                  CreateTabCallback callback) override {
@@ -910,6 +902,13 @@ class GlicWebClientHandler
       mojo::PendingRemote<mojom::SkillsClient> client) override {
     host().instance_delegate().skills_manager().Bind(std::move(receiver),
                                                      std::move(client));
+  }
+
+  void CreateZeroStateSuggestionsHandler(
+      mojo::PendingReceiver<mojom::ZeroStateSuggestionsHandler> receiver)
+      override {
+    host().instance_delegate().CreateZeroStateSuggestionsHandler(
+        std::move(receiver));
   }
 
   void ActivateTab(int32_t tab_id) override {
@@ -1530,17 +1529,6 @@ class GlicWebClientHandler
     web_client_->NotifyPinnedTabDataChanged(change.tab_data->Clone());
   }
 
-  void NotifyZeroStateSuggestionsChanged(
-      glic::mojom::ZeroStateSuggestionsV2Ptr suggestions,
-      mojom::ZeroStateSuggestionsOptionsPtr options) override {
-    // Ideally, we should redesign this to avoid zss suggestions being delivered
-    // when there's no client.
-    if (web_client_) {
-      web_client_->NotifyZeroStateSuggestionsChanged(std::move(suggestions),
-                                                     std::move(options));
-    }
-  }
-
   void NotifyActOnWebCapabilityChanged(bool can_act_on_web) {
     web_client_->NotifyActOnWebCapabilityChanged(can_act_on_web);
   }
@@ -1562,6 +1550,10 @@ class GlicWebClientHandler
   void Invoke(mojom::InvokeOptionsPtr options,
               base::OnceClosure callback) override {
     web_client_->Invoke(std::move(options), std::move(callback));
+  }
+
+  void OnUserInputSubmittedForTesting(mojom::WebClientMode mode) override {
+    OnUserInputSubmitted(mode);
   }
 
  private:

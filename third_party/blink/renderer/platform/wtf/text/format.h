@@ -16,14 +16,16 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/numerics/checked_math.h"
+#include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
-// `blink::Format()`, `blink::VFormat()`, and `blink::VFormatTo()` provide
-// string formatting functionality for Blink's WTF string types, inspired by
-// C++20's `std::format()`, `std::vformat()`, and `std::vformat_to()`.
+// `blink::Format()`, `blink::FormatTo()`, `blink::VFormat()`, and
+// `blink::VFormatTo()` provide string formatting functionality for Blink's WTF
+// string types, inspired by C++20's `std::format()`, `std::format_to()`,
+// `std::vformat()`, and `std::vformat_to()`.
 
 namespace blink {
 
@@ -38,17 +40,21 @@ consteval void FormatStringError(const char* message) {
 }
 
 // Internal helper class representing a single type-erased argument for
-// formatting. This class is used internally by `Format()`, `VFormat()`, and
-// `VFormatTo()` and is not intended for direct public usage.
+// formatting. This class is used internally by `Format()`, `FormatTo()`,
+// `VFormat()`, and `VFormatTo()` and is not intended for direct public usage.
 class WTF_EXPORT FormatArg {
  public:
-  using Value = std::variant<int64_t, uint64_t, StringView>;
+  using Value = std::variant<int64_t, uint64_t, StringView, const void*>;
 
   // NOLINTBEGIN(google-explicit-constructor)
-  FormatArg(int32_t v) : value_(static_cast<int64_t>(v)) {}
-  FormatArg(uint32_t v) : value_(static_cast<uint64_t>(v)) {}
-  FormatArg(int64_t v) : value_(v) {}
-  FormatArg(uint64_t v) : value_(v) {}
+  FormatArg(int v) : value_(static_cast<int64_t>(v)) {}
+  FormatArg(unsigned int v) : value_(static_cast<uint64_t>(v)) {}
+  FormatArg(long v) : value_(static_cast<int64_t>(v)) {}
+  FormatArg(unsigned long v) : value_(static_cast<uint64_t>(v)) {}
+  FormatArg(long long v) : value_(v) {}
+  FormatArg(unsigned long long v) : value_(v) {}
+  FormatArg(const void* v) : value_(v) {}
+  FormatArg(std::nullptr_t) : value_(static_cast<const void*>(nullptr)) {}
   template <typename T>
     requires std::convertible_to<const T&, StringView>
   FormatArg(const T& v) : value_(StringView(v)) {}
@@ -110,6 +116,49 @@ constexpr std::optional<ParsedWidth> ParseWidth(
   return ParsedWidth{width.ValueOrDefault(0), i};
 }
 
+struct ParsedFormatSpec {
+  uint32_t width = 0;
+  char type = '\0';
+  size_t next_index = 0;
+};
+
+// Common constexpr helper to parse format specifier {:width[type]}.
+template <typename StringType>
+constexpr std::optional<ParsedFormatSpec> ParseFormatSpec(
+    const StringType& format,
+    typename StringType::size_type start_index) {
+  using SizeType = typename StringType::size_type;
+  auto width_parsed = ParseWidth(format, start_index);
+  if (!width_parsed.has_value()) {
+    return std::nullopt;
+  }
+  uint32_t width = width_parsed->width;
+  SizeType i = static_cast<SizeType>(width_parsed->next_index);
+  auto len = format.length();
+  char type = '\0';
+
+  if (i < len) {
+    // SAFETY: `i` is checked against `len`.
+    auto ch = UNSAFE_BUFFERS(format[i]);
+    if (IsAsciiAlpha(ch)) {
+      type = static_cast<char>(ch);
+      ++i;
+    }
+  }
+
+  if (type != '\0' && type != 'd' && type != 'x' && type != 'X' &&
+      type != 's' && type != 'p' && type != 'P') {
+    return std::nullopt;
+  }
+
+  // SAFETY: `i` is checked against `len`.
+  if (i >= len || UNSAFE_BUFFERS(format[i]) != '}') {
+    return std::nullopt;
+  }
+
+  return ParsedFormatSpec{.width = width, .type = type, .next_index = i};
+}
+
 }  // namespace internal
 
 // Internal wrapper class for format strings that performs compile-time
@@ -133,15 +182,19 @@ class FormatString {
           ++brace_count;
           ++i;
         } else if (i + 1 < len && format_[i + 1] == ':') {
-          auto parsed = internal::ParseWidth(format_, i + 2);
+          auto parsed = internal::ParseFormatSpec(format_, i + 2);
           if (!parsed.has_value()) {
-            FormatStringError("Format string width out of bounds");
+            FormatStringError(
+                "Invalid format string: invalid format specifier");
+          }
+          if (parsed->type != '\0') {
+            if (!CheckArgTypeAtIndex(brace_count, parsed->type)) {
+              FormatStringError(
+                  "Invalid format string: argument type mismatch for type "
+                  "specifier");
+            }
           }
           i = parsed->next_index;
-          if (i >= len || format_[i] != '}') {
-            FormatStringError(
-                "Invalid format string: unclosed width specifier");
-          }
           ++brace_count;
         } else {
           FormatStringError(
@@ -166,6 +219,28 @@ class FormatString {
   }
 
  private:
+  static consteval bool CheckArgTypeAtIndex(size_t index, char type) {
+    size_t current = 0;
+    bool valid = true;
+    auto check = [&](auto dummy) {
+      using RawT = std::remove_cvref_t<typename decltype(dummy)::type>;
+      if (current == index) {
+        if (type == 'd' || type == 'x' || type == 'X') {
+          valid = std::is_integral_v<RawT> || std::is_enum_v<RawT>;
+        } else if (type == 's') {
+          valid = std::convertible_to<const RawT&, StringView>;
+        } else if (type == 'p' || type == 'P') {
+          valid = (std::convertible_to<RawT, const void*> &&
+                   !std::convertible_to<const RawT&, StringView>) ||
+                  std::is_same_v<RawT, std::nullptr_t>;
+        }
+      }
+      current++;
+    };
+    (check(std::type_identity<Args>{}), ...);
+    return valid;
+  }
+
   std::string_view format_;
 };
 
@@ -207,8 +282,9 @@ WTF_EXPORT StringBuilder& VFormatTo(StringBuilder& builder,
 // - Encoding: Expects ASCII / Latin1 string literals or `std::string_view`
 //   convertible types.
 // - Placeholders: Unindexed `{}` or `{:}` and width-specified `{:width}` or
-//   zero-padded `{:0width}` (where width is a 32-bit unsigned integer) are
-//   supported. Positional (e.g. `{0}`) or typed (e.g. `{:d}`) format
+//   zero-padded `{:0width}` (where width is a 32-bit unsigned integer) with
+//   optional type specifier `d`, `x`, `X`, `s`, `p`, `P` (e.g. `{:d}`,
+//   `{:08x}`, `{:p}`, `{:P}`) are supported. Positional (e.g. `{0}`) format
 //   specifiers are currently not supported.
 // - Escaping: `{{` outputs `{`, and `}}` outputs `}`.
 //
@@ -217,6 +293,8 @@ WTF_EXPORT StringBuilder& VFormatTo(StringBuilder& builder,
 //   implicitly convertible types).
 // - String types: `blink::StringView`, `blink::String`, `blink::AtomicString`,
 //   `const char[N]`.
+// - Pointer types: `const void*`, `std::nullptr_t` (and implicitly
+//   convertible types).
 //
 // Usage Examples:
 //   // Basic formatting:
@@ -242,6 +320,31 @@ inline String Format(FormatString<std::type_identity_t<Args>...> format,
   } else {
     const FormatArg arg_array[] = {FormatArg(args)...};
     return VFormat(format.GetStringView(), base::span(arg_array));
+  }
+}
+
+// Appends a formatted string to a `StringBuilder` with compile-time format
+// string validation and argument count checking. Inspired by C++20's
+// `std::format_to()`.
+//
+// Parameters:
+// - `builder`: The `StringBuilder` to append the formatted result to.
+// - `format`: A format string with compile-time validation. See `Format()` for
+//   specifications and supported types.
+// - `args`: The arguments to format.
+//
+// Return value:
+//   `builder` is returned for chaining.
+template <typename... Args>
+inline StringBuilder& FormatTo(
+    StringBuilder& builder,
+    FormatString<std::type_identity_t<Args>...> format,
+    Args&&... args) {
+  if constexpr (sizeof...(Args) == 0) {
+    return VFormatTo(builder, format.GetStringView(), FormatArgs());
+  } else {
+    const FormatArg arg_array[] = {FormatArg(args)...};
+    return VFormatTo(builder, format.GetStringView(), base::span(arg_array));
   }
 }
 

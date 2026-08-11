@@ -79,13 +79,6 @@ SuspiciousSiteControllerAndroid::SuspiciousSiteControllerAndroid(
 }
 
 SuspiciousSiteControllerAndroid::~SuspiciousSiteControllerAndroid() {
-  if (web_contents() && is_observing_async_check_tracker_) {
-    auto* tracker = AsyncCheckTracker::FromWebContents(web_contents());
-    if (tracker) {
-      tracker->RemoveObserver(this);
-    }
-  }
-
   // If the dialog was shown, log the tracked warning outcome directly.
   if (has_shown_) {
     base::UmaHistogramEnumeration(
@@ -120,9 +113,8 @@ void SuspiciousSiteControllerAndroid::ShowForWebContents(
   controller->is_suspended_ = true;
 
   auto* tracker = AsyncCheckTracker::FromWebContents(web_contents);
-  if (tracker && !controller->is_observing_async_check_tracker_) {
-    tracker->AddObserver(controller);
-    controller->is_observing_async_check_tracker_ = true;
+  if (tracker && !controller->async_check_observation_.IsObserving()) {
+    controller->async_check_observation_.Observe(tracker);
   }
 
   controller->MaybeShowDialog();
@@ -160,7 +152,7 @@ void SuspiciousSiteControllerAndroid::OnAsyncSafeBrowsingCheckCompleted() {
 
 void SuspiciousSiteControllerAndroid::
     OnAsyncSafeBrowsingCheckTrackerDestructed() {
-  // AsyncCheckTracker is being destroyed; no action required.
+  async_check_observation_.Reset();
 }
 
 void SuspiciousSiteControllerAndroid::MaybeShowDialog() {
@@ -241,7 +233,6 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
     return;
   }
 
-  has_shown_ = true;
   dialog_shown_time_ = base::TimeTicks::Now();
   SafeBrowsingService* sb_service = g_browser_process->safe_browsing_service();
   if (sb_service && sb_service->ui_manager()) {
@@ -278,6 +269,12 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
   // TODO(crbug.com/532598569): Investigate if destroying an existing dialog,
   // creating a new one, and displaying it causes UI flicker.
   dialog_view_->Show(*window_android);
+  if (!has_shown_) {
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+        UserInteraction::kShown);
+    has_shown_ = true;
+  }
 }
 
 void SuspiciousSiteControllerAndroid::CloseDialog(
@@ -303,14 +300,16 @@ void SuspiciousSiteControllerAndroid::CloseDialog(
 
   switch (dismissal_cause) {
     case ui::ModalDialogWrapper::DismissalCause::NAVIGATE_BACK:
-      OnGoBackButtonClicked();
+      HandleBackNavigation(UserInteraction::kSystemBack);
       return;
     case ui::ModalDialogWrapper::DismissalCause::NAVIGATE:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kAdhered;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kManualNavigation);
       MaybeTriggerHatsSurvey(UserChoice::kManualNavigation);
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TAB_SWITCHED:
     case ui::ModalDialogWrapper::DismissalCause::DIALOG_INTERACTION_DEFERRED:
@@ -321,32 +320,37 @@ void SuspiciousSiteControllerAndroid::CloseDialog(
         dialog_shown_time_ = base::TimeTicks();
       }
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TAB_DESTROYED:
     case ui::ModalDialogWrapper::DismissalCause::WEB_CONTENTS_DESTROYED:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kAdhered;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kCloseTab);
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TOUCH_OUTSIDE:
     case ui::ModalDialogWrapper::DismissalCause::ACTION_ON_CONTENT:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kBypassed;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kDismissed);
       MaybeTriggerHatsSurvey(UserChoice::kDismiss);
       is_suspended_ = false;
-      dialog_view_.reset();
       break;
     default:
       is_closing_ = true;
       is_suspended_ = false;
-      dialog_view_.reset();
       break;
   }
+
+  dialog_view_.reset();
 }
 
-void SuspiciousSiteControllerAndroid::OnGoBackButtonClicked() {
+void SuspiciousSiteControllerAndroid::HandleBackNavigation(
+    UserInteraction interaction_type) {
   if (is_closing_) {
     return;
   }
@@ -354,6 +358,9 @@ void SuspiciousSiteControllerAndroid::OnGoBackButtonClicked() {
   has_shown_ = true;
   warning_outcome_ = WarningOutcome::kAdhered;
   dialog_view_.reset();
+
+  base::UmaHistogramEnumeration(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction", interaction_type);
 
   MaybeTriggerHatsSurvey(UserChoice::kBackToSafety);
 
@@ -380,6 +387,10 @@ void SuspiciousSiteControllerAndroid::OnContinueButtonClicked() {
   has_shown_ = true;
   warning_outcome_ = WarningOutcome::kBypassed;
   dialog_view_.reset();
+
+  base::UmaHistogramEnumeration(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+      UserInteraction::kMarkAsSafe);
 
   MaybeTriggerHatsSurvey(UserChoice::kMarkAsSafe);
 
@@ -518,7 +529,12 @@ void SuspiciousSiteControllerAndroid::MaybeTriggerHatsSurvey(
 }
 
 void SuspiciousSiteControllerAndroid::OnHelpCenterLinkClicked() {
-  dialog_state_.learn_more_clicked = true;
+  if (!dialog_state_.learn_more_clicked) {
+    dialog_state_.learn_more_clicked = true;
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+        UserInteraction::kLearnMore);
+  }
   content::WebContents* contents = web_contents();
   CHECK(contents);
   content::OpenURLParams params(
