@@ -70,7 +70,7 @@ PaintPropertyChangeType EffectPaintPropertyNode::State::ComputeChange(
       needs_effect_for_2d_scale_transform !=
           other.needs_effect_for_2d_scale_transform ||
       is_in_tainted_subtree != other.is_in_tainted_subtree ||
-      is_in_canvas_subtree != other.is_in_canvas_subtree) {
+      is_in_drawable_canvas_subtree != other.is_in_drawable_canvas_subtree) {
     return PaintPropertyChangeType::kChangedOnlyValues;
   }
   bool opacity_changed = opacity != other.opacity;
@@ -131,6 +131,7 @@ void EffectPaintPropertyNode::State::Trace(Visitor* visitor) const {
 void EffectPaintPropertyNode::CanvasChildState::Trace(Visitor* visitor) const {
   visitor->Trace(content_effect);
   visitor->Trace(content_clip);
+  visitor->Trace(content_transform);
 }
 
 EffectPaintPropertyNode::EffectPaintPropertyNode(RootTag)
@@ -247,6 +248,12 @@ const ClipPaintPropertyNode& EffectPaintPropertyNode::CanvasChildContentClip()
   return state_.canvas_child_state->content_clip->Unalias();
 }
 
+const TransformPaintPropertyNode&
+EffectPaintPropertyNode::CanvasChildContentTransform() const {
+  CHECK(HasCanvasChildState());
+  return state_.canvas_child_state->content_transform->Unalias();
+}
+
 std::unique_ptr<JSONObject> EffectPaintPropertyNode::ToJSON() const {
   auto json = EffectPaintPropertyNodeOrAlias::ToJSON();
   json->SetString("localTransformSpace",
@@ -269,8 +276,8 @@ std::unique_ptr<JSONObject> EffectPaintPropertyNode::ToJSON() const {
     json->SetString("compositorElementId",
                     state_.compositor_element_id.ToString().c_str());
   }
-  if (state_.is_in_canvas_subtree) {
-    json->SetBoolean("is_in_canvas_subtree", true);
+  if (state_.is_in_drawable_canvas_subtree) {
+    json->SetBoolean("is_in_drawable_canvas_subtree", true);
   }
   return json;
 }

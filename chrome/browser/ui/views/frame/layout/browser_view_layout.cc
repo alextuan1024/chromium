@@ -10,7 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_app_layout_impl.h"
@@ -136,23 +136,32 @@ class BrowserViewLayout::BrowserModalDialogHostViews
 // static
 std::unique_ptr<BrowserViewLayout> BrowserViewLayout::CreateLayout(
     std::unique_ptr<BrowserViewLayoutDelegate> delegate,
-    Browser* browser,
+    BrowserWindowInterface* browser,
     BrowserViewLayoutViews views) {
   // Browser can be null in unit tests.
   if (browser) {
     switch (browser->GetType()) {
-      case Browser::TYPE_NORMAL:
+      case BrowserWindowInterface::Type::TYPE_NORMAL:
         return std::make_unique<BrowserViewTabbedLayoutImpl>(
-            std::move(delegate), browser, std::move(views));
-      case Browser::TYPE_APP:
-      case Browser::TYPE_APP_POPUP:
+            std::move(delegate), std::move(views));
+      case BrowserWindowInterface::Type::TYPE_APP:
+      case BrowserWindowInterface::Type::TYPE_APP_POPUP: {
+        bool is_web_app =
+            browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
+            web_app::AppBrowserController::IsWebApp(browser);
+#if BUILDFLAG(IS_CHROMEOS)
+        is_web_app =
+            is_web_app &&
+            !web_app::AppBrowserController::From(browser)->system_app();
+#endif
         return std::make_unique<BrowserViewAppLayoutImpl>(
-            std::move(delegate), browser, std::move(views));
-      case Browser::TYPE_POPUP:
-      case Browser::TYPE_DEVTOOLS:
-      case Browser::TYPE_PICTURE_IN_PICTURE:
-        return std::make_unique<BrowserViewPopupLayoutImpl>(
-            std::move(delegate), browser, std::move(views));
+            std::move(delegate), std::move(views), is_web_app);
+      }
+      case BrowserWindowInterface::Type::TYPE_POPUP:
+      case BrowserWindowInterface::Type::TYPE_DEVTOOLS:
+      case BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE:
+        return std::make_unique<BrowserViewPopupLayoutImpl>(std::move(delegate),
+                                                            std::move(views));
     }
   }
   NOTREACHED() << "Tried to create layout for unknown browser type: "
@@ -161,10 +170,8 @@ std::unique_ptr<BrowserViewLayout> BrowserViewLayout::CreateLayout(
 
 BrowserViewLayout::BrowserViewLayout(
     std::unique_ptr<BrowserViewLayoutDelegate> delegate,
-    Browser* browser,
     BrowserViewLayoutViews views)
     : delegate_(std::move(delegate)),
-      browser_(browser),
       views_(std::move(views)),
       dialog_host_(std::make_unique<BrowserModalDialogHostViews>(this)) {}
 

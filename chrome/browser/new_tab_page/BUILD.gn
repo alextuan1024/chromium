@@ -9,8 +9,7 @@ assert(enable_webui_ntp)
 # The public API target.
 source_set("new_tab_page") {
   public = [
-    "chrome_colors/chrome_colors_factory.h",
-    "chrome_colors/chrome_colors_service.h",
+    "feature_promo_helper/new_tab_page_feature_promo_helper.h",
     "microsoft_auth/microsoft_auth_service.h",
     "microsoft_auth/microsoft_auth_service_factory.h",
     "microsoft_auth/microsoft_auth_service_observer.h",
@@ -63,7 +62,8 @@ source_set("new_tab_page") {
 
   if (!is_android) {
     public += [
-      "feature_promo_helper/new_tab_page_feature_promo_helper.h",
+      "chrome_colors/chrome_colors_factory.h",
+      "chrome_colors/chrome_colors_service.h",
       "modules/v2/tab_groups/tab_groups_page_handler.h",
     ]
     public_deps += [
@@ -76,8 +76,7 @@ source_set("new_tab_page") {
 # The implementation target.
 source_set("impl") {
   sources = [
-    "chrome_colors/chrome_colors_factory.cc",
-    "chrome_colors/chrome_colors_service.cc",
+    "feature_promo_helper/new_tab_page_feature_promo_helper.cc",
     "microsoft_auth/microsoft_auth_service.cc",
     "microsoft_auth/microsoft_auth_service_factory.cc",
     "modules/file_suggestion/drive_service.cc",
@@ -142,7 +141,8 @@ source_set("impl") {
 
   if (!is_android) {
     sources += [
-      "feature_promo_helper/new_tab_page_feature_promo_helper.cc",
+      "chrome_colors/chrome_colors_factory.cc",
+      "chrome_colors/chrome_colors_service.cc",
       "modules/v2/tab_groups/tab_groups_page_handler.cc",
     ]
     deps += [
@@ -282,6 +282,7 @@ if (!is_android) {
       "//chrome/browser/autocomplete:aim_eligibility_service",
       "//chrome/browser/contextual_search",
       "//chrome/browser/ui",
+      "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/side_panel",
       "//chrome/browser/ui/side_panel:side_panel_views_dependent",
       "//chrome/browser/ui/views/user_education",

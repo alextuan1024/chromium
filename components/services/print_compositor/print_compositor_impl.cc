@@ -5,7 +5,6 @@
 #include "components/services/print_compositor/print_compositor_impl.h"
 
 #include <algorithm>
-#include <tuple>
 #include <utility>
 
 #include "base/logging.h"
@@ -19,9 +18,7 @@
 #include "components/services/print_compositor/public/cpp/print_service_mojo_types.h"
 #include "content/public/utility/utility_thread.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "printing/common/metafile_utils.h"
-#include "printing/mojom/print.mojom.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/platform/web_image_generator.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -42,8 +39,7 @@
 #endif
 
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
-#include "components/enterprise/watermarking/mojom/watermark.mojom.h"  // nogncheck
-#include "components/enterprise/watermarking/watermark.h"  // nogncheck
+#include "components/services/print_compositor/print_watermark.h"
 #endif
 
 using MojoDiscardableSharedMemoryManager =
@@ -66,33 +62,6 @@ sk_sp<SkDocument> MakeDocument(
 }
 
 }  // namespace
-
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-
-void DrawEnterpriseWatermark(
-    SkCanvas* canvas,
-    SkSize size,
-    const watermark::mojom::WatermarkBlockPtr& watermark_block) {
-  if (!watermark_block) {
-    return;
-  }
-  base::ReadOnlySharedMemoryMapping mapping =
-      watermark_block->serialized_skpicture.Map();
-  if (!mapping.IsValid()) {
-    LOG(ERROR)
-        << "Error serializing the watermark block received from the browser";
-    return;
-  }
-  auto skpicture_span = mapping.GetMemoryAsSpan<uint8_t>();
-  SkMemoryStream stream(gfx::MakeSkDataFromSpanWithoutCopy(skpicture_span));
-  sk_sp<SkPicture> picture = SkPicture::MakeFromStream(&stream);
-
-  enterprise_watermark::DrawWatermark(canvas, picture.get(),
-                                      watermark_block->width,
-                                      watermark_block->height, size);
-}
-
-#endif
 
 PrintCompositorImpl::PrintCompositorImpl(
     mojo::PendingReceiver<mojom::PrintCompositor> receiver,
@@ -146,6 +115,10 @@ PrintCompositorImpl::~PrintCompositorImpl() {
 #if BUILDFLAG(IS_WIN)
   content::UninitializeFontIntegration();
 #endif
+}
+
+void PrintCompositorImpl::SetAddonForTesting(std::unique_ptr<Addon> addon) {
+  addon_ = std::move(addon);
 }
 
 void PrintCompositorImpl::NotifyUnavailableSubframe(uint64_t frame_guid) {
@@ -497,9 +470,9 @@ void PrintCompositorImpl::DrawPage(SkDocument* doc,
                                    const SkDocumentPage& page) {
   SkCanvas* canvas = doc->beginPage(page.fSize.width(), page.fSize.height());
   canvas->drawPicture(page.fPicture);
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-  DrawEnterpriseWatermark(canvas, page.fSize, watermark_block_);
-#endif
+  if (addon_) {
+    addon_->OnDrawPage(canvas, page.fSize);
+  }
   doc->endPage();
 }
 
@@ -574,14 +547,16 @@ void PrintCompositorImpl::SetTitle(const std::string& title) {
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
 void PrintCompositorImpl::SetWatermarkBlock(
     watermark::mojom::WatermarkBlockPtr watermark_block) {
-  watermark_block_ = std::move(watermark_block);
+  if (watermark_block) {
+    auto watermark =
+        std::make_unique<PrintWatermark>(std::move(watermark_block));
+    watermark_for_testing_ = watermark.get();
+    addon_ = std::move(watermark);
+  } else {
+    watermark_for_testing_ = nullptr;
+    addon_.reset();
+  }
 }
-
-const watermark::mojom::WatermarkBlockPtr&
-PrintCompositorImpl::watermark_block_for_testing() const {
-  return watermark_block_;
-}
-
 #endif
 
 }  // namespace printing

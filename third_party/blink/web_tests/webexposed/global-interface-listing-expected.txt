@@ -2606,6 +2606,7 @@ interface Element : Node
     method getAttributeNodeNS
     method getBoundingClientRect
     method getBoxQuads
+    method getCanvasTransform
     method getClientRects
     method getElementsByClassName
     method getElementsByTagName
@@ -2647,6 +2648,7 @@ interface Element : Node
     method setAttributeNS
     method setAttributeNode
     method setAttributeNodeNS
+    method setCanvasTransform
     method setHTML
     method setHTMLUnsafe
     method setPointerCapture
@@ -7640,6 +7642,7 @@ interface Performance : EventTarget
     method mark
     method markConditional
     method measure
+    method measureConditional
     method now
     method setResourceTimingBufferSize
     method toJSON
@@ -7720,6 +7723,9 @@ interface PerformanceMarkConditional : PerformanceEntry
 interface PerformanceMeasure : PerformanceEntry
     attribute @@toStringTag
     getter detail
+    method constructor
+interface PerformanceMeasureConditional : PerformanceEntry
+    attribute @@toStringTag
     method constructor
 interface PerformanceNavigation
     attribute @@toStringTag

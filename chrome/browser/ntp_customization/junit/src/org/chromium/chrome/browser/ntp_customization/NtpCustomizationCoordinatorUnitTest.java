@@ -16,7 +16,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.flags.ChromeFeatureList.HOME_MODULE_PREF_REFACTOR;
 import static org.chromium.chrome.browser.flags.ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_THEME_SYNC;
 import static org.chromium.chrome.browser.flags.ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.FEED;
@@ -70,11 +69,9 @@ import org.chromium.components.prefs.PrefService;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.ui.widget.ButtonCompat;
 
 /** Unit tests for {@link NtpCustomizationCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures(HOME_MODULE_PREF_REFACTOR)
 public class NtpCustomizationCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private NtpThemeCollectionBridge.Natives mNtpThemeCollectionBridgeJni;
@@ -86,7 +83,7 @@ public class NtpCustomizationCoordinatorUnitTest {
     @Mock private NtpThemeCoordinator mNtpThemeCoordinator;
     @Mock private ViewGroup mHistoryContainerView;
     @Mock private RecyclerView mRecyclerView;
-    @Mock private ButtonCompat mMoreOptionsTitle;
+    @Mock private View mMoreOptionsContainer;
     @Mock private Profile mMockProfile;
     @Mock private TemplateUrlService mMockTemplateUrlService;
     @Mock private PrefService mMockPrefService;
@@ -349,8 +346,8 @@ public class NtpCustomizationCoordinatorUnitTest {
                 .thenReturn(mHistoryContainerView);
         when(mHistoryContainerView.findViewById(R.id.ntp_theme_sync_history_recycler_view))
                 .thenReturn(mRecyclerView);
-        when(mHistoryContainerView.findViewById(R.id.more_options_title))
-                .thenReturn(mMoreOptionsTitle);
+        when(mHistoryContainerView.findViewById(R.id.more_options_container))
+                .thenReturn(mMoreOptionsContainer);
 
         mNtpCustomizationCoordinator.showBottomSheet();
     }

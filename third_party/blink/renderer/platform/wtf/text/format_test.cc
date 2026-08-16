@@ -192,31 +192,102 @@ TEST(FormatTest, TypeSpecifierPointer) {
   EXPECT_EQ("0X0000", Format("{:06P}", nullptr));
 }
 
+TEST(FormatTest, TypeSpecifierFloat) {
+  EXPECT_EQ("3.141592653589793", Format("{}", 3.141592653589793));
+  EXPECT_EQ("3.141592653589793", Format("{:g}", 3.141592653589793));
+  EXPECT_EQ("3.141592653589793", Format("{:G}", 3.141592653589793));
+
+  EXPECT_EQ("3.141592653589793", Format("{:}", 3.141592653589793));
+  EXPECT_EQ("3.141590", Format("{:f}", 3.14159));
+  EXPECT_EQ("3.14159e+00", Format("{:e}", 3.14159));
+  EXPECT_EQ("3.14159E+00", Format("{:E}", 3.14159));
+
+  // Width and padding
+  EXPECT_EQ("  3.141590", Format("{:10f}", 3.14159));
+  EXPECT_EQ("003.141590", Format("{:010f}", 3.14159));
+  EXPECT_EQ("-3.141590", Format("{:09f}", -3.14159));
+  EXPECT_EQ("-3.141590", Format("{:9f}", -3.14159));
+
+  // Special values
+  constexpr double kInfinity = std::numeric_limits<double>::infinity();
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ("inf", Format("{:f}", kInfinity));
+  EXPECT_EQ("-inf", Format("{:f}", -kInfinity));
+  EXPECT_EQ("nan", Format("{:f}", kNaN));
+  EXPECT_EQ("INF", Format("{:F}", kInfinity));
+  EXPECT_EQ("-INF", Format("{:F}", -kInfinity));
+  EXPECT_EQ("NAN", Format("{:F}", kNaN));
+  EXPECT_EQ("INF", Format("{:E}", kInfinity));
+  EXPECT_EQ("NAN", Format("{:G}", kNaN));
+
+  // Precision
+  EXPECT_EQ("3.14", Format("{:.2f}", 3.14159));
+  EXPECT_EQ("3.1", Format("{:.2}", 3.14159));
+  EXPECT_EQ("3.142e+00", Format("{:.3e}", 3.14159));
+  EXPECT_EQ("3.14", Format("{:.3g}", 3.14159));
+  EXPECT_EQ("  3.14", Format("{:6.2f}", 3.14159));
+  EXPECT_EQ("003.14", Format("{:06.2f}", 3.14159));
+  EXPECT_EQ("3e+00", Format("{:.0e}", 3.14159));
+  EXPECT_EQ("3", Format("{:.0f}", 3.14159));
+  EXPECT_EQ("3", Format("{:.0g}", 3.14159));
+  EXPECT_EQ("3", Format("{:.1}", 3.14159));
+  EXPECT_EQ("0.567", Format("{:.6g}", 0.567));
+  EXPECT_EQ("150001", Format("{:.6g}", 150000.5));
+}
+
 TEST(FormatTest, TypeSpecifierDeathTest) {
   FormatArg int_args[] = {FormatArg(42)};
   FormatArg str_args[] = {FormatArg(StringView("abc"))};
   FormatArg ptr_args[] = {FormatArg(static_cast<const void*>(nullptr))};
+  FormatArg double_args[] = {FormatArg(3.14)};
 
-  // String argument with integer/pointer type specifiers
+  // String argument with integer/pointer/float type specifiers
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:d}", FormatArgs(str_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:x}", FormatArgs(str_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:X}", FormatArgs(str_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:p}", FormatArgs(str_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:P}", FormatArgs(str_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:f}", FormatArgs(str_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:e}", FormatArgs(str_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:g}", FormatArgs(str_args)), "");
 
-  // Integer argument with string/pointer type specifiers
+  // Integer argument with string/pointer/float type specifiers
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:s}", FormatArgs(int_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:p}", FormatArgs(int_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:P}", FormatArgs(int_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:f}", FormatArgs(int_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:e}", FormatArgs(int_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:g}", FormatArgs(int_args)), "");
 
-  // Pointer argument with integer/string type specifiers
+  // Pointer argument with integer/string/float type specifiers
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:d}", FormatArgs(ptr_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:x}", FormatArgs(ptr_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:X}", FormatArgs(ptr_args)), "");
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:s}", FormatArgs(ptr_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:f}", FormatArgs(ptr_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:e}", FormatArgs(ptr_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:g}", FormatArgs(ptr_args)), "");
+
+  // Double argument with integer/string/pointer type specifiers
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:d}", FormatArgs(double_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:x}", FormatArgs(double_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:X}", FormatArgs(double_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:s}", FormatArgs(double_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:p}", FormatArgs(double_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:P}", FormatArgs(double_args)), "");
 
   // Unsupported type specifier
   EXPECT_DEATH_IF_SUPPORTED(VFormat("{:z}", FormatArgs(int_args)), "");
+
+  // Precision specified for non-floating-point types
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.2f}", FormatArgs(int_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.2}", FormatArgs(int_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.2s}", FormatArgs(str_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.2}", FormatArgs(str_args)), "");
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.2p}", FormatArgs(ptr_args)), "");
+
+  // Invalid precision specifier
+  EXPECT_DEATH_IF_SUPPORTED(VFormat("{:.}", FormatArgs(double_args)), "");
 }
 
 }  // namespace blink

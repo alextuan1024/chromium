@@ -11,6 +11,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/common/buildflags.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
+#include "ui/webui/buildflags.h"
 
 class AskBeforeHttpDialogController;
 class SidePanelTabScopedDevFeature;
@@ -53,6 +54,13 @@ class TabContextualizationController;
 }  // namespace lens
 
 class HttpAuthCacheStatus;
+class SecurityStateEventObserver;
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+namespace customize_chrome {
+class SidePanelController;
+}  // namespace customize_chrome
+#endif
 
 namespace tabs {
 
@@ -74,6 +82,13 @@ class TabFeatures {
     return data_protection_tab_controller_.get();
   }
 
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+  customize_chrome::SidePanelController*
+  customize_chrome_side_panel_controller() {
+    return customize_chrome_side_panel_controller_.get();
+  }
+#endif
+
  private:
   // Returns the factory used to create owned components.
   static ui::UserDataFactoryWithOwner<TabInterface>& GetUserDataFactory();
@@ -90,6 +105,7 @@ class TabFeatures {
   std::unique_ptr<sync_sessions::SyncSessionsRouterTabHelper>
       sync_sessions_router_;
   std::unique_ptr<HttpAuthCacheStatus> http_auth_cache_status_;
+  std::unique_ptr<SecurityStateEventObserver> security_state_event_observer_;
   std::unique_ptr<QwacWebContentsObserver> qwac_web_contents_observer_;
   std::unique_ptr<NewTabPagePreloadPipelineManager>
       new_tab_page_preload_pipeline_manager_;
@@ -103,6 +119,10 @@ class TabFeatures {
       data_protection_tab_controller_;
 
   std::unique_ptr<glic::ContextualCueingHelper> contextual_cueing_helper_;
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+  std::unique_ptr<customize_chrome::SidePanelController>
+      customize_chrome_side_panel_controller_;
+#endif
   std::unique_ptr<glic::GlicInstanceHelper> glic_instance_helper_;
   std::unique_ptr<glic::GlicSidePanelCoordinator> glic_side_panel_coordinator_;
   std::unique_ptr<actor::ui::ActorUiTabControllerInterface>

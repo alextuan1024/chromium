@@ -120,7 +120,7 @@ public class SettingsPageFragmentDelegateImplTest {
         when(mFragmentManager.findFragmentByTag(EXPECTED_TAG))
                 .thenReturn(mMockSettingsHostFragment);
         when(mFragmentManager.beginTransaction()).thenReturn(mFragmentTransaction);
-        when(mFragmentTransaction.add(anyInt(), any(Fragment.class), anyString()))
+        when(mFragmentTransaction.add(any(Fragment.class), anyString()))
                 .thenReturn(mFragmentTransaction);
         when(mFragmentTransaction.remove(any(Fragment.class))).thenReturn(mFragmentTransaction);
         when(mContainerView.getId()).thenReturn(CONTAINER_ID);
@@ -170,6 +170,7 @@ public class SettingsPageFragmentDelegateImplTest {
 
         SettingsContainmentHelper mockContainmentHelper = mock(SettingsContainmentHelper.class);
         when(mMockSettingsHostFragment.getContainmentHelper()).thenReturn(mockContainmentHelper);
+        when(mMockSettingsHostFragment.containsChild(mMultiColumnSettings)).thenReturn(true);
         when(mTab.getId()).thenReturn(TAB_ID);
 
         mDelegate =
@@ -223,8 +224,7 @@ public class SettingsPageFragmentDelegateImplTest {
         }
 
         // Verify fragment creation and addition.
-        verify(mFragmentTransaction)
-                .add(eq(CONTAINER_ID), any(SettingsHostFragment.class), eq(EXPECTED_TAG));
+        verify(mFragmentTransaction).add(any(SettingsHostFragment.class), eq(EXPECTED_TAG));
         verify(mFragmentTransaction).commitAllowingStateLoss();
     }
 
@@ -640,6 +640,56 @@ public class SettingsPageFragmentDelegateImplTest {
         assertEquals(
                 ApplicationProvider.getApplicationContext().getString(R.string.back),
                 toolbar.getNavigationContentDescription());
+    }
+
+    @Test
+    public void testInitSettings_setsNavigationIconSynchronously() {
+        mDelegate.initSettings(mContainerView, "");
+
+        Toolbar toolbar = mInflatedSettingsView.findViewById(R.id.action_bar);
+        assertNotNull(toolbar);
+
+        // Verify navigation icon is immediately set when top-level main settings is initialized.
+        // It doesn't wait for async tasks.
+        assertEquals(
+                ApplicationProvider.getApplicationContext().getString(R.string.app_name),
+                toolbar.getNavigationContentDescription());
+    }
+
+    @Test
+    public void testUpdateNavigationIcon_singleColumnInSearch_hidesNavigationIcon() {
+        mDelegate.initSettings(mContainerView, "");
+
+        Toolbar toolbar = mInflatedSettingsView.findViewById(R.id.action_bar);
+        assertNotNull(toolbar);
+
+        when(mMockSettingsHostFragment.isAttachedToActivity()).thenReturn(true);
+        when(mMockSettingsHostFragment.getActiveFragment()).thenReturn(mMultiColumnSettings);
+        when(mMultiColumnSettings.isTwoColumn()).thenReturn(false);
+        when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
+
+        // Before search: Chrome logo is shown.
+        mDelegate.onHeaderLayoutUpdated();
+        assertEquals(
+                ApplicationProvider.getApplicationContext().getString(R.string.app_name),
+                toolbar.getNavigationContentDescription());
+
+        // When search coordinator indicates navigation icon should be hidden (single-column in
+        // search mode):
+        SettingsSearchCoordinator mockSearchCoordinator = mock(SettingsSearchCoordinator.class);
+        when(mockSearchCoordinator.shouldShowNavigationIcon()).thenReturn(false);
+        mDelegate.setSearchCoordinatorForTesting(mockSearchCoordinator);
+
+        // During slide animation / header updates while in search mode, navigation icon must stay
+        // hidden.
+        mDelegate.onSlideStateUpdated(MultiColumnSettings.SlideState.OPENING);
+        assertNull(toolbar.getNavigationIcon());
+
+        mDelegate.onHeaderLayoutUpdated();
+        assertNull(toolbar.getNavigationIcon());
+
+        mDelegate.onTitleUpdated();
+        assertNull(toolbar.getNavigationIcon());
     }
 
     @Test

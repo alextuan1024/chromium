@@ -72,11 +72,11 @@ public class SelectActionMenuHelper {
 
         boolean canPaste();
 
-        boolean canShare();
+        boolean canShare(@MenuType int menuType);
 
-        boolean canSelectAll();
+        boolean canSelectAll(@MenuType int menuType);
 
-        boolean canWebSearch();
+        boolean canWebSearch(@MenuType int menuType);
 
         boolean canPasteAsPlainText();
     }
@@ -203,11 +203,11 @@ public class SelectActionMenuHelper {
             } else if (item == DefaultItem.PASTE_AS_PLAIN_TEXT) {
                 if (delegate.canPasteAsPlainText()) menuItems.add(pasteAsPlainText(context, pos));
             } else if (item == DefaultItem.SHARE) {
-                if (delegate.canShare()) menuItems.add(share(context, pos));
+                if (delegate.canShare(menuType)) menuItems.add(share(context, pos, menuType));
             } else if (item == DefaultItem.SELECT_ALL) {
-                if (delegate.canSelectAll()) menuItems.add(selectAll(pos));
+                if (delegate.canSelectAll(menuType)) menuItems.add(selectAll(pos));
             } else if (item == DefaultItem.WEB_SEARCH) {
-                if (delegate.canWebSearch()) {
+                if (delegate.canWebSearch(menuType)) {
                     menuItems.add(
                             webSearch(
                                     context,
@@ -388,20 +388,30 @@ public class SelectActionMenuHelper {
                 .build();
     }
 
-    private static SelectionMenuItem share(@Nullable Context context, int order) {
+    // Relative order for the Share item within the alternative items section in dropdown menus.
+    private static final int ALTERNATIVE_SECTION_SHARE_ORDER = 1;
+
+    private static SelectionMenuItem share(
+            @Nullable Context context, int order, @MenuType int menuType) {
         if (context == null) {
             context = ContextUtils.getApplicationContext();
         }
-        return new SelectionMenuItem.Builder(context.getString(R.string.actionbar_share))
-                .setId(R.id.select_action_menu_share)
-                .setGroupId(R.id.select_action_menu_default_items)
-                .setIconAttr(android.R.attr.actionModeShareDrawable)
-                .setOrderAndCategory(order, ItemGroupOffset.DEFAULT_ITEMS)
-                .setShowAsActionFlags(
-                        MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
-                .setIsEnabled(true)
-                .setIsIconTintable(true)
-                .build();
+        SelectionMenuItem.Builder builder =
+                new SelectionMenuItem.Builder(context.getString(R.string.actionbar_share))
+                        .setId(R.id.select_action_menu_share)
+                        .setGroupId(R.id.select_action_menu_default_items)
+                        .setIconAttr(android.R.attr.actionModeShareDrawable)
+                        .setShowAsActionFlags(
+                                MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
+                        .setIsEnabled(true)
+                        .setIsIconTintable(true);
+        if (menuType == MenuType.DROPDOWN) {
+            builder.setOrderAndCategory(
+                    ALTERNATIVE_SECTION_SHARE_ORDER, ItemGroupOffset.ALTERNATIVE_ITEMS);
+        } else {
+            builder.setOrderAndCategory(order, ItemGroupOffset.DEFAULT_ITEMS);
+        }
+        return builder.build();
     }
 
     private static SelectionMenuItem selectAll(int order) {

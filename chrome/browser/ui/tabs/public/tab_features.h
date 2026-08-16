@@ -59,8 +59,8 @@ class QwacWebContentsObserver;
 class ReadAnythingController;
 class ReadAnythingSidePanelController;
 class RecordReplayPageActionController;
-class RollBackModeBInfoBarController;
 class SearchPromotionNavigationObserver;
+class SecurityStateEventObserver;
 class SidePanelRegistry;
 class TabResourceUsageTabHelper;
 class TabUIHelper;
@@ -437,6 +437,10 @@ class TabFeatures {
   std::unique_ptr<extensions::ExtensionSidePanelManager>
       extension_side_panel_manager_;
 
+  // Security-state-driven side effects (known-interception disclosure,
+  // form-submission UKM).
+  std::unique_ptr<SecurityStateEventObserver> security_state_event_observer_;
+
   // Forwards tab-related events to sync.
   std::unique_ptr<sync_sessions::SyncSessionsRouterTabHelper>
       sync_sessions_router_;
@@ -626,9 +630,6 @@ class TabFeatures {
 
   std::unique_ptr<lens::TabContextualizationController>
       tab_contextualization_controller_;
-
-  std::unique_ptr<RollBackModeBInfoBarController>
-      roll_back_mode_b_infobar_controller_;
 
   std::unique_ptr<BookmarkBarPreloadPipelineManager>
       bookmarkbar_preload_pipeline_manager_;

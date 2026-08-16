@@ -253,13 +253,22 @@ class AutofillClient {
     kMaxValue = kEditAccepted
   };
 
-  // Represents the user's decision or outcome in response to the email
-  // verification prompt.
-  enum class EmailVerificationPermissionUiResult {
-    kAccepted = 0,
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(EvpPermissionUiStatus)
+  enum class EmailVerificationPermissionUiStatus {
+    kAllowed = 0,
     kDeclined = 1,
-    kIgnored = 2,
+    kUserAborted = 2,            // e.g. ESC key or clicking outside
+    kNavigation = 3,             // page navigated
+    kTabGone = 4,                // tab closed or hidden
+    kWidgetChanged = 5,          // e.g. window resized
+    kOverlappingPrompt = 6,      // overlapped by another prompt/pip
+    kOther = 7,                  // any other reason
+    kViewDestroyedDirectly = 8,  // view destroyed without explicit Hide()
+    kMaxValue = kViewDestroyedDirectly,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:EvpPermissionUiStatus)
 
   // Describes the types of Iph shown by Autofill and anchored to a field.
   enum class IphFeature {
@@ -277,7 +286,8 @@ class AutofillClient {
                   int32_t form_control_ax_id,
                   PopupAnchorType anchor_type,
                   bool show_tabbed_popup = false,
-                  bool prefer_prev_arrow_side_on_suggestions_update = false);
+                  bool prefer_prev_arrow_side_on_suggestions_update = false,
+                  std::u16string search_bar_initial_value = {});
     PopupOpenArgs(const PopupOpenArgs&);
     PopupOpenArgs(PopupOpenArgs&&);
     PopupOpenArgs& operator=(const PopupOpenArgs&);
@@ -302,6 +312,8 @@ class AutofillClient {
     // are updated. This avoids unnecessary jumping when the popup is updated,
     // unless the popup would otherwise go out of bounds.
     bool prefer_prev_arrow_side_on_suggestions_update = false;
+    // Initial value for the search bar.
+    std::u16string search_bar_initial_value;
   };
 
   // Details about the UI that was shown to the user in an entity import bubble.
@@ -881,12 +893,13 @@ class AutofillClient {
   // Shows a yes/no prompt asking the user to confirm that they want to verify
   // their email. The prompt is anchored on the field at `element_bounds`.
   // `issuer_site` is the site that issued the assertion.
-  // `callback` is called with the user's decision (accept, decline, or ignore).
+  // `callback` is called with the permission UI status
+  // (`EmailVerificationPermissionUiStatus`).
   virtual void ShowEmailVerificationPopup(
       const gfx::RectF& element_bounds,
       const net::SchemefulSite& issuer_site,
       const std::u16string& email,
-      base::OnceCallback<void(EmailVerificationPermissionUiResult)> callback);
+      base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback);
 
   // May return null on platforms where OTPs are not supported.
   virtual OtpFieldDetector* GetOtpFieldDetector();

@@ -29,6 +29,8 @@
 #include "chrome/browser/devtools/devtools_ui_controller.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_ui_controller.h"
 #include "chrome/browser/extensions/browser_extension_window_controller.h"
+#include "chrome/browser/geic/geic_enabling.h"
+#include "chrome/browser/geic/geic_side_panel_coordinator.h"
 #include "chrome/browser/glic/browser_ui/glic_iph_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
@@ -224,6 +226,7 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #endif
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -402,6 +405,12 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
   extension_installed_watcher_ =
       std::make_unique<ExtensionInstalledWatcher>(profile);
 
+  if (geic::IsGeicEnabled(profile)) {
+    geic_side_panel_coordinator_ =
+        GetUserDataFactory().CreateInstance<geic::GeicSidePanelCoordinator>(
+            *browser, *browser);
+  }
+
   history_clusters_side_panel_coordinator_ =
       std::make_unique<HistoryClustersSidePanelCoordinator>(
           browser, browser->GetProfile());
@@ -451,6 +460,9 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
       std::make_unique<memory_saver::MemorySaverBubbleController>(browser);
 
 #if BUILDFLAG(IS_CHROMEOS)
+  locked_state_controller_ =
+      GetUserDataFactory().CreateInstance<chromeos::LockedStateController>(
+          *browser, browser);
   on_task_locked_controller_ =
       GetUserDataFactory().CreateInstance<ash::boca::OnTaskLockedController>(
           *browser, browser);

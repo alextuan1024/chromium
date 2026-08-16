@@ -227,7 +227,9 @@ std::string RenderFrameProxyHost::ToDebugString() {
 bool RenderFrameProxyHost::InitRenderFrameProxy(
     const std::optional<base::UnguessableToken>& navigation_metrics_token,
     BatchedProxyIPCSender* batched_proxy_ipc_sender) {
-  CHECK(!render_frame_proxy_created_, base::NotFatalUntil::M152);
+  // TODO(b/545449767): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!render_frame_proxy_created_);
   // We shouldn't be creating proxies for subframes of frames in
   // BackForwardCache.
   CHECK(!frame_tree_node_->current_frame_host()->IsInBackForwardCache(),
@@ -396,7 +398,9 @@ void RenderFrameProxyHost::SetRenderFrameProxyCreated(bool created) {
 
 const mojo::AssociatedRemote<blink::mojom::RemoteFrame>&
 RenderFrameProxyHost::GetAssociatedRemoteFrame() {
-  CHECK(remote_frame_.is_bound(), base::NotFatalUntil::M152);
+  // TODO(crbug.com/544915927): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(remote_frame_.is_bound());
   return remote_frame_;
 }
 

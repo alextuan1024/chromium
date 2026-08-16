@@ -152,6 +152,11 @@ found in the LICENSE file.
     <dimen name="safety_fre_logo_size">48dp</dimen>
     <dimen name="safety_fre_title_margin_bottom">36dp</dimen>
 
+    <!-- Safety FRE Carousel dimensions -->
+    <dimen name="safety_fre_carousel_icon_margin_top">64dp</dimen>
+    <dimen name="safety_fre_carousel_title_margin_bottom">8dp</dimen>
+    <dimen name="safety_fre_carousel_button_margin_bottom">8dp</dimen>
+
     <!-- Account Signin dimensions -->
     <!-- The Account Signin page appears in the First Run Experience (amongst other places), so uses
     a lot of the fre_* dimensions for consistency. -->
@@ -174,7 +179,7 @@ found in the LICENSE file.
     <dimen name="ntp_search_box_max_width">680dp</dimen>
     <dimen name="ntp_search_box_action_button_margin">8dp</dimen>
     <dimen name="mvt_container_top_padding">16dp</dimen>
-    <dimen name="mvt_container_top_padding_small">8dp</dimen>
+    <dimen name="mvt_container_top_padding_small">10dp</dimen>
     <dimen name="mvt_container_bottom_padding">22dp</dimen>
     <dimen name="mvt_container_bottom_padding_small">16dp</dimen>
     <dimen name="mvt_container_top_margin_medium">24dp</dimen>
@@ -504,9 +509,9 @@ found in the LICENSE file.
     <dimen name="autofill_loading_dialog_spinner_size">36dp</dimen>
 
     <!-- tab strip context menu-->
-    <dimen name="tab_strip_group_context_menu_max_width">392dp</dimen>
-    <dimen name="tab_strip_context_menu_min_width">200dp</dimen>
-    <dimen name="tab_strip_context_menu_max_width">300dp</dimen>
+    <dimen name="tab_strip_group_context_menu_max_width">@dimen/menu_width_max</dimen>
+    <dimen name="tab_strip_context_menu_min_width">@dimen/menu_width_min</dimen>
+    <dimen name="tab_strip_context_menu_max_width">@dimen/menu_width_max</dimen>
 
     <!-- Text selection context menu dimensions -->
     <dimen name="text_selection_context_menu_max_width">800dp</dimen>

@@ -14,7 +14,7 @@ export function getHtml(this: ToolbarAppElement) {
 ${this.isBackForwardButtonEnabled_ ? html`
   <back-forward-button id="back" direction="back"
    .state="${this.navigationControlsState_.backForwardControlState.backButtonState}"
-   .leadingMargin="${this.navigationControlsState_.backForwardControlState.backButtonLeadingMargin}"
+   .windowIsMaximizedOrFullscreen="${this.navigationControlsState_.backForwardControlState.windowIsMaximizedOrFullscreen}"
    .touchUi="${this.navigationControlsState_.touchUi}">
   </back-forward-button>
   <back-forward-button id="forward" direction="forward"
@@ -74,6 +74,10 @@ ${this.isBackForwardButtonEnabled_ ? html`
     <avatar-button id="avatar"
         .state="${this.navigationControlsState_.avatarControlState}">
     </avatar-button>
+  ` : ''}
+  ${this.webUIToolbarFullyEnabled_ ? html`
+    <overflow-button id="overflow" hidden>
+    </overflow-button>
   ` : ''}
   ${this.isAppMenuButtonEnabled_ ? html`
     <app-menu-button id="app-menu"

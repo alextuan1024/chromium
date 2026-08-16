@@ -570,6 +570,16 @@ class ExtensionsMenuMainPageViewInteractiveTest
     constexpr char kExtensionContextMenuButton[] =
         "extension_context_menu_button";
     return Steps(
+        Do([&]() {
+          if (auto* widget = extensions_container()
+                                 ->GetExtensionsMenuCoordinatorForTesting()
+                                 ->GetExtensionsMenuWidget()) {
+            if (auto* bubble =
+                    widget->widget_delegate()->AsBubbleDialogDelegate()) {
+              bubble->set_close_on_deactivate(false);
+            }
+          }
+        }),
         // Open the extension's context menu from its menu entry.
         NameDescendantViewByType<HoverButton>(menu_entry_element_id,
                                               kExtensionContextMenuButton, 1u),
@@ -755,9 +765,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
 
 // Tests clicking on the 'context menu' button opens the extension's context
 // menu.
-// TODO(crbug.com/400536589): Re-enable this flaky test.
 IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
-                       DISABLED_ContextMenuButtonOpensContextMenu) {
+                       ContextMenuButtonOpensContextMenu) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTab);
   const extensions::Extension* extension =
       LoadExtension(test_data_dir_.AppendASCII("simple_with_icon"));
@@ -784,9 +793,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
             return GetMenuEntryViewFor(extension->id())
                 ->IsContextMenuRunningForTesting();
           },
-          true)
-
-  );
+          true));
 }
 
 // Tests triggering the extension's action closes the extensions menu, even when
@@ -1075,11 +1082,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
           extension->id(),
           extensions::ExtensionContextMenuModel::ContextMenuSource::kMenuItem,
           extensions::ExtensionContextMenuModel::TOGGLE_VISIBILITY,
-          IDS_EXTENSIONS_CONTEXT_MENU_PIN_TO_TOOLBAR),
-
-      // TODO(crbug.com/378724154): Test crashes if popup is left opened at the
-      // end of the test. For now, close the popup so don't lose test coverage.
-      Do([&]() { extensions_container()->HideActivePopup(); }));
+          IDS_EXTENSIONS_CONTEXT_MENU_PIN_TO_TOOLBAR));
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,

@@ -24,6 +24,8 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Callback;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -72,7 +74,7 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
-import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteInput.RefineActionUsage;
@@ -193,7 +195,7 @@ class AutocompleteMediator
     // Suggestions are refreshed several times per keystroke.
     private @Nullable Long mFirstSuggestionListModelCreatedTime;
 
-    private @Nullable Boolean mOmniboxInZeroPrefixState;
+    private @TriState int mOmniboxInZeroPrefixState;
 
     // The timestamp (using SystemClock.elapsedRealtime()) at the point when the user started
     // modifying the omnibox with new input.
@@ -585,7 +587,7 @@ class AutocompleteMediator
         mNumPrefetchesStartedInOmniboxSession = 0;
         mLastPrefetchStartedSuggestion = null;
 
-        mOmniboxInZeroPrefixState = null;
+        mOmniboxInZeroPrefixState = TriState.NOT_SET;
         mNewOmniboxEditSessionTimestamp = -1;
 
         // Prevent any upcoming omnibox suggestions from showing once a URL is loaded (and as
@@ -891,7 +893,7 @@ class AutocompleteMediator
     }
 
     /* package */ void onSuggestionDropdownNavigation(boolean isParkedAtSentinel) {
-        if (isParkedAtSentinel && Boolean.TRUE.equals(mOmniboxInZeroPrefixState)) {
+        if (isParkedAtSentinel && mOmniboxInZeroPrefixState == TriState.TRUE) {
             mDelegate.setOmniboxEditingText("");
         }
     }
@@ -1128,16 +1130,15 @@ class AutocompleteMediator
         mListPropertyModel.set(SuggestionListProperties.LIST_IS_FINAL, false);
         mIgnoreOmniboxItemSelection = true;
         boolean isInZeroPrefixContext = mAutocompleteInput.isInZeroPrefixContext();
-        boolean isUnconventional =
-                isInZeroPrefixContext || !mAutocompleteInput.isConventionalRequestType();
+        boolean isUnconventional = !mAutocompleteInput.isConventionalRequestType();
+        boolean hasDesktopExperience = OmniboxCapabilities.hasDesktopExperience(mContext);
         @SelectionController.Mode int selectionMode;
-        if (isUnconventional || !OmniboxCapabilities.hasDesktopExperience(mContext)) {
+        if (!hasDesktopExperience || isUnconventional) {
+            selectionMode = SelectionController.Mode.WRAPPING_WITH_SENTINEL;
+        } else if (isInZeroPrefixContext) {
             // In desktop experiences, we use SENTINEL_THEN_WRAPPING to match the behavior of the
             // desktop browser.
-            selectionMode =
-                    OmniboxCapabilities.hasDesktopExperience(mContext)
-                            ? SelectionController.Mode.SENTINEL_THEN_WRAPPING
-                            : SelectionController.Mode.WRAPPING_WITH_SENTINEL;
+            selectionMode = SelectionController.Mode.SENTINEL_THEN_WRAPPING;
         } else {
             selectionMode = SelectionController.Mode.WRAPPING;
         }
@@ -1146,9 +1147,9 @@ class AutocompleteMediator
         cancelAutocompleteRequests();
 
         // The user recently focused the Omnibox, began typing, or cleared the Omnibox.
-        if (mOmniboxInZeroPrefixState == null
-                || mOmniboxInZeroPrefixState != isInZeroPrefixContext) {
-            mOmniboxInZeroPrefixState = isInZeroPrefixContext;
+        @TriState int newState = TriStateUtils.from(isInZeroPrefixContext);
+        if (mOmniboxInZeroPrefixState != newState) {
+            mOmniboxInZeroPrefixState = newState;
             if (!isInZeroPrefixContext) {
                 // User started typing.
                 mAutocomplete.resetSession();
@@ -2261,7 +2262,8 @@ class AutocompleteMediator
 
         // Default page context to prefetch suggestions for.
         GURL pageUrl = UrlConstantResolver.getOriginalNtpGurl();
-        int pageClass = PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS_VALUE;
+        @PageClassification
+        int pageClass = PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS;
 
         // Preserve current page context for Jump-start Omnibox feature.
         if (OmniboxFeatures.sJumpStartOmniboxCoverRecentlyVisitedPage.getValue()) {

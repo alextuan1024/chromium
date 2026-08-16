@@ -28,11 +28,11 @@
 //
 // If `earliest_next_refresh_time` is null it will not
 // schedule a new pre-warming, unless there are transient errors, in which case
-// it will use the default interval.
+// it will use the minimum interval.
 //
-// If `earliest_next_refresh_time` is in the past,
-// it will schedule the next pre-warming at the default interval to avoid
-// infinite loops.
+// If `earliest_next_refresh_time` is in the past or shorter than the minimum
+// interval, it will schedule the next pre-warming at the minimum interval to
+// avoid infinite loops or excessive requests.
 class DeviceBoundSessionPrewarmer {
  public:
   // A callback to retrieve the DeviceBoundSessionManager pointer dynamically.
@@ -54,7 +54,7 @@ class DeviceBoundSessionPrewarmer {
 
   // Starts the pre-warmer. The first execution will be immediate.
   // If the pre-warmer is already running, it will be stopped and restarted.
-  void Start(PrewarmUrlProvider url_provider_callback);
+  void Start(PrewarmUrlProvider url_provider_callback, bool is_startup_prewarm);
 
   // Stops the pre-warmer.
   void Stop();
@@ -76,6 +76,10 @@ class DeviceBoundSessionPrewarmer {
   base::OneShotTimer timer_;
   PrewarmUrlProvider url_provider_callback_;
   int invalid_url_consecutive_retries_ = 0;
+
+  // Whether the current pre-warming is the startup pre-warming (from Start())
+  // or a subsequent scheduled pre-warming.
+  bool is_startup_prewarm_ = true;
 
   base::WeakPtrFactory<DeviceBoundSessionPrewarmer> weak_ptr_factory_{this};
 };

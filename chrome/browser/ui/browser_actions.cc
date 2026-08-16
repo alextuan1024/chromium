@@ -64,6 +64,7 @@
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/features.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
+#include "chrome/browser/geic/geic_enabling.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/indigo/resources/grit/indigo_strings.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
@@ -338,9 +339,10 @@ BrowserActions::BrowserActions(BrowserWindowInterface* bwi)
 
 BrowserActions::~BrowserActions() {
   browser_action_prefs_listener_.reset();
+  // Extract the root and destruct it after the raw_ptr to avoid a dangling
+  // pointer scenario.
+  app_menu_root_ = nullptr;
   if (root_action_item_) {
-    // Extract the unique ptr and destruct it after the raw_ptr to avoid a
-    // dangling pointer scenario.
     std::unique_ptr<actions::ActionItem> owned_root_action_item =
         actions::ActionManager::Get().RemoveAction(root_action_item_);
     root_action_item_ = nullptr;
@@ -356,6 +358,9 @@ std::u16string BrowserActions::GetCleanTitleAndTooltipText(
 void BrowserActions::InitializeBrowserActions() {
   actions::ActionManager::Get().AddAction(
       actions::ActionItem::Builder().CopyAddressTo(&root_action_item_).Build());
+
+  RegisterAction(
+      actions::ActionItem::Builder().CopyAddressTo(&app_menu_root_).Build());
 
   InitializeSidePanelActions();
 
@@ -526,7 +531,8 @@ void BrowserActions::InitializeSidePanelActions() {
               [](BrowserWindowInterface* bwi, actions::ActionItem* item,
                  actions::ActionInvocationContext context) {
                 read_anything::ReadAnythingEntryPointController::ToggleUI(
-                    bwi, ReadAnythingOpenTrigger::kKeyboardShortcut);
+                    bwi, read_anything::mojom::ReadAnythingOpenTrigger::
+                             kKeyboardShortcut);
               },
               bwi))
           .SetActionId(kActionShowReadingModeKeyboard)
@@ -547,13 +553,14 @@ void BrowserActions::InitializeSidePanelActions() {
                 std::underlying_type_t<SidePanelOpenTrigger>
                     side_panel_trigger =
                         context.GetProperty(kSidePanelOpenTriggerKey);
-                ReadAnythingOpenTrigger open_trigger =
-                    ReadAnythingOpenTrigger::kAppMenu;
+                read_anything::mojom::ReadAnythingOpenTrigger open_trigger =
+                    read_anything::mojom::ReadAnythingOpenTrigger::kAppMenu;
                 if (side_panel_trigger != -1) {
-                  std::optional<ReadAnythingOpenTrigger> mapped_trigger =
-                      read_anything::SidePanelToReadAnythingOpenTrigger(
-                          static_cast<SidePanelOpenTrigger>(
-                              side_panel_trigger));
+                  std::optional<read_anything::mojom::ReadAnythingOpenTrigger>
+                      mapped_trigger =
+                          read_anything::SidePanelToReadAnythingOpenTrigger(
+                              static_cast<SidePanelOpenTrigger>(
+                                  side_panel_trigger));
                   if (mapped_trigger.has_value()) {
                     open_trigger = mapped_trigger.value();
                   }
@@ -684,7 +691,15 @@ void BrowserActions::InitializeSidePanelActions() {
             .Build());
   }
 
-  if (glic::GlicEnabling::IsEnabledByGlobalCriteria()) {
+  if (geic::IsGeicEnabled(profile)) {
+    root_action_item_->AddChild(
+        SidePanelAction(
+            SidePanelEntryId::kGeic, IDS_SETTINGS_SIDE_PANEL_ALIGNMENT_GLIC,
+            IDS_SETTINGS_SIDE_PANEL_ALIGNMENT_GLIC, omnibox::kSparkIcon,
+            kActionSidePanelShowGeic, bwi, false)
+            .SetVisible(true)
+            .Build());
+  } else if (glic::GlicEnabling::IsEnabledByGlobalCriteria()) {
     root_action_item_->AddChild(
         SidePanelAction(
             SidePanelEntryId::kGlic, IDS_SETTINGS_SIDE_PANEL_ALIGNMENT_GLIC,
@@ -1191,7 +1206,7 @@ void BrowserActions::InitializeChromeMenuActions() {
               l10n_util::GetStringUTF16(IDS_NEW_TAB)))
           .SetImage(ui::ImageModel::FromVectorIcon(
               features::IsRoundedIconsEnabled()
-                  ? vector_icons::kAddWeight500Icon
+                  ? vector_icons::kAddWeight500CustomIcon
                   : vector_icons::kAddOldIcon,
               ui::kColorIcon))
           .Build());
@@ -1588,7 +1603,7 @@ void BrowserActions::InitializeChromeMenuActions() {
           base::BindRepeating(
               [](BrowserWindowInterface* bwi, actions::ActionItem* item,
                  actions::ActionInvocationContext context) {
-                InspectUI::InspectDevices(bwi->GetBrowserForMigrationOnly());
+                InspectUI::InspectDevices(bwi);
               },
               bwi))
           .SetActionId(kActionDevToolsDevices)
@@ -2043,8 +2058,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
                 base::RecordAction(
                     base::UserMetricsAction("InstallWebAppFromMenu"));
                 web_app::CreateWebAppFromCurrentWebContents(
-                    bwi->GetBrowserForMigrationOnly(),
-                    web_app::WebAppInstallFlow::kInstallSite);
+                    bwi, web_app::WebAppInstallFlow::kInstallSite);
               },
               bwi))
           .SetActionId(kActionInstallPwa)
@@ -2736,8 +2750,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
                  actions::ActionInvocationContext context) {
                 base::RecordAction(
                     base::UserMetricsAction("OpenActiveTabInPwaWindow"));
-                web_app::ReparentWebAppForActiveTab(
-                    bwi->GetBrowserForMigrationOnly());
+                web_app::ReparentWebAppForActiveTab(bwi);
               },
               bwi))
           .SetActionId(kActionOpenInPwaWindow)
@@ -3576,8 +3589,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
                     bwi->GetBrowserForMigrationOnly());
 #else
                 web_app::CreateWebAppFromCurrentWebContents(
-                    bwi->GetBrowserForMigrationOnly(),
-                    web_app::WebAppInstallFlow::kCreateShortcut);
+                    bwi, web_app::WebAppInstallFlow::kCreateShortcut);
 #endif
               },
               bwi))

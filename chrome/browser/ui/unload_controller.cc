@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
+#include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -750,15 +751,13 @@ void UnloadController::OnCustomConfirmationClosed(
                 browser = tab->GetBrowserWindowInterface();
               }
               if (browser && browser->GetTabStripModel()) {
-                int current_index =
-                    browser->GetTabStripModel()->GetIndexOfWebContents(
-                        web_contents.get());
-                if (current_index != TabStripModel::kNoTab) {
+                if (browser->GetTabStripModel()->GetIndexOfWebContents(
+                        web_contents.get()) != TabStripModel::kNoTab) {
                   // Note: Once the user has confirmed once via the custom
                   // confirmation dialog, the tab closes directly without any
                   // additional prompts.
-                  browser->GetTabStripModel()->CloseWebContentsAt(
-                      current_index, TabCloseTypes::CLOSE_USER_GESTURE);
+                  browser->GetTabStripModel()->CloseWebContents(
+                      web_contents.get(), TabCloseTypes::CLOSE_USER_GESTURE);
                 }
               }
             },
@@ -973,8 +972,14 @@ void UnloadController::OnWindowCloseComplete() {
   // TODO(crbug.com/413168662): Explore synchronously destroying the browser
   // instead.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&Browser::SynchronouslyDestroyBrowser,
-                                browser_->AsWeakPtr()));
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserWindowInterface> browser) {
+            if (browser) {
+              BrowserManagerService::SynchronouslyDestroyBrowser(browser.get());
+            }
+          },
+          browser_->GetWeakPtr()));
 }
 
 base::CallbackListSubscription UnloadController::RegisterBrowserDidClose(

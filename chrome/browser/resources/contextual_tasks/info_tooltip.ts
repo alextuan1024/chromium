@@ -13,6 +13,8 @@ import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './info_tooltip.css.js';
 import {getHtml} from './info_tooltip.html.js';
+import {WindowOpenDisposition} from '//resources/mojo/ui/base/mojom/window_open_disposition.mojom-webui.js';
+import {BrowserProxyImpl} from './contextual_tasks_browser_proxy.js';
 
 export class ContextualTasksInfoTooltipElement extends CrLitElement {
   static get is() {
@@ -47,6 +49,8 @@ export class ContextualTasksInfoTooltipElement extends CrLitElement {
         type: Boolean,
         reflect: true,
       },
+      linkUrl: {type: String},
+      linkText: {type: String},
     };
   }
 
@@ -60,6 +64,8 @@ export class ContextualTasksInfoTooltipElement extends CrLitElement {
   accessor sideMargin: number = 24;
   accessor isCoinsEnabled: boolean =
       loadTimeData.getBoolean('tabFaviconChipsToCoinsEnabled');
+  accessor linkUrl: string = '';
+  accessor linkText: string = '';
 
   private tooltipResizeObserver_: ResizeObserver|null = null;
 
@@ -164,6 +170,14 @@ export class ContextualTasksInfoTooltipElement extends CrLitElement {
 
   }
 
+  protected onLinkClick_(e: Event) {
+    e.preventDefault();
+    if (this.linkUrl) {
+      BrowserProxyImpl.getInstance().handler.openUrl(
+          this.linkUrl, WindowOpenDisposition.NEW_FOREGROUND_TAB);
+    }
+  }
+
   protected onTooltipCloseClick_(e: Event) {
     e.stopPropagation();
     this.hide();
@@ -198,16 +212,12 @@ export class TooltipState {
   }
 
   constructor(
-      private isFeatureEnabled: boolean,
       private isDismissCountBelowCap: boolean,
       private sessionImpressionCap: number,
       private dismissCallback: () => void) {}
 
   shouldShow(dependencyMet: boolean = true): boolean {
     if (this.userDismissed_) {
-      return false;
-    }
-    if (!this.isFeatureEnabled) {
       return false;
     }
     if (!this.isDismissCountBelowCap) {

@@ -3089,6 +3089,10 @@ int RenderFrameHostImpl::GetRoutingID() const {
   return routing_id_;
 }
 
+int64_t RenderFrameHostImpl::GetNavigationId() const {
+  return navigation_id_;
+}
+
 const blink::LocalFrameToken& RenderFrameHostImpl::GetFrameToken() const {
   return frame_token_;
 }
@@ -7648,7 +7652,6 @@ void RenderFrameHostImpl::ContentsPreferredSizeChanged(
   delegate_->UpdateWindowPreferredSize(this, pref_size);
 }
 
-
 void RenderFrameHostImpl::FocusPage() {
   render_view_host_->OnFocus();
 }
@@ -7999,13 +8002,14 @@ void RenderFrameHostImpl::DownloadURL(
         })");
   std::unique_ptr<download::DownloadUrlParameters> parameters =
       CreateDownloadUrlParameters(blink_parameters->url, traffic_annotation);
-  parameters->set_content_initiated(!blink_parameters->is_context_menu_save);
-  // Ensure that user gesture claims match the current activation state.
+  // Downloads arriving through this IPC handler always originate from web
+  // content.
+  parameters->set_content_initiated(true);
   parameters->set_has_user_gesture(blink_parameters->has_user_gesture &&
                                    HasTransientUserActivation());
   parameters->set_suggested_name(
       blink_parameters->suggested_name.value_or(std::u16string()));
-  parameters->set_prompt(blink_parameters->is_context_menu_save);
+  parameters->set_prompt(blink_parameters->should_prompt_for_save_location);
   parameters->set_cross_origin_redirects(
       blink_parameters->cross_origin_redirects);
   parameters->set_referrer(
@@ -11730,6 +11734,7 @@ void RenderFrameHostImpl::BeginNavigation(
     }
   }
 
+  // TODO(crbug.com/40066983): Consider converting these into renderer kills.
   GetProcess()->FilterURL(true, &begin_params->searchable_form_url);
   if (!VerifyClientSideRedirectUrl(*this,
                                    &begin_params->client_side_redirect_url)) {
@@ -16281,25 +16286,10 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
       features::IsEnforceSameDocumentOriginInvariantsEnabled()) {
     if (params->insecure_request_policy !=
         frame_tree_node_->current_replication_state().insecure_request_policy) {
-      // Log crash keys to diagnose the mismatch direction.
-      SCOPED_CRASH_KEY_NUMBER(
-          "SameDocIRP", "renderer_policy",
-          static_cast<int>(params->insecure_request_policy));
-      SCOPED_CRASH_KEY_NUMBER(
-          "SameDocIRP", "browser_policy",
-          static_cast<int>(frame_tree_node_->current_replication_state()
-                               .insecure_request_policy));
-      SCOPED_CRASH_KEY_BOOL("SameDocIRP", "is_main_frame", !GetParent());
-      SCOPED_CRASH_KEY_NUMBER("SameDocIRP", "lifecycle",
-                              static_cast<int>(lifecycle_state()));
-      SCOPED_CRASH_KEY_STRING256("SameDocIRP", "url", params->url.spec());
-      SCOPED_CRASH_KEY_STRING256("SameDocIRP", "origin",
-                                 GetLastCommittedOrigin().GetDebugString());
-      // TODO(crbug.com/40580002): Collect data on the mismatch before
-      // enforcing. The root cause is not yet identified — keeping as
-      // DumpWithoutCrashing to gather crash reports without killing the
-      // renderer.
-      base::debug::DumpWithoutCrashing();
+      bad_message::ReceivedBadMessage(
+          GetProcess(),
+          bad_message::RFH_SAME_DOC_INSECURE_REQUEST_POLICY_CHANGE);
+      return false;
     }
 
     if (params->insecure_navigations_set !=
@@ -16660,7 +16650,6 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
             fenced_frame_properties->nested_urn_config_pairs()
                 ->GetValueIgnoringVisibility());
       }
-
     }
 
     // Continue observing the events for the committed navigation.
@@ -17543,8 +17532,7 @@ void RenderFrameHostImpl::SendCommitFailedNavigation(
         navigation_request->initiator_state_token_to_commit(),
         std::move(policy_container),
         GetContentClient()->browser()->GetAlternativeErrorPageOverrideInfo(
-            navigation_request->GetURL(), this, GetBrowserContext(),
-            error_code),
+            *navigation_request, this, GetBrowserContext(), error_code),
         BuildCommitFailedNavigationCallback(navigation_request));
   }
 }

@@ -149,6 +149,7 @@ This will otherwise be blocked by your privacy settings. This will allow the con
 <translation id="1243027604378859286">Author:</translation>
 <translation id="1246424317317450637">Bold</translation>
 <translation id="1247030632403369975">Aluminium</translation>
+<translation id="1249643768796040660">Remove this info</translation>
 <translation id="1253846494229886276">Saving screenshot</translation>
 <translation id="1253921432148366685"><ph name="TYPE_1" />, <ph name="TYPE_2" /> (synced)</translation>
 <translation id="1255931290436977164">Passport</translation>
@@ -304,6 +305,7 @@ This will otherwise be blocked by your privacy settings. This will allow the con
 <translation id="1504042622576912555">Flute</translation>
 <translation id="1507202001669085618">&lt;p&gt;You'll see this error if you're using a Wi-Fi portal where you have to sign in before you can get online.&lt;/p&gt;
     &lt;p&gt;To fix the error, click &lt;strong&gt;Connect&lt;/strong&gt; on the page that you're trying to open.&lt;/p&gt;</translation>
+<translation id="1507635939006264930">Turning on autofill</translation>
 <translation id="1508605873202255562">Create a customised tracker to stay on top of my goals</translation>
 <translation id="1513706915089223971">List of history entries</translation>
 <translation id="1515436033764190215">hr ago</translation>
@@ -609,8 +611,10 @@ This will otherwise be blocked by your privacy settings. This will allow the con
 <translation id="2045871135676061132">Envelope Personal</translation>
 <translation id="2048261947532620704">Translating page</translation>
 <translation id="2055016614992422886">Conversation</translation>
+<translation id="2058468041496756763">You can change your search engine at any time in Chrome’s settings. If you don't see your preferred search engine, you can perform a search from their site. You'll see it listed as a recently visited search engine in Chrome settings, and you can make it your default.</translation>
 <translation id="2059166748188874810">Municipality</translation>
 <translation id="2059202684901022309">22 in x 34 in</translation>
+<translation id="2063929825539050431">To quickly send this page to another device, touch and hold the address bar</translation>
 <translation id="2064691555167957331">{COUNT,plural, =1{1 suggestion}other{# suggestions}}</translation>
 <translation id="2066969741541525119">The site ahead is blocked by your organisation</translation>
 <translation id="2071156619270205202">This card is not eligible for virtual card number.</translation>
@@ -631,6 +635,7 @@ This will otherwise be blocked by your privacy settings. This will allow the con
 <translation id="2093982008204312032">Google Chrome is trying to turn off Windows Hello for filling passwords.</translation>
 <translation id="2094505752054353250">Domain mismatch</translation>
 <translation id="2094704029599359040">Version information</translation>
+<translation id="2096183846792489672">The content and URLs of the pages that you visit can be processed in a private space in the cloud</translation>
 <translation id="209961642949927292">Check out faster next time?</translation>
 <translation id="2099652385553570808">Triple staple left</translation>
 <translation id="2101225219012730419">Version:</translation>
@@ -1105,6 +1110,7 @@ This will otherwise be blocked by your privacy settings. This will allow the con
 <translation id="2905107382358353958">Alert about new payment setting</translation>
 <translation id="2909946352844186028">A network change was detected.</translation>
 <translation id="2910062169995917863">Session timed out</translation>
+<translation id="2911224142899421774">Your Google Wallet settings apply to info saved from Chrome</translation>
 <translation id="2911973620368911614">Job accounting user ID</translation>
 <translation id="2914160345369867329"><ph name="SITE" /> normally uses encryption to protect your information. When Chrome tried to connect to <ph name="SITE" /> this time, the website sent back unusual and incorrect credentials. This may happen when an attacker is trying to pretend to be <ph name="SITE" /> or a Wi-Fi sign-in screen has interrupted the connection. Your information is still secure because Chrome stopped the connection before any data was exchanged.</translation>
 <translation id="2915068235268646559">Crash from <ph name="CRASH_TIME" /></translation>
@@ -1591,6 +1597,7 @@ To hide pay later options, go to <ph name="BEGIN_LINK" />payment settings<ph nam
 <translation id="3738166223076830879">Your browser is managed by your administrator.</translation>
 <translation id="3739842843727261045">Thumbs up submits feedback that you like these results</translation>
 <translation id="3740447166056383374">Review is required before copying</translation>
+<translation id="3742104862808477448">Help Chromium better understand and fill complex forms by securely processing data on Google's servers. Your info remains private and isn't reviewed by anyone.</translation>
 <translation id="3744111561329211289">Background sync</translation>
 <translation id="3744212718085287312">Make it more secure with a virtual card next time?</translation>
 <translation id="3744899669254331632">You cannot visit <ph name="SITE" /> right now because the website sent scrambled credentials that Chromium cannot process. Network errors and attacks are usually temporary, so this page will probably work later.</translation>
@@ -1614,6 +1621,7 @@ To hide pay later options, go to <ph name="BEGIN_LINK" />payment settings<ph nam
 <translation id="3769584711865378220"><ph name="URL" /> wants to change location access from approximate to precise</translation>
 <translation id="3772211998634047851">Paper (bond)</translation>
 <translation id="377451872037045164"><ph name="CREATE_GOOGLE_KEEP_NOTE_FOCUSED_FRIENDLY_MATCH_TEXT" />: press Tab then Enter to create a new note in Google Keep quickly</translation>
+<translation id="3778045607993018262">Pix account will be linked to <ph name="ACCOUNT_EMAIL" />. To turn off Pix code detection, go to <ph name="BEGIN_LINK1" />Chrome settings<ph name="END_LINK1" /></translation>
 <translation id="3780694243617746492">Output bin</translation>
 <translation id="3783418713923659662">Mastercard</translation>
 <translation id="3784372983762739446">Bluetooth devices</translation>
@@ -1633,6 +1641,7 @@ To hide pay later options, go to <ph name="BEGIN_LINK" />payment settings<ph nam
 <translation id="380329542618494757">Name</translation>
 <translation id="3803481123869276674">When you make purchases in Chrome, see eWallet as an option</translation>
 <translation id="3803801106042434208">These search engines are popular in your region</translation>
+<translation id="3804112825000113857">View autofill settings</translation>
 <translation id="380666903981445943">Save a payment method in your Google Account to autofill it for purchases made in Chrome</translation>
 <translation id="3807366285948165054">Image X shift</translation>
 <translation id="3807873520724684969">Harmful content blocked.</translation>
@@ -3311,6 +3320,7 @@ To hide pay later options, go to <ph name="BEGIN_LINK" />payment settings<ph nam
 <translation id="666259744093848177">(x86_64 translated)</translation>
 <translation id="6665553082534466207">Triple punch right</translation>
 <translation id="6668389483194953109">Found paper size name 'custom', but the 'custom_size' property is empty or invalid.</translation>
+<translation id="667044980437620424">Autofill turned on</translation>
 <translation id="6670729408462528018">Gallery</translation>
 <translation id="6671697161687535275">Remove form suggestion from Chromium?</translation>
 <translation id="6675846980676550611">AR not allowed</translation>
@@ -3540,6 +3550,7 @@ To hide pay later options, go to <ph name="BEGIN_LINK" />payment settings<ph nam
 <translation id="7064851114919012435">Contact info</translation>
 <translation id="7070144569727915108">system settings</translation>
 <translation id="70705239631109039">Your connection is not fully secure</translation>
+<translation id="7074595960655571061">Now you can save payment methods to autofill at checkout in Chrome. <ph name="LINK_TEXT" /></translation>
 <translation id="7075452647191940183">Request is too large</translation>
 <translation id="7075513071073410194">PKCS #1 MD5 With RSA Encryption</translation>
 <translation id="7075896597860500885">Copying from this site is not recommended</translation>
@@ -3712,6 +3723,7 @@ Additional details:
 <translation id="7379321689415048316">Chrome can autofill difficult fields that standard autofill might miss</translation>
 <translation id="7380398842872229465">10 in x 15 in</translation>
 <translation id="7381551826960739226">Automatic payment methods filling is disabled because this form does not use a secure connection.</translation>
+<translation id="7382980704744807223">Suspicious</translation>
 <translation id="7388594495505979117">{0,plural, =1{Your device will restart in 1 minute}other{Your device will restart in # minutes}}</translation>
 <translation id="7393475648162498734">Show which rewards and benefits are available for your cards at checkout</translation>
 <translation id="7393971683644170444">Connecting to your card provider…</translation>
@@ -3821,7 +3833,7 @@ Additional details:
 <translation id="7552846755917812628">Try the following tips:</translation>
 <translation id="7554242657529665960">From your administrator: '<ph name="ADMIN_MESSAGE" />'</translation>
 <translation id="7554475479213504905">Reload and show anyway</translation>
-<translation id="7554791636758816595">New Tab</translation>
+<translation id="7554791636758816595">New tab</translation>
 <translation id="7556328470713619625">Use a passkey</translation>
 <translation id="7559278538486662777">This app can't be resized.</translation>
 <translation id="7561784249784255101">Digital versatile disc</translation>
@@ -4183,6 +4195,7 @@ Additional details:
 <translation id="8175796834047840627">Chrome is offering to save your cards in your Google Account because you are signed in. You can change this behaviour in settings.</translation>
 <translation id="8176440868214972690">The administrator of this device has sent some info to the following websites, like settings or policies.</translation>
 <translation id="818254048113802060">{0,plural, =1{<ph name="FILE_NAME" /> was blocked because of content}other{<ph name="FILE_COUNT" /> files were blocked because of content}}</translation>
+<translation id="8186171296341598122">You can change your search engine at any time in Chromium's settings. If you don't see your preferred search engine, you can perform a search from their site. You'll see it listed as a recently visited search engine in Chromium settings, and you can make it your default.</translation>
 <translation id="8188830160449823068">IBAN saved to device only</translation>
 <translation id="8189557652711717875">The search engine that you choose will be used for features such as searching from the address bar and from images on web pages.</translation>
 <translation id="8190193880870196235">Managed by an extension</translation>
@@ -4403,6 +4416,7 @@ Additional details:
 <translation id="8564182942834072828">Separate documents/Uncollated copies</translation>
 <translation id="8564466070529550495">Virtual card is not available at the moment, please try again later</translation>
 <translation id="8564985650692024650">Chromium recommends resetting your <ph name="BEGIN_BOLD" /><ph name="ORG_NAME" /><ph name="END_BOLD" /> password if you reused it on other sites.</translation>
+<translation id="8568406155558596128">Help Chrome better understand and fill complex forms by securely processing data on Google's servers. Your info remains private and isn't reviewed by anyone.</translation>
 <translation id="8574570240981266561">Item deleted</translation>
 <translation id="8577192028579836704">All options typically <ph name="TYPICAL_PRICE" /></translation>
 <translation id="8577348305244205642">Virtual card not available</translation>

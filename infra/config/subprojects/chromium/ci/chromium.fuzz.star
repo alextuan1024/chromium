@@ -835,6 +835,7 @@ def browser_msan_builder(**kwargs):
     return browser_builder(
         chromium_config_name = "chromium_clang",
         chromium_extra_apply_configs = ["clobber", "msan"],
+        gclient_apply_configs = ["checkout_instrumented_libraries"],
         build_config = builder_config.build_config.RELEASE,
         target_bits = 64,
         target_platform = builder_config.target_platform.LINUX,
@@ -1090,6 +1091,7 @@ libfuzzer_linux_asan_builder(
     build_config = builder_config.build_config.RELEASE,
     target_bits = 64,
     clusterfuzz_archive_path = "linux-release-asan/libfuzzer-linux-release",
+    clusterfuzz_archive_schema_version = 1,
     console_short_name = "linux",
     execution_timeout = 5 * time.hour,
     gn_extra_configs = [
@@ -1142,27 +1144,6 @@ libfuzzer_linux_asan_builder(
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
 )
 
-# TODO(496589592): Deprecate this builder once archives using schema v1 are
-# tested and confirmed to work as intended on ClusterFuzz.
-libfuzzer_linux_asan_builder(
-    name = "Libfuzzer Upload Linux ASan Schema v1",
-    description_html = "This builder uploads linux libfuzzer fuzzers with archive schema v1, for x64 using ASan",
-    free_space = builders.free_space.high,
-    gardener_rotations = args.ignore_default(None),
-    build_config = builder_config.build_config.RELEASE,
-    target_bits = 64,
-    clusterfuzz_archive_name_prefix = "libfuzzer-schema-v1",
-    clusterfuzz_archive_path = "linux-release-asan-schema-v1/libfuzzer-schema-v1-linux-release",
-    clusterfuzz_archive_schema_version = 1,
-    clusterfuzz_archive_subdir = "asan-schema-v1",
-    console_short_name = "linux-schema-v1",
-    execution_timeout = 4 * time.hour,
-    gn_extra_configs = [
-        "mojo_fuzzer",
-    ],
-    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
-)
-
 libfuzzer_linux_builder(
     name = "Libfuzzer Upload Linux MSan",
     build_config = builder_config.build_config.RELEASE,
@@ -1171,6 +1152,7 @@ libfuzzer_linux_builder(
     clusterfuzz_archive_path = "linux-release-msan/libfuzzer-linux-release",
     clusterfuzz_archive_schema_version = 1,
     console_short_name = "linux-msan",
+    gclient_apply_configs = ["checkout_instrumented_libraries"],
     gn_extra_configs = [
         "msan",
         "disable_seed_corpus",

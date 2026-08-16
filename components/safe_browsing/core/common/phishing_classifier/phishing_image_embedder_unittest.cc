@@ -23,6 +23,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/image/image.h"
 
 namespace safe_browsing {
 
@@ -30,7 +31,7 @@ namespace {
 
 using ::testing::_;
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 constexpr int kExpectedVisualWidth = 18;
 constexpr int kExpectedVisualHeight = 32;
 #else
@@ -49,13 +50,13 @@ class MockScorer : public Scorer {
 
   MOCK_METHOD(void,
               ApplyVisualTfLiteModel,
-              (const SkBitmap& bitmap,
+              (const gfx::Image& image,
                base::OnceCallback<void(std::vector<double>)> callback),
               (const, override));
 
   MOCK_METHOD(void,
               ApplyVisualTfLiteModelImageEmbedding,
-              (const SkBitmap& bitmap,
+              (const gfx::Image& image,
                base::OnceCallback<void(ImageFeatureEmbedding)> callback),
               (const, override));
 };
@@ -100,7 +101,9 @@ class PhishingImageEmbedderTest : public testing::Test {
 
   void TearDown() override {
     image_embedder_.reset();
+#if !BUILDFLAG(IS_IOS)
     ScorerStorage::GetInstance()->SetScorer(nullptr);
+#endif
   }
 
   void ClearScorer() {
@@ -127,8 +130,9 @@ TEST_F(PhishingImageEmbedderTest, NoImageEmbeddingWithVisualFeatures) {
                          const ImageFeatureEmbedding&, const VisualFeatures&>
       future;
 
-  image_embedder_->BeginImageEmbedding(
-      bitmap, /*can_extract_visual_features=*/true, future.GetCallback());
+  image_embedder_->BeginImageEmbedding(gfx::Image::CreateFrom1xBitmap(bitmap),
+                                       /*can_extract_visual_features=*/true,
+                                       future.GetCallback());
 
   // Since we didn't attach a valid image embedding model to the scorer,
   // ApplyVisualTfLiteModelImageEmbedding will return an empty embedding.
@@ -159,8 +163,9 @@ TEST_F(PhishingImageEmbedderTest, NoImageEmbeddingOrVisualFeatures) {
                          const ImageFeatureEmbedding&, const VisualFeatures&>
       future;
 
-  image_embedder_->BeginImageEmbedding(
-      bitmap, /*can_extract_visual_features=*/false, future.GetCallback());
+  image_embedder_->BeginImageEmbedding(gfx::Image::CreateFrom1xBitmap(bitmap),
+                                       /*can_extract_visual_features=*/false,
+                                       future.GetCallback());
 
   auto result = future.Get<0>();
   ASSERT_EQ(result, PhishingImageEmbedder::Result::kSuccess);
@@ -179,9 +184,11 @@ TEST_F(PhishingImageEmbedderTest, NoImageEmbeddingOrVisualFeatures) {
 TEST_F(PhishingImageEmbedderTest, ImageEmbeddingWithMockScorer) {
   auto mock_scorer = std::make_unique<MockScorer>();
   MockScorer* raw_mock_scorer = mock_scorer.get();
-  ScorerStorage::GetInstance()->SetScorer(std::move(mock_scorer));
 #if BUILDFLAG(IS_IOS)
   image_embedder_->set_scorer(raw_mock_scorer);
+  scorer_ = std::move(mock_scorer);
+#else
+  ScorerStorage::GetInstance()->SetScorer(std::move(mock_scorer));
 #endif
 
   SkBitmap bitmap;
@@ -189,7 +196,7 @@ TEST_F(PhishingImageEmbedderTest, ImageEmbeddingWithMockScorer) {
   bitmap.eraseColor(SK_ColorWHITE);
 
   EXPECT_CALL(*raw_mock_scorer, ApplyVisualTfLiteModelImageEmbedding(_, _))
-      .WillOnce([](const SkBitmap& bitmap,
+      .WillOnce([](const gfx::Image& image,
                    base::OnceCallback<void(ImageFeatureEmbedding)> callback) {
         ImageFeatureEmbedding embedding;
         embedding.add_embedding_value(0.5f);
@@ -201,8 +208,9 @@ TEST_F(PhishingImageEmbedderTest, ImageEmbeddingWithMockScorer) {
                          const ImageFeatureEmbedding&, const VisualFeatures&>
       future;
 
-  image_embedder_->BeginImageEmbedding(
-      bitmap, /*can_extract_visual_features=*/true, future.GetCallback());
+  image_embedder_->BeginImageEmbedding(gfx::Image::CreateFrom1xBitmap(bitmap),
+                                       /*can_extract_visual_features=*/true,
+                                       future.GetCallback());
 
   auto result = future.Get<0>();
   ASSERT_EQ(result, PhishingImageEmbedder::Result::kSuccess);
@@ -239,8 +247,9 @@ TEST_F(PhishingImageEmbedderTest, CancelInFlight) {
                          const ImageFeatureEmbedding&, const VisualFeatures&>
       future;
 
-  image_embedder_->BeginImageEmbedding(
-      bitmap, /*can_extract_visual_features=*/true, future.GetCallback());
+  image_embedder_->BeginImageEmbedding(gfx::Image::CreateFrom1xBitmap(bitmap),
+                                       /*can_extract_visual_features=*/true,
+                                       future.GetCallback());
 
   // Cancel immediately. This should invalidate the weak pointer for
   // callback execution.

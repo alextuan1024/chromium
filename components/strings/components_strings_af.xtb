@@ -149,6 +149,7 @@ Dit sal andersins deur jou privaatheidinstellings geblokkeer word. Dit sal die i
 <translation id="1243027604378859286">Outeur:</translation>
 <translation id="1246424317317450637">Vetdruk</translation>
 <translation id="1247030632403369975">Aluminium</translation>
+<translation id="1249643768796040660">Verwyder hierdie inligting</translation>
 <translation id="1253846494229886276">Stoor tans skermskoot</translation>
 <translation id="1253921432148366685"><ph name="TYPE_1" />, <ph name="TYPE_2" /> (gesinkroniseer)</translation>
 <translation id="1255931290436977164">Paspoort</translation>
@@ -304,6 +305,7 @@ Dit sal andersins deur jou privaatheidinstellings geblokkeer word. Dit sal die i
 <translation id="1504042622576912555">Gleuf</translation>
 <translation id="1507202001669085618">&lt;p&gt;Jy sal hierdie fout sien as jy 'n Wi-Fi-portaal gebruik waar jy moet aanmeld voordat jy aanlyn kan gaan.&lt;/p&gt;
     &lt;p&gt;Klik &lt;strong&gt;Koppel&lt;/strong&gt; op die bladsy wat jy probeer oopmaak om die fout reg te stel.&lt;/p&gt;</translation>
+<translation id="1507635939006264930">Skakel tans outovul aan</translation>
 <translation id="1508605873202255562">Skep ’n gepasmaakte rekordhouer om op hoogte van my doelwitte te bly</translation>
 <translation id="1513706915089223971">Lys geskiedenisinskrywings</translation>
 <translation id="1515436033764190215">uur gelede</translation>
@@ -609,8 +611,10 @@ Dit sal andersins deur jou privaatheidinstellings geblokkeer word. Dit sal die i
 <translation id="2045871135676061132">Koevert Persoonlik</translation>
 <translation id="2048261947532620704">Vertaal tans bladsy</translation>
 <translation id="2055016614992422886">Gesprek</translation>
+<translation id="2058468041496756763">Jy kan enige tyd jou soekenjin in Chrome se instellings verander. As jy nie jou voorkeursoekenjin sien nie, kan jy ’n soektog vanaf hul werf uitvoer. Jy sal in Chrome-instellings sien dat dit gelys is as ’n soekenjin wat onlangs besoek is, en jy kan dit jou verstek maak.</translation>
 <translation id="2059166748188874810">Munisipaliteit</translation>
 <translation id="2059202684901022309">22x34 dm.</translation>
+<translation id="2063929825539050431">Raak en hou die adresbalk om hierdie bladsy vinnig na ’n ander toestel toe te stuur</translation>
 <translation id="2064691555167957331">{COUNT,plural, =1{1 voorstel}other{# voorstelle}}</translation>
 <translation id="2066969741541525119">Die werf voor is deur jou organisasie gevlag</translation>
 <translation id="2071156619270205202">Hierdie kaart kwalifiseer nie vir virtuele kaartnommer nie.</translation>
@@ -631,6 +635,7 @@ Dit sal andersins deur jou privaatheidinstellings geblokkeer word. Dit sal die i
 <translation id="2093982008204312032">Google Chrome probeer tans om Windows Hello vir die invul van wagwoorde af te skakel.</translation>
 <translation id="2094505752054353250">Domein stem nie ooreen nie</translation>
 <translation id="2094704029599359040">Weergawe-inligting</translation>
+<translation id="2096183846792489672">Die inhoud en URL’e van die bladsye wat jy besoek, kan in ’n privaat ruimte in die wolk verwerk word</translation>
 <translation id="209961642949927292">Gaan volgende keer vinniger na die betaalpunt</translation>
 <translation id="2099652385553570808">Tripelkram links</translation>
 <translation id="2101225219012730419">Weergawe:</translation>
@@ -1105,6 +1110,7 @@ Dit sal andersins deur jou privaatheidinstellings geblokkeer word. Dit sal die i
 <translation id="2905107382358353958">Opletberig oor nuwe betalinginstelling</translation>
 <translation id="2909946352844186028">'n Netwerkverandering is bespeur.</translation>
 <translation id="2910062169995917863">Sessie het uitgetel</translation>
+<translation id="2911224142899421774">Jou Google Wallet-instellings is van toepassing op inligting wat van Chrome af gestoor is</translation>
 <translation id="2911973620368911614">Taakrekening se gebruiker-ID</translation>
 <translation id="2914160345369867329"><ph name="SITE" /> gebruik gewoonlik enkripsie om jou inligting te beskerm. Toe Chrome hierdie keer aan <ph name="SITE" /> probeer koppel het, het die webwerf ongewone en verkeerde eiebewyse teruggestuur. Dit kan gebeur wanneer 'n aanvaller probeer voorgee om <ph name="SITE" /> te wees, óf wanneer 'n Wi-Fi-aanmeldskerm die verbinding onderbreek het. Jou inligting is steeds veilig, want Chrome het die verbinding gestaak voordat enige data uitgeruil is.</translation>
 <translation id="2915068235268646559">Omval op <ph name="CRASH_TIME" /></translation>
@@ -1591,6 +1597,7 @@ Gaan na <ph name="BEGIN_LINK" />betalinginstellings<ph name="END_LINK" /> om Bet
 <translation id="3738166223076830879">Jou administrateur bestuur jou blaaier.</translation>
 <translation id="3739842843727261045">Opduim stuur terugvoer dat jy van hierdie resultate hou</translation>
 <translation id="3740447166056383374">Kontrolering word vereis voordat lêers gekopieer word</translation>
+<translation id="3742104862808477448">Help Chromium om komplekse vorms beter te verstaan en in te vul deur data veilig op Google se bedieners te verwerk. Jou inligting bly privaat en word nie deur enigiemand nagegaan nie.</translation>
 <translation id="3744111561329211289">Agtergrondsinkronisering</translation>
 <translation id="3744212718085287312">Maak dit volgende keer veiliger met ’n virtuele kaart?</translation>
 <translation id="3744899669254331632">Jy kan <ph name="SITE" /> nie nou onmiddelllik besoek nie, omdat die webwerf deurmekaar eiebewyse gestuur het wat Chrome nie kan verwerk nie. Netwerkfoute en -aanvalle is gewoonlik tydelik, so hierdie bladsy sal waarskynlik later werk.</translation>
@@ -1614,6 +1621,7 @@ Gaan na <ph name="BEGIN_LINK" />betalinginstellings<ph name="END_LINK" /> om Bet
 <translation id="3769584711865378220"><ph name="URL" /> wil liggingtoegang van benaderd na presies verander</translation>
 <translation id="3772211998634047851">Papier (bond)</translation>
 <translation id="377451872037045164"><ph name="CREATE_GOOGLE_KEEP_NOTE_FOCUSED_FRIENDLY_MATCH_TEXT" />, druk Tab en dan Enter om vinnig 'n nuwe nota in Google Keep te skep</translation>
+<translation id="3778045607993018262">Pix-rekening sal aan <ph name="ACCOUNT_EMAIL" /> gekoppel word. Gaan na <ph name="BEGIN_LINK1" />Chrome-instellings<ph name="END_LINK1" /> toe om Pix-kodebespeuring af te skakel</translation>
 <translation id="3780694243617746492">Uitvoerbak</translation>
 <translation id="3783418713923659662">Mastercard</translation>
 <translation id="3784372983762739446">Bluetooth-toestelle</translation>
@@ -1633,6 +1641,7 @@ Gaan na <ph name="BEGIN_LINK" />betalinginstellings<ph name="END_LINK" /> om Bet
 <translation id="380329542618494757">Naam</translation>
 <translation id="3803481123869276674">Beskou eWallet as ’n opsie wanneer jy aankope in Chrome doen</translation>
 <translation id="3803801106042434208">Hierdie soekenjins is gewild in jou streek</translation>
+<translation id="3804112825000113857">Bekyk outovulinstellings</translation>
 <translation id="380666903981445943">Stoor 'n betaalmetode in jou Google-rekening om dit te outovul vir aankope wat in Chrome gedoen word</translation>
 <translation id="3807366285948165054">Skuif prent langs X-as</translation>
 <translation id="3807873520724684969">Skadelike inhoud is geblokkeer.</translation>
@@ -3311,6 +3320,7 @@ Gaan na <ph name="BEGIN_LINK" />betalinginstellings<ph name="END_LINK" /> om Bet
 <translation id="666259744093848177">(x86_64 vertaal)</translation>
 <translation id="6665553082534466207">Tripelpons regs</translation>
 <translation id="6668389483194953109">Het papiergroottenaam "custom" (gepasmaak) gekry, maar die "custom_size"-eienskap is leeg of ongeldig.</translation>
+<translation id="667044980437620424">Outovul is aangeskakel</translation>
 <translation id="6670729408462528018">Galery</translation>
 <translation id="6671697161687535275">Verwyder vormvoorstel uit Chromium?</translation>
 <translation id="6675846980676550611">AR word nie toegelaat nie</translation>
@@ -3540,6 +3550,7 @@ Gaan na <ph name="BEGIN_LINK" />betalinginstellings<ph name="END_LINK" /> om Bet
 <translation id="7064851114919012435">Kontakinligting</translation>
 <translation id="7070144569727915108">stelselinstellings</translation>
 <translation id="70705239631109039">Jou verbinding is nie heeltemal veilig nie</translation>
+<translation id="7074595960655571061">Jy kan nou betaalmetodes stoor om outomaties by die betaalpunt in Chrome in te vul. <ph name="LINK_TEXT" /></translation>
 <translation id="7075452647191940183">Versoek is te groot</translation>
 <translation id="7075513071073410194">PKCS #1 MD5 met RSA-enkripsie</translation>
 <translation id="7075896597860500885">Dit word nie aanbeveel om van hierdie webwerf te kopieer nie</translation>
@@ -3711,6 +3722,7 @@ Bykomende besonderhede:
 <translation id="7379321689415048316">Chrome kan moeilike velde outovul wat standaardoutovul dalk sal mis</translation>
 <translation id="7380398842872229465">10x15 dm.</translation>
 <translation id="7381551826960739226">Outomatiese betaalmetode-invulling is gedeaktiveer omdat hierdie vorm nie ’n veilige verbinding gebruik nie.</translation>
+<translation id="7382980704744807223">Verdag</translation>
 <translation id="7388594495505979117">{0,plural, =1{Jou toestel sal oor 1 minuut herbegin}other{Jou toestel sal oor # minute herbegin}}</translation>
 <translation id="7393475648162498734">Wys watter belonings en voordele vir jou kaarte beskikbaar is by die betaalpunt</translation>
 <translation id="7393971683644170444">Koppel tans aan jou kaartverskaffer …</translation>
@@ -4182,6 +4194,7 @@ om uit te vind hoe om die sagteware permanent van jou rekenaar te verwyder&lt;/o
 <translation id="8175796834047840627">Chrome bied aan om jou kaarte in jou Google-rekening te stoor omdat jy aangemeld is. Jy kan hierdie gedrag in instellings verander.</translation>
 <translation id="8176440868214972690">Die administrateur van hierdie toestel het sommige inligting, soos instellings of beleide, na die volgende webwerwe gestuur.</translation>
 <translation id="818254048113802060">{0,plural, =1{<ph name="FILE_NAME" /> is weens inhoud geblokkeer}other{<ph name="FILE_COUNT" /> lêers is weens inhoud geblokkeer}}</translation>
+<translation id="8186171296341598122">Jy kan enige tyd jou soekenjin in Chromium se instellings verander. As jy nie jou voorkeursoekenjin sien nie, kan jy ’n soektog vanaf hul werf uitvoer. Jy sal in Chromium-instellings sien dat dit gelys is as ’n soekenjin wat onlangs besoek is, en jy kan dit jou verstek maak.</translation>
 <translation id="8188830160449823068">IBAN slegs op toestel gestoor</translation>
 <translation id="8189557652711717875">Die soekenjin wat jy kies, sal vir kenmerke gebruik word soos soek vanaf die adresbalk en vanaf prente op webblaaie.</translation>
 <translation id="8190193880870196235">Bestuur deur 'n uitbreiding</translation>
@@ -4402,6 +4415,7 @@ Bykomende besonderhede:
 <translation id="8564182942834072828">Afsonderlike dokumente/nie-ingesorteerde kopieë</translation>
 <translation id="8564466070529550495">Virtuele kaart is nie op die oomblik beskikbaar nie. Probeer asseblief later weer.</translation>
 <translation id="8564985650692024650">Chromium beveel aan dat jy jou <ph name="BEGIN_BOLD" /><ph name="ORG_NAME" /><ph name="END_BOLD" />-wagwoord terugstel as jy dit ook op ander werwe gebruik het.</translation>
+<translation id="8568406155558596128">Help Chrome om komplekse vorms beter te verstaan en in te vul deur data veilig op Google se bedieners te verwerk. Jou inligting bly privaat en word nie deur enigiemand nagegaan nie.</translation>
 <translation id="8574570240981266561">Item is uitgevee</translation>
 <translation id="8577192028579836704">Alle opsies is gewoonlik <ph name="TYPICAL_PRICE" /></translation>
 <translation id="8577348305244205642">Virtuele kaart is nie beskikbaar nie</translation>

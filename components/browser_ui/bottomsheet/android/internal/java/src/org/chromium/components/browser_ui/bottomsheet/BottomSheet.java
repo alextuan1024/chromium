@@ -22,6 +22,7 @@ import android.view.Window;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.Px;
@@ -224,6 +225,9 @@ class BottomSheet extends FrameLayout
      * easily tap-to-dismiss).
      */
     private View mCloseButton;
+
+    /** The drag handlebar view shown at the top of the sheet when requested by content. */
+    private ImageView mHandlebar;
 
     /** A handle to the FrameLayout that holds the snackbar of the bottom sheet. */
     private @Nullable FrameLayout mSnackbarContainer;
@@ -491,6 +495,16 @@ class BottomSheet extends FrameLayout
         mBottomSheetContentContainer.setBottomSheet(this);
 
         mCloseButton = findViewById(R.id.bottom_sheet_close_button);
+
+        mHandlebar = findViewById(R.id.handlebar);
+
+        assert mHandlebar != null;
+
+        mHandlebar.setOnClickListener(v -> toggleSheetState());
+        if (isLargeFormFactorUiEnabled()) {
+            mHandlebar.setPointerIcon(
+                    PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_HAND));
+        }
 
         mSnackbarContainer = findViewById(R.id.bottom_sheet_snackbar_container);
         assert mSnackbarContainer != null;
@@ -1414,11 +1428,33 @@ class BottomSheet extends FrameLayout
         return mContainerHeight;
     }
 
+    @Override
     @VisibleForTesting
-    boolean isLargeFormFactorUiEnabled() {
+    public boolean isLargeFormFactorUiEnabled() {
         return mIsLargeFormFactor
                 && mSheetContent != null
                 && mSheetContent.supportsLargeFormFactor();
+    }
+
+    public void toggleSheetState() {
+        // Early exit if the sheet only supports one open state (FULL).
+        if (!isHalfStateEnabled() && !isPeekStateEnabled()) return;
+
+        if (mCurrentState == SheetState.FULL) {
+            // We know at least one other state is enabled here.
+            // Go to HALF if enabled, otherwise it must be PEEK.
+            setSheetState(
+                    isHalfStateEnabled() ? SheetState.HALF : SheetState.PEEK,
+                    /* animate= */ true,
+                    StateChangeReason.NONE);
+        } else if (mCurrentState == SheetState.HALF) {
+            setSheetState(SheetState.FULL, /* animate= */ true, StateChangeReason.NONE);
+        } else if (mCurrentState == SheetState.PEEK) {
+            setSheetState(
+                    isHalfStateEnabled() ? SheetState.HALF : SheetState.FULL,
+                    /* animate= */ true,
+                    StateChangeReason.NONE);
+        }
     }
 
     /**
@@ -1690,9 +1726,14 @@ class BottomSheet extends FrameLayout
                 mSheetBackground.setBackgroundResource(R.drawable.bottom_sheet_background);
                 mSheetBackground.setClipToOutline(false);
                 mFallbackShadowLayer.setVisibility(View.VISIBLE);
-                mShadowLayer.setBackgroundResource(0);
-                mShadowLayer.setPadding(0, 0, 0, 0);
             }
+        }
+
+        boolean showHandlebar = content != null && content.showHandlebar();
+        mHandlebar.setVisibility(showHandlebar ? View.VISIBLE : View.GONE);
+        if (isLargeFormFactorUiEnabled()) {
+            mHandlebar.setPointerIcon(
+                    PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_HAND));
         }
         updateBackgroundColor();
         updateBackgroundGlow();
@@ -1745,6 +1786,58 @@ class BottomSheet extends FrameLayout
         }
 
         updateCurtainHeight();
+
+        if (isLargeFormFactorUiEnabled()) {
+            applyLargeFormFactorBackgroundBounds();
+        }
+    }
+
+    /**
+     * Shrinks the background and shadow to match the visible height of the sheet on LFF (desktop
+     * currently).
+     *
+     * <p>When a user drags the sheet downward, the internal view doesn't actually resize; it just
+     * gets pushed off-screen. This method visually trims the background to ensure the bottom
+     * rounded corners and drop shadows stay perfectly aligned with the bottom of the window instead
+     * of disappearing below it.
+     */
+    private void applyLargeFormFactorBackgroundBounds() {
+        if (mSheetBackground == null
+                || mShadowLayer == null
+                || mBottomSheetContentContainer == null) {
+            return;
+        }
+
+        // The true visual height of the sheet's cosmetic wrapper.
+        int visibleHeight = (int) Math.max(0, mCurrentOffsetPx);
+
+        // Ensure we don't accidentally ask for a bounds size larger than the actual layout limits.
+        int measuredBgHeight = mSheetBackground.getMeasuredHeight();
+        if (measuredBgHeight > 0) {
+            visibleHeight = Math.min(visibleHeight, measuredBgHeight);
+        }
+
+        // Clip the solid background strictly to the visual height.
+        mSheetBackground.setBottom(mSheetBackground.getTop() + visibleHeight);
+
+        // Wrap the shadow layer around the new background height, explicitly appending
+        // the shadow's native padding to allow the 9-patch border to paint correctly.
+        int shadowTopPadding = mShadowLayer.getPaddingTop();
+        int shadowBottomPadding = mShadowLayer.getPaddingBottom();
+        mShadowLayer.setBottom(
+                mShadowLayer.getTop() + visibleHeight + shadowTopPadding + shadowBottomPadding);
+    }
+
+    /**
+     * This is needed so that on layout changes, such as the browser resizing, or moving, the layout
+     * should remain tracked for peeking sheets on large form factors.
+     */
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (isLargeFormFactorUiEnabled()) {
+            applyLargeFormFactorBackgroundBounds();
+        }
     }
 
     private void updateViewport() {
@@ -1941,15 +2034,31 @@ class BottomSheet extends FrameLayout
 
         if (isLargeFormFactorUiEnabled()) {
             mShadowLayer.setBackgroundResource(R.drawable.popup_bg_shadow_16dp);
-            int size = mShadowLength;
+
             MarginLayoutParams lp = (MarginLayoutParams) mShadowLayer.getLayoutParams();
             if (lp != null) {
                 // The shadow drawable actually holds visual pixels that extend outwards
                 // further than the sheet itself. By applying negative margins equivalent
                 // to the shadow dimension, we stretch the bounds of the shadow layer to
                 // accommodate drawing the shadow fully without shrinking the inner content.
-                lp.setMargins(-size, -size, -size, -size);
+                lp.setMargins(
+                        -mShadowLayer.getPaddingLeft(),
+                        -mShadowLayer.getPaddingTop(),
+                        -mShadowLayer.getPaddingRight(),
+                        -mShadowLayer.getPaddingBottom());
                 mShadowLayer.setLayoutParams(lp);
+            }
+
+            // Allow the shadow to draw outside the strict layout boundaries of the container.
+            // Since the shadow expands into the container's bottom margin or window insets,
+            // we must also disable clipping on the parent to prevent the shadow from being sliced.
+            if (mSheetContainer != null) {
+                mSheetContainer.setClipChildren(false);
+                mSheetContainer.setClipToPadding(false);
+                if (mSheetContainer.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) mSheetContainer.getParent()).setClipChildren(false);
+                    ((ViewGroup) mSheetContainer.getParent()).setClipToPadding(false);
+                }
             }
         } else {
             MarginLayoutParams lp = (MarginLayoutParams) mShadowLayer.getLayoutParams();
@@ -2109,5 +2218,13 @@ class BottomSheet extends FrameLayout
     @SheetState
     int getStateBeforeKeyboardShownForTesting() {
         return mStateBeforeKeyboardShown;
+    }
+
+    void setHandlebarForTesting(ImageView handlebar) {
+        mHandlebar = handlebar;
+    }
+
+    ImageView getHandlebarForTesting() {
+        return mHandlebar;
     }
 }

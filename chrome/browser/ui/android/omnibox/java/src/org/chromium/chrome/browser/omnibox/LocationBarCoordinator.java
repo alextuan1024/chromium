@@ -90,10 +90,10 @@ import org.chromium.components.browser_ui.accessibility.PageZoomIndicatorCoordin
 import org.chromium.components.browser_ui.accessibility.PageZoomManager;
 import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteMatch;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.omnibox.TextSelection;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -546,6 +546,7 @@ public class LocationBarCoordinator
 
     @VisibleForTesting
     void initializeBoundsEllipsis(LocationBarDataProvider dataProvider) {
+        @PageClassification
         int pageClassification = dataProvider.getPageClassification(/* prefetch= */ false);
         boolean enableBoundsEllipsis = OmniboxViewUtil.isRegularTabContext(pageClassification);
         mDefaultBoundsEllipsis = enableBoundsEllipsis;
@@ -1030,11 +1031,6 @@ public class LocationBarCoordinator
         return mUrlCoordinator;
     }
 
-    /** Returns the {@link FuseboxCoordinator} for the LocationBar. */
-    public FuseboxCoordinator getFuseboxCoordinator() {
-        return mFuseboxCoordinator;
-    }
-
     /**
      * @param focusable Whether the url bar should be focusable.
      */
@@ -1057,9 +1053,9 @@ public class LocationBarCoordinator
      * whether it will be applied.
      */
     private void updateUrlBarForMultilineInput() {
-        boolean allowMultilineInput = OmniboxFeatures.sMultilineEditField.isEnabled();
         // Disable multiline input on Tablets if Fusebox state is "off".
-        allowMultilineInput &= !(isTabletLayout() && mCurrentFuseboxState == FuseboxState.DISABLED);
+        boolean allowMultilineInput =
+                !(isTabletLayout() && mCurrentFuseboxState == FuseboxState.DISABLED);
         mUrlCoordinator.setAllowMultilineInput(allowMultilineInput);
     }
 

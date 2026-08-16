@@ -85,7 +85,6 @@
 <translation id="1310482092992808703">Grouper les onglets</translation>
 <translation id="1318262688555255786">Partager le lien vers la page Web <ph name="PAGE_TITLE" />. Source : <ph name="PAGE_URL" /></translation>
 <translation id="1327257854815634930">L'historique de navigation est ouvert</translation>
-<translation id="1330043879670259913">Afin de sécuriser vos activités sur Chrome, votre organisation pourra consulter ou gérer certaines informations lorsque vous êtes connecté à Chrome. En savoir plus</translation>
 <translation id="1331212799747679585">Impossible de mettre à jour Chrome. Autres options</translation>
 <translation id="1332501820983677155">Raccourcis relatifs aux fonctionnalités Google Chrome</translation>
 <translation id="1333491156693005331">Vérification récente</translation>
@@ -533,6 +532,7 @@ Seule une personne connaissant votre phrase de passe peut lire vos données chif
 <translation id="3161699713309727585"><ph name="BUTTON_TEXT" /> (s'ouvre dans un nouvel onglet)</translation>
 <translation id="3166827708714933426">Raccourcis relatifs aux onglets et aux fenêtres</translation>
 <translation id="3167258285411721858">Vous pouvez utiliser le site pour appareils mobiles de <ph name="HOST_NAME" /></translation>
+<translation id="3177338796769255211">Connectez-vous pour accéder à vos favoris et plus encore sur tous vos appareils</translation>
 <translation id="3181145110929454111"><ph name="TAB_TITLE" />, onglet de navigation privée épinglé et multisélectionné avec son désactivé</translation>
 <translation id="3189635831478931757">Groupe d'onglets <ph name="GROUP_TITLE" /></translation>
 <translation id="3200536777393523575">Fermer votre fenêtre actuelle?</translation>
@@ -723,7 +723,6 @@ Seule une personne connaissant votre phrase de passe peut lire vos données chif
 <translation id="399788104667917863">Épingler à la barre d'outils</translation>
 <translation id="4000212216660919741">Accueil hors ligne</translation>
 <translation id="4000670338830950598">Personnaliser et contrôler Google Chrome avec un élément mis en évidence</translation>
-<translation id="4002066346123236978">Titre</translation>
 <translation id="4015643064997321279">{NUM_PASSWORDS,plural, =1{1 mot de passe compromis dans votre compte Google}one{# mot de passe compromis dans votre compte Google}other{# mots de passe compromis dans votre compte Google}}</translation>
 <translation id="4023638601467301498">Pour obtenir vos favoris et plus encore sur tous vos appareils, connectez-vous à Chrome</translation>
 <translation id="4024768890073681126">Votre navigateur est géré par votre parent</translation>
@@ -930,6 +929,7 @@ D'autres formes d'historique de navigation, telles que les recherches et l'activ
 <translation id="4794291718671962615">(<ph name="MEGABYTES" />) <ph name="URL" /></translation>
 <translation id="4807098396393229769">Nom du titulaire de la carte</translation>
 <translation id="480990236307250886">Ouvrir la page d'accueil</translation>
+<translation id="4816492930507672669">Ajuster à la page</translation>
 <translation id="4822710610088666676">Groupe d'onglets <ph name="TAB_GROUP_TITLE" /> fermé et enregistré</translation>
 <translation id="4834250788637067901">Modes de paiement, offres et adresses utilisant Google Pay</translation>
 <translation id="4835385943915508971">Chrome n'a pas accès à la ressource demandée.</translation>
@@ -1316,7 +1316,6 @@ Par exemple, certains sites Web peuvent répondre à cette demande en diffusant 
 <translation id="6411219469806822692">Impossible d'aller plus haut. Essayez de commencer plus haut sur la page.</translation>
 <translation id="6412215853589222273"><ph name="TAB_TITLE" />, onglet multisélectionné</translation>
 <translation id="641643625718530986">Imprimer...</translation>
-<translation id="6427723330233512782">Ajuster à la hauteur</translation>
 <translation id="6433501201775827830">Choisissez votre moteur de recherche</translation>
 <translation id="6434309073475700221">Supprimer</translation>
 <translation id="6435307030888827407">Rester déconnecté</translation>
@@ -1973,6 +1972,7 @@ Pour modifier ce paramètre, <ph name="BEGIN_LINK" />supprimez les données Chro
 <translation id="8937772741022875483">Supprimer votre activité Chrome de Bien-être numérique?</translation>
 <translation id="8942627711005830162">Ouvrir dans une autre fenêtre</translation>
 <translation id="8945143127965743188">Impossible de télécharger cette langue : <ph name="LANG" />. Réessayez plus tard.</translation>
+<translation id="8945348199139712719">Coller et accéder au texte copié</translation>
 <translation id="8946759102391960088">Conserver l'accès à vos mots de passe</translation>
 <translation id="895442993047180128">Fenêtre d'activation des notifications de conseils fermée</translation>
 <translation id="8957528460562961174">Pour conserver l'accès à vos mots de passe, exportez-les maintenant, puis importez-les dans votre gestionnaire de mots de passe préféré. Le gestionnaire de mots de passe Google a cessé de fonctionner parce que les services Google Play ne sont pas accessibles.</translation>

@@ -558,6 +558,11 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     }
     CHECK(first_dragged_tab_model_index.has_value());
 
+    if (!can_insert_into_groups &&
+        GetTabStripModel()->GetFocusedGroup().has_value()) {
+      return first_dragged_tab_model_index.value();
+    }
+
     const int index = CalculateInsertionIndex(
         dragged_bounds, first_dragged_tab_model_index.value(), num_dragged_tabs,
         can_insert_into_groups);
@@ -1203,10 +1208,11 @@ void TabStrip::NewTabButtonPressed(const ui::Event& event) {
   new_tab_button_pressed_start_time_ = base::TimeTicks::Now();
 
   base::RecordAction(base::UserMetricsAction("NewTab_Button"));
-  GetBrowser()->GetProfile()->SetUserData(
+  BrowserWindowInterface* const browser = GetBrowserWindowInterface();
+  browser->GetProfile()->SetUserData(
       NewTabGroupingUserData::kNewTabGroupingUserDataKey,
       std::make_unique<NewTabGroupingUserData>(
-          GetBrowser()->tab_strip_model()->GetActiveTab()->GetGroup()));
+          browser->GetTabStripModel()->GetActiveTab()->GetGroup()));
   if (event.IsMouseEvent()) {
     // Prevent the hover card from popping back in immediately. This forces a
     // normal fade-in.
@@ -1216,7 +1222,7 @@ void TabStrip::NewTabButtonPressed(const ui::Event& event) {
 
     const ui::MouseEvent& mouse = static_cast<const ui::MouseEvent&>(event);
     if (mouse.IsOnlyMiddleMouseButton()) {
-      chrome::NewTabFromClipboardURL(GetBrowser());
+      chrome::NewTabFromClipboardURL(browser);
       return;
     }
   }
@@ -2122,10 +2128,6 @@ void TabStrip::ShiftGroupRight(const tab_groups::TabGroupId& group) {
   ShiftGroupRelative(group, 1);
 }
 
-Browser* TabStrip::GetBrowser() {
-  return controller_->GetBrowserWindowInterface()->GetBrowserForMigrationOnly();
-}
-
 BrowserWindowInterface* TabStrip::GetBrowserWindowInterface() {
   return controller_->GetBrowserWindowInterface();
 }
@@ -2382,6 +2384,10 @@ void TabStrip::ShiftTabRelative(Tab* tab, int offset) {
 
 void TabStrip::ShiftGroupRelative(const tab_groups::TabGroupId& group,
                                   int offset) {
+  if (GetFocusedGroup() == group) {
+    return;
+  }
+
   CHECK_EQ(1, std::abs(offset))
       << "Offset must be 1 or -1 to shift the group left or right.";
   gfx::Range tabs_in_group = controller_->ListTabsInGroup(group);

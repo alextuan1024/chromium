@@ -51,9 +51,10 @@
 #include "chrome/browser/safe_browsing/v5_search_hashes_cache_factory.h"
 #include "chrome/browser/safe_browsing/verdict_cache_manager_factory.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/hats/mock_trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_util.h"
@@ -105,7 +106,6 @@
 #include "components/security_interstitials/core/unsafe_resource.h"
 #include "components/security_interstitials/core/unsafe_resource_locator.h"
 #include "components/security_interstitials/core/urls.h"
-#include "components/security_state/content/security_state_tab_helper.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -196,13 +196,13 @@ bool IsShowingInterstitial(WebContents* contents) {
           nullptr);
 }
 
-content::RenderFrameHost* GetRenderFrameHost(Browser* browser) {
-  return browser->tab_strip_model()
+content::RenderFrameHost* GetRenderFrameHost(BrowserWindowInterface* browser) {
+  return browser->GetTabStripModel()
       ->GetActiveWebContents()
       ->GetPrimaryMainFrame();
 }
 
-views::BubbleDialogDelegateView* OpenPageInfo(Browser* browser) {
+views::BubbleDialogDelegateView* OpenPageInfo(BrowserWindowInterface* browser) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   LocationIconView* location_icon_view =
       browser_view->toolbar()->location_bar_view()->location_icon_view();
@@ -214,15 +214,16 @@ views::BubbleDialogDelegateView* OpenPageInfo(Browser* browser) {
   return page_info;
 }
 
-bool WaitForReady(Browser* browser) {
-  WebContents* contents = browser->tab_strip_model()->GetActiveWebContents();
+bool WaitForReady(BrowserWindowInterface* browser) {
+  WebContents* contents = browser->GetTabStripModel()->GetActiveWebContents();
   if (!content::WaitForRenderFrameReady(contents->GetPrimaryMainFrame())) {
     return false;
   }
   return chrome_browser_interstitials::IsShowingInterstitial(contents);
 }
 
-Visibility GetVisibility(Browser* browser, const std::string& node_id) {
+Visibility GetVisibility(BrowserWindowInterface* browser,
+                         const std::string& node_id) {
   content::RenderFrameHost* rfh = GetRenderFrameHost(browser);
   if (!rfh) {
     return VISIBILITY_ERROR;
@@ -254,7 +255,7 @@ Visibility GetVisibility(Browser* browser, const std::string& node_id) {
   return result == true ? VISIBLE : HIDDEN;
 }
 
-bool Click(Browser* browser, const std::string& node_id) {
+bool Click(BrowserWindowInterface* browser, const std::string& node_id) {
   DCHECK(node_id == "primary-button" || node_id == "proceed-link" ||
          node_id == "whitepaper-link" || node_id == "details-button" ||
          node_id == "opt-in-checkbox" || node_id == "enhanced-protection-link")
@@ -273,12 +274,13 @@ bool Click(Browser* browser, const std::string& node_id) {
   return true;
 }
 
-bool ClickAndWaitForDetach(Browser* browser, const std::string& node_id) {
+bool ClickAndWaitForDetach(BrowserWindowInterface* browser,
+                           const std::string& node_id) {
   // We wait for interstitial_detached rather than nav_entry_committed, as
   // going back from a main-frame safe browsing interstitial page will not
   // cause a nav entry committed event.
   content::TestNavigationObserver observer(
-      browser->tab_strip_model()->GetActiveWebContents());
+      browser->GetTabStripModel()->GetActiveWebContents());
   if (!Click(browser, node_id)) {
     return false;
   }
@@ -288,21 +290,20 @@ bool ClickAndWaitForDetach(Browser* browser, const std::string& node_id) {
 
 void ExpectSecurityIndicatorDowngrade(content::WebContents* tab,
                                       net::CertStatus cert_status) {
-  SecurityStateTabHelper* helper = SecurityStateTabHelper::FromWebContents(tab);
-  ASSERT_TRUE(helper);
-  EXPECT_EQ(security_state::DANGEROUS, helper->GetSecurityLevel());
+  EXPECT_EQ(security_state::DANGEROUS,
+            chrome_security_state::GetSecurityLevel(tab));
   EXPECT_NE(security_state::MALICIOUS_CONTENT_STATUS_NONE,
-            helper->GetVisibleSecurityState()->malicious_content_status);
+            chrome_security_state::GetVisibleSecurityState(tab)
+                ->malicious_content_status);
   // TODO(felt): Restore this check when https://crbug.com/40085203 is fixed.
   // EXPECT_EQ(cert_status, helper->GetSecurityInfo().cert_status);
 }
 
 void ExpectNoSecurityIndicatorDowngrade(content::WebContents* tab) {
-  SecurityStateTabHelper* helper = SecurityStateTabHelper::FromWebContents(tab);
-  ASSERT_TRUE(helper);
-  EXPECT_EQ(security_state::NONE, helper->GetSecurityLevel());
+  EXPECT_EQ(security_state::NONE, chrome_security_state::GetSecurityLevel(tab));
   EXPECT_EQ(security_state::MALICIOUS_CONTENT_STATUS_NONE,
-            helper->GetVisibleSecurityState()->malicious_content_status);
+            chrome_security_state::GetVisibleSecurityState(tab)
+                ->malicious_content_status);
 }
 
 class TestThreatDetailsFactory : public ThreatDetailsFactory {
@@ -331,8 +332,8 @@ class TestThreatDetailsFactory : public ThreatDetailsFactory {
   raw_ptr<ThreatDetails, AcrossTasksDanglingUntriaged> details_ = nullptr;
 };
 
-void AssertNoInterstitial(Browser* browser) {
-  WebContents* contents = browser->tab_strip_model()->GetActiveWebContents();
+void AssertNoInterstitial(BrowserWindowInterface* browser) {
+  WebContents* contents = browser->GetTabStripModel()->GetActiveWebContents();
   ASSERT_FALSE(chrome_browser_interstitials::IsShowingInterstitial(contents));
   return;
 }
@@ -451,13 +452,13 @@ class SafeBrowsingBlockingPageBrowserTest
   }
 
   // The basic version of this method, which uses an HTTP test URL.
-  GURL SetupWarningAndNavigate(Browser* browser) {
+  GURL SetupWarningAndNavigate(BrowserWindowInterface* browser) {
     return SetupWarningAndNavigateToURL(
         embedded_test_server()->GetURL(kEmptyPage), browser);
   }
 
   // The basic version of this method, which uses an HTTP test URL.
-  GURL SetupWarningAndNavigateInNewTab(Browser* browser) {
+  GURL SetupWarningAndNavigateInNewTab(BrowserWindowInterface* browser) {
     return SetupWarningAndNavigateToURLInNewTab(
         embedded_test_server()->GetURL(kEmptyPage), browser);
   }
@@ -764,7 +765,7 @@ class SafeBrowsingBlockingPageBrowserTest
   // Adds a safebrowsing result of the current test threat to the fake
   // safebrowsing service, navigates to that page, and returns the url.
   // The various wrappers supply different URLs.
-  GURL SetupWarningAndNavigateToURL(GURL url, Browser* browser) {
+  GURL SetupWarningAndNavigateToURL(GURL url, BrowserWindowInterface* browser) {
     SetURLThreatType(url, GetThreatType());
     EXPECT_TRUE(ui_test_utils::NavigateToURL(browser, url));
     EXPECT_TRUE(WaitForReady(browser));
@@ -773,13 +774,14 @@ class SafeBrowsingBlockingPageBrowserTest
   // Adds a safebrowsing result of the current test threat to the fake
   // safebrowsing service, navigates to that page, and returns the url.
   // The various wrappers supply different URLs.
-  GURL SetupWarningAndNavigateToURLInNewTab(GURL url, Browser* browser) {
+  GURL SetupWarningAndNavigateToURLInNewTab(GURL url,
+                                            BrowserWindowInterface* browser) {
     SetURLThreatType(url, GetThreatType());
     ui_test_utils::NavigateToURLWithDisposition(
         browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
     content::TestNavigationObserver observer(
-        browser->tab_strip_model()->GetActiveWebContents());
+        browser->GetTabStripModel()->GetActiveWebContents());
     observer.WaitForNavigationFinished();
     EXPECT_TRUE(WaitForReady(browser));
     return url;
@@ -1468,7 +1470,7 @@ IN_PROC_BROWSER_TEST_P(SafeBrowsingBlockingPageBrowserTest,
     SetReportSentCallback(threat_report_sent_loop.QuitClosure());
   }
 
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   incognito_browser->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kSafeBrowsingScoutReportingEnabled, true);   // set up SBER
   GURL url = SetupWarningAndNavigate(incognito_browser);  // incognito
@@ -1514,8 +1516,8 @@ class SecurityStyleTestObserver : public content::WebContentsObserver {
 
   // WebContentsObserver:
   void DidChangeVisibleSecurityState() override {
-    auto* helper = SecurityStateTabHelper::FromWebContents(web_contents());
-    latest_security_level_ = helper->GetSecurityLevel();
+    latest_security_level_ =
+        chrome_security_state::GetSecurityLevel(web_contents());
   }
 
  private:
@@ -2275,10 +2277,10 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
     ThreatDetails::RegisterFactory(&details_factory_);
   }
 
-  static bool TypeAndWaitForInterstitial(Browser* browser) {
+  static bool TypeAndWaitForInterstitial(BrowserWindowInterface* browser) {
     // Type something. An interstitial should be shown.
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     input::NativeWebKeyboardEvent event(
         blink::WebKeyboardEvent::Type::kRawKeyDown,
@@ -2292,7 +2294,7 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
     return WaitForReady(browser);
   }
 
-  static void MouseClick(Browser* browser) {
+  static void MouseClick(BrowserWindowInterface* browser) {
     blink::WebMouseEvent event(
         blink::WebInputEvent::Type::kMouseDown,
         blink::WebInputEvent::kNoModifiers,
@@ -2301,24 +2303,26 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
     event.SetPositionInWidget(100, 100);
     event.click_count = 1;
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::RenderWidgetHost* rwh =
         contents->GetPrimaryMainFrame()->GetRenderViewHost()->GetWidget();
     rwh->ForwardMouseEvent(event);
   }
 
-  static bool MouseClickAndWaitForInterstitial(Browser* browser) {
+  static bool MouseClickAndWaitForInterstitial(
+      BrowserWindowInterface* browser) {
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     MouseClick(browser);
     observer.WaitForNavigationFinished();
     return WaitForReady(browser);
   }
 
-  static bool FullscreenAndWaitForInterstitial(Browser* browser) {
+  static bool FullscreenAndWaitForInterstitial(
+      BrowserWindowInterface* browser) {
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     const char* const kScript = "document.body.webkitRequestFullscreen()";
     EXPECT_TRUE(content::ExecJs(contents, kScript));
@@ -2326,9 +2330,10 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
     return WaitForReady(browser);
   }
 
-  static bool RequestPermissionAndWaitForInterstitial(Browser* browser) {
+  static bool RequestPermissionAndWaitForInterstitial(
+      BrowserWindowInterface* browser) {
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     const char* const kScript = "Notification.requestPermission(function(){})";
     EXPECT_TRUE(content::ExecJs(contents, kScript));
@@ -2336,9 +2341,10 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
     return WaitForReady(browser);
   }
 
-  static bool RequestDesktopCaptureAndWaitForInterstitial(Browser* browser) {
+  static bool RequestDesktopCaptureAndWaitForInterstitial(
+      BrowserWindowInterface* browser) {
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     const char* const kScript = "navigator.mediaDevices.getDisplayMedia()";
     EXPECT_TRUE(content::ExecJs(contents, kScript,
@@ -2354,9 +2360,9 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
       std::vector<base::test::FeatureRef>* disabled_features) {}
 
   // Initiates a download and waits for it to be completed or cancelled.
-  static void DownloadAndWaitForNavigation(Browser* browser) {
+  static void DownloadAndWaitForNavigation(BrowserWindowInterface* browser) {
     content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver observer(contents);
     content::WebContentsConsoleObserver console_observer(contents);
     console_observer.SetPattern(
@@ -2407,7 +2413,8 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
 };
 
 #if BUILDFLAG(IS_WIN)
-// Flaky on Windows CI bots (e.g. win11-arm64-rel-tests). See https://crbug.com/523387896.
+// Flaky on Windows CI bots (e.g. win11-arm64-rel-tests). See
+// https://crbug.com/523387896.
 #define MAYBE_NoInteraction_WarningNotShown \
   DISABLED_NoInteraction_WarningNotShown
 #else
@@ -2923,7 +2930,7 @@ class SafeBrowsingBlockingPageEnhancedProtectionMessageTest
   }
 
  protected:
-  void SetupWarningAndNavigateToURL(GURL url, Browser* browser) {
+  void SetupWarningAndNavigateToURL(GURL url, BrowserWindowInterface* browser) {
     TestSafeBrowsingService* service = factory_.test_safe_browsing_service();
     ASSERT_TRUE(service);
 

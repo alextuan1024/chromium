@@ -526,7 +526,7 @@ class MODULES_EXPORT AudioContext final
   // all that's needed.
   size_t total_audible_renders_ = 0;
 
-  SelfKeepAlive<AudioContext> keep_alive_{this};
+  SelfKeepAlive<AudioContext> keep_alive_{{}, this};
 
   // Initially, we assume that the microphone permission is denied. But this
   // will be corrected after the actual construction.
@@ -641,10 +641,6 @@ class MODULES_EXPORT AudioContext final
   // is called, cleared when it executes. Also cleared by close() or resume().
   bool pending_transition_to_suspend_
       GUARDED_BY_CONTEXT(main_thread_sequence_checker_) = false;
-
-  // Stores promise resolvers for suspend().
-  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
-      pending_suspend_resolvers_;
 
   // https://webaudio.github.io/web-audio-api/#dom-audiocontext-pending-resume-promises-slot
   HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>

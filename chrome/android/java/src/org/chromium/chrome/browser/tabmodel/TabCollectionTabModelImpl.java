@@ -40,7 +40,6 @@ import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
@@ -202,7 +201,6 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
 
             Token tabGroupId = tab.getTabGroupId();
             boolean restoredTabGroup = tabGroupId != null && !tabGroupExists(tabGroupId);
-            dumpIfHasTabInterfaceAndroid(tab);
             int finalIndex =
                     TabCollectionTabModelImplJni.get()
                             .addTabRecursive(
@@ -333,6 +331,7 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
     private final TabUngrouper mTabUngrouper;
     private final Supplier<ScopedStorageBatch> mBatchFactory;
     private @Nullable PendingTabClosureManager mPendingTabClosureManager;
+    private final @Nullable TabOpenerTrackerHelper mTabOpenerTrackerHelper;
 
     private long mNativeTabCollectionTabModelImplPtr;
     // Only ever true for the regular tab model. Called after tab state is initialized, before
@@ -395,6 +394,10 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
             mPendingTabClosureManager =
                     new PendingTabClosureManager(this, new PendingTabClosureDelegateImpl());
         }
+        mTabOpenerTrackerHelper = TabOpenerTrackerHelper.create();
+        if (mTabOpenerTrackerHelper != null) {
+            mTabModelObservers.addObserver(mTabOpenerTrackerHelper);
+        }
 
         initializeNative(activityType, customTabProfileType, tabModelType);
     }
@@ -441,6 +444,9 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
             } else {
                 mPendingTabClosureManager.destroy();
             }
+        }
+        if (mTabOpenerTrackerHelper != null) {
+            removeObserver(mTabOpenerTrackerHelper);
         }
 
         mTabIdToTabs.clear();
@@ -531,6 +537,15 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
                 Collections.singletonList(tab),
                 uponExit,
                 TabCloseType.SINGLE);
+    }
+
+    @Override
+    public @Nullable Tab getHierarchicalNextTab(Tab closingTab, List<Tab> closingTabs) {
+        assert mNextTabPolicySupplier.get() == NextTabPolicy.HIERARCHICAL;
+        return mTabOpenerTrackerHelper != null
+                ? mTabOpenerTrackerHelper.findHierarchicalNextTab(
+                        /* tabModel= */ this, closingTab, closingTabs)
+                : null;
     }
 
     @Override
@@ -876,7 +891,11 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
 
     @Override
     public void setActive(boolean active) {
+        if (mActive == active) return;
         mActive = active;
+        for (TabModelObserver obs : mTabModelObservers) {
+            obs.onActiveChanged(active);
+        }
     }
 
     // TabModelJniBridge overrides.
@@ -1585,18 +1604,6 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
         }
     }
 
-    private void dumpIfHasTabInterfaceAndroid(Tab tab) {
-        // There appear to be cases where a native TabAndroid has multiple TabInterfaceAndroid
-        // objects. This should not be possible. The C++ state is unhelpful to know how this is
-        // triggered so instead we dump the Java stack to be able to debug this issue.
-        if (tab.hasTabInterfaceAndroid()) {
-            Throwable throwable =
-                    new Throwable(
-                            "This is not a crash. See https://crbug.com/488398095 for details.");
-            ChromePureJavaExceptionReporter.reportJavaException(throwable);
-        }
-    }
-
     private void addTabInternal(
             Tab tab, int index, @TabLaunchType int type, @TabCreationState int creationState) {
         commitAllTabClosures();
@@ -1665,7 +1672,6 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
         // group id.
         tab.setRootId(tab.getId());
 
-        dumpIfHasTabInterfaceAndroid(tab);
         int finalIndex =
                 TabCollectionTabModelImplJni.get()
                         .addTabRecursive(

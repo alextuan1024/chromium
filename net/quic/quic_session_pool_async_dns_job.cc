@@ -4,11 +4,14 @@
 
 #include "net/quic/quic_session_pool_async_dns_job.h"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
 #include "net/base/ech_mode.h"
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
@@ -111,11 +114,20 @@ void QuicSessionPool::AsyncDnsJob::SetRequestExpectations(
   if (!base::FeatureList::IsEnabled(features::kAsyncQuicSession)) {
     return;
   }
+  if (session_creation_notified_) {
+    // The signal already fired. A new request must not be promised a second
+    // one, not even while the other connector is still creating a session.
+    return;
+  }
   // Promise the session creation signal only while it can still fire. That
-  // is before the host resolution signal fired, or while the connector's
-  // attempt has not finished creating its session.
+  // is before the host resolution signal fired, while an attempt of either
+  // connector has not finished creating its session, or while a failed
+  // session creation result is being held for later delivery.
   if (!host_resolution_notified_ ||
-      (connector_ && connector_->AwaitingSessionCreation())) {
+      (primary_connector_ && primary_connector_->AwaitingSessionCreation()) ||
+      (secondary_connector_ &&
+       secondary_connector_->AwaitingSessionCreation()) ||
+      held_session_creation_result_.has_value()) {
     request->ExpectQuicSessionCreation();
   }
 }
@@ -134,61 +146,76 @@ void QuicSessionPool::AsyncDnsJob::UpdatePriority(
 
 void QuicSessionPool::AsyncDnsJob::PopulateNetErrorDetails(
     NetErrorDetails* details) const {
-  if (connector_) {
-    connector_->PopulateNetErrorDetails(details);
+  // An attempt that is still in flight describes the connection the requests
+  // are waiting for, so it is preferred over the recorded failure. The
+  // primary slot comes first because it holds the IPv6 side once both slots
+  // are filled.
+  for (const EndpointConnector* connector :
+       {primary_connector_.get(), secondary_connector_.get()}) {
+    if (connector && connector->has_attempt()) {
+      connector->PopulateNetErrorDetails(details);
+      return;
+    }
+  }
+  if (last_attempt_failure_.has_value()) {
+    details->connection_info = last_attempt_failure_->details.connection_info;
+    details->quic_connection_error =
+        last_attempt_failure_->details.quic_connection_error;
   }
 }
 
 void QuicSessionPool::AsyncDnsJob::OnServiceEndpointsUpdated() {
   usable_endpoints_.reset();
-  // TODO(crbug.com/531975349): Try advancing the connector on updates once
-  // it supports fallback and racing. A single in-flight attempt cannot use
-  // new results, so ignore updates for now.
-  if (attempt_started_) {
-    return;
-  }
-
   if (!service_endpoint_request_->EndpointsCryptoReady()) {
     return;
   }
 
   std::optional<int> rv = ProcessServiceEndpointResults();
   if (!rv.has_value()) {
-    // Nothing usable yet. Wait for the next update or the final result.
+    // Nothing to attempt yet. Wait for the next update or the final result.
     return;
   }
-  NotifyAndCompleteJob(*rv);
+  MaybeNotifyHostResolutionAndComplete(*rv);
 }
 
 void QuicSessionPool::AsyncDnsJob::OnServiceEndpointRequestFinished(int rv) {
   CHECK(!resolution_finished_);
-  resolution_finished_ = true;
   usable_endpoints_.reset();
-  // TODO(crbug.com/531975349): Try advancing the connector on the final
-  // results once it supports fallback and racing. For now the in-flight
-  // attempt decides the job outcome, and a late resolver error cannot
-  // change it.
-  if (attempt_started_) {
-    return;
-  }
 
   rv = DoResolveHostComplete(rv);
-  NotifyAndCompleteJob(rv);
+  MaybeNotifyHostResolutionAndComplete(rv);
 }
 
-void QuicSessionPool::AsyncDnsJob::CompleteJob(int rv) {
-  if (!callback_.is_null()) {
-    std::move(callback_).Run(rv);
+void QuicSessionPool::AsyncDnsJob::MaybeNotifyHostResolutionAndComplete(
+    int rv) {
+  if (!host_resolution_notified_) {
+    auto weak_this = weak_factory_.GetWeakPtr();
+    NotifyRequestsOfHostResolution(rv);
+    if (!weak_this) {
+      return;
+    }
   }
-}
-
-void QuicSessionPool::AsyncDnsJob::NotifyAndCompleteJob(int rv) {
-  auto weak_this = weak_factory_.GetWeakPtr();
-  NotifyRequestsOfHostResolution(rv);
-  if (weak_this && rv != ERR_IO_PENDING) {
+  if (rv != ERR_IO_PENDING) {
     // This destroys the job and its resolver request. The resolver supports
     // request destruction inside this delegate callback.
     CompleteJob(rv);
+  }
+}
+
+void QuicSessionPool::AsyncDnsJob::CompleteJob(int rv) {
+  slow_timer_.Stop();
+  if (!session_creation_notified_ &&
+      held_session_creation_result_.has_value()) {
+    // The job is completing, so no later attempt can replace this result.
+    // Deliver the held failure now.
+    auto weak_this = weak_factory_.GetWeakPtr();
+    NotifyRequestsOfSessionCreation(*held_session_creation_result_);
+    if (!weak_this) {
+      return;
+    }
+  }
+  if (!callback_.is_null()) {
+    std::move(callback_).Run(rv);
   }
 }
 
@@ -286,7 +313,74 @@ bool QuicSessionPool::AsyncDnsJob::MaybePoolToExistingSession() {
   return false;
 }
 
-void QuicSessionPool::AsyncDnsJob::OnSessionCreationDecided(int rv) {
+std::optional<QuicSessionPool::AsyncDnsJob::Candidate>
+QuicSessionPool::AsyncDnsJob::TakeNextCandidate(
+    const EndpointConnector* connector) {
+  // While the secondary slot is empty the primary connector may use both
+  // families, and every visible IPv6 candidate ranks above any IPv4 one.
+  // Once both slots are filled the primary takes IPv6 and the secondary
+  // takes IPv4 while DNS resolution is in flight. Once DNS resolution
+  // finishes, connectors may attempt the other family's remaining candidates
+  // if their preferred family is exhausted.
+  const bool slots_are_exclusive =
+      secondary_connector_ != nullptr && !resolution_finished_;
+  const bool takes_ipv6 = connector == primary_connector_.get();
+  CHECK(takes_ipv6 || connector == secondary_connector_.get());
+
+  const std::vector<UsableEndpoint>& usable_endpoints = GetUsableEndpoints();
+  for (bool ipv6 : {takes_ipv6, !takes_ipv6}) {
+    if (slots_are_exclusive && ipv6 != takes_ipv6) {
+      continue;
+    }
+    // Endpoints and the IPs within them keep the resolver's order.
+    for (const UsableEndpoint& usable : usable_endpoints) {
+      const std::vector<IPEndPoint>& ip_endpoints =
+          ipv6 ? usable.endpoint.ipv6_endpoints
+               : usable.endpoint.ipv4_endpoints;
+      for (const IPEndPoint& ip_endpoint : ip_endpoints) {
+        Candidate candidate{ip_endpoint, usable.endpoint.metadata,
+                            usable.quic_version};
+        if (std::ranges::contains(claimed_candidates_, candidate)) {
+          continue;
+        }
+        claimed_candidates_.push_back(candidate);
+        return candidate;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+void QuicSessionPool::AsyncDnsJob::OnAttemptFailed(
+    int rv,
+    const NetErrorDetails& details) {
+  last_attempt_failure_ = AttemptFailure{rv, details};
+}
+
+void QuicSessionPool::AsyncDnsJob::OnSessionCreationDecided(
+    int rv,
+    const EndpointConnector* connector) {
+  CHECK(connector == primary_connector_.get() ||
+        connector == secondary_connector_.get());
+  if (session_creation_notified_) {
+    // The other connector already decided the signal. Its result stands.
+    return;
+  }
+  if (rv != OK && rv != ERR_IO_PENDING) {
+    // A failure signal makes the waiting requests give up on QUIC, but this
+    // job may still try another candidate. Hold the result until the job's
+    // outcome is known.
+    held_session_creation_result_ = rv;
+    return;
+  }
+  NotifyRequestsOfSessionCreation(rv);
+}
+
+void QuicSessionPool::AsyncDnsJob::NotifyRequestsOfSessionCreation(int rv) {
+  CHECK(!session_creation_notified_);
+  session_creation_notified_ = true;
+  held_session_creation_result_.reset();
+
   // A notified request may reenter the pool and add or remove requests on
   // this job. Iterate over a snapshot of WeakPtrs, and skip requests that were
   // removed or destroyed. Requests added mid-notification are not promised
@@ -312,9 +406,105 @@ void QuicSessionPool::AsyncDnsJob::OnSessionCreationDecided(int rv) {
   }
 }
 
-void QuicSessionPool::AsyncDnsJob::OnConnectorComplete(int rv) {
+void QuicSessionPool::AsyncDnsJob::OnConnectorComplete(
+    int rv,
+    EndpointConnector* connector) {
   CHECK_NE(rv, ERR_IO_PENDING);
-  CompleteJob(rv);
+  CHECK(connector == primary_connector_.get() ||
+        connector == secondary_connector_.get());
+
+  if (rv == OK) {
+    // The first connector to succeed settles the job. The other one and its
+    // in-flight attempt are destroyed here.
+    DestroyOtherConnector(connector);
+    CompleteJob(OK);
+    return;
+  }
+
+  // This connector ran out of candidates. Keep the job going while the other
+  // connector still runs an attempt, and while DNS can still deliver more
+  // candidates.
+  const EndpointConnector* other = OtherConnector(connector);
+  if (!resolution_finished_ || (other && other->has_attempt())) {
+    return;
+  }
+  CompleteJob(LastFailureResult().value_or(rv));
+}
+
+void QuicSessionPool::AsyncDnsJob::DestroyOtherConnector(
+    const EndpointConnector* connector) {
+  if (connector == primary_connector_.get()) {
+    secondary_connector_.reset();
+    return;
+  }
+  CHECK_EQ(connector, secondary_connector_.get());
+  // The connector that succeeded moves into the primary slot. The assignment
+  // destroys the connector that was there, together with its in-flight
+  // attempt.
+  primary_connector_ = std::move(secondary_connector_);
+}
+
+void QuicSessionPool::AsyncDnsJob::MaybeStartSlowTimer() {
+  if (slow_timer_started_ || secondary_connector_ || !primary_connector_ ||
+      !primary_connector_->has_attempt()) {
+    return;
+  }
+  const base::TimeDelta delay = features::kAsyncDnsQuicJobSlowTimerDelay.Get();
+  if (!delay.is_positive()) {
+    // Two attempts at once are disabled. The primary connector walks the
+    // candidates by itself.
+    return;
+  }
+  slow_timer_started_ = true;
+  slow_timer_.Start(
+      FROM_HERE, delay,
+      base::BindOnce(&AsyncDnsJob::OnSlowTimer, base::Unretained(this)));
+}
+
+void QuicSessionPool::AsyncDnsJob::OnSlowTimer() {
+  CHECK(primary_connector_);
+  CHECK(!secondary_connector_);
+
+  secondary_connector_ = std::make_unique<EndpointConnector>(this);
+  if (!primary_connector_->is_attempting_ipv6()) {
+    // The connector in the primary slot is not on IPv6, either because it
+    // attempts IPv4 or because it waits for a candidate. The slots decide the
+    // families from now on and the IPv6 side has to be the primary one, so
+    // move the connectors into the other slot.
+    std::swap(primary_connector_, secondary_connector_);
+  }
+
+  std::optional<int> rv = AdvanceConnectors();
+  if (rv.has_value() && *rv != ERR_IO_PENDING) {
+    // A connector settled the job while it started its attempt.
+    CompleteJob(*rv);
+  }
+}
+
+bool QuicSessionPool::AsyncDnsJob::HasWaitingConnector() const {
+  return (primary_connector_ && primary_connector_->is_waiting_on_dns()) ||
+         (secondary_connector_ && secondary_connector_->is_waiting_on_dns());
+}
+
+bool QuicSessionPool::AsyncDnsJob::HasAttemptInFlight() const {
+  return (primary_connector_ && primary_connector_->has_attempt()) ||
+         (secondary_connector_ && secondary_connector_->has_attempt());
+}
+
+const QuicSessionPool::EndpointConnector*
+QuicSessionPool::AsyncDnsJob::OtherConnector(
+    const EndpointConnector* connector) const {
+  if (connector == primary_connector_.get()) {
+    return secondary_connector_.get();
+  }
+  return primary_connector_.get();
+}
+
+std::optional<int> QuicSessionPool::AsyncDnsJob::LastFailureResult() const {
+  if (!last_attempt_failure_.has_value()) {
+    return std::nullopt;
+  }
+  return last_attempt_failure_->rv;
 }
 
 int QuicSessionPool::AsyncDnsJob::DoResolveHost() {
@@ -333,7 +523,10 @@ int QuicSessionPool::AsyncDnsJob::DoResolveHost() {
 int QuicSessionPool::AsyncDnsJob::DoResolveHostComplete(int rv) {
   resolution_finished_ = true;
   MaybeSetDnsResolutionEndTime();
-  if (rv != OK) {
+
+  // A resolver error fails the job only while no attempt has run. Once a
+  // connector exists the attempts decide the outcome.
+  if (rv != OK && !primary_connector_) {
     return rv;
   }
 
@@ -343,6 +536,13 @@ int QuicSessionPool::AsyncDnsJob::DoResolveHostComplete(int rv) {
 
 std::optional<int>
 QuicSessionPool::AsyncDnsJob::ProcessServiceEndpointResults() {
+  // Nothing to do while every connector keeps an attempt in flight. A
+  // connector reads the new results when it advances, and re-checks IP
+  // pooling before its next attempt.
+  if (primary_connector_ && !HasWaitingConnector()) {
+    return ERR_IO_PENDING;
+  }
+
   // If another request pooled to an existing session and activated the key
   // while we were waiting for async DNS resolution, this job will be
   // redundant. The active session is already in the pool.
@@ -357,25 +557,76 @@ QuicSessionPool::AsyncDnsJob::ProcessServiceEndpointResults() {
   }
 
   if (GetUsableEndpoints().empty()) {
+    // Nothing is visible to attempt. An attempt that is still in flight can
+    // settle the job by itself.
+    if (HasAttemptInFlight()) {
+      return ERR_IO_PENDING;
+    }
+    // If an attempt already failed and DNS has finished, no more candidates
+    // can arrive, so report that failure.
+    if (resolution_finished_) {
+      return LastFailureResult();
+    }
     return std::nullopt;
   }
 
   // Attempts read the DNS end time, so stamp it before advancing the
-  // connector.
+  // connectors.
   MaybeSetDnsResolutionEndTime();
 
-  if (!connector_) {
-    connector_ = std::make_unique<EndpointConnector>(this);
+  if (!primary_connector_) {
+    primary_connector_ = std::make_unique<EndpointConnector>(this);
   }
 
-  std::optional<int> result = connector_->OnEndpointsUpdated();
-  // The current results contain a usable endpoint, so the connector either
-  // settles synchronously or starts an attempt.
-  CHECK(result.has_value());
-  if (result == ERR_IO_PENDING) {
-    attempt_started_ = true;
+  std::optional<int> result = AdvanceConnectors();
+  if (result.has_value()) {
+    return result;
   }
-  return result;
+
+  // Every visible candidate was already attempted. Fail only when DNS has
+  // finished. Until then more candidates may arrive.
+  if (!resolution_finished_) {
+    return std::nullopt;
+  }
+  return LastFailureResult();
+}
+
+std::optional<int> QuicSessionPool::AsyncDnsJob::AdvanceConnector(
+    EndpointConnector* connector) {
+  if (!connector) {
+    return std::nullopt;
+  }
+  if (!connector->is_waiting_on_dns()) {
+    // The connector keeps the attempt it already has in flight.
+    return ERR_IO_PENDING;
+  }
+  return connector->TryAdvance();
+}
+
+std::optional<int> QuicSessionPool::AsyncDnsJob::AdvanceConnectors() {
+  // The primary slot advances first so that it claims candidates first.
+  const std::optional<int> primary_rv =
+      AdvanceConnector(primary_connector_.get());
+  if (primary_rv == OK) {
+    DestroyOtherConnector(primary_connector_.get());
+    return OK;
+  }
+
+  // The primary connector never drops the secondary one, so the secondary
+  // slot still holds what it held above.
+  const std::optional<int> secondary_rv =
+      AdvanceConnector(secondary_connector_.get());
+  if (secondary_rv == OK) {
+    DestroyOtherConnector(secondary_connector_.get());
+    return OK;
+  }
+
+  MaybeStartSlowTimer();
+
+  if (primary_rv == ERR_IO_PENDING || secondary_rv == ERR_IO_PENDING) {
+    return ERR_IO_PENDING;
+  }
+  return std::nullopt;
 }
 
 void QuicSessionPool::AsyncDnsJob::MaybeSetDnsResolutionEndTime() {

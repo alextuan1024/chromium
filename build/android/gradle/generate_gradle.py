@@ -8,6 +8,7 @@
 import argparse
 import codecs
 import collections
+import functools
 import glob
 import json
 import logging
@@ -18,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 
 _BUILD_ANDROID = os.path.join(os.path.dirname(__file__), os.pardir)
 sys.path.append(_BUILD_ANDROID)
@@ -56,7 +58,6 @@ _DEFAULT_ANDROID_MANIFEST_PATH = os.path.join(
     'AndroidManifest.xml',
 )
 _FILE_DIR = os.path.dirname(__file__)
-_GENERATED_JAVA_SUBDIR = 'generated_java'
 _JNI_LIBS_SUBDIR = 'symlinked-libs'
 _ARMEABI_SUBDIR = 'armeabi'
 _GRADLE_BUILD_FILE = 'build.gradle'
@@ -78,7 +79,6 @@ _DEFAULT_TARGETS = [
     '//content/public/android:content_junit_tests',
     '//content/shell/android:content_shell_apk',
     # Below must be included even with --all since they are libraries.
-    '//base/android/jni_generator:jni_processor',
     '//tools/android/errorprone_plugin:errorprone_plugin_java',
 ]
 
@@ -119,6 +119,57 @@ def _WriteFile(path, data):
 def _ReadJson(path):
     with open(path) as f:
         return json.load(f)
+
+
+def _IsUsefulSrcJar(srcjar_path):
+    """Filters out bundled srcjars that would cause duplicate types or stubs.
+
+    Mirrors build/android/generate_vscode_project.py:_IsUsefulSrcJar and
+    build/android/chromiumide_api.py:_is_useful_source_jar.
+    """
+    return not srcjar_path.endswith(
+        (
+            '_placeholder.srcjar',
+            '__build_config_srcjar.srcjar',
+            '__native_libraries.srcjar',
+            '__product_config_srcjar.srcjar',
+            '__compile_resources.srcjar',
+            '__assetres.srcjar',
+        )
+    )
+
+
+@functools.lru_cache
+def _ExtractBundledSrcJar(srcjar_path):
+    """Extracts a bundled .srcjar to a cache dir so Gradle can index it."""
+    abs_srcjar = _RebasePath(srcjar_path)
+    if not os.path.exists(abs_srcjar):
+        return None
+    extract_dir = _RebasePath(
+        os.path.join('extracted_srcjars', srcjar_path.removesuffix('.srcjar'))
+    )
+    stamp = extract_dir + '.stamp'
+    if not os.path.exists(stamp) or os.path.getmtime(stamp) < os.path.getmtime(
+        abs_srcjar
+    ):
+        if os.path.exists(extract_dir):
+            shutil.rmtree(extract_dir)
+        os.makedirs(extract_dir, exist_ok=True)
+        with zipfile.ZipFile(abs_srcjar) as zf:
+            zf.extractall(extract_dir)
+        # Strip placeholder GEN_JNI; every *_jni.srcjar ships one and they
+        # collide across targets.
+        jni_zero_dir = os.path.join(extract_dir, 'org', 'jni_zero')
+        if os.path.exists(jni_zero_dir):
+            shutil.rmtree(jni_zero_dir)
+        with open(stamp, 'wb'):
+            pass
+    has_java = any(
+        f.endswith('.java')
+        for _, _, files in os.walk(extract_dir)
+        for f in files
+    )
+    return extract_dir if has_java else None
 
 
 def _RunGnGen(output_dir, args=None):
@@ -209,11 +260,6 @@ class _ProjectEntry:
             ninja_target = ninja_target[1:]
         return ninja_target.replace(':', os.path.sep)
 
-    def GeneratedJavaSubdir(self):
-        return _RebasePath(
-            os.path.join('gen', self.GradleSubdir(), _GENERATED_JAVA_SUBDIR)
-        )
-
     def ProjectName(self):
         """Returns the Gradle project name."""
         return self.GradleSubdir().replace(os.path.sep, '.')
@@ -250,6 +296,13 @@ class _ProjectEntry:
                 java_files = build_utils.ReadSourcesList(target_sources_file)
             self._java_files = java_files
         return self._java_files
+
+    def BundledSrcjars(self):
+        return [
+            s
+            for s in self.Params().get('bundled_srcjars', [])
+            if s.startswith('gen/') and _IsUsefulSrcJar(s)
+        ]
 
     def PrebuiltJars(self):
         filt = lambda p: (
@@ -359,6 +412,7 @@ class _ProjectContextGenerator:
         generated_inputs = set()
         for entry in self._GetEntries(root_entry):
             generated_inputs.update(entry.PrebuiltJars())
+            generated_inputs.update(entry.BundledSrcjars())
         return generated_inputs
 
     def GenerateManifest(self, root_entry):
@@ -372,9 +426,12 @@ class _ProjectContextGenerator:
         # things up at all.
         variables = {}
         java_dirs, excludes = self._GenJavaDirs(root_entry)
-        java_dirs.extend(
-            e.GeneratedJavaSubdir() for e in self._GetEntries(root_entry)
-        )
+        entries = self._GetEntries(root_entry)
+        for e in entries:
+            for s in e.BundledSrcjars():
+                extracted = _ExtractBundledSrcJar(s)
+                if extracted:
+                    java_dirs.append(extracted)
         self.processed_java_dirs.update(java_dirs)
         java_dirs.sort()
         variables['java_dirs'] = self._Relativize(root_entry, java_dirs)
@@ -382,13 +439,11 @@ class _ProjectContextGenerator:
         variables['jni_libs'] = self._Relativize(
             root_entry, set(self._GenJniLibs(root_entry))
         )
-        prebuilts = set(
-            p for e in self._GetEntries(root_entry) for p in e.PrebuiltJars()
-        )
+        prebuilts = set(p for e in entries for p in e.PrebuiltJars())
         self.processed_prebuilts.update(prebuilts)
         variables['prebuilts'] = self._Relativize(root_entry, prebuilts)
         res_sources_files = _RebasePath(
-            set(p for e in self._GetEntries(root_entry) for p in e.ResSources())
+            set(p for e in entries for p in e.ResSources())
         )
         res_sources = []
         for res_sources_file in res_sources_files:
@@ -548,6 +603,24 @@ def _ParseVersionFromFile(file_path, version_regex_string, default_version):
     return default_version
 
 
+def _EnsureAndroidStudioSdk(src_sdk_root, dst_sdk_root):
+    """Ensures the Android Studio SDK has all required platforms and build tools."""
+    if not os.path.exists(dst_sdk_root):
+        shutil.copytree(src_sdk_root, dst_sdk_root)
+        return
+
+    # Incrementally sync missing platforms and build-tools when the SDK updates.
+    for subdir in ('platforms', 'build-tools'):
+        src_subdir = os.path.join(src_sdk_root, subdir)
+        dst_subdir = os.path.join(dst_sdk_root, subdir)
+        if os.path.exists(src_subdir):
+            os.makedirs(dst_subdir, exist_ok=True)
+            for item in os.listdir(src_subdir):
+                dst_item = os.path.join(dst_subdir, item)
+                if not os.path.exists(dst_item):
+                    shutil.copytree(os.path.join(src_subdir, item), dst_item)
+
+
 def _GenerateLocalProperties(sdk_dir):
     """Returns the data for local.properties as a string."""
     return '\n'.join(
@@ -594,19 +667,20 @@ def _GenerateGradleDaemonJvmProperties():
     )
 
 
-def _GenerateGradleProperties():
+def _GenerateGradleProperties(sdk_version=None):
     """Returns the data for gradle.properties as a string."""
-    return '\n'.join(
-        [
-            '# Generated by //build/android/gradle/generate_gradle.py',
-            '',
-            '# Tells Gradle to show warnings during project sync.',
-            'org.gradle.warning.mode=all',
-            '# Needed when using --split-projects.',
-            'org.gradle.jvmargs=-Xmx2048m',
-            '',
-        ]
-    )
+    lines = [
+        '# Generated by //build/android/gradle/generate_gradle.py',
+        '',
+        '# Tells Gradle to show warnings during project sync.',
+        'org.gradle.warning.mode=all',
+        '# Needed when using --split-projects.',
+        'org.gradle.jvmargs=-Xmx2048m',
+    ]
+    if sdk_version:
+        lines.append(f'android.suppressUnsupportedCompileSdk={sdk_version}')
+    lines.append('')
+    return '\n'.join(lines)
 
 
 def _GenerateBaseVars(generator, build_vars):
@@ -742,23 +816,15 @@ def _GenerateModuleAll(
     def Relativize(paths):
         return _RebasePath(paths, os.path.join(gradle_output_dir, _MODULE_ALL))
 
-    # As after clank modularization, the java and javatests code will live side by
-    # side in the same module, we will list both of them in the main target here.
-    main_java_dirs = [d for d in java_dirs if 'junit/' not in d]
-    junit_test_java_dirs = [d for d in java_dirs if 'junit/' in d]
+    # All java and test code (including junit / robolectric tests) should live
+    # in the main target so that Android Studio can resolve symbols across all
+    # source files for editing and navigation.
     variables['main'] = {
         'android_manifest': Relativize(_DEFAULT_ANDROID_MANIFEST_PATH),
-        'java_dirs': Relativize(main_java_dirs),
+        'java_dirs': Relativize(java_dirs),
         'prebuilts': Relativize(prebuilts),
-        'java_excludes': ['**/*.java', '**/*.kt'],
         'res_dirs': Relativize(res_dirs),
     }
-    variables['android_test'] = [
-        {
-            'java_dirs': Relativize(junit_test_java_dirs),
-            'java_excludes': ['**/*.java', '**/*.kt'],
-        }
-    ]
     if native_targets:
         variables['native'] = _GetNative(
             relative_func=Relativize, target_names=native_targets
@@ -1015,21 +1081,24 @@ def main():
     entries = [e for e in _CombineTestEntries(main_entries) if e.IsValid()]
     logging.warning('Generating for %d targets.', len(entries))
 
-    project_entries = []
-    # When only one entry will be generated we want it to have a valid
-    # build.gradle file with its own AndroidManifest.
+    generated_inputs = set()
     for entry in entries:
-        data = _GenerateGradleFile(
-            entry, generator, build_vars, jinja_processor
-        )
-        if data and not args.all:
-            project_entries.append((entry.ProjectName(), entry.GradleSubdir()))
-            _WriteFile(
-                os.path.join(
-                    generator.EntryOutputDir(entry), _GRADLE_BUILD_FILE
-                ),
-                data,
-            )
+        entries_to_gen = [entry]
+        entries_to_gen.extend(entry.android_test_entries)
+        for entry_to_gen in entries_to_gen:
+            # Build all paths references by .gradle that exist within output_dir.
+            generated_inputs.update(generator.GeneratedInputs(entry_to_gen))
+    if generated_inputs:
+        # Skip targets outside the output_dir since those are not generated.
+        targets = [
+            p
+            for p in _RebasePath(generated_inputs, output_dir)
+            if not p.startswith(os.pardir)
+        ]
+        logging.warning('Building generated sources.')
+        _BuildTargets(output_dir, targets)
+
+    project_entries = []
     if args.all:
         project_entries.append((_MODULE_ALL, _MODULE_ALL))
         _GenerateModuleAll(
@@ -1039,6 +1108,21 @@ def main():
             jinja_processor,
             args.native_targets,
         )
+    else:
+        for entry in entries:
+            data = _GenerateGradleFile(
+                entry, generator, build_vars, jinja_processor
+            )
+            if data:
+                project_entries.append(
+                    (entry.ProjectName(), entry.GradleSubdir())
+                )
+                _WriteFile(
+                    os.path.join(
+                        generator.EntryOutputDir(entry), _GRADLE_BUILD_FILE
+                    ),
+                    data,
+                )
 
     root_gradle_path = os.path.join(generator.project_dir, _GRADLE_BUILD_FILE)
     _WriteFile(
@@ -1057,19 +1141,16 @@ def main():
     )
 
     # Ensure the Android Studio sdk is correctly initialized.
-    if not os.path.exists(args.sdk_path):
-        # Help first-time users avoid Android Studio forcibly changing back to
-        # the previous default due to not finding a valid sdk under this dir.
-        shutil.copytree(
-            _RebasePath(build_vars['android_sdk_root']), args.sdk_path
-        )
+    _EnsureAndroidStudioSdk(
+        _RebasePath(build_vars['android_sdk_root']), args.sdk_path
+    )
     _WriteFile(
         os.path.join(generator.project_dir, 'local.properties'),
         _GenerateLocalProperties(args.sdk_path),
     )
     _WriteFile(
         os.path.join(generator.project_dir, 'gradle.properties'),
-        _GenerateGradleProperties(),
+        _GenerateGradleProperties(build_vars['android_sdk_platform_version']),
     )
 
     wrapper_properties = os.path.join(
@@ -1088,27 +1169,9 @@ def main():
     )
     _WriteFile(daemon_jvm_properties, _GenerateGradleDaemonJvmProperties())
 
-    generated_inputs = set()
-    for entry in entries:
-        entries_to_gen = [entry]
-        entries_to_gen.extend(entry.android_test_entries)
-        for entry_to_gen in entries_to_gen:
-            # Build all paths references by .gradle that exist within output_dir.
-            generated_inputs.update(generator.GeneratedInputs(entry_to_gen))
-    if generated_inputs:
-        # Skip targets outside the output_dir since those are not generated.
-        targets = [
-            p
-            for p in _RebasePath(generated_inputs, output_dir)
-            if not p.startswith(os.pardir)
-        ]
-        logging.warning('Building generated sources.')
-        _BuildTargets(output_dir, targets)
-
     print('Generated projects for Android Studio.')
     print('** Building using Android Studio / Gradle does not work.')
     print('** This project is only for IDE editing & tools.')
-    print('Note: Generated files will appear only if they have been built')
     print(
         'For more tips: https://chromium.googlesource.com/chromium/src.git/'
         '+/main/docs/android_studio.md'

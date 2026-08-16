@@ -18,6 +18,7 @@ import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewGroup.LayoutParams;
 import android.widget.LinearLayout;
 
 import androidx.appcompat.widget.Toolbar;
@@ -215,11 +216,27 @@ public class SettingsPageFragmentDelegateImpl
                 (SettingsHostFragment) fragmentManager.findFragmentByTag(mFragmentTag);
         if (mSettingsHostFragment == null) {
             mSettingsHostFragment = new SettingsHostFragment();
+            // Add the fragment without a container using two-parameter add() to prevent multiple
+            // settings tabs from colliding on the same container ID during activity recreation.
             fragmentManager
                     .beginTransaction()
-                    .add(fragmentContainer.getId(), mSettingsHostFragment, mFragmentTag)
+                    .add(mSettingsHostFragment, mFragmentTag)
                     .commitAllowingStateLoss();
+            // Execute the transaction so mSettingsHostFragment creates its view and getView() is
+            // non-null below.
+            fragmentManager.executePendingTransactions();
         }
+
+        // If the host fragment view was attached to a different tab's container, attach it to this
+        // tab's container instead.
+        View hostView = mSettingsHostFragment.getView();
+        if (hostView != null && hostView.getParent() != fragmentContainer) {
+            UiUtils.removeViewFromParent(hostView);
+            LayoutParams layoutParams =
+                    new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
+            fragmentContainer.addView(hostView, layoutParams);
+        }
+
         var dependencyProvider =
                 new FragmentDependencyProvider(
                         mActivity,
@@ -255,6 +272,9 @@ public class SettingsPageFragmentDelegateImpl
             mInitialBreadcrumbPath =
                     SettingsBreadcrumbUtil.getInitialBreadcrumbPath(savedInstanceState);
         }
+
+        // Set initial navigation icon early to prevent delayed appearance on slow devices.
+        updateNavigationIcon();
 
         // During activity recreation savedInstanceState may be non-null but MultiColumnSettings may
         // not be attached yet. Check for the existing of MultiColumnSettings to decide whether to
@@ -406,6 +426,10 @@ public class SettingsPageFragmentDelegateImpl
         return mSearchCoordinator;
     }
 
+    void setSearchCoordinatorForTesting(@Nullable SettingsSearchCoordinator searchCoordinator) {
+        mSearchCoordinator = searchCoordinator;
+    }
+
     @Override
     public HelpAndFeedbackLauncher getHelpAndFeedbackLauncher() {
         return HelpAndFeedbackLauncherFactory.getForProfile(mProfile);
@@ -527,15 +551,27 @@ public class SettingsPageFragmentDelegateImpl
             SettingsMenuHelper.updateNavigationIcon(
                     mToolbar,
                     mActivity,
-                    /* show= */ true,
+                    /* show= */ shouldShowNavigationIcon(),
                     isTwoColumnSettingsVisible(),
                     isMainSettingsVisible());
         }
     }
 
+    private boolean shouldShowNavigationIcon() {
+        return mSearchCoordinator == null || mSearchCoordinator.shouldShowNavigationIcon();
+    }
+
     private boolean isMainSettingsVisible() {
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
-        return multiColumnSettings != null && !multiColumnSettings.isLayoutOpen();
+        // If MultiColumnSettings is attached, use it.
+        if (multiColumnSettings != null) {
+            return !multiColumnSettings.isLayoutOpen();
+        }
+        // Before MultiColumnSettings is created or attached, check if an initial deep-link
+        // breadcrumb path exists. If not (or size <= 1), top-level main settings is being shown.
+        return mInitialBreadcrumbPath == null
+                || mInitialBreadcrumbPath.isEmpty()
+                || mInitialBreadcrumbPath.size() <= 1;
     }
 
     @Override
@@ -595,7 +631,12 @@ public class SettingsPageFragmentDelegateImpl
         @Override
         public void onFragmentViewCreated(
                 FragmentManager fm, Fragment f, View v, @Nullable Bundle savedFragmentState) {
-            if (f instanceof MultiColumnSettings multiColumnSettings) {
+            if (!(f instanceof MultiColumnSettings multiColumnSettings)) return;
+
+            // Ensure the MultiColumnSettings instance belongs to this tab's SettingsHostFragment
+            // so we don't bind to fragments created for other settings tabs.
+            if (mSettingsHostFragment == null
+                    || mSettingsHostFragment.containsChild(multiColumnSettings)) {
                 Bundle savedInstanceState = getSavedInstanceState();
                 createMultiColumnTitleUpdater(multiColumnSettings, v, savedInstanceState);
                 createSearchCoordinator(multiColumnSettings, savedInstanceState);

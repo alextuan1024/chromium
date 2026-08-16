@@ -71,7 +71,6 @@
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
 #include "chrome/browser/site_protection/site_protection_metrics_observer.h"
 #include "chrome/browser/ssl/chrome_security_blocking_page_factory.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/ssl/connection_help_tab_helper.h"
 #include "chrome/browser/ssl/https_only_mode_tab_helper.h"
 #include "chrome/browser/storage_access_api/storage_access_api_service_factory.h"
@@ -169,6 +168,7 @@
 #include "chrome/browser/android/persisted_tab_data/sensitivity_persisted_tab_data_android.h"
 #include "chrome/browser/android/policy/policy_auditor_bridge.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/android/tab_web_contents_delegate_android.h"
 #include "chrome/browser/banners/android/chrome_app_banner_manager_android.h"
 #include "chrome/browser/content_settings/request_desktop_site_web_contents_observer_android.h"
 #include "chrome/browser/facilitated_payments/ui/chrome_facilitated_payments_client.h"
@@ -407,7 +407,6 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
   ChromeRLZTrackerWebContentsObserver::CreateForWebContentsIfNeeded(
       web_contents);
 #endif
-  ChromeSecurityStateTabHelper::CreateForWebContents(web_contents);
   ChromeTranslateClient::CreateForWebContents(web_contents);
 #if BUILDFLAG(IS_ANDROID)
   // Register LanguagePersistedTabDataAndroid for non-incognito tabs to
@@ -704,7 +703,16 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
     if (auto* optimization_guide_decider =
             OptimizationGuideKeyedServiceFactory::GetForProfile(profile)) {
       ChromeFacilitatedPaymentsClient::CreateForWebContents(
-          web_contents, optimization_guide_decider);
+          web_contents, optimization_guide_decider,
+          base::BindRepeating([](content::WebContents* web_contents) {
+            auto* tab_android = TabAndroid::FromWebContents(web_contents);
+            auto* delegate =
+                tab_android
+                    ? static_cast<android::TabWebContentsDelegateAndroid*>(
+                          web_contents->GetDelegate())
+                    : nullptr;
+            return delegate && delegate->IsCustomTab();
+          }));
     }
   }
 #else   // BUILDFLAG(IS_ANDROID)

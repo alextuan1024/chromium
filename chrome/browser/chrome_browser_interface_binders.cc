@@ -28,6 +28,7 @@
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/chrome_no_state_prefetch_processor_impl_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/pwc/pwc_api_binder.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/speech/on_device_speech_recognition_impl.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
@@ -105,14 +106,14 @@
 #include "chrome/browser/badging/badge_manager.h"
 #include "chrome/browser/payments/payment_request_factory.h"
 #include "chrome/browser/prefs/persistent_renderer_prefs_manager.h"
-#include "chrome/browser/ui/views/side_panel/customize_chrome/customize_chrome_utils.h"
 #include "chrome/browser/web_applications/web_install_service_impl.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/apps/digital_goods/digital_goods_factory_impl.h"
 #include "chrome/browser/speech/cros_speech_recognition_service_factory.h"
-#include "chromeos/ash/experiences/isolated_web_app/isolated_web_app_api_bridge_impl.h"
+#include "chromeos/ash/experiences/isolated_web_app/set_shape_service_impl.h"
+#include "third_party/blink/public/mojom/set_shape/set_shape.mojom.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
@@ -454,6 +455,7 @@ void PopulateChromeFrameBinders(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* map,
     content::RenderFrameHost* render_frame_host) {
   map->Add<glic::mojom::WebClientHandler>(&glic::BindGlicWebClientHandler);
+  map->Add<pwc::mojom::PrivilegedBridge>(&pwc::BindPrivilegedBridge);
   map->Add<image_annotation::mojom::Annotator>(&BindImageAnnotator);
 
   map->Add<blink::mojom::ScriptToolHost>(
@@ -534,8 +536,7 @@ void PopulateChromeFrameBinders(
 #if BUILDFLAG(IS_CHROMEOS)
   map->Add<payments::mojom::DigitalGoodsFactory>(
       &apps::DigitalGoodsFactoryImpl::BindDigitalGoodsFactory);
-  map->Add<blink::mojom::IsolatedWebAppApiBridge>(
-      &ash::IsolatedWebAppApiBridgeImpl::Create);
+  map->Add<blink::mojom::SetShapeService>(&ash::SetShapeServiceImpl::Create);
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)

@@ -881,7 +881,9 @@ void OmniboxEditModel::OpenLensSearch() {
   if (omnibox::kAskGLensChipRoute.Get()) {
     if (auto* client =
             autocomplete_controller()->autocomplete_provider_client()) {
-      client->OpenLensOverlay(/*show=*/true);
+      client->OpenLensOverlay(
+          /*show=*/true,
+          lens::LensOverlayInvocationSource::kOmniboxPopupButton);
     }
     return;
   }
@@ -1179,6 +1181,25 @@ void OmniboxEditModel::ClearKeyword() {
   }
 }
 
+void OmniboxEditModel::SetKeywordInfo(
+    KeywordState keyword_state,
+    const std::u16string& keyword,
+    const std::u16string& keyword_placeholder,
+    metrics::OmniboxEventProto::KeywordModeEntryMethod
+        keyword_mode_entry_method) {
+  // Entry should be valid iff in keyword mode.
+  CHECK_EQ(keyword_state == KeywordState::kKeyword,
+           keyword_mode_entry_method !=
+               metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID);
+  // `keyword` should be populated iff in keyword or hint mode.
+  CHECK_EQ(keyword_state == KeywordState::kNone, keyword.empty());
+
+  keyword_state_ = keyword_state;
+  keyword_ = keyword;
+  keyword_placeholder_ = keyword_placeholder;
+  keyword_mode_entry_method_ = keyword_mode_entry_method;
+}
+
 void OmniboxEditModel::ClearAdditionalText() {
   TRACE_EVENT0("omnibox", "OmniboxEditModel::ClearAdditionalText");
   if (view_) {
@@ -1385,17 +1406,7 @@ void OmniboxEditModel::OnUpOrDownPressed(bool down, bool page) {
                          : OmniboxPopupSelection::Step::kWholeLine;
 
   if (popup_view_ && popup_view_->IsSelectionPopupControlled()) {
-    const OmniboxPopupSelection old_selection = GetPopupSelection();
-    OmniboxPopupSelection new_selection = old_selection.GetNextSelection(
-        autocomplete_controller()->input(), autocomplete_controller()->result(),
-        controller_->client()->GetTemplateURLService(),
-        view_->AimButtonVisible(), direction, step);
-    // Pass through to native step if this is a keyword mode transition because
-    // the popup does not yet support keyword mode.
-    if (new_selection.state != OmniboxPopupSelection::LineState::KEYWORD_MODE) {
-      popup_view_->StepSelection(direction, step);
-      return;
-    }
+    popup_view_->StepSelection(direction, step);
   }
 
   StepPopupSelection(direction, step);
@@ -1409,17 +1420,7 @@ void OmniboxEditModel::OnTabPressed(bool shift) {
       OmniboxPopupSelection::Step::kStateOrLine;
 
   if (popup_view_ && popup_view_->IsSelectionPopupControlled()) {
-    const OmniboxPopupSelection old_selection = GetPopupSelection();
-    OmniboxPopupSelection new_selection = old_selection.GetNextSelection(
-        autocomplete_controller()->input(), autocomplete_controller()->result(),
-        controller_->client()->GetTemplateURLService(),
-        view_->AimButtonVisible(), direction, step);
-    // Pass through to native step if this is a keyword mode transition because
-    // the popup does not yet support keyword mode.
-    if (new_selection.state != OmniboxPopupSelection::LineState::KEYWORD_MODE) {
-      popup_view_->StepSelection(direction, step);
-      return;
-    }
+    popup_view_->StepSelection(direction, step);
   }
 
   StepPopupSelection(direction, step);
@@ -1986,6 +1987,9 @@ void OmniboxEditModel::ResetPopupToInitialState() {
   if (!popup_view_) {
     return;
   }
+  if (popup_view_->IsSelectionPopupControlled()) {
+    popup_view_->ResetPopupToInitialState();
+  }
   size_t new_line = autocomplete_controller()->result().default_match()
                         ? 0
                         : OmniboxPopupSelection::kNoMatch;
@@ -1996,8 +2000,6 @@ void OmniboxEditModel::ResetPopupToInitialState() {
 }
 
 OmniboxPopupSelection OmniboxEditModel::GetPopupSelection() const {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_ ||
-         base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
   return popup_selection_;
 }
 
@@ -2005,8 +2007,6 @@ void OmniboxEditModel::SetPopupSelection(OmniboxPopupSelection new_selection,
                                          bool reset_to_default,
                                          bool force_update_ui,
                                          bool native_update) {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_ ||
-         base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
   // Special case for updating the focus ring around the AIM button.
   if (view_) {
     view_->ApplyFocusRingToAimButton(new_selection.state ==
@@ -2091,8 +2091,6 @@ void OmniboxEditModel::SetPopupSelection(OmniboxPopupSelection new_selection,
 }
 
 bool OmniboxEditModel::IsPopupSelectionOnInitialLine() const {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_ ||
-         base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
   size_t initial_line = autocomplete_controller()->result().default_match()
                             ? 0
                             : OmniboxPopupSelection::kNoMatch;
@@ -2101,15 +2099,10 @@ bool OmniboxEditModel::IsPopupSelectionOnInitialLine() const {
 
 bool OmniboxEditModel::IsPopupControlPresentOnMatch(
     OmniboxPopupSelection selection) const {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_ ||
-         base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
   return selection.IsControlPresentOnMatch(autocomplete_controller()->result());
 }
 
 void OmniboxEditModel::TryDeletingPopupLine(size_t line) {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_ ||
-         base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
-
   // When called with line == GetPopupSelection().line, we could use
   // GetInfoForCurrentText() here, but it seems better to try and delete the
   // actual selection, rather than any "in progress, not yet visible" one.
@@ -2154,8 +2147,6 @@ std::u16string OmniboxEditModel::GetPopupAccessibilityLabelForCurrentSelection(
     const std::u16string& match_text,
     bool include_positional_info,
     int* label_prefix_length) {
-  DCHECK(BUILDFLAG(IS_ANDROID) || popup_view_);
-
   size_t line = popup_selection_.line;
   DCHECK_NE(line, OmniboxPopupSelection::kNoMatch)
       << "GetPopupAccessibilityLabelForCurrentSelection should never be called "
@@ -2508,8 +2499,8 @@ void OmniboxEditModel::StepPopupSelection(
   } else if (new_selection.state ==
              OmniboxPopupSelection::LineState::KEYWORD_MODE) {
     // Prepare for keyword mode before accepting it.
-    SetPopupSelection(OmniboxPopupSelection(
-        new_selection.line, OmniboxPopupSelection::LineState::NORMAL));
+    SetPopupSelection(new_selection, /*reset_to_default=*/false,
+                      /*force_update_ui=*/false, /*native_update=*/false);
     // Note: Popup behavior currently depends on the entry method being tab.
     // This is not ideal for nuanced metrics, but it is how it has worked
     // for a long time. Consider refactoring to fix this if needed.
@@ -2930,16 +2921,16 @@ void OmniboxEditModel::OpenMatch(OmniboxPopupSelection selection,
     }
   }
 
+  if (disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB && view_) {
+    base::AutoReset<bool> tmp(&in_revert_, true);
+    view_->RevertAll();  // Revert the box to its unedited state.
+  }
+
   if (action) {
     OmniboxEditModelActionClient action_client(
         *(autocomplete_controller()->autocomplete_provider_client()), *this);
     controller_->client()->ExecuteAction(
         action, disposition, match_selection_timestamp, action_client);
-  }
-
-  if (disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB && view_) {
-    base::AutoReset<bool> tmp(&in_revert_, true);
-    view_->RevertAll();  // Revert the box to its unedited state.
   }
 
   if (!action) {
@@ -3186,25 +3177,6 @@ std::u16string OmniboxEditModel::GetText() const {
   }
 }
 
-void OmniboxEditModel::SetKeywordInfo(
-    KeywordState keyword_state,
-    const std::u16string& keyword,
-    const std::u16string& keyword_placeholder,
-    metrics::OmniboxEventProto::KeywordModeEntryMethod
-        keyword_mode_entry_method) {
-  // Entry should be valid iff in keyword mode.
-  CHECK_EQ(keyword_state == KeywordState::kKeyword,
-           keyword_mode_entry_method !=
-               metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID);
-  // `keyword` should be populated iff in keyword or hint mode.
-  CHECK_EQ(keyword_state == KeywordState::kNone, keyword.empty());
-
-  keyword_state_ = keyword_state;
-  keyword_ = keyword;
-  keyword_placeholder_ = keyword_placeholder;
-  keyword_mode_entry_method_ = keyword_mode_entry_method;
-}
-
 void OmniboxEditModel::RecordAiModeMetrics(const std::u16string& query,
                                            AimActivation activation) {
   const auto* triggered_feature_service =
@@ -3382,9 +3354,9 @@ OmniboxEditModel::GetOrCreateContextualSearchSessionHandle(Profile* profile) {
 
 void OmniboxEditModel::NavigateToAiModeWithContextualizer(
     const std::u16string& query_text) {
-  if (session_handle_) {
-    session_handle_.reset();
-  }
+  bool sts_active =
+      session_handle_ &&
+      session_handle_->smart_tab_sharing_active().value_or(false);
   contextual_tasks::QueryContextualizer::ContextualizeParams params;
   params.task_id = std::nullopt;
   params.query_text = base::UTF16ToUTF8(query_text);
@@ -3395,7 +3367,7 @@ void OmniboxEditModel::NavigateToAiModeWithContextualizer(
           NavigateToAiModeWithContextualizerOnContextualizationComplete,
       weak_factory_.GetWeakPtr(), query_text,
       WindowOpenDisposition::CURRENT_TAB);
-  params.enable_smart_tab_selection = false;
+  params.enable_smart_tab_selection = sts_active;
   query_contextualizer_->Contextualize(std::move(params));
 }
 

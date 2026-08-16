@@ -73,10 +73,20 @@ BASE_DECLARE_FEATURE(kApiGlicPrivate);
 // `enterprise.reportingPrivate.onDataMaskingRulesTriggered` API.
 BASE_DECLARE_FEATURE(kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered);
 
+// Controls the availability of the
+// `enterprise.reportingPrivate.reportForceSaveToCloudEventHandled` API.
+BASE_DECLARE_FEATURE(
+    kApiEnterpriseReportingPrivateReportForceSaveToCloudEventHandled);
+
 // Controls the availability of Glic access from Google webpages.
 BASE_DECLARE_FEATURE(kApiGlicAccessFromGoogleWebpage);
+
 // Controls the availability of Glic access from Chrome promotion pages.
 BASE_DECLARE_FEATURE(kApiGlicAccessFromPromotionPage);
+
+// Controls the availability of Glic access from Web Continuity.
+BASE_DECLARE_FEATURE(kApiGlicAccessFromWebContinuity);
+
 extern const base::FeatureParam<std::string> kProdPromptEndpointUrlParam;
 extern const base::FeatureParam<std::string> kGlicInvokeApiOAuth2ScopeParam;
 extern const base::FeatureParam<bool> kGlicRequireConsentForInvokeParam;
@@ -122,6 +132,11 @@ BASE_DECLARE_FEATURE(kApiDesktopAndroidNativeMessaging);
 // requested host permissions by default.
 BASE_DECLARE_FEATURE(kAllowWithholdingExtensionPermissionsOnInstall);
 
+// If enabled, navigations and window.open calls to URLs outside a hosted app's
+// web extent in background contents are blocked and not persisted to prefs.
+// TODO(crbug.com/511824746): Clean up in M156.
+BASE_DECLARE_FEATURE(kBlockBackgroundContentsOffExtentNavigation);
+
 // When enabled, then bad_message::ReceivedBadMessage will be called when
 // browser receives an IPC from a content script and the IPC that unexpectedly
 // claims to act on behalf of a given extension id, (i.e. even if the browser
@@ -140,12 +155,6 @@ BASE_DECLARE_FEATURE(kCWSReviewPromptingNativeUI);
 // If enabled, <webview>s will be allowed to request permission from an
 // embedding Chrome App to request access to Human Interface Devices.
 BASE_DECLARE_FEATURE(kEnableWebHidInWebView);
-
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-// If enabled, extensions will be enabled for @google.com and @managedchrome.com
-// users on desktop Android. Otherwise they will be blocked.
-BASE_DECLARE_FEATURE(kEnableExtensionsForCorpDesktopAndroid);
-#endif
 
 // If enabled, JS content scripts injected at document start will be compiled
 // in a background thread.
@@ -325,7 +334,7 @@ BASE_DECLARE_FEATURE(kOptimizeWebRequestProxy);
 // (using per-listener synthetic sub-event names). The renderer matches
 // listeners itself, reports each blocking listener's response via the
 // `webRequestInternal.eventHandled` function, and signals completion with a
-// single `webRequestInternal.eventHandlingDone` per context.
+// single `WebRequestHost.EventHandlingDone` mojo call per target.
 BASE_DECLARE_FEATURE(kWebRequestPerContextEventDispatch);
 
 }  // namespace extensions_features

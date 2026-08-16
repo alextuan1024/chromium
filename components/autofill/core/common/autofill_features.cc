@@ -350,9 +350,14 @@ BASE_FEATURE(kAutofillAiShowDialogInSettingsWhenUpstreamingFails,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, a loading dialog is shown to the user during the time their data
-// is fetched from the server.
+// is fetched from the server for personal context entities.
 BASE_FEATURE(kAutofillAiShowPersonalContextFillingYourInfoDialog,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, a loading dialog is shown to the user during the time their data
+// is fetched from the server for server wallet entities.
+BASE_FEATURE(kAutofillAiShowServerWalletFillingYourInfoDialog,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Controls whether a banner is shown in settings when wallet data sharing is
@@ -561,6 +566,13 @@ BASE_FEATURE(kAutofillAtMemoryTypedFetchPlan, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAutofillBetterLocalHeuristicPlaceholderSupport,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Check that between the time a filling flow is triggered and the popup being
+// displayed, the field id to anchor the popup on did not change.
+// TODO(crbug.com/8233280): This is a kill-switch feature, remove once we are
+// sure no bug was introduced.
+BASE_FEATURE(kAutofillCheckTriggeringFieldDoesNotChangeDuringFilling,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When enabled, deduce country of a new address profile based on the phone
 // number if not explicitly observed.
 BASE_FEATURE(kAutofillComplementCountryUsingPhoneNumber,
@@ -682,6 +694,12 @@ BASE_FEATURE(kAutofillEnableDeduplicationOnBackgroundThread,
 BASE_FEATURE(kAutofillEnableEntryLimitInPopup,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, IBAN regex pattern matching is expanded to support more
+// formats.
+BASE_FEATURE(kAutofillEnableExpandIbanRegexPattern,
+             "AutofillEnableExpandIbanRegexPattern",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables a couple of improvements to credit card expiration date handling:
 // - The autocomplete attribute values are rationalized with format strings
 //   like MM/YY from placeholders and labels in mind.
@@ -787,6 +805,12 @@ BASE_FEATURE(kAutofillGreekRegexes, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAutofillIgnoreCheckableElements,
              base::FEATURE_ENABLED_BY_DEFAULT);
 // LINT.ThenChange(//components/autofill/ios/form_util/resources/autofill_form_features.ts:autofill_ignore_checkable_elements)
+
+// Controls whether `AutofillPopupHideHelper` ignores frame resize events
+// when the `WebContents` size is unchanged.
+// TODO(crbug.com/545556982): Remove after confirming there is no regression.
+BASE_FEATURE(kAutofillIgnoreUnchangedFrameResizes,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, global rules are applied to rewrite empty string values like
 // "null" to an empty string. These rules are applied for all types during
@@ -930,10 +954,6 @@ BASE_FEATURE(kAutofillServerUploadMoreData, base::FEATURE_ENABLED_BY_DEFAULT);
 // TODO(crbug.com/530190112): Clean up after September 1, 2026.
 BASE_FEATURE(kAutofillSimplifyFocusCheck, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// If enabled, upload votes for sms otp.
-// TODO(crbug.com/453999673): Clean up when launched.
-BASE_FEATURE(kAutofillSmsOtpCrowdsourcing, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // If enabled, fetch sms otp from gmscore and upload votes for sms otp.
 // TODO(crbug.com/453999673): Clean up when launched.
 BASE_FEATURE(kAutofillSmsOtpCrowdsourcingFetchFromGmscore,
@@ -1045,7 +1065,14 @@ BASE_FEATURE(kFieldClassificationModelCaching,
 #endif
 );
 
-BASE_FEATURE(kGlicActorAutofill, base::FEATURE_DISABLED_BY_DEFAULT);
+// The feature will be tested and rolled out independently on iOS.
+BASE_FEATURE(kGlicActorAutofill,
+#if BUILDFLAG(IS_IOS)
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif  // BUILDFLAG(IS_IOS)
+);
 
 // The amount of time to wait for a fill to happen if no credit card fetch is
 // ongoing.
@@ -1101,11 +1128,6 @@ BASE_FEATURE(kResetNativePointerInCreditCardAuthDialog,
 // Autocomplete dialogs.
 BASE_FEATURE(kShowAutocompleteAtMemoryButton,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Kill switch: if enabled, suggestions are shown for fields with unrecognized
-// autocomplete attribute if they are already autofilled.
-BASE_FEATURE(kShowSugesstionsOnAlreadyAutofilledUnrecognized,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, "Manage information" menu item for enhanced autofill will
 // redirect user either to "/travel" or "/identityDocs" pages instead of

@@ -19,7 +19,6 @@
 #include "chrome/browser/ui/session_crashed_bubble.h"
 #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
 #include "chrome/browser/ui/startup/bad_flags_prompt.h"
-#include "chrome/browser/ui/startup/bidding_and_auction_consented_debugging_infobar_delegate.h"
 #include "chrome/browser/ui/startup/google_api_keys_infobar_delegate.h"
 #include "chrome/browser/ui/startup/obsolete_system_infobar_delegate.h"
 #include "chrome/browser/ui/startup/oscryptasync_availability_infobar_delegate.h"
@@ -30,6 +29,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/common/content_switches.h"
 #include "google_apis/google_api_keys.h"
 
@@ -146,11 +146,6 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
     if (IsAutomationEnabled()) {
       AutomationInfoBarDelegate::Create();
     }
-
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-            switches::kProtectedAudiencesConsentedDebugToken)) {
-      BiddingAndAuctionConsentedDebuggingDelegate::Create(web_contents);
-    }
   }
 
   // Do not show any other info bars in Kiosk mode, because it's unlikely that
@@ -205,7 +200,7 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
       if (auto* manager =
               infobars::BrowserInfoBarManager::From(g_browser_process)) {
         manager->Show(
-            web_contents,
+            tabs::TabInterface::GetFromContents(web_contents),
             infobars::InfoBarDelegate::GOOGLE_API_KEYS_INFOBAR_DELEGATE);
       }
     } else {
@@ -222,7 +217,7 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
         if (auto* manager =
                 infobars::BrowserInfoBarManager::From(g_browser_process)) {
           manager->Show(
-              web_contents,
+              tabs::TabInterface::GetFromContents(web_contents),
               infobars::InfoBarDelegate::OBSOLETE_SYSTEM_INFOBAR_DELEGATE);
         }
       } else {

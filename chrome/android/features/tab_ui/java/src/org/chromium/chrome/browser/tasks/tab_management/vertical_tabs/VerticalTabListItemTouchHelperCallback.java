@@ -13,8 +13,10 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 
 import androidx.annotation.IntDef;
+import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.RecyclerView;
@@ -85,7 +87,11 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
     private final List<Integer> mSelectedGroupTabIds = new ArrayList<>();
     private final List<RecyclerView.ViewHolder> mDraggedChildViewHolders = new ArrayList<>();
     private final @Nullable UndoBarThrottle mUndoBarThrottle;
-    private @DragDropResult int mDragResult = DragDropResult.ABORTED_NO_CHANGE;
+    // State snapshot captured at drag start to diff against the final state on drop.
+    private int mDragStartTabId = Tab.INVALID_TAB_ID;
+    private int mDragStartTabModelIndex = TabModel.INVALID_TAB_INDEX;
+    private @Nullable Token mDragStartGroupId;
+    private boolean mIsOSNewWindowDrop;
     private RecyclerView.@Nullable ViewHolder mSelectedViewHolder;
     private @Nullable OnDragOutListener mOnDragOutListener;
     private int mUndoBarThrottleToken = TokenHolder.INVALID_TOKEN;
@@ -463,7 +469,6 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
                                 destinationTab,
                                 indexInGroup,
                                 TabGroupMergeNotificationType.NOTIFY_ALWAYS);
-                        mDragResult = DragDropResult.GROUPED;
                         return true;
                     }
                 }
@@ -512,9 +517,6 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
         } else {
             tabModel.moveTab(currentTabId, destinationIndex);
         }
-        if (mDragResult == DragDropResult.ABORTED_NO_CHANGE) {
-            mDragResult = DragDropResult.REORDERED;
-        }
         return true;
     }
 
@@ -556,23 +558,30 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
         }
 
         if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+            TabModel tabModel = mCurrentTabModelSupplier.get();
+            if (tabModel == null || !hasTabPropertiesModel(viewHolder)) return;
+
             // TODO(crbug.com/544185227): Support batch drag and drop of multi-selected tabs.
             // Currently, we fallback to a standard single-tab drag by clearing
             // the multi-selection state if the user drags a highlighted item.
-            TabModel tabModel = mCurrentTabModelSupplier.get();
-            if (tabModel != null
-                    && VerticalTabUtils.isMultiSelectEnabled()
+            if (VerticalTabUtils.isMultiSelectEnabled()
                     && TabMultiSelectHelper.hasMultipleTabsSelected(tabModel)) {
                 tabModel.clearMultiSelection(/* notifyObservers= */ true);
             }
 
             // Pause undo snackbars while dragging.
             startThrottling();
-            mDragResult = DragDropResult.ABORTED_NO_CHANGE;
+            mIsOSNewWindowDrop = false;
             mSelectedViewHolder = viewHolder;
             mSelectedGroupTabIds.clear();
-            if (!hasTabPropertiesModel(viewHolder)) return;
+
+            // Capture initial snapshot to evaluate the final drag result upon release.
             assumeNonNull(viewHolder);
+            mDragStartTabId = getTabId(viewHolder);
+            mDragStartGroupId = getTabGroupId(viewHolder);
+            Tab startTab = tabModel.getTabById(mDragStartTabId);
+            mDragStartTabModelIndex =
+                    startTab != null ? tabModel.indexOf(startTab) : TabModel.INVALID_TAB_INDEX;
             mSelectedTabIndex = viewHolder.getBindingAdapterPosition();
             mModel.updateSelectedCardForSelection(mSelectedTabIndex, true);
 
@@ -843,18 +852,299 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
                 }
             }
         }
-        if (viewHolder.getBindingAdapterPosition() == RecyclerView.NO_POSITION) {
-            mDragResult = DragDropResult.DRAGGED_OUT;
+        if (mDragStartTabId != Tab.INVALID_TAB_ID) {
+            @DragDropResult int dragResult = computeDragDropResult(viewHolder);
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Android.VerticalTabs.DragDropResult", dragResult, DragDropResult.COUNT);
+            mDragStartTabId = Tab.INVALID_TAB_ID;
+            mDragStartGroupId = null;
+            mDragStartTabModelIndex = TabModel.INVALID_TAB_INDEX;
+            mIsOSNewWindowDrop = false;
         }
-        RecordHistogram.recordEnumeratedHistogram(
-                "Android.VerticalTabs.DragDropResult", mDragResult, DragDropResult.COUNT);
-        mDragResult = DragDropResult.ABORTED_NO_CHANGE;
         mDraggedChildTabIds.clear();
     }
 
     @Override
     public boolean shouldAllowDragPastLayout() {
         return true;
+    }
+
+    @Override
+    public RecyclerView.@Nullable ViewHolder findLiveViewHolder(
+            RecyclerView recyclerView, RecyclerView.ViewHolder current) {
+        if (current == null || !hasTabPropertiesModel(current)) return null;
+        int currentTabId = getTabId(current);
+        Token currentGroupId = getTabGroupId(current);
+        boolean isGroupHeader = current.getItemViewType() == TabProperties.UiType.TAB_GROUP;
+
+        for (int i = 0; i < recyclerView.getChildCount(); i++) {
+            View childView = recyclerView.getChildAt(i);
+            RecyclerView.ViewHolder childViewHolder = recyclerView.getChildViewHolder(childView);
+            if (!hasTabPropertiesModel(childViewHolder)) continue;
+
+            if (isGroupHeader) {
+                if (childViewHolder.getItemViewType() == TabProperties.UiType.TAB_GROUP
+                        && Objects.equals(getTabGroupId(childViewHolder), currentGroupId)) {
+                    return childViewHolder;
+                }
+            } else if (getTabId(childViewHolder) == currentTabId) {
+                return childViewHolder;
+            }
+        }
+        return null;
+    }
+
+    private static final long EXTERNAL_DROP_RESTORE_DELAY_MS = 1000L;
+
+    private static class CollapsedItemState {
+        public final int width;
+        public final int height;
+        public final int topMargin;
+        public final int bottomMargin;
+        public final int leftMargin;
+        public final int rightMargin;
+
+        CollapsedItemState(
+                ViewGroup.MarginLayoutParams params, @Nullable CollapsedItemState fallback) {
+            int w = params.width;
+            int h = params.height;
+            int tm = params.topMargin;
+            int bm = params.bottomMargin;
+            int lm = params.leftMargin;
+            int rm = params.rightMargin;
+
+            if (w == 0 && h == 0 && fallback != null) {
+                w = fallback.width;
+                h = fallback.height;
+                tm = fallback.topMargin;
+                bm = fallback.bottomMargin;
+                lm = fallback.leftMargin;
+                rm = fallback.rightMargin;
+            }
+
+            this.width = w;
+            this.height = h;
+            this.topMargin = tm;
+            this.bottomMargin = bm;
+            this.leftMargin = lm;
+            this.rightMargin = rm;
+        }
+
+        void restore(ViewGroup.MarginLayoutParams params) {
+            params.width = width;
+            params.height = height;
+            params.topMargin = topMargin;
+            params.bottomMargin = bottomMargin;
+            params.leftMargin = leftMargin;
+            params.rightMargin = rightMargin;
+        }
+
+        void collapse(ViewGroup.MarginLayoutParams params) {
+            params.width = 0;
+            params.height = 0;
+            params.topMargin = 0;
+            params.bottomMargin = 0;
+            params.leftMargin = 0;
+            params.rightMargin = 0;
+        }
+    }
+
+    private @Nullable CollapsedItemState mCollapsedItemState;
+    private RecyclerView.@Nullable ViewHolder mCollapsedViewHolder;
+    private int mDraggedTabId = Tab.INVALID_TAB_ID;
+    private @Nullable Token mDraggedGroupId;
+    private boolean mIsDraggedGroupHeader;
+    private int mDraggedItemViewType = -1;
+    private float mCollapsedItemInitialAlpha = 1f;
+
+    @VisibleForTesting @Nullable Runnable mDelayedExternalItemRestorationRunnable;
+
+    private final View.OnAttachStateChangeListener mDelayedExternalItemRestorationDetachListener =
+            new View.OnAttachStateChangeListener() {
+                @Override
+                public void onViewAttachedToWindow(View v) {}
+
+                @Override
+                public void onViewDetachedFromWindow(View v) {
+                    v.removeOnAttachStateChangeListener(this);
+                    if (mDelayedExternalItemRestorationRunnable != null) {
+                        v.removeCallbacks(mDelayedExternalItemRestorationRunnable);
+                        mDelayedExternalItemRestorationRunnable.run();
+                    }
+                }
+            };
+
+    private RecyclerView.@Nullable ViewHolder getLiveViewHolder() {
+        if (mCollapsedViewHolder != null) {
+            boolean isStillValid = mCollapsedViewHolder.getItemViewType() == mDraggedItemViewType;
+            if (isStillValid && hasTabPropertiesModel(mCollapsedViewHolder)) {
+                if (mIsDraggedGroupHeader) {
+                    isStillValid =
+                            Objects.equals(getTabGroupId(mCollapsedViewHolder), mDraggedGroupId);
+                } else {
+                    isStillValid = getTabId(mCollapsedViewHolder) == mDraggedTabId;
+                }
+            }
+            if (!isStillValid) {
+                mCollapsedViewHolder = null;
+            }
+        }
+
+        RecyclerView recyclerView = mRecyclerViewSupplier.get();
+        if (recyclerView == null) return mCollapsedViewHolder;
+
+        if (mCollapsedViewHolder != null
+                && mCollapsedViewHolder.itemView.getParent() == recyclerView) {
+            return mCollapsedViewHolder;
+        }
+
+        for (int i = 0; i < recyclerView.getChildCount(); i++) {
+            View childView = recyclerView.getChildAt(i);
+            RecyclerView.ViewHolder childViewHolder = recyclerView.getChildViewHolder(childView);
+            if (!hasTabPropertiesModel(childViewHolder)) continue;
+            if (childViewHolder.getItemViewType() != mDraggedItemViewType) continue;
+
+            if (mIsDraggedGroupHeader) {
+                if (Objects.equals(getTabGroupId(childViewHolder), mDraggedGroupId)) {
+                    mCollapsedViewHolder = childViewHolder;
+                    return childViewHolder;
+                }
+            } else if (getTabId(childViewHolder) == mDraggedTabId) {
+                mCollapsedViewHolder = childViewHolder;
+                return childViewHolder;
+            }
+        }
+        return mCollapsedViewHolder;
+    }
+
+    /**
+     * Completely hides the dragged item from the layout by shrinking it to 0px. This is required to
+     * close the gap left by the dragged item in vertical lists.
+     *
+     * @param viewHolder The initial ViewHolder being dragged out, or null to lookup the live
+     *     ViewHolder.
+     */
+    public void collapseDraggedItem(RecyclerView.@Nullable ViewHolder viewHolder) {
+        if (viewHolder != null) {
+            mCollapsedViewHolder = viewHolder;
+            mDraggedItemViewType = viewHolder.getItemViewType();
+            if (hasTabPropertiesModel(viewHolder)) {
+                mDraggedTabId = getTabId(viewHolder);
+                mDraggedGroupId = getTabGroupId(viewHolder);
+                mIsDraggedGroupHeader = mDraggedItemViewType == TabProperties.UiType.TAB_GROUP;
+            }
+        }
+
+        RecyclerView.ViewHolder liveViewHolder = getLiveViewHolder();
+        if (liveViewHolder != null) {
+            final View itemView = liveViewHolder.itemView;
+            if (mDelayedExternalItemRestorationRunnable != null) {
+                itemView.removeCallbacks(mDelayedExternalItemRestorationRunnable);
+                itemView.removeOnAttachStateChangeListener(
+                        mDelayedExternalItemRestorationDetachListener);
+                mDelayedExternalItemRestorationRunnable = null;
+            }
+
+            float currentAlpha = itemView.getAlpha();
+            if (currentAlpha > 0f) {
+                mCollapsedItemInitialAlpha = currentAlpha;
+            }
+
+            ViewGroup.MarginLayoutParams params =
+                    (ViewGroup.MarginLayoutParams) itemView.getLayoutParams();
+            mCollapsedItemState = new CollapsedItemState(params, mCollapsedItemState);
+
+            // Set the dimensions to 0px to physically collapse the item in the RecyclerView.
+            mCollapsedItemState.collapse(params);
+            itemView.setLayoutParams(params);
+            itemView.setVisibility(View.GONE);
+            itemView.setAlpha(0f);
+            RecyclerView recyclerView = mRecyclerViewSupplier.get();
+            if (recyclerView != null) {
+                recyclerView.invalidate();
+            }
+        }
+    }
+
+    /**
+     * Restores the dragged item's layout dimensions and sets visibility back to VISIBLE.
+     *
+     * @param isOSNewWindowDrop If true, delays the restoration by {@link
+     *     #EXTERNAL_DROP_RESTORE_DELAY_MS}. Required when the drag ended externally and the item
+     *     might be removed asynchronously. If the item is detached before the delay completes, it
+     *     is restored instantly to protect the RecyclerView pool.
+     */
+    public void restoreDraggedItem(boolean isOSNewWindowDrop) {
+        mIsOSNewWindowDrop = isOSNewWindowDrop;
+        RecyclerView.ViewHolder targetHolder = getLiveViewHolder();
+        final CollapsedItemState collapsedState = mCollapsedItemState;
+        final float targetAlpha =
+                mCollapsedItemInitialAlpha > 0f ? mCollapsedItemInitialAlpha : 1.0f;
+        mCollapsedItemState = null;
+        mCollapsedViewHolder = null;
+
+        if (targetHolder != null) {
+            mDelayedExternalItemRestorationRunnable =
+                    () -> {
+                        targetHolder.itemView.removeOnAttachStateChangeListener(
+                                mDelayedExternalItemRestorationDetachListener);
+                        targetHolder.itemView.setVisibility(View.VISIBLE);
+                        targetHolder.itemView.setAlpha(targetAlpha);
+                        if (collapsedState != null) {
+                            ViewGroup.MarginLayoutParams params =
+                                    (ViewGroup.MarginLayoutParams)
+                                            targetHolder.itemView.getLayoutParams();
+                            collapsedState.restore(params);
+                            targetHolder.itemView.setLayoutParams(params);
+                        }
+                        mDelayedExternalItemRestorationRunnable = null;
+
+                        RecyclerView recyclerView = mRecyclerViewSupplier.get();
+                        if (recyclerView != null) {
+                            recyclerView.invalidate();
+                        }
+                    };
+
+            if (isOSNewWindowDrop) {
+                targetHolder.itemView.addOnAttachStateChangeListener(
+                        mDelayedExternalItemRestorationDetachListener);
+                targetHolder.itemView.postDelayed(
+                        mDelayedExternalItemRestorationRunnable, EXTERNAL_DROP_RESTORE_DELAY_MS);
+            } else {
+                mDelayedExternalItemRestorationRunnable.run();
+            }
+        }
+    }
+
+    public boolean isDraggedItemCollapsed() {
+        return mCollapsedItemState != null;
+    }
+
+    @Override
+    public void onExternalDragItemRebound(
+            RecyclerView.ViewHolder oldHolder, RecyclerView.ViewHolder newHolder) {
+        if (mCollapsedViewHolder == oldHolder || getLiveViewHolder() == newHolder) {
+            if (mCollapsedItemState != null && oldHolder != null && oldHolder != newHolder) {
+                oldHolder.itemView.setVisibility(View.VISIBLE);
+                oldHolder.itemView.setAlpha(1f);
+                ViewGroup.MarginLayoutParams params =
+                        (ViewGroup.MarginLayoutParams) oldHolder.itemView.getLayoutParams();
+                mCollapsedItemState.restore(params);
+                oldHolder.itemView.setLayoutParams(params);
+            }
+            mCollapsedViewHolder = newHolder;
+            if (mCollapsedItemState != null) {
+                // If the item was rebound to a new ViewHolder while collapsed off-list, ensure
+                // the new ViewHolder immediately inherits the 0px collapsed layout params and
+                // hidden state so it does not flicker into the list during external drag.
+                newHolder.itemView.setVisibility(View.GONE);
+                newHolder.itemView.setAlpha(0f);
+                ViewGroup.MarginLayoutParams params =
+                        (ViewGroup.MarginLayoutParams) newHolder.itemView.getLayoutParams();
+                mCollapsedItemState.collapse(params);
+                newHolder.itemView.setLayoutParams(params);
+            }
+        }
     }
 
     /**
@@ -968,7 +1258,6 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
 
     private void ungroupTab(TabModel tabModel, Tab tab, boolean trailing) {
         tabModel.getTabUngrouper().ungroupTabs(List.of(tab), trailing, false);
-        mDragResult = DragDropResult.UNGROUPED;
     }
 
     /**
@@ -1200,6 +1489,38 @@ public class VerticalTabListItemTouchHelperCallback extends TabListItemTouchHelp
             mUndoBarThrottle.stopThrottling(mUndoBarThrottleToken);
             mUndoBarThrottleToken = TokenHolder.INVALID_TOKEN;
         }
+    }
+
+    /**
+     * Evaluates the drag outcome by diffing the drop state against the snapshot from drag start.
+     */
+    private @DragDropResult int computeDragDropResult(RecyclerView.ViewHolder viewHolder) {
+        if (mIsOSNewWindowDrop
+                || viewHolder.getBindingAdapterPosition() == RecyclerView.NO_POSITION) {
+            return DragDropResult.DRAGGED_OUT;
+        }
+
+        TabModel tabModel = mCurrentTabModelSupplier.get();
+        if (tabModel == null) return DragDropResult.ABORTED_NO_CHANGE;
+
+        Tab currentTab = tabModel.getTabById(mDragStartTabId);
+        if (currentTab == null) {
+            return DragDropResult.DRAGGED_OUT;
+        }
+
+        Token currentGroupId = currentTab.getTabGroupId();
+        int currentModelIndex = tabModel.indexOf(currentTab);
+
+        if (currentGroupId != null && !Objects.equals(mDragStartGroupId, currentGroupId)) {
+            return DragDropResult.GROUPED;
+        }
+        if (mDragStartGroupId != null && currentGroupId == null) {
+            return DragDropResult.UNGROUPED;
+        }
+        if (currentModelIndex != mDragStartTabModelIndex) {
+            return DragDropResult.REORDERED;
+        }
+        return DragDropResult.ABORTED_NO_CHANGE;
     }
 
     /** Sets the tab grid item long press orchestrator for testing. */

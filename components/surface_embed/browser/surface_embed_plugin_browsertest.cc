@@ -22,6 +22,8 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/surface_embed_connector.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/result_codes.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -54,6 +56,34 @@ constexpr std::string_view kMultilevelParentUrl =
 constexpr std::string_view kInnerPageUrl = "/surface_embed/inner_page.html";
 constexpr size_t kSingleEmbedCount = 1;
 constexpr float kTestDeviceScaleFactor = 1.5f;
+
+class TakeFocusTrackingDelegate : public content::WebContentsDelegate {
+ public:
+  bool TakeFocus(content::WebContents* source, bool reverse) override {
+    take_focus_called_ = true;
+    take_focus_reverse_ = reverse;
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
+    return true;
+  }
+
+  void WaitForTakeFocus() {
+    if (take_focus_called_) {
+      return;
+    }
+    run_loop_ = std::make_unique<base::RunLoop>();
+    run_loop_->Run();
+  }
+
+  bool take_focus_called() const { return take_focus_called_; }
+  bool take_focus_reverse() const { return take_focus_reverse_; }
+
+ private:
+  bool take_focus_called_ = false;
+  bool take_focus_reverse_ = false;
+  std::unique_ptr<base::RunLoop> run_loop_;
+};
 
 // Helper class for tracking SurfaceEmbedHost instances.
 class SurfaceEmbedHostTracker {
@@ -132,11 +162,20 @@ class SurfaceEmbedBrowserTest : public content::ContentBrowserTest {
  public:
   // If `enable_binder` is true, SurfaceEmbedTestContentBrowserClient will be
   // installed to provide a binder for SurfaceEmbedHost interface.
-  explicit SurfaceEmbedBrowserTest(bool enable_binder = true)
-      : enable_binder_(enable_binder) {}
+  explicit SurfaceEmbedBrowserTest(
+      bool enable_binder = true,
+      bool enable_unowned_inner_web_contents = false)
+      : enable_binder_(enable_binder),
+        enable_unowned_inner_web_contents_(enable_unowned_inner_web_contents) {}
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kSurfaceEmbed);
+    if (enable_unowned_inner_web_contents_) {
+      scoped_feature_list_.InitWithFeatures(
+          {features::kSurfaceEmbed, ::features::kAttachUnownedInnerWebContents},
+          {});
+    } else {
+      scoped_feature_list_.InitAndEnableFeature(features::kSurfaceEmbed);
+    }
     content::ContentBrowserTest::SetUp();
   }
 
@@ -409,6 +448,7 @@ class SurfaceEmbedBrowserTest : public content::ContentBrowserTest {
   base::test::ScopedFeatureList scoped_feature_list_;
   SurfaceEmbedHostTracker tracker_;
   bool enable_binder_;
+  bool enable_unowned_inner_web_contents_;
   std::unique_ptr<SurfaceEmbedTestContentBrowserClient> test_browser_client_;
 };
 
@@ -417,6 +457,15 @@ class SurfaceEmbedBrowserTestNoHost : public SurfaceEmbedBrowserTest {
  public:
   SurfaceEmbedBrowserTestNoHost()
       : SurfaceEmbedBrowserTest(/*enable_binder=*/false) {}
+};
+
+class SurfaceEmbedWithInnerWebContentsBrowserTest
+    : public SurfaceEmbedBrowserTest {
+ public:
+  SurfaceEmbedWithInnerWebContentsBrowserTest()
+      : SurfaceEmbedBrowserTest(
+            /*enable_binder=*/true,
+            /*enable_unowned_inner_web_contents=*/true) {}
 };
 
 // Test that trying to create a web plugin w/o providing support via
@@ -1148,9 +1197,11 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByTabKey) {
 
   auto child_contents = CreateChildWebContents();
   NavigateChildToUrl(child_contents.get(), kInnerPageUrl);
+  content::ReadyForInputObserver(child_contents.get()).Wait();
   content::ReadyForInputObserver(web_contents()).Wait();
 
   AttachChildToEmbedWithId(child_contents.get(), "my_embed");
+  content::WaitForHitTestData(child_contents.get());
 
   // Focus outer1 which is before the embed tag.
   EXPECT_TRUE(content::ExecJs(web_contents(),
@@ -1165,7 +1216,11 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByTabKey) {
 
   // Focus should go to the embed element in the parent WebContents.
   EXPECT_TRUE(base::test::RunUntil([&]() {
-    return content::EvalJs(web_contents(), "document.activeElement.id") ==
+    return content::GetFocusedWebContents(web_contents()) ==
+               child_contents.get() &&
+           web_contents()->GetFocusedFrame() ==
+               child_contents->GetPrimaryMainFrame() &&
+           content::EvalJs(web_contents(), "document.activeElement.id") ==
                "my_embed" &&
            content::EvalJs(child_contents.get(), "document.hasFocus()")
                .ExtractBool() &&
@@ -1173,11 +1228,19 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByTabKey) {
                "inner";
   }));
 
-  // Keep pressing tab, it should not crash.
-  // TODO(crbug.com/508638062): update this test to traverse to the next element
-  // after the embed element.
+  // Keep pressing tab: focus should leave the embed element and move to the
+  // next focusable element in the embedder page ('outer2').
   content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
                             ui::VKEY_TAB, false, false, false, false);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(web_contents(), "document.activeElement.id") ==
+               "outer2" &&
+           content::EvalJs(web_contents(), "document.hasFocus()")
+               .ExtractBool() &&
+           !content::EvalJs(child_contents.get(), "document.hasFocus()")
+                .ExtractBool();
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByShiftTabKey) {
@@ -1185,6 +1248,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByShiftTabKey) {
 
   auto child_contents = CreateChildWebContents();
   NavigateChildToUrl(child_contents.get(), kInnerPageUrl);
+  content::ReadyForInputObserver(child_contents.get()).Wait();
   content::ReadyForInputObserver(web_contents()).Wait();
 
   ASSERT_TRUE(content::ExecJs(child_contents.get(), R"(
@@ -1193,6 +1257,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByShiftTabKey) {
     document.body.appendChild(input);
   )"));
   AttachChildToEmbedWithId(child_contents.get(), "my_embed");
+  content::WaitForHitTestData(child_contents.get());
 
   // Focus outer2, which follows the embed element in document order.
   EXPECT_TRUE(content::ExecJs(web_contents(),
@@ -1200,17 +1265,161 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, FocusByShiftTabKey) {
   ASSERT_EQ("outer2",
             content::EvalJs(web_contents(), "document.activeElement.id"));
 
+  // Shift+Tab from outer2 moves focus into the embed element, focusing the last
+  // element ('inner2') in child WebContents.
   content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
                             ui::VKEY_TAB, false, true, false, false);
 
   EXPECT_TRUE(base::test::RunUntil([&]() {
-    return content::EvalJs(web_contents(), "document.activeElement.id") ==
+    return content::GetFocusedWebContents(web_contents()) ==
+               child_contents.get() &&
+           web_contents()->GetFocusedFrame() ==
+               child_contents->GetPrimaryMainFrame() &&
+           content::EvalJs(web_contents(), "document.activeElement.id") ==
                "my_embed" &&
            content::EvalJs(child_contents.get(), "document.hasFocus()")
                .ExtractBool() &&
            content::EvalJs(child_contents.get(), "document.activeElement.id") ==
                "inner2";
   }));
+
+  // Shift+Tab again moves focus from inner2 to inner inside child WebContents.
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, true, false, false);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(child_contents.get(), "document.hasFocus()")
+               .ExtractBool() &&
+           content::EvalJs(child_contents.get(), "document.activeElement.id") ==
+               "inner";
+  }));
+
+  // Shift+Tab from inner moves focus out of the embed element backward to
+  // outer1.
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, true, false, false);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(web_contents(), "document.activeElement.id") ==
+               "outer1" &&
+           content::EvalJs(web_contents(), "document.hasFocus()")
+               .ExtractBool() &&
+           !content::EvalJs(child_contents.get(), "document.hasFocus()")
+                .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest,
+                       FocusByTabKeyNoNextFocusableElement) {
+  NavigateToTestUrl(kFocusHarnessUrl);
+
+  // Remove outer2 so the embed element is the last focusable element.
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              "document.getElementById('outer2').remove()"));
+
+  auto child_contents = CreateChildWebContents();
+  NavigateChildToUrl(child_contents.get(), kInnerPageUrl);
+  content::ReadyForInputObserver(child_contents.get()).Wait();
+  content::ReadyForInputObserver(web_contents()).Wait();
+
+  AttachChildToEmbedWithId(child_contents.get(), "my_embed");
+  content::WaitForHitTestData(child_contents.get());
+
+  TakeFocusTrackingDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+
+  // Focus outer1.
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              "document.getElementById('outer1').focus()"));
+  ASSERT_EQ("outer1",
+            content::EvalJs(web_contents(), "document.activeElement.id"));
+
+  // Press tab to move into the embed element and focus child's 'inner'.
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, false, false, false);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::GetFocusedWebContents(web_contents()) ==
+               child_contents.get() &&
+           web_contents()->GetFocusedFrame() ==
+               child_contents->GetPrimaryMainFrame() &&
+           content::EvalJs(web_contents(), "document.activeElement.id") ==
+               "my_embed" &&
+           content::EvalJs(child_contents.get(), "document.hasFocus()")
+               .ExtractBool() &&
+           content::EvalJs(child_contents.get(), "document.activeElement.id") ==
+               "inner";
+  }));
+
+  // Press tab again. Since there is no next focusable element after the embed
+  // element, focus should be handed off to the embedder WebContents' TakeFocus.
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, false, false, false);
+
+  delegate.WaitForTakeFocus();
+  EXPECT_TRUE(delegate.take_focus_called());
+  EXPECT_FALSE(delegate.take_focus_reverse());
+  EXPECT_FALSE(content::EvalJs(child_contents.get(), "document.hasFocus()")
+                   .ExtractBool());
+
+  web_contents()->SetDelegate(nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest,
+                       FocusByShiftTabKeyNoPreviousFocusableElement) {
+  NavigateToTestUrl(kFocusHarnessUrl);
+
+  // Remove outer1 so the embed element is the first focusable element.
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              "document.getElementById('outer1').remove()"));
+
+  auto child_contents = CreateChildWebContents();
+  NavigateChildToUrl(child_contents.get(), kInnerPageUrl);
+  content::ReadyForInputObserver(child_contents.get()).Wait();
+  content::ReadyForInputObserver(web_contents()).Wait();
+
+  AttachChildToEmbedWithId(child_contents.get(), "my_embed");
+  content::WaitForHitTestData(child_contents.get());
+
+  TakeFocusTrackingDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+
+  // Focus outer2.
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              "document.getElementById('outer2').focus()"));
+  ASSERT_EQ("outer2",
+            content::EvalJs(web_contents(), "document.activeElement.id"));
+
+  // Press Shift+Tab to move into the embed element and focus child's 'inner'.
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, true, false, false);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::GetFocusedWebContents(web_contents()) ==
+               child_contents.get() &&
+           web_contents()->GetFocusedFrame() ==
+               child_contents->GetPrimaryMainFrame() &&
+           content::EvalJs(web_contents(), "document.activeElement.id") ==
+               "my_embed" &&
+           content::EvalJs(child_contents.get(), "document.hasFocus()")
+               .ExtractBool() &&
+           content::EvalJs(child_contents.get(), "document.activeElement.id") ==
+               "inner";
+  }));
+
+  // Press Shift+Tab again. Since there is no previous focusable element before
+  // the embed element, focus should be handed off to the embedder WebContents'
+  // TakeFocus (with reverse = true).
+  content::SimulateKeyPress(web_contents(), ui::DomKey::TAB, ui::DomCode::TAB,
+                            ui::VKEY_TAB, false, true, false, false);
+
+  delegate.WaitForTakeFocus();
+  EXPECT_TRUE(delegate.take_focus_called());
+  EXPECT_TRUE(delegate.take_focus_reverse());
+  EXPECT_FALSE(content::EvalJs(child_contents.get(), "document.hasFocus()")
+                   .ExtractBool());
+
+  web_contents()->SetDelegate(nullptr);
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, MultilevelDetachIntermediate) {
@@ -1359,6 +1568,97 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedBrowserTest, MultilevelFocusAndInput) {
                             ui::DomCode::US_A, ui::VKEY_A, false, false, false,
                             false);
   EXPECT_EQ("r", content::EvalJsAfterLifecycleUpdate(
+                     child_contents.get(), "",
+                     "document.getElementById('inner').value"));
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedWithInnerWebContentsBrowserTest,
+                       FocusAndInput) {
+  NavigateToTestUrl(kMultilevelHarnessUrl);
+
+  auto parent_contents = CreateChildWebContents();
+  NavigateChildToUrl(parent_contents.get(), kMultilevelParentUrl);
+  AttachChildToEmbedWithId(parent_contents.get(), "parent_embed");
+  ASSERT_NE(parent_contents->GetSurfaceEmbedConnector(), nullptr);
+
+  ASSERT_TRUE(content::ExecJs(parent_contents.get(), R"(
+    new Promise(resolve => {
+      const iframe = document.createElement('iframe');
+      iframe.id = 'child_frame';
+      iframe.style.position = 'absolute';
+      iframe.style.left = '10px';
+      iframe.style.top = '40px';
+      iframe.style.width = '100px';
+      iframe.style.height = '100px';
+      iframe.style.border = '0';
+      iframe.onload = resolve;
+      iframe.src = 'about:blank';
+      document.body.appendChild(iframe);
+    });
+  )"));
+  content::RenderFrameHost* child_frame = content::ChildFrameAt(
+      parent_contents->GetPrimaryMainFrame(), /*index=*/0);
+  ASSERT_NE(child_frame, nullptr);
+
+  auto child_contents = CreateChildWebContents();
+  NavigateChildToUrl(child_contents.get(), kInnerPageUrl);
+  guest_contents::GuestContentsHandle* child_guest_handle =
+      guest_contents::GuestContentsHandle::CreateForWebContents(
+          child_contents.get());
+  ASSERT_NE(child_guest_handle, nullptr);
+  child_guest_handle->AttachToOuterWebContents(child_frame);
+  ASSERT_EQ(child_contents->GetOuterWebContents(), parent_contents.get());
+  EXPECT_EQ(child_contents->GetSurfaceEmbedConnector(), nullptr);
+
+  content::ReadyForInputObserver(web_contents()).Wait();
+  content::SimulateMouseClickOrTapElementWithId(web_contents(), "outer1");
+  EXPECT_EQ("outer1", content::EvalJsAfterLifecycleUpdate(
+                          web_contents(), "", "document.activeElement.id"));
+  EXPECT_EQ(web_contents(), content::GetFocusedWebContents(web_contents()));
+
+  content::SimulateKeyPress(web_contents(), ui::DomKey::FromCharacter('g'),
+                            ui::DomCode::US_A, ui::VKEY_A, false, false, false,
+                            false);
+  EXPECT_EQ("g",
+            content::EvalJsAfterLifecycleUpdate(
+                web_contents(), "", "document.getElementById('outer1').value"));
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    auto* parent_view = parent_contents->GetRenderWidgetHostView();
+    auto* child_view = child_contents->GetRenderWidgetHostView();
+    return parent_view && child_view &&
+           parent_view->GetViewBounds().size() == gfx::Size(200, 150) &&
+           child_view->GetViewBounds().size() == gfx::Size(100, 100);
+  }));
+  const gfx::Rect child_embed_bounds(20, 90, 100, 100);
+  VerifyRedPixelInBounds(child_embed_bounds);
+  content::WaitForHitTestData(parent_contents.get());
+  content::WaitForHitTestData(child_contents.get());
+  auto inner_center = content::GetCenterCoordinatesOfElementWithId(
+      child_contents.get(), "inner");
+  gfx::Point click_point(static_cast<int>(inner_center.x()) + 10 + 10,
+                         static_cast<int>(inner_center.y()) + 40 + 50);
+
+  content::SimulateMouseClickAt(
+      web_contents(), 0, blink::WebMouseEvent::Button::kLeft, click_point);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::GetFocusedWebContents(web_contents()) ==
+           child_contents.get();
+  }));
+  WaitForActiveElement(child_contents.get(), "inner");
+  WaitForActiveElement(parent_contents.get(), "child_frame");
+  WaitForActiveElement(web_contents(), "parent_embed");
+  for (content::WebContents* contents :
+       {web_contents(), parent_contents.get(), child_contents.get()}) {
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      return content::EvalJs(contents, "document.hasFocus()").ExtractBool();
+    }));
+  }
+
+  content::SimulateKeyPress(web_contents(), ui::DomKey::FromCharacter('c'),
+                            ui::DomCode::US_A, ui::VKEY_A, false, false, false,
+                            false);
+  EXPECT_EQ("c", content::EvalJsAfterLifecycleUpdate(
                      child_contents.get(), "",
                      "document.getElementById('inner').value"));
 }

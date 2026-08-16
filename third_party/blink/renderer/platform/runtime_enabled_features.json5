@@ -597,12 +597,6 @@
       status: "stable",
     },
     {
-      // This is a bug fix for rendering a missing focus ring on <a> elements.
-      // Shipping in M147, safe to remove in M150.
-      name: "AnchorFocusRingFix",
-      status: "stable",
-    },
-    {
       // Kill switch for https://crbug.com/415834974 which changes anchor
       // positioning adjustments to occur even in cases where there is no
       // scrollable overflow.
@@ -904,12 +898,6 @@
       browser_process_read_write_access: true,
     },
     {
-      name: "BlinkExtensionChromeOSIsolatedWebAppSetShape",
-      status: {"ChromeOS": "experimental", "default": ""},
-      browser_process_read_write_access: true,
-      depends_on: ["BlinkExtensionChromeOS"],
-    },
-    {
       name: "BlinkExtensionWebView",
       public: true,
     },
@@ -1006,7 +994,7 @@
       // embed camera and microphone permission request controls directly in the page.
       // https://chromestatus.com/feature/5153829504024576
       name: "CameraAndMicrophoneElements",
-      status: "test",
+      status: "experimental",
       public: true,
     },
     {
@@ -2538,6 +2526,13 @@
       status: "stable",
     },
     {
+      // Kill switch for marking scripts parsed by DOMParser in XML documents as
+      // "already started" so they stay inert when cloned or imported.
+      // https://crbug.com/542115030
+      name: "DOMParserXmlScriptAlreadyStarted",
+      status: "stable",
+    },
+    {
       // When enabled, retarget the relatedTarget attribute of drag events.
       // This landed partly in M146 and more in M150 and can be removed in M152.
       name: "DontLeakShadowTreesInDragEvents",
@@ -2595,6 +2590,10 @@
       // axis.
       name: "ElasticOverscrollUseEventDeltaForAxisSelection",
       status: "stable",
+    },
+    {
+      name: "ElementCanvasTransform",
+      status: "experimental",
     },
     {
       public: true,
@@ -2665,6 +2664,14 @@
       // crbug.com/420857717
       name: "EmojiMonochromeRendering",
       status: "stable"
+    },
+    {
+      // Controls whether XSLT processing is selectively re-enabled for
+      // Common Alerting Protocol (CAP) alert XML documents when native XSLT
+      // is otherwise disabled.
+      // crbug.com/435623334.
+      name: "EnableXSLTForCAPAlerts",
+      status: "stable",
     },
     {
       name: "EndpointInclusiveCommitStyles",
@@ -2792,12 +2799,6 @@
       base_feature: "none",
     },
     {
-      name: "FedCmErrorAttribute",
-      depends_on: ["FedCm"],
-      public: true,
-      base_feature: "none",
-    },
-    {
       name: "FedCmIdPRegistration",
       depends_on: ["FedCm"],
       public: true,
@@ -2896,6 +2897,7 @@
       // Enables the Blink feature only when the base::Feature is overridden by
       // field trial or command line.
       copied_from_base_feature_if: "overridden",
+      browser_process_read_access: true,
     },
     {
       name: "FetchUploadStreaming",
@@ -3012,6 +3014,10 @@
       // CustomizableCombobox features.
       name: "FilteringPrimitives",
       implied_by: ["FilterableSelect", "CustomizableCombobox"],
+    },
+    {
+      name: "FindBufferMatchAcrossIgnoredNodes",
+      status: "stable",
     },
     {
       name: "FindFirstMisspellingEndWhenNonEditable",
@@ -3474,6 +3480,12 @@
       status: "stable",
     },
     {
+      // Kill switch for making <area> display:none by default according to the
+      // HTML rendering specification. https://crbug.com/1231263
+      name: "HTMLAreaElementDisplayNone",
+      status: "stable",
+    },
+    {
       name: "HTMLAreaHreflangType",
       status: "test",
     },
@@ -3555,6 +3567,12 @@
       // Parse processing instructions in HTML.
       name: "HTMLProcessingInstruction",
       status: "stable",
+    },
+    {
+      // Enables the switch attribute on <input type="checkbox">.
+      // https://open-ui.org/components/switch.attribute.explainer/
+      name: "HTMLSwitchAttribute",
+      status: "experimental",
     },
     {
       name: "ICUCapitalization",
@@ -3825,8 +3843,9 @@
       // instead of pointerdown and pointerup in order to fix light dismiss
       // bugs for touch inputs.
       // https://issues.chromium.org/issues/408010435
+      // Enabled in M153, can be removed in M157.
       name: "LightDismissFromClick",
-      status: "experimental",
+      status: "stable",
     },
     {
       name: "LineBreakAfterSpaceBeforeOpenTag",
@@ -4689,7 +4708,8 @@
       // Simplifies the behavior and stacking interactions of popover=hint and
       // popover=auto. See https://crbug.com/499019927.
       // This shipped in M150, was disabled via Finch, and was re-enabled in
-      // M151. It can be removed in M153.
+      // M151. The behavior was tweaked slightly in M153, and milestones
+      // now happen twice as quickly, so the flag can be removed in M157.
       name: "PopoverHintNewBehavior",
       status: "stable",
     },
@@ -4805,22 +4825,6 @@
       // a float box boundary.
       // See https://crbug.com/41340914
       name: "PreventTextSelectionJump",
-      status: "stable",
-    },
-    {
-      // Controls the aggregate error reporting feature, which allows for
-      // contributions to be made conditional on error conditions that can be
-      // hit when using the API. This also defers contribution merging and
-      // modifies the budgeting flow.
-      // https://chromestatus.com/feature/5194896325214208
-      name: "PrivateAggregationApiErrorReporting",
-      status: "experimental",
-    },
-    {
-      // Controls whether Private Aggregation's "maxContributions" field is
-      // enabled for Shared Storage callers. If disabled, the field will be
-      // ignored. https://chromestatus.com/feature/5189366316793856
-      name: "PrivateAggregationApiMaxContributions",
       status: "stable",
     },
     {
@@ -5093,6 +5097,11 @@
     {
       // See https://issues.chromium.org/issues/40779139
       name: "RemoveScrollNodeWorkaround",
+      status: "stable",
+    },
+    {
+      // See https://crbug.com/539212797
+      name: "RemoveTargetCurrent",
       status: "stable",
     },
     {
@@ -5560,14 +5569,6 @@
       name: "SelectUsesFlatTree",
     },
     {
-      // Removes a hack which allows select elements to be opened with a script
-      // dispatched mousedown event on WebView, as opposed to a real user
-      // click.
-      // https://issues.chromium.org/issues/41273490
-      // Enabled in M152, safe to remove in M154
-      name: "SelectWebViewUntrustedEventRemoval",
-    },
-    {
       name: "SendBeaconThrowForBlobWithNonSimpleType",
       public: true,
       status: "stable",
@@ -5646,6 +5647,11 @@
     {
       name: "SetSequentialFocusStartingPoint",
       status: "experimental",
+    },
+    {
+      name: "SetShape",
+      status: {"ChromeOS": "experimental", "default": ""},
+      browser_process_read_write_access: true,
     },
     // https://chromestatus.com/feature/5176753681203200
     {
@@ -5775,13 +5781,6 @@
     {
       // See crbug.com/502616235.
       name: "SkipViewTransitionSnapshotResumeRendering",
-      status: "stable",
-    },
-    {
-      // Fix for notifying changed slots in different shadow roots during
-      // manual assignment. crbug.com/517322978
-      // Enabled in M151, safe to remove in M153.
-      name: "SlotAssignNotifyDifferentShadowRoots",
       status: "stable",
     },
     {
@@ -6222,6 +6221,10 @@
       status: "stable",
     },
     {
+      name: "TextAreaResizerFixedSize",
+      status: "stable",
+    },
+    {
       // crbug.com/523134883: Ignore ruby annotation text when computing
       // text-autospace boundaries.
       name: "TextAutoSpaceIgnoreRubyAnnotation",
@@ -6476,6 +6479,7 @@
     },
     {
       name: "UAImageReplacementAPI",
+      origin_trial_feature_name: "UAImageReplacementAPI",
     },
     {
       // The Unbounded Element API. See crbug.com/508672616.
@@ -6807,7 +6811,7 @@
       // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-renderquantumsize
       name: "WebAudioConfigurableRenderQuantum",
       origin_trial_feature_name: "WebAudioConfigurableRenderQuantum",
-      status: "experimental",
+      status: "stable",
     },
     {
       name: "WebAudioRustFft",
@@ -7114,6 +7118,10 @@
       name: "WebShare",
       public: true,
       status: "test",
+    },
+    {
+      name: "WebSocketOptionBag",
+      status: "experimental",
     },
     {
       name: "WebSocketStream",

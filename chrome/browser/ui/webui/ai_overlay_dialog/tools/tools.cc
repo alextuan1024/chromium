@@ -3,14 +3,12 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/webui/ai_overlay_dialog/tools/tools.h"
-#include "chrome/browser/ttc/resources/generated_tool_definitions.h"
 
 #include <algorithm>
 #include <optional>
 #include <vector>
 
 #include "base/functional/callback_helpers.h"
-#include "base/i18n/time_formatting.h"
 #include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -19,6 +17,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/expected.h"
 #include "base/values.h"
@@ -30,20 +29,18 @@
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/actor.mojom.h"
-#include "chrome/common/chrome_render_frame.mojom.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ttc/resources/generated_tool_definitions.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "components/bookmarks/browser/bookmark_model.h"
-#include "components/bookmarks/browser/bookmark_utils.h"
-#include "components/history/core/browser/history_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ai_overlay_dialog/page_context_monitor.h"
+#include "chrome/common/actor.mojom.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
+#include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/bookmark_utils.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
@@ -56,6 +53,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/base_window.h"
@@ -94,6 +92,13 @@ std::optional<base::TimeDelta> ParseTimecode(const std::string& timecode) {
     }
   }
   return std::nullopt;
+}
+
+std::string FormatDate(base::Time time) {
+  base::Time::Exploded exploded;
+  time.LocalExplode(&exploded);
+  return base::StringPrintf("%04d-%02d-%02d", exploded.year, exploded.month,
+                            exploded.day_of_month);
 }
 
 }  // namespace
@@ -512,7 +517,7 @@ void AiOverlayTools::AddBookmark(AddBookmarkCallback callback) {
   }
 
   content::WebContents* active_contents =
-      browser_->tab_strip_model()->GetActiveWebContents();
+      browser_->GetTabStripModel()->GetActiveWebContents();
   if (!active_contents) {
     std::move(callback).Run(base::unexpected("No active tab"));
     return;
@@ -538,7 +543,7 @@ void AiOverlayTools::RemoveBookmark(RemoveBookmarkCallback callback) {
   }
 
   content::WebContents* active_contents =
-      browser_->tab_strip_model()->GetActiveWebContents();
+      browser_->GetTabStripModel()->GetActiveWebContents();
   if (!active_contents) {
     std::move(callback).Run(base::unexpected("No active tab"));
     return;
@@ -676,7 +681,7 @@ void FinishOpenPage(base::DictValue response,
 void AiOverlayTools::OpenPage(const std::string& query,
                               OpenPageCallback callback) {
   RecordToolCallInvoked("OpenPage");
-  TabStripModel* tab_strip = browser_ ? browser_->tab_strip_model() : nullptr;
+  TabStripModel* tab_strip = browser_ ? browser_->GetTabStripModel() : nullptr;
   if (!tab_strip) {
     std::move(callback).Run(base::unexpected("No tab strip model available"));
     return;
@@ -727,8 +732,7 @@ void AiOverlayTools::OpenPage(const std::string& query,
       if (node->parent()) {
         bm_dict.Set("folder", node->parent()->GetTitle());
       }
-      bm_dict.Set("date_added", base::UnlocalizedTimeFormatWithPattern(
-                                    node->date_added(), "yyyy-MM-dd"));
+      bm_dict.Set("date_added", FormatDate(node->date_added()));
       bookmarks_list.Append(std::move(bm_dict));
     }
   }
@@ -755,7 +759,7 @@ void AiOverlayTools::OpenPage(const std::string& query,
               std::move(cb).Run(base::unexpected("Browser closed"));
               return;
             }
-            TabStripModel* tab_strip = self->browser_->tab_strip_model();
+            TabStripModel* tab_strip = self->browser_->GetTabStripModel();
             CHECK(tab_strip);
             base::ListValue history_list;
             int current_target_id = start_target_id;
@@ -769,9 +773,7 @@ void AiOverlayTools::OpenPage(const std::string& query,
               hist_dict.Set("target_id", current_target_id++);
               hist_dict.Set("title", result.title());
               hist_dict.Set("url", result.url().spec());
-              hist_dict.Set("date_visited",
-                            base::UnlocalizedTimeFormatWithPattern(
-                                result.visit_time(), "yyyy-MM-dd"));
+              hist_dict.Set("date_visited", FormatDate(result.visit_time()));
               history_list.Append(std::move(hist_dict));
             }
             res.Set("history", std::move(history_list));

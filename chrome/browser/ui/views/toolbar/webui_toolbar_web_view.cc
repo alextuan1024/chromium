@@ -24,6 +24,7 @@
 #include "base/time/time.h"
 #include "base/trace_event/named_trigger.h"
 #include "base/types/expected.h"
+#include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
@@ -74,6 +75,7 @@
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -90,6 +92,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/display/screen.h"
+#include "ui/events/blink/web_input_event.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -140,6 +143,51 @@ WebUIToolbarUI* GetWebUIToolbarUIFromWebContents(
   return controller ? controller->GetAs<WebUIToolbarUI>() : nullptr;
 }
 
+//  The approach used by RoundedOmniboxResultsFrame on Mac to forward mouse
+//  events received by the popup to the underlying windows ultimately ends up
+//  with the event received at Views level at NativeViewHost, which doesn't know
+//  what to do with them. This is set up as a fallback handler to receive these,
+//  and forward them on further till the WebView.
+class WebUIToolbarEventForwarder : public ui::EventHandler {
+ public:
+  WebUIToolbarEventForwarder(WebUIToolbarControlDelegate& control_delegate,
+                             views::WebView& web_view)
+      : control_delegate_(control_delegate), web_view_(web_view) {}
+
+  void OnMouseEvent(ui::MouseEvent* event) override {
+    if (!HaveOpenOmniboxPopup()) {
+      return;
+    }
+    content::RenderWidgetHost* target =
+        web_view_->GetWebContents()->GetRenderViewHost()->GetWidget();
+    if (event->type() == ui::EventType::kMousewheel) {
+      // We purposefully don't forward wheel events. They need special phase
+      // handling and it doesn't seem like we actually do anything with them.
+      return;
+    } else {
+      target->ForwardMouseEvent(ui::MakeWebMouseEvent(*event));
+    }
+  }
+
+  bool HaveOpenOmniboxPopup() {
+    auto* bwi = control_delegate_->GetBrowser();
+    if (!bwi) {
+      return false;
+    }
+    // Note that this may be WebUILocationBar or LocationBarView, dependent
+    // on flags.
+    auto* location_bar = BrowserWindow::FromBrowser(bwi)->GetLocationBar();
+    if (!location_bar) {
+      return false;
+    }
+    return location_bar->GetOmniboxController()->IsPopupOpen();
+  }
+
+ private:
+  const raw_ref<WebUIToolbarControlDelegate> control_delegate_;
+  const raw_ref<views::WebView> web_view_;
+};
+
 }  // namespace
 
 class WebUIToolbarInternalWebView : public views::WebView {
@@ -149,8 +197,19 @@ class WebUIToolbarInternalWebView : public views::WebView {
   WebUIToolbarInternalWebView(content::BrowserContext* browser_context,
                               WebUIToolbarWebView* webui_toolbar_web_view)
       : views::WebView(browser_context),
-        webui_toolbar_web_view_(webui_toolbar_web_view) {}
-  ~WebUIToolbarInternalWebView() override = default;
+        webui_toolbar_web_view_(webui_toolbar_web_view) {
+#if BUILDFLAG(IS_MAC)
+    forwarder_ = std::make_unique<WebUIToolbarEventForwarder>(
+        *webui_toolbar_web_view, *this);
+    holder()->SetMouseEventFallback(forwarder_.get());
+#endif
+  }
+
+  ~WebUIToolbarInternalWebView() override {
+#if BUILDFLAG(IS_MAC)
+    holder()->SetMouseEventFallback(nullptr);
+#endif
+  }
 
   // views::WebView:
   void PreHandleDragUpdate(const content::DropData& drop_data,
@@ -251,6 +310,9 @@ class WebUIToolbarInternalWebView : public views::WebView {
   }
 
  private:
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<WebUIToolbarEventForwarder> forwarder_;
+#endif
   // owns `this` as a child view.
   raw_ptr<WebUIToolbarWebView> webui_toolbar_web_view_;
   // A handler to handle unhandled keyboard messages coming back from the
@@ -463,8 +525,7 @@ void WebUIToolbarWebView::AddedToWidget() {
 
 void WebUIToolbarWebView::OnThemeChanged() {
   views::View::OnThemeChanged();
-  UpdateProfileThemeColors(browser_->GetBrowserForMigrationOnly(),
-                           GetColorProvider());
+  UpdateProfileThemeColors(browser_, GetColorProvider());
   avatar_control_.UpdateIcon();
   if (location_bar_) {
     location_bar_->OnThemeChanged();
@@ -925,16 +986,13 @@ void WebUIToolbarWebView::DidFinishNavigation(
   ui->Init(this);
 }
 
-void WebUIToolbarWebView::SetBackButtonLeadingMargin(int margin) {
-  // This is called every time ToolbarView::Layout() is called, almost always
-  // with the same value as before. Best to avoid the expensive
-  // PreferredSizeChanged() call if nothing actually changed.
-  if (margin == back_button_leading_margin_) {
+void WebUIToolbarWebView::SetIsMaximizedOrFullscreen(
+    bool maximized_or_fullscreen) {
+  if (maximized_or_fullscreen == window_is_maximized_or_fullscreen_) {
     return;
   }
-  back_button_leading_margin_ = margin;
+  window_is_maximized_or_fullscreen_ = maximized_or_fullscreen;
   OnBackForwardStateChanged();
-  PreferredSizeChanged();
 }
 
 void WebUIToolbarWebView::SetBackForwardEnabled(int command_id, bool enabled) {
@@ -1540,7 +1598,7 @@ WebUIToolbarWebView::GetBackForwardState() const {
   auto state = toolbar_ui_api::mojom::BackForwardControlState::New();
   state->back_button_state = back_control_.GetButtonState();
   state->forward_button_state = forward_control_.GetButtonState();
-  state->back_button_leading_margin = back_button_leading_margin_;
+  state->window_is_maximized_or_fullscreen = window_is_maximized_or_fullscreen_;
   return state;
 }
 
@@ -1561,6 +1619,7 @@ gfx::Size WebUIToolbarWebView::ComputeLayout(
                   battery_saver_control_.IsVisible();
   button_count += features::IsWebUIPerformanceInterventionButtonEnabled() &&
                   performance_intervention_control_.IsButtonShowing();
+  button_count += features::IsWebUIAppMenuButtonEnabled();
 
   const int size = GetLayoutConstant(LayoutConstant::kToolbarButtonHeight);
   const int gap = GetLayoutConstant(LayoutConstant::kToolbarIconDefaultMargin);
@@ -1571,7 +1630,15 @@ gfx::Size WebUIToolbarWebView::ComputeLayout(
 
   // TODO(crbug.com/517948314): This isn't sizing the forward button correctly.
   if (features::IsWebUIBackForwardButtonEnabled()) {
-    width += back_button_leading_margin_;
+    const gfx::Insets default_insets =
+        ::GetLayoutInsets(LayoutInset::TOOLBAR_INTERIOR_MARGIN);
+    width += GetMirrored() ? default_insets.right() : default_insets.left();
+  }
+
+  if (features::IsWebUIAppMenuButtonEnabled()) {
+    const gfx::Insets default_insets =
+        ::GetLayoutInsets(LayoutInset::TOOLBAR_INTERIOR_MARGIN);
+    width += GetMirrored() ? default_insets.left() : default_insets.right();
   }
 
   // Handle overflowable / resizable controls here, with highest priority

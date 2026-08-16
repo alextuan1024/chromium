@@ -321,6 +321,59 @@ BASE_FEATURE(kEnableAccountPreviewEntityPreviews,
 // This flag has no effect if `kEnableAccountPreviewData` is not enabled.
 BASE_FEATURE(kEnableAccountPreviewPreferredAccount,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(size_t,
+                   kPasswordsQ1Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   9);
+BASE_FEATURE_PARAM(size_t,
+                   kPasswordsMedianThreshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   32);
+BASE_FEATURE_PARAM(size_t,
+                   kPasswordsQ3Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   92);
+BASE_FEATURE_PARAM(size_t,
+                   kBookmarksQ1Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   4);
+BASE_FEATURE_PARAM(size_t,
+                   kBookmarksMedianThreshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   13);
+BASE_FEATURE_PARAM(size_t,
+                   kBookmarksQ3Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   41);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillQ1Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   15);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillMedianThreshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   95);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillQ3Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   363);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillWalletMetadataQ1Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   1);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillWalletMetadataMedianThreshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   2);
+BASE_FEATURE_PARAM(size_t,
+                   kAutofillWalletMetadataQ3Threshold,
+                   &kEnableAccountPreviewPreferredAccount,
+                   3);
+BASE_FEATURE_PARAM(
+    base::TimeDelta,
+    kAccountPreviewPreferredAccountSingleAccountPromoFetchTimeout,
+    &kEnableAccountPreviewPreferredAccount,
+    base::Seconds(1));
 // Controls whether fetched accounts are stored to reduce redundant fetches.
 const base::FeatureParam<bool> kAccountPreviewDataPersistAccounts{
     &kEnableAccountPreviewData, "persist_accounts", true};
@@ -492,7 +545,12 @@ BASE_FEATURE(kEnableOAuthMultiloginStandardCookiesBinding,
 // for secondary partitions.
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 BASE_FEATURE(kEnableOAuthMultiloginStandardCookiesBindingForSecondaryPartitions,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_WIN)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif  // BUILDFLAG(IS_WIN)
+);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -849,6 +907,9 @@ BASE_FEATURE(kSupportForcedSigninPolicy, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Killswitch for the support of AddSession in web sign-in flow.
 BASE_FEATURE(kSupportWebSigninAddSession, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables an option in settings to open an Incognito window on Desktop Android.
+BASE_FEATURE(kSwitchToIncognitoInSettings, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 BASE_FEATURE(kSyncEnableBookmarksInTransportMode,

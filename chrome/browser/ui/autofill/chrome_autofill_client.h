@@ -311,7 +311,7 @@ class ChromeAutofillClient : public ContentAutofillClient {
       const gfx::RectF& element_bounds,
       const net::SchemefulSite& issuer_site,
       const std::u16string& email,
-      base::OnceCallback<void(EmailVerificationPermissionUiResult)> callback)
+      base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback)
       final;
 
   // TODO(crbug.com/407666146): Create a test API.
@@ -393,7 +393,8 @@ class ChromeAutofillClient : public ContentAutofillClient {
   void ShowAutofillSuggestionsImpl(
       SuggestionUiSessionId session_id,
       const PopupOpenArgs& open_args,
-      base::WeakPtr<AutofillSuggestionDelegate> delegate);
+      base::WeakPtr<AutofillSuggestionDelegate> delegate,
+      FieldGlobalId expected_field_id);
 
   // Called when an actor task is created or an existing one changes state. It
   // may be called for actors unrelated to the current tab. If an update is

@@ -1233,6 +1233,10 @@ ui::ImageModel OmniboxContextMenuController::GetIconForModel(
       return ui::ImageModel::FromVectorIcon(
           features::IsRoundedIconsEnabled() ? kTimerIcon : kTimerOldIcon,
           ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize);
+    case omnibox::ModelMode::MODEL_MODE_GEMINI_FLASH_LATEST:
+      return ui::ImageModel::FromVectorIcon(
+          kAcuteIcon, ui::kColorMenuIcon,
+          ui::SimpleMenuModel::kDefaultIconSize);
     default:
       return ui::ImageModel();
   }
@@ -1486,7 +1490,8 @@ void OmniboxContextMenuController::ExecuteCommand(int id, int event_flags) {
       if (auto it = model_for_command_id_.find(id);
           it != model_for_command_id_.end()) {
         if (composebox_handler) {
-          composebox_handler->SetActiveModelMode(it->second);
+          composebox_handler->SetActiveModelMode(it->second,
+                                                 /*is_set_by_aim=*/false);
           composebox_handler->RecordModelSelectionAction(it->second);
         }
         if (is_aim_popup_open && omnibox_popup_ui &&

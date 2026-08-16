@@ -26,6 +26,7 @@ import androidx.preference.PreferenceFragmentCompat;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -233,7 +234,7 @@ public class SettingsHostFragment extends Fragment
                 snackbarSupplier,
                 bottomSheetSupplier,
                 modalDialogSupplier,
-                () -> null);
+                SupplierUtils.ofNull());
     }
 
     @Override
@@ -308,6 +309,16 @@ public class SettingsHostFragment extends Fragment
     /** Returns the currently active fragment hosted by this fragment. */
     public @Nullable Fragment getActiveFragment() {
         return getChildFragmentManager().findFragmentById(CONTAINER_ID);
+    }
+
+    /** Returns whether the given fragment is a direct child of this host fragment. */
+    public boolean containsChild(Fragment fragment) {
+        if (!isAdded()) return false;
+
+        for (Fragment f : getChildFragmentManager().getFragments()) {
+            if (f == fragment) return true;
+        }
+        return false;
     }
 
     /**

@@ -10,39 +10,23 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/memory/shared_memory_mapping.h"
 #include "base/run_loop.h"
-#include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "cc/test/pixel_test_utils.h"
 #include "components/crash/core/common/crash_key.h"
-#include "components/enterprise/buildflags/buildflags.h"
 #include "components/services/print_compositor/public/cpp/print_service_mojo_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-#include "cc/test/pixel_test_utils.h"  // nogncheck
-#include "components/enterprise/watermarking/mojom/watermark.mojom.h"  // nogncheck
-#include "components/enterprise/watermarking/watermark.h"  // nogncheck
-#include "components/enterprise/watermarking/watermark_test_utils.h"  // nogncheck
-#include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkDocument.h"
+#include "third_party/skia/include/core/SkPaint.h"
+#include "third_party/skia/include/core/SkRect.h"
+#include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/docs/SkMultiPictureDocument.h"
-#endif
 
 namespace printing {
-
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-
-namespace {
-
-constexpr SkSize kWatermarkSize{200, 200};
-constexpr char kWatermarkText[] = "example-watermark";
-
-}  // namespace
-
-#endif
 
 struct TestRequestData {
   uint64_t frame_guid;
@@ -56,6 +40,8 @@ class MockPrintCompositorImpl : public PrintCompositorImpl {
                             /*initialize_environment=*/false,
                             /*io_task_runner=*/nullptr) {}
   ~MockPrintCompositorImpl() override = default;
+
+  using PrintCompositorImpl::DrawPage;
 
   MOCK_METHOD2(OnFulfillRequest, void(uint64_t, int));
 
@@ -102,33 +88,15 @@ class MockCompletionPrintCompositorImpl : public PrintCompositorImpl {
   }
 };
 
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-class MockPrintCompositorImplEnterpriseWatermark : public PrintCompositorImpl {
+class TestBlueSquareAddon : public PrintCompositorImpl::Addon {
  public:
-  MockPrintCompositorImplEnterpriseWatermark()
-      : PrintCompositorImpl(mojo::NullReceiver(),
-                            /*initialize_environment=*/false,
-                            /*io_task_runner=*/nullptr) {
-    SetWatermarkBlock(enterprise_watermark::MakeTestWatermarkBlock(
-        kWatermarkText, kWatermarkSize));
+  void OnDrawPage(SkCanvas* canvas, const SkSize& size) override {
+    SkPaint paint;
+    paint.setColor(SK_ColorBLUE);
+    paint.setStyle(SkPaint::kFill_Style);
+    canvas->drawRect(SkRect::MakeSize(size), paint);
   }
-
-  ~MockPrintCompositorImplEnterpriseWatermark() override = default;
-
-  void DrawPage(SkDocument* doc, const SkDocumentPage& page) override {
-    bitmap_.allocN32Pixels(kWatermarkSize.fWidth, kWatermarkSize.fHeight);
-    SkCanvas canvas(bitmap_);
-    canvas.clear(SK_ColorBLACK);
-    DrawEnterpriseWatermark(&canvas, kWatermarkSize,
-                            watermark_block_for_testing());
-  }
-
-  const SkBitmap& bitmap() const { return bitmap_; }
-
- private:
-  SkBitmap bitmap_;
 };
-#endif  //  BUILDFLAG(ENTERPRISE_WATERMARK)
 
 class PrintCompositorImplTest : public testing::Test {
  public:
@@ -184,36 +152,6 @@ class PrintCompositorImplTest : public testing::Test {
   mojom::PrintCompositor::Status status_ =
       mojom::PrintCompositor::Status::kSuccess;
 };
-
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-class PrintCompositorImplEnterpriseWatermarkTest : public testing::Test {
- public:
-  PrintCompositorImplEnterpriseWatermarkTest() {
-    // Create reference bitmap.
-    reference_watermark_.allocN32Pixels(kWatermarkSize.fWidth,
-                                        kWatermarkSize.fHeight);
-    SkCanvas canvas(reference_watermark_);
-    canvas.clear(SK_ColorBLACK);
-    const auto watermark_block = enterprise_watermark::MakeTestWatermarkBlock(
-        kWatermarkText, kWatermarkSize);
-    DrawEnterpriseWatermark(&canvas, kWatermarkSize, watermark_block);
-  }
-
-  const SkBitmap& reference_watermark() const { return reference_watermark_; }
-
- protected:
-  SkBitmap reference_watermark_;
-};
-
-TEST_F(PrintCompositorImplEnterpriseWatermarkTest, EnterpriseWatermarkSet) {
-  MockPrintCompositorImplEnterpriseWatermark compositor;
-  compositor.DrawPage(nullptr, {});
-
-  ASSERT_TRUE(cc::MatchesBitmap(compositor.bitmap(), reference_watermark(),
-                                cc::ExactPixelComparator()));
-}
-
-#endif  //  BUILDFLAG(ENTERPRISE_WATERMARK)
 
 class PrintCompositorImplCrashKeyTest : public PrintCompositorImplTest {
  public:
@@ -563,6 +501,54 @@ TEST_F(PrintCompositorImplTest, InvalidContentFormat) {
 
   EXPECT_EQ(future.Get<0>(), mojom::PrintCompositor::Status::kContentFormatError);
   EXPECT_FALSE(future.Get<1>().IsValid());
+}
+
+class PrintCompositorImplRenderTest : public PrintCompositorImplTest {
+ public:
+  void RenderPageAndCheckBitmap(MockPrintCompositorImpl& impl,
+                                SkColor expected_color) {
+    constexpr SkSize kPageSize(100, 100);
+    SkDynamicMemoryWStream stream;
+    sk_sp<SkDocument> doc = SkMultiPictureDocument::Make(&stream);
+    SkDocumentPage page;
+    page.fSize = kPageSize;
+
+    impl.DrawPage(doc.get(), page);
+    doc->close();
+
+    sk_sp<SkData> data = stream.detachAsData();
+    SkMemoryStream read_stream(data);
+    int page_count = SkMultiPictureDocument::ReadPageCount(&read_stream);
+    ASSERT_EQ(page_count, 1);
+
+    std::vector<SkDocumentPage> pages(1);
+    ASSERT_TRUE(
+        SkMultiPictureDocument::Read(&read_stream, pages.data(), pages.size()));
+
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(kPageSize.width(), kPageSize.height());
+    SkCanvas canvas(bitmap);
+    canvas.clear(SK_ColorWHITE);
+    pages[0].fPicture->playback(&canvas);
+
+    SkBitmap reference_bitmap;
+    reference_bitmap.allocN32Pixels(kPageSize.width(), kPageSize.height());
+    reference_bitmap.eraseColor(expected_color);
+
+    EXPECT_TRUE(cc::MatchesBitmap(bitmap, reference_bitmap,
+                                  cc::ExactPixelComparator()));
+  }
+};
+
+TEST_F(PrintCompositorImplRenderTest, WithoutAddon) {
+  MockPrintCompositorImpl impl;
+  RenderPageAndCheckBitmap(impl, /*expected_color=*/SK_ColorWHITE);
+}
+
+TEST_F(PrintCompositorImplRenderTest, WithBlueSquareAddon) {
+  MockPrintCompositorImpl impl;
+  impl.SetAddonForTesting(std::make_unique<TestBlueSquareAddon>());
+  RenderPageAndCheckBitmap(impl, /*expected_color=*/SK_ColorBLUE);
 }
 
 }  // namespace printing

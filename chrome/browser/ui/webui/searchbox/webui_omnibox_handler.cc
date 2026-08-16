@@ -16,8 +16,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/ai_mode_button_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/contextual_search/searchbox_context_data.h"
@@ -220,11 +218,10 @@ void WebuiOmniboxHandler::QueryAutocomplete(
       query_id, input, prevent_inline_autocomplete, cursor_position,
       suggest_inventory, is_on_focus, keyword, input_method);
 
-  if (auto* omnibox_view_views =
-          static_cast<OmniboxViewViews*>(edit_model()->view())) {
-    omnibox_view_views->SetWindowTextAndCaretPos(input, cursor_position,
-                                                 /*update_popup=*/false,
-                                                 /*notify_text_changed=*/false);
+  if (auto* view = edit_model()->view()) {
+    view->SetWindowTextAndCaretPos(input, cursor_position,
+                                   /*update_popup=*/false,
+                                   /*notify_text_changed=*/false);
   }
 }
 
@@ -329,6 +326,10 @@ void WebuiOmniboxHandler::OpenCurrentSelection(
   page_->OpenCurrentSelection(disposition);
 }
 
+void WebuiOmniboxHandler::ResetPopupToInitialState() {
+  page_->ResetPopupToInitialState();
+}
+
 void WebuiOmniboxHandler::SetAimButtonVisible(bool visible) {
   page_->SetAimButtonVisible(visible);
 }
@@ -412,6 +413,15 @@ WebuiOmniboxHandler::CreateAutocompleteMatch(
   }
 
   return mojom_match;
+}
+
+bool WebuiOmniboxHandler::ShouldShowFirstContextualDescription() const {
+  return omnibox::kAskGShowFirstDescription.Get() &&
+         autocomplete_controller() &&
+         autocomplete_controller()
+             ->GetSuggestionGroupHeaderText(
+                 omnibox::GroupId::GROUP_CONTEXTUAL_SEARCH)
+             .empty();
 }
 
 void WebuiOmniboxHandler::OnFocusChanged(bool focused) {

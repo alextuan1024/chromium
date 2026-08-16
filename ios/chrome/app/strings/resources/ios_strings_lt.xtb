@@ -51,6 +51,7 @@
 <translation id="1147031633655575115">Prisijungta kaip <ph name="USER" /></translation>
 <translation id="1149401351239820326">Galiojimo laiko pabaigos mėnuo</translation>
 <translation id="1150989369772528668">Kalendorius</translation>
+<translation id="1158134713295836892">„Gemini“ narš. „Chrome“</translation>
 <translation id="1161444134753003495">Prisijungti</translation>
 <translation id="1161663161838091892">Jei norite tęsti, sinchronizuokite skirtukus ir istoriją</translation>
 <translation id="1162834932051545794">{count,plural, =1{{count} kredito kortelė}one{{count} kredito kortelė}few{{count} kredito kortelės}many{{count} kredito kortelės}other{{count} kredito kortelių}}</translation>
@@ -479,6 +480,7 @@
 <translation id="2496180316473517155">Naršymo istorija</translation>
 <translation id="2496626742194544812">Eiti į pirmą skirtuką</translation>
 <translation id="2499505845365628575">Visą naršymo istoriją galite rasti čia: „<ph name="HISTORY_BUTTON_ACCESSIBILITY_LABEL" />“.</translation>
+<translation id="251033673027346551">Apsilankykite „Google Wallet“, kad galėtumėte tvarkyti <ph name="BEGIN_LINK" />duomenų ir privatumo nuostatas<ph name="END_LINK" />.</translation>
 <translation id="2511117522375201202">Turite pažeistų slaptažodžių (iš viso: <ph name="NUMBER_OF_PASSWORDS" />), dėl kurių gali kilti saugos pavojus.</translation>
 <translation id="2512709994717613803"><ph name="LEVEL_NUMBER" /> lygis</translation>
 <translation id="2513103768503127042">Čia rasite skirtukų grupes</translation>

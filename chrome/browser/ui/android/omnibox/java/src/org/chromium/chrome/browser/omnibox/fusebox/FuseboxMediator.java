@@ -10,9 +10,11 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.ComponentCallbacks;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
@@ -69,7 +71,6 @@ import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimProperties;
 import org.chromium.components.contextual_search.InputState;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
@@ -87,6 +88,7 @@ import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.base.KeyNavigationUtil;
 import org.chromium.ui.base.MimeTypeUtils;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.ListObservable;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
@@ -104,7 +106,9 @@ import java.util.function.Supplier;
 
 /** Mediator for the Fusebox component. */
 @NullMarked
-/* package */ class FuseboxMediator implements FuseboxAttachmentChangeListener, BackPressHandler {
+/* package */ class FuseboxMediator
+        implements FuseboxAttachmentChangeListener, BackPressHandler, ComponentCallbacks {
+
     private final Context mContext;
     private final WindowAndroid mWindowAndroid;
     private final AndroidPermissionDelegate mPermissionDelegate;
@@ -143,7 +147,6 @@ import java.util.function.Supplier;
     private @Nullable AttachmentsSelectionController mSelectionController;
 
     private boolean mIsTextWrapping;
-    private boolean mHasContextualTasksFocus;
     private @BrandedColorScheme int mBrandedColorScheme = BrandedColorScheme.APP_DEFAULT;
     private @Nullable Profile mProfile;
     private @Nullable AutocompleteInput mInput;
@@ -154,6 +157,7 @@ import java.util.function.Supplier;
     private boolean mPopupItemSelected;
     private @Nullable Runnable mOnFirstPickerInteractionCanceledCallback;
     private boolean mNeedUnfocusOnCancel;
+    private boolean mShouldBeCompact;
     @VisibleForTesting /* package */ @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
 
     private final ListObserver<Void> mListObserver =
@@ -251,10 +255,13 @@ import java.util.function.Supplier;
         mModel.set(FuseboxProperties.POPUP_MODEL_HEADER_VISIBLE, false);
         mBackPressManager.addHandler(this, BackPressHandler.Type.FUSEBOX_POPUP);
         updatePlusButtonBackgroundStyle();
+        mContext.registerComponentCallbacks(this);
+        onConfigurationChanged(mContext.getResources().getConfiguration());
     }
 
     /* package */ void destroy() {
         endInput();
+        mContext.unregisterComponentCallbacks(this);
         mBackPressManager.removeHandler(this);
         mWindowHasFocusSupplier.removeObserver(mOnWindowFocusChanged);
     }
@@ -390,13 +397,7 @@ import java.util.function.Supplier;
         updateSnackbarStyling();
     }
 
-    /**
-     * Called when the user stops interacting with the Omnibox.
-     *
-     * <p>For standard search, this is called on every focus loss to clear the UI. For Contextual
-     * Tasks, this is only called when the task is destroyed (e.g., tab switch or explicit close) to
-     * keep the session warm during focus loss.
-     */
+    /** Called when the user stops interacting with the Omnibox. */
     /* package */ void endInput() {
         hidePopup();
         setModelList(null);
@@ -411,24 +412,6 @@ import java.util.function.Supplier;
         }
         updateFuseboxState();
         updateActivationChip();
-    }
-
-    /**
-     * Called when focus is lost or gained while in a Contextual Tasks session.
-     *
-     * @param hasFocus Whether the contextual tasks fusebox has focus.
-     */
-    /* package */ void onContextualTaskFocusChanged(boolean hasFocus) {
-        if (mHasContextualTasksFocus == hasFocus) return;
-        mHasContextualTasksFocus = hasFocus;
-
-        if (!isInInputSession()) return;
-
-        if (!hasFocus) {
-            hidePopup();
-            mIsTextWrapping = false;
-        }
-        updateFuseboxState();
     }
 
     private void setAutocompleteInput(@Nullable AutocompleteInput input) {
@@ -543,17 +526,10 @@ import java.util.function.Supplier;
     private void updateFuseboxState() {
         @FuseboxState int targetState;
         boolean showRequestTypeButton = shouldShowRequestTypeButton();
-        boolean isContextualTasks =
-                mInput != null
-                        && mInput.getRawPageClassification()
-                                == PageClassification.CO_BROWSING_COMPOSEBOX_VALUE;
-
         if (!isInInputSession()) {
             targetState = FuseboxState.DISABLED;
         } else if (mInput.isStandby()) {
             targetState = FuseboxState.DISABLED;
-        } else if (!mHasContextualTasksFocus && isContextualTasks) {
-            targetState = FuseboxState.COMPACT;
         } else {
             boolean isPopover =
                     mModel.get(FuseboxProperties.FUSEBOX_LAYOUT_MODE)
@@ -645,6 +621,13 @@ import java.util.function.Supplier;
         }
         updateModelForCurrentTab();
         updateModelForRecentTabs();
+        if (OmniboxFeatures.sShowModelPicker.getValue()) {
+            InputState inputState =
+                    mComposeboxQueryControllerBridge.getInputStateSupplier().get();
+            if (inputState != null) {
+                updateModelForPopupInputState(inputState);
+            }
+        }
 
         @PopupState
         int targetState = shouldShowBottomSheetPopup ? PopupState.BOTTOM : PopupState.FLOATING;
@@ -1098,6 +1081,27 @@ import java.util.function.Supplier;
         mActivationChipVisibilitySupplier.set(showActivationChip);
     }
 
+    /* package */ void updateActivationChipCompact() {
+        boolean isCompact = mModel.get(FuseboxProperties.ACTIVATION_CHIP_COMPACT);
+
+        if (isCompact == mShouldBeCompact) return;
+        mModel.set(FuseboxProperties.ACTIVATION_CHIP_COMPACT, mShouldBeCompact);
+    }
+
+    // ComponentCallbacks implementation.
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        int screenWidthPx = ViewUtils.dpToPx(mContext, newConfig.screenWidthDp);
+        int maxCompactWidthPx =
+                mResourceProvider.getDimen(R.dimen.fusebox_compact_activation_chip_width);
+        mShouldBeCompact = screenWidthPx <= maxCompactWidthPx && mIsDesktopPlatform;
+        updateActivationChipCompact();
+    }
+
+    @Override
+    public void onLowMemory() {}
+
     void onActivationChipSelectionChanged(boolean selected) {
         mModel.set(FuseboxProperties.ACTIVATION_CHIP_SELECTED, selected);
         if (selected && isInInputSession()) {
@@ -1302,7 +1306,6 @@ import java.util.function.Supplier;
 
     void onActivationChipClicked() {
         if (!isInInputSession()) return;
-        mInput.setAutocompleteState(AutocompleteState.ENABLED);
 
         activateAiMode(AutocompleteRequestType.AI_MODE, AiModeActivationSource.DEDICATED_BUTTON);
         if (isUrlBarTextUnchanged()) {
@@ -1313,6 +1316,10 @@ import java.util.function.Supplier;
             // from the views.
             mOnActivationChipClickedWithQuery.run();
         }
+
+        // Enable autocomplete only after updating the request type and URL text so suggestions
+        // are not fetched or shown with stale search state.
+        mInput.setAutocompleteState(AutocompleteState.ENABLED);
     }
 
     private boolean isUrlBarTextUnchanged() {
@@ -1378,6 +1385,14 @@ import java.util.function.Supplier;
 
         mModel.set(
                 FuseboxProperties.REQUEST_TYPE_BUTTON_TEXT, getRequestTypeButtonText(inputState));
+
+        if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
+            updateModelForPopupInputState(inputState);
+        }
+    }
+
+    private void updateModelForPopupInputState(InputState inputState) {
+        assert OmniboxFeatures.sShowModelPicker.getValue();
 
         // TODO(https://crbug.com/480976526): Control visibility as well.
         boolean tabsEnabled =

@@ -23,8 +23,9 @@
 //
 // Attach this to the bubble's Widget by calling `Observe(widget)` when
 // spawning the bubble.
-// Check `ShouldSuppress()` in your button's click handler before opening a new
-// bubble.
+// Call `OnMousePressed()` on pointer-down events to record the state, and check
+// `ShouldSuppressBubbleShow()` in your button's click handler before opening a
+// new bubble.
 class WebUIBubbleReopenSuppressor : public views::WidgetObserver {
  public:
   WebUIBubbleReopenSuppressor();
@@ -53,7 +54,7 @@ class WebUIBubbleReopenSuppressor : public views::WidgetObserver {
   // forcefully suppressed regardless of the bubble's timing state.
   void OnMousePressed(bool extra_suppress_condition = false);
 
-  // Uses the internal state locked in during `OnPointerDown()` to
+  // Uses the internal state locked in during `OnMousePressed()` to
   // definitively check whether the bubble show attempt should be suppressed
   // (returning true) or permitted (returning false). Call this within your UI
   // element's activation (click) handler. Evaluating this resets the internal
@@ -65,14 +66,6 @@ class WebUIBubbleReopenSuppressor : public views::WidgetObserver {
   // mouse, but WebUI considers mouse/touch/pen.
   bool ShouldSuppressBubbleShow(bool is_pointer_interaction);
 
-  // Returns true if the time elapsed since the widget was closed is less than
-  // the suppression threshold, or if the widget is currently showing. Use this
-  // directly ONLY if you lack the native interception capabilities to use
-  // `OnMousePressed()` / `ShouldSuppressBubbleShow()`.
-  // TODO(crbug.com/532609175): Rename this and change it to private. UI
-  // elements' click handlers should call ShouldSuppressBubbleShow instead.
-  bool ShouldSuppress() const;
-
   // views::WidgetObserver:
   void OnWidgetDestroying(views::Widget* widget) override;
 
@@ -81,7 +74,15 @@ class WebUIBubbleReopenSuppressor : public views::WidgetObserver {
   // Uses views::kMinimumTimeBetweenButtonClicks by default.
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold);
 
+  bool is_suppress_next_show_for_testing() const {
+    return suppress_next_bubble_show_;
+  }
+
  private:
+  // Returns true if the time elapsed since the widget was closed is less than
+  // the suppression threshold, or if the widget is currently showing.
+  bool IsTimeWithinSuppressionWindow() const;
+
   // Flag armed by `OnMousePressed()` indicating that the subsequent bubble show
   // attempt triggered by the same physical click should be suppressed.
   bool suppress_next_bubble_show_ = false;

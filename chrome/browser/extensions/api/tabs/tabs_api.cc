@@ -80,6 +80,7 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/platform_util.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/unload_controller.h"
@@ -213,10 +214,6 @@ bool SetOpenerOfTab(Profile& profile,
 
   BrowserWindowInterface* opener_browser =
       browser_window_util::GetBrowserForTabContents(*opener.GetContents());
-  // NOTE: This would be more efficient if there were a
-  // TabListInterface::GetIndexOfWebContents() or similar, since then we could
-  // just check `opener_browser->GetIndexOfWebContents(&tab)` instead of looking
-  // up the tab's browser.
   BrowserWindowInterface* tab_browser =
       browser_window_util::GetBrowserForTabContents(*tab.GetContents());
   if (!opener_browser || opener_browser != tab_browser) {
@@ -1057,7 +1054,7 @@ ExtensionFunction::ResponseAction WindowsCreateFunction::Run() {
     }
 
       // Initialize default window bounds according to window type.
-      // TODO(https://crbug.com/431004500): Properly initialize window bounds.
+      // TODO(https://crbug.com/545671279): Properly initialize window bounds.
 #if !BUILDFLAG(IS_ANDROID)
     ui::mojom::WindowShowState ignored_show_state =
         ui::mojom::WindowShowState::kDefault;
@@ -1117,7 +1114,7 @@ ExtensionFunction::ResponseAction WindowsCreateFunction::Run() {
         BrowserWindowInterface::TYPE_APP_POPUP;
 #endif
 
-    // TODO(https://crbug.com/431004500): Initialize app name on android, or
+    // TODO(https://crbug.com/545671279): Initialize app name on android, or
     // verify this is unnecessary.
 #if !BUILDFLAG(IS_ANDROID)
     create_params.app_name =
@@ -1168,7 +1165,6 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
   if (!new_window) {
     return Error(ExtensionTabUtil::kBrowserWindowNotAllowed);
   }
-
   // NOTE: Even though `new_window` was returned, it may not be fully
   // initialized on non-desktop platforms. See documentation on
   // CreateBrowserWindow().
@@ -1310,7 +1306,7 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
 
   // Create a new tab if the created window is still empty. Don't create a new
   // tab when it is intended to create an empty popup.
-  // TODO(https://crbug.com/431004500): Port to desktop android.
+  // TODO(https://crbug.com/545671279): Port to desktop android.
 #if !BUILDFLAG(IS_ANDROID)
   if (!moved_tab && urls_.empty() &&
       new_window->GetType() == Browser::TYPE_NORMAL) {
@@ -1332,16 +1328,10 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
     focused = *create_data_->focused;
   }
 
-  // Some of the Show() operations below may feasibly cause the window to
-  // destruct. Guard appropriately.
-  base::WeakPtr<BrowserWindowInterface> weak_window = new_window->GetWeakPtr();
-  // Reset `new_window` to prevent it from being used.
-  new_window = nullptr;
-
   if (focused) {
-    weak_window->GetWindow()->Show();
+    new_window->GetWindow()->Show();
   } else {
-    // TODO(https://crbug.com/431004500): Port to desktop android.
+    // TODO(https://crbug.com/545671279): Port to desktop android.
 #if !BUILDFLAG(IS_ANDROID)
     // Show an unfocused new window.
     BrowserWindowInterface* const last_active_bwi =
@@ -1352,17 +1342,13 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
     // the old active browser.
     if (last_active_bwi && last_active_bwi->IsActive()) {
       ScopedPinBrowserAtFront scoper(last_active_bwi);
-      weak_window->GetWindow()->ShowInactive();
+      new_window->GetWindow()->ShowInactive();
     } else {
-      weak_window->GetWindow()->ShowInactive();
+      new_window->GetWindow()->ShowInactive();
     }
 #else
-    weak_window->GetWindow()->ShowInactive();
+    new_window->GetWindow()->ShowInactive();
 #endif  // BUILDFLAG(IS_ANDROID)
-  }
-
-  if (!weak_window || weak_window->IsDeleteScheduled()) {
-    return Error(ExtensionTabUtil::kBrowserWindowNotAllowed);
   }
 
 // Despite creating the window with initial_show_state() ==
@@ -1371,9 +1357,9 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
 // TODO(crbug.com/40254339): Remove this workaround when linux is fixed.
 // TODO(crbug.com/40254339): Find a fix for wayland as well.
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
-  if (BrowserInitState::From(weak_window.get())->initial_show_state() ==
+  if (BrowserInitState::From(new_window)->initial_show_state() ==
       ui::mojom::WindowShowState::kMinimized) {
-    weak_window->GetWindow()->Minimize();
+    new_window->GetWindow()->Minimize();
   }
 #endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
 
@@ -1384,7 +1370,7 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
   if (create_data_ &&
       create_data_->state == windows::WindowState::kLockedFullscreen) {
 #if BUILDFLAG(IS_CHROMEOS)
-    Browser* const target_browser = weak_window->GetBrowserForMigrationOnly();
+    Browser* const target_browser = new_window->GetBrowserForMigrationOnly();
     if (target_browser) {
       auto* delegate =
           ash::BrowserController::GetInstance()->GetDelegate(target_browser);
@@ -1395,7 +1381,7 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
-  if (weak_window->GetProfile()->IsOffTheRecord() &&
+  if (new_window->GetProfile()->IsOffTheRecord() &&
       !browser_context()->IsOffTheRecord() &&
       !include_incognito_information()) {
     // Don't expose incognito windows if extension itself works in non-incognito
@@ -1404,7 +1390,7 @@ ExtensionFunction::ResponseValue WindowsCreateFunction::OnBrowserWindowCreated(
   }
 
   return WithArguments(ExtensionTabUtil::CreateWindowValueForExtension(
-      *weak_window, extension(), WindowController::kPopulateTabs,
+      *new_window, extension(), WindowController::kPopulateTabs,
       source_context_type()));
 }
 
@@ -2084,6 +2070,15 @@ ExtensionFunction::ResponseAction TabsCreateFunction::Run() {
   pinned_ = create_properties.pinned;
   index_ = create_properties.index;
   original_url_ = std::move(create_properties.url);
+  split_with_tab_id_ = create_properties.split_with_tab_id;
+
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(https://crbug.com/480192698): Remove this restriction once split tabs
+  // are supported on Desktop Android.
+  if (split_with_tab_id_) {
+    return RespondNow(Error(tabs_constants::kSplitViewCreationFailedError));
+  }
+#endif
 
   validated_url_ = chrome::ChromeUINewTabURLAsGURL();
   if (original_url_) {
@@ -2144,8 +2139,6 @@ ExtensionFunction::ResponseAction TabsCreateFunction::Run() {
   }
 
   if (base::FeatureList::IsEnabled(extensions_features::kApiTabsSplitView)) {
-    split_with_tab_id_ = create_properties.split_with_tab_id;
-
     if (split_with_tab_id_) {
       int target_index = -1;
       WindowController* target_window_controller = nullptr;
@@ -2213,10 +2206,9 @@ ExtensionFunction::ResponseAction TabsCreateFunction::Run() {
   // browser *and* it's attempting to close? Should that be *or*? This goes
   // back to the dawn of time, AKA the initial implementation in 2014:
   // https://codereview.chromium.org/245933002.
-  if (browser && (browser->IsDeleteScheduled() ||
-                  (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
-                   UnloadController::From(browser->GetBrowserForMigrationOnly())
-                       ->is_attempting_to_close_browser()))) {
+  if (browser && browser->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
+      UnloadController::From(browser->GetBrowserForMigrationOnly())
+          ->is_attempting_to_close_browser()) {
     browser = nullptr;
     fallback_to_tabbed_browser = true;
   }
@@ -2307,18 +2299,7 @@ void TabsCreateFunction::OnBrowserWindowCreated(
     return;
   }
 
-  // The Show() call below could feasibly cause the window to close on some
-  // platforms.
-  base::WeakPtr<BrowserWindowInterface> weak_browser = browser->GetWeakPtr();
-  // Reset `browser` to prevent it from being used.
-  browser = nullptr;
-
-  weak_browser->GetWindow()->Show();
-
-  if (!weak_browser || weak_browser->IsDeleteScheduled()) {
-    Respond(Error(ExtensionTabUtil::kBrowserWindowNotAllowed));
-    return;
-  }
+  browser->GetWindow()->Show();
 
   // Re-fetch the opener, if one was specified. This call might fail if the
   // opener tab was destroyed while the window was being created. In that case,
@@ -2331,7 +2312,7 @@ void TabsCreateFunction::OnBrowserWindowCreated(
                                  &opener, nullptr);
   }
 
-  OpenTabInBrowser(*weak_browser, opener);
+  OpenTabInBrowser(*browser, opener);
 }
 
 void TabsCreateFunction::OpenTabInBrowser(BrowserWindowInterface& browser,
@@ -2341,6 +2322,7 @@ void TabsCreateFunction::OpenTabInBrowser(BrowserWindowInterface& browser,
   options.active = active_;
   options.pinned = pinned_;
   options.index = index_;
+  options.split_with_tab_id = split_with_tab_id_;
 
   base::expected<content::WebContents*, std::string> result =
       OpenTabHelper::OpenTab(validated_url_, browser, *this, options);

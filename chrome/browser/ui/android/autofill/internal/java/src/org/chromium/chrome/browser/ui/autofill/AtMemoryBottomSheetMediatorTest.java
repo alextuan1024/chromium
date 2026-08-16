@@ -15,7 +15,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.CURRENT_SCREEN;
+import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.APPLY_DEACTIVATED_STYLE;
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.IS_FLYOUT_VISIBLE;
+import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.IS_LOADING;
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.ON_FLYOUT_CLICKED;
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.ON_SUGGESTION_CLICKED;
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties.TITLE;
@@ -178,13 +180,19 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .build());
 
         mMediator.show(suggestions);
+        assertEquals(ScreenId.HOME_SCREEN, mModel.get(CURRENT_SCREEN));
 
         PropertyModel itemModel2 = mModelList.get(1).model;
         itemModel2.get(ON_FLYOUT_CLICKED).run();
+        assertEquals(ScreenId.FLYOUT_SCREEN, mModel.get(CURRENT_SCREEN));
 
         PropertyModel flyoutModel = mMediator.getFlyoutModel();
         assertEquals("Hotel Booking Type", flyoutModel.get(FlyoutProperties.TITLE));
         assertEquals(List.of(childSuggestion), flyoutModel.get(FlyoutProperties.SUGGESTIONS));
+
+        // Showing the suggestions again should switch the screen to the home screen.
+        mMediator.show(suggestions);
+        assertEquals(ScreenId.HOME_SCREEN, mModel.get(CURRENT_SCREEN));
     }
 
     @Test
@@ -400,6 +408,45 @@ public class AtMemoryBottomSheetMediatorTest {
                 .setSuggestionType(SuggestionType.AT_MEMORY_SEARCH_AFFORDANCE)
                 .setIsAcceptable(true)
                 .build();
+    }
+
+    @Test
+    public void testShow_DeactivatedSuggestion() {
+        mMediator.show(
+                List.of(
+                        new AutofillSuggestion.Builder()
+                                .setLabel("Deactivated suggestion")
+                                .setSubLabel("")
+                                .setSuggestionType(SuggestionType.AT_MEMORY_SEARCH_RESULT)
+                                .setIsLoading(false)
+                                .setApplyDeactivatedStyle(true)
+                                .setIsAcceptable(false)
+                                .build()));
+
+        assertEquals(1, mModelList.size());
+        assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
+        assertTrue(mModelList.get(0).model.get(APPLY_DEACTIVATED_STYLE));
+        assertFalse(mModelList.get(0).model.get(IS_LOADING));
+    }
+
+    @Test
+    public void testShow_LoadingSuggestion() {
+        mMediator.show(
+                List.of(
+                        new AutofillSuggestion.Builder()
+                                .setLabel("Deactivated suggestion")
+                                .setSubLabel("")
+                                .setSuggestionType(SuggestionType.AT_MEMORY_SEARCH_RESULT)
+                                .setIsLoading(true)
+                                .setApplyDeactivatedStyle(false)
+                                .setIsAcceptable(false)
+                                .build()));
+
+        assertEquals(1, mModelList.size());
+        assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
+        // Loading suggestion should be deactivated as well.
+        assertTrue(mModelList.get(0).model.get(APPLY_DEACTIVATED_STYLE));
+        assertTrue(mModelList.get(0).model.get(IS_LOADING));
     }
 
     @Test

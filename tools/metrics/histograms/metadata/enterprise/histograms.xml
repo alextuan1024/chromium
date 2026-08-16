@@ -346,6 +346,11 @@ chromium-metrics-reviews@google.com.
     <owner>rbock@google.com</owner>
     <owner>zmin@chromium.org</owner>
   </variant>
+  <variant name=".UserManagementStatusAndPolicies"
+      summary="User Management Status And Policies.">
+    <owner>ydago@chromium.org</owner>
+    <owner>cbe-eng@google.com</owner>
+  </variant>
 </variants>
 
 <variants name="EnterpriseReportingEventType">
@@ -3975,6 +3980,16 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.Proxy.DisguisedErrorPage.ErrorCode"
+    enum="HttpResponseCode" expires_after="2027-07-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Recorded when an alternative error page HTML is generated for an Enterprise
+    Proxy disguised error, logging the disguised HTTP response or error code.
+  </summary>
+</histogram>
+
 <histogram name="Enterprise.PublicSession.SessionLength" units="minutes"
     expires_after="2026-12-16">
   <owner>bfranz@chromium.org</owner>
@@ -4248,6 +4263,62 @@ chromium-metrics-reviews@google.com.
     Records when the Enterprise Signals Disclaimer view is shown in the Profile
     Picker after selecting a managed profile missing device signals collection
     consent.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.Skills.Count" units="skills"
+    expires_after="2027-02-01">
+  <owner>esalma@google.com</owner>
+  <owner>austinzzr@google.com</owner>
+  <owner>cbe-productivity-eng@google.com</owner>
+  <summary>
+    Records the number of valid enterprise skills provided by the
+    EnterprisePublishedSkills policy after they have been successfully parsed.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.Skills.FetchLatency" units="ms"
+    expires_after="2027-02-01">
+  <owner>esalma@google.com</owner>
+  <owner>austinzzr@google.com</owner>
+  <owner>cbe-productivity-eng@google.com</owner>
+  <summary>
+    The time it takes to fetch an enterprise skill definition from its URL.
+    Recorded when the network request completes, regardless of success.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.Skills.FetchResult" enum="BooleanSuccess"
+    expires_after="2027-02-01">
+  <owner>esalma@google.com</owner>
+  <owner>austinzzr@google.com</owner>
+  <owner>cbe-productivity-eng@google.com</owner>
+  <summary>
+    Records whether the enterprise skill was successfully fetched from its URL
+    on request completion.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.Skills.PolicyError"
+    enum="EnterprisePublishedSkillsError" expires_after="2027-02-01">
+  <owner>esalma@google.com</owner>
+  <owner>austinzzr@google.com</owner>
+  <owner>cbe-productivity-eng@google.com</owner>
+  <summary>
+    Records validation errors and invalid skills encountered when parsing the
+    EnterprisePublishedSkills policy. Recorded by the policy handler during
+    policy validation.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.Skills.ValidationResult"
+    enum="EnterpriseSkillValidationResult" expires_after="2027-02-01">
+  <owner>esalma@google.com</owner>
+  <owner>austinzzr@google.com</owner>
+  <owner>cbe-productivity-eng@google.com</owner>
+  <summary>
+    Records the outcome of parsing and validating an enterprise skill file
+    fetched from its URL.
   </summary>
 </histogram>
 

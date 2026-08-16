@@ -18,6 +18,7 @@
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/extensions/api/passwords_private/test_passwords_private_delegate.h"
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
+#include "chrome/browser/password_manager/password_change/features.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
 #include "chrome/test/base/testing_profile.h"
@@ -345,25 +346,6 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
-       SetAccountStorageEnabled_CallsDelegate) {
-  EXPECT_CALL(mock_delegate(), SetAccountStorageEnabled(true));
-
-  handler().SetAccountStorageEnabled(true);
-}
-
-TEST_F(PasswordManagerUIHandlerUnitTest,
-       ShouldShowAccountStorageSettingToggle_CallsDelegate) {
-  for (bool should_show : {true, false}) {
-    EXPECT_CALL(mock_delegate(), ShouldShowAccountStorageSettingToggle())
-        .WillOnce(Return(should_show));
-
-    base::test::TestFuture<bool> future;
-    handler().ShouldShowAccountStorageSettingToggle(future.GetCallback());
-    EXPECT_EQ(should_show, future.Get());
-  }
-}
-
-TEST_F(PasswordManagerUIHandlerUnitTest,
        GetPasswordManagerActionableError_ReturnsCorrectValue) {
   EXPECT_CALL(mock_delegate(), GetActionableError())
       .WillOnce(
@@ -567,7 +549,7 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
 
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
-      password_manager::features::kPasswordCheckupPrototype);
+      password_change::features::kPasswordChangeWithGlic);
 
   PasswordChangeServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(), base::BindRepeating([](content::BrowserContext* context)
@@ -611,7 +593,7 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
        StartPasswordChange_InvalidCredentialId_DoesNotCallService) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
-      password_manager::features::kPasswordCheckupPrototype);
+      password_change::features::kPasswordChangeWithGlic);
 
   PasswordChangeServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(), base::BindRepeating([](content::BrowserContext* context)
@@ -641,7 +623,7 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
 
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
-      password_manager::features::kPasswordCheckupPrototype);
+      password_change::features::kPasswordChangeWithGlic);
 
   PasswordChangeServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(), base::BindRepeating([](content::BrowserContext* context)
@@ -674,7 +656,7 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
 
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
-      password_manager::features::kPasswordCheckupPrototype);
+      password_change::features::kPasswordChangeWithGlic);
 
   PasswordChangeServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(), base::BindRepeating([](content::BrowserContext* context)

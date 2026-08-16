@@ -824,7 +824,7 @@ targets.legacy_matrix_compound_suite(
     basic_suites = {
         "optimization_guide_ios_unittests": targets.legacy_matrix_config(
             variants = [
-                "SIM_IPHONE_14_18_2",
+                "SIM_IPHONE_14_18_5",
             ],
         ),
     },
@@ -900,11 +900,6 @@ targets.legacy_matrix_compound_suite(
         "ondevice_stability_tests_suite": targets.legacy_matrix_config(
             variants = [
                 "NVIDIA_GEFORCE_GTX_1660",
-            ],
-        ),
-        "opt_target_coverage_test_suite": targets.legacy_matrix_config(
-            mixins = [
-                "gce",
             ],
         ),
         # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.

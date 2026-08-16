@@ -875,6 +875,12 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
   ExecuteJavaScript("chrome.readingMode.showLoading();");
 
   if (model_.is_readability_next_distillation_method()) {
+    if (features::IsReadAnythingDistillerRefactorEnabled()) {
+      SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                               kDistillationInProgress);
+
+      page_handler_->RequestReadabilityDistillation();
+    }
     return;
   }
   DistillNewTree();
@@ -1530,6 +1536,9 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
       .SetProperty(
           "isReadAnythingTranslateEntryPointEnabled",
           &ReadAnythingAppController::IsReadAnythingTranslateEntryPointEnabled)
+      .SetProperty("isReadAnythingReadAloudExperimentalPlaybackUiEnabled",
+                   &ReadAnythingAppController::
+                       IsReadAnythingReadAloudExperimentalPlaybackUiEnabled)
       .SetProperty("isReadabilityEnabled",
                    &ReadAnythingAppController::IsReadabilityEnabled)
       .SetProperty("isReadabilitySelectTextEnabled",
@@ -2267,6 +2276,11 @@ bool ReadAnythingAppController::IsImprovedReadAloudEnabled() const {
 
 bool ReadAnythingAppController::IsReadAnythingImprovedUiEnabled() const {
   return features::IsReadAnythingImprovedUiEnabled();
+}
+
+bool ReadAnythingAppController::
+    IsReadAnythingReadAloudExperimentalPlaybackUiEnabled() const {
+  return features::IsReadAnythingReadAloudExperimentalPlaybackUiEnabled();
 }
 
 bool ReadAnythingAppController::IsReadAnythingTranslateEntryPointEnabled()

@@ -47,6 +47,7 @@
 #include "url/url_constants.h"
 
 using read_anything::ReadAnythingEntryPointController;
+using read_anything::mojom::ReadAnythingOpenTrigger;
 using ui_test_utils::NavigateToURL;
 
 class ReadAnythingOmniboxControllerTestBase
@@ -740,8 +741,9 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingOmniboxControllerBrowserTest,
       content::WebContents::Create(
           content::WebContents::CreateParams(browser()->GetProfile()));
 
-  browser()->tab_strip_model()->DiscardWebContentsAt(0,
-                                                     std::move(new_contents));
+  browser()->tab_strip_model()->DiscardWebContents(
+      browser()->tab_strip_model()->GetWebContentsAt(0),
+      std::move(new_contents));
 
   // Switch back to the discarded tab.
   browser()->tab_strip_model()->ActivateTabAt(0);

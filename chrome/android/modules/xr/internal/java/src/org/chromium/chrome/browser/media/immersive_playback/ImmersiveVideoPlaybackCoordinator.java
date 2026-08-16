@@ -160,6 +160,13 @@ public class ImmersiveVideoPlaybackCoordinator
         mPlayerCoordinator.updatePlayerSize(width, height);
     }
 
+    /** Shows the playback control panel and restarts the auto-hide timer. */
+    public void showControlPanel() {
+        mControlCoordinator.show(getControlPanelParent());
+        updateControlPanel();
+        mAutoHideManager.startTimer();
+    }
+
     // =========================================================================
     // Delegate Implementations
     // =========================================================================
@@ -172,13 +179,28 @@ public class ImmersiveVideoPlaybackCoordinator
     }
 
     @Override
-    public void onPlayerPanelPoseChanged(XrPose pose) {
+    public void onPlayerPanelPoseChangeStart(XrPose pose) {
+        mAutoHideManager.onPlayerPanelMovingChanged(true);
         mPoseManager.onPlayerPanelPoseChanged(pose);
         updatePose();
     }
 
     @Override
+    public void onPlayerPanelPoseChangeUpdate(XrPose pose) {
+        mPoseManager.onPlayerPanelPoseChanged(pose);
+        updatePose();
+    }
+
+    @Override
+    public void onPlayerPanelPoseChangeEnd(XrPose pose) {
+        mPoseManager.onPlayerPanelPoseChanged(pose);
+        updatePose();
+        mAutoHideManager.onPlayerPanelMovingChanged(false);
+    }
+
+    @Override
     public void onPlayerPanelDragStart(XrVector3 origin, XrVector3 direction) {
+        mAutoHideManager.onPlayerPanelMovingChanged(true);
         mPoseManager.onPlayerPanelDragStart(origin, direction);
     }
 
@@ -190,6 +212,7 @@ public class ImmersiveVideoPlaybackCoordinator
 
     @Override
     public void onPlayerPanelDragEnd(XrVector3 origin, XrVector3 direction) {
+        mAutoHideManager.onPlayerPanelMovingChanged(false);
         mPoseManager.onPlayerPanelDragEnd(origin, direction);
         updatePose();
     }
@@ -306,12 +329,6 @@ public class ImmersiveVideoPlaybackCoordinator
         } else {
             showControlPanel();
         }
-    }
-
-    private void showControlPanel() {
-        mControlCoordinator.show(getControlPanelParent());
-        updateControlPanel();
-        mAutoHideManager.startTimer();
     }
 
     private void hideControlPanel() {

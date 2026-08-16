@@ -59,6 +59,7 @@ if (is_android) {
       "//base:base_junit_test_support",
       "//base:holder_java",
       "//base:service_loader_java",
+      "//base:tristate_java",
       "//base/test:test_support_java",
       "//base/version_info/android:version_constants_java",
       "//cc:cc_java",
@@ -446,6 +447,7 @@ if (is_android) {
       "src/org/chromium/chrome/browser/RecentlyClosedEntriesManagerTrackerImplUnitTest.java",
       "src/org/chromium/chrome/browser/RecentlyClosedEntriesManagerUnitTest.java",
       "src/org/chromium/chrome/browser/ShortcutHelperTest.java",
+      "src/org/chromium/chrome/browser/SwipeRefreshHandlerUnitTest.java",
       "src/org/chromium/chrome/browser/TabGroupUsageTrackerUnitTest.java",
       "src/org/chromium/chrome/browser/TabStateThemeResourceProviderTest.java",
       "src/org/chromium/chrome/browser/UndoRefocusHelperTest.java",
@@ -457,6 +459,7 @@ if (is_android) {
     deps = [
       ":chrome_junit_tests_helper",
       "//chrome/browser/tabpersistence:java",
+      "//third_party/android_swipe_refresh:android_swipe_refresh_java",
     ]
   }
 
@@ -471,6 +474,7 @@ if (is_android) {
       "src/org/chromium/chrome/browser/app/tab_activity_glue/PopupCreatorImplUnitTest.java",
       "src/org/chromium/chrome/browser/app/tab_activity_glue/ReparentingTaskUnitTest.java",
       "src/org/chromium/chrome/browser/app/tab_activity_glue/TabReparentingControllerTest.java",
+      "src/org/chromium/chrome/browser/app/tabmodel/ActiveTabCacheUnitTest.java",
       "src/org/chromium/chrome/browser/app/tabmodel/ArchivedTabModelOrchestratorUnitTest.java",
       "src/org/chromium/chrome/browser/app/tabmodel/CombinedTabRestorerUnitTest.java",
       "src/org/chromium/chrome/browser/app/tabmodel/HeadlessTabCreatorUnitTest.java",
@@ -688,6 +692,7 @@ if (is_android) {
     sources = [
       "src/org/chromium/chrome/browser/contextmenu/ContextMenuCoordinatorTest.java",
       "src/org/chromium/chrome/browser/contextmenu/ContextMenuHeaderMediatorTest.java",
+      "src/org/chromium/chrome/browser/contextmenu/ContextMenuListViewUnitTest.java",
       "src/org/chromium/chrome/browser/contextmenu/ContextMenuMediatorTest.java",
     ]
 
@@ -1083,7 +1088,6 @@ if (is_android) {
     sources = [
       "src/org/chromium/chrome/browser/privacy_sandbox/CctHandlerTest.java",
       "src/org/chromium/chrome/browser/privacy_sandbox/FakeCookieControlsBridge.java",
-      "src/org/chromium/chrome/browser/privacy_sandbox/PrivacySandbox3pcdRollbackMessageControllerTest.java",
     ]
 
     deps = [ ":chrome_junit_tests_helper" ]
@@ -1230,6 +1234,7 @@ if (is_android) {
 
     deps = [
       ":chrome_junit_tests_helper",
+      "//chrome/browser/ntp_customization:java",
       "//chrome/browser/prefs/android:java",
       "//chrome/browser/sync/synced_set_up/android:java",
       "//components/sync_preferences/cross_device_pref_tracker/android:java",
@@ -1306,6 +1311,7 @@ if (is_android) {
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionsTabModelObserversUnitTest.java",
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelImplUtilUnitTest.java",
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelRemoverUnitTest.java",
+      "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabOpenerTrackerHelperUnitTest.java",
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabPinnerActionListenerUnitTest.java",
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabRemoverImplUnitTest.java",
       "//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabUngrouperImplUnitTest.java",
@@ -1357,6 +1363,7 @@ if (is_android) {
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupCreationUiDelegateUnitTest.java",
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupFaviconClusterUnitTest.java",
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupFaviconQuarterUnitTest.java",
+      "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupHoverCardViewUnitTest.java",
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupLabellerUnitTest.java",
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupListBottomSheetCoordinatorUnitTest.java",
       "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabGroupListBottomSheetMediatorUnitTest.java",
@@ -1463,6 +1470,7 @@ if (is_android) {
       "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/TabListMediatorUnitTest.java",
       "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/TabSearchOverlayCoordinatorUnitTest.java",
       "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/TabStripSnapshotterTest.java",
+      "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/TabSwitcherDragHandlerUnitTest.java",
       "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/TabUiMetricsHelperUnitTest.java",
       "//chrome/android/features/tab_ui/junit/src/org/chromium/chrome/browser/tasks/tab_management/vertical_tabs/VerticalTabListRecyclerViewUnitTest.java",
     ]
@@ -1563,6 +1571,7 @@ if (is_android) {
       "src/org/chromium/chrome/browser/settings/SettingsEnumsTest.java",
       "src/org/chromium/chrome/browser/settings/SettingsFragmentRegistryTest.java",
       "src/org/chromium/chrome/browser/settings/SettingsHostFragmentTest.java",
+      "src/org/chromium/chrome/browser/settings/SettingsInTabNavigationDelegateTest.java",
       "src/org/chromium/chrome/browser/settings/SettingsInTabTest.java",
       "src/org/chromium/chrome/browser/settings/SettingsMetricsReporterTest.java",
       "src/org/chromium/chrome/browser/settings/SettingsNavigationImplTest.java",

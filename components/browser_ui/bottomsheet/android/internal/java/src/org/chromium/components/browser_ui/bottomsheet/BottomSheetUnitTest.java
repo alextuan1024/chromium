@@ -6,6 +6,7 @@ package org.chromium.components.browser_ui.bottomsheet;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -23,6 +24,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.core.graphics.Insets;
@@ -439,6 +441,64 @@ public class BottomSheetUnitTest {
     }
 
     @Test
+    public void testApplyLargeFormFactorBackgroundBounds() {
+        BottomSheet sheet =
+                (BottomSheet)
+                        LayoutInflater.from(mActivity).inflate(R.layout.bottom_sheet_desktop, null);
+        mSheetContainer.removeAllViews();
+        mSheetContainer.addView(sheet);
+        sheet.setSheetContainerForTesting(mSheetContainer);
+        sheet.setToolbarHolderForTesting(mToolbarHolder);
+        sheet.setBottomSheetContentContainerForTesting(
+                sheet.findViewById(R.id.bottom_sheet_content));
+
+        sheet.init(
+                mActivity.getWindow(),
+                /* keyboardDelegate= */ mKeyboardDelegate,
+                /* alwaysFullWidth= */ false,
+                /* edgeToEdgeBottomInsetSupplier= */ () -> 0,
+                /* appHeaderHeight= */ 0,
+                /* bottomMargin= */ 0,
+                mInsetObserver,
+                /* isLargeFormFactor= */ true);
+        sheet.setSheetBackgroundForTesting(mSheetBackground);
+        sheet.setShadowLayerForTesting(mShadowLayerView);
+
+        doReturn(true).when(mSheetContent).supportsLargeFormFactor();
+
+        // Stub layout properties that would normally be inflated or measured by Android framework
+        // natively.
+        final int shadowPaddingTop = 10;
+        final int shadowPaddingBottom = 20;
+        final int shadowTop = 10;
+        final int backgroundTop = 20;
+        final int backgroundMeasuredHeight = 300;
+        final float userDragTranslationY = 100f;
+
+        doReturn(shadowPaddingTop).when(mShadowLayerView).getPaddingTop();
+        doReturn(shadowPaddingBottom).when(mShadowLayerView).getPaddingBottom();
+        doReturn(shadowTop).when(mShadowLayerView).getTop();
+        doReturn(backgroundTop).when(mSheetBackground).getTop();
+        doReturn(backgroundMeasuredHeight).when(mSheetBackground).getMeasuredHeight();
+
+        sheet.showContent(mSheetContent);
+
+        // At this point, the layout and visibility should be initialized.
+        // We will call the private method indirectly by triggering a layout pass or updating
+        // translation.
+        sheet.setSheetOffsetFromBottom(
+                userDragTranslationY, BottomSheetController.StateChangeReason.NONE);
+
+        // Evaluate exactly what boundaries the method derived:
+        // visibleHeight = min(currentOffsetPx, measuredBgHeight) = min(100, 300) = 100.
+        // backgroundBottom = backgroundTop + visibleHeight = 20 + 100 = 120.
+        // shadowBottom = shadowTop + visibleHeight + shadowPaddingTop + shadowPaddingBottom
+        //              = 10 + 100 + 10 + 20 = 140.
+        verify(mSheetBackground, org.mockito.Mockito.atLeastOnce()).setBottom(120);
+        verify(mShadowLayerView, org.mockito.Mockito.atLeastOnce()).setBottom(140);
+    }
+
+    @Test
     public void testBackgroundGlowColor_LargeFormFactor() {
         BottomSheet sheet =
                 (BottomSheet)
@@ -464,11 +524,16 @@ public class BottomSheetUnitTest {
 
         doReturn(true).when(mSheetContent).supportsLargeFormFactor();
 
+        int expectedSize =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.bottom_sheet_shadow_length);
+        doReturn(expectedSize).when(mShadowLayerView).getPaddingLeft();
+        doReturn(expectedSize).when(mShadowLayerView).getPaddingTop();
+        doReturn(expectedSize).when(mShadowLayerView).getPaddingRight();
+        doReturn(expectedSize).when(mShadowLayerView).getPaddingBottom();
+
         sheet.showContent(mSheetContent);
 
         verify(mShadowLayerView).setBackgroundResource(R.drawable.popup_bg_shadow_16dp);
-        int expectedSize =
-                mActivity.getResources().getDimensionPixelSize(R.dimen.bottom_sheet_shadow_length);
         ArgumentCaptor<ViewGroup.LayoutParams> captor =
                 ArgumentCaptor.forClass(ViewGroup.LayoutParams.class);
         verify(mShadowLayerView, org.mockito.Mockito.atLeastOnce())
@@ -1102,5 +1167,105 @@ public class BottomSheetUnitTest {
                 mBottomSheet.forceScrollingStateForTesting(
                         SHEET_PEEK_HEIGHT + 20, /* yUpwardsVelocity= */ 1.0f);
         assertEquals(SheetState.HALF, targetState);
+    }
+
+    @Test
+    public void testToggleSheetState() {
+        BottomSheet.setSmallScreenForTesting(false);
+        doReturn((float) HeightMode.DEFAULT).when(mSheetContent).getFullHeightRatio();
+        doReturn(0.5f).when(mSheetContent).getHalfHeightRatio();
+        doReturn(SHEET_PEEK_HEIGHT).when(mSheetContent).getPeekHeight();
+
+        setupBottomSheetStrings(
+                R.string.bottom_sheet_accessibility_description,
+                R.string.bottom_sheet_accessibility_description);
+        doReturn(new View(mActivity)).when(mSheetContent).getContentView();
+
+        mBottomSheet.showContent(mSheetContent);
+
+        mBottomSheet.setSheetState(SheetState.PEEK, false);
+        assertEquals(SheetState.PEEK, mBottomSheet.getSheetState());
+
+        mBottomSheet.toggleSheetState();
+        assertEquals(SheetState.HALF, mBottomSheet.getTargetSheetState());
+        mBottomSheet.endAnimations();
+        assertEquals(SheetState.HALF, mBottomSheet.getSheetState());
+
+        mBottomSheet.toggleSheetState();
+        assertEquals(SheetState.FULL, mBottomSheet.getTargetSheetState());
+        mBottomSheet.endAnimations();
+        assertEquals(SheetState.FULL, mBottomSheet.getSheetState());
+
+        mBottomSheet.toggleSheetState();
+        assertEquals(SheetState.HALF, mBottomSheet.getTargetSheetState());
+        mBottomSheet.endAnimations();
+        assertEquals(SheetState.HALF, mBottomSheet.getSheetState());
+    }
+
+    @Test
+    public void testDesktopHandlebarConfigurationFromContent() {
+        // Initialize a Large Form Factor BottomSheet via layout XML that contains the desktop
+        // layout
+        BottomSheet sheet =
+                (BottomSheet)
+                        LayoutInflater.from(mActivity).inflate(R.layout.bottom_sheet_desktop, null);
+
+        // Inject the newly created Sheet into the testing container
+        mSheetContainer.removeAllViews();
+        mSheetContainer.addView(sheet);
+        sheet.setSheetContainerForTesting(mSheetContainer);
+        sheet.setShadowLayerForTesting(mShadowLayerView);
+        sheet.setBottomSheetContentContainerForTesting(
+                sheet.findViewById(R.id.bottom_sheet_content));
+
+        sheet.init(
+                mActivity.getWindow(),
+                /* keyboardDelegate= */ mKeyboardDelegate,
+                /* alwaysFullWidth= */ false,
+                /* edgeToEdgeBottomInsetSupplier= */ () -> 0,
+                /* appHeaderHeight= */ 0,
+                /* bottomMargin= */ 0,
+                mInsetObserver,
+                /* isLargeFormFactor= */ true); // Force LFF enabled
+
+        ImageView handlebar = sheet.getHandlebarForTesting();
+        assertNotNull(handlebar);
+        assertTrue(
+                "Handlebar should have an OnClickListener configured on desktop",
+                handlebar.hasOnClickListeners());
+        int expectedPadding =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(
+                                R.dimen.bottom_sheet_handlebar_padding_vertical_desktop);
+        assertEquals(
+                "Handlebar top padding should be 8dp on desktop",
+                expectedPadding,
+                handlebar.getPaddingTop());
+        assertEquals(
+                "Handlebar bottom padding should be 8dp on desktop",
+                expectedPadding,
+                handlebar.getPaddingBottom());
+
+        // Setup Sheet Content that requests a handlebar
+        BottomSheetContent contentWithHandlebar = mock(BottomSheetContent.class);
+        doReturn(true).when(contentWithHandlebar).supportsLargeFormFactor();
+        doReturn(true).when(contentWithHandlebar).showHandlebar();
+        doReturn(new View(mActivity)).when(contentWithHandlebar).getContentView();
+
+        sheet.showContent(contentWithHandlebar);
+        assertEquals(View.VISIBLE, handlebar.getVisibility());
+        assertNotNull(
+                "Handlebar should have TYPE_HAND hover pointer icon configured on desktop",
+                handlebar.getPointerIcon());
+
+        // Setup Sheet Content that does not request a handlebar
+        BottomSheetContent contentWithoutHandlebar = mock(BottomSheetContent.class);
+        doReturn(true).when(contentWithoutHandlebar).supportsLargeFormFactor();
+        doReturn(false).when(contentWithoutHandlebar).showHandlebar();
+        doReturn(new View(mActivity)).when(contentWithoutHandlebar).getContentView();
+
+        sheet.showContent(contentWithoutHandlebar);
+        assertEquals(View.GONE, handlebar.getVisibility());
     }
 }

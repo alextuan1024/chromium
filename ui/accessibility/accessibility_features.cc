@@ -213,7 +213,7 @@ BASE_FEATURE(kUiaDisconnectRootProviders, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUiaEventOptimization, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kUiaMathMlSupport, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUiaMathMlSupport, base::FEATURE_ENABLED_BY_DEFAULT);
 bool IsUiaMathMlSupportEnabled() {
   return base::FeatureList::IsEnabled(::features::kUiaMathMlSupport);
 }
@@ -430,6 +430,13 @@ ReadAnythingMenuShuffleExperimentGroup
 GetReadAnythingMenuShuffleExperimentGroup() {
   CHECK(IsReadAnythingMenuShuffleExperimentEnabled());
   return kReadAnythingMenuShuffleExperimentParam.Get();
+}
+
+BASE_FEATURE(kReadAnythingReadAloudExperimentalPlaybackUi,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsReadAnythingReadAloudExperimentalPlaybackUiEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kReadAnythingReadAloudExperimentalPlaybackUi);
 }
 
 BASE_FEATURE(kReadAnythingReadAloudPhraseHighlighting,

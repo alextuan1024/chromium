@@ -10,8 +10,11 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.refEq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
@@ -54,6 +57,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
@@ -1200,6 +1204,68 @@ public class TabContextMenuCoordinatorUnitTest {
 
     @Test
     @Feature("Tab Strip Context Menu")
+    public void testAddToGroup_groupInAnotherWindow_groupedTabs() {
+        when(mTabModel.isTabInTabGroup(mTab1)).thenReturn(true);
+        Token tabGroupId2 = Token.createRandom();
+        SavedTabGroup savedTabGroup2 = new SavedTabGroup();
+        savedTabGroup2.localId = new LocalTabGroupId(tabGroupId2);
+        SavedTabGroupTab savedTabGroupTab2 = new SavedTabGroupTab();
+        savedTabGroupTab2.localId = TAB_ID_2;
+        savedTabGroupTab2.url = EXAMPLE_URL;
+        savedTabGroup2.savedTabs = List.of(savedTabGroupTab2);
+        savedTabGroup2.title = "Window 2 Group";
+        savedTabGroup2.color = TAB_GROUP_INDICATOR_COLOR_ID;
+        when(mTabGroupSyncService.getAllGroupIds())
+                .thenReturn(new String[] {TAB_GROUP_ID_STRING, tabGroupId2.toString()});
+        when(mTabGroupSyncService.getGroup(tabGroupId2.toString())).thenReturn(savedTabGroup2);
+        when(mTabWindowManager.findWindowIdForTabGroup(tabGroupId2)).thenReturn(INSTANCE_ID_2);
+
+        TabModelSelector selectorWindow2 = Mockito.mock(TabModelSelector.class);
+        TabModel tabModelWindow2 = Mockito.mock(TabModel.class);
+        when(mTabWindowManager.getTabModelSelectorById(INSTANCE_ID_2)).thenReturn(selectorWindow2);
+        when(selectorWindow2.getModel(false)).thenReturn(tabModelWindow2);
+        when(tabModelWindow2.getTabGroupTitle(tabGroupId2)).thenReturn("Window 2 Group");
+        when(tabModelWindow2.getTabGroupColorWithFallback(tabGroupId2))
+                .thenReturn(TAB_GROUP_INDICATOR_COLOR_ID);
+        when(tabModelWindow2.tabGroupExists(tabGroupId2)).thenReturn(true);
+
+        mTabModel.addTab(
+                mTab1,
+                TabModel.INVALID_TAB_INDEX,
+                TabLaunchType.FROM_CHROME_UI,
+                TabCreationState.LIVE_IN_FOREGROUND);
+        mTabModel.addTab(
+                mTabOutsideOfGroup,
+                TabModel.INVALID_TAB_INDEX,
+                TabLaunchType.FROM_CHROME_UI,
+                TabCreationState.LIVE_IN_FOREGROUND);
+
+        var modelList = new ModelList();
+        mTabContextMenuCoordinator.configureMenuItemsForTesting(
+                modelList, new AnchorInfo(TAB_ID, Collections.singletonList(TAB_ID)));
+
+        ListItem addToGroupItem =
+                findItemByPluralsId(modelList, R.plurals.add_tab_to_group_menu_item);
+        assertNotNull("Add to group item should be present", addToGroupItem);
+        addToGroupItem.model.get(CLICK_LISTENER).onClick(mView);
+
+        ListItem groupRow = findItemByTitle(modelList, "Window 2 Group");
+        assertNotNull("Group row in window 2 should be present", groupRow);
+        groupRow.model.get(CLICK_LISTENER).onClick(mView);
+
+        InOrder inOrder = inOrder(mTabUngrouper, mMultiInstanceOrchestrator);
+        inOrder.verify(mTabUngrouper).ungroupTabs(eq(List.of(mTab1)), eq(true), eq(false));
+        inOrder.verify(mMultiInstanceOrchestrator)
+                .moveTabsToWindowByIdChecked(
+                        eq(INSTANCE_ID_2),
+                        eq(List.of(mTab1)),
+                        eq(TabList.INVALID_TAB_INDEX),
+                        anyInt(),
+                        eq(true));
+    }
+
+    @Test
+    @Feature("Tab Strip Context Menu")
     public void testSubmenuSelection() {
         var modelList = new ModelList();
         mTabContextMenuCoordinator.configureMenuItemsForTesting(
@@ -1812,7 +1878,8 @@ public class TabContextMenuCoordinatorUnitTest {
         assertNotNull("Move left item should be present", moveLeftItem);
         moveLeftItem.model.get(CLICK_LISTENER).onClick(mView);
 
-        verify(mReorderFunction, times(1)).accept(new AnchorInfo(TAB_ID, List.of(TAB_ID)), true);
+        verify(mReorderFunction, times(1))
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID))), eq(true));
     }
 
     @Test
@@ -1850,7 +1917,8 @@ public class TabContextMenuCoordinatorUnitTest {
         assertNotNull("Move right item should be present", moveRightItem);
         moveRightItem.model.get(CLICK_LISTENER).onClick(mView);
 
-        verify(mReorderFunction, times(1)).accept(new AnchorInfo(TAB_ID, List.of(TAB_ID)), false);
+        verify(mReorderFunction, times(1))
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID))), eq(false));
     }
 
     @Test
@@ -1888,7 +1956,8 @@ public class TabContextMenuCoordinatorUnitTest {
         ListItem moveRightItem = findItemByTitle(modelList, moveRightTitle);
         assertNotNull("Move right item should be present", moveRightItem);
         moveRightItem.model.get(CLICK_LISTENER).onClick(mView);
-        verify(mReorderFunction, times(1)).accept(new AnchorInfo(TAB_ID, List.of(TAB_ID)), false);
+        verify(mReorderFunction, times(1))
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID))), eq(false));
     }
 
     @Test
@@ -1930,7 +1999,8 @@ public class TabContextMenuCoordinatorUnitTest {
         assertNotNull("Move left item should be present", moveLeftItem);
         moveLeftItem.model.get(CLICK_LISTENER).onClick(mView);
 
-        verify(mReorderFunction, times(1)).accept(new AnchorInfo(TAB_ID, List.of(TAB_ID)), true);
+        verify(mReorderFunction, times(1))
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID))), eq(true));
     }
 
     @Test
@@ -2015,7 +2085,8 @@ public class TabContextMenuCoordinatorUnitTest {
         assertNotNull("Move left item should be present", moveLeftItem);
         moveLeftItem.model.get(CLICK_LISTENER).onClick(mView);
 
-        verify(mReorderFunction, times(1)).accept(new AnchorInfo(TAB_ID, List.of(TAB_ID)), true);
+        verify(mReorderFunction, times(1))
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID))), eq(true));
     }
 
     @Test
@@ -2037,7 +2108,7 @@ public class TabContextMenuCoordinatorUnitTest {
         moveLeftItem.model.get(CLICK_LISTENER).onClick(mView);
 
         verify(mReorderFunction, times(1))
-                .accept(new AnchorInfo(TAB_ID, List.of(TAB_ID, TAB_ID_2)), true);
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID, TAB_ID_2))), eq(true));
     }
 
     @Test
@@ -2059,7 +2130,7 @@ public class TabContextMenuCoordinatorUnitTest {
         moveRightItem.model.get(CLICK_LISTENER).onClick(mView);
 
         verify(mReorderFunction, times(1))
-                .accept(new AnchorInfo(TAB_ID, List.of(TAB_ID, TAB_ID_2)), false);
+                .accept(refEq(new AnchorInfo(TAB_ID, List.of(TAB_ID, TAB_ID_2))), eq(false));
     }
 
     @Test

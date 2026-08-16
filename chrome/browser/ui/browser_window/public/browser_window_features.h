@@ -37,6 +37,10 @@ class BookmarkBarController;
 class BookmarksSidePanelCoordinator;
 class BookmarksServiceFeature;
 class BreadcrumbManagerBrowserAgent;
+
+namespace geic {
+class GeicSidePanelCoordinator;
+}  // namespace geic
 class Browser;
 class BrowserActions;
 class BrowserActiveStateManager;
@@ -147,6 +151,10 @@ class ActionItem;
 namespace ash::boca {
 class OnTaskLockedController;
 }  // namespace ash::boca
+
+namespace chromeos {
+class LockedStateController;
+}  // namespace chromeos
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace chrome {
@@ -528,6 +536,12 @@ class BrowserWindowFeatures {
     return webui_browser_exclusive_access_context_.get();
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  chromeos::LockedStateController* locked_state_controller() {
+    return locked_state_controller_.get();
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
   static ui::UserDataFactoryWithOwner<BrowserWindowInterface>&
   GetUserDataFactoryForTesting();
 
@@ -549,6 +563,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<BookmarksServiceFeature> bookmarks_service_feature_;
   std::unique_ptr<BookmarksSidePanelCoordinator>
       bookmarks_side_panel_coordinator_;
+  std::unique_ptr<geic::GeicSidePanelCoordinator> geic_side_panel_coordinator_;
 
   // Listens for browser-related breadcrumb events to be added to crash reports.
   std::unique_ptr<BreadcrumbManagerBrowserAgent>
@@ -759,6 +774,7 @@ class BrowserWindowFeatures {
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_CHROMEOS)
+  std::unique_ptr<chromeos::LockedStateController> locked_state_controller_;
   std::unique_ptr<ash::boca::OnTaskLockedController> on_task_locked_controller_;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

@@ -121,6 +121,89 @@ class GridLanesLayoutAlgorithmTest : public BaseLayoutAlgorithmTest {
     running_positions.SetAutoPlacementCursorForTesting(cursor);
   }
 
+  template <typename ItemRange>
+  void ExpectItemNodes(const ItemRange& items,
+                       const Vector<const char*>& expected_ids) {
+    wtf_size_t expected_index = 0;
+    for (const auto& item : items) {
+      ASSERT_LT(expected_index, expected_ids.size());
+      EXPECT_EQ(item.node.GetLayoutBox(),
+                GetLayoutBoxByElementId(expected_ids[expected_index++]));
+    }
+    EXPECT_EQ(expected_index, expected_ids.size());
+  }
+
+  template <typename ItemRange>
+  wtf_size_t ItemCount(const ItemRange& items) {
+    wtf_size_t count = 0;
+    for (auto iterator = items.begin(); iterator != items.end(); ++iterator) {
+      ++count;
+    }
+    return count;
+  }
+
+  template <typename ItemRange>
+  void ExpectItemsSubgriddedToParent(const ItemRange& items,
+                                     const Vector<const char*>& expected_ids) {
+    for (const auto& item : items) {
+      EXPECT_TRUE(item.is_subgridded_to_parent_grid);
+    }
+    ExpectItemNodes(items, expected_ids);
+  }
+
+  void SetNestedSubgridTestBody() {
+    SetBodyInnerHTML(R"HTML(
+      <style>
+      #grid-lanes {
+        display: grid-lanes;
+        grid-template-columns: repeat(4, 100px);
+      }
+      .subgrid {
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: 1 / -1;
+      }
+      #outer-subgrid {
+        grid-template-rows: repeat(3, 100px);
+      }
+      #middle-subgrid {
+        grid-template-rows: subgrid;
+        grid-row: 1 / -1;
+      }
+      </style>
+      <div id="grid-lanes">
+        <div id="root-item-1"></div>
+        <div id="outer-subgrid" class="subgrid">
+          <div id="outer-item-1"></div>
+          <div id="middle-subgrid" class="subgrid">
+            <div id="middle-item-1"></div>
+            <div id="inner-subgrid" class="subgrid">
+              <div id="inner-item"></div>
+            </div>
+            <div id="middle-item-2"></div>
+          </div>
+          <div id="outer-item-2"></div>
+        </div>
+        <div id="root-item-2"></div>
+      </div>
+    )HTML");
+  }
+
+  GridSizingTree BuildGridLanesSizingTree() {
+    BlockNode node(GetLayoutBoxByElementId("grid-lanes"));
+    const auto space = ConstructBlockLayoutTestConstraintSpace(
+        {WritingMode::kHorizontalTb, TextDirection::kLtr},
+        LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+        /*stretch_inline_size_if_auto=*/true,
+        /*is_new_formatting_context=*/true);
+    const auto fragment_geometry =
+        CalculateInitialFragmentGeometry(space, node, /*break_token=*/nullptr);
+    GridLanesLayoutAlgorithm algorithm({node, fragment_geometry, space});
+    const GridLineResolver line_resolver(node.Style(), /*auto_repetitions=*/0);
+    return BuildGridSizingTree<GridLanesLayoutAlgorithm>(algorithm,
+                                                         line_resolver);
+  }
+
   GridLanesDataVector GetFragmentedGridLanesData() {
     // Run the grid-lanes algorithm directly in a fragmentation context. The
     // fragmentation pass currently only collects initial item offsets into the
@@ -1465,6 +1548,66 @@ TEST_F(GridLanesLayoutAlgorithmTest, GetMaxPositionsForAllTracks) {
                                 LayoutUnit(3.5), LayoutUnit(2.5)}));
 }
 
+TEST_F(GridLanesLayoutAlgorithmTest,
+       IncludeSubgriddedItemsIncludesNestedDescendants) {
+  SetNestedSubgridTestBody();
+  auto sizing_tree = BuildGridLanesSizingTree();
+
+  const GridItems& root_items = sizing_tree.GetGridItems();
+  ExpectItemNodes(root_items, {"root-item-1", "outer-subgrid", "root-item-2"});
+  ExpectItemNodes(
+      root_items.IncludeSubgriddedItems(),
+      {"root-item-1", "outer-subgrid", "root-item-2", "outer-item-1",
+       "middle-subgrid", "outer-item-2", "middle-item-1", "inner-subgrid",
+       "middle-item-2", "inner-item"});
+
+  const BlockNode outer_node(GetLayoutBoxByElementId("outer-subgrid"));
+  const GridItems& outer_items =
+      sizing_tree.GetGridItems(sizing_tree.LookupSubgridIndex(outer_node));
+  ExpectItemNodes(outer_items,
+                  {"outer-item-1", "middle-subgrid", "outer-item-2"});
+  ExpectItemNodes(outer_items.IncludeSubgriddedItems(),
+                  {"outer-item-1", "middle-subgrid", "outer-item-2",
+                   "middle-item-1", "inner-subgrid", "middle-item-2"});
+
+  const BlockNode middle_node(GetLayoutBoxByElementId("middle-subgrid"));
+  const GridItems& middle_items =
+      sizing_tree.GetGridItems(sizing_tree.LookupSubgridIndex(middle_node));
+  ExpectItemNodes(middle_items,
+                  {"middle-item-1", "inner-subgrid", "middle-item-2"});
+  ExpectItemNodes(middle_items.IncludeSubgriddedItems(),
+                  {"middle-item-1", "inner-subgrid", "middle-item-2"});
+}
+
+TEST_F(GridLanesLayoutAlgorithmTest,
+       ItemsSubgriddedToParentExcludesDirectItems) {
+  SetNestedSubgridTestBody();
+  auto sizing_tree = BuildGridLanesSizingTree();
+
+  const GridItems& root_items = sizing_tree.GetGridItems();
+  ExpectItemsSubgriddedToParent(
+      root_items.ItemsSubgriddedToParent(),
+      {"outer-item-1", "middle-subgrid", "outer-item-2", "middle-item-1",
+       "inner-subgrid", "middle-item-2", "inner-item"});
+
+  const BlockNode outer_node(GetLayoutBoxByElementId("outer-subgrid"));
+  const GridItems& outer_items =
+      sizing_tree.GetGridItems(sizing_tree.LookupSubgridIndex(outer_node));
+  ExpectItemsSubgriddedToParent(
+      outer_items.ItemsSubgriddedToParent(),
+      {"middle-item-1", "inner-subgrid", "middle-item-2"});
+
+  const BlockNode middle_node(GetLayoutBoxByElementId("middle-subgrid"));
+  const GridItems& middle_items =
+      sizing_tree.GetGridItems(sizing_tree.LookupSubgridIndex(middle_node));
+  ExpectItemsSubgriddedToParent(middle_items.ItemsSubgriddedToParent(), {});
+
+  const BlockNode inner_node(GetLayoutBoxByElementId("inner-subgrid"));
+  const GridItems& inner_items =
+      sizing_tree.GetGridItems(sizing_tree.LookupSubgridIndex(inner_node));
+  ExpectItemsSubgriddedToParent(inner_items.ItemsSubgriddedToParent(), {});
+}
+
 TEST_F(GridLanesLayoutAlgorithmTest, AppendSubgriddedItemsColumns) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -1510,16 +1653,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, AppendSubgriddedItemsColumns) {
 
   // After building the sizing tree, we should have 2 original items + 2
   // subgridded items.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 4u);
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 4u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            2u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest, AppendSubgriddedItemsRows) {
@@ -1568,16 +1704,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, AppendSubgriddedItemsRows) {
 
   // After building the sizing tree, we should have 2 original items + 2
   // subgridded items.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 4u);
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 4u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            2u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest, SubgridRowsIgnoredInColumnGridLanes) {
@@ -1623,16 +1752,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, SubgridRowsIgnoredInColumnGridLanes) {
 
   // A child that only subgrids rows should not produce subgridded items
   // when the grid-lanes axis is columns.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 2u);
-  EXPECT_EQ(subgridded_count, 0u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            0u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest, SubgridColumnsIgnoredInRowGridLanes) {
@@ -1679,16 +1801,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, SubgridColumnsIgnoredInRowGridLanes) {
 
   // A child that only subgrids columns should not produce subgridded items
   // when the grid-lanes axis is rows.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 2u);
-  EXPECT_EQ(subgridded_count, 0u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            0u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest, OrthogonalAppendSubgriddedItemsColumns) {
@@ -1738,16 +1853,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, OrthogonalAppendSubgriddedItemsColumns) {
 
   // After building the sizing tree, we should have 2 original items + 2
   // subgridded items.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 4u);
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 4u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            2u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest, OrthogonalAppendSubgriddedItemsRows) {
@@ -1798,16 +1906,9 @@ TEST_F(GridLanesLayoutAlgorithmTest, OrthogonalAppendSubgriddedItemsRows) {
 
   // After building the sizing tree, we should have 2 original items + 2
   // subgridded items.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 4u);
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 4u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            2u);
 }
 
 // Auto-placed subgrid: subgridded items should be marked as auto-placed
@@ -1858,16 +1959,14 @@ TEST_F(GridLanesLayoutAlgorithmTest, AutoPlacedSubgriddedItemsAreAutoPlaced) {
 
   const auto grid_axis_direction = node.Style().GridLanesTrackSizingDirection();
 
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      EXPECT_TRUE(item.is_auto_placed);
-      EXPECT_TRUE(
-          item.resolved_position.Span(grid_axis_direction).IsIndefinite());
-      ++subgridded_count;
-    }
+  const auto subgridded_items =
+      sizing_tree.GetGridItems().ItemsSubgriddedToParent();
+  for (const auto& item : subgridded_items) {
+    EXPECT_TRUE(item.is_auto_placed);
+    EXPECT_TRUE(
+        item.resolved_position.Span(grid_axis_direction).IsIndefinite());
   }
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(subgridded_items), 2u);
 }
 
 // Definite subgrid with an auto-placed child: the subgrid's placement
@@ -1923,17 +2022,14 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // Both items end up with definite positions after the subgrid's placement
   // algorithm runs. Item B has grid-column: 1 / 2 (explicitly placed), and
   // item A is resolved by the subgrid's auto-placement.
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (!item.is_subgridded_to_parent_grid) {
-      continue;
-    }
+  const auto subgridded_items =
+      sizing_tree.GetGridItems().ItemsSubgriddedToParent();
+  for (const auto& item : subgridded_items) {
     const auto& span = item.resolved_position.Span(grid_axis_direction);
     EXPECT_TRUE(span.IsTranslatedDefinite());
     EXPECT_FALSE(item.is_auto_placed);
-    ++subgridded_count;
   }
-  EXPECT_EQ(subgridded_count, 2u);
+  EXPECT_EQ(ItemCount(subgridded_items), 2u);
 }
 
 // Subgrid with opposite direction (RTL): the subgridded items' spans should be
@@ -1987,10 +2083,8 @@ TEST_F(GridLanesLayoutAlgorithmTest,
 
   // The child is at subgrid column 1/2 (0-based: 0-1). With opposite direction,
   // this should be reversed within the 3-track subgrid: position becomes 2-3.
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (!item.is_subgridded_to_parent_grid) {
-      continue;
-    }
+  for (const auto& item :
+       sizing_tree.GetGridItems().ItemsSubgriddedToParent()) {
     const auto& span = item.resolved_position.Span(grid_axis_direction);
     EXPECT_TRUE(span.IsTranslatedDefinite());
     EXPECT_EQ(span.StartLine(), 2u);
@@ -2045,16 +2139,9 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // An orthogonal child with `grid-template-columns: subgrid` maps to the
   // parent's row axis after the writing-mode swap, not columns. Since the
   // grid-lanes axis is columns, no subgridded items should be produced.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 2u);
-  EXPECT_EQ(subgridded_count, 0u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            0u);
 }
 
 TEST_F(GridLanesLayoutAlgorithmTest,
@@ -2105,16 +2192,9 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // An orthogonal child with `grid-template-rows: subgrid` maps to the
   // parent's column axis after the writing-mode swap, not rows. Since the
   // grid-lanes axis is rows, no subgridded items should be produced.
-  wtf_size_t total_count = 0;
-  wtf_size_t subgridded_count = 0;
-  for (const auto& item : sizing_tree.GetGridItems().IncludeSubgriddedItems()) {
-    if (item.is_subgridded_to_parent_grid) {
-      ++subgridded_count;
-    }
-    ++total_count;
-  }
-  EXPECT_EQ(total_count, 2u);
-  EXPECT_EQ(subgridded_count, 0u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().IncludeSubgriddedItems()), 2u);
+  EXPECT_EQ(ItemCount(sizing_tree.GetGridItems().ItemsSubgriddedToParent()),
+            0u);
 }
 
 // Two definite subgrids at different positions, each with a child that has the
@@ -3207,8 +3287,8 @@ TEST_F(GridLanesLayoutAlgorithmTest, PopulateDensePackedBreakTokenData) {
 
   // The packed item is stored under the spanner below its selected opening.
   const auto& spanner = *grid_lanes[0]->item_data[0];
-  ASSERT_EQ(spanner.items_packed_above.size(), 1u);
-  const auto& packed_item = *spanner.items_packed_above[0];
+  ASSERT_EQ(spanner.items_densely_packed_above.size(), 1u);
+  const auto& packed_item = *spanner.items_densely_packed_above[0];
 
   // The packed item's shared placement record is found by its collection index
   // and end-aligned within the opening above the spanner.
@@ -3242,8 +3322,8 @@ TEST_F(GridLanesLayoutAlgorithmTest, PopulateDensePackedSpannerBreakTokenData) {
   // Both entries for the packed spanner reference the same grid item and shared
   // placement data.
   const auto& spanner = *grid_lanes[1]->item_data[0];
-  ASSERT_EQ(spanner.items_packed_above.size(), 1u);
-  const auto& packed_spanner_start = *spanner.items_packed_above[0];
+  ASSERT_EQ(spanner.items_densely_packed_above.size(), 1u);
+  const auto& packed_spanner_start = *spanner.items_densely_packed_above[0];
   const auto& packed_spanner_continuation = *grid_lanes[2]->item_data[0];
 
   EXPECT_EQ(packed_spanner_start.item.Get(),
@@ -3285,16 +3365,18 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // lane.
   const auto& first_parent = *grid_lanes[1]->item_data[0];
   const auto& second_parent = *grid_lanes[2]->item_data[0];
-  ASSERT_EQ(first_parent.items_packed_above.size(), 2u);
-  ASSERT_EQ(second_parent.items_packed_above.size(), 2u);
+  ASSERT_EQ(first_parent.items_densely_packed_above.size(), 2u);
+  ASSERT_EQ(second_parent.items_densely_packed_above.size(), 2u);
 
-  const auto& first_packed_spanner_start = *first_parent.items_packed_above[0];
+  const auto& first_packed_spanner_start =
+      *first_parent.items_densely_packed_above[0];
   const auto& first_packed_spanner_continuation =
-      *second_parent.items_packed_above[0];
+      *second_parent.items_densely_packed_above[0];
 
-  const auto& second_packed_spanner_start = *first_parent.items_packed_above[1];
+  const auto& second_packed_spanner_start =
+      *first_parent.items_densely_packed_above[1];
   const auto& second_packed_spanner_continuation =
-      *second_parent.items_packed_above[1];
+      *second_parent.items_densely_packed_above[1];
 
   // The first packed spanner starts at the top of both openings.
   EXPECT_NE(first_parent.item.Get(), second_parent.item.Get());
@@ -3344,15 +3426,15 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   ASSERT_EQ(grid_lanes[2]->item_data.size(), 2u);
   ASSERT_EQ(grid_lanes[3]->item_data.size(), 2u);
   const auto& root_spanner = *grid_lanes[1]->item_data[0];
-  ASSERT_EQ(root_spanner.items_packed_above.size(), 2u);
-  const auto& packed_spanner = *root_spanner.items_packed_above[0];
-  const auto& packed_item = *root_spanner.items_packed_above[1];
+  ASSERT_EQ(root_spanner.items_densely_packed_above.size(), 2u);
+  const auto& packed_spanner = *root_spanner.items_densely_packed_above[0];
+  const auto& packed_item = *root_spanner.items_densely_packed_above[1];
 
   // The single-lane item uses the opening above the packed spanner but remains
   // a sibling under the original root instead of nesting under that spanner.
   EXPECT_EQ(packed_spanner.PlacementData().offset,
             (LogicalOffset{LayoutUnit(100), LayoutUnit(10)}));
-  EXPECT_TRUE(packed_spanner.items_packed_above.empty());
+  EXPECT_TRUE(packed_spanner.items_densely_packed_above.empty());
   EXPECT_EQ(packed_item.PlacementData().offset,
             (LogicalOffset{LayoutUnit(100), LayoutUnit()}));
 }
@@ -3382,11 +3464,12 @@ TEST_F(GridLanesLayoutAlgorithmTest,
 
   const auto& first_spanner = *grid_lanes[1]->item_data[0];
   const auto& second_spanner = *grid_lanes[1]->item_data[1];
-  ASSERT_EQ(first_spanner.items_packed_above.size(), 1u);
-  ASSERT_EQ(second_spanner.items_packed_above.size(), 1u);
+  ASSERT_EQ(first_spanner.items_densely_packed_above.size(), 1u);
+  ASSERT_EQ(second_spanner.items_densely_packed_above.size(), 1u);
 
-  const auto& first_packed_item = *first_spanner.items_packed_above[0];
-  const auto& second_packed_item = *second_spanner.items_packed_above[0];
+  const auto& first_packed_item = *first_spanner.items_densely_packed_above[0];
+  const auto& second_packed_item =
+      *second_spanner.items_densely_packed_above[0];
 
   // Each packed item is associated with the spanner below the opening it
   // selected.
@@ -3917,12 +4000,12 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // Packed entries are reversed with their containing lane, while retaining
   // their final inline alignment offsets.
   const auto& spanner = *grid_lanes[1]->item_data[0];
-  ASSERT_EQ(spanner.items_packed_above.size(), 2u);
+  ASSERT_EQ(spanner.items_densely_packed_above.size(), 2u);
   EXPECT_EQ(spanner.PlacementData().offset,
             (LogicalOffset{LayoutUnit(100), LayoutUnit()}));
-  EXPECT_EQ(spanner.items_packed_above[0]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[0]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(100), LayoutUnit(180)}));
-  EXPECT_EQ(spanner.items_packed_above[1]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[1]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(180), LayoutUnit(190)}));
 }
 
@@ -3962,12 +4045,12 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // The packed vector likewise remains in placement order. The first packed
   // item is aligned to both the inline and block ends of its opening.
   const auto& spanner = *grid_lanes[1]->item_data[0];
-  ASSERT_EQ(spanner.items_packed_above.size(), 2u);
+  ASSERT_EQ(spanner.items_densely_packed_above.size(), 2u);
   EXPECT_EQ(spanner.PlacementData().offset,
             (LogicalOffset{LayoutUnit(), LayoutUnit(50)}));
-  EXPECT_EQ(spanner.items_packed_above[0]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[0]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(190), LayoutUnit(80)}));
-  EXPECT_EQ(spanner.items_packed_above[1]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[1]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(180), LayoutUnit(50)}));
 }
 
@@ -3997,11 +4080,11 @@ TEST_F(GridLanesLayoutAlgorithmTest,
   // Once intrinsic sizing resolves the 200px block size, fill-reverse updates
   // every offset and reverses the two packed entries with their lane.
   const auto& spanner = *grid_lanes[0]->item_data[0];
-  ASSERT_EQ(spanner.items_packed_above.size(), 2u);
+  ASSERT_EQ(spanner.items_densely_packed_above.size(), 2u);
   EXPECT_EQ(spanner.PlacementData().offset, LogicalOffset());
-  EXPECT_EQ(spanner.items_packed_above[0]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[0]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(), LayoutUnit(20)}));
-  EXPECT_EQ(spanner.items_packed_above[1]->PlacementData().offset,
+  EXPECT_EQ(spanner.items_densely_packed_above[1]->PlacementData().offset,
             (LogicalOffset{LayoutUnit(), LayoutUnit(30)}));
 
   // The spanner's shared placement record appears first in column 2, followed

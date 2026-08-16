@@ -8,6 +8,7 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
@@ -45,6 +46,9 @@ ContextHubPageHandler::ContextHubPageHandler(
       ContextHubServiceFactory::GetForProfile(profile_);
   if (service) {
     service_observation_.Observe(service);
+    if (service->IsGeneratingFirstPartyAutoTodos()) {
+      page_->OnFirstPartyAutoTodosGenerationStateChanged(true);
+    }
   }
 }
 
@@ -62,6 +66,16 @@ void ContextHubPageHandler::OnAutoTodosChanged(
     visible_entries.push_back(entry);
   }
   page_->OnAutoTodosChanged(std::move(visible_entries));
+}
+
+void ContextHubPageHandler::OnFirstPartyAutoTodosGenerationStateChanged(
+    bool is_generating) {
+  page_->OnFirstPartyAutoTodosGenerationStateChanged(is_generating);
+}
+
+void ContextHubPageHandler::OnThirdPartyAutoTodosGenerationStateChanged(
+    bool is_generating) {
+  page_->OnThirdPartyAutoTodosGenerationStateChanged(is_generating);
 }
 
 void ContextHubPageHandler::GenerateFirstPartyAutoTodos(
@@ -388,6 +402,17 @@ void ContextHubPageHandler::GetExistingTabGroupsAndChats(
 void ContextHubPageHandler::SwitchToTab(int64_t tab_id) {
   if (tab_provider_) {
     tab_provider_->SwitchToTab(tab_id);
+  }
+}
+
+void ContextHubPageHandler::CloseTab(int64_t tab_id) {
+  if (tab_provider_) {
+    tab_provider_->CloseTab(tab_id);
+    context_hub::ContextHubService* service =
+        ContextHubServiceFactory::GetForProfile(profile_);
+    if (service) {
+      service->DeleteAutoTodoByTabId(tab_id, base::DoNothing());
+    }
   }
 }
 

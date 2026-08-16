@@ -187,6 +187,8 @@ interface TrackedElementData {
   bounds: RectF;
   onVisibilityChanged?: TrackedElementVisibilityChangedCallback;
   onHighlightChanged?: HighlightChangedCallback;
+  lastReportedVisible?: boolean;
+  lastReportedBounds?: RectF;
 }
 
 /**
@@ -205,6 +207,14 @@ class ElementData {
 
 const NATIVE_ELEMENT_IDENTIFIER_KEY = 'nativeId';
 const SECONDARY_ELEMENT_IDENTIFIER_KEY = 'secondaryId';
+
+function areBoundsEqual(a?: RectF, b?: RectF): boolean {
+  if (!a || !b) {
+    return a === b;
+  }
+  return a.x === b.x && a.y === b.y && a.width === b.width &&
+      a.height === b.height;
+}
 
 function parseOptions(options?: Options) {
   if (!options) {
@@ -234,18 +244,23 @@ function computeIsVisible(element: Element): boolean {
   return rect.height > 0 && rect.width > 0;
 }
 
-export class TrackedElementManager {
-  private static instance_: TrackedElementManager|null = null;
+declare global {
+  // This is ugly but required for test code to have access to the instance.
+  interface Window {
+    _trackedElementManager: TrackedElementManager|undefined;
+  }
+}
 
+export class TrackedElementManager {
   static getInstance(): TrackedElementManager {
-    if (TrackedElementManager.instance_ === null) {
-      TrackedElementManager.instance_ = new TrackedElementManager();
+    if (!window._trackedElementManager) {
+      window._trackedElementManager = new TrackedElementManager();
     }
-    return TrackedElementManager.instance_;
+    return window._trackedElementManager;
   }
 
-  static setInstance(instance: TrackedElementManager|null) {
-    TrackedElementManager.instance_ = instance;
+  static setInstance(instance: TrackedElementManager|undefined) {
+    window._trackedElementManager = instance;
   }
 
   private trackedElementHandler_: TrackedElementHandlerInterface;
@@ -281,12 +296,14 @@ export class TrackedElementManager {
 
     this.resizeObserver_ =
         new ResizeObserver(entries => entries.forEach(({target}) => {
-          if (target === document.body) {
-            this.debouncedUpdateAllBoundsCallback_();
-          } else {
+          // A resize of any element can potentially cause layout shifts in any
+          // other elements. Send an update to the resized element immediately
+          // and use debounced updates for all other elements.
+          if (target !== document.body) {
             this.onElementVisibilityChanged_(
                 target as HTMLElement, computeIsVisible(target));
           }
+          this.debouncedUpdateAllBoundsCallback_();
         }));
     this.fixedElementObserver_ = new IntersectionObserver(
         entries => entries.forEach(
@@ -580,9 +597,8 @@ export class TrackedElementManager {
       return;
     }
 
-    const bounds: RectF = visible ? this.getElementBounds_(element) :
+    const bounds: RectF = visible ? this.getElementBounds_(trackedElement) :
                                     {x: 0, y: 0, width: 0, height: 0};
-
 
     const update = {visible, bounds, element};
 
@@ -595,6 +611,15 @@ export class TrackedElementManager {
     this.trackedElements_.get(trackedElement.nativeId)!.eventTarget
         .dispatchEvent(new CustomEvent(
             TRACKED_ELEMENT_VISIBILITY_CHANGED_EVENT, {detail: update}));
+
+    // Deduplicate TS -> C++ updates if visibility and bounds haven't changed.
+    if (trackedElement.lastReportedVisible === visible &&
+        areBoundsEqual(trackedElement.lastReportedBounds, bounds)) {
+      return;
+    }
+
+    trackedElement.lastReportedVisible = visible;
+    trackedElement.lastReportedBounds = bounds;
 
     const wasVisible = trackedElement.visible;
     trackedElement.visible = visible;
@@ -622,22 +647,19 @@ export class TrackedElementManager {
     });
   }
 
-  private getElementBounds_(element: HTMLElement): RectF {
+  private getElementBounds_(trackedElement: TrackedElementData): RectF {
     const rect: RectF = {x: 0, y: 0, width: 0, height: 0};
-    const bounds = element.getBoundingClientRect();
+    const bounds = trackedElement.element.getBoundingClientRect();
     rect.x = bounds.x;
     rect.y = bounds.y;
     rect.width = bounds.width;
     rect.height = bounds.height;
 
-    const trackedElement = this.getDataForElement_(element);
-    if (trackedElement) {
-      const padding = trackedElement.padding;
-      rect.x -= padding.left;
-      rect.y -= padding.top;
-      rect.width += padding.left + padding.right;
-      rect.height += padding.top + padding.bottom;
-    }
+    const padding = trackedElement.padding;
+    rect.x -= padding.left;
+    rect.y -= padding.top;
+    rect.width += padding.left + padding.right;
+    rect.height += padding.top + padding.bottom;
     return rect;
   }
 

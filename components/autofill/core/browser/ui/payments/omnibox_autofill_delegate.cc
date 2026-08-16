@@ -435,6 +435,10 @@ void OmniboxAutofillDelegate::OnTabSelected(TabbedPaneTabType tab_type) {
   NOTREACHED();
 }
 
+FieldGlobalId OmniboxAutofillDelegate::GetQueriedFieldId() const {
+  return trigger_field_global_id_;
+}
+
 void OmniboxAutofillDelegate::OnFieldBecameVisible() {
   // Log that the field became visible to the user's viewport.
   LogOmniboxAutofillShowChipDecisionPart2(
@@ -474,12 +478,7 @@ void OmniboxAutofillDelegate::OnFieldBecameVisible() {
 
   // Log the number of credit card suggestions generated, maintaining
   // consistency with standard Autofill suggestion generation logging.
-  autofill_metrics::LogSuggestionsCount(suggestions.size(),
-                                        FillingProduct::kCreditCard);
-
-  // Log security status of the credit card form when suggestions are generated,
-  // similar to standard Autofill suggestions generation.
-  AutofillMetrics::LogIsQueriedCreditCardFormSecure(client_->IsContextSecure());
+  autofill_metrics::LogSuggestionsCount(suggestions);
 
   // Requests to show the "Autofill payment" chip and initializes the bubble.
   client_->GetPaymentsAutofillClient()->ShowExpandedOmniboxAutofillChip(

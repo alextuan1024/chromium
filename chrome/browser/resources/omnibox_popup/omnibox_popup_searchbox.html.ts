@@ -20,6 +20,7 @@ export function getHtml(this: OmniboxPopupSearchboxElement) {
           searchbox-aria-description="${this.searchboxAriaDescription}"
           searchbox-icon="${this.searchboxIcon_}"
           .selectedMatch="${this.selectedMatch}"
+          page-url="${this.computeCurrentPageUrl_()}"
           .inputKeywordModel="${this.inputKeywordModel}"
           ?input-has-matches="${this.hasMatches()}"
           @focusin="${this.onInputFocusin_}"
@@ -73,6 +74,7 @@ export function getHtml(this: OmniboxPopupSearchboxElement) {
             @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
             @match-focusin="${this.onMatchFocusin}"
             @match-click="${this.onMatchClick}"
+            @keyword-click="${this.onKeywordClick}"
             ?hidden="${!this.dropdownIsVisible}">
         </cr-searchbox-dropdown>
         <omnibox-popup-contextual-entrypoint

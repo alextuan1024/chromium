@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_group_data.h"
@@ -76,7 +75,6 @@ class TabStripCollectionControllerBrowserTest
       override {
     auto enabled = VerticalTabsBrowserTestMixin<
         InProcessBrowserTest>::GetEnabledFeatures();
-    enabled.push_back({features::kTabGroupsCollapseFreezing, {}});
     enabled.push_back({tabs::kTabStripUnification, {}});
     return enabled;
   }
@@ -146,16 +144,16 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
       group, ToggleTabGroupCollapsedStateOrigin::kMouse);
 
   // Verify freezing votes.
-  EXPECT_TRUE(tab_view0->HasFreezingVote());
-  EXPECT_TRUE(tab_view1->HasFreezingVote());
+  EXPECT_TRUE(tab_view0->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
+  EXPECT_TRUE(tab_view1->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
 
   // Expand the group.
   vertical_tab_strip_controller()->ToggleTabGroupCollapsedState(
       group, ToggleTabGroupCollapsedStateOrigin::kMouse);
 
   // Verify freezing votes are released.
-  EXPECT_FALSE(tab_view0->HasFreezingVote());
-  EXPECT_FALSE(tab_view1->HasFreezingVote());
+  EXPECT_FALSE(tab_view0->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
+  EXPECT_FALSE(tab_view1->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
 }
 
 IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest, ShiftTabNext) {
@@ -282,7 +280,6 @@ class TabGroupHoverCardTest
       override {
     auto enabled = VerticalTabsBrowserTestMixin<
         InProcessBrowserTest>::GetEnabledFeatures();
-    enabled.push_back({features::kTabGroupsCollapseFreezing, {}});
     enabled.push_back({features::kTabGroupHoverCards, {}});
     enabled.push_back({tabs::kTabStripUnification, {}});
     return enabled;
@@ -394,9 +391,9 @@ IN_PROC_BROWSER_TEST_P(TabGroupHoverCardTest,
       hover_card_controller()->hover_card_for_testing();
   ASSERT_TRUE(bubble);
 
-  // There should be 2 excess tabs. Note that the group has |n_tabs+1| tabs
+  // There should be 2 excess tabs. Note that the group has `n_tabs + 1` tabs
   // because of the initial tab made in the browser, and the call to
-  // |GroupAllUngroupedTabs|.
+  // `GroupAllUngroupedTabs`.
   std::u16string expected_footer = l10n_util::GetStringFUTF16(
       IDS_TAB_GROUPS_HOVER_CARD_FOOTER, base::NumberToString16(2));
   EXPECT_EQ(bubble->GetGroupFooterViewForTesting()->GetText(), expected_footer);

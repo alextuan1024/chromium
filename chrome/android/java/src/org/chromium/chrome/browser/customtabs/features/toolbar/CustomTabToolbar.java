@@ -53,10 +53,12 @@ import androidx.core.widget.ImageViewCompat;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.EnsuresNonNull;
@@ -165,7 +167,7 @@ public class CustomTabToolbar extends ToolbarLayout implements View.OnLongClickL
     private boolean mMaximizeButtonEnabled;
 
     private @Nullable CookieControlsBridge mCookieControlsBridge;
-    private Supplier<@Nullable AppMenuHandler> mAppMenuHandler = () -> null;
+    private Supplier<@Nullable AppMenuHandler> mAppMenuHandler = SupplierUtils.ofNull();
 
     private @Nullable AppMenuObserver mAppMenuObserver;
     private final Handler mTaskHandler = new Handler();
@@ -1227,7 +1229,7 @@ public class CustomTabToolbar extends ToolbarLayout implements View.OnLongClickL
                             getContext(),
                             (UrlBar) mUrlBar,
                             actionModeCallback,
-                            /* focusChangeCallback= */ _ -> {},
+                            /* focusChangeCallback= */ CallbackUtils.emptyCallback(),
                             this,
                             new NoOpkeyboardVisibilityDelegate(),
                             isIncognitoBranded(),

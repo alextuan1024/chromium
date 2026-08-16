@@ -189,11 +189,6 @@ class LocationBarView
   const OmniboxController* GetOmniboxController() const;
 
 
-  // Controls the permission dashboard in the LocationBarView.
-  PermissionDashboardController* permission_dashboard_controller() {
-    return permission_dashboard_controller_.get();
-  }
-
   PermissionChipView* chip_view() { return chip_view_; }
   PermissionDashboardView* permission_dashboard_view() {
     return permission_dashboard_view_;
@@ -209,6 +204,7 @@ class LocationBarView
   OmniboxController* GetOmniboxController() override;
   bool ShouldCloseOmniboxPopup(ui::MouseEvent* event) override;
   ChipController* GetChipController() override;
+  PermissionDashboardController* GetPermissionDashboardController() override;
   void UpdateWithoutTabRestore() override;
   LocationBarModel* GetLocationBarModel() override;
   content::WebContents* GetWebContents() override;
@@ -271,7 +267,7 @@ class LocationBarView
   views::Widget* GetLocationBarWidget() override;
   OmniboxPopupFileSelector* GetOmniboxPopupFileSelector() const override;
   OmniboxPopupAimPresenter* GetOmniboxPopupAimPresenter() const override;
-  const views::View* GetLocationBarFocusRestoreView() const override;
+  views::View* GetLocationBarFocusRestoreView() override;
 
   static bool IsVirtualKeyboardVisible(views::Widget* widget);
 

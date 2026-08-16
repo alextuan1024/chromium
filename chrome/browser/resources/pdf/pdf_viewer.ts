@@ -148,6 +148,15 @@ function hasFixedCtrlModifierOnly(e: KeyboardEvent): boolean {
   return e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey;
 }
 
+// Like hasCtrlModifierOnly(), but allow the shift modifier.
+function hasCtrlModifierMaybeWithShift(e: KeyboardEvent): boolean {
+  let metaModifier = e.metaKey;
+  // <if expr="is_macosx">
+  metaModifier = e.ctrlKey;
+  // </if>
+  return hasCtrlModifier(e) && !e.altKey && !metaModifier;
+}
+
 const LOCAL_STORAGE_SIDENAV_COLLAPSED_KEY: string = 'sidenavCollapsed';
 
 /**
@@ -563,6 +572,12 @@ export class PdfViewerElement extends PdfViewerBaseElement {
           this.maybeCreateTextAnnotation_();
         }
         return;
+      case 'v':
+        if ((e as ExtendedKeyEvent).fromPlugin && hasCtrlModifierOnly(e) &&
+            this.isInTextAnnotationMode_()) {
+          this.maybePasteTextAnnotation_();
+        }
+        return;
       // </if>
       default:
         break;
@@ -571,6 +586,21 @@ export class PdfViewerElement extends PdfViewerBaseElement {
     // Handle toolbar related key events.
     this.handleToolbarKeyEvent_(e);
   }
+
+  // <if expr="enable_pdf_ink2">
+  private maybePasteTextAnnotation_() {
+    // Ignore paste if focus is actively on some other element like
+    // a side panel/nav or toolbar.
+    const focused = this.shadowRoot.activeElement;
+    if (!!focused && !this.$.scroller.contains(focused)) {
+      return;
+    }
+
+    const annotations = this.shadowRoot.querySelector('ink-text-annotations');
+    assert(annotations);
+    annotations.pasteAnnotation();
+  }
+  // </if>
 
   /**
    * Helper for handleKeyEvent dealing with events that control toolbars.
@@ -601,23 +631,18 @@ export class PdfViewerElement extends PdfViewerBaseElement {
         return;
       // <if expr="enable_pdf_ink2">
       case 'z':
-        // <if expr="is_macosx">
-        if (e.metaKey && !e.ctrlKey && !e.altKey) {
+      case 'Z':
+        if (hasCtrlModifierMaybeWithShift(e)) {
           if (e.shiftKey) {
             this.$.toolbar.redo();
           } else {
             this.$.toolbar.undo();
           }
         }
-        // </if>  is_macosx
-        // <if expr="not is_macosx">
-        if (hasCtrlModifierOnly(e)) {
-          this.$.toolbar.undo();
-        }
-        // </if>  not is_macosx
         return;
       // <if expr="not is_macosx">
       case 'y':
+      case 'Y':
         if (hasCtrlModifierOnly(e)) {
           this.$.toolbar.redo();
         }

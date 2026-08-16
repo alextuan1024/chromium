@@ -85,6 +85,18 @@ CG_EXTERN CGRegionRef CGRegionCreateWithRect(CGRect rect);
 namespace {
 constexpr auto kUIPaintTimeout = base::Milliseconds(500);
 
+void ApplyCaptureExclusion(NSWindow* window, bool allow) {
+  CGSConnectionID connection_id = CGSMainConnectionID();
+  CGSWindowID window_id = window.windowNumber;
+  CGRect frame = window.frame;
+  frame.origin = CGPointZero;
+  base::apple::ScopedCFTypeRef<CGRegionRef> region;
+  if (!allow) {
+    region.reset(CGRegionCreateWithRect(frame));
+  }
+  CGSSetWindowCaptureExcludeShape(connection_id, window_id, region.get());
+}
+
 // Returns the display that the specified window is on.
 display::Display GetDisplayForWindow(NSWindow* window) {
   return display::Screen::Get()->GetDisplayNearestWindow(
@@ -695,6 +707,14 @@ void NativeWidgetNSWindowBridge::SetBounds(
             display:YES
             animate:NO];
 
+  if (window_move_loop_) {
+    // If the window bounds are updated programmatically during an active move
+    // loop (e.g. by TabDragController when crossing display boundaries),
+    // update the move loop baseline so subsequent mouse drag events calculate
+    // deltas against the new frame rather than the stale initial frame.
+    window_move_loop_->SetBaseFrame([window_ frame], [NSEvent mouseLocation]);
+  }
+
   // If the window has focus but is not on the active space and the window was
   // moved to a different display, re-activate it to switch the space to the
   // active window. (crbug.com/1316543)
@@ -1178,6 +1198,11 @@ void NativeWidgetNSWindowBridge::EndMoveLoop() {
   window_move_loop_.reset();
 }
 
+void NativeWidgetNSWindowBridge::SetWindowMoveLoopForTesting(
+    std::unique_ptr<CocoaWindowMoveLoop> move_loop) {
+  window_move_loop_ = std::move(move_loop);
+}
+
 void NativeWidgetNSWindowBridge::SetCursor(NSCursor* cursor) {
   [window_delegate_ setCursor:cursor];
 }
@@ -1296,15 +1321,12 @@ void NativeWidgetNSWindowBridge::DisplayContextMenu(
 }
 
 void NativeWidgetNSWindowBridge::SetAllowScreenshots(bool allow) {
-  CGSConnectionID connection_id = CGSMainConnectionID();
-  CGSWindowID window_id = ns_window().windowNumber;
-  CGRect frame = ns_window().frame;
-  frame.origin = CGPointZero;
-  base::apple::ScopedCFTypeRef<CGRegionRef> region;
-  if (!allow) {
-    region.reset(CGRegionCreateWithRect(frame));
+  allow_screenshots_ = allow;
+  if (capture_exclusion_applier_for_testing_) {
+    capture_exclusion_applier_for_testing_.Run(ns_window(), allow);
+  } else {
+    ApplyCaptureExclusion(ns_window(), allow);
   }
-  CGSSetWindowCaptureExcludeShape(connection_id, window_id, region.get());
 }
 
 void NativeWidgetNSWindowBridge::SetColorMode(
@@ -1423,6 +1445,9 @@ void NativeWidgetNSWindowBridge::OnWindowWillClose() {
 
 void NativeWidgetNSWindowBridge::OnSizeChanged() {
   UpdateWindowGeometry();
+  if (!allow_screenshots_) {
+    SetAllowScreenshots(false);
+  }
 }
 
 void NativeWidgetNSWindowBridge::OnPositionChanged() {

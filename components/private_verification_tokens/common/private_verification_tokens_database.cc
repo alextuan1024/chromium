@@ -30,7 +30,7 @@
 namespace {
 
 // Version number of the database.
-const int kCurrentVersionNumber = 4;
+const int kCurrentVersionNumber = 5;
 
 static constexpr char kDatabaseTag[] = "PrivateVerificationTokens";
 
@@ -42,7 +42,6 @@ static constexpr char kCreateTokensTableSql[] =
       "key_id INTEGER NOT NULL,"
       "expiration INTEGER NOT NULL,"
       "token BLOB NOT NULL,"
-      "redeemed INTEGER NOT NULL DEFAULT 0,"
       "version INTEGER NOT NULL,"
       "creation_time INTEGER NOT NULL)";
 
@@ -53,20 +52,15 @@ static constexpr char kInsertTokenSql[] =
 
 static constexpr char kGetTokenSql[] =
     "SELECT id,issuer,key_id,expiration,token,version,creation_time "
-    "FROM tokens WHERE redeemed = 0 AND issuer = ?";
+    "FROM tokens WHERE issuer = ?";
 
 static constexpr char kGetAllTokensSql[] =
-    "SELECT id,issuer,key_id,expiration,token,version,creation_time "
-    "FROM tokens WHERE redeemed = 0 "
+    "SELECT id,issuer,key_id,expiration,token,version,creation_time,COUNT(*) "
+    "FROM tokens "
     "GROUP BY issuer";
 
-static constexpr char kSetTokenRedeemedSql[] =
-    "UPDATE tokens "
-    "SET redeemed = 1 "
-    "WHERE id = ?";
-
-static constexpr char kDeleteRedeemedTokensSql[] =
-    "DELETE FROM tokens WHERE redeemed = 1";
+static constexpr char kDeleteTokenSql[] =
+    "DELETE FROM tokens WHERE id = ?";
 
 // SQLite in Chromium has a limit of 32k placeholders per query. We use
 // anywhere between 0-2 placeholders for the time range, plus one for
@@ -86,6 +80,16 @@ TokenWithId& TokenWithId::operator=(const TokenWithId&) = default;
 TokenWithId::TokenWithId(TokenWithId&&) = default;
 TokenWithId& TokenWithId::operator=(TokenWithId&&) = default;
 TokenWithId::~TokenWithId() = default;
+
+TokensAndCounts::TokensAndCounts() = default;
+TokensAndCounts::TokensAndCounts(std::map<url::Origin, TokenWithId> tokens,
+                                 std::map<url::Origin, size_t> counts)
+    : tokens(std::move(tokens)), counts(std::move(counts)) {}
+TokensAndCounts::TokensAndCounts(const TokensAndCounts&) = default;
+TokensAndCounts& TokensAndCounts::operator=(const TokensAndCounts&) = default;
+TokensAndCounts::TokensAndCounts(TokensAndCounts&&) = default;
+TokensAndCounts& TokensAndCounts::operator=(TokensAndCounts&&) = default;
+TokensAndCounts::~TokensAndCounts() = default;
 
 // static
 std::unique_ptr<sql::Database>
@@ -204,8 +208,7 @@ std::optional<TokenWithId> PrivateVerificationTokensDatabase::GetToken(
   return std::nullopt;
 }
 
-std::map<url::Origin, TokenWithId>
-PrivateVerificationTokensDatabase::GetTokensFromEach() {
+TokensAndCounts PrivateVerificationTokensDatabase::GetTokensFromEach() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!EnsureDBInitialized()) {
     return {};
@@ -216,6 +219,7 @@ PrivateVerificationTokensDatabase::GetTokensFromEach() {
   DCHECK(statement.is_valid());
 
   std::map<url::Origin, TokenWithId> tokens;
+  std::map<url::Origin, size_t> counts;
   while (statement.Step()) {
     int64_t id = statement.ColumnInt64(0);
     std::string issuer_str = statement.ColumnString(1);
@@ -224,6 +228,7 @@ PrivateVerificationTokensDatabase::GetTokensFromEach() {
     SerializedToken token = statement.ColumnBlobAsVector(4);
     uint32_t version = static_cast<uint32_t>(statement.ColumnInt64(5));
     int64_t creation_time = statement.ColumnInt64(6);
+    int64_t count = statement.ColumnInt64(7);
 
     url::Origin issuer = url::Origin::Create(GURL(issuer_str));
     tokens.try_emplace(
@@ -232,22 +237,12 @@ PrivateVerificationTokensDatabase::GetTokensFromEach() {
             issuer, std::move(token), key_id,
             base::Time::UnixEpoch() + base::Seconds(expiration), version,
             base::Time::UnixEpoch() + base::Seconds(creation_time)));
+    counts.emplace(issuer, static_cast<size_t>(count));
   }
   if (!statement.Succeeded()) {
     return {};
   }
-  return tokens;
-}
-
-bool PrivateVerificationTokensDatabase::DeleteRedeemedTokens() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!EnsureDBInitialized()) {
-    return false;
-  }
-  sql::Statement statement(
-      database_->GetCachedStatement(SQL_FROM_HERE, kDeleteRedeemedTokensSql));
-  DCHECK(statement.is_valid());
-  return statement.Run();
+  return TokensAndCounts(std::move(tokens), std::move(counts));
 }
 
 bool PrivateVerificationTokensDatabase::DeleteTokens(
@@ -320,13 +315,13 @@ bool PrivateVerificationTokensDatabase::DeleteTokenBatch(
   return statement.Run();
 }
 
-bool PrivateVerificationTokensDatabase::SetRedeemed(int64_t token_id) {
+bool PrivateVerificationTokensDatabase::DeleteToken(int64_t token_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!EnsureDBInitialized()) {
     return false;
   }
   sql::Statement statement(
-      database_->GetCachedStatement(SQL_FROM_HERE, kSetTokenRedeemedSql));
+      database_->GetCachedStatement(SQL_FROM_HERE, kDeleteTokenSql));
   DCHECK(statement.is_valid());
   statement.BindInt64(0, token_id);
   return statement.Run();

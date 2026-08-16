@@ -710,7 +710,7 @@ TEST_P(HTMLVideoElementTest, RequestSaveVideoFrame) {
   ASSERT_TRUE(FrameHost()->download_url_called());
   const auto& params = FrameHost()->download_params();
   ASSERT_TRUE(params);
-  EXPECT_TRUE(params->is_context_menu_save);
+  EXPECT_TRUE(params->should_prompt_for_save_location);
   EXPECT_TRUE(params->suggested_name.starts_with("videoframe_"));
   EXPECT_TRUE(params->url.ProtocolIs("blob"));
   EXPECT_TRUE(params->blob_url_token.is_valid());
@@ -740,6 +740,36 @@ TEST_P(HTMLVideoElementTest, CreateStaticBitmapImage_Rotated) {
 
   ASSERT_TRUE(image);
   EXPECT_EQ(image->Size(), gfx::Size(720, 1280));
+}
+
+TEST_P(HTMLVideoElementTest, CreateStaticBitmapImage_Rotated_SoftFlip) {
+  video()->SetSrc(AtomicString("http://example.com/foo.mp4"));
+  test::RunPendingTasks();
+
+  gfx::Size coded_size(1280, 720);
+  gfx::Rect visible_rect(coded_size);
+  gfx::Size natural_size = coded_size;
+
+  auto frame = media::VideoFrame::CreateZeroInitializedFrame(
+      media::PIXEL_FORMAT_I420, coded_size, visible_rect, natural_size,
+      base::TimeDelta());
+
+  frame->metadata().transformation =
+      media::VideoTransformation(media::VIDEO_ROTATION_90);
+
+  MockMediaPlayer()->SetCurrentFrame(frame);
+
+  auto image = video()->CreateStaticBitmapImage(std::nullopt, false,
+                                                kRespectImageOrientation);
+
+  ASSERT_TRUE(image);
+  EXPECT_EQ(image->Size(kRespectImageOrientation), gfx::Size(720, 1280));
+  EXPECT_EQ(image->PreferredDisplaySize(), gfx::Size(720, 1280));
+  EXPECT_EQ(image->SizeAsFloat(kRespectImageOrientation),
+            gfx::SizeF(720, 1280));
+  EXPECT_EQ(image->SizeAsFloat(kDoNotRespectImageOrientation),
+            gfx::SizeF(1280, 720));
+  EXPECT_EQ(image->Orientation(), ImageOrientationEnum::kOriginRightTop);
 }
 
 TEST_P(HTMLVideoElementTest, CreateStaticBitmapImage_Rotated_WYSIWYG) {

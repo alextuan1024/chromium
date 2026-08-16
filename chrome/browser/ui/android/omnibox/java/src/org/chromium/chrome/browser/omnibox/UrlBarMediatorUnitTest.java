@@ -44,7 +44,6 @@ import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.search_engines.settings.SiteSearchSettings;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
-import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxUrlEmphasizer;
 import org.chromium.components.omnibox.OmniboxUrlEmphasizer.UrlEmphasisColorSpan;
@@ -236,6 +235,17 @@ public class UrlBarMediatorUnitTest {
                         UrlBarData.create(null, spannable("Test"), 0, 0, "Blah"),
                         UrlBarData.create(null, spannable("Test"), 0, 0, "Blah")));
 
+        // Equal plain string display text
+        assertTrue(
+                UrlBarMediator.isNewTextEquivalentToExistingText(
+                        UrlBarData.forNonUrlText("Test"), UrlBarData.forNonUrlText("Test")));
+
+        // Spanned (with no emphasis spans) vs plain string display text
+        assertTrue(
+                UrlBarMediator.isNewTextEquivalentToExistingText(
+                        UrlBarData.create(null, spannable("Test"), 0, 0, null),
+                        UrlBarData.create(null, "Test", 0, 0, null)));
+
         // Equal complex display text and editing text
         SpannableStringBuilder text1 = spannable("Test");
         text1.setSpan(new UrlEmphasisColorSpan(3), 0, 3, 0);
@@ -277,6 +287,14 @@ public class UrlBarMediatorUnitTest {
                 UrlBarMediator.isNewTextEquivalentToExistingText(
                         UrlBarData.create(null, spannable("Test"), 0, 0, null),
                         UrlBarData.create(null, "Test2", 0, 0, null)));
+
+        // Spanned with emphasis spans vs plain string display text
+        SpannableStringBuilder textWithSpan = spannable("Test");
+        textWithSpan.setSpan(new UrlEmphasisColorSpan(3), 0, 3, 0);
+        assertFalse(
+                UrlBarMediator.isNewTextEquivalentToExistingText(
+                        UrlBarData.create(null, textWithSpan, 0, 0, null),
+                        UrlBarData.create(null, "Test", 0, 0, null)));
 
         // Equal display text, different editing text
         assertFalse(
@@ -387,7 +405,7 @@ public class UrlBarMediatorUnitTest {
 
     @Test
     public void hintVisibility() {
-        var input = new AutocompleteInput();
+        var sessionState = new FuseboxSessionState();
         UrlBarData baseData =
                 UrlBarData.create(
                         new GURL("http://www.example.com"),
@@ -399,7 +417,7 @@ public class UrlBarMediatorUnitTest {
         assertTrue(mModel.get(UrlBarProperties.SHOW_HINT_TEXT));
         doReturn(baseData).when(mDelegate).getUrlBarDataForCurrentInput();
 
-        mMediator.beginInput(input);
+        mMediator.beginInput(sessionState);
         mModel.get(UrlBarProperties.TEXT_CHANGE_LISTENER).onResult("");
 
         assertTrue(mModel.get(UrlBarProperties.SHOW_HINT_TEXT));
@@ -519,11 +537,73 @@ public class UrlBarMediatorUnitTest {
         UrlBarData mockData = UrlBarData.forNonUrlText("Text");
         doReturn(mockData).when(mDelegate).getUrlBarDataForCurrentInput();
 
-        var input = new AutocompleteInput();
-        mMediator.beginInput(input);
+        var sessionState = new FuseboxSessionState();
+        mMediator.beginInput(sessionState);
 
         verify(mDelegate).getUrlBarDataForCurrentInput();
         assertEquals("Text", mModel.get(UrlBarProperties.TEXT_STATE).text.toString());
+    }
+
+    @Test
+    public void onTextChanged_synchronizesUrlBarDataInInputSession() {
+        UrlBarData initialData = UrlBarData.forNonUrlText("initial");
+        doReturn(initialData).when(mDelegate).getUrlBarDataForCurrentInput();
+
+        var sessionState = new FuseboxSessionState();
+        mMediator.beginInput(sessionState);
+        assertEquals("initial", mMediator.getUrlBarData().displayText.toString());
+
+        // Typing updates mUrlBarData when in input session.
+        mModel.get(UrlBarProperties.TEXT_CHANGE_LISTENER).onResult("typed text");
+        assertEquals("typed text", mMediator.getUrlBarData().displayText.toString());
+
+        mMediator.endInput();
+
+        // Typing does NOT update mUrlBarData when not in input session.
+        mModel.get(UrlBarProperties.TEXT_CHANGE_LISTENER).onResult("after session");
+        assertEquals("", mMediator.getUrlBarData().displayText.toString());
+    }
+
+    @Test
+    public void setUrlBarData_inInputSession_selectionEquivalence() {
+        var sessionState = new FuseboxSessionState();
+        UrlBarData data = UrlBarData.forNonUrlText("test");
+        doReturn(data).when(mDelegate).getUrlBarDataForCurrentInput();
+
+        mMediator.beginInput(sessionState);
+        assertTrue(
+                mMediator.setUrlBarData(
+                        data, UrlBar.ScrollType.NO_SCROLL, new TextSelection(0, 4)));
+
+        // Same text, same scroll type, same selection -> deduplicated (false).
+        assertFalse(
+                mMediator.setUrlBarData(
+                        data, UrlBar.ScrollType.NO_SCROLL, new TextSelection(0, 4)));
+
+        // Same text, same scroll type, different selection -> not deduplicated (true).
+        assertTrue(
+                mMediator.setUrlBarData(
+                        data, UrlBar.ScrollType.NO_SCROLL, new TextSelection(2, 2)));
+    }
+
+    @Test
+    public void setUrlBarData_emptyDisplayText_scrollTypeEquivalent() {
+        UrlBarData nonEmpty = UrlBarData.forNonUrlText("initial");
+        assertTrue(
+                mMediator.setUrlBarData(
+                        nonEmpty, UrlBar.ScrollType.NO_SCROLL, TextSelection.SELECT_END));
+
+        UrlBarData empty1 = UrlBarData.create(null, "", 0, 0, null);
+        UrlBarData empty2 = UrlBarData.create(null, "", 0, 0, null);
+
+        assertTrue(
+                mMediator.setUrlBarData(
+                        empty1, UrlBar.ScrollType.NO_SCROLL, TextSelection.SELECT_END));
+
+        // Different scroll type, but both texts are empty -> deduplicated (false).
+        assertFalse(
+                mMediator.setUrlBarData(
+                        empty2, UrlBar.ScrollType.SCROLL_TO_TLD, TextSelection.SELECT_END));
     }
 
     private static SpannableStringBuilder spannable(String text) {

@@ -18,7 +18,6 @@ import android.view.View;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.MathUtils;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -28,6 +27,7 @@ import org.chromium.chrome.browser.compositor.overlays.strip.TabStripMenuMetrics
 import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicHelper;
 import org.chromium.chrome.browser.glic.GlicUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
@@ -159,9 +159,9 @@ public class TabStripContextMenuCoordinator {
 
         // Similar to Chrome Desktop (W/M/L), compute the translated strings' width
         // dynamically, clamp the value between a preselected
-        // tab_strip_context_menu_(min_width/max_width), and apply the result as
-        // the DesiredContentWidth. This ensures that the each context menu item is
-        // always one line long, and does not wrap to 2 or more lines for long strings.
+        // tab_strip_context_menu_(min_width/max_width), and apply the result as the
+        // DesiredContentWidth. This ensures that each context menu item is always one line long,
+        // and does not wrap to 2 or more lines for long strings.
         int[] contentDimensions =
                 UiUtils.computeListAdapterContentDimensions(adapter, touchTrackingListView);
         int minWidthPx =
@@ -170,11 +170,12 @@ public class TabStripContextMenuCoordinator {
         int maxWidthPx =
                 mContext.getResources()
                         .getDimensionPixelSize(R.dimen.tab_strip_context_menu_max_width);
-        var popupWidthPx =
-                MathUtils.clamp(
-                        Math.max(anchorViewRectProvider.getRect().width(), contentDimensions[0]),
-                        minWidthPx,
-                        maxWidthPx);
+        int marginPx =
+                mContext.getResources().getDimensionPixelSize(R.dimen.menu_horizontal_margin);
+        int windowWidthPx = mContext.getResources().getDisplayMetrics().widthPixels;
+        int popupWidthPx =
+                UiUtils.computeMenuWidth(
+                        contentDimensions[0], minWidthPx, maxWidthPx, marginPx, windowWidthPx);
 
         AnchoredPopupWindow.Builder builder =
                 new AnchoredPopupWindow.Builder(
@@ -358,17 +359,19 @@ public class TabStripContextMenuCoordinator {
                     controller.onMenuOrKeyboardAction(
                             R.id.toggle_tab_layout_menu_id, /* fromMenu= */ false);
                 }
-            } else if (model.get(MENU_ITEM_ID) == R.id.pin_glic
-                    || model.get(MENU_ITEM_ID) == R.id.unpin_glic) {
-                boolean isPin = model.get(MENU_ITEM_ID) == R.id.pin_glic;
-                if (isPin) {
-                    TabStripMenuMetricsUtils.recordStripMenuUserAction(
-                            StripMenuAction.PIN_GLIC, mTabStripLayout);
-                } else {
-                    TabStripMenuMetricsUtils.recordStripMenuUserAction(
-                            StripMenuAction.UNPIN_GLIC, mTabStripLayout);
+            } else if (model.get(MENU_ITEM_ID) == R.id.pin_glic) {
+                TabStripMenuMetricsUtils.recordStripMenuUserAction(
+                        StripMenuAction.PIN_GLIC, mTabStripLayout);
+                if (profile != null) {
+                    GlicUtils.setButtonPinnedToTabStrip(profile, true);
                 }
-                if (profile != null) GlicUtils.setButtonPinnedToTabStrip(profile, isPin);
+            } else if (model.get(MENU_ITEM_ID) == R.id.unpin_glic) {
+                TabStripMenuMetricsUtils.recordStripMenuUserAction(
+                        StripMenuAction.UNPIN_GLIC, mTabStripLayout);
+                if (profile != null) {
+                    GlicUtils.setButtonPinnedToTabStrip(profile, false);
+                    GlicHelper.showUnpinnedSnackbar(mSnackbarManager, mContext, profile);
+                }
             } else if (model.get(MENU_ITEM_ID) == R.id.task_manager) {
                 TabStripMenuMetricsUtils.recordStripMenuUserAction(
                         StripMenuAction.TASK_MANAGER, mTabStripLayout);

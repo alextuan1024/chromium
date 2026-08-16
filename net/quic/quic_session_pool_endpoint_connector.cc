@@ -5,11 +5,11 @@
 #include "net/quic/quic_session_pool_endpoint_connector.h"
 
 #include <utility>
-#include <vector>
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "net/base/ip_endpoint.h"
+#include "net/base/address_family.h"
+#include "net/base/net_error_details.h"
 #include "net/base/net_errors.h"
 #include "net/quic/quic_session_pool_async_dns_job.h"
 
@@ -24,43 +24,52 @@ QuicSessionPool::EndpointConnector::~EndpointConnector() {
   }
 }
 
-std::optional<int> QuicSessionPool::EndpointConnector::OnEndpointsUpdated() {
-  // TODO(crbug.com/531975349): Support fallback and racing over multiple
-  // candidate endpoints. For now this makes a single attempt.
+std::optional<int> QuicSessionPool::EndpointConnector::TryAdvance() {
   if (attempt_) {
     return ERR_IO_PENDING;
   }
 
-  const std::vector<AsyncDnsJob::UsableEndpoint>& usable_endpoints =
-      job_->GetUsableEndpoints();
-  if (usable_endpoints.empty()) {
-    return std::nullopt;
+  // Another job may have created a usable session while the previous
+  // attempt ran. Pool to it instead of attempting again.
+  if (last_attempt_error_.has_value() && job_->MaybePoolToExistingSession()) {
+    return OK;
   }
 
-  // Attempt the first usable endpoint, preferring IPv6 within the endpoint.
-  const AsyncDnsJob::UsableEndpoint& usable = usable_endpoints.front();
-  const IPEndPoint& ip_endpoint = usable.endpoint.ipv6_endpoints.empty()
-                                      ? usable.endpoint.ipv4_endpoints.front()
-                                      : usable.endpoint.ipv6_endpoints.front();
+  while (true) {
+    std::optional<AsyncDnsJob::Candidate> candidate =
+        job_->TakeNextCandidate(this);
+    if (!candidate.has_value()) {
+      return std::nullopt;
+    }
 
-  AsyncDnsJob::AttemptParams params = job_->GetAttemptParams();
-  // Passing a null `crypto_client_config_handle` is safe because the owning
-  // job holds a handle for as long as this attempt can be alive.
-  attempt_ = std::make_unique<QuicSessionAttempt>(
-      this, ip_endpoint, usable.endpoint.metadata, usable.quic_version,
-      params.cert_verify_flags, params.dns_resolution_start_time,
-      params.dns_resolution_end_time, std::move(params.resolution_details),
-      params.retry_on_alternate_network_before_handshake,
-      params.use_dns_aliases, std::move(params.dns_aliases),
-      /*crypto_client_config_handle=*/nullptr,
-      params.session_creation_initiator,
-      params.quic_session_establishment_reason,
-      params.connection_management_config);
+    AsyncDnsJob::AttemptParams params = job_->GetAttemptParams();
+    // Passing a null `crypto_client_config_handle` is safe because the owning
+    // job holds a handle for as long as this attempt can be alive.
+    attempt_ = std::make_unique<QuicSessionAttempt>(
+        this, candidate->ip_endpoint, std::move(candidate->metadata),
+        candidate->quic_version, params.cert_verify_flags,
+        params.dns_resolution_start_time, params.dns_resolution_end_time,
+        std::move(params.resolution_details),
+        params.retry_on_alternate_network_before_handshake,
+        params.use_dns_aliases, std::move(params.dns_aliases),
+        /*crypto_client_config_handle=*/nullptr,
+        params.session_creation_initiator,
+        params.quic_session_establishment_reason,
+        params.connection_management_config);
 
-  int rv = attempt_->Start(base::BindOnce(&EndpointConnector::OnAttemptComplete,
-                                          weak_factory_.GetWeakPtr()));
-  attempt_in_flight_ = (rv == ERR_IO_PENDING);
-  return rv;
+    int rv = attempt_->Start(base::BindOnce(
+        &EndpointConnector::OnAttemptComplete, weak_factory_.GetWeakPtr()));
+    attempt_in_flight_ = (rv == ERR_IO_PENDING);
+    if (rv == OK || rv == ERR_IO_PENDING) {
+      return rv;
+    }
+    // The attempt failed while starting. Continue with the next candidate.
+    RecordAttemptFailure(rv);
+  }
+}
+
+bool QuicSessionPool::EndpointConnector::is_attempting_ipv6() const {
+  return attempt_ && attempt_->ip_endpoint().GetFamily() == ADDRESS_FAMILY_IPV6;
 }
 
 bool QuicSessionPool::EndpointConnector::AwaitingSessionCreation() const {
@@ -69,9 +78,8 @@ bool QuicSessionPool::EndpointConnector::AwaitingSessionCreation() const {
 
 void QuicSessionPool::EndpointConnector::PopulateNetErrorDetails(
     NetErrorDetails* details) const {
-  if (attempt_) {
-    attempt_->PopulateNetErrorDetails(details);
-  }
+  CHECK(attempt_);
+  attempt_->PopulateNetErrorDetails(details);
 }
 
 QuicSessionPool* QuicSessionPool::EndpointConnector::GetQuicSessionPool() {
@@ -91,13 +99,32 @@ void QuicSessionPool::EndpointConnector::OnConnectionFailedOnDefaultNetwork() {
 }
 
 void QuicSessionPool::EndpointConnector::OnQuicSessionCreationComplete(int rv) {
-  job_->OnSessionCreationDecided(rv);
+  job_->OnSessionCreationDecided(rv, this);
+}
+
+void QuicSessionPool::EndpointConnector::RecordAttemptFailure(int rv) {
+  CHECK(attempt_);
+  last_attempt_error_ = rv;
+  NetErrorDetails details;
+  attempt_->PopulateNetErrorDetails(&details);
+  attempt_.reset();
+  job_->OnAttemptFailed(rv, details);
 }
 
 void QuicSessionPool::EndpointConnector::OnAttemptComplete(int rv) {
   CHECK_NE(rv, ERR_IO_PENDING);
   attempt_in_flight_ = false;
-  job_->OnConnectorComplete(rv);
+  if (rv != OK) {
+    RecordAttemptFailure(rv);
+    std::optional<int> result = TryAdvance();
+    if (result == ERR_IO_PENDING) {
+      return;
+    }
+    // Nothing else could be attempted. Report the most recent failure so
+    // the job can fail or keep waiting for more DNS results.
+    rv = result.value_or(*last_attempt_error_);
+  }
+  job_->OnConnectorComplete(rv, this);
 }
 
 }  // namespace net

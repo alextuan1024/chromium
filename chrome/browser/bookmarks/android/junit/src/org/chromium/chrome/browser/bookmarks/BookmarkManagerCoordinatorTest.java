@@ -31,6 +31,7 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.BaseSwitches;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRule;
@@ -76,7 +77,7 @@ import java.util.Collection;
 @Config(manifest = Config.NONE)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.DISABLE_NATIVE_INITIALIZATION
+    BaseSwitches.DISABLE_NATIVE_INITIALIZATION
 })
 @Features.EnableFeatures({
     ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES,
@@ -358,7 +359,9 @@ public class BookmarkManagerCoordinatorTest {
 
         // Manually trigger the callback since Robolectric doesn't auto-dispatch it for
         // ComponentCallbacks
-        mCoordinator.getComponentCallbacksForTesting().onConfigurationChanged(null);
+        mCoordinator
+                .getComponentCallbacksForTesting()
+                .onConfigurationChanged(mActivity.getResources().getConfiguration());
 
         // The padding should update immediately
         assertPaddingDp(90);
@@ -373,5 +376,25 @@ public class BookmarkManagerCoordinatorTest {
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         assertPaddingDp(90); // Should remain 90dp
+    }
+
+    @Test
+    @Config(qualifiers = "w839dp")
+    @Features.EnableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT})
+    public void testNavigationPaneVisibility_belowThreshold() {
+        recreateCoordinatorForDesktop();
+        View navigationPane = mCoordinator.getView().findViewById(R.id.navigation_pane);
+        assertNotNull(navigationPane);
+        assertEquals(View.GONE, navigationPane.getVisibility());
+    }
+
+    @Test
+    @Config(qualifiers = "w840dp")
+    @Features.EnableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT})
+    public void testNavigationPaneVisibility_atThreshold() {
+        recreateCoordinatorForDesktop();
+        View navigationPane = mCoordinator.getView().findViewById(R.id.navigation_pane);
+        assertNotNull(navigationPane);
+        assertEquals(View.VISIBLE, navigationPane.getVisibility());
     }
 }

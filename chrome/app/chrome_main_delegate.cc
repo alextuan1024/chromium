@@ -1211,6 +1211,16 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
     const auto isolated_process =
         chrome::IsolatedBrowserProcess::Launch(command_line);
     if (isolated_process.has_value()) {
+      // Set the stub process's shutdown priority to a lower value than the
+      // default value. The default priority is 0x280, so 0x27E is picked, which
+      // is below the 0x27F picked by child processes in `CommonSubprocessInit`.
+      // Assigning a lower priority instructs Windows to delay terminating this
+      // stub process until all higher priority processes (the isolated browser,
+      // and its child processes) have fully completed their shutdown sequence.
+      // This ensures the Job Object remains open and the isolated browser is
+      // not killed abruptly during OS shutdown.
+      ::SetProcessShutdownParameters(0x27E, SHUTDOWN_NORETRY);
+
       auto exit_code = isolated_process->WaitForExit();
       if (!exit_code.has_value()) {
         return CHROME_RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS;
@@ -1624,6 +1634,12 @@ void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 }
 
+#if BUILDFLAG(IS_MAC)
+int NoOpMain(content::MainFunctionParams main_parameters) {
+  return 0;
+}
+#endif
+
 std::variant<int, content::MainFunctionParams> ChromeMainDelegate::RunProcess(
     const std::string& process_type,
     content::MainFunctionParams main_function_params) {
@@ -1636,6 +1652,7 @@ std::variant<int, content::MainFunctionParams> ChromeMainDelegate::RunProcess(
       {switches::kRelauncherProcess, mac_relauncher::internal::RelauncherMain},
       {switches::kCodeSignCloneCleanupProcess,
        code_sign_clone_manager::internal::ChromeCodeSignCloneCleanupMain},
+      {switches::kNoOpForTestingProcess, NoOpMain},
   };
 
   for (size_t i = 0; i < std::size(kMainFunctions); ++i) {

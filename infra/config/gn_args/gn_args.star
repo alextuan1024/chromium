@@ -666,13 +666,6 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "enterprise_companion",
-    args = {
-        "enable_enterprise_companion": True,
-    },
-)
-
-gn_args.config(
     name = "extended_tracing",
     args = {
         "extended_tracing_enabled": True,
@@ -911,6 +904,20 @@ gn_args.config(
     name = "linux",
     args = {
         "target_os": "linux",
+    },
+)
+
+gn_args.config(
+    name = "linux_native_wayland",
+    configs = [
+        "linux",
+    ],
+    args = {
+        "ozone_auto_platforms": False,
+        "ozone_platform_wayland": True,
+        "ozone_platform": "wayland",
+        "use_bundled_weston": False,
+        "use_bundled_mutter": False,
     },
 )
 

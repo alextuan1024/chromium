@@ -1519,6 +1519,18 @@
       <message name="IDS_IOS_BWG_PAGE_CONTENT_SHARING_ALERT_TITLE" desc="The title of the alert asking a user to turn on Page Content sharing.">
           Turn on tab sharing
       </message>
+      <message name="IDS_IOS_BWG_PROMO_CAROUSEL_GEMINI_IN_CHROME" desc="Product branding suffix text for the Gemini Promo carousel slide titles.">
+          Gemini in Chrome
+      </message>
+      <message name="IDS_IOS_BWG_PROMO_CAROUSEL_PLANNING_TITLE" desc="Planning slide title text prefix for the Gemini Promo carousel.">
+          Plan your weekend with
+      </message>
+      <message name="IDS_IOS_BWG_PROMO_CAROUSEL_SHOPPING_TITLE" desc="Shopping slide title text prefix for the Gemini Promo carousel.">
+          Shop confidently with
+      </message>
+      <message name="IDS_IOS_BWG_PROMO_CAROUSEL_SUMMARIZE_TITLE" desc="Summarize slide title text prefix for the Gemini Promo carousel.">
+          Sum it up with
+      </message>
       <message name="IDS_IOS_BWG_PROMO_FIRST_BOX_BODY" desc="First box body text for the Gemini Promo page.">
           Get relevant answers based on the content of the page you're on
       </message>
@@ -4227,9 +4239,6 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
       </message>
       <message name="IDS_IOS_INTERACTIVE_LENS_OVERLAY_PROMO_START_BROWSING_BUTTON" desc="The text for the button that allows users to start browsing after the interactive lens overlay promo in the First Run Experience.">
         Start browsing
-      </message>
-      <message name="IDS_IOS_INTERACTIVE_LENS_OVERLAY_PROMO_SUBTITLE" desc="The subtitle for the interactive lens overlay promo in the First Run Experience.">
-        You can now open Google Lens from your address bar and search anything you see
       </message>
       <message name="IDS_IOS_INTERACTIVE_LENS_OVERLAY_PROMO_TITLE" desc="The title for the interactive lens overlay promo in the First Run Experience.">
         Search anything on your screen
@@ -7353,8 +7362,14 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_SETTINGS_AUTOMATICALLY_OPEN_SYNCED_TAB_GROUPS_TITLE" desc="Title for the setting to automatically open tab groups from other devices. [iOS only]">
           Automatically open tab groups from other devices
       </message>
+      <message name="IDS_IOS_SETTINGS_CLOSE_DEFAULT_BROWSER_PROMO_ACCESSIBILITY_LABEL" desc="Close button accessibility label for the Default Browser promo in settings. [iOS only]" is_accessibility_with_no_ui="true">
+        Close default browser promo
+      </message>
       <message name="IDS_IOS_SETTINGS_DATE_PICKER_CLEAR" desc="Button title to clear the selected date in a date picker. [iOS only]">
         Clear
+      </message>
+      <message name="IDS_IOS_SETTINGS_DEFAULT_BROWSER_PASSIVE_CARD_BUTTON_TITLE" desc="Title of the passive Default Browser card primary button in settings. [iOS only]">
+        Set as default
       </message>
       <message name="IDS_IOS_SETTINGS_DELETE_ALL_CREDENTIALS" desc="Title for the authentication page when the user tries to delete all saved credentials. [iOS only]">
           To delete all passwords manager data

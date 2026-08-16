@@ -39,13 +39,13 @@ class MockScorer : public Scorer {
 
   MOCK_METHOD(void,
               ApplyVisualTfLiteModel,
-              (const SkBitmap& bitmap,
+              (const gfx::Image& image,
                base::OnceCallback<void(std::vector<double>)> callback),
               (const, override));
 
   MOCK_METHOD(void,
               ApplyVisualTfLiteModelImageEmbedding,
-              (const SkBitmap& bitmap,
+              (const gfx::Image& image,
                base::OnceCallback<void(ImageFeatureEmbedding)> callback),
               (const, override));
 };
@@ -90,7 +90,9 @@ class PhishingClassifierTest : public testing::Test {
 
   void TearDown() override {
     classifier_.reset();
+#if !BUILDFLAG(IS_IOS)
     ScorerStorage::GetInstance()->SetScorer(nullptr);
+#endif
   }
 
   void ClearScorer() {
@@ -118,7 +120,8 @@ TEST_F(PhishingClassifierTest, Classification) {
   base::test::TestFuture<const ClientPhishingRequest&,
                          PhishingClassifier::Result>
       test_future;
-  classifier_->BeginClassification(url, bitmap, test_future.GetCallback());
+  classifier_->BeginClassification(url, gfx::Image::CreateFrom1xBitmap(bitmap),
+                                   test_future.GetCallback());
 
   const ClientPhishingRequest& verdict = test_future.Get<0>();
   PhishingClassifier::Result result = test_future.Get<1>();
@@ -132,9 +135,11 @@ TEST_F(PhishingClassifierTest, ClassificationWithImageEmbedding) {
   // Inject a MockScorer to intercept model application calls.
   auto mock_scorer = std::make_unique<MockScorer>();
   MockScorer* raw_mock_scorer = mock_scorer.get();
-  ScorerStorage::GetInstance()->SetScorer(std::move(mock_scorer));
 #if BUILDFLAG(IS_IOS)
   classifier_->set_scorer(raw_mock_scorer);
+  scorer_ = std::move(mock_scorer);
+#else
+  ScorerStorage::GetInstance()->SetScorer(std::move(mock_scorer));
 #endif
 
   SkBitmap bitmap;
@@ -150,7 +155,7 @@ TEST_F(PhishingClassifierTest, ClassificationWithImageEmbedding) {
   // The standard classification flow always applies the visual model first.
   // We simulate a successful but empty result.
   EXPECT_CALL(*raw_mock_scorer, ApplyVisualTfLiteModel(_, _))
-      .WillOnce([](const SkBitmap& bitmap,
+      .WillOnce([](const gfx::Image& image,
                    base::OnceCallback<void(std::vector<double>)> callback) {
         std::move(callback).Run({});
       });
@@ -165,7 +170,7 @@ TEST_F(PhishingClassifierTest, ClassificationWithImageEmbedding) {
   // fake embedding.
   EXPECT_CALL(*raw_mock_scorer, ApplyVisualTfLiteModelImageEmbedding(_, _))
       .WillOnce([expected_embedding](
-                    const SkBitmap& bitmap,
+                    const gfx::Image& image,
                     base::OnceCallback<void(ImageFeatureEmbedding)> callback) {
         std::move(callback).Run(expected_embedding);
       });
@@ -173,7 +178,8 @@ TEST_F(PhishingClassifierTest, ClassificationWithImageEmbedding) {
   base::test::TestFuture<const ClientPhishingRequest&,
                          PhishingClassifier::Result>
       test_future;
-  classifier_->BeginClassification(url, bitmap, test_future.GetCallback());
+  classifier_->BeginClassification(url, gfx::Image::CreateFrom1xBitmap(bitmap),
+                                   test_future.GetCallback());
 
   const ClientPhishingRequest& verdict = test_future.Get<0>();
   PhishingClassifier::Result result = test_future.Get<1>();
@@ -207,7 +213,8 @@ TEST_F(PhishingClassifierTest, CancelInFlight) {
   base::test::TestFuture<const ClientPhishingRequest&,
                          PhishingClassifier::Result>
       test_future;
-  classifier_->BeginClassification(url, bitmap, test_future.GetCallback());
+  classifier_->BeginClassification(url, gfx::Image::CreateFrom1xBitmap(bitmap),
+                                   test_future.GetCallback());
 
   // Cancel immediately. This should invalidate the weak pointer for
   // OnVisualFeaturesExtracted.

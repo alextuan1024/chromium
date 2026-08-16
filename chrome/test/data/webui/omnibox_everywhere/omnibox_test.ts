@@ -21,6 +21,14 @@ import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.
 
 import {TestSearchboxBrowserProxy} from './test_searchbox_browser_proxy.js';
 
+function getInputValue(
+    inputElement: HTMLInputElement|HTMLTextAreaElement|HTMLElement): string {
+  if ('value' in inputElement) {
+    return (inputElement as HTMLInputElement).value;
+  }
+  return inputElement.innerText;
+}
+
 suite('OmniboxEverywhereOmniboxTest', () => {
   let omnibox: OmniboxEverywhereOmniboxElement;
   let testProxy: TestSearchboxBrowserProxy;
@@ -51,7 +59,7 @@ suite('OmniboxEverywhereOmniboxTest', () => {
     await microtasksFinished();
   });
 
-  test('onAddTabContext_ opens composebox with tab upload', () => {
+  test('AddTabContext opens composebox with tab upload', () => {
     let openComposeboxCalled = false;
     const detailHolder: {state?: ComposeboxState} = {};
     omnibox.addEventListener('open-composebox', (e: Event) => {
@@ -242,7 +250,7 @@ suite('OmniboxEverywhereOmniboxTest', () => {
       closeMenuCalled = true;
     };
 
-    omnibox['onContextMenuOpened_']();
+    contextMenu.dispatchEvent(new CustomEvent('context-menu-opened'));
     await omnibox.updateComplete;
 
     const event = new ToggleEvent('unbounded', {
@@ -255,7 +263,7 @@ suite('OmniboxEverywhereOmniboxTest', () => {
     mockDialog.remove();
   });
 
-  test('onContextMenuClosed_ removes unbounded visibility', async () => {
+  test('ContextMenuClosed event removes unbounded visibility', async () => {
     const contextMenu =
         omnibox.shadowRoot.querySelector<ContextualEntrypointAndMenuElement>(
             '#context')!;
@@ -273,7 +281,7 @@ suite('OmniboxEverywhereOmniboxTest', () => {
     (contextMenu as unknown as {getDialog: () => HTMLDialogElement}).getDialog =
         () => mockDialog;
 
-    omnibox['onContextMenuClosed_']();
+    contextMenu.dispatchEvent(new CustomEvent('context-menu-closed'));
     await microtasksFinished();
 
     assertTrue(hideCalled);
@@ -358,7 +366,7 @@ suite('OmniboxEverywhereComposeboxTest', () => {
     assertTrue(glow.energyEffectAnimationEnabled);
   });
 
-  test('onAddTabContext adds tab to composebox files', async () => {
+  test('AddTabContext event adds tab to composebox files', async () => {
     const mockToken = {high: 1234n, low: 5678n};
     testProxy.handler.setPromiseResolveFor('addTabContext', mockToken);
 
@@ -885,7 +893,7 @@ suite('OmniboxEverywhereAppTest', () => {
 
         assertEquals(
             'composebox stopped speech query',
-            composebox.$.composeboxInput.inputElement.value);
+            getInputValue(composebox.$.composeboxInput.inputElement));
         assertEquals(0, testProxy.handler.getCallCount('submitQuery'));
       });
 

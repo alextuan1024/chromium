@@ -939,6 +939,8 @@ struct SkillPreview {
   url.mojom.Url? image_url;
   // The category of the skill.
   string? category;
+  // The time when the skill was created.
+  mojo_base.mojom.Time? creation_time;
 };
 
 // @generate glic_api
@@ -1289,6 +1291,9 @@ interface ActorHandler {
   // No-op if a task with the given id does not exist.
   // No-op if the task is not in the interrupted state.
   UninterruptActorTask(int32 task_id);
+
+  // Updates the progress of a step for an actor task with the given ID.
+  UpdateActorTaskStepProgress(int32 task_id, string step_progress);
 
   // Creates a new tab for an actor task to act in. The initiator tab and window
   // are used to place the new tab in the window the task was started from,
@@ -1987,6 +1992,8 @@ enum InvocationSource {
   [MinVersion=26] kReshowInactive = 40,
   // From the tab context menu.
   [MinVersion=27] kTabContextMenu = 41,
+  // From Web Continuity.
+  [MinVersion=28] kWebContinuity = 42,
 };
 
 // LINT.ThenChange(

@@ -1413,10 +1413,68 @@ inline LayoutStateScenePassKey PassKey() {
   }];
 }
 
+- (void)showIdentityDocsWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  CHECK(!self.isSigninInProgress);
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showIdentityDocsWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      identityDocsControllerForBrowser:_regularBrowser.get()
+                              referrer:referrer
+                              delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showTravelWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  CHECK(!self.isSigninInProgress);
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showTravelWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      travelControllerForBrowser:_regularBrowser.get()
+                        referrer:referrer
+                        delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showShoppingWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  CHECK(!self.isSigninInProgress);
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showShoppingWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      shoppingControllerForBrowser:_regularBrowser.get()
+                          referrer:referrer
+                          delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
 - (void)showAutofillSettings {
   __weak SceneCoordinator* weakSelf = self;
   [self dismissModalDialogsWithCompletion:^{
     [weakSelf showAutofillSettingsAfterModalDismiss];
+  }];
+}
+
+- (void)showAutofillSettingsFromNotice {
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf showAutofillSettingsFromNoticeAfterModalDismiss];
   }];
 }
 
@@ -2039,6 +2097,25 @@ inline LayoutStateScenePassKey PassKey() {
                                                        kFillingFlowDropdown
                                       delegate:self];
   [_settingsNavigationController showAutofillSettings];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+// Shows the Autofill settings in the settings UI from an Autofill notice (no
+// back button).
+- (void)showAutofillSettingsFromNoticeAfterModalDismiss {
+  DCHECK(!self.isSigninInProgress);
+
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showAutofillSettingsFromNotice];
+    return;
+  }
+  _settingsNavigationController = [[SettingsNavigationController alloc]
+      initWithRootViewController:nil
+                         browser:_regularBrowser.get()
+                        delegate:self];
+  [_settingsNavigationController showAutofillSettingsFromNotice];
   [self.activeViewController presentViewController:_settingsNavigationController
                                           animated:YES
                                         completion:nil];

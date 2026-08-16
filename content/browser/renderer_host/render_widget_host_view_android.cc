@@ -77,6 +77,7 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
+#include "content/browser/renderer_host/unbounded_surface_window_android.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/browser/screen_orientation/screen_orientation_provider.h"
 #include "content/common/features.h"
@@ -1221,6 +1222,12 @@ void RenderWidgetHostViewAndroid::OnRootScrollOffsetChanged(
   gesture_listener_manager_->OnRootScrollOffsetChanged(root_scroll_offset_dip);
 }
 
+void RenderWidgetHostViewAndroid::OnReportScrollJankStats(
+    uint32_t total_frames,
+    uint32_t janky_frames) {
+  ReportScrollJankStats(total_frames, janky_frames);
+}
+
 void RenderWidgetHostViewAndroid::Focus() {
   if (view_.HasFocus())
     GotFocus();
@@ -1657,10 +1664,7 @@ bool RenderWidgetHostViewAndroid::OnTouchEvent(
   // when a touch sequence is handled on Browser, as it will try to compare a
   // lingering transferred event's touch id and touch id of acked event that the
   // Browser is now handling.
-  if (input_transfer_handler_ &&
-      (!base::FeatureList::IsEnabled(
-           blink::features::kDropInputEventsWhilePaintHolding) ||
-       host()->input_router()->IsActive())) {
+  if (input_transfer_handler_ && host()->input_router()->IsActive()) {
     bool is_ignoring_input_events =
         host()->delegate()->ShouldIgnoreInputEvents();
     if (input_transfer_handler_->OnTouchEvent(event,
@@ -1875,6 +1879,18 @@ void RenderWidgetHostViewAndroid::Destroy() {
   RenderWidgetHostViewBase::Destroy();
 
   delete this;
+}
+
+void RenderWidgetHostViewAndroid::CreateUnboundedSurface(
+    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
+    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
+    const gfx::Rect& bounds_in_dips,
+    base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
+  gfx::Rect bounds_in_screen =
+      ConvertSubframeBoundsToScreen(bounds_in_dips, subframe_view.get());
+  unbounded_surface_window_ = UnboundedSurfaceWindowAndroid::Create(
+      this, std::move(host), std::move(client), bounds_in_screen,
+      std::move(subframe_view));
 }
 
 void RenderWidgetHostViewAndroid::UpdateTooltipUnderCursor(
@@ -3244,6 +3260,9 @@ void RenderWidgetHostViewAndroid::OnDetachedFromWindow() {
   if (input_transfer_handler_) {
     input_transfer_handler_->OnDetachedFromWindow();
   }
+  if (touch_selection_controller_) {
+    touch_selection_controller_->HideAndDestroy();
+  }
 }
 
 void RenderWidgetHostViewAndroid::OnAttachCompositor() {
@@ -3941,6 +3960,11 @@ void RenderWidgetHostViewAndroid::SetTouchpadOverscrollHistoryNavigation(
   if (overscroll_controller_) {
     overscroll_controller_->SetTouchpadOverscrollHistoryNavigation(enabled);
   }
+}
+
+void RenderWidgetHostViewAndroid::ReportScrollJankStats(uint32_t total_frames,
+                                                        uint32_t janky_frames) {
+  view_.ReportScrollJankStats(total_frames, janky_frames);
 }
 
 void RenderWidgetHostViewAndroid::OnUnconfirmedTapConvertedToTap() {

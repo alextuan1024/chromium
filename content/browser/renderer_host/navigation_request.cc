@@ -5987,13 +5987,11 @@ void NavigationRequest::OnStartChecksComplete(
   // Give DevTools a chance to override begin params (headers, skip SW)
   // before actually loading resource.
   bool report_raw_headers = false;
-  std::optional<std::vector<net::SourceStreamType>>
-      devtools_accepted_stream_types;
   GURL devtools_referrer_override;
   devtools_instrumentation::ApplyNetworkRequestOverrides(
       frame_tree_node_, begin_params_.get(), &report_raw_headers,
-      &devtools_accepted_stream_types, &devtools_user_agent_override_,
-      &devtools_accept_language_override_, &devtools_referrer_override);
+      &devtools_user_agent_override_, &devtools_accept_language_override_,
+      &devtools_referrer_override);
 
   if (!devtools_referrer_override.is_empty()) {
     // When the `Referer` header is overridden by DevTools (e.g. by CDP command
@@ -6085,10 +6083,10 @@ void NavigationRequest::OnStartChecksComplete(
           blob_url_loader_factory_ ? blob_url_loader_factory_->Clone()
                                    : nullptr,
           devtools_navigation_token(), local_root_rfh->devtools_frame_token(),
-          BuildClientSecurityStateForNavigationFetch(),
-          devtools_accepted_stream_types, IsPdf(), GetInitiatorProcessId(),
-          initiator_document_token_, allow_cookies_from_browser_,
-          navigation_id_, is_ad_tagged_, force_no_https_upgrade_),
+          BuildClientSecurityStateForNavigationFetch(), IsPdf(),
+          GetInitiatorProcessId(), initiator_document_token_,
+          allow_cookies_from_browser_, navigation_id_, is_ad_tagged_,
+          force_no_https_upgrade_),
       std::move(navigation_ui_data), service_worker_handle_.get(),
       std::move(prefetched_signed_exchange_cache_), this, loader_type,
       CreateCookieAccessObserver(), CreateTrustTokenAccessObserver(),
@@ -8350,10 +8348,10 @@ NavigationRequest::CheckConnectionAllowlistEmbeddedEnforcement() {
     if (parent_required &&
         !network::ConnectionAllowlistSubsumes(
             *parent_required, *required_connection_allowlist_)) {
-      // TODO(crbug.com/538219521): Surface this "the embedder's
-      // `connectionallowlist` attribute is less strict than an ancestor's
-      // requirement and was discarded" diagnostic as a DevTools issue rather
-      // than a console message.
+      devtools_instrumentation::OnConnectionAllowlistEmbeddedEnforcementIssue(
+          *this, devtools_instrumentation::
+                     ConnectionAllowlistEmbeddedEnforcementIssue::
+                         kIFrameAttributeLoosensEmbeddingRequirement);
       required_connection_allowlist_ = parent_required;
     }
   }
@@ -8393,9 +8391,13 @@ NavigationRequest::CheckConnectionAllowlistEmbeddedEnforcement() {
     return ConnectionAllowlistEmbeddedEnforcementResult::ALLOW_RESPONSE;
   }
 
-  // TODO(crbug.com/538219521): Surface an invalid
-  // 'Allow-Connection-Allowlist-From' response header value as a DevTools
-  // issue rather than a console message.
+  if (allow_connection_allowlist_from &&
+      allow_connection_allowlist_from->is_error_message()) {
+    devtools_instrumentation::OnConnectionAllowlistEmbeddedEnforcementIssue(
+        *this,
+        devtools_instrumentation::ConnectionAllowlistEmbeddedEnforcementIssue::
+            kInvalidAllowConnectionAllowlistFrom);
+  }
 
   // The framed document may instead satisfy the requirement by delivering its
   // own Connection-Allowlist that is at least as strict (subsumes the required
@@ -8407,10 +8409,10 @@ NavigationRequest::CheckConnectionAllowlistEmbeddedEnforcement() {
     return ConnectionAllowlistEmbeddedEnforcementResult::ALLOW_RESPONSE;
   }
 
-  // TODO(crbug.com/538219521): Surface this "refused to display: the frame
-  // neither accepts the requirement via Allow-Connection-Allowlist-From nor
-  // delivers a Connection-Allowlist at least as strict" diagnostic as a
-  // DevTools issue rather than a console message.
+  devtools_instrumentation::OnConnectionAllowlistEmbeddedEnforcementIssue(
+      *this,
+      devtools_instrumentation::ConnectionAllowlistEmbeddedEnforcementIssue::
+          kEmbeddingRequirementNotSatisfied);
   return ConnectionAllowlistEmbeddedEnforcementResult::BLOCK_RESPONSE;
 }
 
@@ -10360,6 +10362,29 @@ bool NavigationRequest::HasPrefetchedAlternativeSubresourceSignedExchange() {
 
 int64_t NavigationRequest::GetNavigationId() const {
   return navigation_id_;
+}
+
+void NavigationRequest::SetBypassRedirectChecksForNextRedirect(bool bypass) {
+  bypass_redirect_checks_for_next_redirect_ = bypass;
+}
+
+bool NavigationRequest::ConsumeBypassRedirectChecksForNextRedirect() {
+  bool bypass = bypass_redirect_checks_for_next_redirect_;
+  bypass_redirect_checks_for_next_redirect_ = false;
+  return bypass;
+}
+
+void NavigationHandle::SetBypassRedirectChecksForNextRedirect(
+    FrameTreeNodeId frame_tree_node_id,
+    int64_t navigation_id) {
+  FrameTreeNode* frame_tree_node =
+      FrameTreeNode::GloballyFindByID(frame_tree_node_id);
+  if (frame_tree_node && frame_tree_node->navigation_request() &&
+      frame_tree_node->navigation_request()->GetNavigationId() ==
+          navigation_id) {
+    frame_tree_node->navigation_request()
+        ->SetBypassRedirectChecksForNextRedirect(true);
+  }
 }
 
 ukm::SourceId NavigationRequest::GetNextPageUkmSourceId() {

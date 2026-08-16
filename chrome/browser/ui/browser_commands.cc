@@ -862,16 +862,15 @@ bool ExecuteCommand(BrowserWindowInterface* browser,
                     int command,
                     base::TimeTicks time_stamp) {
   return browser->GetFeatures().browser_command_controller()->ExecuteCommand(
-      command, time_stamp);
+      command, std::nullopt, time_stamp);
 }
 
 bool ExecuteCommandWithContext(BrowserWindowInterface* browser,
                                int command,
                                actions::ActionInvocationContext context,
                                base::TimeTicks time_stamp) {
-  return browser->GetFeatures()
-      .browser_command_controller()
-      ->ExecuteCommandWithContext(command, std::move(context), time_stamp);
+  return browser->GetFeatures().browser_command_controller()->ExecuteCommand(
+      command, std::move(context), time_stamp);
 }
 
 bool ExecuteCommandWithDisposition(BrowserWindowInterface* browser,
@@ -880,7 +879,8 @@ bool ExecuteCommandWithDisposition(BrowserWindowInterface* browser,
                                    base::TimeTicks time_stamp) {
   return browser->GetFeatures()
       .browser_command_controller()
-      ->ExecuteCommandWithDisposition(command, disposition, time_stamp);
+      ->ExecuteCommandWithDisposition(command, disposition, std::nullopt,
+                                      time_stamp);
 }
 
 bool ExecuteCommandWithDispositionAndContext(
@@ -891,8 +891,8 @@ bool ExecuteCommandWithDispositionAndContext(
     base::TimeTicks time_stamp) {
   return browser->GetFeatures()
       .browser_command_controller()
-      ->ExecuteCommandWithDispositionAndContext(command, disposition,
-                                                std::move(context), time_stamp);
+      ->ExecuteCommandWithDisposition(command, disposition, std::move(context),
+                                      time_stamp);
 }
 
 void UpdateCommandEnabled(BrowserWindowInterface* browser,
@@ -1435,7 +1435,8 @@ void NewTabFromClipboardURL(BrowserWindowInterface* browser) {
     clipboard->ReadText(
         ui::ClipboardBuffer::kSelection, /* data_dst = */ std::nullopt,
         base::BindOnce(
-            [](base::WeakPtr<Browser> browser_weak, std::u16string text) {
+            [](base::WeakPtr<BrowserWindowInterface> browser_weak,
+               std::u16string text) {
               if (!browser_weak || text.empty()) {
                 return;
               }
@@ -1451,11 +1452,11 @@ void NewTabFromClipboardURL(BrowserWindowInterface* browser) {
                   content::ChildProcessSecurityPolicy::GetInstance()
                       ->IsWebSafeScheme(
                           std::string(match.destination_url.scheme()))) {
-                browser_weak->tab_strip_model()->delegate()->AddTabAt(
+                browser_weak->GetTabStripModel()->delegate()->AddTabAt(
                     match.destination_url, -1, true);
               }
             },
-            browser->GetBrowserForMigrationOnly()->AsWeakPtr()));
+            browser->GetWeakPtr()));
   }
 #endif
 }
@@ -1842,10 +1843,7 @@ void NewSplitTab(BrowserWindowInterface* browser,
   tab_strip_model->AddToNewSplit(
       {active_index}, split_tabs::SplitTabVisualData(layout), source);
 
-  if (content::WebContents* active_contents =
-          tab_strip_model->GetActiveWebContents()) {
-    active_contents->Focus();
-  }
+  tab_strip_model->ActivateTabAt(active_index + 1);
 }
 
 void AddNewTabToGroup(BrowserWindowInterface* browser) {

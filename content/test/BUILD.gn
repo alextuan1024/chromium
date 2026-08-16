@@ -82,8 +82,6 @@ static_library("test_support") {
   }
 
   sources = [
-    "../browser/aggregation_service/aggregation_service_test_utils.cc",
-    "../browser/aggregation_service/aggregation_service_test_utils.h",
     "../browser/back_forward_cache_test_util.cc",
     "../browser/back_forward_cache_test_util.h",
     "../browser/background_fetch/background_fetch_test_base.cc",
@@ -201,6 +199,8 @@ static_library("test_support") {
     "../public/test/context_menu_interceptor.h",
     "../public/test/cursor_utils.cc",
     "../public/test/cursor_utils.h",
+    "../public/test/desktop_capture_test_utils.cc",
+    "../public/test/desktop_capture_test_utils.h",
     "../public/test/direct_sockets_test_helpers.cc",
     "../public/test/direct_sockets_test_helpers.h",
     "../public/test/download_test_observer.cc",
@@ -1495,6 +1495,7 @@ test("content_browsertests") {
     "../browser/content_security_policy_browsertest.cc",
     "../browser/cross_site_transfer_browsertest.cc",
     "../browser/data_decoder_browsertest.cc",
+    "../browser/declarative_performance_observer/declarative_performance_observer_browsertest.cc",
     "../browser/device_sensors/device_sensor_browsertest.cc",
     "../browser/devtools/devtools_issue_storage_browsertest.cc",
     "../browser/devtools/devtools_trust_token_browsertest.cc",
@@ -1895,7 +1896,6 @@ test("content_browsertests") {
     "//build:chromecast_buildflags",
     "//cc/slim",
     "//components//unexportable_keys",
-    "//components/aggregation_service",
     "//components/cbor",
     "//components/discardable_memory/client",
     "//components/discardable_memory/common",
@@ -2535,16 +2535,6 @@ test("content_unittests") {
     "../browser/accessibility/one_shot_accessibility_tree_search_unittest.cc",
     "../browser/accessibility/scoped_mode_collection_unittest.cc",
     "../browser/agent_cluster_key_unittest.cc",
-    "../browser/aggregation_service/aggregatable_report_assembler_unittest.cc",
-    "../browser/aggregation_service/aggregatable_report_scheduler_unittest.cc",
-    "../browser/aggregation_service/aggregatable_report_sender_unittest.cc",
-    "../browser/aggregation_service/aggregatable_report_unittest.cc",
-    "../browser/aggregation_service/aggregation_service_impl_unittest.cc",
-    "../browser/aggregation_service/aggregation_service_key_fetcher_unittest.cc",
-    "../browser/aggregation_service/aggregation_service_network_fetcher_impl_unittest.cc",
-    "../browser/aggregation_service/aggregation_service_storage_sql_unittest.cc",
-    "../browser/aggregation_service/public_key_parsing_utils_unittest.cc",
-    "../browser/aggregation_service/report_scheduler_timer_unittest.cc",
     "../browser/back_forward_cache/back_forward_cache_impl_unittest.cc",
     "../browser/back_forward_cache/back_forward_cache_metrics_unittest.cc",
     "../browser/back_forward_cache/back_forward_cache_subframe_navigation_throttle_unittest.cc",
@@ -3229,7 +3219,6 @@ test("content_unittests") {
     "//cc",
     "//cc:test_support",
     "//cc/mojom",
-    "//components/aggregation_service",
     "//components/cbor",
     "//components/input",
     "//components/metrics",
@@ -3483,8 +3472,10 @@ test("content_unittests") {
 
     if (!is_ios) {
       deps += [ "//media/capture:test_support" ]
-      sources +=
-          [ "../browser/media/capture/desktop_capture_device_unittest.cc" ]
+      sources += [
+        "../browser/media/capture/desktop_capture_device_unittest.cc",
+        "../browser/media/capture/desktop_capture_unittest.cc",
+      ]
     }
 
     if (is_android) {
@@ -3654,7 +3645,9 @@ test("content_unittests") {
     sources += [
       "../browser/hid/hid_service_unittest.cc",
       "../browser/service_worker/service_worker_hid_delegate_observer_unittest.cc",
+      "../browser/webauth/authenticator_impl_cable_unittest.cc",
       "../browser/webauth/authenticator_impl_pin_unittest.cc",
+      "../browser/webauth/authenticator_impl_resident_key_unittest.cc",
       "../browser/webauth/authenticator_impl_unittest.cc",
       "../browser/webauth/authenticator_impl_unittest_test_base.cc",
       "../browser/webauth/authenticator_impl_unittest_test_base.h",

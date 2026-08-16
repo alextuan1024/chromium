@@ -259,8 +259,7 @@ WebAppToolbarButtonContainer::WebAppToolbarButtonContainer(
         AddChildView(std::make_unique<ExtensionsToolbarDesktop>(
             browser_view_->browser(), display_mode));
     extensions_toolbar_coordinator_ =
-        std::make_unique<ExtensionsToolbarCoordinator>(browser_view_->browser(),
-                                                       extensions_container_);
+        std::make_unique<ExtensionsToolbarCoordinator>(extensions_container_);
 
     extensions_container_->GetExtensionsButton()
         ->SetAppearDisabledInInactiveWidget(true);
@@ -285,8 +284,8 @@ WebAppToolbarButtonContainer::WebAppToolbarButtonContainer(
 
 #if !BUILDFLAG(IS_CHROMEOS)
   if (app_controller->HasProfileMenuButton()) {
-    avatar_button_ =
-        AddChildView(std::make_unique<AvatarToolbarButton>(browser_view_));
+    avatar_button_ = AddChildView(
+        std::make_unique<AvatarToolbarButton>(browser_view_->browser()));
     avatar_button_->SetID(VIEW_ID_AVATAR_BUTTON);
     ConfigureWebAppToolbarButton(avatar_button_, toolbar_button_provider_);
     views::SetHitTestComponent(avatar_button_, static_cast<int>(HTCLIENT));

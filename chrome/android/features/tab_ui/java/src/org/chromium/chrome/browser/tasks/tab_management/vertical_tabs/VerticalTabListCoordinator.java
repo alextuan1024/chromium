@@ -25,6 +25,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.Callback;
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
@@ -524,6 +525,13 @@ public class VerticalTabListCoordinator {
                         .with(
                                 VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER,
                                 v -> handleNewTabButtonClick())
+                        // TODO(crbug.com/537032526): Wire ON_INCOGNITO_CLICK_LISTENER to handle
+                        // incognito tab creation.
+                        .with(
+                                VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE,
+                                VerticalTabUtils.isIncognitoButtonEnabled()
+                                        && !IncognitoUtils.shouldOpenIncognitoAsWindow()
+                                        && IncognitoUtils.isIncognitoModeEnabled(profile))
                         .with(
                                 VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER,
                                 v -> mCollapseController.toggleCollapseState())
@@ -562,7 +570,7 @@ public class VerticalTabListCoordinator {
                         /* snackbarManager */ null,
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
                         /* isSingleContextMode */ false,
-                        /* onDragStateChangedListener */ () -> {});
+                        /* onDragStateChangedListener */ CallbackUtils.emptyRunnable());
 
         mMediator.initWithNative(profile.getOriginalProfile());
 
@@ -708,6 +716,12 @@ public class VerticalTabListCoordinator {
 
                     @Override
                     public void willCloseTab(Tab tab, boolean didCloseAlone) {
+                        mTabHoverCardController.hideHoverCard();
+                    }
+
+                    @Override
+                    public void willCloseTabs(
+                            List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                         mTabHoverCardController.hideHoverCard();
                     }
 
@@ -990,7 +1004,13 @@ public class VerticalTabListCoordinator {
 
                         itemTouchHelper.setExternalDragItem(viewHolder);
                         dragHandler.setDragHandlerDelegate(
-                                createDragHandlerDelegate(itemTouchHelper, model));
+                                createDragHandlerDelegate(
+                                        recyclerView,
+                                        itemTouchHelper,
+                                        touchHelperCallback,
+                                        dragHandler,
+                                        viewHolder,
+                                        model));
 
                         mLastDraggedGroupId = tabGroupId;
 
@@ -1034,7 +1054,13 @@ public class VerticalTabListCoordinator {
 
                     itemTouchHelper.setExternalDragItem(viewHolder);
                     dragHandler.setDragHandlerDelegate(
-                            createDragHandlerDelegate(itemTouchHelper, model));
+                            createDragHandlerDelegate(
+                                    recyclerView,
+                                    itemTouchHelper,
+                                    touchHelperCallback,
+                                    dragHandler,
+                                    viewHolder,
+                                    model));
 
                     mLastDraggedGroupId = null;
                     View gridCardView = buildGridCardDragShadow(activity, model);
@@ -1076,8 +1102,36 @@ public class VerticalTabListCoordinator {
     }
 
     private DragHandlerDelegate createDragHandlerDelegate(
-            ItemTouchHelper2 itemTouchHelper, @Nullable PropertyModel model) {
+            RecyclerView recyclerView,
+            ItemTouchHelper2 itemTouchHelper,
+            VerticalTabListItemTouchHelperCallback touchHelperCallback,
+            TabSwitcherDragHandler dragHandler,
+            RecyclerView.ViewHolder viewHolder,
+            @Nullable PropertyModel model) {
         return new DragHandlerDelegate() {
+            private final int[] mTempViewLoc = new int[2];
+            private final int[] mTempRvLoc = new int[2];
+            private final float[] mTempCoords = new float[2];
+
+            private float[] toRvCoordinates(View view, float x, float y) {
+                if (view == recyclerView) {
+                    mTempCoords[0] = x;
+                    mTempCoords[1] = y;
+                } else {
+                    view.getLocationOnScreen(mTempViewLoc);
+                    recyclerView.getLocationOnScreen(mTempRvLoc);
+                    mTempCoords[0] = x + mTempViewLoc[0] - mTempRvLoc[0];
+                    mTempCoords[1] = y + mTempViewLoc[1] - mTempRvLoc[1];
+                }
+                return mTempCoords;
+            }
+
+            @Override
+            public boolean handleDragStart(View view, float xPx, float yPx) {
+                float[] coords = toRvCoordinates(view, xPx, yPx);
+                return handleDragStart(coords[0], coords[1]);
+            }
+
             @Override
             public boolean handleDragStart(float xPx, float yPx) {
                 mTabHoverCardController.hideHoverCard();
@@ -1092,8 +1146,14 @@ public class VerticalTabListCoordinator {
                 // outside the bounds of the RecyclerView, we will never receive an
                 // ACTION_DRAG_EXITED event. Therefore, we must explicitly trigger the collapse of
                 // the drag gap right away.
-                itemTouchHelper.clearExternalDragItemVisibility();
+                touchHelperCallback.collapseDraggedItem(viewHolder);
                 return true;
+            }
+
+            @Override
+            public boolean handleDragLocation(View view, float xPx, float yPx) {
+                float[] coords = toRvCoordinates(view, xPx, yPx);
+                return handleDragLocation(coords[0], coords[1]);
             }
 
             @Override
@@ -1104,25 +1164,34 @@ public class VerticalTabListCoordinator {
 
             @Override
             public boolean handleDragEnter() {
+                dragHandler.showDragShadow(recyclerView, false);
                 updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
-                itemTouchHelper.restoreExternalDragItemVisibility(/* isOSNewWindowDrop= */ false);
+                touchHelperCallback.restoreDraggedItem(/* isOSNewWindowDrop= */ false);
                 return true;
             }
 
             @Override
             public boolean handleDragExit() {
+                dragHandler.showDragShadow(recyclerView, true);
                 moveDraggedPinnedTabToEndIfNeeded(model);
                 // Keep a minimum height during external drag so a single-item list does not
                 // collapse to 0px.
                 updateSingleTabListMinHeight(model, /* useMinHeight= */ true);
-                itemTouchHelper.clearExternalDragItemVisibility();
+                touchHelperCallback.collapseDraggedItem(null);
                 return true;
+            }
+
+            @Override
+            public boolean handleExternalDragEnd(
+                    View view, float xPx, float yPx, boolean isOSNewWindowDrop) {
+                float[] coords = toRvCoordinates(view, xPx, yPx);
+                return handleExternalDragEnd(coords[0], coords[1], isOSNewWindowDrop);
             }
 
             @Override
             public boolean handleExternalDragEnd(float xPx, float yPx, boolean isOSNewWindowDrop) {
                 updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
-                itemTouchHelper.restoreExternalDragItemVisibility(isOSNewWindowDrop);
+                touchHelperCallback.restoreDraggedItem(isOSNewWindowDrop);
                 itemTouchHelper.onExternalDragStop(/* recoverItem= */ false);
 
                 if (mLastDraggedGroupId != null) {
@@ -1136,6 +1205,12 @@ public class VerticalTabListCoordinator {
                     }
                 }
                 return true;
+            }
+
+            @Override
+            public boolean handleDrop(View view, float xPx, float yPx) {
+                float[] coords = toRvCoordinates(view, xPx, yPx);
+                return handleDrop(coords[0], coords[1]);
             }
 
             @Override

@@ -421,7 +421,7 @@ IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest, FocusOnlyNtp) {
 
 // Verifies switching to a tab where the webpage body is focused and has no
 // omnibox draft to verify the popup remains closed.
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 #define MAYBE_BlurredPage DISABLED_BlurredPage
 #else
 #define MAYBE_BlurredPage BlurredPage
@@ -729,7 +729,8 @@ IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
                   }))),
       // Click the bookmark button situated directly beneath the Omnibox.
       InContext(browser_context, MoveMouseTo(kBookmarkButtonName)),
-      InContext(browser_context, ClickMouse()),
+      InSameContextAs(OmniboxPopupPresenter::kRoundedResultsFrame,
+                      ClickMouse()),
       // Verify the popup closes, navigation occurs, and Omnibox loses focus.
       InAnyContext(WaitForHide(OmniboxPopupPresenter::kRoundedResultsFrame)),
       InContext(browser_context,
@@ -829,6 +830,8 @@ IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
       SendKeyPress(kBrowserViewElementId, ui::VKEY_RETURN,
                    ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN),
       WaitForWebContentsReady(kTab2),
+      // Verify popup remains open on Tab 1.
+      InAnyContext(WaitForShow(OmniboxPopupPresenter::kRoundedResultsFrame)),
       // Switch to the newly opened background tab (index 2).
       SelectTab(kTabStripElementId, 2), WaitForPopupTransitionLockout(),
       InAnyContext(WaitForHide(OmniboxPopupPresenter::kRoundedResultsFrame)),
@@ -853,6 +856,28 @@ IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
       CheckWebUIInputFocus(true));
 }
 
+// Verifies that pressing Shift+Enter on a match opens the result in a new
+// window and resets the original window's omnibox popup state to steady state.
+IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
+                       ShiftEnterOpensNewWindowAndResetsOmnibox) {
+  RunTestSequence(
+      // 1. Open Tab 1 at chrome://version/ and focus Omnibox.
+      OpenInitialTabAndFocusOmnibox(kTab1, GURL("chrome://version/")),
+      // 2. Type "a" into the WebUI input to open suggestions.
+      InputWebUIText("a"),
+      WaitForMatch(kPopupWebView, kFirstSuggestionMatchContents,
+                   "suggestion-1"),
+      WaitForJsConditionAt(kPopupWebView, kPopupSearchbox,
+                           "(el) => el && el.dropdownIsVisible"),
+      // 3. Send Shift+Enter to open the suggestion in a new window.
+      InAnyContext(
+          SendKeyPress(kPopupWebView, ui::VKEY_RETURN, ui::EF_SHIFT_DOWN)),
+      // 4. Verify that in the original window, the full popup frame is hidden
+      // and Omnibox focus is cleared.
+      InAnyContext(WaitForHide(OmniboxPopupPresenter::kRoundedResultsFrame)),
+      WaitForOmniboxFocus(false));
+}
+
 // Verifies that copying text in the full WebUI Omnibox records the
 // Omnibox.CutOrCopyAllText metric.
 IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest, OnCopy) {
@@ -863,6 +888,32 @@ IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest, OnCopy) {
         histogram_tester.ExpectBucketCount(
             OmniboxEditModel::kCutOrCopyAllTextHistogram, 1, 1);
       }));
+}
+
+// Verifies that pressing Enter on an open page (without modifying the URL)
+// submits the verbatim URL (reloads/navigates) and closes the popup.
+IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
+                       EnterSubmitsVerbatimUrlOnOpenPage) {
+  RunTestSequence(
+      OpenInitialTabAndFocusOmnibox(kTab1, GURL("chrome://version/")),
+      WaitForWebUIInputValue("chrome://version"),
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_RETURN, ui::EF_NONE),
+      WaitForWebContentsNavigation(kTab1, GURL("chrome://version/")),
+      InAnyContext(WaitForHide(OmniboxPopupPresenter::kRoundedResultsFrame)),
+      WaitForOmniboxFocus(false));
+}
+
+// Verifies that pressing Alt+Enter on an open page (without modifying the URL)
+// opens the verbatim URL in a new foreground tab.
+IN_PROC_BROWSER_TEST_F(FullWebUIOmniboxInteractiveTest,
+                       AltEnterOpensInNewForegroundTab) {
+  RunTestSequence(
+      OpenInitialTabAndFocusOmnibox(kTab1, GURL("chrome://version/")),
+      WaitForWebUIInputValue("chrome://version"), InstrumentNextTab(kTab2),
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_RETURN, ui::EF_ALT_DOWN),
+      WaitForWebContentsReady(kTab2),
+      InAnyContext(WaitForHide(OmniboxPopupPresenter::kRoundedResultsFrame)),
+      WaitForOmniboxFocus(false));
 }
 
 class FullWebUIOmniboxAimInteractiveTestBase

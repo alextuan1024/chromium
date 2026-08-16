@@ -86,7 +86,6 @@ import org.chromium.chrome.browser.firstrun.FirstRunPageDelegate;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
 import org.chromium.chrome.browser.firstrun.FirstRunUtilsJni;
 import org.chromium.chrome.browser.firstrun.MobileFreProgress;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
@@ -591,7 +590,6 @@ public class SigninFirstRunFragmentTest {
     @Test
     @MediumTest
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
-    @EnableFeatures({ChromeFeatureList.XPLAT_SYNCED_SETUP})
     public void testSigninAnimationWithLargeProfilePicture() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
         launchActivityWithFragment();
@@ -1024,7 +1022,7 @@ public class SigninFirstRunFragmentTest {
                         .getString(
                                 R.string.signed_in_fre_title, TestAccounts.ACCOUNT1.getGivenName());
         final String expectedLoadingText =
-                mActivityTestRule.getActivity().getString(R.string.fre_signing_in_2);
+                mActivityTestRule.getActivity().getString(R.string.fre_signing_in);
         onView(allOf(withId(R.id.title), withText(expectedTitle))).check(matches(isDisplayed()));
         onView(withId(R.id.fre_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.fre_icon))
@@ -1110,7 +1108,7 @@ public class SigninFirstRunFragmentTest {
                                 R.string.signed_in_fre_title,
                                 TestAccounts.CHILD_ACCOUNT.getGivenName());
         final String expectedLoadingText =
-                mActivityTestRule.getActivity().getString(R.string.fre_signing_in_2);
+                mActivityTestRule.getActivity().getString(R.string.fre_signing_in);
         onView(allOf(withId(R.id.title), withText(expectedTitle))).check(matches(isDisplayed()));
         onView(withId(R.id.fre_browser_managed_by)).check(matches(isDisplayed()));
         onView(withText(R.string.fre_browser_managed_by_parent)).check(matches(isDisplayed()));
@@ -1631,7 +1629,7 @@ public class SigninFirstRunFragmentTest {
     private void checkFragmentWithSignInSpinner(
             AccountInfo accountInfo, String continueAsText, boolean isChildAccount) {
         onView(withId(R.id.fre_signin_progress_spinner)).check(matches(isDisplayed()));
-        onView(withText(R.string.fre_signing_in_2)).check(matches(isDisplayed()));
+        onView(withText(R.string.fre_signing_in)).check(matches(isDisplayed()));
         final DisplayableProfileData profileData =
                 new DisplayableProfileData(
                         accountInfo.getId(),

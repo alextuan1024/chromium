@@ -51,6 +51,7 @@
 <translation id="1147031633655575115">Kirjautunut käyttäjänä <ph name="USER" /></translation>
 <translation id="1149401351239820326">Viimeinen voimassaolokuukausi</translation>
 <translation id="1150989369772528668">Kalenteri</translation>
+<translation id="1158134713295836892">Gemini in Chrome</translation>
 <translation id="1161444134753003495">Kirjaudu</translation>
 <translation id="1161663161838091892">Jatka synkronoimalla välilehdet ja historia</translation>
 <translation id="1162834932051545794">{count,plural, =1{{count} credit-kortti}other{{count} credit-korttia}}</translation>
@@ -479,6 +480,7 @@
 <translation id="2496180316473517155">Selaushistoria</translation>
 <translation id="2496626742194544812">Siirry ensimmäiselle välilehdelle</translation>
 <translation id="2499505845365628575">Näet koko selaushistoriasi täältä: <ph name="HISTORY_BUTTON_ACCESSIBILITY_LABEL" />.</translation>
+<translation id="251033673027346551">Jos haluat muuttaa <ph name="BEGIN_LINK" />data- ja yksityisyysasetuksia<ph name="END_LINK" />, siirry Google Walletiin.</translation>
 <translation id="2511117522375201202">Sinulla on <ph name="NUMBER_OF_PASSWORDS" /> vaarantunutta salasanaa, jotka voivat vaarantaa turvallisuutesi.</translation>
 <translation id="2512709994717613803">Taso <ph name="LEVEL_NUMBER" /></translation>
 <translation id="2513103768503127042">Näet välilehtiryhmäsi täällä</translation>

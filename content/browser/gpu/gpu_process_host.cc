@@ -107,6 +107,8 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
 #include "base/win/access_token.h"
 #include "base/win/security_descriptor.h"
 #include "base/win/win_util.h"
@@ -136,6 +138,13 @@
 
 #if BUILDFLAG(ENABLE_VRP_FLAGS)
 #include "components/vrp_flags/vrp_flags.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_MAC)
+// If enabled, the macOS sandbox for the GPU process will use process-isolated
+// subdirectories of the darwin user directories instead of the
+// non-process-isolated directories themselves.
+BASE_FEATURE(kMacGpuSandboxDarwinUserDirs, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 namespace content {
@@ -472,6 +481,12 @@ class GpuSandboxedProcessLauncherDelegate
     return sandbox::mojom::Sandbox::kGpu;
   }
 
+#if BUILDFLAG(IS_MAC)
+  bool NeedsProcessIsolatedDarwinUserDirs() override {
+    return base::FeatureList::IsEnabled(kMacGpuSandboxDarwinUserDirs);
+  }
+#endif
+
  private:
 #if BUILDFLAG(IS_WIN)
   // These values are persisted to logs. Entries should not be renumbered and
@@ -567,6 +582,17 @@ void InitGpuPersistentCacheFileFactoryOnce() {
   }
 }
 
+// True while the OS is ending the user session (Windows logoff, shutdown,
+// restart): it is killing this browser's child processes and refuses to start
+// new ones, which says nothing about the GPU.
+bool IsSessionEnding() {
+#if BUILDFLAG(IS_WIN)
+  return ::GetSystemMetrics(SM_SHUTTINGDOWN) != 0;
+#else
+  return false;
+#endif
+}
+
 }  // anonymous namespace
 
 // static
@@ -611,6 +637,12 @@ GpuProcessHost* GpuProcessHost::Get(GpuProcessKind kind, bool force_create) {
   // Do not create a new process if browser is shutting down.
   if (BrowserMainRunner::ExitedMainMessageLoop()) {
     DLOG(ERROR) << "BrowserMainRunner::ExitedMainMessageLoop()";
+    return nullptr;
+  }
+
+  // Nor while the OS ends the session: the launch would fail and nothing is
+  // left to use the process.
+  if (IsSessionEnding()) {
     return nullptr;
   }
 
@@ -1473,6 +1505,14 @@ void GpuProcessHost::RecordProcessCrash() {
   // options).
   if (!process_launched_ || kind_ != GPU_PROCESS_KIND_SANDBOXED)
     return;
+
+  // The OS is ending the session: it kills child processes, refuses to start
+  // new ones, and ends the browser next. Whether this exit was that or a real
+  // crash just before no longer matters - Get() won't launch another GPU
+  // process - so don't spend the fallback budget on it.
+  if (IsSessionEnding()) {
+    return;
+  }
 
   // Keep track of the total number of GPU crashes.
   base::subtle::NoBarrier_AtomicIncrement(&gpu_crash_count_, 1);

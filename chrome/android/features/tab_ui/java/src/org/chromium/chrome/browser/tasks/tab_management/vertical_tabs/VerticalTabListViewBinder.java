@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
-import android.content.res.Resources;
 import android.view.View;
 import android.widget.ImageView;
 
@@ -36,8 +35,6 @@ public class VerticalTabListViewBinder {
      */
     public static void bind(
             PropertyModel model, VerticalTabRailLayout view, PropertyKey propertyKey) {
-        updateButtonSizes(view);
-
         if (VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER == propertyKey) {
             view.setExpandOrCollapseOnHoverListener(
                     model.get(VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER));
@@ -56,6 +53,13 @@ public class VerticalTabListViewBinder {
             assert newTabButton != null;
             newTabButton.setOnClickListener(
                     model.get(VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER));
+        } else if (VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE == propertyKey) {
+            View incognitoButton = view.getIncognitoButton();
+            assert incognitoButton != null;
+            boolean visible = model.get(VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE);
+            incognitoButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+            view.updateFooterLayout();
+            // TODO(crbug.com/537032526): Bind ON_INCOGNITO_CLICK_LISTENER to handle click actions.
         } else if (VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER == propertyKey) {
             View collapseButton = view.findViewById(R.id.collapse_button);
             assert collapseButton != null;
@@ -118,6 +122,11 @@ public class VerticalTabListViewBinder {
             ImageViewCompat.setImageTintList(newTabButton, iconTint);
         }
 
+        @Nullable ImageView incognitoButton = view.getIncognitoButton();
+        if (incognitoButton != null) {
+            ImageViewCompat.setImageTintList(incognitoButton, iconTint);
+        }
+
         @Nullable ColorStateList buttonBgTint =
                 isIncognito
                         ? context.getColorStateList(
@@ -133,55 +142,8 @@ public class VerticalTabListViewBinder {
         if (newTabButton != null) {
             ViewCompat.setBackgroundTintList(newTabButton, buttonBgTint);
         }
-    }
-
-    /**
-     * Updates the dimensions of header and new tab buttons based on device form factor.
-     *
-     * @param view The root {@link VerticalTabRailLayout} container view.
-     */
-    public static void updateButtonSizes(VerticalTabRailLayout view) {
-        Resources res = view.getResources();
-        int buttonSize = res.getDimensionPixelSize(R.dimen.vertical_tabs_header_button_size);
-        int newTabHeight = res.getDimensionPixelSize(R.dimen.vertical_tabs_new_tab_button_height);
-
-        View collapseButton = view.findViewById(R.id.collapse_button);
-        if (collapseButton != null && collapseButton.getLayoutParams() != null) {
-            var params = collapseButton.getLayoutParams();
-            if (params.width != buttonSize || params.height != buttonSize) {
-                params.width = buttonSize;
-                params.height = buttonSize;
-                collapseButton.setLayoutParams(params);
-            }
-        }
-
-        View gridButton = view.findViewById(R.id.grid_button);
-        if (gridButton != null && gridButton.getLayoutParams() != null) {
-            var params = gridButton.getLayoutParams();
-            if (params.width != buttonSize || params.height != buttonSize) {
-                params.width = buttonSize;
-                params.height = buttonSize;
-                gridButton.setLayoutParams(params);
-            }
-        }
-
-        View searchButton = view.findViewById(R.id.tab_search_button);
-        if (searchButton != null && searchButton.getLayoutParams() != null) {
-            var params = searchButton.getLayoutParams();
-            if (params.width != buttonSize || params.height != buttonSize) {
-                params.width = buttonSize;
-                params.height = buttonSize;
-                searchButton.setLayoutParams(params);
-            }
-        }
-
-        View newTabButton = view.findViewById(R.id.new_tab_button);
-        if (newTabButton != null && newTabButton.getLayoutParams() != null) {
-            var params = newTabButton.getLayoutParams();
-            if (params.height != newTabHeight) {
-                params.height = newTabHeight;
-                newTabButton.setLayoutParams(params);
-            }
+        if (incognitoButton != null) {
+            ViewCompat.setBackgroundTintList(incognitoButton, buttonBgTint);
         }
     }
 }

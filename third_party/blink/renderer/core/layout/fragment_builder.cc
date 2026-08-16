@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/core/layout/transform_utils.h"
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -130,11 +131,23 @@ FragmentBuilder::EnsureStickyDescendants() {
 
 void FragmentBuilder::PropagateStickyDescendants(
     const PhysicalFragment& child) {
+  const bool has_sticky_position = child.HasStickyConstrainedPosition();
+  const auto& sticky_descendants = child.StickyDescendants();
+
+  // GetOverflowScrollAxes() is only used below when `child` itself is
+  // sticky-positioned or has sticky descendants pending propagation; skip it
+  // (a checked downcast plus a scrollable-area lookup) otherwise, mirroring
+  // the cheap-check-before-expensive-work gating already done for e.g.
+  // block-fragmentation propagation above.
+  if (!has_sticky_position && sticky_descendants.empty()) {
+    return;
+  }
+
   const PhysicalAxes scrollable_axes = GetOverflowScrollAxes();
 
   bool single_axis_scroller_position_sticky = false;
 
-  if (child.HasStickyConstrainedPosition()) {
+  if (has_sticky_position) {
     const PhysicalAxes axes =
         LayoutBoxModelObject::StickyConstrainedAxes(child.Style());
     const PhysicalAxes consumed = scrollable_axes & axes;
@@ -150,7 +163,7 @@ void FragmentBuilder::PropagateStickyDescendants(
         pending);
   }
 
-  for (const auto& item : child.StickyDescendants()) {
+  for (const auto& item : sticky_descendants) {
     if (auto* pending_obj = item.GetIfPending()) {
       const PhysicalAxes consumed = scrollable_axes & item.PendingAxes();
       const PhysicalAxes pending = item.PendingAxes() ^ consumed;
@@ -1188,14 +1201,13 @@ const LayoutResult* FragmentBuilder::Abort(LayoutResult::EStatus status) {
 
 String FragmentBuilder::ToString() const {
   StringBuilder builder;
-  builder.AppendFormat("FragmentBuilder %.2fx%.2f, Children %u\n",
-                       InlineSize().ToFloat(), BlockSize().ToFloat(),
-                       children_.size());
+  FormatTo(builder, "FragmentBuilder {:.2f}x{:.2f}, Children {}\n",
+           InlineSize().ToFloat(), BlockSize().ToFloat(), children_.size());
   for (auto& child : children_) {
     builder.Append(child.fragment->DumpFragmentTree(
         PhysicalFragment::DumpAll & ~PhysicalFragment::DumpHeaderText));
   }
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 #endif

@@ -5,6 +5,7 @@
 #include "chrome/browser/net/device_bound_session_prewarmer.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -13,9 +14,11 @@
 #include "services/network/public/mojom/device_bound_sessions.mojom.h"
 
 namespace {
-// The fallback prewarm timer interval when earliest_next_refresh_time is in the
-// past or a transient error is returned.
-constexpr base::TimeDelta kDefaultPrewarmInterval = base::Seconds(60);
+// The minimum prewarm timer interval. Used as:
+// - The minimum delay when scheduling subsequent prewarm requests.
+// - The fallback interval when a transient error is returned.
+// - The fallback interval when the session manager is unavailable.
+constexpr base::TimeDelta kMinPrewarmInterval = base::Seconds(60);
 
 // The prewarm timer interval when the URL provider callback returns an empty or
 // invalid URL.
@@ -37,10 +40,12 @@ DeviceBoundSessionPrewarmer::~DeviceBoundSessionPrewarmer() {
 }
 
 void DeviceBoundSessionPrewarmer::Start(
-    PrewarmUrlProvider url_provider_callback) {
+    PrewarmUrlProvider url_provider_callback,
+    bool is_startup_prewarm) {
   CHECK(url_provider_callback);
   url_provider_callback_ = std::move(url_provider_callback);
   invalid_url_consecutive_retries_ = 0;
+  is_startup_prewarm_ = is_startup_prewarm;
 
   Stop();
 
@@ -83,7 +88,7 @@ void DeviceBoundSessionPrewarmer::DoPrewarm() {
         base::BindOnce(&DeviceBoundSessionPrewarmer::OnPrewarmComplete,
                        weak_ptr_factory_.GetWeakPtr()));
   } else {
-    timer_.Start(FROM_HERE, kDefaultPrewarmInterval, this,
+    timer_.Start(FROM_HERE, kMinPrewarmInterval, this,
                  &DeviceBoundSessionPrewarmer::DoPrewarm);
   }
 }
@@ -109,6 +114,17 @@ bool DeviceBoundSessionPrewarmer::IsTransientError(
 void DeviceBoundSessionPrewarmer::OnPrewarmComplete(
     const std::vector<net::device_bound_sessions::RefreshResult>& results,
     std::optional<base::Time> earliest_next_refresh_time) {
+  bool is_startup = std::exchange(is_startup_prewarm_, false);
+  for (const auto& result : results) {
+    if (is_startup) {
+      base::UmaHistogramEnumeration(
+          "Net.DeviceBoundSessions.PrewarmResult.Startup", result);
+    } else {
+      base::UmaHistogramEnumeration(
+          "Net.DeviceBoundSessions.PrewarmResult.Scheduled", result);
+    }
+  }
+
   if (!earliest_next_refresh_time) {
     if (std::ranges::none_of(results,
                              &DeviceBoundSessionPrewarmer::IsTransientError)) {
@@ -117,15 +133,15 @@ void DeviceBoundSessionPrewarmer::OnPrewarmComplete(
       return;
     }
 
-    timer_.Start(FROM_HERE, kDefaultPrewarmInterval, this,
+    timer_.Start(FROM_HERE, kMinPrewarmInterval, this,
                  &DeviceBoundSessionPrewarmer::DoPrewarm);
     return;
   }
 
-  // If the next refresh time is in the past, we should schedule the next
-  // prewarm at least `kDefaultPrewarmInterval` from now to avoid infinite
-  // loops.
-  base::TimeDelta delay = *earliest_next_refresh_time - base::Time::Now();
-  timer_.Start(FROM_HERE, delay.is_positive() ? delay : kDefaultPrewarmInterval,
-               this, &DeviceBoundSessionPrewarmer::DoPrewarm);
+  // If the next refresh time is in the past or shorter than the minimum
+  // interval, schedule the next prewarm after `kMinPrewarmInterval` to avoid
+  // infinite loops or excessive requests.
+  base::TimeDelta delay = std::max(
+      *earliest_next_refresh_time - base::Time::Now(), kMinPrewarmInterval);
+  timer_.Start(FROM_HERE, delay, this, &DeviceBoundSessionPrewarmer::DoPrewarm);
 }

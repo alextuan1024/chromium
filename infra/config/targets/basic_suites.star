@@ -1083,8 +1083,14 @@ targets.legacy_basic_suite(
     tests = {
         "webgl2_conformance_gles_passthrough_tests": targets.legacy_test_config(
             swarming = targets.swarming(
+                shards = 5,
+            ),
+            android_swarming = targets.swarming(
                 # These tests currently take about an hour and fifteen minutes
                 # to run. Split them into roughly 5-minute shards.
+                shards = 20,
+            ),
+            chromeos_swarming = targets.swarming(
                 shards = 20,
             ),
             skylab = targets.skylab(
@@ -1132,6 +1138,12 @@ targets.legacy_basic_suite(
     tests = {
         "webgl_conformance_gles_passthrough_tests": targets.legacy_test_config(
             swarming = targets.swarming(
+                shards = 2,
+            ),
+            android_swarming = targets.swarming(
+                shards = 6,
+            ),
+            chromeos_swarming = targets.swarming(
                 shards = 6,
             ),
             skylab = targets.skylab(
@@ -1452,20 +1464,6 @@ targets.legacy_basic_suite(
 #     },
 # )
 
-targets.legacy_basic_suite(
-    name = "opt_target_coverage_test_suite",
-    tests = {
-        "opt_target_coverage_test": targets.legacy_test_config(
-            mixins = [
-                "has_native_resultdb_integration",
-            ],
-            linux_args = [
-                "--no-xvfb",
-            ],
-        ),
-    },
-)
-
 _CHROME_AI_WPT_TEST_CONFIG = targets.legacy_test_config(
     mixins = [
         "has_native_resultdb_integration",
@@ -1551,10 +1549,6 @@ targets.legacy_basic_suite(
 targets.legacy_basic_suite(
     name = "chrome_ai_wpt_tests_suite",
     tests = {
-        "chrome_ai_wpt_tests_gpu": _CHROME_AI_WPT_TEST_CONFIG,
-        "chrome_ai_wpt_tests_cpu": _CHROME_AI_WPT_TEST_CONFIG,
-        "chrome_ai_wpt_tests_litert_cpu": _CHROME_AI_WPT_TEST_CONFIG,
-        "chrome_ai_wpt_tests_litert_gpu": _CHROME_AI_WPT_TEST_CONFIG,
         "chrome_ai_wpt_tests_manifest_gpu_high_tier": _CHROME_AI_WPT_GPU_HIGH_TIER_TEST_CONFIG,
         "chrome_ai_wpt_tests_manifest_gpu_low_tier": _CHROME_AI_WPT_TEST_CONFIG,
         "chrome_ai_wpt_tests_manifest_cpu": _CHROME_AI_WPT_TEST_CONFIG,

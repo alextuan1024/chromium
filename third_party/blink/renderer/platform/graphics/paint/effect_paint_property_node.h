@@ -24,6 +24,7 @@ namespace blink {
 class ClipPaintPropertyNode;
 class ClipPaintPropertyNodeOrAlias;
 class PropertyTreeState;
+class TransformPaintPropertyNode;
 class TransformPaintPropertyNodeOrAlias;
 
 // Effect nodes are abstraction of isolated groups, along with optional effects
@@ -111,13 +112,15 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     bool operator==(const CanvasChildState& other) const {
       return id == other.id && paint_state == other.paint_state &&
              content_effect == other.content_effect &&
-             content_clip == other.content_clip;
+             content_clip == other.content_clip &&
+             content_transform == other.content_transform;
     }
 
     DOMNodeId id = kInvalidDOMNodeId;
     CanvasChildPaintState paint_state;
     Member<const EffectPaintPropertyNodeOrAlias> content_effect;
     Member<const ClipPaintPropertyNodeOrAlias> content_clip;
+    Member<const TransformPaintPropertyNodeOrAlias> content_transform;
 
     void Trace(Visitor* visitor) const;
   };
@@ -170,7 +173,7 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
 
     bool is_in_tainted_subtree = false;
 
-    bool is_in_canvas_subtree = false;
+    bool is_in_drawable_canvas_subtree = false;
 
     PaintPropertyChangeType ComputeChange(
         const State& other,
@@ -308,7 +311,9 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
 
   bool IsInTaintedSubtree() const { return state_.is_in_tainted_subtree; }
 
-  bool IsInCanvasSubtree() const { return state_.is_in_canvas_subtree; }
+  bool IsInDrawableCanvasSubtree() const {
+    return state_.is_in_drawable_canvas_subtree;
+  }
 
   bool FlattensAtLeafOf3DScene() const {
     return state_.direct_compositing_reasons.Has(
@@ -417,6 +422,7 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
 
   const EffectPaintPropertyNode& CanvasChildContentEffect() const;
   const ClipPaintPropertyNode& CanvasChildContentClip() const;
+  const TransformPaintPropertyNode& CanvasChildContentTransform() const;
 
   bool SelfOrAncestorParticipatesInViewTransition() const {
     return state_.self_or_ancestor_participates_in_view_transition;

@@ -61,6 +61,7 @@ import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -79,6 +80,7 @@ import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.hub.PaneId;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
@@ -237,6 +239,7 @@ public class VerticalTabListCoordinatorUnitTest {
 
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
+        IncognitoUtils.setEnabledForTesting(true);
 
         mCurrentTabModelSupplier.set(mTabModel);
         when(mTabModelSelector.getCurrentTabModelSupplier()).thenReturn(mCurrentTabModelSupplier);
@@ -912,7 +915,7 @@ public class VerticalTabListCoordinatorUnitTest {
 
         assertNull(
                 clickHandler.getTabGroupActionButtonData(
-                        tab, model, /* defaultOverflowListenerSupplier= */ () -> null));
+                        tab, model, /* defaultOverflowListenerSupplier= */ SupplierUtils.ofNull()));
     }
 
     @Test
@@ -1093,6 +1096,54 @@ public class VerticalTabListCoordinatorUnitTest {
         verify(mTabCreator).launchNtp(TabLaunchType.FROM_CHROME_UI);
         assertTrue(userActionTester.getActions().contains("MobileNewTabOpened.VerticalTabs"));
         userActionTester.tearDown();
+    }
+
+    @Test
+    @SmallTest
+    public void testIncognitoButtonVisibility_TabletUnder10Inches() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS,
+                VerticalTabUtils.INCOGNITO_BUTTON_PARAM,
+                true);
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(false);
+        IncognitoUtils.setEnabledForTesting(true);
+        createCoordinator();
+        ImageButton incognitoButton =
+                mCoordinator.getView().findViewById(R.id.new_incognito_tab_button);
+        assertNotNull(incognitoButton);
+        assertEquals(View.VISIBLE, incognitoButton.getVisibility());
+    }
+
+    @Test
+    @SmallTest
+    public void testIncognitoButtonVisibility_TabletOver10Inches() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS,
+                VerticalTabUtils.INCOGNITO_BUTTON_PARAM,
+                true);
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
+        IncognitoUtils.setEnabledForTesting(true);
+        createCoordinator();
+        ImageButton incognitoButton =
+                mCoordinator.getView().findViewById(R.id.new_incognito_tab_button);
+        assertNotNull(incognitoButton);
+        assertEquals(View.GONE, incognitoButton.getVisibility());
+    }
+
+    @Test
+    @SmallTest
+    public void testIncognitoButtonVisibility_ParamDisabled() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS,
+                VerticalTabUtils.INCOGNITO_BUTTON_PARAM,
+                false);
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(false);
+        IncognitoUtils.setEnabledForTesting(true);
+        createCoordinator();
+        ImageButton incognitoButton =
+                mCoordinator.getView().findViewById(R.id.new_incognito_tab_button);
+        assertNotNull(incognitoButton);
+        assertEquals(View.GONE, incognitoButton.getVisibility());
     }
 
     @Test
@@ -1579,12 +1630,27 @@ public class VerticalTabListCoordinatorUnitTest {
 
     @Test
     @SmallTest
+    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testHoverCard_TabClosed_HidesHoverCard() {
         Tab tab = prepareAndShowHoverCard(mMockTab1);
 
         // Notify tab model that tab will close
         for (TabModelObserver observer : mTabModelObservers) {
             observer.willCloseTab(tab, /* didCloseAlone= */ false);
+        }
+        verify(mTabHoverCardView).hide();
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
+    public void testHoverCard_TabClosed_HidesHoverCard_WillCloseTabs() {
+        Tab tab = prepareAndShowHoverCard(mMockTab1);
+
+        // Notify tab model that tab will close
+        for (TabModelObserver observer : mTabModelObservers) {
+            observer.willCloseTabs(
+                    List.of(tab), /* isAllTabs= */ false, /* allowUndo= */ false);
         }
         verify(mTabHoverCardView).hide();
     }

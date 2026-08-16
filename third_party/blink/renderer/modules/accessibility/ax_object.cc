@@ -80,6 +80,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_text_area_element.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
+#include "third_party/blink/renderer/core/html/html_area_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
@@ -4986,6 +4987,19 @@ bool AXObject::ComputeIsHiddenViaStyle(const ComputedStyle* style) {
       return style->Visibility() != EVisibility::kVisible;
     }
 
+    // <area> is display:none by default, in which case it has no box of its
+    // own, but it is rendered as part of the <img> that uses its <map>. Its
+    // visibility is the image's.
+    if (const auto* area = DynamicTo<HTMLAreaElement>(GetNode());
+        area && RuntimeEnabledFeatures::HTMLAreaElementDisplayNoneEnabled()) {
+      HTMLImageElement* image = area->ImageElement();
+      const LayoutObject* image_layout_object =
+          image ? image->GetLayoutObject() : nullptr;
+      return !image_layout_object ||
+             image_layout_object->StyleRef().Visibility() !=
+                 EVisibility::kVisible;
+    }
+
     // TODO(crbug.com/1286465): It's not consistent to only check
     // IsEnsuredInDisplayNone() on layoutless elements.
     return GetNode() && GetNode()->IsElementNode() &&
@@ -7558,17 +7572,13 @@ void AXObject::GetRelativeBounds(AXObject** out_container,
         gfx::Rect frame_rect;
         LocalFrameView* reference_view =
             AXObjectCache().GetDocument().GetFrame()->View();
+        Element* owner_element = chrome_client.GetPopupClientOwnerElement();
+        LocalFrame* owner_frame = owner_element->GetDocument().GetFrame();
         gfx::Rect reference_frame_rect;
         if (RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled()) {
           frame_rect = view->FrameToScreen(gfx::Rect(view->Size()));
-          // TODO(crbug.com/398893928): Remove the conditions for color input
-          // elements because the logic applies to all popups.
-          if (auto* input_element = DynamicTo<HTMLInputElement>(
-                  chrome_client.GetPopupClientOwnerElement())) {
-            if (input_element->FormControlType() ==
-                FormControlType::kInputColor) {
-              reference_view = input_element->GetDocument().GetFrame()->View();
-            }
+          if (owner_frame && owner_frame->View()) {
+            reference_view = owner_frame->View();
           }
           reference_frame_rect =
               reference_view->FrameToScreen(gfx::Rect(reference_view->Size()));
@@ -7576,19 +7586,10 @@ void AXObject::GetRelativeBounds(AXObject** out_container,
           frame_rect = view->FrameToScreen(view->DeprecatedFrameRect());
           reference_frame_rect = reference_view->FrameToScreen(
               reference_view->DeprecatedFrameRect());
-          // If a color picker popup is found inside of an iframe, account for
-          // the distance from the current frame to the parent frame.
-          auto* owner_element = chrome_client.GetPopupClientOwnerElement();
-          if (auto* input_element =
-                  DynamicTo<HTMLInputElement>(owner_element)) {
-            if (input_element->FormControlType() ==
-                FormControlType::kInputColor) {
-              gfx::Point origin(reference_frame_rect.origin());
-              owner_element->GetDocument()
-                  .GetFrame()
-                  ->DeprecatedAdjustOffsetByAncestorFrames(&origin);
-              reference_frame_rect.set_origin(origin);
-            }
+          if (owner_frame) {
+            gfx::Point origin(reference_frame_rect.origin());
+            owner_frame->DeprecatedAdjustOffsetByAncestorFrames(&origin);
+            reference_frame_rect.set_origin(origin);
           }
         }
 

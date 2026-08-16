@@ -4,6 +4,7 @@
 
 import type {CrLitElement, PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
+import type {ToolbarAppElement} from './app.js';
 import type {ResponsiveControl} from './responsive_control.js';
 
 export interface OverflowableButtonState {
@@ -18,6 +19,7 @@ export interface OverflowableButton {
   setToMinWidth(): void;
   expandUpToPreferredWidth(): void;
   setToPreferredWidth(): void;
+  controlsToAddToOverflowMenu(): string[];
   consumeNeedsLayout(): boolean;
 }
 
@@ -72,8 +74,8 @@ export const OverflowableButtonMixin =
           this.setToPreferredWidth();
 
           const shadowRoot = this.getRootNode() as ShadowRoot;
-          const parent = shadowRoot.host as HTMLElement;
-          if (parent && parent.clientWidth > window.innerWidth) {
+          const toolbarApp = shadowRoot.host as ToolbarAppElement;
+          if (toolbarApp.getAvailableWidth() < 0) {
             this.setToMinWidth();
           }
         }
@@ -84,6 +86,13 @@ export const OverflowableButtonMixin =
         // `shouldBeShown()`.
         setToPreferredWidth() {
           this.toggleAttribute('overflow-display-none', false);
+        }
+
+        controlsToAddToOverflowMenu(): string[] {
+          return (this.shouldBeShown() &&
+                  this.hasAttribute('overflow-display-none')) ?
+              [this.id] :
+              [];
         }
 
         consumeNeedsLayout(): boolean {

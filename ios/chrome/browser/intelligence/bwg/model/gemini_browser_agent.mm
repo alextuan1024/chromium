@@ -267,13 +267,9 @@ void ShowGeminiMicrophonePermissionAlert(UIViewController* base_view_controller,
 }
 
 // Returns true if the page context is eligible to be listed in the tab picker.
-// A context is eligible if it is explicitly attached and its computation state
-// is either success or pending (meaning it is not blocked or protected).
+// A context is eligible if its computation state is either success or pending
+// (meaning it is not blocked or protected).
 bool IsPageContextEligibleForTabPicker(GeminiPageContext* context) {
-  if (context.geminiPageContextAttachmentState !=
-      ios::provider::GeminiPageContextAttachmentState::kAttached) {
-    return false;
-  }
   auto computation_state = context.geminiPageContextComputationState;
   return computation_state ==
              ios::provider::GeminiPageContextComputationState::kSuccess ||
@@ -466,7 +462,10 @@ GeminiBrowserAgent::GeminiBrowserAgent(Browser* browser)
         if (weak_this) {
           std::set<web::WebStateID> eligible_tabs;
           for (const auto& [tab_id, context] : weak_this->attached_tabs_) {
-            if (IsPageContextEligibleForTabPicker(context)) {
+            if (IsPageContextEligibleForTabPicker(context) &&
+                context.geminiPageContextAttachmentState ==
+                    ios::provider::GeminiPageContextAttachmentState::
+                        kAttached) {
               eligible_tabs.insert(tab_id);
             }
           }
@@ -613,9 +612,7 @@ void GeminiBrowserAgent::OnPrimaryAccountChanged(
   if (event_type != signin::PrimaryAccountChangeEvent::Type::kNone) {
     browser_->GetProfile()->GetPrefs()->ClearPref(prefs::kGeminiConversationId);
 
-    if (is_floaty_invoked_) {
-      ForceDismissFloaty();
-    }
+    ForceDismissFloaty();
   }
 }
 
@@ -624,9 +621,7 @@ void GeminiBrowserAgent::OnIdentityManagerShutdown(
   if (identity_manager_) {
     identity_manager_->RemoveObserver(this);
     identity_manager_ = nullptr;
-    if (is_floaty_invoked_) {
-      ForceDismissFloaty();
-    }
+    ForceDismissFloaty();
   }
 }
 
@@ -1432,6 +1427,9 @@ void GeminiBrowserAgent::DismissFloaty() {
 }
 
 void GeminiBrowserAgent::ForceDismissFloaty() {
+  if (!is_floaty_invoked_) {
+    return;
+  }
   is_floaty_temporarily_hidden_ = false;
   DismissFloaty();
 }
@@ -2024,9 +2022,13 @@ void GeminiBrowserAgent::PropagatePageContextToProvider(
     }
   }
 
-  // Save the new active web state to attached tabs.
-  if (active_web_state && !IsTabGridVisible() &&
-      IsGeminiMultiTabContextEnabled()) {
+  // Save the active page context to `attached_tabs`. If we are on the tab
+  // grid, the active page context will be saved as `kBlocked` unless we have
+  // other tabs attached. This prevents the current tab from being erroneously
+  // showed as `kBlocked` when we open the Floaty on a different attached tab.
+  bool should_save_active_context = !IsTabGridVisible() || !HasSharedTabs();
+  if (IsGeminiMultiTabContextEnabled() && active_web_state &&
+      should_save_active_context) {
     SetAttachedPageContext(active_web_state->GetUniqueIdentifier(),
                            active_page_context);
   }
@@ -2380,6 +2382,7 @@ void GeminiBrowserAgent::DetachTabWithID(NSString* tab_id) {
   CHECK(detached_tab_id != active_web_state_id);
 
   RemoveAttachedPageContext(detached_tab_id);
+  RecordGeminiTabDetached();
 
   GeminiPageContext* active_page_context =
       GetAttachedPageContext(active_web_state_id);
@@ -2400,6 +2403,13 @@ void GeminiBrowserAgent::UpdateLocalTabAttachmentState(
   if (GeminiPageContext* page_context =
           GetAttachedPageContext(attached_tab_id)) {
     page_context.geminiPageContextAttachmentState = new_state;
+    if (new_state ==
+        ios::provider::GeminiPageContextAttachmentState::kAttached) {
+      RecordGeminiActiveTabAttached();
+    } else if (new_state ==
+               ios::provider::GeminiPageContextAttachmentState::kDetached) {
+      RecordGeminiActiveTabDetached();
+    }
   }
 }
 

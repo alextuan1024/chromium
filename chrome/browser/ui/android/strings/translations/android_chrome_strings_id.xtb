@@ -85,7 +85,6 @@
 <translation id="1310482092992808703">Grupkan tab</translation>
 <translation id="1318262688555255786">Bagikan link ke halaman web <ph name="PAGE_TITLE" />. Sumber: <ph name="PAGE_URL" /></translation>
 <translation id="1327257854815634930">Histori navigasi terbuka</translation>
-<translation id="1330043879670259913">Untuk mengamankan pekerjaan di Chrome, organisasi Anda akan dapat melihat atau mengelola informasi tertentu saat Anda login ke Chrome. Pelajari lebih lanjut</translation>
 <translation id="1331212799747679585">Chrome tidak dapat diupdate. Opsi lainnya</translation>
 <translation id="1332501820983677155">Pintasan fitur Google Chrome</translation>
 <translation id="1333491156693005331">Baru saja diperiksa</translation>
@@ -533,6 +532,7 @@ Hanya orang yang memiliki frasa sandi Anda yang dapat membaca data terenkripsi A
 <translation id="3161699713309727585"><ph name="BUTTON_TEXT" />, dibuka di tab baru</translation>
 <translation id="3166827708714933426">Pintasan tab dan jendela</translation>
 <translation id="3167258285411721858">Anda dapat meminta situs seluler untuk <ph name="HOST_NAME" /></translation>
+<translation id="3177338796769255211">Login untuk mendapatkan bookmark dan lainnya di semua perangkat Anda</translation>
 <translation id="3181145110929454111"><ph name="TAB_TITLE" />, Beberapa Tab Samaran yang Disematkan, Dibisukan, dan Dipilih</translation>
 <translation id="3189635831478931757">Grup tab <ph name="GROUP_TITLE" /></translation>
 <translation id="3200536777393523575">Tutup jendela saat ini?</translation>
@@ -723,7 +723,6 @@ Hanya orang yang memiliki frasa sandi Anda yang dapat membaca data terenkripsi A
 <translation id="399788104667917863">Sematkan ke toolbar</translation>
 <translation id="4000212216660919741">Beranda Offline</translation>
 <translation id="4000670338830950598">Sesuaikan dan kontrol Google Chrome dengan item yang ditandai</translation>
-<translation id="4002066346123236978">Judul</translation>
 <translation id="4015643064997321279">{NUM_PASSWORDS,plural, =1{1 sandi telah dibobol di Akun Google Anda}other{# sandi telah dibobol di Akun Google Anda}}</translation>
 <translation id="4023638601467301498">Untuk mendapatkan bookmark dan info Anda yang lain di semua perangkat Anda, login ke Chrome</translation>
 <translation id="4024768890073681126">Browser dikelola oleh orang tuamu</translation>
@@ -930,6 +929,7 @@ Akun Google Anda mungkin memiliki bentuk histori penjelajahan lain seperti penel
 <translation id="4794291718671962615">(<ph name="MEGABYTES" />) <ph name="URL" /></translation>
 <translation id="4807098396393229769">Nama di kartu</translation>
 <translation id="480990236307250886">Buka beranda</translation>
+<translation id="4816492930507672669">Paskan dengan halaman</translation>
 <translation id="4822710610088666676">Grup tab <ph name="TAB_GROUP_TITLE" /> ditutup dan disimpan</translation>
 <translation id="4834250788637067901">Metode pembayaran, penawaran, dan alamat yang menggunakan Google Pay</translation>
 <translation id="4835385943915508971">Chrome tidak memiliki akses ke sumber daya yang diminta.</translation>
@@ -1316,7 +1316,6 @@ Misalnya, beberapa situs web mungkin menanggapi permintaan ini dengan menayangka
 <translation id="6411219469806822692">Tidak dapat lebih tinggi lagi. Coba mulai dari bagian yang lebih atas pada halaman.</translation>
 <translation id="6412215853589222273"><ph name="TAB_TITLE" />, Tab yang Dipilih Beberapa Kali</translation>
 <translation id="641643625718530986">Cetak...</translation>
-<translation id="6427723330233512782">Sesuaikan dengan tinggi</translation>
 <translation id="6433501201775827830">Pilih mesin telusur Anda</translation>
 <translation id="6434309073475700221">Buang</translation>
 <translation id="6435307030888827407">Tetap logout</translation>
@@ -1973,6 +1972,7 @@ Untuk mengubah setelan ini, <ph name="BEGIN_LINK" />hapus data Chrome di akun An
 <translation id="8937772741022875483">Hapus aktivitas Chrome Anda dari Kesehatan Digital?</translation>
 <translation id="8942627711005830162">Buka di jendela lain</translation>
 <translation id="8945143127965743188"><ph name="LANG" /> - Bahasa ini tidak dapat didownload. Coba lagi nanti.</translation>
+<translation id="8945348199139712719">Tempel dan buka teks yang disalin</translation>
 <translation id="8946759102391960088">Tetap pertahankan akses ke sandi Anda</translation>
 <translation id="895442993047180128">Pilihan untuk mengaktifkan notifikasi tips ditutup</translation>
 <translation id="8957528460562961174">Untuk mempertahankan akses ke sandi Anda, ekspor sandi sekarang, lalu impor sandi tersebut ke pengelola sandi pilihan Anda. Pengelola Sandi Google berhenti berfungsi karena layanan Google Play tidak tersedia.</translation>

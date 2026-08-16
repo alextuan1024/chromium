@@ -15,7 +15,6 @@
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -37,6 +36,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_user_data.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image_skia.h"
@@ -53,6 +53,36 @@
 
 namespace payments {
 namespace {
+
+// WebContentsUserData key for retrieving PaymentHandlerWebFlowViewController
+// from the payment handler's WebContents. Attached in FillContentView.
+class PaymentHandlerWebFlowViewControllerWebContentsWrapper
+    : public content::WebContentsUserData<
+          PaymentHandlerWebFlowViewControllerWebContentsWrapper> {
+ public:
+  PaymentHandlerWebFlowViewController* controller() {
+    return controller_.get();
+  }
+
+ private:
+  friend class content::WebContentsUserData<
+      PaymentHandlerWebFlowViewControllerWebContentsWrapper>;
+
+  PaymentHandlerWebFlowViewControllerWebContentsWrapper(
+      content::WebContents* web_contents,
+      base::WeakPtr<PaymentHandlerWebFlowViewController> controller)
+      : content::WebContentsUserData<
+            PaymentHandlerWebFlowViewControllerWebContentsWrapper>(
+            *web_contents),
+        controller_(std::move(controller)) {}
+
+  base::WeakPtr<PaymentHandlerWebFlowViewController> controller_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+};
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(
+    PaymentHandlerWebFlowViewControllerWebContentsWrapper);
 
 std::u16string GetPaymentHandlerDialogTitle(
     content::WebContents* web_contents) {
@@ -136,6 +166,23 @@ PaymentHandlerWebFlowViewController::~PaymentHandlerWebFlowViewController() {
   }
 }
 
+// static
+PaymentHandlerWebFlowViewController*
+PaymentHandlerWebFlowViewController::FromWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  auto* wrapper =
+      PaymentHandlerWebFlowViewControllerWebContentsWrapper::FromWebContents(
+          web_contents);
+  return wrapper ? wrapper->controller() : nullptr;
+}
+
+views::View* PaymentHandlerWebFlowViewController::GetLocationIconView() {
+  return nullptr;
+}
+
 std::u16string PaymentHandlerWebFlowViewController::GetSheetTitle() {
   return GetPaymentHandlerDialogTitle(web_contents());
 }
@@ -168,6 +215,8 @@ void PaymentHandlerWebFlowViewController::FillContentView(
   Observe(web_view->GetWebContents());
   PaymentHandlerNavigationThrottle::MarkPaymentHandlerWebContents(
       web_contents());
+  PaymentHandlerWebFlowViewControllerWebContentsWrapper::CreateForWebContents(
+      web_contents(), weak_ptr_factory_.GetWeakPtr());
   web_contents()->SetDelegate(this);
   content::WebContents* parent_tab_web_contents = state()->GetWebContents();
 
@@ -190,14 +239,14 @@ void PaymentHandlerWebFlowViewController::FillContentView(
   // Make the web view show up in the task manager.
   task_manager::WebContentsTags::CreateForTabContents(web_contents());
 
-  // Install permission helpers so that permission prompts, one-time
-  // permissions, and security state checks function within the Payment
-  // Handler window.
+  // Install permission helpers so that permission prompts and one-time
+  // permissions function within the Payment Handler window. Security state
+  // is computed on demand by chrome_security_state (see
+  // chrome/browser/ssl/chrome_security_state_util.h) and needs no helper.
   //
   // TODO(crbug.com/539998580): Restrict non-camera permission requests in
   // Payment Handler windows via Permissions-Policy enforcement.
   if (base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccessUx)) {
-    ChromeSecurityStateTabHelper::CreateForWebContents(web_contents());
     OneTimePermissionsTrackerHelper::CreateForWebContents(web_contents());
     permissions::PermissionRequestManager::CreateForWebContents(web_contents());
   } else if (base::FeatureList::IsEnabled(

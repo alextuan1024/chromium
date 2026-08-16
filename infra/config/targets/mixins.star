@@ -1029,18 +1029,6 @@ targets.mixin(
 )
 
 targets.mixin(
-    name = "ios_runtime_cache_18_2",
-    swarming = targets.swarming(
-        named_caches = [
-            swarming.cache(
-                name = "runtime_ios_18_2",
-                path = "Runtime-ios-18.2",
-            ),
-        ],
-    ),
-)
-
-targets.mixin(
     name = "ios_runtime_cache_18_4",
     swarming = targets.swarming(
         named_caches = [
@@ -1183,6 +1171,15 @@ targets.mixin(
     ),
 )
 
+targets.mixin(
+    name = "linux-ubuntu",
+    swarming = targets.swarming(
+        dimensions = {
+            "os": "Ubuntu",
+        },
+    ),
+)
+
 # Restricts Linux GPU High Tier AI WPT tasks to NVIDIA, AMD, or modern Intel GPUs
 # (Intel UHD 770 / Iris Xe) to avoid execution stalls on low-end Intel UHD 630
 # integrated graphics (lin-90-g582 and lin-91-g582).
@@ -1229,6 +1226,19 @@ targets.mixin(
             "os": "Ubuntu-24.04",
             "display_attached": "1",
             "display_server": "x11",
+            "pool": "chromium.tests.gpu",
+        },
+    ),
+)
+
+targets.mixin(
+    name = "linux_amd_rx_5500_xt_wayland_stable",
+    swarming = targets.swarming(
+        dimensions = {
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
+            "display_attached": "1",
+            "display_server": "wayland",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -2251,12 +2261,12 @@ targets.mixin(
     name = "xcode_27_beta",
     args = [
         "--xcode-build-version",
-        "27a5228h",
+        "27a5237l",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_27a5228h",
+                name = "xcode_ios_27a5237l",
                 path = "Xcode.app",
             ),
         ],

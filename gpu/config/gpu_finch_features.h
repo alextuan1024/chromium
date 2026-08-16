@@ -108,6 +108,9 @@ struct GPU_CONFIG_EXPORT SkiaGraphiteFeatureParams {
   // If this param is enabled, FlushTileRasterGraphiteCommandsCHROMIUM will
   // also flush the D3D11 commands to the driver (if delay flush is enabled).
   bool flush_d3d11_tile_raster_commands_to_driver = false;
+
+  // Whether to use triple buffering for DirectComposition root surface.
+  bool triple_buffered_dcomp_root_surface = false;
 #endif
 };
 
@@ -162,8 +165,9 @@ inline bool SkiaGraphiteFlushD3D11TileRasterCommandsToDriver() {
   return GetSkiaGraphiteFeatureParams()
       .flush_d3d11_tile_raster_commands_to_driver;
 }
-
-GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kSkiaGraphiteDawnUseD3D12);
+inline bool SkiaGraphiteTripleBufferedDCompRootSurface() {
+  return GetSkiaGraphiteFeatureParams().triple_buffered_dcomp_root_surface;
+}
 #endif
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kSkiaGraphiteSmallPathAtlas);

@@ -60,7 +60,6 @@
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/optimization_guide/core/optimization_guide_features.h"
 #import "components/optimization_guide/core/optimization_guide_switches.h"
-#import "components/page_content_annotations/core/page_content_annotations_features.h"
 #import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/features.h"
@@ -1051,6 +1050,24 @@ const FeatureEntry::FeatureVariation kBWGPromoConsentVariations[] = {
     {"Force FRE", kForceBWGFirstTimeRun, nullptr},
     {"Skip new user delay", kSkipNewUserDelay, nullptr}};
 
+const FeatureEntry::FeatureParam kGeminiFREExperimentVisualRich[] = {
+    {kGeminiFREExperimentParam, kGeminiFREExperimentParamVisualRich}};
+const FeatureEntry::FeatureParam kGeminiFREExperimentLightweight[] = {
+    {kGeminiFREExperimentParam, kGeminiFREExperimentParamLightweight}};
+
+const FeatureEntry::FeatureVariation kGeminiFREExperimentVariations[] = {
+    {"Visual Rich", kGeminiFREExperimentVisualRich, nullptr},
+    {"Lightweight", kGeminiFREExperimentLightweight, nullptr},
+};
+
+const FeatureEntry::FeatureParam kGeminiExperimentalGuidedOnboardingForce[] = {
+    {kGeminiExperimentalGuidedOnboardingForceParam, "true"}};
+
+const FeatureEntry::FeatureVariation
+    kGeminiExperimentalGuidedOnboardingVariations[] = {
+        {"Force Guided Onboarding", kGeminiExperimentalGuidedOnboardingForce,
+         nullptr}};
+
 const FeatureEntry::FeatureParam kPageActionMenuDirectEntryPoint[] = {
     {kPageActionMenuDirectEntryPointParam, "true"},
 };
@@ -1150,27 +1167,6 @@ const FeatureEntry::FeatureVariation kMobilePromoOnDesktopWave1Variations[] = {
     {" - Price Tracking", kMobilePromoOnDesktopPriceTracking, nullptr},
     {" - Price Tracking with push notification",
      kMobilePromoOnDesktopPriceTrackingNotification, nullptr},
-};
-
-const FeatureEntry::FeatureParam kGeminiImageRemixToolShowFRERowParam[] = {
-    {kGeminiImageRemixToolShowFRERow, "true"}};
-const FeatureEntry::FeatureParam
-    kGeminiImageRemixToolShowAboveSearchImageParam[] = {
-        {kGeminiImageRemixToolShowAboveSearchImage, "true"}};
-const FeatureEntry::FeatureParam
-    kGeminiImageRemixToolShowBelowSearchImageParam[] = {
-        {kGeminiImageRemixToolShowBelowSearchImage, "true"}};
-const FeatureEntry::FeatureParam kGeminiImageRemixToolRemovePageContextParam[] =
-    {{kGeminiImageRemixToolRemovePageContext, "true"}};
-
-const FeatureEntry::FeatureVariation kGeminiImageRemixToolVariations[] = {
-    {"(Show FRE Row)", kGeminiImageRemixToolShowFRERowParam, nullptr},
-    {"(Show Above Search Image)",
-     kGeminiImageRemixToolShowAboveSearchImageParam, nullptr},
-    {"(Show Below Search Image)",
-     kGeminiImageRemixToolShowBelowSearchImageParam, nullptr},
-    {"(Disable Page Context)", kGeminiImageRemixToolRemovePageContextParam,
-     nullptr},
 };
 
 const FeatureEntry::FeatureParam kWalletApiPrivatePassesUrl[] = {
@@ -1354,17 +1350,41 @@ const FeatureEntry::FeatureVariation kCrossDeviceSigninVariations[] = {
      kCrossDeviceSigninDefaultUrl, nullptr},
 };
 
-const FeatureEntry::FeatureParam kNewTabPagePaddingUpdateTightPadding[] = {
-    {kNewTabPagePaddingUpdateArmParam, "1"}};
-const FeatureEntry::FeatureParam kNewTabPagePaddingUpdateMediumPadding[] = {
-    {kNewTabPagePaddingUpdateArmParam, "2"}};
-const FeatureEntry::FeatureParam kNewTabPagePaddingUpdatePreferredPadding[] = {
-    {kNewTabPagePaddingUpdateArmParam, "3"}};
+const FeatureEntry::FeatureParam kNewTabPageUICleanupTightPadding[] = {
+    {kNewTabPageUICleanupArmParam, "1"}};
+const FeatureEntry::FeatureParam kNewTabPageUICleanupMediumPadding[] = {
+    {kNewTabPageUICleanupArmParam, "2"}};
+const FeatureEntry::FeatureParam kNewTabPageUICleanupPreferredPadding[] = {
+    {kNewTabPageUICleanupArmParam, "3"}};
 
-const FeatureEntry::FeatureVariation kNewTabPagePaddingUpdateVariations[] = {
-    {" - Tight Padding", kNewTabPagePaddingUpdateTightPadding, nullptr},
-    {" - Medium Padding", kNewTabPagePaddingUpdateMediumPadding, nullptr},
-    {" - Preferred Padding", kNewTabPagePaddingUpdatePreferredPadding, nullptr},
+const FeatureEntry::FeatureVariation kNewTabPageUICleanupVariations[] = {
+    {" - Tight Padding", kNewTabPageUICleanupTightPadding, nullptr},
+    {" - Medium Padding", kNewTabPageUICleanupMediumPadding, nullptr},
+    {" - Preferred Padding", kNewTabPageUICleanupPreferredPadding, nullptr},
+};
+
+const FeatureEntry::FeatureParam
+    kGeminiContextualSuggestionsCuesWithOnDeviceClassifierCPU[] = {
+        {kGeminiContextualSuggestionsCuesOnDeviceClassifierParam, "true"},
+        {kGeminiContextualSuggestionsCuesAllowGpuExecutionParam, "false"}};
+const FeatureEntry::FeatureParam
+    kGeminiContextualSuggestionsCuesWithOnDeviceClassifierGPU[] = {
+        {kGeminiContextualSuggestionsCuesOnDeviceClassifierParam, "true"},
+        {kGeminiContextualSuggestionsCuesAllowGpuExecutionParam, "true"}};
+
+const FeatureEntry::FeatureVariation
+    kGeminiContextualSuggestionsCuesVariations[] = {
+        {"with on-device classifier (CPU)",
+         kGeminiContextualSuggestionsCuesWithOnDeviceClassifierCPU, nullptr},
+        {"with on-device classifier (GPU / ANE)",
+         kGeminiContextualSuggestionsCuesWithOnDeviceClassifierGPU, nullptr}};
+
+const FeatureEntry::FeatureParam
+    kNewTabPageRedesignStaticFakeboxParamEnabled[] = {
+        {kNewTabPageRedesignStaticFakeboxParam, "true"}};
+
+const FeatureEntry::FeatureVariation kNewTabPageRedesignVariations[] = {
+    {"Static Fakebox", kNewTabPageRedesignStaticFakeboxParamEnabled, nullptr},
 };
 
 // To add a new entry, add to the end of kFeatureEntries. There are four
@@ -1463,7 +1483,9 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      FEATURE_VALUE_TYPE(ntp_features::kNtpAlphaBackgroundCollections)},
     {"new-tab-page-redesign", flag_descriptions::kNewTabPageRedesignName,
      flag_descriptions::kNewTabPageRedesignDescription, flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(kNewTabPageRedesign)},
+     FEATURE_WITH_PARAMS_VALUE_TYPE(kNewTabPageRedesign,
+                                    kNewTabPageRedesignVariations,
+                                    "NewTabPageRedesign")},
     {"ntp-mvt-in-bottom-sheet", flag_descriptions::kMVTInBottomSheetName,
      flag_descriptions::kMVTInBottomSheetDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kMVTInBottomSheet)},
@@ -1714,17 +1736,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(
          autofill::features::kAutofillEnablePrefetchingRiskDataForRetrieval)},
-
-    {"page-content-annotations", flag_descriptions::kPageContentAnnotationsName,
-     flag_descriptions::kPageContentAnnotationsDescription, flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(
-         page_content_annotations::features::kPageContentAnnotations)},
-    {"page-content-annotations-remote-page-metadata",
-     flag_descriptions::kPageContentAnnotationsRemotePageMetadataName,
-     flag_descriptions::kPageContentAnnotationsRemotePageMetadataDescription,
-     flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(
-         page_content_annotations::features::kRemotePageMetadata)},
     {"page-info-certificate-information",
      flag_descriptions::kViewCertificateInformationName,
      flag_descriptions::kViewCertificateInformationDescription,
@@ -1940,10 +1951,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      FEATURE_WITH_PARAMS_VALUE_TYPE(first_run::kBestFeaturesScreenInFirstRun,
                                     kBestFeaturesScreenInFirstRunVariations,
                                     "BestFeaturesScreenInFirstRun")},
-    {"manual-log-uploads-in-the-fre",
-     flag_descriptions::kManualLogUploadsInFREName,
-     flag_descriptions::kManualLogUploadsInFREDescription, flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(first_run::kManualLogUploadsInTheFRE)},
     {"lens-unary-api-salient-text-enabled",
      flag_descriptions::kLensUnaryApiSalientTextEnabledName,
      flag_descriptions::kLensUnaryApiSalientTextEnabledDescription,
@@ -1984,12 +1991,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"data-sharing-debug-logs", flag_descriptions::kDataSharingDebugLogsName,
      flag_descriptions::kDataSharingDebugLogsDescription, flags_ui::kOsIos,
      SINGLE_VALUE_TYPE(data_sharing::kDataSharingDebugLoggingEnabled)},
-    {"supervised-user-emit-log-record-separately",
-     flag_descriptions::kSupervisedUserEmitLogRecordSeparatelyName,
-     flag_descriptions::kSupervisedUserEmitLogRecordSeparatelyDescription,
-     flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(
-         supervised_user::kSupervisedUserEmitLogRecordSeparately)},
     {"lens-fetch-srp-api-enabled",
      flag_descriptions::kLensFetchSrpApiEnabledName,
      flag_descriptions::kLensFetchSrpApiEnabledDescription, flags_ui::kOsIos,
@@ -2428,11 +2429,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      FEATURE_WITH_PARAMS_VALUE_TYPE(kChromeNextIa,
                                     kChromeNextIaVariations,
                                     "ChromeNextIa")},
-    {"gemini-image-remix-tool", flag_descriptions::kGeminiImageRemixToolName,
-     flag_descriptions::kGeminiImageRemixToolDescription, flags_ui::kOsIos,
-     FEATURE_WITH_PARAMS_VALUE_TYPE(kGeminiImageRemixTool,
-                                    kGeminiImageRemixToolVariations,
-                                    "GeminiImageRemixTool")},
     {"composebox-aim-disabled", flag_descriptions::kComposeboxAIMDisabledName,
      flag_descriptions::kComposeboxAIMDisabledDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kComposeboxAIMDisabled)},
@@ -2446,12 +2442,22 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"gemini-updated-consent", flag_descriptions::kGeminiUpdatedConsentName,
      flag_descriptions::kGeminiUpdatedConsentDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kGeminiUpdatedConsent)},
+    {"gemini-experimental-guided-onboarding",
+     flag_descriptions::kGeminiExperimentalGuidedOnboardingName,
+     flag_descriptions::kGeminiExperimentalGuidedOnboardingDescription,
+     flags_ui::kOsIos,
+     FEATURE_WITH_PARAMS_VALUE_TYPE(
+         kGeminiExperimentalGuidedOnboarding,
+         kGeminiExperimentalGuidedOnboardingVariations,
+         "GeminiExperimentalGuidedOnboarding")},
+    {"gemini-fre-experiment", flag_descriptions::kGeminiFREExperimentName,
+     flag_descriptions::kGeminiFREExperimentDescription, flags_ui::kOsIos,
+     FEATURE_WITH_PARAMS_VALUE_TYPE(kGeminiFREExperiment,
+                                    kGeminiFREExperimentVariations,
+                                    "GeminiFREExperiment")},
     {"gemini-fre-refactor", flag_descriptions::kGeminiFRERefactorName,
      flag_descriptions::kGeminiFRERefactorDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kGeminiFRERefactor)},
-    {"gemini-visual-rich-fre", flag_descriptions::kGeminiVisualRichFREName,
-     flag_descriptions::kGeminiVisualRichFREDescription, flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(kGeminiVisualRichFRE)},
     {"gemini-coordinator-teardown-fix",
      flag_descriptions::kGeminiCoordinatorTeardownFixName,
      flag_descriptions::kGeminiCoordinatorTeardownFixDescription,
@@ -2585,6 +2591,10 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"fullscreen-refactoring", flag_descriptions::kFullscreenRefactoringName,
      flag_descriptions::kFullscreenRefactoringDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kFullscreenRefactoring)},
+    {"fullscreen-eased-transitions",
+     flag_descriptions::kFullscreenEasedTransitionsName,
+     flag_descriptions::kFullscreenEasedTransitionsDescription,
+     flags_ui::kOsIos, FEATURE_VALUE_TYPE(kFullscreenEasedTransitions)},
     {"app-bar-hide-labels", flag_descriptions::kAppBarHideLabelsName,
      flag_descriptions::kAppBarHideLabelsDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kAppBarHideLabels)},
@@ -2845,7 +2855,10 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"gemini-contextual-suggestions-cues",
      flag_descriptions::kGeminiContextualSuggestionsCuesName,
      flag_descriptions::kGeminiContextualSuggestionsCuesDescription,
-     flags_ui::kOsIos, FEATURE_VALUE_TYPE(kGeminiContextualSuggestionsCues)},
+     flags_ui::kOsIos,
+     FEATURE_WITH_PARAMS_VALUE_TYPE(kGeminiContextualSuggestionsCues,
+                                    kGeminiContextualSuggestionsCuesVariations,
+                                    "GeminiContextualSuggestionsCues")},
     {"infobar-banner-revamp", flag_descriptions::kInfobarBannerRevampName,
      flag_descriptions::kInfobarBannerRevampDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kInfobarBannerRevamp)},
@@ -2907,15 +2920,31 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"next-old-design", flag_descriptions::kNextOldDesignName,
      flag_descriptions::kNextOldDesignDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kNextOldDesign)},
-    {"new-tab-page-padding-update",
-     flag_descriptions::kNewTabPagePaddingUpdateName,
-     flag_descriptions::kNewTabPagePaddingUpdateDescription, flags_ui::kOsIos,
-     FEATURE_WITH_PARAMS_VALUE_TYPE(kNewTabPagePaddingUpdate,
-                                    kNewTabPagePaddingUpdateVariations,
-                                    "NewTabPagePaddingUpdate")},
+    {"new-tab-page-ui-cleanup", flag_descriptions::kNewTabPageUICleanupName,
+     flag_descriptions::kNewTabPageUICleanupDescription, flags_ui::kOsIos,
+     FEATURE_WITH_PARAMS_VALUE_TYPE(kNewTabPageUICleanup,
+                                    kNewTabPageUICleanupVariations,
+                                    "NewTabPageUICleanup")},
     {"web-frame-tree", flag_descriptions::kWebFrameTreeName,
      flag_descriptions::kWebFrameTreeDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(web::features::kWebFrameTree)},
+    {"prepopulated-engines-shadow-variants",
+     flag_descriptions::kPrepopulatedEnginesShadowVariantsName,
+     flag_descriptions::kPrepopulatedEnginesShadowVariantsDescription,
+     flags_ui::kOsIos,
+     FEATURE_VALUE_TYPE(switches::kPrepopulatedEnginesShadowVariants)},
+    {"voice-search-mic-permissions",
+     flag_descriptions::kVoiceSearchMicPermissionsName,
+     flag_descriptions::kVoiceSearchMicPermissionsDescription, flags_ui::kOsIos,
+     FEATURE_VALUE_TYPE(kVoiceSearchMicPermissions)},
+    {"glic-actor-autofill", flag_descriptions::kGlicActorAutofillName,
+     flag_descriptions::kGlicActorAutofillDescription, flags_ui::kOsIos,
+     FEATURE_VALUE_TYPE(autofill::features::kGlicActorAutofill)},
+    {"new-geolocation-permission-delegate",
+     flag_descriptions::kNewGeolocationPermissionDelegateName,
+     flag_descriptions::kNewGeolocationPermissionDelegateDescription,
+     flags_ui::kOsIos,
+     FEATURE_VALUE_TYPE(web::features::kNewGeolocationPermissionDelegate)},
 });
 
 bool SkipConditionalFeatureEntry(const flags_ui::FeatureEntry& entry) {

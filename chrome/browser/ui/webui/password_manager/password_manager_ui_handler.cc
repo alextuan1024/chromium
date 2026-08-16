@@ -13,6 +13,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
+#include "chrome/browser/password_manager/password_change/features.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
@@ -339,16 +340,6 @@ void PasswordManagerUIHandler::IsAccountStorageActive(
   std::move(callback).Run(result);
 }
 
-void PasswordManagerUIHandler::SetAccountStorageEnabled(bool enabled) {
-  passwords_private_delegate_->SetAccountStorageEnabled(enabled);
-}
-
-void PasswordManagerUIHandler::ShouldShowAccountStorageSettingToggle(
-    ShouldShowAccountStorageSettingToggleCallback callback) {
-  std::move(callback).Run(
-      passwords_private_delegate_->ShouldShowAccountStorageSettingToggle());
-}
-
 void PasswordManagerUIHandler::SwitchBiometricAuthBeforeFillingState(
     SwitchBiometricAuthBeforeFillingStateCallback callback) {
   passwords_private_delegate_->SwitchBiometricAuthBeforeFillingState(
@@ -357,7 +348,7 @@ void PasswordManagerUIHandler::SwitchBiometricAuthBeforeFillingState(
 
 void PasswordManagerUIHandler::StartPasswordChange(int credential_id) {
   CHECK(base::FeatureList::IsEnabled(
-      password_manager::features::kPasswordCheckupPrototype));
+      password_change::features::kPasswordChangeWithGlic));
   CHECK(web_contents_);
   auto credential =
       passwords_private_delegate_->GetCredentialFromId(credential_id);
@@ -389,7 +380,7 @@ void PasswordManagerUIHandler::StartPasswordChange(int credential_id) {
 
 void PasswordManagerUIHandler::StopPasswordChange() {
   CHECK(base::FeatureList::IsEnabled(
-      password_manager::features::kPasswordCheckupPrototype));
+      password_change::features::kPasswordChangeWithGlic));
   CHECK(web_contents_);
   Profile* profile =
       Profile::FromBrowserContext(web_contents_->GetBrowserContext());

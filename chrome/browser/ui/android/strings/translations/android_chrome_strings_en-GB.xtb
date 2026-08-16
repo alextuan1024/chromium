@@ -85,7 +85,6 @@
 <translation id="1310482092992808703">Group tabs</translation>
 <translation id="1318262688555255786">Share link to web page <ph name="PAGE_TITLE" />. Source: <ph name="PAGE_URL" /></translation>
 <translation id="1327257854815634930">Navigation history is opened</translation>
-<translation id="1330043879670259913">To secure your work on Chrome, your organisation will be able to view or manage certain information when you're signed in to Chrome. Learn more</translation>
 <translation id="1331212799747679585">Chrome can’t update. More options</translation>
 <translation id="1332501820983677155">Google Chrome feature shortcuts</translation>
 <translation id="1333491156693005331">Checked recently</translation>
@@ -533,6 +532,7 @@ Only someone with your passphrase can read your encrypted data. The passphrase i
 <translation id="3161699713309727585"><ph name="BUTTON_TEXT" />, opens in a new tab</translation>
 <translation id="3166827708714933426">Tab and window shortcuts</translation>
 <translation id="3167258285411721858">You can request the mobile site for <ph name="HOST_NAME" /></translation>
+<translation id="3177338796769255211">Sign in to get your bookmarks and more on all your devices</translation>
 <translation id="3181145110929454111"><ph name="TAB_TITLE" />, multi-selected pinned muted Incognito tab</translation>
 <translation id="3189635831478931757"><ph name="GROUP_TITLE" /> tab group</translation>
 <translation id="3200536777393523575">Close your current window?</translation>
@@ -723,7 +723,6 @@ Only someone with your passphrase can read your encrypted data. The passphrase i
 <translation id="399788104667917863">Pin to toolbar</translation>
 <translation id="4000212216660919741">Offline Home</translation>
 <translation id="4000670338830950598">Customise and control Google Chrome with a highlighted item</translation>
-<translation id="4002066346123236978">Title</translation>
 <translation id="4015643064997321279">{NUM_PASSWORDS,plural, =1{1 compromised password in your Google Account}other{# compromised passwords in your Google Account}}</translation>
 <translation id="4023638601467301498">To get your bookmarks and more on all your devices, sign in to Chrome</translation>
 <translation id="4024768890073681126">Your browser is managed by your parent</translation>
@@ -930,6 +929,7 @@ Your Google Account may have other forms of browsing history such as searches an
 <translation id="4794291718671962615">(<ph name="MEGABYTES" />) <ph name="URL" /></translation>
 <translation id="4807098396393229769">Name on card</translation>
 <translation id="480990236307250886">Open the homepage</translation>
+<translation id="4816492930507672669">Fit to page</translation>
 <translation id="4822710610088666676"><ph name="TAB_GROUP_TITLE" /> tab group closed and saved</translation>
 <translation id="4834250788637067901">Payment methods, offers and addresses using Google Pay</translation>
 <translation id="4835385943915508971">Chrome does not have access to the requested resource.</translation>
@@ -1316,7 +1316,6 @@ For example, some websites may respond to this request by showing you ads that a
 <translation id="6411219469806822692">Can\u2019t go higher. Try starting from further up the page.</translation>
 <translation id="6412215853589222273"><ph name="TAB_TITLE" />, multiselected tab</translation>
 <translation id="641643625718530986">Print…</translation>
-<translation id="6427723330233512782">Fit to height</translation>
 <translation id="6433501201775827830">Choose your search engine</translation>
 <translation id="6434309073475700221">Discard</translation>
 <translation id="6435307030888827407">Stay signed out</translation>
@@ -1973,6 +1972,7 @@ To change this setting, <ph name="BEGIN_LINK" />delete the Chrome data in your a
 <translation id="8937772741022875483">Remove your Chrome activity from Digital Wellbeing?</translation>
 <translation id="8942627711005830162">Open in other window</translation>
 <translation id="8945143127965743188"><ph name="LANG" /> – This language couldn't be downloaded. Try again later.</translation>
+<translation id="8945348199139712719">Paste and go to copied text</translation>
 <translation id="8946759102391960088">Keep access to your passwords</translation>
 <translation id="895442993047180128">Tips notifications opt-in closed</translation>
 <translation id="8957528460562961174">To keep access to your passwords, export them now and then import them to your preferred password manager. Google Password Manager stopped working because Google Play services isn't available.</translation>

@@ -400,18 +400,6 @@ bool GlicInstanceImpl::IsShowing() const {
   return false;
 }
 
-bool GlicInstanceImpl::IsFullyClosedForTesting() const {
-  if (HasActiveEmbedder()) {
-    return false;
-  }
-  for (const auto& [key, entry] : embedders_) {
-    if (entry.embedder && entry.embedder->IsShowingOrBackgrounded()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 bool GlicInstanceImpl::HasActiveEmbedder() const {
   return active_embedder_key_.has_value();
 }
@@ -596,6 +584,7 @@ void GlicInstanceImpl::Attach(tabs::TabHandle tab) {
 }
 
 void GlicInstanceImpl::Close(EmbedderKey key, const CloseOptions& options) {
+  TRACE_EVENT("glic", "GlicInstanceImpl::Close");
   VLOG(1) << "Glic [InstanceImpl] Close, id=" << id_.value();
   auto* entry = GetEmbedderEntry(key);
   if (!entry || !entry->embedder) {
@@ -1800,6 +1789,7 @@ void GlicInstanceImpl::MaybeInitializeHiddenClient(
 
 void GlicInstanceImpl::DidCloseFor(EmbedderKey key,
                                    EmbedderCloseReason reason) {
+  TRACE_EVENT("glic", "GlicInstanceImpl::DidCloseFor", "reason", reason);
   // Must be called early to avoid use-after-free if instance is deleted.
   if (reason == EmbedderCloseReason::kExplicitlyClosed) {
     instance_metrics().ResetShownState(key);
@@ -1820,9 +1810,9 @@ void GlicInstanceImpl::DidCloseFor(EmbedderKey key,
 
 void GlicInstanceImpl::ClientReadyToShow(
     const mojom::OpenPanelInfo& open_info) {
-  if (auto* embedder = GetActiveEmbedder()) {
-    embedder->OnClientReady();
-  }
+  TRACE_EVENT("glic", "GlicInstanceImpl::ClientReadyToShow",
+              perfetto::Flow::FromPointer(this));
+  instance_metrics_.OnClientReady();
 }
 
 void GlicInstanceImpl::WebUiStateChanged(mojom::WebUiState state) {

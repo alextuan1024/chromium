@@ -16,9 +16,10 @@
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
+#include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/sessions/session_service_browser_helper.h"
@@ -55,13 +56,11 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/feature_list.h"
-#include "chrome/browser/win/mica_titlebar.h"
 #include "content/public/browser/desktop_capture_pip_utils.h"
 #include "media/base/media_switches.h"
 #include "media/capture/capture_switches.h"
 #include "ui/wm/core/window_properties.h"
 #endif
-
 namespace {
 
 // Helper to track whether a ThemeChange event has been received by the widget.
@@ -139,7 +138,7 @@ void BrowserWidget::InitBrowserWidget() {
   params.name = "BrowserWidget";
   params.delegate = browser_view_;
 
-  Browser* browser = browser_view_->browser();
+  BrowserWindowInterface* browser = browser_view_->browser();
   if (browser->GetType() ==
       BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
     params.z_order = ui::ZOrderLevel::kFloatingWindow;
@@ -331,7 +330,7 @@ const ui::ThemeProvider* BrowserWidget::GetThemeProvider() const {
 }
 
 const ui::ThemeProvider* BrowserWidget::GetBaseThemeProvider() const {
-  Browser* browser = browser_view_->browser();
+  BrowserWindowInterface* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);
   // Ignore the system theme for web apps with window-controls-overlay as the
   // display_override so the web contents can blend with the overlay by using
@@ -352,7 +351,7 @@ ui::ColorProviderKey::ThemeInitializerSupplier* BrowserWidget::GetCustomTheme()
     return nullptr;
   }
 
-  Browser* browser = browser_view_->browser();
+  BrowserWindowInterface* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);
   // Ignore the system theme for web apps with window-controls-overlay as the
   // display_override so the web contents can blend with the overlay by using
@@ -377,7 +376,7 @@ void BrowserWidget::OnNativeWidgetWorkspaceChanged() {
 
 void BrowserWidget::OnNativeWidgetDestroyed() {
   browser_native_widget_ = nullptr;
-  Browser* const browser = browser_view_->browser();
+  BrowserWindowInterface* const browser = browser_view_->browser();
 
   // Current expectations are that the Browser is destroyed synchronously when
   // its NativeWidget is destroyed. Prepare Browser and request synchronous
@@ -387,7 +386,7 @@ void BrowserWidget::OnNativeWidgetDestroyed() {
   UnloadController::From(browser)->set_force_skip_warning_user_on_close(true);
   UnloadController::From(browser)->OnWindowClosing();
   Widget::OnNativeWidgetDestroyed();
-  browser->SynchronouslyDestroyBrowser();
+  BrowserManagerService::SynchronouslyDestroyBrowser(browser);
 }
 
 void BrowserWidget::ShowContextMenuForViewImpl(
@@ -563,17 +562,9 @@ bool BrowserWidget::RegenerateFrameOnThemeChange(
   // System and user theme changes can both change frame buttons, so the frame
   // always needs to be regenerated on Linux.
   need_regenerate = true;
-#endif
-
-#if BUILDFLAG(IS_WIN)
-  // On Windows, DWM transition does not performed for a frame regeneration in
-  // fullscreen mode, so do a lighweight theme change to refresh a bookmark bar
-  // on new tab. (see crbug.com/40646694)
-  // With Mica, toggling titlebar accent colors in the native theme needs a
-  // frame regen to switch between the system-drawn and custom-drawn titlebars.
+#elif BUILDFLAG(IS_WIN)
   need_regenerate |=
-      (theme_change_type == BrowserThemeChangeType::kBrowserTheme ||
-       SystemTitlebarCanUseMicaMaterial()) &&
+      (theme_change_type == BrowserThemeChangeType::kBrowserTheme) &&
       !IsFullscreen();
 #else
   need_regenerate |= theme_change_type == BrowserThemeChangeType::kBrowserTheme;

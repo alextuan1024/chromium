@@ -37,6 +37,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
@@ -439,31 +440,48 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
         return mCache.getDimen(R.dimen.omnibox_suggestion_side_spacing_smallest);
     }
 
-    /**
-     * Get most visited carousel top padding.
-     *
-     * @see #getMostVisitedCarouselTopPadding(Context, ...)
-     */
+    /** Gets the edge size of a suggestion icon. */
+    public @Px int getEdgeSize() {
+        if (OmniboxCapabilities.isDesktopPlatform()) {
+            return mCache.getDimen(R.dimen.omnibox_desktop_small_decoration_icon_size);
+        }
+        return mCache.getDimen(R.dimen.omnibox_suggestion_24dp_icon_size);
+    }
+
+    /** Gets the edge size of a large suggestion icon. */
+    public @Px int getEdgeSizeLargeIcon() {
+        if (OmniboxCapabilities.isDesktopPlatform()) {
+            return mCache.getDimen(R.dimen.omnibox_desktop_large_decoration_icon_size);
+        }
+        return mCache.getDimen(R.dimen.omnibox_suggestion_36dp_icon_size);
+    }
+
+    /** Gets the rounding radius of a large suggestion icon. */
+    public @Px int getLargeIconRoundingRadius() {
+        return mCache.getDimen(R.dimen.omnibox_large_icon_rounding_radius);
+    }
+
+    /** Gets the rounding radius of a small suggestion icon. */
+    public @Px int getSmallIconRoundingRadius() {
+        return mCache.getDimen(R.dimen.omnibox_small_icon_rounding_radius);
+    }
+
+    /** Get most visited carousel top padding. */
     public @Px int getMostVisitedCarouselTopPadding() {
-        return getMostVisitedCarouselTopPadding(mContext);
+        return mCache.getDimen(R.dimen.omnibox_carousel_suggestion_padding_smaller);
     }
 
-    /**
-     * Get most visited carousel bottom padding.
-     *
-     * @see #getMostVisitedCarouselBottomPadding(Context, ...)
-     */
+    /** Get most visited carousel bottom padding. */
     public @Px int getMostVisitedCarouselBottomPadding() {
-        return getMostVisitedCarouselBottomPadding(mContext);
+        return mCache.getDimen(R.dimen.omnibox_carousel_suggestion_padding);
     }
 
-    /**
-     * Get header start padding.
-     *
-     * @see #getHeaderStartPadding(Context, ...)
-     */
+    /** Get header start padding. */
     public @Px int getHeaderStartPadding() {
-        return getHeaderStartPadding(mContext);
+        if (OmniboxCapabilities.isDesktopPlatform()) {
+            return mCache.getDimen(R.dimen.omnibox_suggestion_header_padding_start_desktop);
+        }
+        return mCache.getDimen(R.dimen.omnibox_suggestion_header_padding_start);
     }
 
     /**
@@ -493,13 +511,9 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
         return getToolbarSidePaddingForNtp(mContext);
     }
 
-    /**
-     * Get suggestion decoration icon size width.
-     *
-     * @see #getSuggestionDecorationIconSizeWidth(Context, ...)
-     */
+    /** Get suggestion decoration icon size width. */
     public @Px int getSuggestionDecorationIconSizeWidth() {
-        return getSuggestionDecorationIconSizeWidth(mContext);
+        return mCache.getDimen(R.dimen.omnibox_suggestion_icon_area_size);
     }
 
     /**
@@ -620,6 +634,36 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
     }
 
     /**
+     * Get secondary icon tint list.
+     *
+     * @see #getSecondaryIconTintList(Context, ...)
+     */
+    public ColorStateList getSecondaryIconTintList() {
+        return getSecondaryIconTintList(mContext, getBrandedColorScheme());
+    }
+
+    /**
+     * Get Fusebox popup icon tint list.
+     *
+     * @param isBottomSheet Whether the popup is presented as a bottom sheet.
+     * @see #getFuseboxPopupIconTintList(Context, int, boolean)
+     */
+    public ColorStateList getFuseboxPopupIconTintList(boolean isBottomSheet) {
+        return getFuseboxPopupIconTintList(mContext, getBrandedColorScheme(), isBottomSheet);
+    }
+
+    /**
+     * Get Fusebox popup icon background tint list.
+     *
+     * @param isBottomSheet Whether the popup is presented as a bottom sheet.
+     * @see #getFuseboxPopupIconBackgroundTintList(Context, int, boolean)
+     */
+    public @Nullable ColorStateList getFuseboxPopupIconBackgroundTintList(boolean isBottomSheet) {
+        return getFuseboxPopupIconBackgroundTintList(
+                mContext, getBrandedColorScheme(), isBottomSheet);
+    }
+
+    /**
      * Get primary icon background tint list.
      *
      * @see #getPrimaryIconBackgroundTintList(Context, ...)
@@ -689,6 +733,18 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
      */
     public Drawable getSearchBoxIconBackground() {
         return getSearchBoxIconBackground(mContext, getBrandedColorScheme());
+    }
+
+    /** Get popover navigate button background. */
+    public Drawable getPopoverNavigateButtonBackground() {
+        boolean isIncognito =
+                convertBrandedColorSchemeToIncognitoOrDayNightAdaptive(getBrandedColorScheme());
+        @DrawableRes
+        int resId =
+                isIncognito
+                        ? R.drawable.fusebox_popover_navigate_button_background_incognito
+                        : R.drawable.fusebox_popover_navigate_button_background;
+        return getDrawable(resId);
     }
 
     /** Get popover plus button background. */
@@ -1090,28 +1146,6 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
                 .getDimensionPixelOffset(R.dimen.omnibox_suggestion_list_padding_top);
     }
 
-    /** Get the top padding for the MV carousel. */
-    public static @Px int getMostVisitedCarouselTopPadding(Context context) {
-        return context.getResources()
-                .getDimensionPixelSize(R.dimen.omnibox_carousel_suggestion_padding_smaller);
-    }
-
-    /** Get the bottom padding for the MV carousel. */
-    public static @Px int getMostVisitedCarouselBottomPadding(Context context) {
-        return context.getResources()
-                .getDimensionPixelSize(R.dimen.omnibox_carousel_suggestion_padding);
-    }
-
-    /** Gets the start padding for a header suggestion. */
-    public static @Px int getHeaderStartPadding(Context context) {
-        if (OmniboxCapabilities.isDesktopPlatform()) {
-            return context.getResources()
-                    .getDimensionPixelSize(R.dimen.omnibox_suggestion_header_padding_start_desktop);
-        }
-        return context.getResources()
-                .getDimensionPixelSize(R.dimen.omnibox_suggestion_header_padding_start);
-    }
-
     /**
      * Returns the amount of pixels the location bar background should increase in height by when
      * the omnibox is focused.
@@ -1131,13 +1165,10 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
      * top of the screen in NTP.
      */
     public static @Px int getToolbarSidePaddingForNtp(Context context) {
+        if (ChromeFeatureList.sNtpAurora.isEnabled()) {
+            return getToolbarSidePadding(context);
+        }
         return context.getResources().getDimensionPixelSize(R.dimen.toolbar_edge_padding_ntp);
-    }
-
-    /** Returns the width of the Omnibox Suggestion decoration icon. */
-    public static @Px int getSuggestionDecorationIconSizeWidth(Context context) {
-        return context.getResources()
-                .getDimensionPixelSize(R.dimen.omnibox_suggestion_icon_area_size);
     }
 
     /** Returns the height of the content of an Omnibox Suggestion. */
@@ -1306,6 +1337,45 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
         boolean isIncognito =
                 convertBrandedColorSchemeToIncognitoOrDayNightAdaptive(brandedColorScheme);
         return ChromeColors.getPrimaryIconTint(context, isIncognito);
+    }
+
+    /** Resolves the secondary icon tint color. */
+    public static ColorStateList getSecondaryIconTintList(
+            Context context, @BrandedColorScheme int brandedColorScheme) {
+        boolean isIncognito =
+                convertBrandedColorSchemeToIncognitoOrDayNightAdaptive(brandedColorScheme);
+        return ChromeColors.getSecondaryIconTint(context, isIncognito);
+    }
+
+    /**
+     * Resolves the icon tint for Fusebox popup items (primary for bottom sheet, secondary for plus
+     * menu).
+     */
+    public static ColorStateList getFuseboxPopupIconTintList(
+            Context context, @BrandedColorScheme int brandedColorScheme, boolean isBottomSheet) {
+        return isBottomSheet
+                ? getPrimaryIconTintList(context, brandedColorScheme)
+                : getSecondaryIconTintList(context, brandedColorScheme);
+    }
+
+    /**
+     * Resolves the icon background tint for Fusebox popup items (only present for bottom sheet).
+     */
+    public static @Nullable ColorStateList getFuseboxPopupIconBackgroundTintList(
+            Context context, @BrandedColorScheme int brandedColorScheme, boolean isBottomSheet) {
+        return isBottomSheet ? getPrimaryIconBackgroundTintList(context, brandedColorScheme) : null;
+    }
+
+    /**
+     * Resolves the icon dimension for Fusebox popup items (24dp for bottom sheet, 20dp for plus
+     * menu).
+     */
+    public static @Px int getFuseboxPopupIconSize(Context context, boolean isBottomSheet) {
+        Resources res = context.getResources();
+        return res.getDimensionPixelSize(
+                isBottomSheet
+                        ? R.dimen.fusebox_bottom_sheet_attachment_icon_size
+                        : R.dimen.fusebox_popup_item_icon_size);
     }
 
     /**

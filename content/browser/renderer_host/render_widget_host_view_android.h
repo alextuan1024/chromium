@@ -212,6 +212,12 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void ShowWithVisibility(PageVisibilityState page_visibility) final;
   void WasOccluded() override;
   void Destroy() override;
+  void CreateUnboundedSurface(
+      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
+      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
+          client,
+      const gfx::Rect& bounds_in_dips,
+      base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltip(const std::u16string& tooltip_text) override;
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
@@ -432,6 +438,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       const cc::RenderFrameMetadata& metadata) override {}
   void OnRootScrollOffsetChanged(
       const gfx::PointF& root_scroll_offset) override;
+  void OnReportScrollJankStats(uint32_t total_frames,
+                               uint32_t janky_frames) override;
 
   void WasEvicted();
 
@@ -520,6 +528,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UnlockOrientation() override;
   void SetHasPersistentVideo(bool has_persistent_video) override;
   void SetTouchpadOverscrollHistoryNavigation(bool enabled) override;
+  void ReportScrollJankStats(uint32_t total_frames,
+                             uint32_t janky_frames) override;
   void OnUnconfirmedTapConvertedToTap() override;
 
   // This method is used as a callback for `ViewAndroid::HitTest` to determine

@@ -180,12 +180,6 @@ BASE_FEATURE(kAutofillEnableDownstreamCardAwarenessIph,
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
 
-// When enabled, IBAN regex pattern matching is expanded to support more
-// formats.
-BASE_FEATURE(kAutofillEnableExpandIbanRegexPattern,
-             "AutofillEnableExpandIbanRegexPattern",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // When enabled, card flat rate benefit will not be shown on merchants in the
 // blocklist.
 BASE_FEATURE(kAutofillEnableFlatRateCardBenefitsBlocklist,
@@ -308,6 +302,11 @@ BASE_FEATURE(kAutofillEnableWalletBranding, base::FEATURE_ENABLED_BY_DEFAULT);
 // When enabled, further brings certain strings and images referencing Google
 // Pay and Google Wallet into consistency with branding requirements.
 BASE_FEATURE(kAutofillEnableWalletBrandingV2,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, direct offers synced via Google Wallet will be available for
+// autofill into merchant promo code fields during checkout.
+BASE_FEATURE(kAutofillEnableWalletDirectOffers,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, shows the Wallet Reminder Notice after payment form submission

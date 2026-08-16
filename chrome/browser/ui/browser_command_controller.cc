@@ -628,19 +628,11 @@ bool BrowserCommandController::IsCommandEnabled(int id) const {
   return command_updater_->IsCommandEnabled(id);
 }
 
-bool BrowserCommandController::ExecuteCommandImpl(
-    int id,
-    base::TimeTicks time_stamp,
-    std::optional<actions::ActionInvocationContext> context) {
-  return ExecuteCommandWithDispositionImpl(
-      id, WindowOpenDisposition::CURRENT_TAB, time_stamp, std::move(context));
-}
-
-bool BrowserCommandController::ExecuteCommandWithDispositionImpl(
+bool BrowserCommandController::ExecuteCommandWithDispositionAndContext(
     int id,
     WindowOpenDisposition disposition,
-    base::TimeTicks time_stamp,
-    std::optional<actions::ActionInvocationContext> context) {
+    std::optional<actions::ActionInvocationContext> context,
+    base::TimeTicks time_stamp) {
   if (!SupportsCommand(id) || !IsCommandEnabled(id)) {
     return false;
   }
@@ -658,12 +650,8 @@ bool BrowserCommandController::ExecuteCommandWithDispositionImpl(
 
   DCHECK(IsCommandEnabled(id)) << "Invalid/disabled command " << id;
 
-  if (context.has_value()) {
-    return command_updater_->ExecuteCommandWithDispositionAndContext(
-        id, disposition, std::move(*context), time_stamp);
-  }
-  return command_updater_->ExecuteCommandWithDisposition(id, disposition,
-                                                         time_stamp);
+  return command_updater_->ExecuteCommandWithDisposition(
+      id, disposition, std::move(context), time_stamp);
 }
 
 void BrowserCommandController::HandleCommandWithDisposition(
@@ -1511,13 +1499,14 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_SHOW_READING_MODE_SIDE_PANEL: {
       // Yes. This is a separate feature from the reading list.
       read_anything::ReadAnythingEntryPointController::ShowUI(
-          browser_, ReadAnythingOpenTrigger::kAppMenu);
+          browser_, read_anything::mojom::ReadAnythingOpenTrigger::kAppMenu);
       break;
     }
 
     case IDC_SHOW_READING_MODE_KEYBOARD: {
       read_anything::ReadAnythingEntryPointController::ToggleUI(
-          browser_, ReadAnythingOpenTrigger::kKeyboardShortcut);
+          browser_,
+          read_anything::mojom::ReadAnythingOpenTrigger::kKeyboardShortcut);
       break;
     }
 

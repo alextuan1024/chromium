@@ -33,7 +33,7 @@ BASE_FEATURE(kNewTabPageRedesign, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kMVTInBottomSheet, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kNewTabPagePaddingUpdate, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNewTabPageUICleanup, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #pragma mark - Feature parameters
 
@@ -57,14 +57,21 @@ BASE_FEATURE_PARAM(int,
                    kFeedSwipeInProductHelpArmParam,
                    static_cast<int>(FeedSwipeIPHVariation::kStaticAfterFRE));
 
-const char kNewTabPagePaddingUpdateArmParam[] =
-    "new-tab-page-padding-update-arm";
+const char kNewTabPageUICleanupArmParam[] = "new-tab-page-ui-cleanup-arm";
 
 BASE_FEATURE_PARAM(int,
-                   kNewTabPagePaddingUpdateArmParamFeature,
-                   &kNewTabPagePaddingUpdate,
-                   kNewTabPagePaddingUpdateArmParam,
-                   static_cast<int>(NTPPaddingUpdateVariation::kTightPadding));
+                   kNewTabPageUICleanupArmParamFeature,
+                   &kNewTabPageUICleanup,
+                   kNewTabPageUICleanupArmParam,
+                   static_cast<int>(NTPUICleanupVariation::kTightPadding));
+
+const char kNewTabPageRedesignStaticFakeboxParam[] = "static-fakebox";
+
+BASE_FEATURE_PARAM(bool,
+                   kNewTabPageRedesignStaticFakeboxParamFeature,
+                   &kNewTabPageRedesign,
+                   kNewTabPageRedesignStaticFakeboxParam,
+                   false);
 
 #pragma mark - Helpers
 
@@ -124,10 +131,19 @@ bool IsNTPRedesignEnabled() {
          ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET;
 }
 
-NTPPaddingUpdateVariation GetNTPPaddingUpdateVariation() {
-  if (base::FeatureList::IsEnabled(kNewTabPagePaddingUpdate)) {
-    return static_cast<NTPPaddingUpdateVariation>(
-        kNewTabPagePaddingUpdateArmParamFeature.Get());
+bool IsNTPRedesignStaticFakeboxEnabled() {
+  return IsNTPRedesignEnabled() &&
+         kNewTabPageRedesignStaticFakeboxParamFeature.Get();
+}
+
+bool IsNewTabPageUICleanupEnabled() {
+  return base::FeatureList::IsEnabled(kNewTabPageUICleanup);
+}
+
+NTPUICleanupVariation GetNewTabPageUICleanupVariation() {
+  if (IsNewTabPageUICleanupEnabled()) {
+    return static_cast<NTPUICleanupVariation>(
+        kNewTabPageUICleanupArmParamFeature.Get());
   }
-  return NTPPaddingUpdateVariation::kDisabled;
+  return NTPUICleanupVariation::kDisabled;
 }

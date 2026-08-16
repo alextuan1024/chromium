@@ -66,7 +66,6 @@
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/render_surface_impl.h"
 #include "cc/layers/surface_layer_impl.h"
-#include "cc/layers/video_layer_impl.h"
 #include "cc/layers/viewport.h"
 #include "cc/metrics/compositor_frame_reporting_controller.h"
 #include "cc/metrics/custom_metrics_recorder.h"
@@ -653,6 +652,12 @@ LayerTreeHostImpl::LayerTreeHostImpl(
             id,
             /*is_trees_in_viz_client=*/
             settings_.TreesInVizInClientProcess());
+#if BUILDFLAG(IS_ANDROID)
+    if (features::ShouldScrollJankV4MetricReportAndroidAppJankStats()) {
+      compositor_frame_reporting_controller_->SetScrollJankOsReporter(
+          weak_factory_.GetWeakPtr());
+    }
+#endif
   }
 
   if (base::FeatureList::IsEnabled(features::kTreesInViz) ||
@@ -689,7 +694,8 @@ LayerTreeHostImpl::LayerTreeHostImpl(
 
   browser_controls_offset_manager_ = BrowserControlsOffsetManager::Create(
       this, settings.top_controls_show_threshold,
-      settings.top_controls_hide_threshold);
+      settings.top_controls_hide_threshold,
+      settings.trees_in_viz_in_viz_process);
 
   SetDebugState(settings.initial_debug_state);
   compositor_frame_reporting_controller_->SetFrameSorter(&frame_sorter_);
@@ -2353,6 +2359,17 @@ void LayerTreeHostImpl::ReportEventLatency(
   if (auto* recorder = CustomMetricRecorder::Get()) {
     recorder->ReportEventLatency(args, std::move(latencies));
   }
+}
+
+void LayerTreeHostImpl::ReportScrollJankStats(uint32_t total_frames,
+                                              uint32_t janky_frames) {
+  CHECK_LE(janky_frames, total_frames);
+#if BUILDFLAG(IS_ANDROID)
+  if (render_frame_metadata_observer_) {
+    render_frame_metadata_observer_->ReportScrollJankStats(total_frames,
+                                                           janky_frames);
+  }
+#endif
 }
 
 void LayerTreeHostImpl::OnCanDrawStateChangedForTree() {
@@ -4824,6 +4841,13 @@ void LayerTreeHostImpl::WillScrollContent(ElementId element_id) {
 void LayerTreeHostImpl::DidScrollContent(ElementId element_id,
                                          bool animated,
                                          const gfx::Vector2dF& scroll_delta) {
+  // An animated scroll has not moved content yet; the movement lands on later
+  // animation ticks that do not reach here.
+  if (settings_.enable_scroll_performance_timing && !animated && element_id &&
+      !scroll_delta.IsZero()) {
+    events_metrics_manager_.RecordAppliedScrollObservation(element_id);
+  }
+
   scroll_accumulated_this_frame_ += scroll_delta;
   frame_max_scroll_delta_ =
       std::max(std::abs(scroll_delta.x()), std::abs(scroll_delta.y()));

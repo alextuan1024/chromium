@@ -33,6 +33,7 @@
 <translation id="1290883685122687410">დაყენების შეცდომა: <ph name="METAINSTALLER_EXIT_CODE" />. <ph name="WINDOWS_ERROR" /></translation>
 <translation id="1302523850133262269">დაელოდეთ, სანამ Chrome დააინსტალირებს სისტემის უახლეს განახლებებს.</translation>
 <translation id="1330562121671411446">ენის ამოცნობა</translation>
+<translation id="1333654552732143316">Chrome-ის ჩართვა</translation>
 <translation id="1341711321000856656">ახლა შეგიძლიათ გადართვა, პაროლები სხვა Chrome პროფილიდან რომ ნახოთ</translation>
 <translation id="1343830902827845050">Chrome-ში შესვლა</translation>
 <translation id="1356661055722410047">სიახლე! თქვენს ეკრანზე შეგიძლიათ, თარგმნოთ ტექსტი და სურათები</translation>
@@ -382,7 +383,6 @@
 <translation id="4885446229353981848">Google Lens-ის მალსახმობის ყოველთვის ჩვენება</translation>
 <translation id="4891791193823137474">Google Chrome გაიშვას ფონურ რეჟიმში</translation>
 <translation id="4895437082222824641">ბმულის გახსნა Chrome-ის ახალ ჩა&amp;ნართში</translation>
-<translation id="4896867431081882115">დააყენეთ Chrome ნაგულისხმევ ბრაუზერად და მიიღეთ მარტივი წვდომა იმ ფუნქციებზე, რომლებსაც იცნობთ, გიყვართ და ენდობით. Chrome ჩამაგრდება თქვენს ამოცანათა ზოლში სწრაფი წვდომისთვის.</translation>
 <translation id="4904953848704395458">გახსენით Gemini Chrome-ში კლავიატურის მალსახმობით.</translation>
 <translation id="4918086044614829423">მიღება</translation>
 <translation id="4918844574251943176">სურათი დაკოპირდა</translation>

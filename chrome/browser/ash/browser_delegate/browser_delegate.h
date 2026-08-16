@@ -147,6 +147,10 @@ class BrowserDelegate {
   // Closes the browser as soon as possible.
   virtual void Close() = 0;
 
+  // Sets whether the browser should skip warning the user (e.g. beforeunload or
+  // download warnings) when closing.
+  virtual void SetSkipWarningUserOnClose(bool skip) = 0;
+
   // Loads the given URL in a new tab.
   // If the `url` is empty the new tab-page is loaded.
   // If an `index` is given, the tab is placed at the corresponding position in
@@ -194,10 +198,16 @@ class BrowserDelegate {
   // Enters locked fullscreen mode.
   // Pins the window, updates browser commands, and optionally focuses the
   // toolbar.
+  // TODO(crbug.com/434082728): Remove this OnTask/LockedFullscreen
+  // consolidation is completed. This will be replaced with lock method for
+  // OnTask.
   virtual void EnterLockedFullscreen(bool focus_toolbar) = 0;
 
   // Leaves locked fullscreen mode.
   // Unpins the window and updates browser commands.
+  // TODO(crbug.com/434082728): Remove this OnTask/LockedFullscreen
+  // consolidation is completed. This will be replaced with unlock method for
+  // OnTask.
   virtual void LeaveLockedFullscreen() = 0;
 
   // Sets whether command shortcuts related to DevTools are enabled.

@@ -10,13 +10,14 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "components/remote_cocoa/app_shim/remote_cocoa_app_shim_export.h"
 #include "ui/gfx/mac/scoped_cocoa_disable_screen_updates.h"
 
 namespace remote_cocoa {
 class NativeWidgetNSWindowBridge;
 
 // Used by NativeWidgetNSWindowBridge when dragging detached tabs.
-class CocoaWindowMoveLoop {
+class REMOTE_COCOA_APP_SHIM_EXPORT CocoaWindowMoveLoop {
  public:
   CocoaWindowMoveLoop(NativeWidgetNSWindowBridge* owner,
                       const NSPoint& initial_mouse_in_screen);
@@ -30,6 +31,18 @@ class CocoaWindowMoveLoop {
   // Returns true if a mouse up event ended the loop.
   bool Run();
   void End();
+
+  // Updates the baseline window frame and mouse position. Called when the
+  // window bounds or size are updated programmatically during the drag (e.g.
+  // by TabDragController when moving across displays).
+  void SetBaseFrame(const NSRect& new_base_frame,
+                    const NSPoint& new_base_mouse);
+
+  const NSRect& base_frame_for_testing() const { return base_frame_; }
+  const NSPoint& base_mouse_for_testing() const {
+    return base_mouse_in_screen_;
+  }
+  const NSRect& last_set_frame_for_testing() const { return last_set_frame_; }
 
  private:
   enum LoopExitReason {

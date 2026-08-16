@@ -17,8 +17,8 @@ enum class FeedSwipeIPHVariation {
   kAnimated,
 };
 
-// Enum to represent arms of feature kNewTabPagePaddingUpdate.
-enum class NTPPaddingUpdateVariation {
+// Enum to represent arms of feature kNewTabPageUICleanup.
+enum class NTPUICleanupVariation {
   kDisabled,
   kTightPadding,
   kMediumPadding,
@@ -54,8 +54,9 @@ BASE_DECLARE_FEATURE(kEnableNTPBackgroundImageCache);
 // Feature flag to make the height of the NTP Logo and Doodle consistent.
 BASE_DECLARE_FEATURE(kConsistentLogoDoodleHeight);
 
-// Feature flag to enable the New Tab Page padding updates.
-BASE_DECLARE_FEATURE(kNewTabPagePaddingUpdate);
+// Feature flag to enable the New Tab Page UI cleanup. The refresh includes
+// padding and styling updates.
+BASE_DECLARE_FEATURE(kNewTabPageUICleanup);
 
 // Feature flag to place the Most Visited Tiles in the bottom sheet.
 BASE_DECLARE_FEATURE(kMVTInBottomSheet);
@@ -86,9 +87,13 @@ extern const char kFeedSettingDiscoverReferrerParameter[];
 // enabled.
 extern const char kFeedSwipeInProductHelpArmParam[];
 
-// Parameter to indicate which arm of the feature kNewTabPagePaddingUpdate is
+// Parameter to indicate which arm of the feature kNewTabPageUICleanup is
 // enabled.
-extern const char kNewTabPagePaddingUpdateArmParam[];
+extern const char kNewTabPageUICleanupArmParam[];
+
+// Feature parameter for kNewTabPageRedesign to enable static fakebox on expand
+// and revealing the toolbar view controller.
+extern const char kNewTabPageRedesignStaticFakeboxParam[];
 
 #pragma mark - Helpers
 
@@ -120,7 +125,14 @@ BASE_DECLARE_FEATURE(kNewTabPageRedesign);
 // Whether the New Tab Page Redesign is enabled.
 bool IsNTPRedesignEnabled();
 
-// Returns the enabled variation of feature kNewTabPagePaddingUpdate.
-NTPPaddingUpdateVariation GetNTPPaddingUpdateVariation();
+// Returns whether the static fakebox / reveal toolbar behavior is enabled for
+// NTP redesign.
+bool IsNTPRedesignStaticFakeboxEnabled();
+
+// Whether the New Tab Page UI cleanup is enabled.
+bool IsNewTabPageUICleanupEnabled();
+
+// Returns the enabled variation of feature kNewTabPageUICleanup.
+NTPUICleanupVariation GetNewTabPageUICleanupVariation();
 
 #endif  // IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_FEATURE_H_

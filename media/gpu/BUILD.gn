@@ -210,8 +210,6 @@ component("gpu") {
       "windows/d3d11_copying_texture_wrapper.h",
       "windows/d3d11_decoder_configurator.cc",
       "windows/d3d11_decoder_configurator.h",
-      "windows/d3d11_h264_accelerator.cc",
-      "windows/d3d11_h264_accelerator.h",
       "windows/d3d11_picture_buffer.cc",
       "windows/d3d11_picture_buffer.h",
       "windows/d3d11_status.h",
@@ -230,8 +228,6 @@ component("gpu") {
       "windows/d3d11_video_frame_mailbox_release_helper.h",
       "windows/d3d11_video_processor_proxy.cc",
       "windows/d3d11_video_processor_proxy.h",
-      "windows/d3d11_vp9_accelerator.cc",
-      "windows/d3d11_vp9_accelerator.h",
       "windows/d3d11_vp9_picture.cc",
       "windows/d3d11_vp9_picture.h",
       "windows/d3d12_copy_command_list_wrapper.cc",
@@ -259,8 +255,12 @@ component("gpu") {
       "windows/d3d12_video_processor_wrapper.cc",
       "windows/d3d12_video_processor_wrapper.h",
       "windows/d3d_com_defs.h",
+      "windows/d3d_h264_accelerator.cc",
+      "windows/d3d_h264_accelerator.h",
       "windows/d3d_video_decoder_wrapper.cc",
       "windows/d3d_video_decoder_wrapper.h",
+      "windows/d3d_vp9_accelerator.cc",
+      "windows/d3d_vp9_accelerator.h",
       "windows/format_utils.cc",
       "windows/format_utils.h",
       "windows/h264_video_rate_control_wrapper.cc",
@@ -289,10 +289,10 @@ component("gpu") {
     ]
     if (enable_hevc_parser_and_hw_decoder) {
       sources += [
-        "windows/d3d11_h265_accelerator.cc",
-        "windows/d3d11_h265_accelerator.h",
         "windows/d3d12_video_encode_h265_delegate.cc",
         "windows/d3d12_video_encode_h265_delegate.h",
+        "windows/d3d_h265_accelerator.cc",
+        "windows/d3d_h265_accelerator.h",
       ]
     }
     deps += [

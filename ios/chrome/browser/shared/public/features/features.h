@@ -138,10 +138,6 @@ bool ShouldHideSafetyCheckModuleIfNoIssues();
 // Whether the refactored implementation of the `OmahaService` is enabled.
 bool IsOmahaServiceRefactorEnabled();
 
-// Feature flag enabling Choose from Drive.
-// TODO(crbug.com/473788390): Clean-up feature once file upload menu is ready.
-BASE_DECLARE_FEATURE(kIOSChooseFromDrive);
-
 // Feature flag enabling Choose from Drive for signed out users.
 BASE_DECLARE_FEATURE(kIOSChooseFromDriveSignedOut);
 
@@ -529,6 +525,10 @@ BASE_DECLARE_FEATURE(kIOSMiniMapUniversalLink);
 // experiment.
 BASE_DECLARE_FEATURE(kIOSMiniMapUniversalLinkCounterfactual);
 
+// Returns true if kIOSMiniMapUniversalLink is enabled and the current country
+// is not in the excluded list.
+bool IsMiniMapUniversalLinkEnabled();
+
 // Feature flag to open linkified address in Maps native preview.
 BASE_DECLARE_FEATURE(kIOSMiniMapLinkifiedAddress);
 
@@ -843,6 +843,12 @@ BASE_DECLARE_FEATURE(kFullscreenRefactoring);
 // Returns true if the FullscreenRefactoring feature or ChromeNext is enabled.
 bool IsFullscreenRefactoringEnabled();
 
+// Enables the FullscreenEasedTransitions feature.
+BASE_DECLARE_FEATURE(kFullscreenEasedTransitions);
+
+// Returns true if the FullscreenEasedTransitions feature is enabled.
+bool IsFullscreenEasedTransitionsEnabled();
+
 // Enables the AskAboutThisPage feature.
 BASE_DECLARE_FEATURE(kAskAboutThisPage);
 
@@ -1004,5 +1010,11 @@ BASE_DECLARE_FEATURE(kNextOldDesign);
 
 // Returns true if the NextOldDesign feature is enabled.
 bool IsNextOldDesignEnabled();
+
+// Feature to enable mic permissions for voice search.
+BASE_DECLARE_FEATURE(kVoiceSearchMicPermissions);
+
+// Returns true if VoiceSearchMicPermissions is enabled.
+bool IsVoiceSearchMicPermissionsEnabled();
 
 #endif  // IOS_CHROME_BROWSER_SHARED_PUBLIC_FEATURES_FEATURES_H_

@@ -30,7 +30,6 @@
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "build/android_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
@@ -627,13 +626,7 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, SendPolicyNames) {
   VerifyPolicies(expected_policies);
 }
 
-// TODO(crbug.com/384989795): Fails on desktop android, see bug.
-#if BUILDFLAG(IS_DESKTOP_ANDROID)
-#define MAYBE_SendPolicyValues DISABLED_SendPolicyValues
-#else
-#define MAYBE_SendPolicyValues SendPolicyValues
-#endif
-IN_PROC_BROWSER_TEST_P(PolicyUITest, MAYBE_SendPolicyValues) {
+IN_PROC_BROWSER_TEST_P(PolicyUITest, SendPolicyValues) {
   // Verifies that policy values are sent to the UI and processed there
   // correctly by setting the values of four known and one unknown policy and
   // checking that the policy table contains the policy names, values and
@@ -1154,10 +1147,18 @@ constexpr char kCheckBannerJs[] =
     "(() => {"
     "  const app = document.querySelector('policy-app');"
     "  return !!app && "
-    "!!app.shadowRoot.querySelector('#command-line-flags-warning');"
+    "!!app.shadowRoot.querySelector('#command-line-arguments-warning');"
     "})();";
 
-IN_PROC_BROWSER_TEST_F(PolicyUITestBase, NoWarningWithoutCommandLineFlags) {
+constexpr char kGetCommandLineArgsJs[] =
+    "(() => {"
+    "  const app = document.querySelector('policy-app');"
+    "  const el = app && "
+    "app.shadowRoot.querySelector('#command-line-arguments');"
+    "  return el ? el.textContent : '';"
+    "})();";
+
+IN_PROC_BROWSER_TEST_F(PolicyUITestBase, NoWarningWithoutCommandLineArguments) {
   base::CommandLine empty_command_line(
       base::FilePath(FILE_PATH_LITERAL("chrome")));
   enterprise_reporting::ScopedInitialCommandLine override_cli(
@@ -1169,10 +1170,10 @@ IN_PROC_BROWSER_TEST_F(PolicyUITestBase, NoWarningWithoutCommandLineFlags) {
   EXPECT_EQ(false, content::EvalJs(web_contents(), kCheckBannerJs));
 }
 
-IN_PROC_BROWSER_TEST_F(PolicyUITestBase, ShowsWarningWithCommandLineFlags) {
+IN_PROC_BROWSER_TEST_F(PolicyUITestBase, ShowsWarningWithCommandLineArguments) {
   base::CommandLine custom_command_line(
       base::FilePath(FILE_PATH_LITERAL("chrome")));
-  custom_command_line.AppendSwitch("test-custom-flag");
+  custom_command_line.AppendSwitch("test-custom-argument");
   enterprise_reporting::ScopedInitialCommandLine override_cli(
       &custom_command_line);
 
@@ -1180,9 +1181,13 @@ IN_PROC_BROWSER_TEST_F(PolicyUITestBase, ShowsWarningWithCommandLineFlags) {
       content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
 
   EXPECT_EQ(true, content::EvalJs(web_contents(), kCheckBannerJs));
+  EXPECT_THAT(
+      content::EvalJs(web_contents(), kGetCommandLineArgsJs).ExtractString(),
+      testing::HasSubstr("test-custom-argument"));
 }
 
-IN_PROC_BROWSER_TEST_F(PolicyUITestBase, NoWarningWithIgnoredCommandLineFlags) {
+IN_PROC_BROWSER_TEST_F(PolicyUITestBase,
+                       NoWarningWithIgnoredCommandLineArguments) {
   base::CommandLine custom_command_line(
       base::FilePath(FILE_PATH_LITERAL("chrome")));
   custom_command_line.AppendSwitchASCII(switches::kProfileDirectory, "Default");
@@ -1196,11 +1201,12 @@ IN_PROC_BROWSER_TEST_F(PolicyUITestBase, NoWarningWithIgnoredCommandLineFlags) {
 }
 
 IN_PROC_BROWSER_TEST_F(PolicyUITestBase,
-                       ShowsWarningWithCustomAndIgnoredCommandLineFlags) {
+                       ShowsWarningWithCustomAndIgnoredCommandLineArguments) {
   base::CommandLine custom_command_line(
       base::FilePath(FILE_PATH_LITERAL("chrome")));
+  // kProfileDirectory is in the ignore list.
   custom_command_line.AppendSwitchASCII(switches::kProfileDirectory, "Default");
-  custom_command_line.AppendSwitch("test-custom-flag");
+  custom_command_line.AppendSwitch("test-custom-argument");
   enterprise_reporting::ScopedInitialCommandLine override_cli(
       &custom_command_line);
 
@@ -1208,6 +1214,14 @@ IN_PROC_BROWSER_TEST_F(PolicyUITestBase,
       content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
 
   EXPECT_EQ(true, content::EvalJs(web_contents(), kCheckBannerJs));
+
+  // Ignored switch must not appear.
+  EXPECT_THAT(
+      content::EvalJs(web_contents(), kGetCommandLineArgsJs).ExtractString(),
+      testing::Not(testing::HasSubstr(switches::kProfileDirectory)));
+  EXPECT_THAT(
+      content::EvalJs(web_contents(), kGetCommandLineArgsJs).ExtractString(),
+      testing::HasSubstr("test-custom-argument"));
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 

@@ -109,6 +109,11 @@ void InitSkiaGraphiteFeatureParams(const base::Feature* feature) {
           g_skia_graphite_feature_params
               .flush_d3d11_tile_raster_commands_to_driver)
           .Get();
+  g_skia_graphite_feature_params.triple_buffered_dcomp_root_surface =
+      base::FeatureParam<bool>(
+          feature, "triple_buffered_dcomp_root_surface",
+          g_skia_graphite_feature_params.triple_buffered_dcomp_root_surface)
+          .Get();
 #endif
 
   GetGraphiteParamsInitFlag().Set();
@@ -455,10 +460,6 @@ void InitSkiaGraphiteDefaultParamsForTesting() {
 
 const base::FeatureParam<int> kSkiaGraphiteMinPathSizeForMsaa{
     &kSkiaGraphiteSmallPathAtlas, "min_path_size_for_msaa", 0};
-
-#if BUILDFLAG(IS_WIN)
-BASE_FEATURE(kSkiaGraphiteDawnUseD3D12, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
 
 // Whether to use the GpuPersistentCache for caching GPU process shader blobs.
 // Usage for Graphite is controlled independently with

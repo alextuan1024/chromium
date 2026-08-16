@@ -30,6 +30,7 @@
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -47,6 +48,7 @@
 #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
 #include "chrome/browser/ui/views/tabs/vertical/top_container_button.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
+#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/grit/generated_resources.h"
@@ -185,6 +187,11 @@ VerticalTabStripRegionView::VerticalTabStripRegionView(
   shadow_frame_ = AddChildView(std::make_unique<ShadowFrameView>(
       kExpandOnHoverShadowElevation, kExpandOnHoverShadowAlpha));
   shadow_frame_->SetProperty(views::kViewIgnoredByLayoutKey, true);
+
+  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+    focus_swipe_controller_ =
+        std::make_unique<VerticalTabStripFocusSwipeController>(this);
+  }
 
   SetNotifyEnterExitOnChild(true);
   UpdateColors();
@@ -382,9 +389,9 @@ void VerticalTabStripRegionView::Layout(PassKey) {
 }
 
 views::View* VerticalTabStripRegionView::GetDefaultFocusableChild() {
-  const int active_index = tab_strip_model()->active_index();
-  if (active_index != TabStripModel::kNoTab) {
-    return GetTabAnchorViewAt(active_index);
+  tabs::TabInterface* active_tab = tab_strip_model()->GetActiveTab();
+  if (active_tab) {
+    return GetTabAnchorView(active_tab->GetHandle());
   }
 
   return top_button_container_;
@@ -666,6 +673,12 @@ bool VerticalTabStripRegionView::IsCollapsing() {
 
 void VerticalTabStripRegionView::RequestCollapse(bool collapse) {
   target_collapse_state_.collapsed = collapse;
+  if (collapse) {
+    suppress_expand_on_hover_ = IsCollapseButtonHovered();
+    ResetExpandOnHoverTimers();
+  } else {
+    suppress_expand_on_hover_ = false;
+  }
   // Do not trigger the animation before tab_strip_view() is set, as the region
   // view only subscribes to animation updates once tab_strip_view() has been
   // attached. target_collapse_state_ is still set so that when
@@ -808,6 +821,13 @@ bool VerticalTabStripRegionView::IsFrameActive() const {
   return GetWidget() ? GetWidget()->ShouldPaintAsActive() : true;
 }
 
+bool VerticalTabStripRegionView::IsCollapseButtonHovered() const {
+  if (top_button_container_ && top_button_container_->GetCollapseButton()) {
+    return top_button_container_->GetCollapseButton()->IsMouseHovered();
+  }
+  return false;
+}
+
 gfx::Rect VerticalTabStripRegionView::GetTabStripDraggableBounds() const {
   // Tabs should be draggable from the top of the tab strip to the bottom of the
   // tab strip's max size, saving space for the bottom button container and
@@ -837,6 +857,11 @@ void VerticalTabStripRegionView::UpdateExpandOnHoverState(
     is_expanded_on_hover_ = false;
     return;
   }
+
+  if (suppress_expand_on_hover_ && !IsCollapseButtonHovered()) {
+    suppress_expand_on_hover_ = false;
+  }
+
   // If the force collapse lock is held, collapse the tab strip.
   if (force_collapse_lock_count_ > 0) {
     if (is_expanded_on_hover_) {
@@ -871,6 +896,7 @@ void VerticalTabStripRegionView::UpdateExpandOnHoverState(
   }
 
   const bool should_expand =
+      !suppress_expand_on_hover_ &&
       state_controller_->IsExpandOnHoverEnabled() &&
       (hovered.value_or(IsMouseHovered()) ||
        (GetFocusManager() && Contains(GetFocusManager()->GetFocusedView())));
