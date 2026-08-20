@@ -14,10 +14,13 @@
 #include "base/task/current_thread.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
 #include "components/lens/buildflags.h"
+#include "components/prefs/pref_service.h"
 #include "components/renderer_context_menu/views/toolkit_delegate_views.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -27,6 +30,7 @@
 #include "ui/aura/client/screen_position_client.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/accelerators/command.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -265,6 +269,16 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
           IDC_SHOW_READING_MODE_KEYBOARD, accel);
     }
 
+    case IDC_CONTENT_CONTEXT_DICTATION: {
+      const std::string& pref_shortcut =
+          GetProfile()->GetPrefs()->GetString(prefs::kVoiceTypingHotkey);
+      if (pref_shortcut.empty()) {
+        return false;
+      }
+      *accel = ui::Command::StringToAccelerator(pref_shortcut);
+      return !accel->IsEmpty();
+    }
+
     case IDC_CONTENT_CONTEXT_EMOJI:
 #if BUILDFLAG(IS_WIN)
       *accel = ui::Accelerator(ui::VKEY_OEM_PERIOD, ui::EF_COMMAND_DOWN);
@@ -289,7 +303,7 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
 void RenderViewContextMenuViews::ExecuteCommand(int command_id,
                                                 int event_flags) {
   switch (command_id) {
-    case kWritingDirectionDefaultId:
+    case IDC_WRITING_DIRECTION_DEFAULT:
     case IDC_WRITING_DIRECTION_RTL:
     case IDC_WRITING_DIRECTION_LTR: {
       // Note: we get the local render frame host so that the writing mode
@@ -322,7 +336,7 @@ void RenderViewContextMenuViews::ExecuteCommand(int command_id,
 
 bool RenderViewContextMenuViews::IsCommandIdChecked(int command_id) const {
   switch (command_id) {
-    case kWritingDirectionDefaultId:
+    case IDC_WRITING_DIRECTION_DEFAULT:
       return (params_.writing_direction_default &
               blink::ContextMenuData::kCheckableMenuItemChecked) != 0;
     case IDC_WRITING_DIRECTION_RTL:
@@ -339,9 +353,9 @@ bool RenderViewContextMenuViews::IsCommandIdChecked(int command_id) const {
 
 bool RenderViewContextMenuViews::IsCommandIdEnabled(int command_id) const {
   switch (command_id) {
-    case kWritingDirectionMenuId:
+    case IDC_WRITING_DIRECTION_MENU:
       return true;
-    case kWritingDirectionDefaultId:  // Provided to match OS defaults.
+    case IDC_WRITING_DIRECTION_DEFAULT:  // Provided to match OS defaults.
       return params_.writing_direction_default &
              blink::ContextMenuData::kCheckableMenuItemEnabled;
     case IDC_WRITING_DIRECTION_RTL:
@@ -369,7 +383,7 @@ RenderViewContextMenuViews::GetBrowserAcceleratorProvider() const {
 
 void RenderViewContextMenuViews::AppendPlatformEditableItems() {
   bidi_submenu_model_.AddCheckItem(
-      kWritingDirectionDefaultId,
+      IDC_WRITING_DIRECTION_DEFAULT,
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_DEFAULT));
   bidi_submenu_model_.AddCheckItem(
       IDC_WRITING_DIRECTION_LTR,
@@ -379,7 +393,7 @@ void RenderViewContextMenuViews::AppendPlatformEditableItems() {
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_RTL));
 
   menu_model_.AddSubMenu(
-      kWritingDirectionMenuId,
+      IDC_WRITING_DIRECTION_MENU,
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_MENU),
       &bidi_submenu_model_);
 }

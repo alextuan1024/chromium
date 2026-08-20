@@ -10,7 +10,7 @@
 //     basic-struct.test-mojom
 //
 
-private static let mojoPrefix = "golden."
+private let mojoPrefix = "golden."
 
 ///
 /// Interfaces
@@ -45,7 +45,7 @@ extension ObjectGroup {
             ] => .undefined,
             "getStruct": [
                 .plain(.string),
-            ] => .jsPromise,
+            ] => .jsPromise(resolvingTo: .jsGoldenPrimary_GetStructResponse),
             "syncGetStruct": [
                 .plain(.string),
             ] => .jsGoldenPrimary_SyncGetStructResponse,
@@ -81,6 +81,7 @@ extension ILType {
             "id",
             "value",
             "residence",
+            "optionalField",
             "valid",
             "data",
         ])
@@ -88,6 +89,7 @@ extension ILType {
         .plain(.integer),
         .plain(.string),
         .plain(.jsGoldenSimpleStruct),
+        .either(.string, .undefined),
         .plain(.boolean),
         .plain(.jsGoldenSimpleUnion),
     ] => .jsGoldenLargeStruct)
@@ -99,6 +101,11 @@ extension ILType {
     fileprivate static let jsGoldenSimpleStructConstructor: ILType = .constructor([
         .plain(.string),
     ] => .jsGoldenSimpleStruct)
+    fileprivate static let jsGoldenPrimary_GetStructResponse: ILType = .object(
+        ofGroup: "golden.Primary_GetStructResponse",
+        withProperties: [
+            "result",
+        ])
     fileprivate static let jsGoldenPrimary_SyncGetStructResponse: ILType = .object(
         ofGroup: "golden.Primary_SyncGetStructResponse",
         withProperties: [
@@ -114,6 +121,7 @@ extension ObjectGroup {
             "id": .integer,
             "value": .string,
             "residence": .jsGoldenSimpleStruct,
+            "optionalField": .string,
             "valid": .boolean,
             "data": .jsGoldenSimpleUnion,
         ],
@@ -124,6 +132,14 @@ extension ObjectGroup {
         instanceType: .jsGoldenSimpleStruct,
         properties: [
             "field": .string,
+        ],
+        methods: [:]
+    )
+    fileprivate static let goldenPrimaryGetStructResponse = ObjectGroup(
+        name: "golden.Primary_GetStructResponse",
+        instanceType: .jsGoldenPrimary_GetStructResponse,
+        properties: [
+            "result": .jsGoldenSimpleStruct,
         ],
         methods: [:]
     )
@@ -145,18 +161,19 @@ extension ILType {
         .createJsArrayType(ofElementType: .jsIntegerElement)
 }
 
-/// Generate an array with only one element. As Fuzzilli runs, the
-/// OperationMutator and VariadicInputReducer will modify the
-/// `CreateArray` operation to increase  or decrease the element count.
+/// As Fuzzilli runs, the OperationMutator and VariadicInputReducer will modify
+/// the `CreateArray` operation to increase or decrease the element count. This
+/// allows arrays to be arbitrarily long.
 private let MojoIntegerArrayGenerator = CodeGenerator(
     "MojoIntegerArrayGenerator",
     inputs: .required(.integer),
     produces: [.jsIntegerArray]
 ) { b, elem in
+    var elements: [Variable] = [elem]
     b.createArray(
-        with: [elem],
+        with: elements,
         elementGroupName:
-            ObjectGroup.integerElement.group.name)
+            ObjectGroup.integerElement.name)
 }
 
 ///
@@ -297,6 +314,7 @@ let mojoPrimaryProfile = Profile(
         .goldenPrimaryPendingReceiver,
         .goldenLargeStruct,
         .goldenSimpleStruct,
+        .goldenPrimaryGetStructResponse,
         .goldenPrimarySyncGetStructResponse,
     ] + commonMojoObjectGroups,
     additionalEnumerations: [

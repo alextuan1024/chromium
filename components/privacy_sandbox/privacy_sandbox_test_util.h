@@ -55,38 +55,6 @@ class MockPrivacySandboxObserver
   MOCK_METHOD1(OnRelatedWebsiteSetsEnabledChanged, void(bool));
 };
 
-class MockPrivacySandboxSettingsDelegate
-    : public privacy_sandbox::PrivacySandboxSettings::Delegate {
- public:
-  MockPrivacySandboxSettingsDelegate();
-  ~MockPrivacySandboxSettingsDelegate() override;
-  void SetUpIsPrivacySandboxRestrictedResponse(bool restricted) {
-    ON_CALL(*this, IsPrivacySandboxRestricted).WillByDefault([=]() {
-      return restricted;
-    });
-  }
-
-  void SetUpIsPrivacySandboxCurrentlyUnrestrictedResponse(bool unrestricted) {
-    ON_CALL(*this, IsPrivacySandboxCurrentlyUnrestricted).WillByDefault([=]() {
-      return unrestricted;
-    });
-  }
-
-  void SetUpIsIncognitoProfileResponse(bool incognito) {
-    ON_CALL(*this, IsIncognitoProfile).WillByDefault([=]() {
-      return incognito;
-    });
-  }
-
-  MOCK_METHOD(bool, IsPrivacySandboxRestricted, (), (const, override));
-  MOCK_METHOD(bool,
-              IsPrivacySandboxCurrentlyUnrestricted,
-              (),
-              (const, override));
-
-  MOCK_METHOD(bool, IsIncognitoProfile, (), (const, override));
-};
-
 // A declarative test case is a collection of key value pairs, which each define
 // some property of the test, such as the state of the profile, the input, or
 // expected output.
@@ -121,29 +89,17 @@ enum class InputKey {
   // TODO(crbug.com/474716334): Remove this enum.
   kPromptAction = 10,
   kEventReportingDestinationOrigin = 11,
-  kOutSharedStorageDebugMessage = 12,
-  kOutSharedStorageSelectURLDebugMessage = 13,
-  kOutSharedStorageBlockIsSiteSettingSpecific = 14,
-  kOutSharedStorageSelectURLBlockIsSiteSettingSpecific = 15,
 };
 
 // Defines the expected output of the functions under test, when the profile is
 // setup as per defined state, and they are provided the defined inputs.
 enum class OutputKey {
-  kIsSharedStorageAllowed = 6,
-  kIsSharedStorageSelectURLAllowed = 7,
-  kIsSharedStorageAllowedMetric = 14,
-  kIsSharedStorageSelectURLAllowedMetric = 15,
   // kPromptType and kM1PromptSuppressedReason are Obsolete.
   // TODO(crbug.com/474716334): Remove obsolete enums.
   kPromptType = 21,
   kM1TopicsEnabled = 26,
   kM1FledgeEnabled = 27,
   kM1AdMeasurementEnabled = 28,
-  kIsSharedStorageAllowedDebugMessage = 48,
-  kIsSharedStorageSelectURLAllowedDebugMessage = 49,
-  kIsSharedStorageBlockSiteSettingSpecific = 50,
-  kIsSharedStorageSelectURLBlockSiteSettingSpecific = 51,
 };
 
 // To allow multiple input keys to map to the same value, without having to
@@ -204,7 +160,6 @@ void RunTestCase(
     content::BrowserTaskEnvironment* task_environment,
     sync_preferences::TestingPrefServiceSyncable* testing_pref_service,
     HostContentSettingsMap* host_content_settings_map,
-    MockPrivacySandboxSettingsDelegate* mock_delegate,
     privacy_sandbox::PrivacySandboxSettings* privacy_sandbox_settings,
     PrivacySandboxServiceTestInterface* privacy_sandbox_service,
     content_settings::MockProvider* user_content_setting_provider,
@@ -220,7 +175,6 @@ void ApplyTestState(
     content::BrowserTaskEnvironment* task_environment,
     sync_preferences::TestingPrefServiceSyncable* testing_pref_service,
     HostContentSettingsMap* map,
-    MockPrivacySandboxSettingsDelegate* mock_delegate,
     PrivacySandboxServiceTestInterface* privacy_sandbox_service,
     privacy_sandbox::PrivacySandboxSettings* privacy_sandbox_settings,
     content_settings::MockProvider* user_content_setting_provider,

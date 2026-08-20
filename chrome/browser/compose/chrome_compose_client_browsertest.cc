@@ -28,7 +28,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/common/compose/compose.mojom.h"
@@ -1950,8 +1949,17 @@ IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest,
                                    kAcceptedComposeSuggestion)));
 }
 
-IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest,
-                       TestShouldTriggerProactiveNudgeBlockedBySegmentation) {
+// TODO(crbug.com/503556973): Flaky on Windows, Linux and Chrome OS.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation \
+  DISABLED_TestShouldTriggerProactiveNudgeBlockedBySegmentation
+#else
+#define MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation \
+  TestShouldTriggerProactiveNudgeBlockedBySegmentation
+#endif
+IN_PROC_BROWSER_TEST_F(
+    ChromeComposeClientBrowserTest,
+    MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation) {
   base::HistogramTester histograms;
 
   // Enable and trigger the proactive nudge.

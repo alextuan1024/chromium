@@ -41,6 +41,8 @@
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_actuation_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_camera_handler.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_capabilities_manager.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_capabilities_manager_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_configuration.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_consent_provider_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_gateway_manager.h"
@@ -82,8 +84,10 @@
 #import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/custom_leading_view_type.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
@@ -401,6 +405,14 @@ GeminiBrowserAgent::GeminiBrowserAgent(Browser* browser)
   }
   last_known_gemini_availability_ = IsGeminiAvailableForActiveWebState();
 
+  if (IsAppSwitcherAISummarizationEnabled()) {
+    GeminiCapabilitiesManager* capabilities_manager =
+        GeminiCapabilitiesManagerFactory::GetForProfile(browser_->GetProfile());
+    if (capabilities_manager) {
+      capabilities_manager->UpdateCapabilities();
+    }
+  }
+
   if (IsIOSGeminiBottomSheetMigrationEnabled()) {
     return;
   }
@@ -580,7 +592,8 @@ bool GeminiBrowserAgent::IsFloatyVisible() const {
 }
 
 bool GeminiBrowserAgent::IsInGeminiLiveMode() const {
-  return gemini::IsFeatureAvailable(gemini::Feature::kLive,
+  return is_floaty_invoked_ &&
+         gemini::IsFeatureAvailable(gemini::Feature::kLive,
                                     browser_->GetProfile()) &&
          ios::provider::GetCurrentMode() ==
              ios::provider::GeminiViewMode::kLive;
@@ -857,20 +870,22 @@ bool GeminiBrowserAgent::HasCompletedFirstRun() {
 }
 
 void GeminiBrowserAgent::UpdateGeminiLiveIconVisibility(bool animated) {
-  if (IsChromeNextIaEnabled() || !IsGeminiLiveEnabled()) {
+  if (!IsGeminiLiveEnabled()) {
     return;
   }
-  CGFloat progress = 1.0;
-  if (fullscreen_controller_) {
-    progress = fullscreen_controller_->GetProgress();
-  }
-  BOOL visible = IsInGeminiLiveMode() && (progress < 0.1);
 
+  CustomLeadingViewType type = IsInGeminiLiveMode()
+                                   ? CustomLeadingViewType::kGeminiLive
+                                   : CustomLeadingViewType::kNone;
   CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
-  if ([dispatcher dispatchingForProtocol:@protocol(OmniboxCommands)]) {
+  if (IsChromeNextIaEnabled()) {
+    id<LocationBarBadgeCommands> location_bar_badge_handler =
+        HandlerForProtocol(dispatcher, LocationBarBadgeCommands);
+    [location_bar_badge_handler setBadgeCustomLeadingViewType:type];
+  } else {
     id<OmniboxCommands> omnibox_handler =
         HandlerForProtocol(dispatcher, OmniboxCommands);
-    [omnibox_handler setCustomLeadingViewVisible:visible animated:animated];
+    [omnibox_handler setCustomLeadingViewType:type];
   }
 }
 
@@ -1084,6 +1099,14 @@ void GeminiBrowserAgent::PresentFloaty(UIViewController* base_view_controller,
     bool should_show_suggestion_chips = [gemini_container_mediator_
         shouldShowSuggestionChipsForEntryPoint:entry_point];
     ios::provider::SetShouldShowSuggestionChips(should_show_suggestion_chips);
+    bool block_query_submission = [gemini_container_mediator_
+        shouldBlockQuerySubmissionWhileLoadingForEntryPoint:entry_point];
+    ios::provider::SetBlockQuerySubmissionWhileLoading(block_query_submission);
+    bool show_page_loading_snackbar = [gemini_container_mediator_
+        shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
+            entry_point];
+    ios::provider::SetShowPageLoadingSnackbarOnOpeningInvocation(
+        show_page_loading_snackbar);
     if (IsChromeNextIaEnabled() && IsFullscreenRefactoringEnabled()) {
       [HandlerForProtocol(browser_->GetCommandDispatcher(), FullscreenCommands)
           exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::
@@ -1124,8 +1147,6 @@ void GeminiBrowserAgent::PresentFloaty(UIViewController* base_view_controller,
 
 void GeminiBrowserAgent::HandleDormantStatus(
     ios::provider::GeminiDormantReason dormant_reason) {
-  SwitchToChatModeOrDismiss(/*animated=*/true);
-
   if (IsGeminiLiveDormantReasonsEnabled()) {
     switch (dormant_reason) {
       case ios::provider::GeminiDormantReason::kLowVolumeInBackground:
@@ -1133,25 +1154,35 @@ void GeminiBrowserAgent::HandleDormantStatus(
       case ios::provider::GeminiDormantReason::kInterruptedByExternalAudio:
       case ios::provider::GeminiDormantReason::kUserStop:
       case ios::provider::GeminiDormantReason::kUserPause:
+        SwitchToChatModeOrDismiss(/*animated=*/true,
+                                  ios::provider::GeminiViewState::kExpanded);
         break;
       case ios::provider::GeminiDormantReason::kInactivityTimeout:
+        SwitchToChatModeOrDismiss(/*animated=*/true,
+                                  ios::provider::GeminiViewState::kCollapsed);
         is_showing_live_session_dormant_snackbar_ = true;
         ShowLiveSessionDormantSnackbar(
             IDS_IOS_GEMINI_LIVE_CONTINUE_SESSION_SNACKBAR);
         break;
       case ios::provider::GeminiDormantReason::kLongInteractionTimeout:
       case ios::provider::GeminiDormantReason::kServerPause:
+        SwitchToChatModeOrDismiss(/*animated=*/true,
+                                  ios::provider::GeminiViewState::kCollapsed);
         is_showing_live_session_dormant_snackbar_ = true;
         ShowLiveSessionDormantSnackbar(
             IDS_IOS_GEMINI_LIVE_SERVER_PAUSE_SNACKBAR);
         break;
       default:
+        SwitchToChatModeOrDismiss(/*animated=*/true,
+                                  ios::provider::GeminiViewState::kCollapsed);
         is_showing_live_session_dormant_snackbar_ = true;
         ShowLiveSessionDormantSnackbar(
             IDS_IOS_GEMINI_LIVE_GENERAL_DORMANT_SNACKBAR);
         break;
     }
   } else {
+    SwitchToChatModeOrDismiss(/*animated=*/true,
+                              ios::provider::GeminiViewState::kCollapsed);
     is_showing_live_session_dormant_snackbar_ = true;
     ShowLiveSessionDormantSnackbar(
         IDS_IOS_GEMINI_LIVE_GENERAL_DORMANT_SNACKBAR);
@@ -1320,15 +1351,30 @@ void GeminiBrowserAgent::OnGeminiLiveUserDidBargeIn() {
 }
 
 void GeminiBrowserAgent::OnModeChanged(ios::provider::GeminiViewMode mode) {
+  if (IsFullscreenInitialized()) {
+    if (IsFullscreenRefactoringEnabled()) {
+      [HandlerForProtocol(browser_->GetCommandDispatcher(), FullscreenCommands)
+          exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::
+                                        kUserInitiatedFinishedByCode
+                           animated:YES];
+    } else {
+      fullscreen_controller_->ExitFullscreen();
+    }
+  }
+
   if (mode == ios::provider::GeminiViewMode::kLive) {
     RecordLiveSessionStarted();
     if (live_session_start_time_.is_null()) {
       live_session_start_time_ = base::TimeTicks::Now();
       live_turn_count_ = 0;
     }
+    if (last_shown_view_state_ == ios::provider::GeminiViewState::kExpanded) {
+      ResetFullscreenDisabler();
+    }
   } else {
     LogLiveSessionMetrics();
   }
+  UpdateGeminiLiveIconVisibility();
 }
 
 void GeminiBrowserAgent::OnGeminiUIDidAppear() {
@@ -1536,7 +1582,9 @@ void GeminiBrowserAgent::UpdateAttachedTabContexts(
                      weak_factory_.GetWeakPtr()));
 }
 
-void GeminiBrowserAgent::SwitchToChatModeOrDismiss(bool animated) {
+void GeminiBrowserAgent::SwitchToChatModeOrDismiss(
+    bool animated,
+    ios::provider::GeminiViewState target_state) {
   web::WebState* active_web_state =
       browser_->GetWebStateList()->GetActiveWebState();
   GeminiTabHelper* tab_helper = GetActiveTabHelper(active_web_state);
@@ -1544,7 +1592,7 @@ void GeminiBrowserAgent::SwitchToChatModeOrDismiss(bool animated) {
     DismissFloaty();
   } else {
     ios::provider::SwitchToMode(ios::provider::GeminiViewMode::kFloaty,
-                                animated);
+                                target_state, animated);
   }
 }
 
@@ -2101,11 +2149,6 @@ bool GeminiBrowserAgent::IsFullscreenInitialized() {
 
 void GeminiBrowserAgent::ResetFullscreenDisabler() {
   if (!fullscreen_disabler_) {
-    return;
-  }
-
-  if (IsChromeNextIaEnabled() && IsAppBarHiddenInFullscreen() &&
-      is_floaty_invoked_) {
     return;
   }
 

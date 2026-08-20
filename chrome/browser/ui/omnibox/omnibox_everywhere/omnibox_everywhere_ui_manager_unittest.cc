@@ -14,6 +14,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_widget_delegate.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
+#include "components/ntp_tiles/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/context_menu_params.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -666,7 +668,7 @@ TEST_F(OmniboxEverywhereUIManagerTest, ContextMenuModelEditableElement) {
 
   content::ContextMenuParams params;
   params.is_editable = true;
-  ui_manager->HandleContextMenu(*rfh, params);
+  EXPECT_TRUE(ui_manager->HandleContextMenu(*rfh, params));
 
   const ui::SimpleMenuModel* model =
       ui_manager->context_menu_model_for_testing();
@@ -696,7 +698,7 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   content::ContextMenuParams params;
   params.is_editable = false;
   params.selection_text = u"selected text";
-  ui_manager->HandleContextMenu(*rfh, params);
+  EXPECT_TRUE(ui_manager->HandleContextMenu(*rfh, params));
 
   const ui::SimpleMenuModel* model =
       ui_manager->context_menu_model_for_testing();
@@ -710,7 +712,7 @@ TEST_F(OmniboxEverywhereUIManagerTest,
 }
 
 TEST_F(OmniboxEverywhereUIManagerTest,
-       ContextMenuModelNonEditableElementWithoutSelection) {
+       ContextMenuSuppressedOnNonEditableBackground) {
   auto ui_manager = CreateUIManager();
   ui_manager->ShowForProfile(&profile_, GetContext());
   ASSERT_TRUE(ui_manager->widget());
@@ -719,19 +721,32 @@ TEST_F(OmniboxEverywhereUIManagerTest,
                   ->web_contents()
                   ->GetPrimaryMainFrame();
 
+  // Right-clicking on empty background space (not editable, no selection text).
   content::ContextMenuParams params;
   params.is_editable = false;
-  ui_manager->HandleContextMenu(*rfh, params);
+  params.selection_text = u"";
 
-  const ui::SimpleMenuModel* model =
-      ui_manager->context_menu_model_for_testing();
-  ASSERT_TRUE(model);
-  EXPECT_EQ(model->GetItemCount(), 3u);
-  EXPECT_EQ(model->GetCommandIdAt(0),
-            omnibox_everywhere::OmniboxEverywhereUIManager::kPaste);
-  EXPECT_EQ(model->GetTypeAt(1), ui::MenuModel::ItemType::TYPE_SEPARATOR);
-  EXPECT_EQ(model->GetCommandIdAt(2),
-            omnibox_everywhere::OmniboxEverywhereUIManager::kSelectAll);
+  bool menu_runner_created = false;
+  ui_manager->SetMenuRunnerFactoryForTesting(base::BindRepeating(
+      [](bool* created, ui::MenuModel* model,
+         base::RepeatingClosure on_closed) {
+        *created = true;
+        auto runner = std::make_unique<views::MenuRunner>(
+            model,
+            views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
+            on_closed);
+        views::test::MenuRunnerTestAPI(runner.get())
+            .SetMenuRunnerHandler(std::make_unique<TestMenuRunnerHandler>());
+        return runner;
+      },
+      &menu_runner_created));
+
+  // Should return true (consumed/handled) but NOT create or open a context
+  // menu.
+  EXPECT_TRUE(ui_manager->HandleContextMenu(*rfh, params));
+  EXPECT_FALSE(menu_runner_created);
+  EXPECT_FALSE(ui_manager->is_context_menu_open_for_testing());
+  EXPECT_FALSE(ui_manager->context_menu_model_for_testing());
 }
 
 TEST_F(OmniboxEverywhereUIManagerTest, ContextMenuCommandEnablement) {
@@ -890,6 +905,51 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   // Showing again creates a new widget with the updated ephemeral settings.
   ui_manager->ShowForProfile(&profile_, GetContext());
   ASSERT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+
+  ui_manager->Shutdown();
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest,
+       CleanUpWidgetOnMostVisitedPrefChangeWhenHidden) {
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, true);
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+
+  // Hide the widget.
+  ui_manager->Close();
+  EXPECT_FALSE(ui_manager->widget()->IsVisible());
+  EXPECT_TRUE(ui_manager->widget());
+
+  // Changing a most-visited pref while hidden should clean up the old widget to
+  // prevent stale frame buffer and tile flicker upon reopen.
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, false);
+  EXPECT_FALSE(ui_manager->widget());
+
+  // Showing again creates a fresh widget with the updated preferences.
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+
+  ui_manager->Shutdown();
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest,
+       KeepWidgetOnMostVisitedPrefChangeWhenVisible) {
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, true);
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+
+  // Changing a most-visited pref while visible should keep the widget alive for
+  // in-place dynamic update via Mojo.
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, false);
+  EXPECT_TRUE(ui_manager->widget());
   EXPECT_TRUE(ui_manager->widget()->IsVisible());
 
   ui_manager->Shutdown();

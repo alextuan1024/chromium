@@ -59,7 +59,8 @@ public abstract class MultiInstanceManager {
         NewWindowAppSource.BROWSER_WINDOW_CREATOR,
         NewWindowAppSource.ANDROID_S_UPDATE,
         NewWindowAppSource.CRASH_RECOVERY,
-        NewWindowAppSource.RELAUNCH
+        NewWindowAppSource.RELAUNCH,
+        NewWindowAppSource.SETTINGS
     })
     public @interface NewWindowAppSource {
         int UNKNOWN = 0;
@@ -76,7 +77,8 @@ public abstract class MultiInstanceManager {
         int ANDROID_S_UPDATE = 11;
         int CRASH_RECOVERY = 12;
         int RELAUNCH = 13;
-        int NUM_ENTRIES = 14;
+        int SETTINGS = 14;
+        int NUM_ENTRIES = 15;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml)
@@ -90,7 +92,9 @@ public abstract class MultiInstanceManager {
         CloseWindowAppSource.RETENTION_PERIOD_EXPIRATION,
         CloseWindowAppSource.NO_TABS_IN_WINDOW,
         CloseWindowAppSource.RECENT_TABS,
-        CloseWindowAppSource.RECENTLY_CLOSED_LIMIT_EXCEEDED
+        CloseWindowAppSource.RECENTLY_CLOSED_LIMIT_EXCEEDED,
+        CloseWindowAppSource.KEYBOARD_SHORTCUT,
+        CloseWindowAppSource.MENU
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface CloseWindowAppSource {
@@ -100,7 +104,9 @@ public abstract class MultiInstanceManager {
         int NO_TABS_IN_WINDOW = 3;
         int RECENT_TABS = 4;
         int RECENTLY_CLOSED_LIMIT_EXCEEDED = 5;
-        int NUM_ENTRIES = 6;
+        int KEYBOARD_SHORTCUT = 6;
+        int MENU = 7;
+        int NUM_ENTRIES = 8;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml)

@@ -27,7 +27,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/global_error/global_error.h"
 #include "chrome/browser/ui/global_error/global_error_service.h"
 #include "chrome/browser/ui/global_error/global_error_service_factory.h"
@@ -83,11 +82,15 @@ class MenuError : public GlobalError {
   bool HasMenuItem() override { return true; }
   int MenuItemCommandID() override { return command_id_; }
   std::u16string MenuItemLabel() override { return std::u16string(); }
-  void ExecuteMenuItem(Browser* browser) override { execute_count_++; }
+  void ExecuteMenuItem(BrowserWindowInterface* browser) override {
+    execute_count_++;
+  }
 
   bool HasBubbleView() override { return false; }
   bool HasShownBubbleView() override { return false; }
-  void ShowBubbleView(Browser* browser) override { ADD_FAILURE(); }
+  void ShowBubbleView(BrowserWindowInterface* browser) override {
+    ADD_FAILURE();
+  }
   GlobalErrorBubbleViewBase* GetBubbleView() override { return nullptr; }
 
  private:
@@ -380,7 +383,7 @@ IN_PROC_BROWSER_TEST_F(AppMenuModelTest, ModelHasIcons) {
   // Skip the items that are either not supposed to have an icon, or are not
   // ready to be tested. Remove items once they're ready for testing.
   const std::vector<int> skip_commands = {
-      kRecentTabsNoDeviceTabsId,
+      IDC_RECENT_TABS_NO_DEVICE_TABS,
       IDC_ABOUT,
       RecentTabsSubMenuModel::GetDisabledRecentlyClosedHeaderCommandId(),
       IDC_EXTENSIONS_SUBMENU_VISIT_CHROME_WEB_STORE,

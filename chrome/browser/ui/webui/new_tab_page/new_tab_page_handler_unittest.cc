@@ -85,6 +85,7 @@
 #include "ui/color/color_transform.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/native_theme/os_settings_provider.h"
 #include "url/gurl.h"
 
 // TODO(b/502297163): Remove this guard once these desktop-only features are
@@ -99,7 +100,6 @@
 #include "chrome/browser/ui/views/side_panel/customize_chrome/side_panel_controller_views.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #endif
 
 namespace {
@@ -291,10 +291,6 @@ class MockCustomizeChromeTabHelper
               (SidePanelOpenTrigger, std::optional<CustomizeChromeSection>),
               (override));
   MOCK_METHOD(void, CloseSidePanel, (), (override));
-
- protected:
-  MOCK_METHOD(void, CreateAndRegisterEntry, (), (override));
-  MOCK_METHOD(void, DeregisterEntry, (), (override));
 };
 
 int GetDictPrefKeyCount(Profile* profile,
@@ -349,10 +345,10 @@ class NewTabPageHandlerTest : public testing::Test {
         .WillOnce(testing::SaveArg<0>(&promo_service_observer_));
     if (!base::FeatureList::IsEnabled(
             ntp_features::kNtpBackgroundImageErrorDetection)) {
-      EXPECT_CALL(mock_page_, SetTheme).Times(1);
+      EXPECT_CALL(mock_page_, SetTheme).Times(testing::AtLeast(1));
       EXPECT_CALL(mock_ntp_custom_background_service_,
                   RefreshBackgroundIfNeeded)
-          .Times(1);
+          .Times(testing::AtLeast(1));
     } else {
       EXPECT_CALL(mock_ntp_custom_background_service_,
                   VerifyCustomBackgroundImageURL)
@@ -415,6 +411,8 @@ class NewTabPageHandlerTest : public testing::Test {
   }
 
  protected:
+  ui::OsSettingsProvider os_settings_provider_{
+      ui::OsSettingsProvider::PriorityLevel::kTesting};
   testing::NiceMock<MockPage> mock_page_;
   // NOTE: The initialization order of these members matters.
   content::BrowserTaskEnvironment task_environment_;

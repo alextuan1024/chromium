@@ -2057,6 +2057,14 @@ Google Chrome is unable to recover your settings.
         <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
           You can pin Google Search AI Mode to ask questions as you browse
         </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search AI Mode.">
+          You can reopen Google Search AI Mode to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search AI Mode."
+          is_accessibility_with_no_ui="true">
+          From the "Google Search AI Mode" button on the toolbar, you can reopen Google Search AI Mode to ask questions while you browse
+        </message>
         <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP1" desc="The body text of the first step of the Contextual Tasks tutorial. THREE_DOTS_ICON is the vertical three-dot overflow menu icon that we are instructing users to click on.">
           Open the more <ph name="THREE_DOTS_ICON">⋮</ph> menu
         </message>
@@ -3324,7 +3332,7 @@ Google Chrome is unable to recover your settings.
           Your microphone will be used to capture your voice.
         </message>
         <message name="IDS_DICTATION_ONBOARDING_BULLET_DISCLAIMER" desc="The disclaimer text in the onboarding dialog describing the use of AI and potential for mistakes and providing a link for more details." translateable="false">
-          Gemini is AI and can make mistakes. <ph name="LEARN_MORE_LINK">$1<ex>Learn more</ex></ph>
+          Gemini models can make mistakes. <ph name="LEARN_MORE_LINK">$1<ex>Learn more</ex></ph>
         </message>
       </if>
 

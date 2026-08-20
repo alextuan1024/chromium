@@ -31,11 +31,13 @@ class DatabaseMemoryBankTest : public testing::Test {
   std::unique_ptr<DatabaseMemoryBank> memory_bank_;
 };
 
-TEST_F(DatabaseMemoryBankTest, SaveTabAndRetrieve) {
-  base::test::TestFuture<void> save_future;
-  memory_bank_->SaveTab(GURL("https://example.com"), "Example", "Page content",
-                        save_future.GetCallback());
-  EXPECT_TRUE(save_future.Wait());
+TEST_F(DatabaseMemoryBankTest, SaveMemoryBankEntryAndRetrieve) {
+  base::test::TestFuture<bool> save_future;
+  memory_bank_->SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTab, GURL("https://example.com"),
+                      "Example", "Page content"),
+      save_future.GetCallback());
+  ASSERT_TRUE(save_future.Get());
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> get_future;
   memory_bank_->GetAllEntries(get_future.GetCallback());
@@ -48,11 +50,13 @@ TEST_F(DatabaseMemoryBankTest, SaveTabAndRetrieve) {
   EXPECT_EQ("Page content", entries[0].selected_text.value());
 }
 
-TEST_F(DatabaseMemoryBankTest, SaveTextSelectionAndDelete) {
-  base::test::TestFuture<void> save_future;
-  memory_bank_->SaveTextSelection(GURL("https://google.com"), "Google",
-                                  "Search text", save_future.GetCallback());
-  EXPECT_TRUE(save_future.Wait());
+TEST_F(DatabaseMemoryBankTest, SaveMemoryBankEntryAndDelete) {
+  base::test::TestFuture<bool> save_future;
+  memory_bank_->SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTextSelection,
+                      GURL("https://google.com"), "Google", "Search text"),
+      save_future.GetCallback());
+  ASSERT_TRUE(save_future.Get());
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> get_future;
   memory_bank_->GetAllEntries(get_future.GetCallback());
@@ -60,10 +64,10 @@ TEST_F(DatabaseMemoryBankTest, SaveTextSelectionAndDelete) {
   ASSERT_EQ(1u, entries.size());
   EXPECT_EQ(MemoryBankType::kTextSelection, entries[0].type);
 
-  base::test::TestFuture<void> delete_future;
+  base::test::TestFuture<bool> delete_future;
   std::vector<int64_t> ids = {entries[0].id};
   memory_bank_->DeleteEntries(ids, delete_future.GetCallback());
-  EXPECT_TRUE(delete_future.Wait());
+  ASSERT_TRUE(delete_future.Get());
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> empty_future;
   memory_bank_->GetAllEntries(empty_future.GetCallback());
@@ -71,15 +75,19 @@ TEST_F(DatabaseMemoryBankTest, SaveTextSelectionAndDelete) {
 }
 
 TEST_F(DatabaseMemoryBankTest, GetEntriesByIds) {
-  base::test::TestFuture<void> save_future1;
-  memory_bank_->SaveTab(GURL("https://example.com/1"), "Tab 1", "Content 1",
-                        save_future1.GetCallback());
-  EXPECT_TRUE(save_future1.Wait());
+  base::test::TestFuture<bool> save_future1;
+  memory_bank_->SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTab, GURL("https://example.com/1"),
+                      "Tab 1", "Content 1"),
+      save_future1.GetCallback());
+  ASSERT_TRUE(save_future1.Get());
 
-  base::test::TestFuture<void> save_future2;
-  memory_bank_->SaveTab(GURL("https://example.com/2"), "Tab 2", "Content 2",
-                        save_future2.GetCallback());
-  EXPECT_TRUE(save_future2.Wait());
+  base::test::TestFuture<bool> save_future2;
+  memory_bank_->SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTab, GURL("https://example.com/2"),
+                      "Tab 2", "Content 2"),
+      save_future2.GetCallback());
+  ASSERT_TRUE(save_future2.Get());
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> all_future;
   memory_bank_->GetAllEntries(all_future.GetCallback());

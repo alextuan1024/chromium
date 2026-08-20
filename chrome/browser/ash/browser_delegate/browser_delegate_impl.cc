@@ -22,9 +22,12 @@
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
@@ -32,6 +35,7 @@
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_info.h"
+#include "components/tabs/public/tab_group.h"
 #include "ui/base/base_window.h"
 
 namespace ash {
@@ -166,6 +170,16 @@ bool BrowserDelegateImpl::IsVisible() const {
   return browser_->GetWindow()->IsVisible();
 }
 
+bool BrowserDelegateImpl::IsFullscreen() const {
+  return browser_->GetWindow()->IsFullscreen();
+}
+
+void BrowserDelegateImpl::SetFullscreen(bool fullscreen) {
+  if (IsFullscreen() != fullscreen) {
+    chrome::ToggleFullscreenMode(&*browser_, /*user_initiated=*/false);
+  }
+}
+
 void BrowserDelegateImpl::Show() {
   browser_->GetWindow()->Show();
 }
@@ -244,6 +258,23 @@ void BrowserDelegateImpl::CreateTabGroup(
   tab_strip_model->ChangeTabGroupVisuals(new_group_id, tab_group.visual_data);
 }
 
+std::vector<tab_groups::TabGroupInfo> BrowserDelegateImpl::GetTabGroupInfos()
+    const {
+  std::vector<tab_groups::TabGroupInfo> tab_groups;
+  const TabGroupModel* group_model = browser_->tab_strip_model()->group_model();
+  if (group_model) {
+    for (const auto& group_id : group_model->ListTabGroups()) {
+      const TabGroup* tab_group = group_model->GetTabGroup(group_id);
+      tab_groups.emplace_back(
+          gfx::Range(tab_group->ListTabs()),
+          tab_groups::TabGroupVisualData(*(tab_group->visual_data())));
+    }
+  } else {
+    CHECK(!browser_->tab_strip_model()->SupportsTabGroups());
+  }
+  return tab_groups;
+}
+
 void BrowserDelegateImpl::PinTab(size_t tab_index) {
   browser_->tab_strip_model()->SetTabPinned(static_cast<int>(tab_index),
                                             /*pinned=*/true);
@@ -312,6 +343,15 @@ void BrowserDelegateImpl::SetTabSwitchCommandsEnabled(bool enabled) {
 
 void BrowserDelegateImpl::ActivateWebContentsAt(size_t index) {
   browser_->tab_strip_model()->ActivateTabAt(static_cast<int>(index));
+}
+
+void BrowserDelegateImpl::SetContentsBackgroundVisible(bool visible) {
+  BrowserView& browser_view =
+      CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(&browser_.get()));
+  for (ContentsWebView* contents_view :
+       browser_view.GetAllVisibleContentsWebViews()) {
+    contents_view->SetBackgroundVisible(visible);
+  }
 }
 
 }  // namespace ash

@@ -122,6 +122,7 @@ import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.lifecycle.InflationObserver;
 import org.chromium.chrome.browser.lifecycle.NativeInitObserver;
 import org.chromium.chrome.browser.lifecycle.WindowFocusChangedObserver;
+import org.chromium.chrome.browser.media.TabSharingToolbarUiCoordinator;
 import org.chromium.chrome.browser.merchant_viewer.MerchantTrustMetrics;
 import org.chromium.chrome.browser.merchant_viewer.MerchantTrustSignalsCoordinator;
 import org.chromium.chrome.browser.messages.ChromeMessageAutodismissDurationProvider;
@@ -448,6 +449,7 @@ public class RootUiCoordinator
     private @Nullable ReaderModeBottomSheetManager mReaderModeBottomSheetManager;
     private @Nullable AppMenuObserver mAppMenuObserver;
     private @Nullable LinkHoverStatusBarCoordinator mLinkHoverStatusBarCoordinator;
+    private @Nullable TabSharingToolbarUiCoordinator mTabSharingToolbarUiCoordinator;
     private @Nullable BookmarkAllTabsHandler mBookmarkAllTabsHandler;
 
     private final OneshotSupplierImpl<ToolbarManager> mToolbarManagerOneshotSupplier =
@@ -772,6 +774,15 @@ public class RootUiCoordinator
                             @Override
                             public boolean isCurrentTabNull() {
                                 return mActivityTabProvider.get() == null;
+                            }
+
+                            @Override
+                            public boolean isPageZoomSupported() {
+                                Tab tab = mActivityTabProvider.get();
+                                if (tab == null || tab.isNativePage()) {
+                                    return false;
+                                }
+                                return true;
                             }
 
                             @Override
@@ -1188,6 +1199,11 @@ public class RootUiCoordinator
             mLinkHoverStatusBarCoordinator = null;
         }
 
+        if (mTabSharingToolbarUiCoordinator != null) {
+            mTabSharingToolbarUiCoordinator.destroy();
+            mTabSharingToolbarUiCoordinator = null;
+        }
+
         if (mAutomotiveBackButtonToolbarCoordinator != null) {
             mAutomotiveBackButtonToolbarCoordinator.destroy();
             mAutomotiveBackButtonToolbarCoordinator = null;
@@ -1357,29 +1373,8 @@ public class RootUiCoordinator
             initializeEdgeToEdgeController();
         }
 
-        if (EphemeralTabCoordinator.isSupported()) {
-            Supplier<TabCreator> tabCreator =
-                    () ->
-                            mTabCreatorManagerSupplier
-                                    .asNonNull()
-                                    .get()
-                                    .getTabCreator(tabModelSelector.isIncognitoSelected());
-            ContextMenuPopulatorFactory contextMenuPopulatorFactory =
-                    new ChromeContextMenuPopulatorFactory(
-                            /* itemDelegate= */ null,
-                            mShareDelegateSupplier,
-                            ChromeContextMenuPopulator.ContextMenuMode.THIN_WEB_VIEW,
-                            /* customContentActions= */ Collections.emptyList(),
-                            getLeftSideUiWidthSupplier());
-            mEphemeralTabCoordinatorSupplier.set(
-                    new EphemeralTabCoordinator(
-                            mActivity,
-                            mWindowAndroid,
-                            mActivity.getWindow().getDecorView(),
-                            mActivityTabProvider,
-                            tabCreator,
-                            assertNonNull(getBottomSheetController()),
-                            contextMenuPopulatorFactory));
+        if (!ChromeFeatureList.sAndroidStartupImprovements.isEnabled()) {
+            initEphemeralTabCoordinator();
         }
         ReadAloudController controller =
                 new ReadAloudController(
@@ -1469,6 +1464,13 @@ public class RootUiCoordinator
                         mCompositorViewHolderSupplier.asNonNull().get(),
                         () -> mBrowserControlsManager.getContentOffset());
         AnchoredDialogCoordinatorProvider.attach(mWindowAndroid, mAnchoredDialogCoordinator);
+
+        ViewGroup controlContainer = (ViewGroup) mActivity.findViewById(R.id.control_container);
+        if (ChromeFeatureList.sTabSharingToolbarAndroid.isEnabled() && controlContainer != null) {
+            mTabSharingToolbarUiCoordinator =
+                    new TabSharingToolbarUiCoordinator(
+                            mActivity, controlContainer, mTopControlsStacker, mActivityTabProvider);
+        }
     }
 
     private void initReaderModeBottomSheetManager() {
@@ -1517,6 +1519,38 @@ public class RootUiCoordinator
             observer.destroy();
         } else {
             mReaderModeTabObserver = observer;
+        }
+    }
+
+    private void initEphemeralTabCoordinator() {
+        if (mEphemeralTabCoordinatorSupplier.get() != null) return;
+        if (EphemeralTabCoordinator.isSupported()) {
+            Supplier<TabCreator> tabCreator =
+                    () ->
+                            mTabCreatorManagerSupplier
+                                    .asNonNull()
+                                    .get()
+                                    .getTabCreator(
+                                            mTabModelSelectorSupplier
+                                                    .asNonNull()
+                                                    .get()
+                                                    .isIncognitoSelected());
+            ContextMenuPopulatorFactory contextMenuPopulatorFactory =
+                    new ChromeContextMenuPopulatorFactory(
+                            /* itemDelegate= */ null,
+                            mShareDelegateSupplier,
+                            ChromeContextMenuPopulator.ContextMenuMode.THIN_WEB_VIEW,
+                            /* customContentActions= */ Collections.emptyList(),
+                            getLeftSideUiWidthSupplier());
+            mEphemeralTabCoordinatorSupplier.set(
+                    new EphemeralTabCoordinator(
+                            mActivity,
+                            mWindowAndroid,
+                            mActivity.getWindow().getDecorView(),
+                            mActivityTabProvider,
+                            tabCreator,
+                            assertNonNull(getBottomSheetController()),
+                            contextMenuPopulatorFactory));
         }
     }
 
@@ -2435,6 +2469,7 @@ public class RootUiCoordinator
                         mActionModeControllerCallback,
                         mBackPressManager,
                         mActivity.findViewById(R.id.secondary_ui_container),
+                        mIsTablet ? mActivity.findViewById(R.id.control_container) : null,
                         mBrowserControlsManager);
 
         mFindToolbarObserver =
@@ -2702,7 +2737,13 @@ public class RootUiCoordinator
      * @return Supplies the {@link EphemeralTabCoordinator}
      */
     public Supplier<@Nullable EphemeralTabCoordinator> getEphemeralTabCoordinatorSupplier() {
-        return mEphemeralTabCoordinatorSupplier;
+        if (!ChromeFeatureList.sAndroidStartupImprovements.isEnabled()) {
+            return mEphemeralTabCoordinatorSupplier;
+        }
+        return () -> {
+            initEphemeralTabCoordinator();
+            return mEphemeralTabCoordinatorSupplier.get();
+        };
     }
 
     /**

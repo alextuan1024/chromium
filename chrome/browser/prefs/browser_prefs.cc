@@ -47,7 +47,6 @@
 #include "chrome/browser/media/unified_autoplay_config.h"
 #include "chrome/browser/media/webrtc/capture_policy_utils.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
-#include "chrome/browser/media/webrtc/permission_bubble_media_access_handler.h"
 #include "chrome/browser/memory/enterprise_memory_limit_pref_observer.h"
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
 #include "chrome/browser/metrics/tab_stats/tab_stats_tracker.h"
@@ -989,6 +988,12 @@ constexpr char kPrivacySandboxBlockedTopics[] =
     "privacy_sandbox.blocked_topics";
 constexpr char kPrivacySandboxFledgeJoinBlocked[] =
     "privacy_sandbox.fledge_join_blocked";
+constexpr char kShowRollbackUiModeB[] =
+    "tracking_protection.show_rollback_ui_mode_b";
+constexpr char kTrackingProtection3pcdEnabled[] =
+    "tracking_protection.tracking_protection_3pcd_enabled";
+constexpr char kBlockAll3pcToggleEnabled[] =
+    "tracking_protection.block_all_3pc_toggle_enabled";
 
 #if BUILDFLAG(IS_CHROMEOS)
 // Deprecated 07/2026.
@@ -1400,6 +1405,11 @@ void RegisterProfilePrefsForMigration(
   registry->RegisterBooleanPref(kObsoleteAutofillWalletImportEnabled, true);
   registry->RegisterBooleanPref(kObsoleteAutofillWalletImportEnabledMigrated,
                                 false);
+
+  // Deprecated 08/2026.
+  registry->RegisterBooleanPref(kShowRollbackUiModeB, false);
+  registry->RegisterBooleanPref(kBlockAll3pcToggleEnabled, false);
+  registry->RegisterBooleanPref(kTrackingProtection3pcdEnabled, false);
 }
 
 }  // namespace
@@ -1814,7 +1824,6 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   payments::RegisterProfilePrefs(registry);
   performance_manager::user_tuning::prefs::RegisterProfilePrefs(registry);
   permissions::RegisterProfilePrefs(registry);
-  PermissionBubbleMediaAccessHandler::RegisterProfilePrefs(registry);
   PlatformNotificationServiceImpl::RegisterProfilePrefs(registry);
   policy::URLBlocklistManager::RegisterProfilePrefs(registry);
   PolicyUI::RegisterProfilePrefs(registry);
@@ -2733,6 +2742,11 @@ void MigrateObsoleteProfilePrefs(PrefService* profile_prefs,
   profile_prefs->ClearPref(kPrivacySandboxTopicsDataAccessibleSince);
   profile_prefs->ClearPref(kPrivacySandboxBlockedTopics);
   profile_prefs->ClearPref(kPrivacySandboxFledgeJoinBlocked);
+
+  // Added 08/2026.
+  profile_prefs->ClearPref(kShowRollbackUiModeB);
+  profile_prefs->ClearPref(kBlockAll3pcToggleEnabled);
+  profile_prefs->ClearPref(kTrackingProtection3pcdEnabled);
 
   // Please don't delete the following line. It is used by PRESUBMIT.py.
   // END_MIGRATE_OBSOLETE_PROFILE_PREFS

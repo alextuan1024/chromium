@@ -17,6 +17,22 @@
 
 h1 {
   font-size: 1.75rem;
+  margin-bottom: 8px;
+}
+
+#learn-more {
+  color: var(--cr-secondary-text-color);
+  font-size: 1rem;
+  margin-bottom: 16px;
+}
+
+#learn-more a {
+  color: var(--cr-link-color);
+  text-decoration: none;
+}
+
+#learn-more a:hover {
+  text-decoration: underline;
 }
 
 .header-row {
@@ -28,6 +44,7 @@ h1 {
 
 h2 {
   font-size: 1.5rem;
+  margin: 0;
 }
 
 #iwa-list {
@@ -42,4 +59,10 @@ h2 {
   font-style: italic;
   padding: 24px;
   text-align: center;
+}
+
+#installButton {
+  /* Aligns perfectly with the 20px padding + 1px border of the app list cards */
+  margin-inline-end: 21px;
+  min-width: 81px;
 }

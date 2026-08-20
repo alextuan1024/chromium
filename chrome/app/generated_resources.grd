@@ -1426,6 +1426,9 @@ are declared in tools/grit/grit_args.gni.
         <message name="IDS_APP_MENU_TOOLS_AND_ACTIONS_HEADER" desc="Header title for the Tools and Actions section in the main App Menu">
           Tools and Actions
         </message>
+        <message name="IDS_APP_MENU_INCOGNITO" desc="Label for the Incognito block button in the main App Menu">
+          Incognito
+        </message>
         <message name="IDS_PROFILE_ROW_VERIFY_MESSAGE" desc="A label to indicate that the profile needs credential verification (reauthentication). This is a shorter version of 'Verify it's you' that is used in other places.">
           Verify
         </message>
@@ -5959,6 +5962,9 @@ are declared in tools/grit/grit_args.gni.
           <message name="IDS_EXTENSIONS_CONTEXT_MENU_UNPIN_FROM_TOOLBAR" desc="The label in an extension's context menu that the user can click to unpin the extension from the toolbar (sentence case).">
             Unpin from toolbar
           </message>
+          <message name="IDS_EXTENSIONS_CONTEXT_MENU_WRITE_REVIEW" desc="The label in an extension's context menu that the user can click to write a review for the extension (sentence case).">
+            Write a review
+          </message>
           <message name="IDS_EXTENSIONS_OPTIONS_MENU_ITEM" desc="The text for the options menu item in context menus (sentence case).">
             Options
           </message>
@@ -6032,6 +6038,9 @@ are declared in tools/grit/grit_args.gni.
           </message>
           <message name="IDS_EXTENSIONS_CONTEXT_MENU_UNPIN_FROM_TOOLBAR" desc="The label in an extension's context menu that the user can click to unpin the extension from the toolbar (sentence case).">
             Unpin from Toolbar
+          </message>
+          <message name="IDS_EXTENSIONS_CONTEXT_MENU_WRITE_REVIEW" desc="The label in an extension's context menu that the user can click to write a review for the extension (title case).">
+            Write a Review
           </message>
           <message name="IDS_EXTENSIONS_OPTIONS_MENU_ITEM" desc="The text for the options menu item in context menus (title case).">
             Options
@@ -10508,22 +10517,28 @@ Keep your key file in a safe place. You will need it to create new versions of y
           <message name="IDS_TAB_SCROLL_AUTO_SHOW_ON_OVERFLOW" desc="In Title Case: Text of the setting to automatically show scroll buttons on tab overflow.">
             Automatically Show Tab Scroll Buttons When Needed
           </message>
-          <message name="IDS_TAB_SCROLL_HIDE_BUTTONS" desc="In Title Case: Text of the context menu item or button to hide scroll buttons.">
-            Hide Scroll Buttons
-          </message>
-          <message name="IDS_TAB_SCROLL_PIN_BUTTONS" desc="In Title Case: Text of the context menu item to pin scroll buttons.">
+          <message name="IDS_TAB_SCROLL_PIN_BUTTONS_SYSTEM_MENU" desc="In Title Case: Text of the context system menu item to pin scroll buttons.">
             Pin Scroll Buttons
+          </message>
+          <message name="IDS_TAB_SCROLL_UNPIN_BUTTONS_SYSTEM_MENU" desc="In Title Case: Text of the context system menu item to unpin scroll buttons.">
+            Unpin Scroll Buttons
+          </message>
+          <message name="IDS_TAB_SCROLL_UNPIN_BUTTONS" desc="In Title Case: Text of the context menu item to unpin scroll buttons.">
+            Unpin
           </message>
         </then>
         <else>
           <message name="IDS_TAB_SCROLL_AUTO_SHOW_ON_OVERFLOW" desc="Text of the setting to automatically show scroll buttons on tab overflow.">
             Automatically show tab scroll buttons when needed
           </message>
-          <message name="IDS_TAB_SCROLL_HIDE_BUTTONS" desc="Text of the context menu item or button to hide scroll buttons.">
-            Hide scroll buttons
-          </message>
-          <message name="IDS_TAB_SCROLL_PIN_BUTTONS" desc="Text of the context menu item to pin scroll buttons.">
+          <message name="IDS_TAB_SCROLL_PIN_BUTTONS_SYSTEM_MENU" desc="Text of the context menu item to pin scroll buttons.">
             Pin scroll buttons
+          </message>
+          <message name="IDS_TAB_SCROLL_UNPIN_BUTTONS_SYSTEM_MENU" desc="In Title Case: Text of the context system menu item to unpin scroll buttons.">
+            Unpin scroll buttons
+          </message>
+          <message name="IDS_TAB_SCROLL_UNPIN_BUTTONS" desc="Text of the context menu item to unpin scroll buttons.">
+            Unpin
           </message>
         </else>
       </if>
@@ -16818,46 +16833,46 @@ Please help our engineers fix this problem. Tell us what happened right before y
       </message>
 
       <!--Tab alert tooltip strings-->
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_MEDIA_RECORDING" desc="Extra tool tip text, when the tab is recording media (Camera and Microphone).">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_MEDIA_RECORDING" desc="Extra tool tip text, when the tab is recording media (Camera and Microphone)." formatter_data="android_java">
         This tab is using your camera and microphone
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_RECORDING" desc="Extra tool tip text, when the tab is using microphone.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_RECORDING" desc="Extra tool tip text, when the tab is using microphone." formatter_data="android_java">
         This tab is using your microphone
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_VIDEO_RECORDING" desc="Extra tool tip text, when the tab is using camera.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_VIDEO_RECORDING" desc="Extra tool tip text, when the tab is using camera." formatter_data="android_java">
         This tab is using your camera
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_TAB_CAPTURING" desc="Extra tool tip text, when the tab content is being captured.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_TAB_CAPTURING" desc="Extra tool tip text, when the tab content is being captured." formatter_data="android_java">
         This tab's content is being shared
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_PLAYING" desc="Extra tool tip text, when the tab is playing audio.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_PLAYING" desc="Extra tool tip text, when the tab is playing audio." formatter_data="android_java">
         This tab is playing audio
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_MUTING" desc="Extra tool tip text, when all tab audio output is muted.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_AUDIO_MUTING" desc="Extra tool tip text, when all tab audio output is muted." formatter_data="android_java">
         This tab's audio is being muted
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_BLUETOOTH_CONNECTED" desc="Extra tool tip text, when tab is connected to a Bluetooth device.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_BLUETOOTH_CONNECTED" desc="Extra tool tip text, when tab is connected to a Bluetooth device." formatter_data="android_java">
         This tab is connected to a Bluetooth device
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_BLUETOOTH_SCAN_ACTIVE" desc="Extra tool tip text, when tab is actively scanning for Bluetooth devices.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_BLUETOOTH_SCAN_ACTIVE" desc="Extra tool tip text, when tab is actively scanning for Bluetooth devices." formatter_data="android_java">
         This tab is actively scanning for Bluetooth devices
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_USB_CONNECTED" desc="Extra tool tip text, when tab is connected to a USB device.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_USB_CONNECTED" desc="Extra tool tip text, when tab is connected to a USB device." formatter_data="android_java">
         This tab is connected to a USB device
       </message>
       <message name="IDS_TOOLTIP_TAB_ALERT_STATE_HID_CONNECTED" desc="Extra tool tip text, when tab is connected to a HID device.">
         This tab is connected to a HID device
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_SERIAL_CONNECTED" desc="Extra tool tip text, when tab is connected to a serial port.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_SERIAL_CONNECTED" desc="Extra tool tip text, when tab is connected to a serial port." formatter_data="android_java">
         This tab is connected to a serial port
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_PIP_PLAYING" desc="Extra tool tip text, when tab is playing a video in Picture-in-Picture.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_PIP_PLAYING" desc="Extra tool tip text, when tab is playing a video in Picture-in-Picture." formatter_data="android_java">
         This tab is playing a video in picture-in-picture mode
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_DESKTOP_CAPTURING" desc="Extra tool tip text, when the tab is capturing desktop contents.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_DESKTOP_CAPTURING" desc="Extra tool tip text, when the tab is capturing desktop contents." formatter_data="android_java">
         This tab is sharing your screen
       </message>
-      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_VR_PRESENTING" desc="Extra tool tip text, when the tab is presenting VR content to a headset.">
+      <message name="IDS_TOOLTIP_TAB_ALERT_STATE_VR_PRESENTING" desc="Extra tool tip text, when the tab is presenting VR content to a headset." formatter_data="android_java">
         This tab is presenting VR content to a headset
       </message>
 
@@ -19319,6 +19334,12 @@ Please help our engineers fix this problem. Tell us what happened right before y
       <message name="IDS_DICTATION_BUTTON_START" desc="Button label on the dictation UI that turns on the microphone to start dictating text." translateable="false">
         Start
       </message>
+      <message name="IDS_DICTATION_ACCNAME_OVERLAY_MIC_BUTTON" desc="The accessible name for the microphone button on the dictation overlay UI that starts dictating text." translateable="false">
+        Start microphone
+      </message>
+      <message name="IDS_DICTATION_ACCNAME_OVERLAY_WAVEFORM_BUTTON" desc="The accessible name for the waveform button on the dictation overlay UI that stops dictating text." translateable="false">
+        Stop microphone
+      </message>
     </if>
 
     <if expr="is_android">
@@ -19342,6 +19363,9 @@ Please help our engineers fix this problem. Tell us what happened right before y
     </message>
     <message name="IDS_OMNIBOX_EVERYWHERE_WINDOW" desc="Label of the option to capture a window screenshot.">
       Window
+    </message>
+    <message name="IDS_OMNIBOX_EVERYWHERE_REGION" desc="Label of the option to capture a region screenshot.">
+      Region
     </message>
 
     <!-- Responsive Toolbar -->

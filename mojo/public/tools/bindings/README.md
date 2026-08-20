@@ -645,6 +645,7 @@ bindings API documentation for that language:
 * [C++ Bindings](/mojo/public/cpp/bindings/README.md)
 * [JavaScript Bindings](/mojo/public/js/README.md)
 * [Java Bindings](/mojo/public/java/bindings/README.md)
+* [Rust Bindings](/mojo/public/rust/bindings/README.md)
 
 ## Message Validation
 
@@ -708,10 +709,11 @@ manually encode their own bindings messages.
 ### Custom Validation
 
 It's also possible for developers to define custom validation logic for specific
-Mojom struct types by exploiting the
-[type mapping](/mojo/public/cpp/bindings/README.md#Type-Mapping) system for C++
-bindings. Messages rejected by custom validation logic trigger the same
-validation failure behavior as the built-in type validation routines.
+Mojom struct types by exploiting the type mapping system for
+[C++](/mojo/public/cpp/bindings/README.md#Type-Mapping) or
+[Rust](/mojo/public/rust/bindings/README.md#type-mapping) bindings. Messages
+rejected by custom validation logic trigger the same validation failure behavior
+as the built-in type validation routines.
 
 ## Associated Interfaces
 
@@ -725,9 +727,11 @@ relative ordering guarantees among them. Associated interfaces are useful when
 one interface needs to guarantee strict FIFO ordering with respect to one or
 more other interfaces, as they allow interfaces to share a single pipe.
 
-Currently associated interfaces are only supported in generated C++ bindings.
+Currently associated interfaces are supported in generated C++, JavaScript, and Rust bindings.
 See the documentation for
-[C++ Associated Interfaces](/mojo/public/cpp/bindings/README.md#Associated-Interfaces).
+[C++ Associated Interfaces](/mojo/public/cpp/bindings/README.md#Associated-Interfaces),
+[JavaScript Associated Interfaces](/mojo/public/js/README.md#Associated-Interfaces), and
+[Rust Associated Interfaces](/mojo/public/rust/bindings/README.md#Associated-Interfaces).
 
 ## Versioning
 

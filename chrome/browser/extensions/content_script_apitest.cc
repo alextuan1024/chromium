@@ -34,7 +34,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -84,7 +84,7 @@
 #endif  // BUILDFLAG(ENABLE_PDF)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/search/ntp_test_utils.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
@@ -2339,7 +2339,7 @@ IN_PROC_BROWSER_TEST_P(NTPInterceptionTest, ContentScript) {
   // Create a corresponding off the record profile for the current profile. This
   // is necessary to reproduce crbug.com/40091421, which occurs in part due to
   // incorrect handling of multiple profiles by the NTP code.
-  Browser* incognito_browser = CreateIncognitoBrowser(profile());
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile());
   ASSERT_TRUE(incognito_browser);
 
   // Ensure that the extension isn't able to inject the script into the New Tab

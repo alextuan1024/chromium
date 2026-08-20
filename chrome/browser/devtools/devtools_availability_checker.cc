@@ -85,10 +85,15 @@ bool IsRestrictedExtension(const extensions::Extension* extension,
 
 bool IsInspectionAllowed(Profile* profile,
                          content::DevToolsAgentHost* agent_host) {
+  GURL target_url = agent_host->GetURL();
+  if (!IsInspectionAllowed(profile, target_url)) {
+    return false;
+  }
+
   if (content::WebContents* web_contents = agent_host->GetWebContents()) {
     return IsInspectionAllowed(profile, web_contents);
   }
-  return IsInspectionAllowed(profile, agent_host->GetURL());
+  return true;
 }
 
 bool IsInspectionAllowed(Profile* profile, content::WebContents* web_contents) {
@@ -98,27 +103,10 @@ bool IsInspectionAllowed(Profile* profile, content::WebContents* web_contents) {
         profile, static_cast<const extensions::Extension*>(nullptr));
   }
 
-  policy::DeveloperToolsPolicyChecker* checker =
-      policy::DeveloperToolsPolicyCheckerFactory::GetForBrowserContext(profile);
-  if (checker) {
-    if (content::RenderFrameHost* main_frame =
-            web_contents->GetPrimaryMainFrame()) {
-      bool is_blocked = false;
-      main_frame->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
-        if (frame->GetLastCommittedURL().is_empty() ||
-            frame->GetLastCommittedURL().SchemeIs(url::kAboutScheme)) {
-          return;
-        }
-        auto frame_availability = checker->GetDevToolsAvailabilityForUrl(
-            frame->GetLastCommittedURL());
-        if (frame_availability == policy::DeveloperToolsPolicyChecker::
-                                      DevToolsAvailability::kDisallowed) {
-          is_blocked = true;
-        }
-      });
-      if (is_blocked) {
-        return false;
-      }
+  if (content::RenderFrameHost* main_frame =
+          web_contents->GetPrimaryMainFrame()) {
+    if (!IsInspectionAllowed(profile, main_frame->GetLastCommittedURL())) {
+      return false;
     }
   }
 
@@ -147,6 +135,8 @@ bool IsInspectionAllowed(Profile* profile, content::WebContents* web_contents) {
   }
 #endif
 
+  policy::DeveloperToolsPolicyChecker* checker =
+      policy::DeveloperToolsPolicyCheckerFactory::GetForBrowserContext(profile);
   if (checker) {
     auto url_availability =
         checker->GetDevToolsAvailabilityForUrl(web_contents->GetURL());
@@ -161,22 +151,6 @@ bool IsInspectionAllowed(Profile* profile, content::WebContents* web_contents) {
     }
   }
 
-  // Exhaustively check every frame to prevent subframe bypasses
-  // and identify restricted extensions even on error pages.
-  bool is_blocked = false;
-  web_contents->ForEachRenderFrameHostWithAction(
-      [&](content::RenderFrameHost* frame) {
-        if (!IsInspectionAllowed(profile, frame->GetLastCommittedURL())) {
-          is_blocked = true;
-          return content::RenderFrameHost::FrameIterationAction::kStop;
-        }
-        return content::RenderFrameHost::FrameIterationAction::kContinue;
-      });
-
-  if (is_blocked) {
-    return false;
-  }
-
   // Fall back to the general enum policy for the tab context.
   using Availability = policy::DeveloperToolsAvailability;
   Availability availability = GetDevToolsAvailability(profile);
@@ -184,24 +158,7 @@ bool IsInspectionAllowed(Profile* profile, content::WebContents* web_contents) {
     case Availability::kDisallowed:
       return false;
     case Availability::kAllowed:
-      return true;
     case Availability::kDisallowedForForceInstalledExtensions:
-#if !BUILDFLAG(IS_ANDROID)
-      if (web_app::AreWebAppsEnabled(profile)) {
-        const webapps::AppId* app_id =
-            web_app::WebAppTabHelper::GetAppId(web_contents);
-        auto* web_app_provider =
-            web_app::WebAppProvider::GetForWebContents(web_contents);
-        if (app_id && web_app_provider) {
-          const web_app::WebApp* web_app =
-              web_app_provider->registrar_unsafe().GetAppById(*app_id);
-          if (web_app && (web_app->IsKioskInstalledApp() ||
-                          web_app->IsIwaPolicyInstalledApp())) {
-            return false;
-          }
-        }
-      }
-#endif
       return true;
     default:
       NOTREACHED() << "Unknown developer tools policy";

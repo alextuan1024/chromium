@@ -20,7 +20,6 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/supervised_user/core/browser/device_parental_controls.h"
-#include "components/supervised_user/core/browser/family_link_url_filter.h"
 #include "components/supervised_user/core/browser/remote_web_approvals_manager.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
@@ -40,7 +39,6 @@ enum class Channel;
 }  // namespace version_info
 
 namespace supervised_user {
-class FamilyLinkSettingsService;
 
 // Represents custodian data - who is responsible for managing the supervised
 // user's settings.
@@ -70,11 +68,10 @@ class Custodian {
 };
 
 // Orchestrates cooperation between components of user supervision. Manages the
-// lifecycle of url filtering, remote approval workflows, custodian data and
-// incognito mode availability.
+// lifecycle of remote approval workflows, custodian data and incognito mode
+// availability.
 // The state of features is driven by changes to the following preferences:
-// * `profile.managed_user_id` for url filtering, remove approvals and custodian
-//    data,
+// * `profile.managed_user_id` for remote approvals and custodian data,
 // * `incognito.mode_availability` for incognito mode.
 class SupervisedUserService : public KeyedService {
  public:
@@ -110,11 +107,6 @@ class SupervisedUserService : public KeyedService {
     return remote_web_approvals_manager_;
   }
 
-  // Returns the URL filter for filtering navigations and classifying sites in
-  // the history view. Both this method and the returned filter may only be used
-  // on the UI thread.
-  FamilyLinkUrlFilter* GetURLFilter() const;
-
   std::optional<Custodian> GetCustodian() const;
   std::optional<Custodian> GetSecondCustodian() const;
 
@@ -140,17 +132,11 @@ class SupervisedUserService : public KeyedService {
       signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       PrefService& user_prefs,
-      FamilyLinkSettingsService& settings_service,
-      std::unique_ptr<FamilyLinkUrlFilter> url_filter,
       std::unique_ptr<SupervisedUserService::PlatformDelegate>
           platform_delegate,
       const DeviceParentalControls& device_parental_controls);
 
  private:
-  // Activates the service which controls managed settings of url filtering and
-  // incognito mode.
-  void SetSettingsServiceActive(bool active);
-
   void OnCustodianInfoChanged();
   void OnSupervisedUserIdChanged();
 
@@ -171,13 +157,9 @@ class SupervisedUserService : public KeyedService {
 
   const raw_ref<PrefService> user_prefs_;
 
-  const raw_ref<FamilyLinkSettingsService> settings_service_;
-
   raw_ptr<signin::IdentityManager> identity_manager_;
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-
-  std::unique_ptr<FamilyLinkUrlFilter> url_filter_;
 
   std::unique_ptr<PlatformDelegate> platform_delegate_;
 

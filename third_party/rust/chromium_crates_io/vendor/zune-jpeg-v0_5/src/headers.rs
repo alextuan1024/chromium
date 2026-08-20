@@ -16,8 +16,7 @@ use alloc::vec::Vec;
 use core::cmp::max;
 
 use zune_core::bytestream::ZByteReaderTrait;
-use zune_core::colorspace::ColorSpace;
-use zune_core::log::{debug, trace, warn};
+use zune_core::log::{trace, warn};
 
 use crate::components::{Components, SampleRatios};
 use crate::decoder::{ExtendedXmpSegment, GainMapInfo, ICCChunk, JpegDecoder, MAX_COMPONENTS};
@@ -163,7 +162,13 @@ where
             // symbols in increasing code length
             let mut symbols = [0; 256];
             cursor.read_exact(&mut symbols[0..(symbols_sum as usize)])?;
-            let table = HuffmanTable::new(&num_symbols, symbols, dc_or_ac == 0, is_progressive)?;
+            let table = if dc_or_ac == 0
+                && (!decoder.seen_sof || decoder.info.sof.is_lossless())
+            {
+                HuffmanTable::new_lossless(&num_symbols, symbols)?
+            } else {
+                HuffmanTable::new(&num_symbols, symbols, dc_or_ac == 0, is_progressive)?
+            };
             new_tables.push((dc_or_ac, index, table));
         }
         if cursor.remaining() > 0 {
@@ -330,16 +335,32 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
         ));
     }
     with_marker_body(img, |img, mut cursor| {
+        let dc_symbol_limit = if sof.is_lossless() { 16 } else { 15 };
+        for table in img.entropy_tables.dc_huffman.iter().flatten() {
+            table.validate_dc_symbol_limit(dc_symbol_limit)?;
+        }
+
         // Body length came from a u16 length field minus 2; +2 round-trips it.
         #[allow(clippy::cast_possible_truncation)]
         let length = (cursor.body().len() + 2) as u16;
-        // usually 8, but can be 12 and 16, we currently support only 8
-        // so sorry about that 12 bit images
+        // Pixel decoding remains 8-bit only, but Huffman-coded 12-bit frame
+        // headers are useful to callers that inspect image metadata.
         let dt_precision = cursor.read_u8()?;
 
-        if dt_precision != 8 {
+        let supported_header_precision = if sof.is_lossless() {
+            (2..=16).contains(&dt_precision)
+        } else {
+            dt_precision == 8
+                || (dt_precision == 12
+                    && matches!(
+                        sof,
+                        SOFMarkers::ExtendedSequentialHuffman
+                            | SOFMarkers::ProgressiveDctHuffman
+                    ))
+        };
+        if !supported_header_precision {
             return Err(DecodeErrors::SofError(format!(
-                "The library can only parse 8-bit images, the image has {dt_precision} bits of precision"
+                "Unsupported {dt_precision}-bit sample precision for {sof:?}"
             )));
         }
 
@@ -416,14 +437,6 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
         if img_height == 0 {
             img.expects_dnl = true;
         }
-        if num_components == 1 {
-            img.input_colorspace = ColorSpace::Luma;
-            debug!("Overriding default colorspace set to Luma");
-        }
-        if num_components == 4 && img.input_colorspace == ColorSpace::YCbCr {
-            trace!("Input image has 4 components, defaulting to CMYK colorspace");
-            img.input_colorspace = ColorSpace::CMYK;
-        }
         img.info.components = num_components;
         img.components = components;
         img.seen_sof = true;
@@ -432,6 +445,49 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
 
         Ok(())
     })
+}
+
+fn validate_scan_parameters(
+    is_lossless: bool,
+    precision: u8,
+    spec_start: u8,
+    spec_end: u8,
+    succ_high: u8,
+    succ_low: u8,
+) -> Result<(), DecodeErrors> {
+    if is_lossless {
+        if !(1..=7).contains(&spec_start)
+            || spec_end != 0
+            || succ_high != 0
+            || succ_low >= precision
+        {
+            return Err(DecodeErrors::SosError(format!(
+                "Invalid lossless scan parameters: predictor={spec_start}, Se={spec_end}, Ah={succ_high}, Pt={succ_low}"
+            )));
+        }
+    } else {
+        if spec_end > 63 {
+            return Err(DecodeErrors::SosError(format!(
+                "Invalid Se parameter {spec_end}, range should be 0-63"
+            )));
+        }
+        if succ_low > 13 {
+            return Err(DecodeErrors::SosError(format!(
+                "Invalid Al parameter {succ_low}, range should be 0-13"
+            )));
+        }
+    }
+    if spec_start > 63 {
+        return Err(DecodeErrors::SosError(format!(
+            "Invalid Ss parameter {spec_start}, range should be 0-63"
+        )));
+    }
+    if succ_high > 13 {
+        return Err(DecodeErrors::SosError(format!(
+            "Invalid Ah parameter {succ_high}, range should be 0-13"
+        )));
+    }
+    Ok(())
 }
 
 /// Parse a start of scan data
@@ -517,26 +573,14 @@ pub(crate) fn parse_sos<T: ZByteReaderTrait>(
         let succ_high = bit_approx >> 4;
         let succ_low = bit_approx & 0xF;
 
-        if spec_end > 63 {
-            return Err(DecodeErrors::SosError(format!(
-                "Invalid Se parameter {spec_end}, range should be 0-63"
-            )));
-        }
-        if spec_start > 63 {
-            return Err(DecodeErrors::SosError(format!(
-                "Invalid Ss parameter {spec_start}, range should be 0-63"
-            )));
-        }
-        if succ_high > 13 {
-            return Err(DecodeErrors::SosError(format!(
-                "Invalid Ah parameter {succ_high}, range should be 0-13"
-            )));
-        }
-        if succ_low > 13 {
-            return Err(DecodeErrors::SosError(format!(
-                "Invalid Al parameter {succ_low}, range should be 0-13"
-            )));
-        }
+        validate_scan_parameters(
+            image.info.sof.is_lossless(),
+            image.info.pixel_density,
+            spec_start,
+            spec_end,
+            succ_high,
+            succ_low,
+        )?;
 
         // Commit phase: all reads and validations succeeded.
         image.num_scans = ns;
@@ -594,7 +638,7 @@ pub(crate) fn parse_app14<T: ZByteReaderTrait>(
         let body = cursor.body();
 
         // Validate, decide, then commit. No partial mutation on error.
-        let new_colorspace = if body.len() >= 5 && &body[..5] == b"Adobe" {
+        let transform = if body.len() >= 5 && &body[..5] == b"Adobe" {
             // Adobe segment must be at least 12 bytes of body (6 id + 5 ver/flags + 1 transform).
             if body.len() < 12 {
                 return Err(DecodeErrors::FormatStatic(
@@ -605,9 +649,7 @@ pub(crate) fn parse_app14<T: ZByteReaderTrait>(
             let transform = body[11];
             // https://exiftool.org/TagNames/JPEG.html#Adobe
             match transform {
-                0 => Some(ColorSpace::CMYK),
-                1 => Some(ColorSpace::YCbCr),
-                2 => Some(ColorSpace::YCCK),
+                0..=2 => Some(transform),
                 _ => {
                     return Err(DecodeErrors::Format(format!(
                         "Unknown Adobe colorspace {transform}"
@@ -620,8 +662,8 @@ pub(crate) fn parse_app14<T: ZByteReaderTrait>(
         };
 
         // Commit phase.
-        if let Some(cs) = new_colorspace {
-            decoder.input_colorspace = cs;
+        if let Some(transform) = transform {
+            decoder.adobe_transform = Some(transform);
         }
         Ok(())
     })

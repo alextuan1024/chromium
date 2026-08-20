@@ -1108,7 +1108,7 @@ public class KeyboardShortcuts {
                         ? "Accessibility.Android.KeyboardShortcut.ScreenReaderRunning7"
                         : "Accessibility.Android.KeyboardShortcut.NoScreenReader7",
                 semanticMeaning,
-                KeyboardShortcuts.KeyboardShortcutsSemanticMeaning.MAX_VALUE);
+                KeyboardShortcuts.KeyboardShortcutsSemanticMeaning.MAX_VALUE + 1);
 
         switch (semanticMeaning) {
             case KeyboardShortcutsSemanticMeaning.OPEN_RECENTLY_CLOSED_TAB:
@@ -1283,13 +1283,13 @@ public class KeyboardShortcuts {
                     menuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.print_id, false);
                     return true;
                 case KeyboardShortcutsSemanticMeaning.ZOOM_IN:
-                    ZoomController.zoomInPage(currentWebContents);
+                    ZoomController.zoomInPage(currentTab);
                     return true;
                 case KeyboardShortcutsSemanticMeaning.ZOOM_OUT:
-                    ZoomController.zoomOutPage(currentWebContents);
+                    ZoomController.zoomOutPage(currentTab);
                     return true;
                 case KeyboardShortcutsSemanticMeaning.ZOOM_RESET:
-                    ZoomController.zoomResetPage(currentWebContents, browserContextHandle);
+                    ZoomController.zoomResetPage(currentTab, browserContextHandle);
                     return true;
                 case KeyboardShortcutsSemanticMeaning.RELOAD_TAB:
                     if (currentTab != null) {

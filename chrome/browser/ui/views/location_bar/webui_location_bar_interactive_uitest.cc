@@ -224,7 +224,7 @@ class WebUILocationBarInteractiveUiTest : public TestBase {
     // OS.
     ASSERT_TRUE(base::test::RunUntil([browser = browser()]() {
       InitialWebUIManager* manager = InitialWebUIManager::From(browser);
-      return !manager || !manager->IsShowPending();
+      return !manager || !manager->IsInitialWebUIPending();
     }));
   }
 
@@ -686,7 +686,8 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarInteractiveUiTest, ShowHideAIPopup) {
 // one.
 IN_PROC_BROWSER_TEST_F(WebUILocationBarInteractiveUiTest, TabAIButton) {
   const char kCheckForceFocusRing[] =
-      "(el) => el.classList.contains('force-focus-ring')";
+      "(el) => "
+      "el.shadowRoot.querySelector('#button').hasAttribute('force-focus-ring')";
 
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
@@ -1061,6 +1062,31 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarInteractiveUiTest, ClickLocationIcon) {
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
       FocusWebContents(kWebUIToolbarId),
+      ExecuteJsAt(
+          kWebUIToolbarId,
+          {"toolbar-app", "location-bar", "location-icon", "#container"},
+          "el => el.click()"),
+      WaitForShow(PageInfoBubbleViewBase::kPageInfoBubbleElementIdentifier));
+}
+
+// Clicking the location icon should still show the Page Info bubble if we
+// unelide.
+IN_PROC_BROWSER_TEST_F(WebUILocationBarInteractiveUiTest,
+                       ClickLocationIconAfterUnelide) {
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      // about:blank will conveniently give us focus.
+      WaitTillOmniboxViewFocus(),
+      // Need a URL that will get trigger elision to test this
+      // (about:blank won't).
+      NavigateWebContents(kTabId, GURL("https://local.test")),
+      WaitTillOmniboxViewText("local.test"),
+      SendKeyPress(kWebUIToolbarId, ui::VKEY_LEFT),
+      WaitTillOmniboxViewText("https://local.test"),
+      // Close the popup
+      RemoveFocusFromPopup(),
+      // Now the location icon should be clickable.
       ExecuteJsAt(
           kWebUIToolbarId,
           {"toolbar-app", "location-bar", "location-icon", "#container"},

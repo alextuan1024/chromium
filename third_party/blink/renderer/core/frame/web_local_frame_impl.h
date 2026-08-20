@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "base/dcheck_is_on.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/pass_key.h"
@@ -202,7 +203,8 @@ class CORE_EXPORT WebLocalFrameImpl final
                             WebScriptExecutionCallback,
                             BackForwardCacheAware back_forward_cache_aware,
                             mojom::blink::WantResultOption,
-                            mojom::blink::PromiseResultOption) override;
+                            mojom::blink::PromiseResultOption,
+                            bool is_injected_extension_script) override;
   bool IsInspectorConnected() override;
   void Alert(const WebString& message) override;
   bool Confirm(const WebString& message) override;
@@ -347,6 +349,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const override;
   bool IsAdFrame() const override;
   bool IsAdScriptInStack() const override;
+  bool IsExtensionScriptInStack() const override;
   void SetAdEvidence(const FrameAdEvidence& ad_evidence) override;
   const std::optional<blink::FrameAdEvidence>& AdEvidence() override;
   bool IsFrameCreatedByAdScript() override;
@@ -679,7 +682,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   // Returns whether we should perform compositor warm-up.
   bool ShouldWarmUpCompositor();
 
-  WebLocalFrameClient* client_;
+  raw_ptr<WebLocalFrameClient, UnprotectedInRelease | DanglingUntriaged>
+      client_;
 
   // TODO(dcheng): Inline this field directly rather than going through Member.
   const Member<LocalFrameClientImpl> local_frame_client_;
@@ -695,13 +699,17 @@ class CORE_EXPORT WebLocalFrameImpl final
 
   Member<WebDevToolsAgentImpl> dev_tools_agent_;
 
-  WebAutofillClient* autofill_client_ = nullptr;
+  raw_ptr<WebAutofillClient, UnprotectedInRelease | DanglingUntriaged>
+      autofill_client_ = nullptr;
 
-  WebRecordReplayClient* record_replay_client_ = nullptr;
+  raw_ptr<WebRecordReplayClient, UnprotectedInRelease | DanglingUntriaged>
+      record_replay_client_ = nullptr;
 
-  WebContentCaptureClient* content_capture_client_ = nullptr;
+  raw_ptr<WebContentCaptureClient, UnprotectedInRelease | DanglingUntriaged>
+      content_capture_client_ = nullptr;
 
-  WebContentSettingsClient* content_settings_client_ = nullptr;
+  raw_ptr<WebContentSettingsClient, UnprotectedInRelease | DanglingUntriaged>
+      content_settings_client_ = nullptr;
 
   Member<FindInPage> find_in_page_;
 
@@ -714,13 +722,17 @@ class CORE_EXPORT WebLocalFrameImpl final
   Member<ChromePrintContext> print_context_;
 
   // Borrowed pointers to Mojo objects.
-  InterfaceRegistry* interface_registry_;
+  raw_ptr<InterfaceRegistry, UnprotectedInRelease | DanglingUntriaged>
+      interface_registry_;
 
   WebInputMethodControllerImpl input_method_controller_;
 
-  WebTextCheckClient* text_check_client_;
+  raw_ptr<WebTextCheckClient, UnprotectedInRelease | DanglingUntriaged>
+      text_check_client_;
 
-  WebSpellCheckPanelHostClient* spell_check_panel_host_client_;
+  raw_ptr<WebSpellCheckPanelHostClient,
+          UnprotectedInRelease | DanglingUntriaged>
+      spell_check_panel_host_client_;
 
   mojom::BackForwardCacheNotRestoredReasonsPtr not_restored_reasons_;
 

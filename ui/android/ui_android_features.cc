@@ -32,6 +32,8 @@ BASE_FEATURE(kClipboardConfusedDeputyDefenseImages,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kClipboardConfusedDeputyDefenseFiles,
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kClipboardOversizedPayloadProvider,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDeprecatedExternalPickerFunction,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -49,9 +51,6 @@ BASE_FEATURE(kReportBottomOverscrolls, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRequireLeadingInTextViewWithLeading,
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTouchMovesToEventForwarderObservers,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAndroidUpdateDisplayForContext, base::FEATURE_ENABLED_BY_DEFAULT);
 

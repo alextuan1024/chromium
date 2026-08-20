@@ -1617,6 +1617,13 @@ ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
     return promise;
   }
 
+  if (!isConnected()) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element is not connected to a document."));
+    return promise;
+  }
+
   auto* frame = GetDocument().GetFrame();
   if (!frame) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
@@ -1660,17 +1667,11 @@ ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
           local_root_widget->BlinkSpaceToDIPs(gfx::RectF(bounds)));
     }
   }
+  // Unbounded elements must have a minimum size of 1x1 to prevent empty-bounds
+  // compositor and platform window issues.
+  bounds.set_width(std::max(1, bounds.width()));
+  bounds.set_height(std::max(1, bounds.height()));
   SetLastSentUnboundedBounds(bounds);
-
-  if (bounds.IsEmpty()) {
-    // TODO(crbug.com/508672616): This is likely weird for now as an element
-    // without layout or with display: none has empty bounds. We should think of
-    // a cleaner way to handle or report this.
-    resolver->Reject(MakeGarbageCollected<DOMException>(
-        DOMExceptionCode::kNotSupportedError,
-        "Unbounded elements must have non-empty bounds."));
-    return promise;
-  }
 
 #if BUILDFLAG(IS_ANDROID)
   // Unbounded elements rely on
@@ -2575,6 +2576,15 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
       CHECK_EQ(result, DispatchEventResult::kCanceledBeforeDispatch);
       return PopoverHideResult::kHidden;
     }
+
+    // The 'beforetoggle' event handler could have changed this popover, e.g. by
+    // changing its type, removing it from the document, or calling
+    // showPopover().
+    if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
+                        /*include_event_handler_text=*/true, &document)) {
+      return PopoverHideResult::kHidden;
+    }
+
     if (stack_containing_this && !stack_containing_this->empty() &&
         stack_top_ignoring_inspector(*stack_containing_this) != this) {
       CHECK(PopoverType() == PopoverValueType::kAuto ||
@@ -2588,14 +2598,13 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
           this, document, focus_behavior,
           HidePopoverTransitionBehavior::kNoEventsNoWaiting,
           &popovers_held_open_by_inspector);
-    }
-
-    // The 'beforetoggle' event handler could have changed this popover, e.g. by
-    // changing its type, removing it from the document, or calling
-    // showPopover().
-    if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
-                        /*include_event_handler_text=*/true, &document)) {
-      return PopoverHideResult::kHidden;
+      // The 'beforetoggle' event handler (from the HideAllPopoversUntil call)
+      // could have changed this popover, e.g. by changing its type, removing it
+      // from the document, or calling showPopover().
+      if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
+                          /*include_event_handler_text=*/true, &document)) {
+        return PopoverHideResult::kHidden;
+      }
     }
 
     // If this is the target of an active interest invoker, closing the popover
@@ -2616,6 +2625,20 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
     if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
                         /*include_event_handler_text=*/true, &document)) {
       return PopoverHideResult::kHidden;
+    }
+
+    if (stack_containing_this && !stack_containing_this->empty() &&
+        stack_top_ignoring_inspector(*stack_containing_this) != this) {
+      CHECK(PopoverType() == PopoverValueType::kAuto ||
+            PopoverType() == PopoverValueType::kHint);
+      hide_all_popovers_result = HideAllPopoversUntil(
+          this, document, focus_behavior,
+          HidePopoverTransitionBehavior::kNoEventsNoWaiting,
+          &popovers_held_open_by_inspector);
+      if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
+                          /*include_event_handler_text=*/true, &document)) {
+        return PopoverHideResult::kHidden;
+      }
     }
 
     // Queue the "closing" toggle event.
@@ -2660,11 +2683,11 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
 
   // Remove this popover from the stack.
   if (PopoverType() != PopoverValueType::kManual) {
-    if (!hint_stack.empty() &&
-        stack_top_ignoring_inspector(hint_stack) == this) {
+    if (hint_stack.Contains(this)) {
       if (RuntimeEnabledFeatures::PopoverHintNewBehaviorEnabled()) {
         CHECK_NE(PopoverType(), PopoverValueType::kManual);
         CHECK_NE(PopoverType(), PopoverValueType::kNone);
+        DCHECK(!auto_stack.Contains(this));
       } else {
         CHECK_EQ(PopoverType(), PopoverValueType::kHint);
       }
@@ -2673,9 +2696,11 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
           RuntimeEnabledFeatures::PopoverHintNewBehaviorEnabled()) {
         document.SetPopoverHintStackParent(nullptr);
       }
-    } else {
-      CHECK(!auto_stack.empty());
-      CHECK(auto_stack.Contains(this));
+    } else if (auto_stack.Contains(this)) {
+      if (RuntimeEnabledFeatures::PopoverHintNewBehaviorEnabled()) {
+        DCHECK_EQ(PopoverType(), PopoverValueType::kAuto);
+        DCHECK(!hint_stack.Contains(this));
+      }
       auto_stack.EraseAt(auto_stack.Find(this));
     }
   }
@@ -4409,6 +4434,18 @@ void HTMLElement::OnContainerTimingAttrChanged(
     return;
   }
 
+  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
+          GetExecutionContext())) {
+    // Prepaint mode: the pre-paint attribution tracker is the sole source of
+    // truth; the legacy SelfOrAncestorHasContainerTiming() node flag is not
+    // maintained. Marking the layout object dirty re-attributes the subtree on
+    // the next pre-paint walk.
+    if (auto* layout_object = GetLayoutObject()) {
+      layout_object->MarkContainerTimingChanged();
+    }
+    return;
+  }
+
   if (had_container_timing && !has_container_timing) {
     if (!RecalcSelfOrAncestorHasContainerTiming()) {
       ClearSelfOrAncestorHasContainerTiming();
@@ -4417,13 +4454,6 @@ void HTMLElement::OnContainerTimingAttrChanged(
   } else if (!had_container_timing && has_container_timing) {
     SetSelfOrAncestorHasContainerTiming();
     UpdateDescendantHasContainerTiming(true /* has_container_timing */);
-  }
-
-  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
-          GetExecutionContext())) {
-    if (auto* layout_object = GetLayoutObject()) {
-      layout_object->MarkContainerTimingChanged();
-    }
   }
 }
 
@@ -4461,6 +4491,18 @@ void HTMLElement::OnContainerTimingIgnoreAttrChanged(
     return;
   }
 
+  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
+          GetExecutionContext())) {
+    // Prepaint mode: the pre-paint attribution tracker is the sole source of
+    // truth; the legacy SelfOrAncestorHasContainerTiming() node flag is not
+    // maintained. Marking the layout object dirty re-attributes the subtree on
+    // the next pre-paint walk.
+    if (auto* layout_object = GetLayoutObject()) {
+      layout_object->MarkContainerTimingChanged();
+    }
+    return;
+  }
+
   if (had_container_timing_ignore && !has_container_timing_ignore) {
     if (RecalcSelfOrAncestorHasContainerTiming()) {
       SetSelfOrAncestorHasContainerTiming();
@@ -4472,13 +4514,6 @@ void HTMLElement::OnContainerTimingIgnoreAttrChanged(
     // the tree if the node has ignore only
     ClearSelfOrAncestorHasContainerTiming();
     UpdateDescendantHasContainerTiming(false /* has_container_timing */);
-  }
-
-  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
-          GetExecutionContext())) {
-    if (auto* layout_object = GetLayoutObject()) {
-      layout_object->MarkContainerTimingChanged();
-    }
   }
 }
 

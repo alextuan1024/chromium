@@ -35,14 +35,10 @@ class TabDragWindowAdapterImpl : public tabs_api::TabDragWindowAdapter,
   tabs_api::TabDragWindowId GetWindowId() const override;
   gfx::NativeWindow GetNativeWindow() const override;
   gfx::Rect GetBoundsInScreen() const override;
-  bool IsDraggingEntireWindow(size_t dragged_tab_count) const override;
+  bool ShouldDragWholeWindow(size_t dragged_tab_count) const override;
   gfx::Point ConvertScreenPointToLocal(
       gfx::NativeView target_view,
       const gfx::Point& screen_point) const override;
-
-  void SetCapture() override;
-  void ReleaseCapture() override;
-  bool HasCapture() const override;
   void Activate() override;
 
   base::expected<tabs_api::TabDragWindowId, mojo_base::mojom::ErrorPtr>

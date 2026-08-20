@@ -24,10 +24,10 @@
 #include "ui/compositor/animation_throughput_reporter.h"
 #include "ui/compositor/callback_layer_animation_observer.h"
 #include "ui/compositor/compositor.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_sequence.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/layer_owner.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager.h"
@@ -295,11 +295,12 @@ void ScreenRotationAnimator::OnScreenRotationContainerLayerCopiedBeforeRotation(
                            GetScreenRotationContainer(root_window_)->layer(),
                            old_layer_tree_owner_->root());
 
-  // TODO(oshima): We need a better way to control animation and other
-  // activities during system wide animation.
+  // This disables animations while updating the rotation and is safe even if
+  // multiple rotation animations are applied concurrently because
+  // ScopedAnimationDurationScaleMode supports stacking for DISABLE_ANIMATION.
   animation_scale_mode_ =
       std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
-          gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+          gfx::ScopedAnimationDurationScaleMode::DISABLE_ANIMATION);
 
   for (auto& observer : screen_rotation_animator_observers_)
     observer.OnScreenCopiedBeforeRotation();

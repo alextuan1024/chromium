@@ -226,7 +226,6 @@
 <translation id="1674504678466460478"><ph name="SOURCE_LANGUAGE" /> para <ph name="TARGET_LANGUAGE" /></translation>
 <translation id="1678855624321223424">De acordo com as políticas da sua organização, este arquivo pode conter informações sensíveis</translation>
 <translation id="1683276189281028863">Check-up de Senha</translation>
-<translation id="168389590065701766">Agora você pode abrir o Google Lens na barra de endereço e pesquisar qualquer coisa que vê</translation>
 <translation id="1689333818294560261">Apelido</translation>
 <translation id="169048873465870056">Remover guia e excluir grupo?</translation>
 <translation id="1692115862433274081">Usar outra conta</translation>
@@ -521,7 +520,7 @@
 <translation id="2640733327287333451">Sem nome de usuário ••••••</translation>
 <translation id="264215785133931186">Verificadas agora mesmo</translation>
 <translation id="2647434099613338025">Adicionar idioma</translation>
-<translation id="2648812801228676606">A conta <ph name="NAME_OR_EMAIL" /> continua conectada.</translation>
+<translation id="2648812801228676606">A conta <ph name="NAME_OR_EMAIL" /> continua conectada</translation>
 <translation id="2649592894792404568">Você está prestes a excluir seus dados do Gerenciador de senhas do Google</translation>
 <translation id="2652129567809778422">Selecionar senha</translation>
 <translation id="2658056020748144467">Não foi possível abrir arquivo</translation>
@@ -972,7 +971,7 @@
 <translation id="4237377247299956313">Toque em <ph name="BEGIN_BOLD" />App de navegação padrão<ph name="END_BOLD" />.</translation>
 <translation id="424063167283213501">Salvar número de viajante conhecido (KTN)</translation>
 <translation id="4241893428331130998">Nenhuma senha ou chave de acesso salva</translation>
-<translation id="4242533952199664413">Abrir configurações.</translation>
+<translation id="4242533952199664413">Abrir configurações</translation>
 <translation id="4250432749243022864">{count,plural, =0{Abrir {count} guia}=1{Abrir {count} guia}one{Abrir {count} guia}other{Abrir {count} guias}}</translation>
 <translation id="4250680216510889253">Não</translation>
 <translation id="4253168017788158739">Observação</translation>
@@ -1390,6 +1389,7 @@ A "Transição" também deve ser ativada na seção "Geral" das configurações.
 <translation id="5596627076506792578">Mais opções</translation>
 <translation id="560322036295180549">Desativado pela organização</translation>
 <translation id="5611398002774823980">Salvar na conta</translation>
+<translation id="5612225021788368236">Fechar promoção do navegador padrão</translation>
 <translation id="561269594905823128">Toque em <ph name="BEGIN_BOLD" />Selecionar o arquivo<ph name="END_BOLD" /></translation>
 <translation id="5613297089029360427">Ordenar por mais recentes</translation>
 <translation id="5614553682702429503">Salvar senha?</translation>
@@ -2519,7 +2519,7 @@ Para continuar pelo computador, mude para <ph name="OTHER_EMAIL" />. Você vai r
 <translation id="9162432979321511934">Ative a opção "Preenchimento automático de senhas"</translation>
 <translation id="9165320910061267720">Para receber notificações de alertas de redução no preço, ative as notificações nas configurações do iOS.</translation>
 <translation id="9179151630575358778">Oculta este item</translation>
-<translation id="9183563643084679152">Você leu um QR code para fazer login no Chrome. Você vai receber as senhas, os favoritos e outros itens desta conta.</translation>
+<translation id="9183563643084679152">Você leu um QR code para fazer login no Chrome, então vai receber as senhas, os favoritos e outros itens desta conta.</translation>
 <translation id="9183733013282108610">Pesquisa anônima</translation>
 <translation id="9186762474139509529">Iniciar registro</translation>
 <translation id="9191031968346938109">Adicionar a…</translation>
@@ -2528,6 +2528,7 @@ Para continuar pelo computador, mude para <ph name="OTHER_EMAIL" />. Você vai r
 <translation id="9203951165704618409">Mude sua barra de endereço da parte de cima para a parte de baixo da tela e tenha uma experiência de navegação personalizada.</translation>
 <translation id="9205189991633470489">Bloqueio anônimo</translation>
 <translation id="9206887540681440657">Velocidade</translation>
+<translation id="9218430445555521422">Definir como padrão</translation>
 <translation id="9219103736887031265">Imagens</translation>
 <translation id="9219154867334666734">Pesquisar guias…</translation>
 <translation id="9223358826628549784">Relatórios de erros enviados.</translation>

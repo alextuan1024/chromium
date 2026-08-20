@@ -299,10 +299,16 @@ class WebUIToolbarInternalWebView : public views::WebView {
 
   std::optional<GURL> ConsumeDroppedUrl(const gfx::PointF& point) {
     std::optional<GURL> url;
-    if (cached_dragged_file_position_.has_value() &&
-        point == *cached_dragged_file_position_ &&
+    if (GetLocalBounds().Contains(gfx::ToRoundedPoint(point)) &&
+        cached_dragged_file_position_.has_value() &&
         cached_dragged_file_path_.has_value()) {
-      url = net::FilePathToFileURL(*cached_dragged_file_path_);
+      // Allow 1.0f DIP tolerance to account for floating-point differences.
+      constexpr float kMaxAllowedDelta = 1.0f;
+      const gfx::Vector2dF delta = *cached_dragged_file_position_ - point;
+      if (std::abs(delta.x()) <= kMaxAllowedDelta &&
+          std::abs(delta.y()) <= kMaxAllowedDelta) {
+        url = net::FilePathToFileURL(*cached_dragged_file_path_);
+      }
     }
     cached_dragged_file_path_.reset();
     cached_dragged_file_position_.reset();
@@ -371,6 +377,7 @@ WebUIToolbarWebView::WebUIToolbarWebView(
               toolbar_ui_api::IconHandle(),
               toolbar_ui_api::mojom::SecurityLevel::kNone,
               /*text=*/std::u16string(),
+              /*tooltip=*/std::u16string(),
               toolbar_ui_api::mojom::SecurityChipAccessibilityState::New(
                   /*label=*/std::u16string(),
                   /*description=*/std::u16string()),
@@ -676,6 +683,14 @@ void WebUIToolbarWebView::OnContentSettingImagePointerDown(
   }
 }
 
+void WebUIToolbarWebView::OnContentSettingImageAnimationEnded(
+    ::toolbar_ui_api::mojom::ContentSettingImageType type) {
+  if (location_bar_) {
+    location_bar_->content_setting_image_control()
+        .OnContentSettingImageAnimationEnded(type);
+  }
+}
+
 void WebUIToolbarWebView::OnPageActionClick(
     ::toolbar_ui_api::mojom::PageActionId action_id,
     ::toolbar_ui_api::mojom::PageActionTrigger trigger,
@@ -728,6 +743,13 @@ void WebUIToolbarWebView::MaybeInitializePageDependentControls() {
 void WebUIToolbarWebView::OnPageInitialized() {
   SetInitializationState(InitializationState::kInitialized);
   MaybeInitializePageDependentControls();
+
+  if (pending_focus_request_) {
+    if (WebUIToolbarUI* web_ui = GetWebUIToolbarUI()) {
+      web_ui->OnFocusRequested(*pending_focus_request_);
+    }
+    pending_focus_request_.reset();
+  }
 
   if (auto* manager = InitialWebUIManager::From(browser_)) {
     manager->OnWebUIToolbarLoaded();
@@ -1536,8 +1558,12 @@ void WebUIToolbarWebView::OnFocusRequested(
     toolbar_ui_api::mojom::FocusRequestTarget target) {
   // We need to focus the WebView as well, besides the JS focus.
   web_view_->RequestFocus();
-  if (WebUIToolbarUI* web_ui = GetWebUIToolbarUI()) {
-    web_ui->OnFocusRequested(target);
+  if (initialization_state_ == InitializationState::kInitialized) {
+    if (WebUIToolbarUI* web_ui = GetWebUIToolbarUI()) {
+      web_ui->OnFocusRequested(target);
+    }
+  } else {
+    pending_focus_request_ = target;
   }
 }
 

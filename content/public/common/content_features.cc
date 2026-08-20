@@ -390,7 +390,6 @@ const base::FeatureParam<bool> kUrgentDiscardIgnoreWorkers{
 // When this feature is enabled, partial storage cleanup will be
 // disabled for the GPU disk cache. (Performance improvement)
 BASE_FEATURE(kDisablePartialStorageCleanupForGPUDiskCache,
-             "PerformStorageCleanupForGPUDiskCache",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enable drawing under System Bars within DisplayCutout.
@@ -436,6 +435,10 @@ BASE_FEATURE(kEnforceDedicatedWorkerSameOriginCheck,
 // See https://crbug.com/504073872.
 BASE_FEATURE(kEnforceSharedWorkerSameOriginCheck,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables Active Mode support with multiple Identity Providers in FedCM.
+BASE_FEATURE(kFedCmActiveModeMultipleIdentityProviders,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables usage of the FedCM IdP Registration API.
 BASE_FEATURE(kFedCmIdPRegistration, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -776,6 +779,13 @@ BASE_FEATURE(kPrefetchOffTheMainThread, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool>
     kPrefetchOffTheMainThreadUpdateMissingHeaderCache{
         &kPrefetchOffTheMainThread, "update_missing_header_cache", true};
+// Consults `ContentBrowserClient::WillCreateURLLoaderFactory()` for
+// PrePrefetch requests. Use `false` for keeping the existing behavior before
+// this param is introduced.
+const base::FeatureParam<bool>
+    kPrefetchOffTheMainThreadCheckWillCreateURLLoaderFactory{
+        &kPrefetchOffTheMainThread, "check_will_create_url_loader_factory",
+        false};
 
 // Use code paths for prefetch/prerender integration.
 // See also `kPrerender2FallbackPrefetchSpecRules`.
@@ -1366,6 +1376,10 @@ BASE_FEATURE(kAccessibilityDeprecateTypeAnnounce,
 BASE_FEATURE(kAccessibilityExtendedSelection,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, syncs accessibility focus when WebView gains focus.
+BASE_FEATURE(kAccessibilitySyncFocusOnViewFocusGain,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When this feature is enabled, the InputConnection will request
 // formatted text from the TextInputState.
 BASE_FEATURE(kAccessibilityImeGetFormattedText,
@@ -1377,12 +1391,6 @@ BASE_FEATURE(kAccessibilityImeGetFormattedText,
 // flag does not. This flag focuses solely on the LIVE_REGION_NODE_CHANGED
 // generated events.
 BASE_FEATURE(kAccessibilityImproveLiveRegionAnnounce,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When enabled, allows Android to fire WINDOW_CONTENT_CHANGED events for value
-// changes made to ARIA meter controls.
-// TODO(crbug.com/493195387): Remove killswitch after stability period.
-BASE_FEATURE(kAccessibilityMeterEventsOnAndroid,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When this feature is enabled, the accessibility tree will be requested to

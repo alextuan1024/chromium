@@ -639,6 +639,17 @@ std::string_view SavePasswordProgressLogger::GetStringFromID(
         STRING_PASSWORD_CHANGE_FROM_CHECKUP_VERIFICATION_FINISHED:
       return "Password change from checkup: verification task finished";
     case SavePasswordProgressLogger::
+        STRING_PASSWORD_CHANGE_GLIC_INSTANCE_NOT_AVAILABLE:
+      return "Automated password change: Glic instance not available";
+    case SavePasswordProgressLogger::
+        STRING_PASSWORD_CHANGE_FAILED_TO_REGISTER_EXPERIMENTAL_TRIGGERING:
+      return "Automated password change: Failed to register experimental "
+             "triggering";
+    case SavePasswordProgressLogger::STRING_PASSWORD_CHANGE_STATUS_UPDATE:
+      return "Automated password change: status update";
+    case SavePasswordProgressLogger::STRING_PASSWORD_CHANGE_WORKLOG:
+      return "Automated password change: worklog";
+    case SavePasswordProgressLogger::
         STRING_PASSWORD_CHANGE_OVERRIDDEN_BY_SWITCH:
       return "Automated password change: Overridden by switch";
     case SavePasswordProgressLogger::
@@ -651,6 +662,8 @@ std::string_view SavePasswordProgressLogger::GetStringFromID(
       return "Automated password change: Saving disabled";
     case SavePasswordProgressLogger::STRING_PASSWORD_CHANGE_DISABLED_BY_POLICY:
       return "Automated password change: Disabled by policy";
+    case SavePasswordProgressLogger::STRING_PASSWORD_CHANGE_DISABLED_BY_USER:
+      return "Automated password change: Disabled by user";
     case SavePasswordProgressLogger::
         STRING_PASSWORD_CHANGE_UNSUPPORTED_LANGUAGE:
       return "Automated password change: Unsupported language";

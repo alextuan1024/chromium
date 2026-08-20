@@ -8,9 +8,9 @@
 #ifndef SERVICES_TRACING_PUBLIC_MOJOM_DATA_SOURCE_CONFIG_MOJOM_TRAITS_H_
 #define SERVICES_TRACING_PUBLIC_MOJOM_DATA_SOURCE_CONFIG_MOJOM_TRAITS_H_
 
-#include <optional>
 #include <string>
 
+#include "mojo/public/cpp/bindings/optional_as_pointer.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "services/tracing/public/mojom/perfetto_service.mojom-shared.h"
 #include "third_party/perfetto/include/perfetto/tracing/core/chrome_config.h"
@@ -58,13 +58,20 @@ class StructTraits<tracing::mojom::DataSourceConfigDataView,
       const perfetto::DataSourceConfig& src) {
     return src.chromium_histogram_samples_raw();
   }
+  static const std::string& chromium_sampling_heap_profiler_raw(
+      const perfetto::DataSourceConfig& src) {
+    return src.chromium_sampling_heap_profiler_raw();
+  }
+  static const std::string& chromium_stack_sampling_profiler_raw(
+      const perfetto::DataSourceConfig& src) {
+    return src.chromium_stack_sampling_profiler_raw();
+  }
 
-  static std::optional<perfetto::protos::gen::InterceptorConfig>
+  static mojo::OptionalAsPointer<const perfetto::protos::gen::InterceptorConfig>
   interceptor_config(const perfetto::DataSourceConfig& src) {
-    if (src.has_interceptor_config()) {
-      return src.interceptor_config();
-    }
-    return std::nullopt;
+    return src.has_interceptor_config()
+               ? mojo::OptionalAsPointer(&src.interceptor_config())
+               : nullptr;
   }
 
   static bool Read(tracing::mojom::DataSourceConfigDataView data,

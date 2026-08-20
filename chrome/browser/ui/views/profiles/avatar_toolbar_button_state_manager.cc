@@ -36,6 +36,7 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/signin/signin_ui_util.h"
@@ -78,6 +79,7 @@
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_service_observer.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "content/public/common/url_utils.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -138,7 +140,8 @@ gfx::Image GetGaiaAccountImage(Profile* profile) {
         ->FindExtendedAccountInfoByAccountId(
             identity_manager->GetPrimaryAccountId(
                 signin::ConsentLevel::kSignin))
-        .account_image;
+        .GetAvatarImage()
+        .value_or(gfx::Image());
   }
   return gfx::Image();
 }
@@ -1132,7 +1135,10 @@ class PromoStateProviderCoordinator
   explicit PromoStateProviderCoordinator(Profile& profile)
       : profile_(profile),
         identity_manager_(IdentityManagerFactory::GetForProfile(&profile)),
-        promo_manager_(identity_manager_, profile.GetPrefs()) {}
+        promo_manager_(
+            identity_manager_,
+            AccountPreviewDataServiceFactory::GetForProfile(&profile),
+            profile.GetPrefs()) {}
 
   void Trigger() {
     if (promo_type_.has_value()) {
@@ -2089,8 +2095,6 @@ std::pair<ui::ImageModel, AvatarIconType> StateProvider::GetAvatarIcon(
       ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
           image, icon_size, icon_size, profiles::SHAPE_CIRCLE));
 
-  // TODO(crbug.com/516795763): Ensure this is is triggered every time the ai
-  // subscription level changes (via listening for changes).
   if (ShouldShowGradientAvatarRing()) {
     gfx::ImageSkia avatar_with_ai_ring =
         AddLinearGradientRingToAvatar(avatar_model, color_provider, icon_size);

@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
@@ -120,10 +121,12 @@ class DriveIntegrationService : public KeyedService,
   // test_drivefs_mojo_listener_factory are used by tests to inject customized
   // instances.
   // Pass NULL or the empty value when not interested.
-  // `local_state` must be non-null and must outlive `this`.
+  // `local_state` and `identity_manager` must be non-null and must outlive
+  // `this`.
   DriveIntegrationService(
       PrefService* local_state,
       Profile* profile,
+      signin::IdentityManager* identity_manager,
       const std::string& test_mount_point_name,
       const base::FilePath& test_cache_root,
       DriveFsMojoListenerFactory test_drivefs_mojo_listener_factory = {});
@@ -512,6 +515,7 @@ class DriveIntegrationService : public KeyedService,
   friend class DriveIntegrationServiceFactory;
 
   const raw_ptr<Profile> profile_;
+  const raw_ref<signin::IdentityManager> identity_manager_;
 
   State state_ = State::kNone;
   bool enabled_ = false;

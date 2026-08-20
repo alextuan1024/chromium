@@ -43,6 +43,8 @@ class BrowserDelegateImpl : public BrowserDelegate {
   bool IsActive() const override;
   bool IsMinimized() const override;
   bool IsVisible() const override;
+  bool IsFullscreen() const override;
+  void SetFullscreen(bool fullscreen) override;
   void Show() override;
   void ShowInactive() override;
   void Activate() override;
@@ -59,6 +61,7 @@ class BrowserDelegateImpl : public BrowserDelegate {
       std::optional<webapps::LaunchParams> launch_params =
           std::nullopt) override;
   void CreateTabGroup(const tab_groups::TabGroupInfo& tab_group) override;
+  std::vector<tab_groups::TabGroupInfo> GetTabGroupInfos() const override;
   void PinTab(size_t tab_index) override;
   void MoveTab(size_t tab_index, BrowserDelegate& target_browser) override;
   bool CreateWebAppFromActiveWebContents() override;
@@ -69,6 +72,7 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void SetDevToolsCommandsEnabled(bool enabled) override;
   void SetTabSwitchCommandsEnabled(bool enabled) override;
   void ActivateWebContentsAt(size_t index) override;
+  void SetContentsBackgroundVisible(bool visible) override;
 
  private:
   const raw_ref<Browser> browser_;

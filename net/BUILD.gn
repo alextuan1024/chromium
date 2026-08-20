@@ -195,6 +195,8 @@ component("net") {
     "base/ip_address_util.h",
     "base/ip_endpoint.cc",
     "base/ip_endpoint.h",
+    "base/is_potentially_trustworthy.cc",
+    "base/is_potentially_trustworthy.h",
     "base/isolation_info.cc",
     "base/isolation_info.h",
     "base/load_flags.h",
@@ -232,6 +234,7 @@ component("net") {
     "base/network_delegate.h",
     "base/network_delegate_impl.cc",
     "base/network_delegate_impl.h",
+    "base/network_handle.cc",
     "base/network_handle.h",
     "base/network_interfaces.cc",
     "base/network_interfaces.h",
@@ -983,6 +986,8 @@ component("net") {
     "socket/datagram_client_socket.h",
     "socket/datagram_server_socket.h",
     "socket/datagram_socket.h",
+    "socket/delayed_datagram_socket.cc",
+    "socket/delayed_datagram_socket.h",
     "socket/delayed_socket_config.h",
     "socket/delayed_stream_socket.cc",
     "socket/delayed_stream_socket.h",
@@ -2631,6 +2636,8 @@ if (is_linux || is_chromeos || is_mac) {
 
 if (is_android) {
   generate_jni("net_jni_headers") {
+    # quic_server links this code.
+    use_weak_called_by_natives = true
     sources = [
       "android/java/src/org/chromium/net/AndroidCertVerifyResult.java",
       "android/java/src/org/chromium/net/AndroidKeyStore.java",
@@ -2860,6 +2867,7 @@ target(_test_target_type, "net_unittests") {
     "base/ip_address_unittest.cc",
     "base/ip_address_util_unittest.cc",
     "base/ip_endpoint_unittest.cc",
+    "base/is_potentially_trustworthy_unittest.cc",
     "base/isolation_info_unittest.cc",
     "base/load_flags_to_string_unittest.cc",
     "base/lookup_string_in_fixed_set_unittest.cc",
@@ -3120,6 +3128,7 @@ target(_test_target_type, "net_unittests") {
     "socket/connect_job_test_util.cc",
     "socket/connect_job_test_util.h",
     "socket/connect_job_unittest.cc",
+    "socket/delayed_datagram_socket_unittest.cc",
     "socket/delayed_stream_socket_unittest.cc",
     "socket/mock_client_socket_pool_manager.cc",
     "socket/mock_client_socket_pool_manager.h",

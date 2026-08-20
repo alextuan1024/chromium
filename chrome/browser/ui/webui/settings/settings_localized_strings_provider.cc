@@ -603,6 +603,7 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
       {"showOrganizerPanelButton", IDS_SETTINGS_SHOW_ORGANIZER_PANEL_BUTTON},
       {"showEverythingMenuButton", IDS_SETTINGS_SHOW_EVERYTHING_MENU_BUTTON},
       {"tabStripPosition", IDS_SETTINGS_TAB_STRIP_POSITION},
+      {"tabScrollAutoShowOnOverflow", IDS_TAB_SCROLL_AUTO_SHOW_ON_OVERFLOW},
       {"showVerticalTabsExpandOnHover",
        IDS_SETTINGS_VERTICAL_TABS_EXPAND_ON_HOVER},
       {"allowSplitViewDragAndDrop",
@@ -686,6 +687,9 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
 
   html_source->AddBoolean("showCtrlTabMru",
                           base::FeatureList::IsEnabled(features::kCtrlTabMru));
+  html_source->AddBoolean(
+      "tabStripUnificationEnabled",
+      base::FeatureList::IsEnabled(tabs::kTabStripUnification));
 
   std::string configurable_alignments_json;
   base::JSONWriter::Write(
@@ -1957,14 +1961,28 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
 
   html_source->AddString("manageAddressesUrl",
                          autofill::payments::GetManageAddressesUrl().spec());
-  html_source->AddString(
-      "manageCreditCardsLabel",
-      l10n_util::GetStringFUTF16(
-          IDS_SETTINGS_PAYMENTS_MANAGE_LOYALTY_CARDS_AND_PAYMENT_METHODS,
-          base::UTF8ToUTF16(
-              autofill::payments::GetManageLoyaltyCardsUrl().spec()),
-          base::UTF8ToUTF16(
-              autofill::payments::GetManageInstrumentsUrl().spec())));
+  if (base::FeatureList::IsEnabled(
+          autofill::features::kAutofillEnableWalletReminderNotice)) {
+    html_source->AddString(
+        "manageCreditCardsLabel",
+        l10n_util::GetStringFUTF16(
+            IDS_SETTINGS_PAYMENTS_MANAGE_WALLET_DATA,
+            base::UTF8ToUTF16(
+                autofill::payments::GetManageSettingsUrl().spec()),
+            base::UTF8ToUTF16(
+                autofill::payments::GetManageInstrumentsUrl().spec()),
+            base::UTF8ToUTF16(
+                autofill::payments::GetManagePassesUrl().spec())));
+  } else {
+    html_source->AddString(
+        "manageCreditCardsLabel",
+        l10n_util::GetStringFUTF16(
+            IDS_SETTINGS_PAYMENTS_MANAGE_LOYALTY_CARDS_AND_PAYMENT_METHODS,
+            base::UTF8ToUTF16(
+                autofill::payments::GetManageLoyaltyCardsUrl().spec()),
+            base::UTF8ToUTF16(
+                autofill::payments::GetManageInstrumentsUrl().spec())));
+  }
   html_source->AddString("managePaymentMethodsUrl",
                          autofill::payments::GetManageInstrumentsUrl().spec());
   html_source->AddString("managePrivatePassesUrl",

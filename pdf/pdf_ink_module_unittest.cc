@@ -1012,16 +1012,18 @@ class PdfInkModuleTextTest : public testing::Test {
 
     std::vector<InkTextBox> test_boxes;
     InkTextBox test_box(
-        /*id=*/42, InkTextBoxAttributes(
-                       /*rect=*/gfx::RectF(10.0f, 20.0f, 100.0f, 15.0f),
-                       /*color=*/kYellow,
-                       /*css_font_size=*/12.0f,
-                       /*typeface=*/TextTypeface::kSerif,
-                       /*alignment=*/TextAlignment::kCenter,
-                       /*orientation=*/1,
-                       /*viewport_orientation=*/PageOrientation::kOriginal,
-                       /*is_bold=*/true,
-                       /*is_italic=*/true, kOriginalText));
+        /*id=*/42, InkTextBoxAttributes{
+                       .rect = gfx::RectF(10.0f, 20.0f, 100.0f, 15.0f),
+                       .color = kYellow,
+                       .css_font_size = 12.0f,
+                       .typeface = TextTypeface::kSerif,
+                       .alignment = TextAlignment::kCenter,
+                       .orientation = 1,
+                       .viewport_orientation = PageOrientation::kOriginal,
+                       .is_bold = true,
+                       .is_italic = true,
+                       .text = kOriginalText,
+                   });
     test_box.ink_loaded_text_id = kLoadedTextId;
     test_boxes.push_back(std::move(test_box));
 
@@ -1634,22 +1636,12 @@ TEST_F(PdfInkModuleTextTest, HandleFinishTextAnnotationMessageEdit) {
     EXPECT_CALL(client(), UpdateTextActiveAndInvalidate(TextId(kTextId0),
                                                         /*active=*/false));
     EXPECT_CALL(client(), DiscardText(kTextId0));
-    EXPECT_CALL(
-        client(),
-        DrawText(kPageIndex, kTextId1,
-                 ElementsAre(SampleInkTextInfoMatcher(kFontId)), kAscent,
-                 kPdfZoom,
-                 InkTextBoxAttributesEq(
-                     /*rect=*/gfx::RectF(10.0f, 20.0f, 100.0f, 15.0f),
-                     /*color=*/kYellow,
-                     /*css_font_size=*/12.0f,
-                     /*typeface=*/TextTypeface::kSerif,
-                     /*alignment=*/TextAlignment::kCenter,
-                     /*orientation=*/1,
-                     /*viewport_orientation=*/PageOrientation::kOriginal,
-                     /*is_bold=*/true,
-                     /*is_italic=*/true,
-                     /*text=*/"ah")));
+    EXPECT_CALL(client(),
+                DrawText(kPageIndex, kTextId1,
+                         ElementsAre(SampleInkTextInfoMatcher(kFontId)),
+                         kAscent, kPdfZoom,
+                         SampleInkTextBoxAttributesMatcherWith(
+                             "ah", PageOrientation::kOriginal)));
     EXPECT_CALL(client(), RequestThumbnail(kPageIndex, _));
     EXPECT_CALL(client(), AddFont(_, _, _)).Times(0);
 

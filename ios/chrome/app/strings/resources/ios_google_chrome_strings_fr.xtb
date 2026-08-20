@@ -110,6 +110,7 @@ Vous ne pourrez pas enregistrer de nouveaux favoris dans votre compte tant que v
 <translation id="322254490661677575">Pour utiliser et enregistrer des données Chrome dans votre compte Google, saisissez votre phrase secrète.</translation>
 <translation id="3303503998967553377">Utiliser Actions Chrome sur iOS</translation>
 <translation id="3348862487678490430">Ajouter un élément de liste de lecture à Chrome</translation>
+<translation id="3350281376951945723">Ouvrez les liens plus rapidement en définissant Chrome comme navigateur par défaut</translation>
 <translation id="3357827134511189025">Connectez-vous avec vos mots de passe et clés d'accès enregistrés depuis n'importe quelle appli avec Chrome pour la saisie automatique</translation>
 <translation id="3360031466389132716">{THRESHOLD,plural, =1{Cela se produit quand Chrome est inutilisé pendant {THRESHOLD} minute}one{Cela se produit quand Chrome est inutilisé pendant {THRESHOLD} minute}other{Cela se produit quand Chrome est inutilisé pendant {THRESHOLD} minutes}}</translation>
 <translation id="3367797402528056312">Finir de configurer Chrome</translation>
@@ -168,6 +169,7 @@ Vous ne pourrez pas enregistrer de nouveaux favoris dans votre compte tant que v
 <translation id="5030102366287574140">Chrome peut vous aider à vous protéger, entre autres, contre les violations de données et les sites Web dangereux.</translation>
 <translation id="5109169629909011627">Afficher les favoris Chrome</translation>
 <translation id="5112925986883715005">Afficher la liste de lecture Chrome</translation>
+<translation id="5116239826668864748">Vous pouvez utiliser Chrome chaque fois que vous appuyez sur des liens dans des messages, des documents et d'autres applis</translation>
 <translation id="5119391094379141756">Sélectionnez Chrome</translation>
 <translation id="5123188916260706415">Effectuer une recherche vocale dans Chrome</translation>
 <translation id="5162467219239570114">Version de Chrome obsolète. Si aucune mise à jour n'est disponible sur l'<ph name="BEGIN_LINK" />App Store<ph name="END_LINK" />, votre appareil n'est peut-être plus compatible avec les nouvelles versions de Chrome.</translation>
@@ -378,6 +380,7 @@ Vos données ont été chiffrées avec votre phrase secrète le <ph name="TIME" 
 <translation id="9122931302567044771">Cela signifie que Chrome demandera la version pour ordinateur à chaque fois.</translation>
 <translation id="9176561303811134420">Gérer les modes de paiement dans Chrome</translation>
 <translation id="9181628561061032322">Ouvre les onglets récents de Chrome.</translation>
+<translation id="924447568950697217">Faites de Chrome votre navigateur par défaut</translation>
 <translation id="948597495737267756">Ouvre votre historique Chrome.</translation>
 <translation id="954347330803595209">Importez vos données pour utiliser vos mots de passe, votre historique, vos favoris et vos cartes de crédit dans Chrome</translation>
 <translation id="97300214378190234">Utilisez Chrome chaque fois que vous appuyez sur des liens dans d'autres applis.</translation>

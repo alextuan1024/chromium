@@ -226,7 +226,6 @@
 <translation id="1674504678466460478"><ph name="SOURCE_LANGUAGE" /> ते <ph name="TARGET_LANGUAGE" /></translation>
 <translation id="1678855624321223424">तुमच्या संस्थेच्या धोरणांनुसार, या फाइलमध्ये संवेदनशील माहिती असू शकते</translation>
 <translation id="1683276189281028863">पासवर्ड तपासणी</translation>
-<translation id="168389590065701766">तुम्ही आता तुमच्या अ‍ॅड्रेस बारमधून Google Lens उघडू शकता आणि तुम्हाला दिसणारी कोणतीही गोष्ट शोधू शकता</translation>
 <translation id="1689333818294560261">टोपणनाव</translation>
 <translation id="169048873465870056">टॅब काढून टाकून गट हटवायचा आहे का?</translation>
 <translation id="1692115862433274081">दुसरे खाते वापरा</translation>
@@ -1032,6 +1031,7 @@
 <translation id="4430505936695785931">इतर ॲप्समध्ये सेव्ह केलेले पासवर्ड मिळवा</translation>
 <translation id="4431224949908513835">भरण्यासाठी पेमेंट पद्धत निवडा.</translation>
 <translation id="4432122368769493392">सेटिंग्ज…</translation>
+<translation id="4439968635693513370">यांच्यासोबत तुमच्या वीकेंडचे नियोजन करा</translation>
 <translation id="4442550905108052454"><ph name="BEGIN_BOLD" />सेटिंग्ज<ph name="END_BOLD" /> उघडा</translation>
 <translation id="4445840280797509738"><ph name="CELL_ACCESSIBILITY_LABEL" /> यासाठी आणखी पर्याय</translation>
 <translation id="4455710003856931944">पुढे किंवा मागे जाण्यासाठी तुम्ही कडेवर स्‍वाइप करू शकता.</translation>
@@ -1101,6 +1101,7 @@
 <translation id="4668929960204016307">,</translation>
 <translation id="4669618761237477717">तुमच्या संस्थेनुसार तुम्ही खाजगीरीत्या ब्राउझ करणे आवश्यक आहे. गुप्त मोडमध्ये टॅब गट सिंक केलेले नाहीत.
 <ph name="BEGIN_LINK" />अधिक जाणून घ्या<ph name="END_LINK" /></translation>
+<translation id="4670422040696550256">यांच्या मदतीने आत्मविश्वासाने खरेदी करा</translation>
 <translation id="467189612236587057">फोन कॉल सुरू करून व्यवसायाशी कनेक्ट करा</translation>
 <translation id="4673565891421389203">तुमचे व्यवस्थापित केलेले खाते वापरून साइन इन केल्यामुळे, तुम्हाला तुमच्या संस्थेशी संबंधित ब्राउझिंग (टॅब, इतिहास आणि पासवर्ड यांच्या समावेशासह) तुमच्या इतर ब्राउझिंगपासून वेगळे ठेवण्यात मदत होते.
 
@@ -2476,6 +2477,7 @@
 <translation id="9029650858822697271">तुम्हाला साइन आउट केले गेले होते</translation>
 <translation id="9032405509996909363">ब्राउझिंग डेटा हटवणे कन्फर्म करा</translation>
 <translation id="9035699147763101514">Gemini सह पर्सनल इंटेलिजन्स द्वारे सक्षम केलेले. सेटिंग्जमध्ये तुमच्या निवडी व्यवस्थापित करा.</translation>
+<translation id="9038526468059454274">यासोबत सारांश द्या</translation>
 <translation id="9039373489628511875">बँडविड्थ</translation>
 <translation id="9042893549633094279">गोपनीयता आणि सुरक्षा</translation>
 <translation id="9055291197094969722">तुमचे उघडे असलेले टॅब संगतवार लावण्यासाठी आणि उत्पादनक्षम राहण्यासाठी टॅब गट तयार करा</translation>
@@ -2529,6 +2531,7 @@
 <translation id="9203951165704618409">कस्टमाइझ केलेल्या ब्राउझिंग अनुभवासाठी तुमचा ॲड्रेस बार वरपासून खालपर्यंत स्विच करा.</translation>
 <translation id="9205189991633470489">गुप्त मोड लॉक</translation>
 <translation id="9206887540681440657">वेग</translation>
+<translation id="9218430445555521422">डीफॉल्ट म्हणून सेट करा</translation>
 <translation id="9219103736887031265">इमेज</translation>
 <translation id="9219154867334666734">टॅब शोधा…</translation>
 <translation id="9223358826628549784">क्रॅश अहवाल पाठवला.</translation>

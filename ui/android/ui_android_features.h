@@ -52,6 +52,10 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseText);
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseImages);
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseFiles);
 
+// Controls whether oversized text and HTML clipboard payloads are streamed
+// across processes via ClipboardTextDataProvider on Android.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardOversizedPayloadProvider);
+
 // Use the old-style opening of an External Picker when uploading files.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDeprecatedExternalPickerFunction);
 
@@ -70,11 +74,6 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kReportBottomOverscrolls);
 // Kill switch to turn off validation in TextViewWithLeading that requires a
 // leading value to be configured.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kRequireLeadingInTextViewWithLeading);
-
-// TODO(crbug.com/328601354): Cleanup flag after investigating nothing is broken
-// after changing the default behavior for EventForwarder observers.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
-    kSendTouchMovesToEventForwarderObservers);
 
 // Update display for context on configuration changed and activity resumed.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUpdateDisplayForContext);

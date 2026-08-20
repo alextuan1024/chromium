@@ -216,15 +216,9 @@ struct AccountInfo : public CoreAccountInfo {
   // TODO(crbug.com/458409080): move all struct members to the private section.
 
 
-  // Deprecated: Use GetAvatarImage() instead.
-  gfx::Image account_image;
-
   // Deprecated: Use GetLastAuthenticationAccessPoint() instead.
   // The value is set consistently only on DICE platforms.
   std::optional<signin_metrics::AccessPoint> access_point;
-
-  // Deprecated: Use GetLocale() instead.
-  std::string locale;
 
  private:
   friend class Builder;
@@ -236,9 +230,11 @@ struct AccountInfo : public CoreAccountInfo {
   std::string hosted_domain_;
   std::string picture_url_;
 
+  std::string locale_;
   std::string last_downloaded_image_url_with_size_;
   signin::Tribool is_child_account_ = signin::Tribool::kUnknown;
   AccountCapabilities capabilities_;
+  gfx::Image account_image_;
 };
 
 // Builder class for constructing AccountInfo objects.

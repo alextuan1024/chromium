@@ -17,6 +17,9 @@ void ConvertToVariantFn::Apply(const ActivateWindowToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
 #endif
+void ConvertToVariantFn::Apply(const AddBookmarkToolRequest& tr) {
+  var_ = ToolRequestVariant(tr);
+}
 void ConvertToVariantFn::Apply(const AttemptLoginToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
@@ -46,6 +49,14 @@ void ConvertToVariantFn::Apply(const CreateWindowToolRequest& tr) {
 void ConvertToVariantFn::Apply(const DragAndReleaseToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+void ConvertToVariantFn::Apply(const EnterFullscreenToolRequest& tr) {
+  var_ = ToolRequestVariant(tr);
+}
+void ConvertToVariantFn::Apply(const ExitFullscreenToolRequest& tr) {
+  var_ = ToolRequestVariant(tr);
+}
+#endif
 void ConvertToVariantFn::Apply(const HistoryToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
@@ -63,6 +74,9 @@ void ConvertToVariantFn::Apply(const MoveMouseToolRequest& tr) {
 void ConvertToVariantFn::Apply(const NavigateToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
+void ConvertToVariantFn::Apply(const RemoveBookmarkToolRequest& tr) {
+  var_ = ToolRequestVariant(tr);
+}
 void ConvertToVariantFn::Apply(const ScriptToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
@@ -73,6 +87,9 @@ void ConvertToVariantFn::Apply(const ScrollToToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
 void ConvertToVariantFn::Apply(const SelectToolRequest& tr) {
+  var_ = ToolRequestVariant(tr);
+}
+void ConvertToVariantFn::Apply(const TranslatePageToolRequest& tr) {
   var_ = ToolRequestVariant(tr);
 }
 void ConvertToVariantFn::Apply(const TypeToolRequest& tr) {

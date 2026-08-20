@@ -75,6 +75,7 @@ import org.chromium.chrome.browser.bookmarks.BookmarkOpenerImpl;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarCoordinator;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarVisibilityProvider;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarVisibilityProvider.BookmarkBarVisibilityObserver;
 import org.chromium.chrome.browser.browser_controls.BottomOverscrollHandler;
@@ -91,6 +92,7 @@ import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoord
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulator;
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulatorFactory;
 import org.chromium.chrome.browser.contextual_tasks.ContextualTasksBridge;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.data_sharing.DataSharingNotificationManager;
 import org.chromium.chrome.browser.data_sharing.DataSharingServiceFactory;
@@ -141,6 +143,7 @@ import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.metrics.UmaSessionStats;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceIphController;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.CloseWindowAppSource;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.multiwindow.TabbedCrashRecoveryDelegate;
@@ -176,6 +179,7 @@ import org.chromium.chrome.browser.search_engines.choice_screen.ChoiceDialogCoor
 import org.chromium.chrome.browser.selection.ChromeSelectionDropdownMenuDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.link_to_text.LinkToTextIphController;
+import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfCoordinator;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.status_indicator.StatusIndicatorCoordinator;
@@ -415,11 +419,22 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         @Override
         public void onObservingDifferentTab(@Nullable Tab tab) {
             swapToTab(tab);
+            updateBookmarkBarVisibility();
         }
 
         @Override
         public void onTitleUpdated(Tab tab) {
             setActivityTitle(tab, /* isHub= */ false);
+        }
+
+        @Override
+        public void onUrlUpdated(Tab tab) {
+            updateBookmarkBarVisibility();
+        }
+
+        @Override
+        public void onContentChanged(Tab tab) {
+            updateBookmarkBarVisibility();
         }
 
         private void swapToTab(@Nullable Tab tab) {
@@ -741,7 +756,8 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                         () -> assumeNonNull(mLayoutManager).getStripLayoutHelperManager(),
                         mTabObscuringHandlerSupplier.get(),
                         () -> mToolbarManager, // Gets current value of mToolbarManager
-                        urlBarVisibleSupplier);
+                        urlBarVisibleSupplier,
+                        () -> mVerticalTabsSideUiCoordinator);
 
         mInactivityObserver =
                 new InactivityObserver() {
@@ -1303,8 +1319,12 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         new OneShotCallback<>(mProfileSupplier, this::initCollaborationDelegatesOnProfile);
 
         if (BookmarkBarUtils.isDeviceBookmarkBarCompatible(mActivity)) {
-            BookmarkBarUtils.recordStartUpMetrics(
-                    mActivity, mProfileSupplier.get(), mXrSpaceModeObservableSupplier.get());
+            if (ChromeFeatureList.isEnabled(ChromeFeatureList.BOOKMARKS_BAR_NTP)) {
+                BookmarkBarUtils.recordStartUpMetricsForVisibilityState(mProfileSupplier.get());
+            } else {
+                BookmarkBarUtils.recordStartUpMetrics(
+                        mActivity, mProfileSupplier.get(), mXrSpaceModeObservableSupplier.get());
+            }
             mBookmarkBarVisibilityProvider =
                     new BookmarkBarVisibilityProvider(
                             mActivity,
@@ -1321,9 +1341,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                         @Override
                         public void onVisibilityChanged_TriState(
                                 @BookmarkBarVisibilityState int visibilityState) {
-                            // TODO(crbug.com/542276874): Add proper NTP treatment here.
-                            updateBookmarkBarIfNecessary(
-                                    visibilityState == BookmarkBarVisibilityState.ALWAYS_SHOW);
+                            updateBookmarkBarIfNecessary(getBookmarkBarVisibility());
                         }
                     };
             mBookmarkBarVisibilityProvider.addObserver(mBookmarkBarVisibilityObserver);
@@ -1444,7 +1462,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         }
         NewTabPageLocationPolicyManager.getInstance().onFinishNativeInitialization(originalProfile);
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.CONTEXTUAL_TASKS)) {
+        if (ContextualTasksUtils.isContextualTasksUiEnabled()) {
             if (mChromeAndroidTaskSupplier.get() != null) {
                 mContextualTasksBridge = new ContextualTasksBridge(originalProfile, mWindowAndroid);
                 mChromeAndroidTaskSupplier
@@ -1605,6 +1623,13 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         } else {
             mToolbarButtonInProductHelpController.showColdStartIph();
             mReadLaterIphController.showColdStartIph();
+            SendTabToSelfCoordinator.maybeShowOmniboxIphOnStartup(
+                    mActivity,
+                    profile,
+                    mActivityTabProvider.get(),
+                    toolbarManager.getLocationBar() == null
+                            ? null
+                            : toolbarManager.getLocationBar().getContainerView());
             String featureName = null;
             int stringId = 0;
             int menuId = 0;
@@ -1920,7 +1945,10 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                         // Disable edge-to-edge on top when the status indicator is visible
                         // to avoid the indicator being obscured by the status bar in e2e
                         // mode.
-                        if (mTopInsetCoordinator != null) {
+                        if (EdgeToEdgeUtils.isEdgelessTopInsetEnabled()
+                                && mEdgeToEdgeController != null) {
+                            mEdgeToEdgeController.setStatusIndicatorVisible(indicatorHeight > 0);
+                        } else if (mTopInsetCoordinator != null) {
                             mTopInsetCoordinator.setStatusIndicatorVisible(indicatorHeight > 0);
                         }
                     }
@@ -2248,14 +2276,9 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         }
 
         if (ChromeFeatureList.sTabSearchForDesktop.isEnabled()) {
-            ViewGroup tabSearchParent =
-                    anchorContainerParent != null
-                            ? anchorContainerParent
-                            : assumeNonNull(mCoordinator);
             mTabSearchOverlayCoordinator =
                     new TabSearchOverlayCoordinator(
                             mActivity,
-                            tabSearchParent,
                             mWindowAndroid,
                             mProfileSupplier,
                             assumeNonNull(mSnackbarManagerSupplier.get()),
@@ -2266,7 +2289,8 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                             mBackPressManager,
                             mCompositorViewHolderSupplier,
                             mTabGroupUiActionHandlerSupplier,
-                            getDesktopWindowStateManager());
+                            getDesktopWindowStateManager(),
+                            mTabObscuringHandlerSupplier.get());
         }
 
         mSideUiCoordinator =
@@ -2288,14 +2312,16 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         }
 
         mSidePanelContainerCoordinator =
-                SidePanelContainerCoordinatorFactory.create(mActivity, mSideUiCoordinator);
+                SidePanelContainerCoordinatorFactory.create(
+                        mWindowAndroid,
+                        mSideUiCoordinator,
+                        mTabModelSelectorSupplier.asNonNull().get());
         if (mSidePanelContainerCoordinator != null) {
+            mSidePanelContainerCoordinator.init();
+
             var chromeAndroidTask = mChromeAndroidTaskSupplier.get();
             assert chromeAndroidTask != null
                     : "ChromeAndroidTask shouldn't be null when side panel is enabled";
-
-            mSidePanelContainerCoordinator.init(
-                    chromeAndroidTask, currentlySelectedProfile, mWindowAndroid);
 
             // TODO(crbug.com/489548570): Remove SidePanelDevFeature when it's not needed.
             mSidePanelDevFeature =
@@ -2362,6 +2388,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
 
     @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
     private void maybeInitializeVerticalTabs(Profile profile) {
+        if (mActivity == null) return;
         if (!VerticalTabUtils.isVerticalTabsEligible(mActivity)) return;
 
         // Restore the user's saved tab layout preference upon browser cold launch.
@@ -2862,10 +2889,27 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
         }
     }
 
+    private void updateBookmarkBarVisibility() {
+        // Because tab events can arrive before native initialization finishes (or after
+        // destruction), verify that the provider and profile are available before updating.
+        if (mBookmarkBarVisibilityProvider == null || mProfileSupplier.get() == null) {
+            return;
+        }
+
+        updateBookmarkBarIfNecessary(getBookmarkBarVisibility());
+    }
+
     @Override
     public boolean getBookmarkBarVisibility() {
-        return BookmarkBarUtils.isBookmarkBarVisible(
-                mActivity, mProfileSupplier.get(), mXrSpaceModeObservableSupplier.get());
+        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.BOOKMARKS_BAR_NTP)) {
+            return BookmarkBarUtils.isBookmarkBarVisible(
+                    mActivity, mProfileSupplier.get(), mXrSpaceModeObservableSupplier.get());
+        }
+        return BookmarkBarUtils.isBookmarkBarVisibleForState(
+                mActivity,
+                mProfileSupplier.get(),
+                mXrSpaceModeObservableSupplier.get(),
+                mActivityTabProvider.get());
     }
 
     public int getBookmarkBarHeight() {
@@ -2928,9 +2972,24 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                 BookmarkBarUtils.setBookmarkBarVisibilityState(
                         mProfileSupplier.asNonNull().get(),
                         newState,
-                        /* fromKeyboardShortcut= */ true);
+                        BookmarkBarSettingChangeOrigin.KEYBOARD_SHORTCUT);
                 return true;
             }
+        } else if (id == R.id.bookmark_bar_state_only_ntp_menu_id) {
+            if (!BookmarkBarUtils.isActivityStateBookmarkBarCompatible(mActivity)) {
+                return false;
+            }
+            Profile profile = mProfileSupplier.asNonNull().get();
+            if (BookmarkBarUtils.getBookmarkBarVisibilityState(
+                            mActivity, profile, mXrSpaceModeObservableSupplier.get())
+                    != BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP) {
+                BookmarkBarUtils.setBookmarkBarVisibilityState(
+                        profile,
+                        BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP,
+                        BookmarkBarSettingChangeOrigin.APP_MENU);
+                RecordUserAction.record("MobileMenuBookmarkBarOnlyNtp");
+            }
+            return true;
         } else if (id == R.id.bookmark_bar_state_always_show_menu_id) {
             if (!BookmarkBarUtils.isActivityStateBookmarkBarCompatible(mActivity)) {
                 return false;
@@ -2942,7 +3001,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                 BookmarkBarUtils.setBookmarkBarVisibilityState(
                         profile,
                         BookmarkBarVisibilityState.ALWAYS_SHOW,
-                        /* fromKeyboardShortcut= */ false);
+                        BookmarkBarSettingChangeOrigin.APP_MENU);
                 RecordUserAction.record("MobileMenuBookmarkBarAlwaysShow");
             }
             return true;
@@ -2957,12 +3016,20 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                 BookmarkBarUtils.setBookmarkBarVisibilityState(
                         profile,
                         BookmarkBarVisibilityState.ALWAYS_HIDE,
-                        /* fromKeyboardShortcut= */ false);
+                        BookmarkBarSettingChangeOrigin.APP_MENU);
                 RecordUserAction.record("MobileMenuBookmarkBarAlwaysHide");
             }
             return true;
         } else if (id == R.id.close_window) {
-            mActivity.finishAndRemoveTask();
+            if (mMultiInstanceManager != null && MultiWindowUtils.isMultiInstanceApi31Enabled()) {
+                mMultiInstanceManager.closeWindows(
+                        Collections.singletonList(mMultiInstanceManager.getCurrentInstanceId()),
+                        fromMenu
+                                ? CloseWindowAppSource.MENU
+                                : CloseWindowAppSource.KEYBOARD_SHORTCUT);
+            } else {
+                mActivity.finishAndRemoveTask();
+            }
             return true;
         } else if (id == R.id.glic_menu_id) {
             return toggleGlic(false, GlicInvocationSource.THREE_DOTS_MENU);

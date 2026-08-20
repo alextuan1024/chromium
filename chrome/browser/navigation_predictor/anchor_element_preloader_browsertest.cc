@@ -12,15 +12,17 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "build/build_config.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/subresource_filter/subresource_filter_browser_test_harness.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -99,7 +101,7 @@ class AnchorElementPreloaderBrowserTest
 
   void SimulateMouseDownElementWithId(const std::string& id) {
     content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     gfx::Point point = gfx::ToFlooredPoint(
         GetCenterCoordinatesOfElementWithId(web_contents, id));
 
@@ -118,13 +120,6 @@ class AnchorElementPreloaderBrowserTest
       run_loop_->Run();
       run_loop_.reset();
     }
-  }
-
-  void GiveItSomeTime(const base::TimeDelta& t) {
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(), t);
-    run_loop.Run();
   }
 
   // content::PreconnectManager::Observer
@@ -154,7 +149,7 @@ class AnchorElementPreloaderBrowserTest
 
   content::RenderFrameHost* GetPrimaryMainFrame() {
     return browser()
-        ->tab_strip_model()
+        ->GetTabStripModel()
         ->GetActiveWebContents()
         ->GetPrimaryMainFrame();
   }
@@ -326,7 +321,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, DISABLED_IframeTest) {
   const GURL& url = GetTestURL("/iframe_anchor.html");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   content::SimulateMouseEvent(
-      browser()->tab_strip_model()->GetActiveWebContents(),
+      browser()->GetTabStripModel()->GetActiveWebContents(),
       blink::WebMouseEvent::Type::kMouseDown,
       blink::WebMouseEvent::Button::kLeft, gfx::Point(200, 200));
   WaitForPreresolveCountForURL(1);
@@ -340,10 +335,11 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
   const GURL& url = GetTestURL("/one_anchor.html");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   SimulateMouseDownElementWithId("anchor1");
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::test::GetPreloadingAttemptsCount(
+               browser()->GetTabStripModel()->GetActiveWebContents()) > 0;
+  }));
   EXPECT_EQ(0, preresolve_count_);
-
-  // Give some time for Preloading APIs creation.
-  GiveItSomeTime(base::Milliseconds(100));
 
   // Navigate away to the same origin that was preconnected. This should flush
   // the Preloading UKM logs.
@@ -382,10 +378,11 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderHoldbackBrowserTest,
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   SimulateMouseDownElementWithId("anchor1");
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::test::GetPreloadingAttemptsCount(
+               browser()->GetTabStripModel()->GetActiveWebContents()) > 0;
+  }));
   EXPECT_EQ(0, preresolve_count_);
-
-  // Give some time for Preloading APIs creation.
-  GiveItSomeTime(base::Milliseconds(100));
 
   // Navigate away to the same origin that was preconnected. This should flush
   // the Preloading UKM logs.
@@ -485,7 +482,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
   ASSERT_TRUE(iframe);
 
   EXPECT_TRUE(content::NavigateIframeToURL(
-      browser()->tab_strip_model()->GetActiveWebContents(), "iframe1",
+      browser()->GetTabStripModel()->GetActiveWebContents(), "iframe1",
       cross_origin_url));
   // Re-get the iframe RFH after navigation.
   iframe = content::ChildFrameAt(main_frame, 0);
@@ -494,7 +491,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
 
   // Trigger mousedown in the iframe.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   gfx::Point point =
       gfx::ToFlooredPoint(iframe->GetView()->TransformPointToRootCoordSpaceF(
           content::GetCenterCoordinatesOfElementWithId(iframe,

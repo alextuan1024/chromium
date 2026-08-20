@@ -135,6 +135,7 @@ class GeminiContainerMediatorTest : public PlatformTest {
     mediator_ = [[GeminiContainerMediator alloc] initWithBrowser:browser_.get()
                                                     eventHandler:&delegate_];
     mediator_.containerHandler = mock_container_handler_;
+    mediator_.geminiHandler = mock_gemini_handler_;
   }
 
   static std::unique_ptr<KeyedService> CreateMockTracker(ProfileIOS* context) {
@@ -615,10 +616,12 @@ TEST_F(GeminiContainerMediatorTest, TestDidTapNewChatButtonResetsZeroState) {
   EXPECT_FALSE(consumer.dismissKeyboardCalled);
 }
 
-// Tests that requireFullPageContext is YES when kAppSwitcherAISummarization is
-// enabled and entry point is AppSwitcherAISummarization.
+// Tests that blockQuerySubmissionWhileLoading and
+// showPageLoadingSnackbarOnOpeningInvocation are YES when
+// kAppSwitcherAISummarization is enabled and entry point is
+// AppSwitcherAISummarization.
 TEST_F(GeminiContainerMediatorTest,
-       TestRequireFullPageContextEnabledForAppSwitcher) {
+       TestLoadingConfigurationEnabledForAppSwitcher) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       {kAppSwitcherAISummarization, kPageActionMenu}, {});
@@ -632,15 +635,20 @@ TEST_F(GeminiContainerMediatorTest,
   GeminiConfiguration* config = [mediator_
       createGeminiConfigurationForActiveWebState:app_switcher_startup_state
                               baseViewController:nil];
-  EXPECT_TRUE(config.requireFullPageContext);
-  histogram_tester.ExpectUniqueSample(kRequireFullPageContextHistogram, true,
-                                      1);
+  EXPECT_TRUE(config.blockQuerySubmissionWhileLoading);
+  EXPECT_TRUE(config.showPageLoadingSnackbarOnOpeningInvocation);
+  histogram_tester.ExpectUniqueSample(
+      kBlockQuerySubmissionWhileLoadingHistogram, true, 1);
+  histogram_tester.ExpectUniqueSample(
+      kShowPageLoadingSnackbarOnOpeningInvocationHistogram, true, 1);
 }
 
-// Tests that requireFullPageContext is NO when kAppSwitcherAISummarization is
-// enabled but entry point is not AppSwitcherAISummarization.
+// Tests that blockQuerySubmissionWhileLoading and
+// showPageLoadingSnackbarOnOpeningInvocation are NO when
+// kAppSwitcherAISummarization is enabled but entry point is not
+// AppSwitcherAISummarization.
 TEST_F(GeminiContainerMediatorTest,
-       TestRequireFullPageContextDisabledForOtherEntryPoints) {
+       TestLoadingConfigurationDisabledForOtherEntryPoints) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       {kAppSwitcherAISummarization, kPageActionMenu}, {});
@@ -654,9 +662,126 @@ TEST_F(GeminiContainerMediatorTest,
   GeminiConfiguration* config =
       [mediator_ createGeminiConfigurationForActiveWebState:promo_startup_state
                                          baseViewController:nil];
-  EXPECT_FALSE(config.requireFullPageContext);
-  histogram_tester.ExpectUniqueSample(kRequireFullPageContextHistogram, false,
-                                      1);
+  EXPECT_FALSE(config.blockQuerySubmissionWhileLoading);
+  EXPECT_FALSE(config.showPageLoadingSnackbarOnOpeningInvocation);
+  histogram_tester.ExpectUniqueSample(
+      kBlockQuerySubmissionWhileLoadingHistogram, false, 1);
+  histogram_tester.ExpectUniqueSample(
+      kShowPageLoadingSnackbarOnOpeningInvocationHistogram, false, 1);
+}
+
+// Tests that shouldBlockQuerySubmissionWhileLoadingForEntryPoint returns true
+// for AppSwitcherAISummarization when feature is enabled and false otherwise.
+TEST_F(GeminiContainerMediatorTest,
+       TestShouldBlockQuerySubmissionWhileLoadingForEntryPoint) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAppSwitcherAISummarization, kPageActionMenu}, {});
+
+  EXPECT_TRUE([mediator_ shouldBlockQuerySubmissionWhileLoadingForEntryPoint:
+                             gemini::EntryPoint::AppSwitcherAISummarization]);
+  EXPECT_FALSE([mediator_ shouldBlockQuerySubmissionWhileLoadingForEntryPoint:
+                              gemini::EntryPoint::Promo]);
+}
+
+// Tests that shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint
+// returns true for AppSwitcherAISummarization when feature is enabled and false
+// otherwise.
+TEST_F(GeminiContainerMediatorTest,
+       TestShouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAppSwitcherAISummarization, kPageActionMenu}, {});
+
+  EXPECT_TRUE(
+      [mediator_ shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
+                     gemini::EntryPoint::AppSwitcherAISummarization]);
+  EXPECT_FALSE(
+      [mediator_ shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
+                     gemini::EntryPoint::Promo]);
+}
+
+// Tests that changing detent to minimized when container is in zero state and
+// Chrome Next IA is enabled dismisses the Gemini flow, while changing detent
+// otherwise does not.
+TEST_F(GeminiContainerMediatorTest,
+       TestDidChangeDetentDismissesInZeroStateChromeNextIa) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration, kChromeNextIa}, {});
+
+  FakeGeminiContainerConsumer* consumer =
+      [[FakeGeminiContainerConsumer alloc] init];
+  mediator_.consumer = consumer;
+  EXPECT_TRUE(mediator_.isZeroState);
+
+  OCMExpect([mock_gemini_handler_ dismissGeminiFlowWithCompletion:nil]);
+  [mediator_ assistantContainer:nil
+                didChangeDetent:AssistantContainerDetent::kMinimized];
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+
+  // When zeroState is NO, changing detent to minimized should not dismiss.
+  mediator_.zeroState = NO;
+  [[mock_gemini_handler_ reject] dismissGeminiFlowWithCompletion:nil];
+  [mediator_ assistantContainer:nil
+                didChangeDetent:AssistantContainerDetent::kMinimized];
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+}
+
+// Tests that changing detent to minimized when container is in zero state but
+// Chrome Next IA is disabled does not dismiss the Gemini flow.
+TEST_F(GeminiContainerMediatorTest, TestDidChangeDetentNextIaDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {kChromeNextIa});
+
+  FakeGeminiContainerConsumer* consumer =
+      [[FakeGeminiContainerConsumer alloc] init];
+  mediator_.consumer = consumer;
+  EXPECT_TRUE(mediator_.isZeroState);
+
+  [[mock_gemini_handler_ reject] dismissGeminiFlowWithCompletion:nil];
+  [mediator_ assistantContainer:nil
+                didChangeDetent:AssistantContainerDetent::kMinimized];
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+}
+
+// Tests that accessibility escape request dismisses the Gemini flow.
+TEST_F(GeminiContainerMediatorTest, TestAssistantContainerDidRequestDismissal) {
+  OCMExpect([mock_gemini_handler_ dismissGeminiFlowWithCompletion:nil]);
+  [mediator_ assistantContainerDidRequestDismissal:nil];
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+}
+
+// Tests that when detent size is updated during a transition out of zero state
+// (e.g., switching to Live view mode) and the container delegate notifies of
+// the detent change, the Gemini flow is not dismissed.
+TEST_F(GeminiContainerMediatorTest,
+       TestDidChangeDetentWhenSwitchingOutOfZeroStateDoesNotDismiss) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration, kChromeNextIa}, {});
+
+  FakeGeminiContainerConsumer* consumer =
+      [[FakeGeminiContainerConsumer alloc] init];
+  mediator_.consumer = consumer;
+  EXPECT_TRUE(mediator_.isZeroState);
+
+  OCMStub([mock_container_handler_ animateAssistantContainerToDetent:
+                                       AssistantContainerDetent::kMinimized])
+      .andDo(^(NSInvocation* invocation) {
+        [mediator_ assistantContainer:nil
+                      didChangeDetent:AssistantContainerDetent::kMinimized];
+      });
+
+  __block BOOL dismissed = NO;
+  OCMStub([mock_gemini_handler_ dismissGeminiFlowWithCompletion:nil])
+      .andDo(^(NSInvocation* invocation) {
+        dismissed = YES;
+      });
+
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kLive];
+  EXPECT_FALSE(dismissed);
 }
 
 }  // namespace

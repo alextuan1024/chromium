@@ -164,6 +164,8 @@ InspectorEmulationAgent::InspectorEmulationAgent(
       navigator_platform_override_(&agent_state_,
                                    /*default_value=*/String()),
       hardware_concurrency_override_(&agent_state_, /*default_value=*/0),
+      cpu_performance_override_(&agent_state_,
+                                /*default_value=*/String()),
       data_saver_override_(&agent_state_,
                            /*default_value=*/DataSaverOverride::Unset),
       user_agent_override_(&agent_state_, /*default_value=*/String()),
@@ -217,6 +219,10 @@ void InspectorEmulationAgent::Restore() {
 
   if (int concurrency = hardware_concurrency_override_.Get())
     setHardwareConcurrencyOverride(concurrency);
+
+  if (!cpu_performance_override_.Get().IsNull()) {
+    setCPUPerformanceOverride(cpu_performance_override_.Get());
+  }
 
   if (!locale_override_.Get().empty())
     setLocaleOverride(locale_override_.Get());
@@ -314,6 +320,7 @@ protocol::Response InspectorEmulationAgent::disable() {
   }
 
   hardware_concurrency_override_.Clear();
+  cpu_performance_override_.Clear();
   setUserAgentOverride(String(), std::nullopt, std::nullopt, nullptr);
   if (!locale_override_.Get().empty())
     setLocaleOverride(String());
@@ -663,15 +670,15 @@ protocol::Response InspectorEmulationAgent::setVirtualTimePolicy(
           ? base::Time::FromSecondsSinceUnixEpoch(initial_virtual_time.value())
           : base::Time();
   virtual_time_base_ticks_ =
-      virtual_time_controller_.EnableVirtualTime(initial_time);
-  virtual_time_controller_.SetVirtualTimePolicy(scheduler_policy);
+      virtual_time_controller_->EnableVirtualTime(initial_time);
+  virtual_time_controller_->SetVirtualTimePolicy(scheduler_policy);
   if (virtual_time_budget_ms.value_or(0) > 0) {
     TRACE_EVENT_BEGIN("renderer.scheduler", "VirtualTimeBudget",
                       GetTracingTrack(this), "budget",
                       virtual_time_budget_ms.value());
     const base::TimeDelta budget_amount =
         base::Milliseconds(virtual_time_budget_ms.value());
-    virtual_time_controller_.GrantVirtualTimeBudget(
+    virtual_time_controller_->GrantVirtualTimeBudget(
         budget_amount,
         BindOnce(&InspectorEmulationAgent::VirtualTimeBudgetExpired,
                  WrapWeakPersistent(this)));
@@ -688,7 +695,7 @@ protocol::Response InspectorEmulationAgent::setVirtualTimePolicy(
   }
 
   if (max_virtual_time_task_starvation_count.value_or(0)) {
-    virtual_time_controller_.SetMaxVirtualTimeTaskStarvationCount(
+    virtual_time_controller_->SetMaxVirtualTimeTaskStarvationCount(
         max_virtual_time_task_starvation_count.value());
   }
 
@@ -763,7 +770,7 @@ void InspectorEmulationAgent::VirtualTimeBudgetExpired() {
   if (!enabled_) {
     return;
   }
-  virtual_time_controller_.SetVirtualTimePolicy(
+  virtual_time_controller_->SetVirtualTimePolicy(
       VirtualTimeController::VirtualTimePolicy::kPause);
   virtual_time_policy_.Set(protocol::Emulation::VirtualTimePolicyEnum::Pause);
   // We could have been detached while VT was still running.
@@ -903,6 +910,28 @@ protocol::Response InspectorEmulationAgent::setHardwareConcurrencyOverride(
   InnerEnable();
   hardware_concurrency_override_.Set(hardware_concurrency);
 
+  return protocol::Response::Success();
+}
+
+protocol::Response InspectorEmulationAgent::setCPUPerformanceOverride(
+    std::optional<String> performance_tier) {
+  if (performance_tier.has_value()) {
+    namespace PerformanceTierEnum =
+        protocol::Emulation::SetCPUPerformanceOverride::PerformanceTierEnum;
+    const String& tier_str = performance_tier.value();
+    if (tier_str != PerformanceTierEnum::Unknown &&
+        tier_str != PerformanceTierEnum::Low &&
+        tier_str != PerformanceTierEnum::Mid &&
+        tier_str != PerformanceTierEnum::High &&
+        tier_str != PerformanceTierEnum::Ultra) {
+      return protocol::Response::InvalidParams(
+          "Invalid performanceTier enum value");
+    }
+    InnerEnable();
+    cpu_performance_override_.Set(tier_str);
+  } else {
+    cpu_performance_override_.Clear();
+  }
   return protocol::Response::Success();
 }
 
@@ -1102,6 +1131,26 @@ void InspectorEmulationAgent::ApplyHardwareConcurrencyOverride(
     unsigned int& hardware_concurrency) {
   if (int concurrency = hardware_concurrency_override_.Get())
     hardware_concurrency = concurrency;
+}
+
+void InspectorEmulationAgent::ApplyCPUPerformanceOverride(
+    mojom::blink::PerformanceTier& tier) {
+  if (!cpu_performance_override_.Get().IsNull()) {
+    const String& tier_str = cpu_performance_override_.Get();
+    namespace PerformanceTierEnum =
+        protocol::Emulation::SetCPUPerformanceOverride::PerformanceTierEnum;
+    if (tier_str == PerformanceTierEnum::Low) {
+      tier = mojom::blink::PerformanceTier::kLow;
+    } else if (tier_str == PerformanceTierEnum::Mid) {
+      tier = mojom::blink::PerformanceTier::kMid;
+    } else if (tier_str == PerformanceTierEnum::High) {
+      tier = mojom::blink::PerformanceTier::kHigh;
+    } else if (tier_str == PerformanceTierEnum::Ultra) {
+      tier = mojom::blink::PerformanceTier::kUltra;
+    } else if (tier_str == PerformanceTierEnum::Unknown) {
+      tier = mojom::blink::PerformanceTier::kUnknown;
+    }
+  }
 }
 
 void InspectorEmulationAgent::ApplyUserAgentOverride(String* user_agent) {

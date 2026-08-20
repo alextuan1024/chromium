@@ -69,6 +69,7 @@ import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 import org.chromium.components.content_settings.ContentSettingsType;
+import org.chromium.components.prefs.PrefService;
 import org.chromium.components.safe_browsing.OsAdditionalSecurityProvider;
 import org.chromium.components.safe_browsing.OsAdditionalSecurityUtil;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -99,6 +100,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
     private static final String PREF_INCOGNITO_LOCK = "incognito_lock";
     private static final String PREF_JAVASCRIPT_OPTIMIZER = "javascript_optimizer";
     @VisibleForTesting static final String PREF_DO_NOT_TRACK = "do_not_track";
+    private static final String PREF_UNIVERSAL_OPT_OUT = "universal_opt_out";
     @VisibleForTesting static final String PREF_THIRD_PARTY_COOKIES = "third_party_cookies";
     private static final String PREF_ADVANCED_PROTECTION_INFO = "advanced_protection_info";
     private static final int SECURE_CONNECTIONS_MESSAGE_ID =
@@ -149,7 +151,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                     RecordHistogram.recordEnumeratedHistogram(
                             "Settings.PrivacyGuide.EntryExit",
                             PrivacyGuideInteractions.SETTINGS_LINK_ROW_ENTRY,
-                            PrivacyGuideInteractions.MAX_VALUE);
+                            PrivacyGuideInteractions.MAX_VALUE + 1);
                     UserPrefs.get(getProfile()).setBoolean(Pref.PRIVACY_GUIDE_VIEWED, true);
 
                     // Explicitly launch PrivacyGuideFragment from here. Because the fragment
@@ -278,6 +280,10 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
             scrollToPreference(PREF_ADVANCED_PROTECTION_INFO);
         }
 
+        if (!shouldShowUniversalOptOutSettings()) {
+            getPreferenceScreen().removePreference(findPreference(PREF_UNIVERSAL_OPT_OUT));
+        }
+
         updatePreferences();
     }
 
@@ -389,6 +395,16 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                             : R.string.text_off);
         }
 
+        if (shouldShowUniversalOptOutSettings()) {
+            Preference universalOptOutPref = findPreference(PREF_UNIVERSAL_OPT_OUT);
+            if (universalOptOutPref != null) {
+                universalOptOutPref.setSummary(
+                        UserPrefs.get(getProfile()).getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
+                                ? R.string.text_on
+                                : R.string.text_off);
+            }
+        }
+
         Preference preloadPagesPreference = findPreference(PREF_PRELOAD_PAGES);
         if (preloadPagesPreference != null) {
             preloadPagesPreference.setSummary(
@@ -451,6 +467,16 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                                 getProfile(), ContentSettingsType.JAVASCRIPT_OPTIMIZER)
                         ? R.string.website_settings_category_javascript_optimizer_allowed_list
                         : R.string.website_settings_category_javascript_optimizer_blocked_list);
+    }
+
+    private boolean shouldShowUniversalOptOutSettings() {
+        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)) {
+            return false;
+        }
+
+        PrefService userPrefs = UserPrefs.get(getProfile());
+        return userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
+                || userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE);
     }
 
     /** Shows the advanced-protection-section if needed. */

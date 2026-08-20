@@ -180,9 +180,10 @@ class SBDatabase {
   friend class ::SafeBrowsingServiceTest;
   friend class ::TestSafeBrowsingDatabaseHelper;
   friend class SBDatabaseFactory;
-  friend class V4EmbeddedTestServerBrowserTest;
+  friend class SBEmbeddedTestServerBrowserTest;
   friend class SBDatabaseTest;
-  friend class V4SafeBrowsingServiceTest;
+  friend class SBSafeBrowsingServiceTestBase;
+  friend class SBSafeBrowsingServiceTest;
   FRIEND_TEST_ALL_PREFIXES(SBDatabaseTest, TestSetupDatabaseWithFakeStores);
   FRIEND_TEST_ALL_PREFIXES(SBDatabaseTest,
                            TestSetupDatabaseWithFakeStoresFailsReset);

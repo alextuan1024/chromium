@@ -22,12 +22,15 @@ class WebStateList;
 @class GeminiStartupState;
 @protocol AssistantContainerCommands;
 @protocol BWGGatewayProtocol;
+@protocol GeminiCommands;
 
+#import "ios/chrome/browser/assistant/ui/assistant_container_delegate.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
 #import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_consumer.h"
 
 // Mediator for the Gemini container.
-@interface GeminiContainerMediator : NSObject <GeminiViewStateDelegate>
+@interface GeminiContainerMediator
+    : NSObject <AssistantContainerDelegate, GeminiViewStateDelegate>
 
 // Delegate for handling events from the mediator. Temporarily used by
 // `GeminiBrowserAgent` to support pre-migration logic.
@@ -35,6 +38,9 @@ class WebStateList;
 
 // Handler for container commands to update detent and grabber state.
 @property(nonatomic, weak) id<AssistantContainerCommands> containerHandler;
+
+// Handler for Gemini commands (e.g. dismissing Gemini flow).
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
 
 // Consumer interface for handling UI updates from the coordinator.
 @property(nonatomic, weak) id<GeminiContainerConsumer> consumer;
@@ -88,8 +94,16 @@ class WebStateList;
 - (BOOL)shouldShowSuggestionChipsForEntryPoint:
     (gemini::EntryPoint)entryPoint;
 
-// Returns whether full page context is required for the given entry point.
-- (BOOL)shouldRequireFullPageContextForEntryPoint:
+// TODO(crbug.com/509898861): Move to private after migration is complete.
+// Returns whether query submission should be blocked while page context is
+// loading for the given entry point.
+- (BOOL)shouldBlockQuerySubmissionWhileLoadingForEntryPoint:
+    (gemini::EntryPoint)entryPoint;
+
+// TODO(crbug.com/509898861): Move to private after migration is complete.
+// Returns whether the page loading snackbar should be displayed on opening
+// invocation for the given entry point.
+- (BOOL)shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
     (gemini::EntryPoint)entryPoint;
 
 // Currently, `GeminiBrowserAgent` does some of the state cleanup after each

@@ -80,6 +80,7 @@ import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.policy.test.annotations.Policies;
+import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.ui.text.SpanApplier;
@@ -589,5 +590,72 @@ public class PrivacySettingsFragmentTest {
                                     return "javascript_optimizer".equals(category);
                                 }),
                         eq(true));
+    }
+
+    @Test
+    @LargeTest
+    @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    public void testUniversalOptOutSettingsVisible_EligibleAndTurnedOn() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, true);
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, true);
+                });
+        mSettingsActivityTestRule.startSettingsActivity();
+        scrollToSetting(withText(R.string.universal_opt_out_title));
+        onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @LargeTest
+    @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    public void testUniversalOptOutSettingsVisible_EligibleAndTurnedOff() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, true);
+                });
+        mSettingsActivityTestRule.startSettingsActivity();
+        scrollToSetting(withText(R.string.universal_opt_out_title));
+        onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @LargeTest
+    @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    public void testUniversalOptOutSettingsVisible_NotEligibleAndTurnedOn() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, true);
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
+                });
+        mSettingsActivityTestRule.startSettingsActivity();
+        scrollToSetting(withText(R.string.universal_opt_out_title));
+        onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @LargeTest
+    @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    public void testUniversalOptOutSettingsHidden_NotEligibleAndTurnedOff() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
+                });
+        mSettingsActivityTestRule.startSettingsActivity();
+        onView(withText(R.string.universal_opt_out_title)).check(doesNotExist());
+    }
+
+    @Test
+    @LargeTest
+    @DisableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    public void testUniversalOptOutSettingsHidden_FeatureDisabled() {
+        mSettingsActivityTestRule.startSettingsActivity();
+        onView(withText(R.string.universal_opt_out_title)).check(doesNotExist());
+    }
+
+    private PrefService getPrefService() {
+        return UserPrefs.get(ProfileManager.getLastUsedRegularProfile());
     }
 }

@@ -119,6 +119,29 @@ class QuicSessionPool::AsyncDnsJob
     std::optional<ConnectionManagementConfig> connection_management_config;
   };
 
+  // How the job obtained its session. Attempt-based results use connector
+  // identity rather than the connector's final slot because connectors can
+  // change slots. Failed jobs use kNone. The non-kNone values are recorded in
+  // Net.QuicSession.AsyncDnsJob.SuccessSource.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(QuicSessionPoolAsyncDnsJobSuccessSource)
+  enum class SuccessSource {
+    kNone = 0,
+    // Another request activated a session for the same key.
+    kActiveSession = 1,
+    // The job found an existing session through IP pooling.
+    kIpPooling = 2,
+    // The initial connector's first attempt succeeded.
+    kInitialConnectorFirstAttempt = 3,
+    // A later attempt by the initial connector succeeded.
+    kInitialConnectorLaterAttempt = 4,
+    // An attempt by the connector created when the slow timer fired succeeded.
+    kSlowTimerConnector = 5,
+    kMaxValue = kSlowTimerConnector,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:QuicSessionPoolAsyncDnsJobSuccessSource)
+
   AsyncDnsJob(
       QuicSessionPool* pool,
       quic::ParsedQuicVersion quic_version,
@@ -188,12 +211,22 @@ class QuicSessionPool::AsyncDnsJob
   // known, because a later attempt may still create a session.
   void OnSessionCreationDecided(int rv, const EndpointConnector* connector);
 
-  // Called by `connector` when it succeeded or when it ran out of untried
-  // candidates. The first connector to succeed settles the job, and the job
-  // destroys the other one together with its in-flight attempt. Running out
-  // of candidates fails the job only when the other connector has nothing in
-  // flight and DNS has finished.
+  // Called by `connector` when it settled successfully or when it ran out of
+  // untried candidates. A connector settles successfully when its attempt
+  // succeeds or when it finds an existing session through IP pooling. The job
+  // then destroys the other connector together with its in-flight attempt.
+  // Running out of candidates fails the job only when the other connector has
+  // nothing in flight and DNS has finished.
   void OnConnectorComplete(int rv, EndpointConnector* connector);
+
+  // Returns the name of the slot `connector` occupies. For logging.
+  const char* SlotName(const EndpointConnector* connector) const;
+
+  // Called immediately before `connector` starts an attempt. Updates the
+  // attempt metrics, logs the attempt, and returns its job-wide identifier.
+  int OnAttemptStarted(const EndpointConnector* connector,
+                       const Candidate& candidate,
+                       base::TimeTicks start_time);
 
  private:
   // The result and the error details of one failed attempt.
@@ -216,14 +249,15 @@ class QuicSessionPool::AsyncDnsJob
   std::optional<int> AdvanceConnector(EndpointConnector* connector);
 
   // Advances both slots and arms the slow timer once the primary connector
-  // has an attempt in flight. Returns OK when a connector succeeded, in which
-  // case the other connector has been destroyed. Returns ERR_IO_PENDING while
-  // an attempt is in flight, and std::nullopt when nothing could be started.
+  // has an attempt in flight. Returns OK when a connector settled the job, in
+  // which case the other connector has been destroyed. Returns ERR_IO_PENDING
+  // while an attempt is in flight, and std::nullopt when nothing could be
+  // started.
   std::optional<int> AdvanceConnectors();
 
-  // Called when `connector` succeeded. Destroys the other connector together
-  // with the attempt it had in flight, and moves `connector` into the primary
-  // slot when it was in the secondary one.
+  // Called when `connector` settled the job. Logs how it settled, destroys the
+  // other connector together with the attempt it had in flight, and moves
+  // `connector` into the primary slot when it was in the secondary one.
   void DestroyOtherConnector(const EndpointConnector* connector);
 
   // Starts the slow timer when the primary connector has its first attempt in
@@ -276,6 +310,15 @@ class QuicSessionPool::AsyncDnsJob
   // `endpoints`.
   bool IsSvcbOptional(base::span<const ServiceEndpoint> endpoints) const;
 
+  // Logs the job's outcome. Logging only.
+  void LogJobComplete(int rv) const;
+
+  // Logs the resolver's final result. Logging only.
+  void LogServiceEndpointRequestFinished(int rv) const;
+
+  // Records this job's histograms. Called once when the job finishes.
+  void RecordMetrics(int rv) const;
+
   const quic::ParsedQuicVersion quic_version_;
   const raw_ptr<HostResolver> host_resolver_;
   const bool use_dns_aliases_;
@@ -302,6 +345,11 @@ class QuicSessionPool::AsyncDnsJob
   // Set once the slow timer was armed. The timer is armed at most once per
   // job.
   bool slow_timer_started_ = false;
+  // The number of attempts the connectors of this job started. Reported when
+  // the job settles.
+  size_t attempt_count_ = 0;
+  // Set before every successful completion.
+  SuccessSource success_source_ = SuccessSource::kNone;
   // The candidates already handed out for an attempt. Lives here because the
   // connectors of one job must not attempt the same candidate twice. A vector
   // because ParsedQuicVersion can be compared but not ordered, and because one
@@ -320,6 +368,14 @@ class QuicSessionPool::AsyncDnsJob
   // Stamped once, when the job first stops waiting on DNS. Not moved when
   // the resolver finishes later.
   base::TimeTicks dns_resolution_end_time_;
+  // When the resolver reported its final result. Null while resolution is in
+  // flight. Distinct from `dns_resolution_end_time_`, which is stamped at the
+  // first usable partial results.
+  base::TimeTicks resolution_finished_time_;
+  // When the job's first attempt started. Null while no attempt started.
+  base::TimeTicks first_attempt_start_time_;
+  // When the successful attempt started.
+  base::TimeTicks successful_attempt_start_time_;
   // Runs while only the primary slot is filled. On expiry the job fills the
   // secondary slot so that an IPv4 attempt runs next to the IPv6 one.
   base::OneShotTimer slow_timer_;

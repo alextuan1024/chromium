@@ -37,6 +37,8 @@
 #include <string>
 
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
@@ -214,7 +216,7 @@ class TestData {
 
  private:
   gfx::Size size_;
-  WebViewImpl* web_view_;
+  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged> web_view_;
 };
 
 class AutoResizeWebViewClient : public WebViewClient {
@@ -4907,7 +4909,8 @@ class ViewReusingWebFrameClient
   void SetWebView(WebView* view) { web_view_ = view; }
 
  private:
-  WebView* web_view_ = nullptr;
+  raw_ptr<WebView, UnprotectedInRelease | DanglingUntriaged> web_view_ =
+      nullptr;
 };
 
 TEST_F(WebViewTest,
@@ -6458,6 +6461,94 @@ TEST_F(WebViewTest, ResizeWithFixedPosCrash) {
   frame->PrintEnd();
 }
 
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+class OverlayScrollbarWebViewTest : public WebViewTest {
+ protected:
+  void SetUp() override {
+    WebViewTest::SetUp();
+    if (!non_overlay_scrollbars_.IsSuccessful()) {
+      GTEST_SKIP();
+    }
+  }
+
+  void TearDown() override {
+    if (WebViewImpl* web_view = web_view_helper_.GetWebView()) {
+      auto renderer_preferences = web_view->GetRendererPreferences();
+      renderer_preferences.use_overlay_scrollbar = false;
+      web_view->SetRendererPreferences(renderer_preferences);
+      UpdateAllLifecyclePhases();
+    }
+    WebViewTest::TearDown();
+  }
+
+ private:
+  ScopedMockOverlayScrollbars non_overlay_scrollbars_{false};
+};
+
+// Verifies that `Page::UsesOverlayScrollbarsChanged()` does not get called
+// when the overlay settings did not change.
+TEST_F(OverlayScrollbarWebViewTest,
+       UnchangedOverlayScrollbarPreferenceKeepsScrollbars) {
+  WebViewImpl* web_view = web_view_helper_.Initialize();
+  web_view->MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+
+  WebURL base_url = url_test_helpers::ToKURL("http://example.com/");
+  frame_test_helpers::LoadHTMLString(
+      web_view->MainFrameImpl(),
+      "<style>body { margin: 0; height: 3000px; }</style>", base_url);
+  UpdateAllLifecyclePhases();
+
+  auto renderer_preferences = web_view->GetRendererPreferences();
+  renderer_preferences.use_overlay_scrollbar = false;
+  web_view->SetRendererPreferences(renderer_preferences);
+  UpdateAllLifecyclePhases();
+
+  auto* layout_viewport =
+      web_view->MainFrameImpl()->GetFrameView()->LayoutViewport();
+  auto* vertical_scrollbar = layout_viewport->VerticalScrollbar();
+  ASSERT_NE(nullptr, vertical_scrollbar);
+
+  web_view->SetRendererPreferences(renderer_preferences);
+
+  // If `Page::UsesOverlayScrollbarsChanged()` were called, the existing
+  // scrollbar would have been removed for reconstruction.
+  EXPECT_EQ(vertical_scrollbar, layout_viewport->VerticalScrollbar());
+}
+
+// Verifies that `Page::UsesOverlayScrollbarsChanged()` does get called
+// when the overlay settings change.
+TEST_F(OverlayScrollbarWebViewTest,
+       ChangedOverlayScrollbarPreferenceUpdatesScrollbar) {
+  WebViewImpl* web_view = web_view_helper_.Initialize();
+  web_view->MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+
+  WebURL base_url = url_test_helpers::ToKURL("http://example.com/");
+  frame_test_helpers::LoadHTMLString(
+      web_view->MainFrameImpl(),
+      "<style>body { margin: 0; height: 3000px; }</style>", base_url);
+  UpdateAllLifecyclePhases();
+
+  auto renderer_preferences = web_view->GetRendererPreferences();
+  renderer_preferences.use_overlay_scrollbar = false;
+  web_view->SetRendererPreferences(renderer_preferences);
+  UpdateAllLifecyclePhases();
+
+  auto* layout_viewport =
+      web_view->MainFrameImpl()->GetFrameView()->LayoutViewport();
+  ASSERT_NE(nullptr, layout_viewport->VerticalScrollbar());
+  ASSERT_FALSE(layout_viewport->VerticalScrollbar()->IsOverlayScrollbar());
+
+  renderer_preferences.use_overlay_scrollbar = true;
+  web_view->SetRendererPreferences(renderer_preferences);
+  UpdateAllLifecyclePhases();
+
+  // After calling `Page::UsesOverlayScrollbarsChanged()`, the page
+  // will now have overlay scrollbars.
+  ASSERT_NE(nullptr, layout_viewport->VerticalScrollbar());
+  EXPECT_TRUE(layout_viewport->VerticalScrollbar()->IsOverlayScrollbar());
+}
+#endif  // (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN))
+
 TEST_F(WebViewTest, DeviceEmulationResetScrollbars) {
   WebViewImpl* web_view = web_view_helper_.Initialize();
   web_view->MainFrameViewWidget()->Resize(gfx::Size(800, 600));
@@ -6547,7 +6638,8 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
     }
 
    private:
-    WebLocalFrame* frame_;  // Unowned
+    raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged>
+        frame_;  // Unowned
   };
 
   class PluginCreatingWebFrameClient
@@ -6788,11 +6880,13 @@ class MockClockAdvancingWebFrameClient
                               const WebString& source_name,
                               unsigned source_line,
                               const WebString& stack_trace) override {
-    task_environment_.FastForwardBy(event_handling_delay_);
+    task_environment_->FastForwardBy(event_handling_delay_);
   }
 
  private:
-  base::test::TaskEnvironment& task_environment_;
+  const raw_ref<base::test::TaskEnvironment,
+                UnprotectedInRelease | DanglingUntriaged>
+      task_environment_;
   base::TimeDelta event_handling_delay_;
 };
 

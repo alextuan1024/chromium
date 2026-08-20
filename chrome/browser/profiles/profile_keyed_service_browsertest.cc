@@ -550,7 +550,6 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "LanguageDetectionModelService",
     "MediaEngagementServiceFactory",
     "MediaNotificationService",
-    "MerchantPromoCodeManager",
     "NoStatePrefetchManager",
 #if !BUILDFLAG(IS_CHROMEOS)
     // TODO(crbug.com/374351946): Investigate if this is necessary on CrOS.
@@ -585,7 +584,6 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "PrimaryProfileServices",
     "PrinterEventTracker",
     "SharesheetService",
-    "SupervisedUserService",
     "SupervisedUserUrlFilteringService",
     "SystemWebAppManager",
     "VirtualKeyboardAPI",
@@ -603,9 +601,15 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     guest_otr_active_services.insert("AimEligibilityExtensionBridge");
     guest_otr_active_services.insert("ExtensionMojoBinderRegistry");
   }
+
+  // On ChromeOS, Guest session startup navigates to chrome://newtab (a WebUI)
+  // by default, whereas Desktop CreateGuestBrowser() navigates to about:blank.
+  // Loading a WebUI initializes the embedded WebUI toolbar
+  // (WebUIToolbarWebView), which opts into V2 resource loading and
+  // instantiates ThemeColorsSourceManager for the Guest OTR profile.
   if (base::FeatureList::IsEnabled(
-          universal_optout::features::kUniversalOptOut)) {
-    guest_otr_active_services.insert("UniversalOptOutService");
+          features::kWebUIInProcessResourceLoadingV2)) {
+    guest_otr_active_services.insert("ThemeColorsSourceManager");
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -901,7 +905,6 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
 #endif
     "StorageFrontend",
     "StorageNotificationService",
-    "SupervisedUserService",
     "SystemInfoAPI",
     "TCPServerSocketEventDispatcher",
     "TCPSocketEventDispatcher",
@@ -1017,6 +1020,10 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     guest_active_services.insert("ExtensionInstallPolicyService");
   }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (base::FeatureList::IsEnabled(
+          universal_optout::features::kUniversalOptOut)) {
+    guest_active_services.insert("UniversalOptOutService");
+  }
 #if BUILDFLAG(IS_CHROMEOS)
   EXPECT_TRUE(user_manager::UserManager::Get()->IsLoggedInAsGuest());
   // ChromeOS Guest mode starts with the guest otr profile.

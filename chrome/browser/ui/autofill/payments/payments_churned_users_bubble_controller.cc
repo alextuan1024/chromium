@@ -17,7 +17,6 @@
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
@@ -83,7 +82,7 @@ void PaymentsChurnedUsersBubbleController::OnBubbleClosed(
   autofill_metrics::LogPaymentsChurnedUsersBubbleResult(
       is_accepted_ ? PaymentsUiClosedReason::kAccepted : closed_reason);
 
-  if (is_accepted_ || closed_reason == PaymentsUiClosedReason::kCancelled ||
+  if (closed_reason == PaymentsUiClosedReason::kCancelled ||
       closed_reason == PaymentsUiClosedReason::kClosed) {
     should_show_icon_ = false;
   }
@@ -175,10 +174,16 @@ PaymentsChurnedUsersBubbleController::GetConfirmationUiParams() const {
 
 base::OnceCallback<void(PaymentsUiClosedReason)>
 PaymentsChurnedUsersBubbleController::GetConfirmationBubbleClosedCallback() {
-  return base::IgnoreArgs<PaymentsUiClosedReason>(
-      base::BindOnce(&PaymentsChurnedUsersBubbleController::
-                         ResetBubbleViewAndInformBubbleManager,
-                     weak_ptr_factory_.GetWeakPtr()));
+  return base::BindOnce(
+      &PaymentsChurnedUsersBubbleController::OnConfirmationBubbleClosed,
+      weak_ptr_factory_.GetWeakPtr());
+}
+
+void PaymentsChurnedUsersBubbleController::PrimaryPageChanged(
+    content::Page& page) {
+  should_show_icon_ = false;
+  UpdatePageActionIcon();
+  HideBubble(/*initiated_by_bubble_manager=*/false);
 }
 
 bool PaymentsChurnedUsersBubbleController::CanBeReshown() const {
@@ -230,5 +235,12 @@ bool PaymentsChurnedUsersBubbleController::ShouldShowPageAction() {
   return should_show_icon_;
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+void PaymentsChurnedUsersBubbleController::OnConfirmationBubbleClosed(
+    PaymentsUiClosedReason closed_reason) {
+  should_show_icon_ = false;
+  UpdatePageActionIcon();
+  ResetBubbleViewAndInformBubbleManager();
+}
 
 }  // namespace autofill

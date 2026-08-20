@@ -930,6 +930,13 @@ void VideoCaptureDeviceAndroid::OnInteractiveStateChangedOnMainThread(
     bool is_interactive) {
   DCHECK(main_task_runner_->BelongsToCurrentThread());
 
+  {
+    base::AutoLock lock(lock_);
+    if (state_ != kConfigured) {
+      return;
+    }
+  }
+
   JNIEnv* env = AttachCurrentThread();
   if (is_interactive) {
     Java_VideoCapture_startCaptureMaybeAsync(env, j_capture_);
@@ -1084,3 +1091,10 @@ void VideoCaptureDeviceAndroid::DoSetPhotoOptions(
 }  // namespace media
 
 DEFINE_JNI(VideoCapture)
+
+void VideoCaptureDeviceAndroid::InvalidateBuffers() {
+  base::AutoLock lock(lock_);
+  if (client_) {
+    client_->InvalidateBuffers();
+  }
+}

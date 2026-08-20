@@ -1272,36 +1272,44 @@ StyleCascade::MakeFunctionContextFromMixinAndResolveSubstitutions(
     return nullptr;
   }
 
-  // TODO(sesse): Can we avoid taking a copy here if there are no CQ-dependent
-  // locals?
-  HeapHashMap<String, Member<CSSVariableData>> locals_after_cq =
-      mixin_parameter_bindings->GetBaseLocals();
-  for (const auto& [name, candidates] :
-       mixin_parameter_bindings->GetConditionalOverrideLocals()) {
-    // Mark this as uncacheable in the MPC.
-    // TODO(sesse): Loosen this restriction, by including the CQ evaluation
-    // results in the MPC key (and also update operator== and GetHash() to
-    // include CQ-dependent locals).
-    state_.StyleBuilder().SetHasContainerRelativeValue();
+  const auto& conditional_override_locals =
+      mixin_parameter_bindings->GetConditionalOverrideLocals();
 
-    // Find the last-declared value with a matching container query (if any),
-    // and apply it.
-    for (const MixinParameterBindings::CQDependentValue& candidate :
-         base::Reversed(candidates)) {
-      if (EvaluateContainerQueries(state_.GetElement(), state_.GetPseudoId(),
-                                   *candidate.container_queries, tree_scope,
-                                   state_.NearestSizeContainer(),
-                                   match_result_)) {
-        locals_after_cq.Set(name, candidate.data);
-        break;
+  // Avoid copying the base locals when there's nothing to override: point
+  // `unresolved_locals` straight at GetBaseLocals() in that case, since it
+  // outlives this call.
+  HeapHashMap<String, Member<CSSVariableData>> locals_after_cq;
+  const HeapHashMap<String, Member<CSSVariableData>>* unresolved_locals =
+      &mixin_parameter_bindings->GetBaseLocals();
+  if (!conditional_override_locals.empty()) {
+    locals_after_cq = mixin_parameter_bindings->GetBaseLocals();
+    for (const auto& [name, candidates] : conditional_override_locals) {
+      // Mark this as uncacheable in the MPC.
+      // TODO(sesse): Loosen this restriction, by including the CQ evaluation
+      // results in the MPC key (and also update operator== and GetHash() to
+      // include CQ-dependent locals).
+      state_.StyleBuilder().SetHasContainerRelativeValue();
+
+      // Find the last-declared value with a matching container query (if
+      // any), and apply it.
+      for (const MixinParameterBindings::CQDependentValue& candidate :
+           base::Reversed(candidates)) {
+        if (EvaluateContainerQueries(state_.GetElement(), state_.GetPseudoId(),
+                                     *candidate.container_queries, tree_scope,
+                                     state_.NearestSizeContainer(),
+                                     match_result_)) {
+          locals_after_cq.Set(name, candidate.data);
+          break;
+        }
       }
     }
+    unresolved_locals = &locals_after_cq;
   }
 
   FunctionContext ctx = {
       .arguments = function_arguments,
       .locals = {},  // Populated by ApplyLocalVariables.
-      .unresolved_locals = std::move(locals_after_cq),
+      .unresolved_locals = *unresolved_locals,
       .local_types = local_types,
       .parent = function_context,
   };
@@ -2322,8 +2330,10 @@ void StyleCascade::FlattenFunctionBody(
     } else if (auto* navigation_rule =
                    DynamicTo<StyleRuleNavigation>(child.Get())) {
       state_.StyleBuilder().SetAffectedByFunctionalNavigation();
-      // TODO(crbug.com/493044687): Implement
-      (void)navigation_rule;
+      if (navigation_rule->GetNavigationQuery().Evaluate(&GetDocument())) {
+        FlattenFunctionBody(*navigation_rule, function_tree_scope, result,
+                            locals);
+      }
     }
   }
 }
@@ -2361,17 +2371,12 @@ bool StyleCascade::ResolveEnvInto(CSSParserTokenStream& stream,
 
   CSSVariableData* data =
       GetEnvironmentVariable(variable_name, std::move(indices));
-  if (data) {
-    return out.Append(data, data->IsAttrTainted());
-  }
 
-  // Fallback.
-  if (ConsumeComma(stream)) {
-    return ResolveTokensInto(stream, tree_scope, resolver, context,
-                             /* function_context */ nullptr,
-                             /* stop_type */ kEOFToken, out);
-  }
-  return false;
+  // Appending the fallback (if any) through the same path as var() gives it
+  // the same treatment: the whitespace and comments surrounding it are not
+  // part of the substitution value.
+  return AppendDataWithFallback(data, stream, tree_scope, resolver, context,
+                                /*function_context=*/nullptr, out);
 }
 
 bool StyleCascade::ResolveAttrInto(CSSParserTokenStream& stream,
@@ -3071,7 +3076,7 @@ bool StyleCascade::TreatAsRevertLayer(CascadePriority priority) const {
                                       state_.StyleBuilder().GetPosition());
 }
 
-const Document& StyleCascade::GetDocument() const {
+Document& StyleCascade::GetDocument() const {
   return state_.GetDocument();
 }
 

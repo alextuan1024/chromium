@@ -4853,6 +4853,22 @@ be describing additional metrics about the same event.
   </metric>
 </event>
 
+<event name="Blink.EmailVerificationProtocol.FormSubmission">
+  <owner>npm@google.com</owner>
+  <owner>web-identity-eng@google.com</owner>
+  <summary>
+    Records metrics for the Email Verification Protocol (EVP) when a form
+    containing a verified email verification token is submitted.
+  </summary>
+  <metric name="Autofill.FormSubmitted" enum="BooleanHit">
+    <summary>
+      Records when a form containing a verified email verification token is
+      submitted. Recorded once when the form submission occurs after successful
+      email verification.
+    </summary>
+  </metric>
+</event>
+
 <event name="Blink.FedCm">
   <owner>yigu@chromium.org</owner>
   <owner>web-identity-eng@google.com</owner>
@@ -6020,42 +6036,6 @@ be describing additional metrics about the same event.
     Metrics associated with the async script count associated with a document,
     recorded when the HTML parsing of a mainframe has completed.
   </summary>
-</event>
-
-<event name="Blink.SVGImage" singular="True">
-  <owner>chikamune@chromium.org</owner>
-  <owner>chrome-loading@google.com</owner>
-  <summary>
-    Metrics to measure the SVGImage::DataChanged() performance per document
-    while loading the outermost main frame document. This is recorded at the
-    frequency of 0.001.
-  </summary>
-  <metric name="Count">
-    <summary>
-      Measures the call count of SVGImage::DataChanged().
-      ukm::GetExponentialBucketMinForCounts1000() is applied.
-    </summary>
-    <aggregation>
-      <history>
-        <statistics>
-          <quantiles type="std-percentiles"/>
-        </statistics>
-      </history>
-    </aggregation>
-  </metric>
-  <metric name="TotalTime">
-    <summary>
-      Measures the total elapsed time it takes to run SVGImage::DataChanged(),
-      in microseconds.
-    </summary>
-    <aggregation>
-      <history>
-        <statistics>
-          <quantiles type="std-percentiles"/>
-        </statistics>
-      </history>
-    </aggregation>
-  </metric>
 </event>
 
 <event name="Blink.UpdateTime">
@@ -7707,11 +7687,39 @@ be describing additional metrics about the same event.
   <owner>picarella@google.com</owner>
   <owner>mmaryia@google.com</owner>
   <summary>
-    Recorded when either a copy/cut or a subsequent paste event occurs. A
-    separate event entry is logged for each action: a copy or cut from a tab
-    records an entry with `CopyFromTabNonce`, while a subsequent paste of that
-    data from a different tab and within 10 minutes, records a separate entry
-    with `PasteFromTabNonce`.
+    As of M153, recorded when either a copy/cut or a subsequent paste event
+    occurs for a user with the AutofillAtMemory feature disabled (prior to M153,
+    it was recorded regardless of the feature status). A separate event entry is
+    logged for each action: a copy or cut from a tab records an entry with
+    `CopyFromTabNonce`, while a subsequent paste of that data from a different
+    tab and within 10 minutes, records a separate entry with
+    `PasteFromTabNonce`.
+  </summary>
+  <metric name="CopyFromTabNonce">
+    <summary>
+      A random 64-bit integer recorded when a user copies or cuts data from a
+      non-incognito tab.
+    </summary>
+  </metric>
+  <metric name="PasteFromTabNonce">
+    <summary>
+      The 64-bit nonce of the matching copy event, recorded when the user pastes
+      the copied data into a different tab within 10 minutes. Used to link the
+      copy and paste events.
+    </summary>
+  </metric>
+</event>
+
+<event name="Clipboard.CopyPasteEvent.WithAtMemory">
+  <owner>picarella@google.com</owner>
+  <owner>mmaryia@google.com</owner>
+  <summary>
+    Added in M153. Recorded when either a copy/cut or a subsequent paste event
+    occurs for a user with the AutofillAtMemory feature enabled. A separate
+    event entry is logged for each action: a copy or cut from a tab records an
+    entry with `CopyFromTabNonce`, while a subsequent paste of that data from a
+    different tab and within 10 minutes, records a separate entry with
+    `PasteFromTabNonce`.
   </summary>
   <metric name="CopyFromTabNonce">
     <summary>
@@ -10324,8 +10332,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameControls.ButtonOptionsMenuFunctionTriggered">
-  <owner>cuicuiruan@google.com</owner>
-  <owner>pjlee@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     Logged when Game Controls' options menu button functions are triggered.
@@ -10338,8 +10345,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameControls.EditDeleteMenuFuctionTriggered">
-  <owner>cuicuiruan@google.com</owner>
-  <owner>pjlee@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     Logged when Game Controls edit-delete menu functions are triggered.
@@ -10352,8 +10358,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameControls.EditingListFunctionTriggered">
-  <owner>cuicuiruan@google.com</owner>
-  <owner>pjlee@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     Logged when Game Controls editing list functions are triggered.
@@ -10366,7 +10371,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameControls.PlayGameWithGameControls">
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     Log once whether the ARC game is played with Game Controls per game session.
@@ -10381,8 +10386,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameControls.ToggleWithMappingSource">
-  <owner>cuicuiruan@google.com</owner>
-  <owner>pjlee@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     Logged when Game Controls feature or hint is toggled on or off.
@@ -10405,7 +10409,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ControlsFeatureToggleState">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10419,7 +10422,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ControlsHintToggleSource">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10438,7 +10440,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.EditControlsWithEmptyState">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10452,7 +10453,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.FunctionTriggered">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10466,7 +10466,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.RecordingStartSource">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10480,7 +10479,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ScreenshotTakeSource">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10494,7 +10492,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ToggleMainMenu">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10514,7 +10511,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ToolbarClickToExpandState">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10528,7 +10524,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ToolbarNewLocation">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10542,7 +10537,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.ToolbarToggleState">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10556,7 +10550,6 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GameDashboard.WelcomeDialogNotificationToggleState">
-  <owner>cuicuiruan@google.com</owner>
   <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
@@ -10571,8 +10564,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.ActionRepositionOperationType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when key mapping position is changed.
@@ -10592,8 +10584,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.ActionRepositionWindowStateType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when key mapping position is changed.
@@ -10613,8 +10604,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.ButtonGroupRepositionOperationType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when button group position is changed.
@@ -10634,8 +10624,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.ButtonGroupRepositionWindowStateType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when menu entry position is changed.
@@ -10655,8 +10644,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.Customization">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event for gaming input overlay that is logged when users enter into edit
@@ -10677,8 +10665,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.Feature">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event for gaming input overlay that is logged when the input overlay
@@ -10699,8 +10686,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.MappingHint">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event for gaming input overlay that is logged when the mapping hint state
@@ -10721,8 +10707,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.MenuEntryRepositionOperationType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when key mapping position is changed.
@@ -10742,8 +10727,7 @@ be describing additional metrics about the same event.
 </event>
 
 <event name="GamingInputOverlay.MenuEntryRepositionWindowStateType">
-  <owner>pjlee@google.com</owner>
-  <owner>cuicuiruan@google.com</owner>
+  <owner>phshah@chromium.org</owner>
   <owner>arc-gaming@google.com</owner>
   <summary>
     An event that is logged when menu entry position is changed.

@@ -37,6 +37,17 @@ public class SelectionUtilsTest {
     }
 
     @Test
+    public void testSanitizeTextForMenu() {
+        assertEquals("", SelectionUtils.sanitizeTextForMenu(null));
+        assertEquals("", SelectionUtils.sanitizeTextForMenu(""));
+        assertEquals("hello world", SelectionUtils.sanitizeTextForMenu("  hello   world  "));
+        assertEquals("line 1 line 2", SelectionUtils.sanitizeTextForMenu("line 1\nline 2"));
+        assertEquals(
+                "um.[59] ^ XVIII In the United Kingdom",
+                SelectionUtils.sanitizeTextForMenu("um.[59] ^\nXVIII In the United Kingdom"));
+    }
+
+    @Test
     public void testShare() {
         Context context = RuntimeEnvironment.application;
         SelectionUtils.share(context, "test share");
@@ -50,6 +61,18 @@ public class SelectionUtilsTest {
     public void testWebSearch() {
         Context context = RuntimeEnvironment.application;
         SelectionUtils.webSearch(context, "test search");
+        Intent intent = Shadows.shadowOf((Application) context).getNextStartedActivity();
+        assertNotNull(intent);
+        assertEquals(Intent.ACTION_WEB_SEARCH, intent.getAction());
+        assertNull(intent.getPackage());
+        assertTrue(intent.getBooleanExtra(Browser.EXTRA_CREATE_NEW_TAB, false));
+        assertTrue((intent.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0);
+    }
+
+    @Test
+    public void testWebSearchWithSetPackage() {
+        Context context = RuntimeEnvironment.application;
+        SelectionUtils.webSearch(context, "test search", /* setPackage= */ true);
         Intent intent = Shadows.shadowOf((Application) context).getNextStartedActivity();
         assertNotNull(intent);
         assertEquals(Intent.ACTION_WEB_SEARCH, intent.getAction());

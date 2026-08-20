@@ -147,6 +147,9 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableEyeDropperAPI, raw_ref(features::kEyeDropper),
            kSetOnlyIfOverridden},
           {wf::EnableFedCm, raw_ref(features::kFedCm), kSetOnlyIfOverridden},
+          {wf::EnableFedCmActiveModeMultipleIdentityProviders,
+           raw_ref(features::kFedCmActiveModeMultipleIdentityProviders),
+           kDefault},
           {wf::EnableFedCmAutofill, raw_ref(features::kFedCmAutofill),
            kDefault},
           {wf::EnableFedCmDelegation, raw_ref(features::kFedCmDelegation),
@@ -230,8 +233,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableWebOTPAssertionFeaturePolicy,
            raw_ref(features::kWebOTPAssertionFeaturePolicy),
            kSetOnlyIfOverridden},
-          {wf::EnableWebGPUCompatibilityMode,
-           raw_ref(features::kWebGPUCompatibilityMode)},
           {wf::EnableWebUSB, raw_ref(features::kWebUsb)},
           {wf::EnableWebXR, raw_ref(features::kWebXr)},
 #if BUILDFLAG(ENABLE_VR)

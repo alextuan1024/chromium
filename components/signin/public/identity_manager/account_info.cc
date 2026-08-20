@@ -174,10 +174,10 @@ AccountInfo::GetLastDownloadedAvatarUrlWithSize() const {
 }
 
 std::optional<gfx::Image> AccountInfo::GetAvatarImage() const {
-  if (account_image.IsEmpty()) {
+  if (account_image_.IsEmpty()) {
     return std::nullopt;
   }
-  return account_image;
+  return account_image_;
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -196,15 +196,15 @@ signin::Tribool AccountInfo::IsChildAccount() const {
 }
 
 std::optional<std::string_view> AccountInfo::GetLocale() const {
-  if (locale.empty()) {
+  if (locale_.empty()) {
     return std::nullopt;
   }
-  return locale;
+  return locale_;
 }
 
 bool AccountInfo::IsEmpty() const {
   return CoreAccountInfo::IsEmpty() && hosted_domain_.empty() &&
-         full_name_.empty() && given_name_.empty() && locale.empty() &&
+         full_name_.empty() && given_name_.empty() && locale_.empty() &&
          picture_url_.empty();
 }
 
@@ -227,7 +227,7 @@ bool AccountInfo::UpdateWith(const AccountInfo& other) {
   modified |= UpdateField(&given_name_, other.given_name_, nullptr);
   modified |=
       UpdateField(&hosted_domain_, other.hosted_domain_, kNoHostedDomainFound);
-  modified |= UpdateField(&locale, other.locale, nullptr);
+  modified |= UpdateField(&locale_, other.locale_, nullptr);
   modified |=
       UpdateField(&picture_url_, other.picture_url_, kNoPictureURLFound);
   modified |= UpdateField(&is_child_account_, other.is_child_account_);
@@ -362,14 +362,14 @@ AccountInfo::Builder& AccountInfo::Builder::SetLastDownloadedAvatarUrlWithSize(
 
 AccountInfo::Builder& AccountInfo::Builder::SetAvatarImage(
     const gfx::Image& avatar_image) {
-  account_info_.account_image = avatar_image;
+  account_info_.account_image_ = avatar_image;
   return *this;
 }
 
 AccountInfo::Builder& AccountInfo::Builder::SetLocale(
     std::string_view locale_val) {
   CHECK(!locale_val.empty());
-  account_info_.locale = std::string(locale_val);
+  account_info_.locale_ = std::string(locale_val);
   return *this;
 }
 
@@ -465,11 +465,12 @@ base::android::ScopedJavaLocalRef<jobject> ConvertToJavaAccountInfo(
                 env, maybe_hosted_domain->empty() ? kNoHostedDomainFound
                                                   : *maybe_hosted_domain)
           : nullptr;
+  std::optional<gfx::Image> maybe_account_image = account_info.GetAvatarImage();
   base::android::ScopedJavaLocalRef<jobject> account_image =
-      account_info.account_image.IsEmpty()
-          ? nullptr
-          : gfx::ConvertToJavaBitmap(
-                *account_info.account_image.AsImageSkia().bitmap());
+      maybe_account_image.has_value()
+          ? gfx::ConvertToJavaBitmap(
+                *maybe_account_image->AsImageSkia().bitmap())
+          : nullptr;
   return signin::Java_AccountInfo_Constructor(
       env, account_info.GetAccountId(), std::string(account_info.GetEmail()),
       account_info.GetGaiaId(),

@@ -24,8 +24,6 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Callback;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
-import org.chromium.base.TriState;
-import org.chromium.base.TriStateUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -195,7 +193,7 @@ class AutocompleteMediator
     // Suggestions are refreshed several times per keystroke.
     private @Nullable Long mFirstSuggestionListModelCreatedTime;
 
-    private @TriState int mOmniboxInZeroPrefixState;
+    private @Nullable Boolean mOmniboxInZeroPrefixState;
 
     // The timestamp (using SystemClock.elapsedRealtime()) at the point when the user started
     // modifying the omnibox with new input.
@@ -587,7 +585,7 @@ class AutocompleteMediator
         mNumPrefetchesStartedInOmniboxSession = 0;
         mLastPrefetchStartedSuggestion = null;
 
-        mOmniboxInZeroPrefixState = TriState.NOT_SET;
+        mOmniboxInZeroPrefixState = null;
         mNewOmniboxEditSessionTimestamp = -1;
 
         // Prevent any upcoming omnibox suggestions from showing once a URL is loaded (and as
@@ -893,7 +891,7 @@ class AutocompleteMediator
     }
 
     /* package */ void onSuggestionDropdownNavigation(boolean isParkedAtSentinel) {
-        if (isParkedAtSentinel && mOmniboxInZeroPrefixState == TriState.TRUE) {
+        if (isParkedAtSentinel && Boolean.TRUE.equals(mOmniboxInZeroPrefixState)) {
             mDelegate.setOmniboxEditingText("");
         }
     }
@@ -1147,9 +1145,9 @@ class AutocompleteMediator
         cancelAutocompleteRequests();
 
         // The user recently focused the Omnibox, began typing, or cleared the Omnibox.
-        @TriState int newState = TriStateUtils.from(isInZeroPrefixContext);
-        if (mOmniboxInZeroPrefixState != newState) {
-            mOmniboxInZeroPrefixState = newState;
+        if (mOmniboxInZeroPrefixState == null
+                || mOmniboxInZeroPrefixState != isInZeroPrefixContext) {
+            mOmniboxInZeroPrefixState = isInZeroPrefixContext;
             if (!isInZeroPrefixContext) {
                 // User started typing.
                 mAutocomplete.resetSession();
@@ -1554,6 +1552,13 @@ class AutocompleteMediator
             // user tapped the URL bar to dismiss the suggestions, then pressed enter. This can
             // also happen if the user presses enter before any suggestions have been received
             // from the autocomplete controller.
+            // For Tab Search Overlay, do nothing if there are no matching suggestions so that
+            // focus is not cleared and no web search navigation is performed.
+            if (mAutocompleteInput != null
+                    && mAutocompleteInput.getPageClassification()
+                            == PageClassification.ANDROID_TAB_SEARCH_OVERLAY) {
+                return null;
+            }
             return mAutocomplete != null ? mAutocomplete.classify(urlText) : null;
             // If urlText couldn't be classified, bail.
         }

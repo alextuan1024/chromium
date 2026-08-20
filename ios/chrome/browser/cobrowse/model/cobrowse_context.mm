@@ -22,18 +22,23 @@ const char kSearchQueryKey[] = "q";
 
 // AI Mode (AIM) Specific Parameters
 
-// Magi Thread ID (mtid): Identifies the unique conversation thread ID in the
+// Thread ID (mtid): Identifies the unique conversation thread ID in the
 // current AI Mode session.
 const char kThreadIDKey[] = "mtid";
+
+// State Token (mstk): The primary opaque token holding the state of an AIM
+// session.
+const char kStateTokenKey[] = "mstk";
+
+// Contextual Input Tokens (cinpts): Represents the opaque state of attachments
+// (like images or tab context) parsed by the server.
+const char kContextualInputTokensKey[] = "cinpts";
 
 // Conversation Search UI Restore (csuir): A boolean flag (1 for true) telling
 // the backend/UI to restore the conversation view using the provided mstk state
 // rather than starting a completely fresh query thread.
 const char kConversationRestoreKey[] = "csuir";
 const char kConversationSearchUIRestoreValue[] = "1";
-
-const char kGoogleSearchClientKey[] = "gsc";
-const char kGoogleSearchClientValue[] = "2";
 
 const char kSourceIDKey[] = "sourceid";
 const char kSourceIDValue[] = "chrome-mobile";
@@ -48,6 +53,14 @@ const char kGoogleSearchAppStateValue[] = "4";
 }
 
 @synthesize url = _url;
+
+- (BOOL)hasServerSessionTokens {
+  std::string dummy;
+  return net::GetValueForKeyInQuery(self.url, kStateTokenKey, &dummy) ||
+         net::GetValueForKeyInQuery(self.url, kThreadIDKey, &dummy) ||
+         net::GetValueForKeyInQuery(self.url, kContextualInputTokensKey,
+                                    &dummy);
+}
 
 - (instancetype)initWithURL:(const GURL&)url {
   self = [super init];
@@ -66,8 +79,7 @@ const char kGoogleSearchAppStateValue[] = "4";
     } else {
       _url = url;
     }
-    _url = net::AppendOrReplaceQueryParameter(_url, kGoogleSearchClientKey,
-                                              kGoogleSearchClientValue);
+
     _url =
         net::AppendOrReplaceQueryParameter(_url, kSourceIDKey, kSourceIDValue);
     _url = net::AppendOrReplaceQueryParameter(_url, kGoogleSearchAppStateKey,

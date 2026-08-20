@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
@@ -92,13 +93,15 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
   }
 
   // Returns true if the skills dialog is currently being shown.
-  bool IsShowing() const;
+  bool IsShowing() const override;
 
  protected:
   // Helper to retrieve a skill by ID.
   virtual const skills::Skill* GetSkill(std::string_view skill_id);
   // Helper to retrieve the service on demand.
   virtual glic::GlicKeyedService* GetGlicService();
+  // Helper to retrieve the profile on demand.
+  virtual Profile* GetProfile();
 
  private:
   // Testing callback to be invoked when the dialog is closed.

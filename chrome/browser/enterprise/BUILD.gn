@@ -253,9 +253,7 @@ source_set("enterprise") {
       "connectors/device_trust/device_trust_service_factory.h",
       "connectors/device_trust/navigation_throttle.h",
       "connectors/device_trust/signals/decorators/common/context_signals_decorator.h",
-      "connectors/device_trust/signals/signals_filterer.h",
       "connectors/device_trust/signals/signals_service_factory.h",
-      "connectors/device_trust/signals/signals_service_impl.h",
     ]
     public_deps += [
       "//chrome/browser/enterprise/connectors/device_trust/signals",
@@ -335,6 +333,7 @@ source_set("enterprise") {
       "webstore/chrome_web_store_navigation_throttle.h",
       "webstore/features.h",
     ]
+    public_deps += [ "//chrome/browser/ui:idle_dialog" ]
   }
 
   if (!is_android && !is_chromeos) {
@@ -381,6 +380,9 @@ source_set("enterprise") {
       "reporting/extension_request/extension_request_policy_handler.h",
       "reporting/extension_request/extension_request_report_generator.h",
     ]
+    if (is_android) {
+      public += [ "reporting/extension_request/extension_request_notification_handler_android.h" ]
+    }
     public_deps += [
       "//extensions/common",
       "//ui/message_center/public/cpp",
@@ -730,9 +732,7 @@ source_set("impl") {
       "connectors/device_trust/device_trust_service_factory.cc",
       "connectors/device_trust/navigation_throttle.cc",
       "connectors/device_trust/signals/decorators/common/context_signals_decorator.cc",
-      "connectors/device_trust/signals/signals_filterer.cc",
       "connectors/device_trust/signals/signals_service_factory.cc",
-      "connectors/device_trust/signals/signals_service_impl.cc",
     ]
     deps += [
       "//chrome/browser/enterprise/connectors/device_trust:features",
@@ -867,6 +867,11 @@ source_set("impl") {
       "reporting/extension_request/extension_request_policy_handler.cc",
       "reporting/extension_request/extension_request_report_generator.cc",
     ]
+    if (is_android) {
+      sources += [
+        "reporting/extension_request/extension_request_notification_handler_android.cc",
+      ]
+    }
     deps += [
       "//chrome/browser/extensions",
       "//components/vector_icons",

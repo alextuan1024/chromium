@@ -13,8 +13,8 @@
 #include "components/prefs/pref_notifier_impl.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_store.h"
-#include "components/safe_search_api/fake_url_checker_client.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/supervised_user/core/browser/child_account_service.h"
 #include "components/supervised_user/core/browser/device_parental_controls_noop_impl.h"
 #include "components/supervised_user/core/browser/device_parental_controls_url_filter.h"
 #include "components/supervised_user/core/browser/family_link_settings_service.h"
@@ -148,8 +148,9 @@ class SupervisedUserTestEnvironment {
   MockUrlCheckerClient& family_link_url_checker_client();
   MockUrlCheckerClient& device_parental_controls_url_checker_client();
 
-  FamilyLinkUrlFilter* family_link_url_filter() const;
+  const FamilyLinkUrlFilter* family_link_url_filter() const;
   FamilyLinkSettingsService* family_link_settings_service();
+  ChildAccountService* child_account_service() const;
 
   SupervisedUserService* service() const;
   SupervisedUserUrlFilteringService* url_filtering_service() const;
@@ -194,6 +195,7 @@ class SupervisedUserTestEnvironment {
   network::TestURLLoaderFactory test_url_loader_factory_;
 
   // Core services under test
+  std::unique_ptr<ChildAccountService> child_account_service_;
   std::unique_ptr<SupervisedUserService> service_;
   std::unique_ptr<SupervisedUserUrlFilteringService> url_filtering_service_;
   std::unique_ptr<SupervisedUserMetricsService> metrics_service_;

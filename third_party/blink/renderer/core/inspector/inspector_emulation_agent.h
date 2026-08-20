@@ -7,8 +7,10 @@
 
 #include <optional>
 
+#include "base/memory/raw_ref.h"
 #include "base/time/time.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+#include "third_party/blink/public/mojom/cpu_performance.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_theme_engine.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/html/parser/parser_synchronization_policy.h"
@@ -95,6 +97,8 @@ class CORE_EXPORT InspectorEmulationAgent final
       std::optional<bool> data_saver) override;
   protocol::Response setHardwareConcurrencyOverride(
       int hardware_concurrency) override;
+  protocol::Response setCPUPerformanceOverride(
+      std::optional<String> performance_tier) override;
   protocol::Response setUserAgentOverride(
       const String& user_agent,
       std::optional<String> accept_language,
@@ -116,6 +120,7 @@ class CORE_EXPORT InspectorEmulationAgent final
   void ApplyAcceptLanguageOverride(String* accept_lang);
   void ApplyDataSaverOverride(bool& data_saver);
   void ApplyHardwareConcurrencyOverride(unsigned int& hardware_concurrency);
+  void ApplyCPUPerformanceOverride(mojom::blink::PerformanceTier& tier);
   void ApplyUserAgentOverride(String* user_agent);
   void ApplyUserAgentMetadataOverride(
       std::optional<blink::UserAgentMetadata>* ua_metadata);
@@ -144,7 +149,8 @@ class CORE_EXPORT InspectorEmulationAgent final
   void SetSystemThemeState();
 
   Member<WebLocalFrameImpl> web_local_frame_;
-  VirtualTimeController& virtual_time_controller_;
+  const raw_ref<VirtualTimeController, UnprotectedInRelease | DanglingUntriaged>
+      virtual_time_controller_;
   base::TimeTicks virtual_time_base_ticks_;
   HeapVector<Member<DocumentLoader>> pending_document_loaders_;
 
@@ -171,6 +177,7 @@ class CORE_EXPORT InspectorEmulationAgent final
   InspectorAgentState::Double emulated_os_text_scale_;
   InspectorAgentState::String navigator_platform_override_;
   InspectorAgentState::Integer hardware_concurrency_override_;
+  InspectorAgentState::String cpu_performance_override_;
   InspectorAgentState::Integer data_saver_override_;
   InspectorAgentState::String user_agent_override_;
   InspectorAgentState::Bytes serialized_ua_metadata_override_;

@@ -1931,17 +1931,25 @@ class AutofillAgentTest_AtMemory : public AutofillAgentTest {
                               const std::optional<PasswordSuggestionRequest>&
                                   password_request) {
           if (IsAtMemoryTriggerSource(trigger_source)) {
-            base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    &AutofillAgent::ApplyFieldAction,
-                    test_api(autofill_agent()).GetWeakPtr(),
-                    mojom::FieldActionType::kReplaceSelectionForAtMemory,
-                    action_persistence_to_respond_, field_id,
-                    fill_value_to_respond_)
-                    .Then(run_loop_->QuitClosure()));
+            ApplyFieldActionAsync(field_id, fill_value_to_respond_,
+                                  action_persistence_to_respond_);
           }
         });
+  }
+
+  // Calls ApplyFieldAction() asynchronously.
+  // To be called in response to AskForValuesToFill().
+  void ApplyFieldActionAsync(
+      FieldRendererId field_id,
+      std::u16string value = u"result",
+      mojom::ActionPersistence persistence = mojom::ActionPersistence::kFill) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&AutofillAgent::ApplyFieldAction,
+                       test_api(autofill_agent()).GetWeakPtr(),
+                       mojom::FieldActionType::kReplaceSelectionForAtMemory,
+                       persistence, field_id, std::move(value))
+            .Then(run_loop_->QuitClosure()));
   }
 
   void WaitForApplyFieldAction() {
@@ -2529,6 +2537,43 @@ TEST_F(AutofillAgentTest_AtMemory, AtMemoryReplaceTriggerAbortsIfValueChanged) {
   EXPECT_EQ(input.Value().Utf16(), u"hello @@ changed");
 }
 
+// Tests that ApplyFieldAction() with kReplaceSelectionForAtMemory refocuses the
+// element and restores the caret if the element lost focus.
+TEST_F(AutofillAgentTest_AtMemory, RefocusesAndRestoresCaretIfUnfocused) {
+  LoadHTML(R"(<input id="f"><input id="g">)");
+  WaitForFormsSeen();
+  blink::WebInputElement input = GetInputElementById("f");
+  blink::WebInputElement other = GetInputElementById("g");
+  Focus("f");
+
+  // Ignore standard Autofill noise during setup.
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemoryTriggerString),
+          _))
+      .Times(AnyNumber());
+  // Expect the specific @memory trigger.
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          _, _, _, AutofillSuggestionTriggerSource::kAtMemoryTriggerString, _))
+      .WillOnce([this, &other](const FormData& form, FieldRendererId field_id,
+                               const gfx::Rect& caret_bounds,
+                               AutofillSuggestionTriggerSource trigger_source,
+                               const std::optional<PasswordSuggestionRequest>&
+                                   password_request) {
+        other.Focus();
+        EXPECT_EQ(other.GetDocument().FocusedElement(), other);
+        ApplyFieldActionAsync(field_id);
+      });
+
+  SimulateSlowTyping("hello @@");
+  WaitForApplyFieldAction();
+  EXPECT_EQ(input.Value().Utf16(), u"hello result");
+  EXPECT_EQ(input.GetDocument().FocusedElement(), input);
+}
+
 // Tests that a non-standard trigger string works in <input> fields.
 TEST_F(AutofillAgentTest_AtMemory, NonStandardTriggerString) {
   // Ignore standard Autofill noise during setup.
@@ -2797,6 +2842,48 @@ TEST_F(AutofillAgentTest_AtMemoryContentEditable,
   EXPECT_EQ(ce.TextContent().Utf16(), u"hello @@ changed");
 }
 
+// Tests that ApplyFieldAction() with kReplaceSelectionForAtMemory refocuses the
+// element and restores the caret if the element lost focus.
+TEST_F(AutofillAgentTest_AtMemoryContentEditable,
+       RefocusesAndRestoresCaretIfUnfocused) {
+  blink::WebElement ce = GetWebElementById("ce");
+  Focus("ce");
+
+  ExecuteJavaScriptForTests(R"(
+    const input = document.createElement('input');
+    input.id = 'other';
+    document.body.appendChild(input);
+  )");
+  blink::WebElement other = GetWebElementById("other");
+
+  // Ignore standard Autofill noise during setup.
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemoryTriggerString),
+          _))
+      .Times(AnyNumber());
+  // Expect the specific @memory trigger.
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          _, _, _, AutofillSuggestionTriggerSource::kAtMemoryTriggerString, _))
+      .WillOnce([this, &other](const FormData& form, FieldRendererId field_id,
+                               const gfx::Rect& caret_bounds,
+                               AutofillSuggestionTriggerSource trigger_source,
+                               const std::optional<PasswordSuggestionRequest>&
+                                   password_request) {
+        other.Focus();
+        ApplyFieldActionAsync(field_id);
+        EXPECT_EQ(other.GetDocument().FocusedElement(), other);
+      });
+
+  SimulateSlowTyping("hello @@");
+  WaitForApplyFieldAction();
+  EXPECT_EQ(ce.TextContent().Utf16(), u"hello result");
+  EXPECT_EQ(ce.GetDocument().FocusedElement(), ce);
+}
+
 // Tests that a non-standard trigger string works in <div contenteditable>
 // fields.
 TEST_F(AutofillAgentTest_AtMemoryContentEditable, NonStandardTriggerString) {
@@ -2990,13 +3077,22 @@ TEST_F(EmailVerificationHandlerTest,
 }
 
 // Tests that GetNonceForEmailVerification correctly queries the nonce from
-// the hidden verification token field.
+// the verification token field (including both type="hidden" and boolean hidden
+// attribute) and ignores non-hidden fields.
 TEST_F(EmailVerificationHandlerTest, GetNonceForEmailVerification) {
   EXPECT_CALL(autofill_driver(), FormsSeen);
   LoadHTML(R"(<body>
     <form id="form">
       <input type="email" id="email" value="a@example.com">
       <input type="hidden" id="verification" autocomplete="email-verification-token" nonce="test_nonce_123">
+    </form>
+    <form id="form_hidden_attr">
+      <input type="email" id="email_hidden_attr" value="a@example.com">
+      <input id="verification_hidden_attr" autocomplete="email-verification-token" nonce="test_nonce_456" hidden>
+    </form>
+    <form id="form_visible_token">
+      <input type="email" id="email_visible" value="a@example.com">
+      <input id="verification_visible" autocomplete="email-verification-token" nonce="test_nonce_789">
     </form>
     <form id="form_without_token">
       <input type="email" id="email2" value="b@example.com">
@@ -3006,6 +3102,10 @@ TEST_F(EmailVerificationHandlerTest, GetNonceForEmailVerification) {
 
   blink::WebFormControlElement email_element =
       GetFormControlElementById("email");
+  blink::WebFormControlElement email_hidden_attr_element =
+      GetFormControlElementById("email_hidden_attr");
+  blink::WebFormControlElement email_visible_element =
+      GetFormControlElementById("email_visible");
   blink::WebFormControlElement email2_element =
       GetFormControlElementById("email2");
 
@@ -3014,10 +3114,57 @@ TEST_F(EmailVerificationHandlerTest, GetNonceForEmailVerification) {
       form_util::GetFieldRendererId(email_element), future1.GetCallback());
   EXPECT_EQ(future1.Get(), "test_nonce_123");
 
+  base::test::TestFuture<const std::optional<std::string>&> future_hidden_attr;
+  autofill_agent().GetNonceForEmailVerification(
+      form_util::GetFieldRendererId(email_hidden_attr_element),
+      future_hidden_attr.GetCallback());
+  EXPECT_EQ(future_hidden_attr.Get(), "test_nonce_456");
+
+  base::test::TestFuture<const std::optional<std::string>&> future_visible;
+  autofill_agent().GetNonceForEmailVerification(
+      form_util::GetFieldRendererId(email_visible_element),
+      future_visible.GetCallback());
+  EXPECT_EQ(future_visible.Get(), std::nullopt);
+
   base::test::TestFuture<const std::optional<std::string>&> future2;
   autofill_agent().GetNonceForEmailVerification(
       form_util::GetFieldRendererId(email2_element), future2.GetCallback());
   EXPECT_EQ(future2.Get(), std::nullopt);
+}
+
+// Tests that the verification token is injected into an input field using the
+// boolean `hidden` attribute instead of type="hidden".
+TEST_F(EmailVerificationHandlerTest,
+       EmailVerificationHandlerSharesTokenWithHiddenAttributeField) {
+  EXPECT_CALL(autofill_driver(), FormsSeen);
+  LoadHTML(R"(<body>
+    <form id="form">
+      <input type="email" id="email" value="a@example.com">
+      <input id="verification" autocomplete="email-verification-token" hidden>
+    </form>
+  </body>)");
+  WaitForFormsSeen();
+
+  blink::WebFormElement form_element =
+      GetWebElementById("form").DynamicTo<blink::WebFormElement>();
+  blink::WebFormControlElement email_element =
+      GetFormControlElementById("email");
+  blink::WebFormControlElement verification_element =
+      GetFormControlElementById("verification");
+
+  EXPECT_CALL(autofill_driver(),
+              FormWithEmailVerificationTokenSubmitted(
+                  _, form_util::GetFieldRendererId(email_element)));
+
+  autofill_agent().SendEmailVerificationToken(
+      form_util::GetFieldRendererId(email_element), "a@example.com",
+      "evt_token_456");
+
+  test_api(autofill_agent())
+      .email_verification_handler()
+      .WillSendSubmitEvent(form_element);
+
+  EXPECT_EQ(verification_element.Value().Utf16(), u"evt_token_456");
 }
 
 // Malicious web pages can attempt to steal saved autofill data via a

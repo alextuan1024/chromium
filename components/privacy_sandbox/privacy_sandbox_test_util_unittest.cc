@@ -23,17 +23,6 @@ namespace privacy_sandbox_test_util {
 
 namespace {
 
-constexpr char kAccessingOrigin[] = "https://storage.com";
-constexpr char kTopFrameOrigin[] = "https://top-frame.com";
-
-static url::Origin AccessingOrigin() {
-  return url::Origin::Create(GURL(kAccessingOrigin));
-}
-
-static url::Origin TopFrameOrigin() {
-  return url::Origin::Create(GURL(kTopFrameOrigin));
-}
-
 class MockPrivacySandboxServiceTestInterface
     : public PrivacySandboxServiceTestInterface {
  public:
@@ -84,8 +73,8 @@ class PrivacySandboxTestUtilTest {
   void ApplyTestState(StateKey key, const TestCaseItemValue& value) {
     privacy_sandbox_test_util::ApplyTestState(
         key, value, task_environment(), prefs(), host_content_settings_map(),
-        mock_delegate(), mock_privacy_sandbox_service(),
-        mock_privacy_sandbox_settings(), user_provider_, managed_provider_);
+        mock_privacy_sandbox_service(), mock_privacy_sandbox_settings(),
+        user_provider_, managed_provider_);
   }
 
   void ProvideInput(InputKey key, TestCaseItemValue value) {
@@ -103,10 +92,6 @@ class PrivacySandboxTestUtilTest {
   sync_preferences::TestingPrefServiceSyncable* prefs() { return &prefs_; }
   content::BrowserTaskEnvironment* task_environment() {
     return &browser_task_environment_;
-  }
-  privacy_sandbox_test_util::MockPrivacySandboxSettingsDelegate*
-  mock_delegate() {
-    return &mock_delegate_;
   }
   HostContentSettingsMap* host_content_settings_map() {
     return host_content_settings_map_.get();
@@ -130,7 +115,6 @@ class PrivacySandboxTestUtilTest {
   sync_preferences::TestingPrefServiceSyncable prefs_;
   scoped_refptr<HostContentSettingsMap> host_content_settings_map_;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_;
-  MockPrivacySandboxSettingsDelegate mock_delegate_;
   MockPrivacySandboxServiceTestInterface mock_privacy_sandbox_service_;
   MockPrivacySandboxSettings mock_privacy_sandbox_settings_;
   raw_ptr<content_settings::MockProvider> user_provider_;
@@ -174,19 +158,6 @@ TEST_P(PrivacySandboxTestUtilBoolTest,
                 ->GetBool(),
             state);
 }
-
-TEST_P(PrivacySandboxTestUtilBoolTest, VerifyIsIncognitoStateKey) {
-  bool state = GetParam();
-  ApplyTestState(StateKey::kIsIncognito, state);
-  EXPECT_EQ(mock_delegate()->IsIncognitoProfile(), state);
-}
-
-TEST_P(PrivacySandboxTestUtilBoolTest, VerifyIsRestrictedAccountStateKey) {
-  bool state = GetParam();
-  ApplyTestState(StateKey::kIsRestrictedAccount, state);
-  EXPECT_EQ(mock_delegate()->IsPrivacySandboxRestricted(), state);
-}
-
 
 class PrivacySandboxTestUtilCookieControlsModeTest
     : public PrivacySandboxTestUtilTest,
@@ -286,124 +257,6 @@ TEST_F(PrivacySandboxBaseTestUtilTest, VerifyAdvanceClockByStateKey) {
   base::Time start_time = base::Time::Now();
   ApplyTestState(StateKey::kAdvanceClockBy, base::Hours(1));
   EXPECT_EQ(start_time + base::Hours(1), base::Time::Now());
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest, VerifyIsSharedStorageAllowedOutputKey) {
-  EXPECT_CALL(
-      *mock_privacy_sandbox_settings(),
-      IsSharedStorageAllowed(TopFrameOrigin(), AccessingOrigin(),
-                             /*out_debug_message=*/nullptr,
-                             /*console_frame=*/nullptr,
-                             /*out_block_is_site_setting_specific=*/nullptr))
-      .WillOnce(testing::Return(true));
-
-  CheckOutput({{InputKey::kAccessingOrigin, AccessingOrigin()},
-               {InputKey::kTopFrameOrigin, TopFrameOrigin()}},
-              {OutputKey::kIsSharedStorageAllowed, true});
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest,
-       VerifyIsSharedStorageSelectURLAllowedOutputKey) {
-  EXPECT_CALL(*mock_privacy_sandbox_settings(),
-              IsSharedStorageSelectURLAllowed(
-                  TopFrameOrigin(), AccessingOrigin(),
-                  /*out_debug_message=*/nullptr,
-                  /*out_block_is_site_setting_specific=*/nullptr))
-      .WillOnce(testing::Return(true));
-
-  CheckOutput({{InputKey::kAccessingOrigin, AccessingOrigin()},
-               {InputKey::kTopFrameOrigin, TopFrameOrigin()}},
-              {OutputKey::kIsSharedStorageSelectURLAllowed, true});
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest,
-       VerifyIsSharedStorageAllowedDebugMessageOutputKey) {
-  std::string actual_out_debug_message;
-  EXPECT_CALL(
-      *mock_privacy_sandbox_settings(),
-      IsSharedStorageAllowed(TopFrameOrigin(), AccessingOrigin(),
-                             /*out_debug_message=*/&actual_out_debug_message,
-                             /*console_frame=*/nullptr,
-                             /*out_block_is_site_setting_specific=*/nullptr))
-      .WillOnce(testing::Return(true));
-
-  // The expected debug message is a non-null empty string here because we using
-  // a mock method.
-  std::string expected_out_debug_message;
-  CheckOutput(
-      {{InputKey::kAccessingOrigin, AccessingOrigin()},
-       {InputKey::kTopFrameOrigin, TopFrameOrigin()},
-       {InputKey::kOutSharedStorageDebugMessage, &actual_out_debug_message}},
-      {OutputKey::kIsSharedStorageAllowedDebugMessage,
-       &expected_out_debug_message});
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest,
-       VerifyIsSharedStorageSelectURLAllowedDebugMessageOutputKey) {
-  std::string actual_out_debug_message;
-  EXPECT_CALL(*mock_privacy_sandbox_settings(),
-              IsSharedStorageSelectURLAllowed(
-                  TopFrameOrigin(), AccessingOrigin(),
-                  /*out_debug_message=*/&actual_out_debug_message,
-                  /*out_block_is_site_setting_specific=*/nullptr))
-      .WillOnce(testing::Return(true));
-
-  // The expected debug message is a non-null empty string here because we using
-  // a mock method.
-  std::string expected_out_debug_message;
-  CheckOutput({{InputKey::kAccessingOrigin, AccessingOrigin()},
-               {InputKey::kTopFrameOrigin, TopFrameOrigin()},
-               {InputKey::kOutSharedStorageSelectURLDebugMessage,
-                &actual_out_debug_message}},
-              {OutputKey::kIsSharedStorageSelectURLAllowedDebugMessage,
-               &expected_out_debug_message});
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest,
-       VerifyIsSharedStorageBlockSiteSettingSpecificOutputKey) {
-  bool actual_out_block_is_site_setting_specific = true;
-  EXPECT_CALL(
-      *mock_privacy_sandbox_settings(),
-      IsSharedStorageAllowed(TopFrameOrigin(), AccessingOrigin(),
-                             /*out_debug_message=*/nullptr,
-                             /*console_frame=*/nullptr,
-                             /*out_block_is_site_setting_specific=*/
-                             &actual_out_block_is_site_setting_specific))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(false),
-                               testing::Return(true)));
-
-  // The expected value for `out_block_is_site_setting_specific` here is false
-  // because we are using a mock method that sets it to false.
-  bool expected_out_block_is_site_setting_specific = false;
-  CheckOutput({{InputKey::kAccessingOrigin, AccessingOrigin()},
-               {InputKey::kTopFrameOrigin, TopFrameOrigin()},
-               {InputKey::kOutSharedStorageBlockIsSiteSettingSpecific,
-                &actual_out_block_is_site_setting_specific}},
-              {OutputKey::kIsSharedStorageBlockSiteSettingSpecific,
-               &expected_out_block_is_site_setting_specific});
-}
-
-TEST_F(PrivacySandboxBaseTestUtilTest,
-       VerifyIsSharedStorageSelectURLBlockSiteSettingSpecificOutputKey) {
-  bool actual_out_block_is_site_setting_specific = true;
-  EXPECT_CALL(*mock_privacy_sandbox_settings(),
-              IsSharedStorageSelectURLAllowed(
-                  TopFrameOrigin(), AccessingOrigin(),
-                  /*out_debug_message=*/nullptr,
-                  /*out_block_is_site_setting_specific=*/
-                  &actual_out_block_is_site_setting_specific))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(false),
-                               testing::Return(true)));
-
-  // The expected value for `out_block_is_site_setting_specific` here is false
-  // because we are using a mock method that sets it to false.
-  bool expected_out_block_is_site_setting_specific = false;
-  CheckOutput({{InputKey::kAccessingOrigin, AccessingOrigin()},
-               {InputKey::kTopFrameOrigin, TopFrameOrigin()},
-               {InputKey::kOutSharedStorageSelectURLBlockIsSiteSettingSpecific,
-                &actual_out_block_is_site_setting_specific}},
-              {OutputKey::kIsSharedStorageSelectURLBlockSiteSettingSpecific,
-               &expected_out_block_is_site_setting_specific});
 }
 
 }  // namespace privacy_sandbox_test_util

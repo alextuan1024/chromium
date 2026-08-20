@@ -11,6 +11,7 @@ import android.util.SparseIntArray;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -286,8 +287,16 @@ public class MediaNotificationManager {
         Pair<Integer, Integer> mapKey = Pair.create(tabId, mediaTypeId);
         sUniqueIdMap.remove(mapKey);
 
-        // Clear the active ID; tryFallbackPromotion will set sActiveNotificationIds correctly if
-        // there is a fallback playing controller that already is or becomes promoted to FGS.
+        // Only trigger fallback promotion if the tab being hidden was the active FGS owner,
+        // or if there is currently no active foreground controller.
+        int activeId = sActiveNotificationIds.get(mediaTypeId, MediaNotificationInfo.INVALID_ID);
+        MediaNotificationController activeController = sControllers.get(activeId);
+        if (notificationId != activeId
+                && activeController != null
+                && activeController.isForeground()) {
+            return;
+        }
+
         sActiveNotificationIds.delete(mediaTypeId);
         tryFallbackPromotion(mediaTypeId, notificationId);
     }
@@ -394,10 +403,20 @@ public class MediaNotificationManager {
     }
 
     public static void resetForTesting() {
-        sControllers.clear();
-        sUniqueIdMap.clear();
-        sActiveNotificationIds.clear();
-        sServices.clear();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    for (int i = 0; i < sControllers.size(); i++) {
+                        MediaNotificationController controller = sControllers.valueAt(i);
+                        if (controller != null) {
+                            controller.clearNotification();
+                            controller.onServiceDestroyed();
+                        }
+                    }
+                    sControllers.clear();
+                    sUniqueIdMap.clear();
+                    sActiveNotificationIds.clear();
+                    sServices.clear();
+                });
     }
 
     public static @Nullable MediaNotificationController getControllerByNotificationId(

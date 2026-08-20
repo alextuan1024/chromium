@@ -220,6 +220,7 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="RefreshTokenUpdated"/>
   <int value="2" label="RefreshTokenRemoved"/>
   <int value="3" label="RefreshTokenInvalidated"/>
+  <int value="4" label="ExternalAppAccountUpdated"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/signin/core/browser/account_preview_data_service_impl.h:FetchTriggerCause) -->
@@ -929,6 +930,7 @@ chromium-metrics-reviews@google.com.
   <int value="106" label="Browser Actuator"/>
   <int value="107" label="Tab Context Containers Service"/>
   <int value="108" label="Site Token Provider"/>
+  <int value="109" label="Device Authorization Request"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/signin/public/base/oauth_consumer_id.h:OAuthConsumerId) -->

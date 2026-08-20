@@ -21,6 +21,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/features.h"
@@ -30,6 +31,7 @@
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry_conversions.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_store.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
@@ -48,6 +50,13 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/web_contents.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/tab_list/tab_removed_reason.h"
+#include "chrome/browser/ui/browser_tab_strip_tracker.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#endif
 
 namespace context_hub {
 
@@ -136,10 +145,43 @@ ThirdPartyData::GroupType ToThirdPartyGroupType(
   }
 }
 
+personal_context::proto::AutoTodoItem ToAutoTodoItemProto(
+    const AutoTodoEntry& entry) {
+  personal_context::proto::AutoTodoItem proto;
+  proto.set_id(entry.id);
+  proto.set_title(entry.title);
+  proto.set_description(entry.description);
+  proto.set_importance_score(entry.importance_score);
+  switch (entry.status) {
+    case AutoTodoEntry::Status::kActive:
+      proto.set_status(personal_context::proto::AutoTodoItem::STATUS_ACTIVE);
+      break;
+    case AutoTodoEntry::Status::kCompleted:
+      proto.set_status(personal_context::proto::AutoTodoItem::STATUS_COMPLETED);
+      break;
+    case AutoTodoEntry::Status::kDismissed:
+      proto.set_status(personal_context::proto::AutoTodoItem::STATUS_DISMISSED);
+      break;
+  }
+  if (const FirstPartyData* first_party =
+          std::get_if<FirstPartyData>(&entry.data)) {
+    proto.set_actionable_url(first_party->actionable_url.spec());
+    for (const SourceReference& ref : first_party->source_references) {
+      personal_context::proto::SourceReference* source_ref =
+          proto.add_source_references();
+      personal_context::proto::GmailReference* gmail_ref =
+          source_ref->mutable_gmail();
+      gmail_ref->set_message_url(ref.url.spec());
+      gmail_ref->set_subject(ref.subject);
+    }
+  }
+  return proto;
+}
+
 }  // namespace
 
 ContextHubService::ContextHubService(
-    PrefService* pref_service,
+    Profile* profile,
     personal_context::PersonalContextService* personal_context_service,
     optimization_guide::RemoteModelExecutor*
         optimization_guide_remote_model_executor,
@@ -150,7 +192,8 @@ ContextHubService::ContextHubService(
     std::unique_ptr<TabGroupStore> tab_group_store,
     std::unique_ptr<ContextHubBackend> context_hub_backend,
     std::unique_ptr<AutoTodosStore> auto_todos_store)
-    : personal_context_service_(CHECK_DEREF(personal_context_service)),
+    : profile_(CHECK_DEREF(profile)),
+      personal_context_service_(CHECK_DEREF(personal_context_service)),
       optimization_guide_remote_model_executor_(
           CHECK_DEREF(optimization_guide_remote_model_executor)),
       tab_group_sync_service_(CHECK_DEREF(tab_group_sync_service)),
@@ -163,18 +206,23 @@ ContextHubService::ContextHubService(
       memory_bank_(std::move(memory_bank)),
       tab_group_store_(std::move(tab_group_store)),
       auto_todos_store_(std::move(auto_todos_store)) {
-  CHECK(pref_service);
   CHECK(memory_bank_);
   if (auto_todos_store_) {
     auto_todos_store_->AddObserver(this);
     first_party_auto_todos_timer_ =
         std::make_unique<signin::PersistentRepeatingTimer>(
-            pref_service, prefs::kContextHubLastAutoTodosGenerationTime,
+            profile_->GetPrefs(), prefs::kContextHubLastAutoTodosGenerationTime,
             features::kFirstPartyAutoTodosInterval.Get(),
             base::BindRepeating(
                 &ContextHubService::OnFirstPartyAutoTodosTimerTriggered,
                 weak_factory_.GetWeakPtr()));
     first_party_auto_todos_timer_->Start();
+
+#if !BUILDFLAG(IS_ANDROID)
+    browser_tab_strip_tracker_ =
+        std::make_unique<BrowserTabStripTracker>(this, this);
+    browser_tab_strip_tracker_->Init();
+#endif
   }
 }
 
@@ -192,6 +240,37 @@ ContextHubService::~ContextHubService() {
                       false);
   }
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+bool ContextHubService::ShouldTrackBrowser(BrowserWindowInterface* browser) {
+  return browser->GetProfile() == &profile_.get();
+}
+
+void ContextHubService::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  // Delete any cached AutoTodos that are associated with a removed tab.
+  if (change.type() == TabStripModelChange::kRemoved) {
+    const TabStripModelChange::Remove* remove = change.GetRemove();
+    for (const auto& removed_tab : remove->contents) {
+      if (TabRemoveReasonUtils::WillDeleteWebContents(
+              removed_tab.remove_reason)) {
+        content::WebContents* contents =
+            removed_tab.contents
+                ? removed_tab.contents.get()
+                : (removed_tab.tab ? removed_tab.tab->GetContents() : nullptr);
+        if (contents) {
+          SessionID session_id = sessions::SessionTabHelper::IdForTab(contents);
+          if (session_id.is_valid()) {
+            DeleteAutoTodoByTabId(session_id.id(), base::DoNothing());
+          }
+        }
+      }
+    }
+  }
+}
+#endif
 
 void ContextHubService::OnFirstPartyAutoTodosTimerTriggered() {
   GenerateFirstPartyAutoTodos(base::DoNothing());
@@ -221,7 +300,28 @@ void ContextHubService::GenerateFirstPartyAutoTodos(
   observers_.Notify(&Observer::OnFirstPartyAutoTodosGenerationStateChanged,
                     true);
 
+  // Fetch all existing items from the store to use as deduplication input to
+  // the server.
+  auto_todos_store_->GetAllItems(
+      base::BindOnce(&ContextHubService::OnCachedFirstPartyAutoTodosFetched,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void ContextHubService::OnCachedFirstPartyAutoTodosFetched(
+    AutoTodosStore::OperationCallback callback,
+    std::vector<AutoTodoEntry> stored_todos) {
+  if (!auto_todos_store_ || !is_generating_first_party_auto_todos_) {
+    FinishFirstPartyAutoTodosGeneration(std::move(callback), /*success=*/false);
+    return;
+  }
+
   personal_context::proto::AutoTodosRequest request_metadata;
+  for (const AutoTodoEntry& entry : stored_todos) {
+    if (entry.is_first_party()) {
+      *request_metadata.add_existing_todos() = ToAutoTodoItemProto(entry);
+    }
+  }
+
   personal_context::ContextMemoryRequestOptions options;
   options.request_timeout = features::kAutoTodosTimeoutSeconds.Get();
 
@@ -475,16 +575,13 @@ void ContextHubService::OnFirstPartyAutoTodosFetched(
     return;
   }
 
-  // TODO(crbug.com/540562062): Remove this once state management is handled.
-  auto_todos_store_->Clear(base::DoNothing());
-
   std::vector<AutoTodoEntry> entries;
   entries.reserve(response.todos_size());
   for (const personal_context::proto::AutoTodoItem& todo : response.todos()) {
     AutoTodoEntry entry;
-    // TODO(crbug.com/541276677): Remove when the observer is notified of cache
-    // changes.
-    entry.id = todo.title();
+    if (!todo.id().empty()) {
+      entry.id = todo.id();
+    }
     entry.title = todo.title();
     entry.description = todo.description();
     entry.importance_score = todo.importance_score();
@@ -606,21 +703,33 @@ void ContextHubService::ClearTabGroupChatHistory() {
   tab_group_chat_history_cache_.Clear();
 }
 
-void ContextHubService::SaveTab(
-    const GURL& url,
-    std::string_view tab_title,
-    std::string_view page_text,
-    MemoryBank::OperationCompleteCallback callback) {
-  memory_bank_->SaveTab(url, tab_title, page_text, std::move(callback));
+void ContextHubService::SetPendingMemoryBankEntry(MemoryBankEntry entry) {
+  pending_memory_bank_entry_ = std::move(entry);
 }
 
-void ContextHubService::SaveTextSelection(
-    const GURL& url,
-    std::string_view tab_title,
-    std::string_view selected_text,
+std::optional<MemoryBankEntry> ContextHubService::GetPendingMemoryBankEntry()
+    const {
+  return pending_memory_bank_entry_;
+}
+
+bool ContextHubService::SavePendingMemoryBankEntry(
+    const std::vector<std::string>& tags) {
+  if (!pending_memory_bank_entry_.has_value()) {
+    return false;
+  }
+  MemoryBankEntry entry = std::move(*pending_memory_bank_entry_);
+  pending_memory_bank_entry_.reset();
+
+  entry.tags = tags;
+  // TODO(crbug.com/523377643): Add support for notes and collections.
+  SaveMemoryBankEntry(std::move(entry), base::DoNothing());
+  return true;
+}
+
+void ContextHubService::SaveMemoryBankEntry(
+    MemoryBankEntry entry,
     MemoryBank::OperationCompleteCallback callback) {
-  memory_bank_->SaveTextSelection(url, tab_title, selected_text,
-                                  std::move(callback));
+  memory_bank_->SaveMemoryBankEntry(std::move(entry), std::move(callback));
 }
 
 void ContextHubService::DeleteEntries(

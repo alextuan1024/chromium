@@ -78,6 +78,7 @@ bool IsActivationUserVisible(ShareActivatedEntryPoint entry_point) {
     case ShareActivatedEntryPoint::kMobileNotification:
     case ShareActivatedEntryPoint::kTabStrip:
     case ShareActivatedEntryPoint::kChromeOSBirch:
+    case ShareActivatedEntryPoint::kMobileMessageBanner:
       return true;
     case ShareActivatedEntryPoint::kTabOrBrowserClosedWithoutActivation:
     case ShareActivatedEntryPoint::kSTTSEntryExpiredWithoutActivation:
@@ -407,6 +408,8 @@ void SendTabToSelfBridge::ApplyDisableSyncChanges(
   std::vector<std::string> all_guids = GetAllGuids();
 
   entries_.clear();
+  unknown_opened_entries_.clear();
+  unknown_activated_entries_.clear();
   mru_entry_guid_.clear();
 
   commit_tracker_->OnSyncDisabled();

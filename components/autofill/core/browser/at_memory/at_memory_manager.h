@@ -22,6 +22,7 @@
 #include "base/types/expected.h"
 #include "base/types/optional_ref.h"
 #include "components/autofill/core/browser/at_memory/at_memory_metrics_recorder.h"
+#include "components/autofill/core/browser/at_memory/at_memory_persisted_state_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
@@ -37,6 +38,7 @@
 
 namespace autofill {
 
+struct AtMemoryManagerState;
 struct MemorySearchResults;
 class AutofillClient;
 class BrowserAutofillManager;
@@ -56,6 +58,11 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
   AtMemoryManager& operator=(const AtMemoryManager&) = delete;
 
   ~AtMemoryManager() override;
+
+  // Returns the initial state (suggestions and filter) for `field_id`.
+  // If search statefulness is enabled and persisted state exists, returns
+  // the persisted state. Otherwise, returns empty query suggestions.
+  AtMemoryManagerState GetInitialStateForField(const FieldGlobalId& field_id);
 
   // Called when suggestions are shown. The manager initiates an @memory
   // session if the `trigger_source` is an @memory one.
@@ -116,6 +123,13 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
   // Returns true if a search is currently in progress.
   bool IsSearching() const;
 
+  // Returns the list of suggestions to show when the query is empty.
+  // These suggestions will be in order:
+  // * kPersonalContextNotice (optional)
+  // * kTitle (optional)
+  // * kAtMemorySearchResult (repeated)
+  std::vector<Suggestion> GetEmptyQuerySuggestions() const;
+
   // Appends the personal context notice to the suggestions if necessary.
   void MaybeAppendPersonalContextNotice(
       std::vector<Suggestion>& suggestions) const;
@@ -168,9 +182,15 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
   // Advances to the next fetching suggestion message and updates the UI.
   void AdvanceFetchingSuggestion();
 
+  // Appends previously filled suggestions to the list of suggestions.
+  static void MaybeAppendPreviouslyFilledSuggestions(
+      std::vector<Suggestion>& suggestions);
+
   // Shows all the suggestions in the empty state.
   // These suggestions will be in order:
   // * kPersonalContextNotice (optional)
+  // * kTitle (optional)
+  // * kAtMemorySearchResult (repeated)
   void ShowEmptyQuerySuggestions();
 
   // Shows all the suggestions in the query typing state.
@@ -280,32 +300,41 @@ class AtMemoryManager : public CreditCardAccessManager::Observer {
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id);
 
-  // Encapsulates active session state for an AtMemory UI interaction.
-  struct SessionState {
+  // Encapsulates state for the currently visible AtMemory popup.
+  struct PopupState {
     AutofillSuggestionTriggerSource trigger_source =
         AutofillSuggestionTriggerSource::kUnspecified;
     UpdateSuggestionsCallback update_callback;
+    // TODO(crbug.com/535486238): Reconsider where metrics_recorder should live.
     std::unique_ptr<AtMemoryMetricsRecorder> metrics_recorder;
     // Flag indicating that a search query is in progress.
     bool is_searching = false;
+    // Timer used to rotate the fetching suggestions while searching.
+    base::RepeatingTimer fetching_timer;
+    // Index of the current fetching message to display.
+    size_t fetching_string_index = 0;
   };
 
   const raw_ref<AutofillClient> client_;
 
-  std::optional<SessionState> session_state_;
+  std::optional<PopupState> popup_state_;
 
+  // TODO(crbug.com/535486238): Consider moving `ccam_observation_` into
+  // `state_manager_`.
   base::ScopedObservation<CreditCardAccessManager,
                           CreditCardAccessManager::Observer>
       ccam_observation_{this};
 
+  // TODO(crbug.com/535486238): Consider moving `credit_card_fetch_in_progress_`
+  // into `state_manager_`.
   bool credit_card_fetch_in_progress_ = false;
 
   // Origin of the target field for the active search session.
+  // TODO(crbug.com/535486238): Consider moving `target_field_origin_` into
+  // `state_manager_`.
   url::Origin target_field_origin_;
-  // Timer used to rotate the fetching suggestions.
-  base::RepeatingTimer fetching_timer_;
-  // Index of the current fetching message to display.
-  size_t fetching_string_index_ = 0;
+
+  AtMemoryPersistedStateManager state_manager_;
   // Factory for search queries, used to identify currently active query and
   // discard the old ones.
   base::WeakPtrFactory<AtMemoryManager> query_weak_ptr_factory_{this};

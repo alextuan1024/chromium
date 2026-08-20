@@ -110,6 +110,7 @@
 <translation id="322254490661677575">‏כדי להשתמש בנתוני Chrome ולשמור אותם בחשבון Google, עליך להזין את ביטוי הסיסמה שלך.</translation>
 <translation id="3303503998967553377">‏שימוש בפעולות ב-Chrome ב-iOS</translation>
 <translation id="3348862487678490430">‏הוספת פריט מרשימת הקריאה ל-Chrome</translation>
+<translation id="3350281376951945723">‏הקישורים נפתחים מהר יותר כשמגדירים את Chrome כדפדפן ברירת המחדל</translation>
 <translation id="3357827134511189025">‏רוצה להיכנס לחשבון באמצעות הסיסמאות ומפתחות הגישה השמורים שלך מכל אפליקציה באמצעות Chrome למילוי אוטומטי?</translation>
 <translation id="3360031466389132716">{THRESHOLD,plural, =1{‏הפעולה הזו מתבצעת כשלא משתמשים ב-Chrome במשך דקה ({THRESHOLD})}one{‏הפעולה הזו מתבצעת כשלא משתמשים ב-Chrome במשך {THRESHOLD} דקות}two{‏הפעולה הזו מתבצעת כשלא משתמשים ב-Chrome במשך {THRESHOLD} דקות}other{‏הפעולה הזו מתבצעת כשלא משתמשים ב-Chrome במשך {THRESHOLD} דקות}}</translation>
 <translation id="3367797402528056312">‏לא סיימת להגדיר את Chrome</translation>
@@ -168,6 +169,7 @@
 <translation id="5030102366287574140">‏Chrome יכול להגן עליך מפני פרצות באבטחת מידע, אתרים לא בטוחים וסכנות נוספות.</translation>
 <translation id="5109169629909011627">‏הצגת הסימניות ב-Chrome</translation>
 <translation id="5112925986883715005">‏הצגה של רשימת הקריאה ב-Chrome</translation>
+<translation id="5116239826668864748">‏אפשר להשתמש ב-Chrome בכל פעם שלוחצים על קישורים בהודעות, במסמכים ובאפליקציות אחרות.</translation>
 <translation id="5119391094379141756">‏בוחרים באפשרות Chrome</translation>
 <translation id="5123188916260706415">‏חיפוש קולי ב-Chrome</translation>
 <translation id="5162467219239570114">‏Chrome אינו מעודכן. אם אין עדכון זמין ב-<ph name="BEGIN_LINK" />App Store<ph name="END_LINK" />, ייתכן שהמכשיר שלך אינו תומך עוד בגרסאות חדשות של Chrome.</translation>
@@ -378,6 +380,7 @@
 <translation id="9122931302567044771">‏כלומר, Chrome תמיד יבקש את האתר למחשב.</translation>
 <translation id="9176561303811134420">‏ניהול אמצעי תשלום ב-Chrome</translation>
 <translation id="9181628561061032322">‏ייפתחו הכרטיסיות האחרונות ב-Chrome.</translation>
+<translation id="924447568950697217">‏הגדר את Chrome בתור דפדפן ברירת המחדל</translation>
 <translation id="948597495737267756">‏פתיחת דף ההיסטוריה ב-Chrome.</translation>
 <translation id="954347330803595209">‏כדי להשתמש בסיסמאות, בהיסטוריה, בסימניות ובכרטיסי האשראי שלך ב-Chrome, צריך לייבא את הנתונים שלך</translation>
 <translation id="97300214378190234">‏שימוש ב-Chrome בכל פעם שלוחצים על קישורים באפליקציות אחרות.</translation>

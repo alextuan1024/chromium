@@ -1341,13 +1341,15 @@ void CSSSelector::SerializeSimpleSelector(StringBuilder& builder,
           } else if (a == -1) {
             builder.Append("-n");
           } else {
-            builder.AppendFormat("%dn", a);
+            builder.AppendNumber(a);
+            builder.Append('n');
           }
 
           if (b < 0) {
             builder.Append(String::Number(b));
           } else if (b > 0) {
-            builder.AppendFormat("+%d", b);
+            builder.Append('+');
+            builder.AppendNumber(b);
           }
         }
 
@@ -2243,6 +2245,7 @@ bool CSSSelector::SupportsPseudoStateChange(PseudoType type) {
     case CSSSelector::kPseudoChecked:
     case CSSSelector::kPseudoDefault:
     case CSSSelector::kPseudoDefined:
+    case CSSSelector::kPseudoDialogInTopLayer:
     case CSSSelector::kPseudoDir:
     case CSSSelector::kPseudoDisabled:
     case CSSSelector::kPseudoDrag:
@@ -2291,6 +2294,7 @@ bool CSSSelector::SupportsPseudoStateChange(PseudoType type) {
     case CSSSelector::kPseudoPictureInPicture:
     case CSSSelector::kPseudoPlaceholderShown:
     case CSSSelector::kPseudoPlaying:
+    case CSSSelector::kPseudoPopoverInTopLayer:
     case CSSSelector::kPseudoPopoverOpen:
     case CSSSelector::kPseudoReadOnly:
     case CSSSelector::kPseudoReadWrite:

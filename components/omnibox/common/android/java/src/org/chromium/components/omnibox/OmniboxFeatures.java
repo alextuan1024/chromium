@@ -147,7 +147,7 @@ public class OmniboxFeatures {
                     FeatureState.ENABLED_IN_PROD);
 
     private static final CachedFlag sOmniboxMultimodalInput =
-            newFlag(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT, FeatureState.ENABLED_IN_TEST);
+            newFlag(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT, FeatureState.ENABLED_IN_PROD);
 
     public static final BooleanCachedFeatureParam sMultiattachmentFusebox =
             newBooleanParam(sOmniboxMultimodalInput, "multi_context", true);
@@ -166,6 +166,9 @@ public class OmniboxFeatures {
      */
     public static final BooleanCachedFeatureParam sShowModelPicker =
             newBooleanParam(sOmniboxMultimodalInput, "show_model_picker", false);
+
+    public static final BooleanCachedFeatureParam sModelPickerOptimizations =
+            newBooleanParam(sOmniboxMultimodalInput, "model_picker_optimizations", true);
 
     /**
      * Whether the bottom sheet popup should be shown. This is private to ensure that callers use
@@ -373,6 +376,9 @@ public class OmniboxFeatures {
      * flag state, disabling the fusebox on unsupported device and experience configurations.
      */
     public static boolean isMultimodalInputEnabled(Context context) {
+        if (!OmniboxCapabilities.isFuseboxSupportedDeviceType()) {
+            return false;
+        }
         if (OmniboxCapabilities.isDesktopPlatform()
                 || OmniboxCapabilities.hasDesktopExperience(context)) {
             return sAndroidDesktopAimGate.isEnabled() && sOmniboxMultimodalInput.isEnabled();

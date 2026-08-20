@@ -76,7 +76,10 @@ constexpr absl::Overload PreToolEventsFn{
     NoUiEvents<CloseWindowToolRequest>,
     NoUiEvents<CreateTabToolRequest>,
     NoUiEvents<CreateWindowToolRequest>,
+    NoUiEvents<EnterFullscreenToolRequest>,
+    NoUiEvents<ExitFullscreenToolRequest>,
 #endif
+    NoUiEvents<AddBookmarkToolRequest>,
     NoUiEvents<DragAndReleaseToolRequest>,
     NoUiEvents<HistoryToolRequest>,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
@@ -89,8 +92,10 @@ constexpr absl::Overload PreToolEventsFn{
           MouseMove(tr.GetTabHandle(), pt, source)};
     },
     NoUiEvents<NavigateToolRequest>,
+    NoUiEvents<RemoveBookmarkToolRequest>,
     NoUiEvents<ScrollToolRequest>,
     NoUiEvents<SelectToolRequest>,
+    NoUiEvents<TranslatePageToolRequest>,
     [](const TypeToolRequest& tr) {
       auto [pt, source] = ComputeMouseTarget(tr.GetTabHandle(), tr.GetTarget());
       return EventSequence<AsyncUiEvent>{
@@ -112,7 +117,10 @@ constexpr absl::Overload PostToolEventsFn{
     NoUiEvents<CloseWindowToolRequest>,
     NoUiEvents<CreateTabToolRequest>,
     NoUiEvents<CreateWindowToolRequest>,
+    NoUiEvents<EnterFullscreenToolRequest>,
+    NoUiEvents<ExitFullscreenToolRequest>,
 #endif
+    NoUiEvents<AddBookmarkToolRequest>,
     NoUiEvents<DragAndReleaseToolRequest>,
     NoUiEvents<HistoryToolRequest>,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
@@ -121,8 +129,10 @@ constexpr absl::Overload PostToolEventsFn{
     NoUiEvents<MediaControlToolRequest>,
     NoUiEvents<MoveMouseToolRequest>,
     NoUiEvents<NavigateToolRequest>,
+    NoUiEvents<RemoveBookmarkToolRequest>,
     NoUiEvents<ScrollToolRequest>,
     NoUiEvents<SelectToolRequest>,
+    NoUiEvents<TranslatePageToolRequest>,
     NoUiEvents<TypeToolRequest>,
     NoUiEvents<WaitToolRequest>,
     NoUiEvents<AttemptLoginToolRequest>,

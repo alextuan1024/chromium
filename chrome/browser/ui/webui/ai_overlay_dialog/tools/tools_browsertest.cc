@@ -13,6 +13,7 @@
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
+#include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
@@ -469,16 +470,18 @@ IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, TranslatePageDefault) {
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto lang_waiter = translate::CreateTranslateWaiter(
+      contents, translate::TranslateWaiter::WaitEvent::kLanguageDetermined);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/empty.html")));
+  lang_waiter->Wait();
 
   base::test::TestFuture<TranslatePageResult> future;
   tools()->TranslatePage("", future.GetCallback());
 
   EXPECT_TRUE(future.Get().has_value());
-
-  content::WebContents* contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
 
   // Wait for the translation to be processed by the mock script.
   translate::CreateTranslateWaiter(
@@ -502,16 +505,18 @@ IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, TranslatePageDefault) {
 }
 
 IN_PROC_BROWSER_TEST_F(AiOverlayToolsBrowserTest, TranslatePageSpecificTarget) {
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto lang_waiter = translate::CreateTranslateWaiter(
+      contents, translate::TranslateWaiter::WaitEvent::kLanguageDetermined);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/empty.html")));
+  lang_waiter->Wait();
 
   base::test::TestFuture<TranslatePageResult> future;
   tools()->TranslatePage("fr", future.GetCallback());
 
   EXPECT_TRUE(future.Get().has_value());
-
-  content::WebContents* contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
 
   // Wait for the translation to be processed by the mock script.
   translate::CreateTranslateWaiter(

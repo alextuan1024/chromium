@@ -196,7 +196,8 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
 #include "ui/native_theme/native_theme.h"
 #endif
 
@@ -461,7 +462,8 @@ void MaybePreloadSystemFonts(Page* page) {
       FROM_HERE, BindOnce([]() { FontCache::MaybePreloadSystemFonts(); }));
 }
 
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
 void UpdateUseOverlayScrollbar(bool use_overlay_scrollbar) {
   ui::NativeTheme::GetInstanceForWeb()->set_use_overlay_scrollbar(
       use_overlay_scrollbar);
@@ -3828,11 +3830,23 @@ void WebViewImpl::UpdateRendererPreferences(
   SetExplicitlyAllowedPorts(
       renderer_preferences_.explicitly_allowed_network_ports);
 
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
   if (!ScrollbarTheme::MockScrollbarsEnabled()) {
-    WebRuntimeFeatures::EnableOverlayScrollbars(
-        renderer_preferences_.use_overlay_scrollbar);
-    UpdateUseOverlayScrollbar(renderer_preferences_.use_overlay_scrollbar);
+    // DevTools emulation can update Blink's overlay scrollbar setting,
+    // while OS theme updates can update NativeTheme before renderer preferences
+    // synchronize with Blink's. Avoid global scrollbar reconstruction only when
+    // both mirrors already match the requested preference.
+    const bool blink_changed = ScrollbarTheme::OverlayScrollbarsEnabled() !=
+                               renderer_preferences_.use_overlay_scrollbar;
+    const bool native_theme_changed =
+        ui::NativeTheme::GetInstanceForWeb()->use_overlay_scrollbar() !=
+        renderer_preferences_.use_overlay_scrollbar;
+    if (blink_changed || native_theme_changed) {
+      WebRuntimeFeatures::EnableOverlayScrollbars(
+          renderer_preferences_.use_overlay_scrollbar);
+      UpdateUseOverlayScrollbar(renderer_preferences_.use_overlay_scrollbar);
+    }
   }
 #endif
 
@@ -4417,7 +4431,7 @@ void WebViewImpl::CreateRemoteMainFrame(
 }
 
 scheduler::WebAgentGroupScheduler& WebViewImpl::GetWebAgentGroupScheduler() {
-  return web_agent_group_scheduler_;
+  return *web_agent_group_scheduler_;
 }
 
 void WebViewImpl::UpdatePageBrowsingContextGroup(

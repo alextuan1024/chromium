@@ -525,7 +525,7 @@ bool PKIMetadataComponentInstallerService::UpdateMtcMetadataTrustAnchorIDs(
 
   std::vector<MtcCaIdAndLandmarkTrustAnchorIds>
       mtc_ca_id_landmark_trust_anchor_ids;
-  for (const auto& [ca_id, ca_data] : parsed->plants05_anchor_data()) {
+  for (const auto& [ca_id, ca_data] : parsed->mtc_anchor_data()) {
     MtcCaIdAndLandmarkTrustAnchorIds tai_entry;
     tai_entry.ca_id = ca_id;
     if (ca_data.trusted_landmark_ranges.empty()) {
@@ -639,6 +639,12 @@ bool PKIMetadataComponentInstallerService::WriteCTDataForTesting(
   return base::WriteFile(path.Append(kCTConfigProtoFileName), contents);
 }
 
+void PKIMetadataComponentInstallerService::
+    AllowOldCTUpdateForTesting(  // IN_TEST
+        bool allowed) {
+  allow_old_ct_log_list_updates_for_testing_ = allowed;
+}
+
 void PKIMetadataComponentInstallerService::AddObserver(Observer* observer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   observers_.AddObserver(observer);
@@ -697,8 +703,9 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceCTListOnUI(
       base::Seconds(proto->log_list().timestamp().seconds()) +
       base::Nanoseconds(proto->log_list().timestamp().nanos());
   // Do not update the CT log list with the component data if it's older than
-  // the built in list.
-  if (proto_timestamp < certificate_transparency::GetLogListTimestamp()) {
+  // the built in list, unless it is allowed for testing.
+  if (proto_timestamp < certificate_transparency::GetLogListTimestamp() &&
+      !allow_old_ct_log_list_updates_for_testing_) {
     return;
   }
 

@@ -6,6 +6,7 @@
 
 #import <memory>
 
+#import "base/base64.h"
 #import "base/run_loop.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
@@ -231,6 +232,8 @@ class AppBarMediatorTest : public PlatformTest {
         regular_profile_->GetSharedURLLoaderFactory(),
         IdentityManagerFactory::GetForProfile(regular_profile_.get()));
     ON_CALL(*aim_eligibility_service_, IsAimEligible())
+        .WillByDefault(testing::Return(false));
+    ON_CALL(*aim_eligibility_service_, IsServerEligibilityEnabled())
         .WillByDefault(testing::Return(false));
 
     mediator_ = [[AppBarMediator alloc]
@@ -1616,6 +1619,84 @@ TEST_F(AppBarMediatorTest, TestGeminiEligibilityChangeUpdatesAssistantButton) {
   [mediator disconnect];
 }
 
+// Tests that when AimEligibilityService's eligibility changes, the mediator
+// receives the notification and updates the assistant button's state on the
+// consumer.
+TEST_F(AppBarMediatorTest, TestAimEligibilityChangeUpdatesAssistantButton) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({kGeminiKillSwitch}, {kPageActionMenu});
+
+  base::RepeatingClosure aim_callback;
+  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
+      *regular_profile_->GetTestingPrefService(),
+      search_engines_test_environment_.template_url_service(),
+      regular_profile_->GetSharedURLLoaderFactory(),
+      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+
+  EXPECT_CALL(*mock_aim_service, RegisterEligibilityChangedCallback(testing::_))
+      .WillOnce([&](base::RepeatingClosure callback) {
+        aim_callback = callback;
+        return base::CallbackListSubscription();
+      });
+
+  FakeGeminiService fake_gemini_service;
+  fake_gemini_service.SetIsEligible(false);
+
+  BrowserActionFactory* regular_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:regular_browser_.get()
+                                           scenario:kTestMenuScenario];
+  BrowserActionFactory* incognito_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:incognito_browser_.get()
+                                           scenario:kTestMenuScenario];
+
+  AppBarMediator* mediator = [[AppBarMediator alloc]
+          initWithRegularWebStateList:regular_web_state_list_.get()
+                incognitoWebStateList:incognito_web_state_list_.get()
+          regularFullscreenController:TestFullscreenController::FromBrowser(
+                                          regular_browser_.get())
+        incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                          incognito_browser_.get())
+        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          incognito_browser_.get())
+                 regularActionFactory:regular_action_factory
+               incognitoActionFactory:incognito_action_factory
+                          prefService:regular_profile_->GetTestingPrefService()
+                   templateURLService:search_engines_test_environment_
+                                          .template_url_service()
+                authenticationService:auth_service_
+                      identityManager:IdentityManagerFactory::GetForProfile(
+                                          regular_profile_.get())
+                        geminiService:&fake_gemini_service
+                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+                aimEligibilityService:mock_aim_service.get()
+                            URLLoader:url_loader_
+                         tabGridState:tab_grid_state_
+                       incognitoState:incognito_state_
+             lensOverlayStateNotifier:lens_overlay_state_];
+
+  id consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  mediator.consumer = consumer;
+
+  // Change from ineligible to eligible.
+  EXPECT_CALL(*mock_aim_service, IsAimEligible())
+      .WillRepeatedly(testing::Return(true));
+  OCMExpect([consumer setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                                  highlighted:NO
+                                      enabled:YES
+                                       avatar:nil
+                                     signedIn:NO]);
+
+  ASSERT_FALSE(aim_callback.is_null());
+  aim_callback.Run();
+
+  EXPECT_OCMOCK_VERIFY(consumer);
+
+  [mediator disconnect];
+}
+
 // Tests that buttons are enabled/disabled based on policy.
 TEST_F(AppBarMediatorTest, TestSetButtonsEnabledByPolicy) {
   tab_grid_state_.currentPage = TabGridPageRegularTabs;
@@ -1976,6 +2057,208 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_AIM) {
 
   EXPECT_OCMOCK_VERIFY(local_consumer);
 
+  local_histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAIM, 1);
+
+  [local_mediator disconnect];
+}
+
+// Tests that the AIM on-load metric is deferred while AIM eligibility is
+// pending on startup, and recorded when the eligibility changed callback
+// executes.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonStateOnLoadMetric_AIM_DeferredUntilCallback) {
+  // Disable Gemini via policy.
+  regular_profile_->GetTestingPrefService()->SetInteger(
+      prefs::kGeminiEnabledByPolicy,
+      static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
+
+  base::RepeatingClosure aim_callback;
+  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
+      *regular_profile_->GetTestingPrefService(),
+      search_engines_test_environment_.template_url_service(),
+      regular_profile_->GetSharedURLLoaderFactory(),
+      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+
+  ON_CALL(*mock_aim_service, IsAimLocallyEligible())
+      .WillByDefault(testing::Return(true));
+  ON_CALL(*mock_aim_service, IsServerEligibilityEnabled())
+      .WillByDefault(testing::Return(true));
+  ON_CALL(*mock_aim_service, IsAimEligible())
+      .WillByDefault(testing::Return(false));
+
+  EXPECT_CALL(*mock_aim_service, RegisterEligibilityChangedCallback(testing::_))
+      .WillOnce([&](base::RepeatingClosure callback) {
+        aim_callback = callback;
+        return base::CallbackListSubscription();
+      });
+
+  BrowserActionFactory* regular_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:regular_browser_.get()
+                                           scenario:kTestMenuScenario];
+  BrowserActionFactory* incognito_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:incognito_browser_.get()
+                                           scenario:kTestMenuScenario];
+
+  base::HistogramTester local_histogram_tester;
+  AppBarMediator* local_mediator = [[AppBarMediator alloc]
+          initWithRegularWebStateList:regular_web_state_list_.get()
+                incognitoWebStateList:incognito_web_state_list_.get()
+          regularFullscreenController:TestFullscreenController::FromBrowser(
+                                          regular_browser_.get())
+        incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                          incognito_browser_.get())
+        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          incognito_browser_.get())
+                 regularActionFactory:regular_action_factory
+               incognitoActionFactory:incognito_action_factory
+                          prefService:regular_profile_->GetTestingPrefService()
+                   templateURLService:search_engines_test_environment_
+                                          .template_url_service()
+                authenticationService:auth_service_
+                      identityManager:IdentityManagerFactory::GetForProfile(
+                                          regular_profile_.get())
+                        geminiService:gemini_service_ptr_.get()
+                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+                aimEligibilityService:mock_aim_service.get()
+                            URLLoader:url_loader_
+                         tabGridState:tab_grid_state_
+                       incognitoState:incognito_state_
+             lensOverlayStateNotifier:lens_overlay_state_];
+
+  local_mediator.overrideLensAvailabilityForTesting = NO;
+  SetLocationEligible(false);
+
+  id local_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  local_mediator.consumer = local_consumer;
+
+  // On initial load, AIM check is pending, so 0 metrics are recorded.
+  local_histogram_tester.ExpectTotalCount(
+      kAppBarAssistantButtonStateOnLoadHistogram, 0);
+
+  // Simulate response arriving with AIM eligible.
+  omnibox::AimEligibilityResponse response;
+  response.set_is_eligible(true);
+  std::string response_string;
+  response.SerializeToString(&response_string);
+  mock_aim_service->SetEligibilityResponseForDebugging(
+      base::Base64Encode(response_string));
+  EXPECT_CALL(*mock_aim_service, IsAimEligible())
+      .WillRepeatedly(testing::Return(true));
+
+  OCMExpect([local_consumer
+      setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                  highlighted:NO
+                      enabled:YES
+                       avatar:nil
+                     signedIn:NO]);
+
+  ASSERT_FALSE(aim_callback.is_null());
+  aim_callback.Run();
+
+  EXPECT_OCMOCK_VERIFY(local_consumer);
+
+  // Exactly 1 metric sample should now be logged for kAIM.
+  local_histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAIM, 1);
+
+  // Calling callback or updateAssistantButton again does not log duplicate
+  // metrics.
+  aim_callback.Run();
+  local_histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAIM, 1);
+
+  [local_mediator disconnect];
+}
+
+// Tests the AIM state on-load metric when AIM eligibility is already cached in
+// prefs on startup.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonStateOnLoadMetric_AIM_CachedInPrefs) {
+  // Disable Gemini via policy.
+  regular_profile_->GetTestingPrefService()->SetInteger(
+      prefs::kGeminiEnabledByPolicy,
+      static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
+
+  // Populate cached response in prefs.
+  omnibox::AimEligibilityResponse response;
+  response.set_is_eligible(true);
+  std::string response_string;
+  response.SerializeToString(&response_string);
+  regular_profile_->GetTestingPrefService()->SetString(
+      "aim_eligibility_service.aim_eligibility_response",
+      base::Base64Encode(response_string));
+
+  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
+      *regular_profile_->GetTestingPrefService(),
+      search_engines_test_environment_.template_url_service(),
+      regular_profile_->GetSharedURLLoaderFactory(),
+      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+
+  ON_CALL(*mock_aim_service, IsAimLocallyEligible())
+      .WillByDefault(testing::Return(true));
+  ON_CALL(*mock_aim_service, IsServerEligibilityEnabled())
+      .WillByDefault(testing::Return(true));
+  EXPECT_CALL(*mock_aim_service, IsAimEligible())
+      .WillRepeatedly(testing::Return(true));
+
+  BrowserActionFactory* regular_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:regular_browser_.get()
+                                           scenario:kTestMenuScenario];
+  BrowserActionFactory* incognito_action_factory =
+      [[BrowserActionFactory alloc] initWithBrowser:incognito_browser_.get()
+                                           scenario:kTestMenuScenario];
+
+  base::HistogramTester local_histogram_tester;
+  AppBarMediator* local_mediator = [[AppBarMediator alloc]
+          initWithRegularWebStateList:regular_web_state_list_.get()
+                incognitoWebStateList:incognito_web_state_list_.get()
+          regularFullscreenController:TestFullscreenController::FromBrowser(
+                                          regular_browser_.get())
+        incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                          incognito_browser_.get())
+        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                          incognito_browser_.get())
+                 regularActionFactory:regular_action_factory
+               incognitoActionFactory:incognito_action_factory
+                          prefService:regular_profile_->GetTestingPrefService()
+                   templateURLService:search_engines_test_environment_
+                                          .template_url_service()
+                authenticationService:auth_service_
+                      identityManager:IdentityManagerFactory::GetForProfile(
+                                          regular_profile_.get())
+                        geminiService:gemini_service_ptr_.get()
+                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                          regular_browser_.get())
+                aimEligibilityService:mock_aim_service.get()
+                            URLLoader:url_loader_
+                         tabGridState:tab_grid_state_
+                       incognitoState:incognito_state_
+             lensOverlayStateNotifier:lens_overlay_state_];
+
+  id local_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  OCMExpect([local_consumer
+      setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                  highlighted:NO
+                      enabled:YES
+                       avatar:nil
+                     signedIn:NO]);
+
+  // Setting the consumer triggers updateAssistantButton and records metric
+  // immediately.
+  local_mediator.consumer = local_consumer;
+
+  EXPECT_OCMOCK_VERIFY(local_consumer);
+
+  // Since response was in prefs, metric is logged immediately.
   local_histogram_tester.ExpectUniqueSample(
       kAppBarAssistantButtonStateOnLoadHistogram,
       AppBarAssistantButtonState::kAIM, 1);

@@ -189,6 +189,24 @@ partition_alloc::PartitionRoot* OriginalAllocator(AllocToken alloc_token) {
   return g_original_roots[alloc_token.value()].load(std::memory_order_relaxed);
 }
 
+class IntendedLeakRootConstructor {
+ public:
+  static partition_alloc::PartitionRoot* New(void* buffer) {
+    partition_alloc::PartitionOptions opts;
+    opts.thread_cache = partition_alloc::PartitionOptions::kDisabled;
+    opts.backup_ref_ptr = partition_alloc::PartitionOptions::kDisabled;
+    auto* new_root = new (buffer) partition_alloc::PartitionRoot(opts);
+    return new_root;
+  }
+};
+
+LeakySingleton<partition_alloc::PartitionRoot, IntendedLeakRootConstructor>
+    g_intended_leak_root = {};
+
+partition_alloc::PartitionRoot* IntendedLeakAllocator() {
+  return g_intended_leak_root.Get();
+}
+
 bool AllocatorConfigurationFinalized() {
   return g_roots_finalized.load();
 }
@@ -738,6 +756,12 @@ partition_alloc::PartitionRoot* PartitionAllocMalloc::OriginalAllocator(
   return ::allocator_shim::OriginalAllocator(alloc_token);
 }
 
+// static
+partition_alloc::PartitionRoot*
+PartitionAllocMalloc::IntendedLeakAllocator() {
+  return ::allocator_shim::IntendedLeakAllocator();
+}
+
 }  // namespace internal
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
@@ -1020,9 +1044,7 @@ void ConfigurePartitions(
         scheduler_loop_quarantine_thread_local_config,
     partition_alloc::internal::SchedulerLoopQuarantineConfig
         scheduler_loop_quarantine_for_advanced_memory_safety_checks_config,
-    EventuallyZeroFreedMemory eventually_zero_freed_memory,
-    EnableFreeWithSize enable_free_with_size,
-    EnableStrictFreeSizeCheck enable_strict_free_size_check) {
+    EventuallyZeroFreedMemory eventually_zero_freed_memory) {
   partition_alloc::PartitionOptions opts;
   // The caller of ConfigurePartitions() will decide whether this or
   // another partition will have the thread cache enabled, by calling
@@ -1048,13 +1070,6 @@ void ConfigurePartitions(
                      ? partition_alloc::PartitionOptions::kEnabled
                      : partition_alloc::PartitionOptions::kDisabled,
       .reporting_mode = memory_tagging_reporting_mode};
-  opts.free_with_size = enable_free_with_size
-                            ? partition_alloc::PartitionOptions::kEnabled
-                            : partition_alloc::PartitionOptions::kDisabled;
-  opts.strict_free_size_check =
-      enable_strict_free_size_check
-          ? partition_alloc::PartitionOptions::kEnabled
-          : partition_alloc::PartitionOptions::kDisabled;
 
   static std::array<partition_alloc::internal::base::NoDestructor<
                         partition_alloc::PartitionAllocator>,

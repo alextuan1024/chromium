@@ -127,6 +127,11 @@ class ActorKeyedService : public KeyedService,
   // The associated ActorUiStateManager for the associated profile.
   ui::ActorUiStateManagerInterface* GetActorUiStateManager();
 
+  // Sets/clears pending actuation indicator on a tab prior to an ActorTask
+  // starting.
+  void SetTabPendingActuation(tabs::TabHandle tab_handle);
+  bool ClearTabPendingActuation(tabs::TabHandle tab_handle);
+
   // Returns true if there is a task that is actively (i.e. not paused) acting
   // in the given `tab`.
   bool IsActiveOnTab(const tabs::TabInterface& tab) const;
@@ -187,6 +192,13 @@ class ActorKeyedService : public KeyedService,
   base::CallbackListSubscription AddTaskVisibilityChangedCallback(
       TaskVisibilityChangedCallback callback);
   void NotifyTaskVisibilityChanged(ActorTask& task);
+
+  using TaskStepProgressChangedCallback =
+      base::RepeatingCallback<void(ActorTask&, const std::string&)>;
+  base::CallbackListSubscription AddTaskStepProgressChangedCallback(
+      TaskStepProgressChangedCallback callback);
+  void NotifyTaskStepProgressChanged(ActorTask& task,
+                                     const std::string& step_progress);
 
   // Returns the acting task for web_contents. Returns nullptr if acting task
   // does not exist.
@@ -274,6 +286,9 @@ class ActorKeyedService : public KeyedService,
 
   base::RepeatingCallbackList<void(ActorTask&)>
       task_visibility_change_callback_list_;
+
+  base::RepeatingCallbackList<void(ActorTask&, const std::string&)>
+      task_step_progress_change_callback_list_;
 
   base::RepeatingCallbackList<void(ActorTask&)>
       task_state_change_callback_list_;

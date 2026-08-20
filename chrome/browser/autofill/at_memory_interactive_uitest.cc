@@ -9,7 +9,6 @@
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -37,6 +36,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 
@@ -78,7 +78,8 @@ class AtMemoryInteractiveUiTest : public AutofillUiTest,
  public:
   AtMemoryInteractiveUiTest() {
     feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kAutofillAtMemory,
+        /*enabled_features=*/{blink::features::kAutofillKeydownEditableElement,
+                              features::kAutofillAtMemory,
                               features::debug::kAtMemorySkipEnablementChecks},
         /*disabled_features=*/{});
   }
@@ -236,15 +237,6 @@ IN_PROC_BROWSER_TEST_P(AtMemoryInteractiveUiTest, MAYBE_TriggerAndFill) {
            sel.removeAllRanges();
            sel.addRange(range);
          })"));
-
-  // Allow any initial focus-triggered AskForValuesToFill requests to pass the
-  // 100ms per-field throttle.
-  {
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(), base::Milliseconds(150));
-    run_loop.Run();
-  }
 
   // Type '@'.
   ASSERT_TRUE(SendKeyToPageAndWait(ui::DomKey::FromCharacter('@'),

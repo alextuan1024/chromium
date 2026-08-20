@@ -46,7 +46,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/committed_all_nudged_changes_checker.h"
-#include "chrome/browser/sync/test/integration/device_info_helper.h"
 #include "chrome/browser/sync/test/integration/fake_sync_gcm_driver_for_instance_id.h"
 #include "chrome/browser/sync/test/integration/session_hierarchy_match_checker.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
@@ -133,6 +132,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/trusted_vault/command_line_switches.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -556,11 +556,6 @@ SyncTest::SetupSyncMode SyncTest::GetSetupSyncMode() const {
   return SetupSyncMode::kSyncTheFeature;
 }
 
-bool SyncTest::TestReliesOnSharingMessage() const {
-  // Temporarily fix on macOS (crbug.com/501729852).
-  return !BUILDFLAG(IS_MAC);
-}
-
 GURL SyncTest::GetInitialURL() const {
   return GURL(url::kAboutBlankURL);
 }
@@ -950,13 +945,24 @@ void SyncTest::TearDownOnMainThread() {
   // around like profile_to_*_map_ - those should probably be cleaned up too.
 
 #if !BUILDFLAG(IS_ANDROID)
-  // Closing all browsers created by this test. The calls here block until
-  // they are closed. Other browsers created outside SyncTest setup should be
+  // Closing all browsers created by this test in parallel rather than
+  // sequentially. Other browsers created outside SyncTest setup should be
   // closed by the creator of that browser.
+  std::vector<std::unique_ptr<ui_test_utils::BrowserDestroyedObserver>>
+      browser_observers;
+  browser_observers.reserve(browsers_.size());
+
   for (Browser* browser : browsers_) {
     if (browser) {
-      CloseBrowserSynchronously(browser);
+      browser_observers.push_back(
+          std::make_unique<ui_test_utils::BrowserDestroyedObserver>(browser));
+      CloseBrowserAsynchronously(browser);
     }
+  }
+
+  for (const std::unique_ptr<ui_test_utils::BrowserDestroyedObserver>&
+           observer : browser_observers) {
+    observer->Wait();
   }
   browsers_.clear();
 #endif
@@ -1195,17 +1201,6 @@ bool SyncTest::WaitForAsyncChangesToBeCommitted(size_t profile_index) const {
   // CommittedAllNudgedChangesChecker will wait for all the local changes to be
   // committed, it doesn't cover all the cases.
   if (server_type_ != EXTERNAL_LIVE_SERVER) {
-    // Wait for committing DeviceInfo with sharing_fields, it may happen
-    // asynchronously due to FCM token registration.
-    if (TestReliesOnSharingMessage() && GetSyncService(profile_index)
-                                            ->GetPreferredDataTypes()
-                                            .Has(syncer::SHARING_MESSAGE)) {
-      if (!device_info_helper::WaitForFullDeviceInfoCommitted(
-              GetCacheGuid(profile_index))) {
-        return false;
-      }
-    }
-
 #if BUILDFLAG(IS_ANDROID)
     // On Android, default about:blank page is loaded by default. Wait for
     // Session to be committed to prevent unexpected commit requests during

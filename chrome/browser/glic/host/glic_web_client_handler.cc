@@ -102,7 +102,6 @@
 #include "chrome/browser/glic/host/context/glic_focused_browser_manager.h"
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
 #include "chrome/browser/media/audio_ducker.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
@@ -865,6 +864,11 @@ class GlicWebClientHandler
       trigger = FromMojomUnpinTrigger(options->unpin_trigger);
     }
     GetSharingManagerInternal().UnpinAllTabs(trigger);
+  }
+
+  void OpenPinnedTabPicker(mojom::OpenPinnedTabPickerOptionsPtr options,
+                           OpenPinnedTabPickerCallback callback) override {
+    std::move(callback).Run();
   }
 
   void CreateActorHandler(

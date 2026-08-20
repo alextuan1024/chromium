@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_PRIVACY_SANDBOX_PRIVACY_SANDBOX_SETTINGS_IMPL_H_
 #define COMPONENTS_PRIVACY_SANDBOX_PRIVACY_SANDBOX_SETTINGS_IMPL_H_
 
-#include <set>
-
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -34,7 +32,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings {
   // rely on this interface, they should be migrated to something better (such
   // as a dedicated test builder)
   PrivacySandboxSettingsImpl(
-      std::unique_ptr<Delegate> delegate,
       HostContentSettingsMap* host_content_settings_map,
       scoped_refptr<content_settings::CookieSettings> cookie_settings,
       PrefService* pref_service);
@@ -48,23 +45,9 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings {
       const url::Origin& destination_origin,
       privacy_sandbox::PrivacySandboxAttestationsGatedAPI invoking_api)
       const override;
-  bool IsSharedStorageAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& accessing_origin,
-      std::string* out_debug_message,
-      content::RenderFrameHost* console_frame,
-      bool* out_block_is_site_setting_specific) const override;
-  bool IsSharedStorageSelectURLAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& accessing_origin,
-      std::string* out_debug_message,
-      bool* out_block_is_site_setting_specific) const override;
 
-  bool IsPrivacySandboxRestricted() const override;
-  bool IsPrivacySandboxCurrentlyUnrestricted() const override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
-  void SetDelegateForTesting(std::unique_ptr<Delegate> delegate) override;
 
   bool AreRelatedWebsiteSetsEnabled() const override;
 
@@ -98,7 +81,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings {
 
   base::ObserverList<Observer>::Unchecked observers_;
 
-  std::unique_ptr<Delegate> delegate_;
   raw_ptr<HostContentSettingsMap> host_content_settings_map_;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_;
   raw_ptr<PrefService> pref_service_;

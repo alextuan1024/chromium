@@ -7,7 +7,9 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_cookie_synchronizer.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_eligibility_manager.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_delegate.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
@@ -92,7 +94,7 @@ TEST_F(ContextualTasksWebContentsUserDataTest, SetAndGetModel) {
       std::make_shared<contextual_search::MockContextualSearchSessionHandle>();
   omnibox::SearchboxConfig config;
   auto input_state_model = std::make_unique<contextual_search::InputStateModel>(
-      *mock_handle, config, GURL(), false, false);
+      *mock_handle, config, GURL(), false, false, false);
 
   auto weak_ptr = input_state_model->AsWeakPtr();
 

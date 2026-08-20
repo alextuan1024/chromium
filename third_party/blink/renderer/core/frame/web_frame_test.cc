@@ -41,6 +41,8 @@
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -234,6 +236,7 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "ui/base/ime/mojom/text_input_state.mojom-blink.h"
 #include "ui/base/mojom/menu_source_type.mojom-blink.h"
@@ -306,7 +309,8 @@ void ExecuteScriptsInMainWorld(
       mojom::blink::EvaluationTiming::kSynchronous,
       mojom::blink::LoadEventBlockingOption::kDoNotBlock, std::move(callback),
       BackForwardCacheAware::kAllow,
-      mojom::blink::WantResultOption::kWantResult, wait_for_promise);
+      mojom::blink::WantResultOption::kWantResult, wait_for_promise,
+      /*is_injected_extension_script=*/false);
 }
 
 // Same as above, but for a single script.
@@ -1431,7 +1435,7 @@ class WebFrameCSSCallbackTest : public testing::Test {
   test::TaskEnvironment task_environment_;
   CSSCallbackWebFrameClient client_;
   frame_test_helpers::WebViewHelper helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
 };
 
 TEST_F(WebFrameCSSCallbackTest, AuthorStyleSheet) {
@@ -4707,7 +4711,7 @@ class ContextLifetimeTestWebFrameClient
              world_id == other->world_id;
     }
 
-    WebLocalFrame* frame;
+    raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame;
     v8::Persistent<v8::Context> context;
     int32_t world_id;
   };
@@ -4720,8 +4724,8 @@ class ContextLifetimeTestWebFrameClient
   ~ContextLifetimeTestWebFrameClient() override = default;
 
   void Reset() {
-    create_notifications_.clear();
-    release_notifications_.clear();
+    create_notifications_->clear();
+    release_notifications_->clear();
   }
 
   // WebLocalFrameClient:
@@ -4735,28 +4739,32 @@ class ContextLifetimeTestWebFrameClient
       WebPolicyContainerBindParams policy_container_bind_params,
       ukm::SourceId document_ukm_source_id,
       FinishChildFrameCreationFn finish_creation) override {
-    return CreateLocalChild(*Frame(), scope,
-                            std::make_unique<ContextLifetimeTestWebFrameClient>(
-                                create_notifications_, release_notifications_),
-                            std::move(policy_container_bind_params),
-                            finish_creation);
+    return CreateLocalChild(
+        *Frame(), scope,
+        std::make_unique<ContextLifetimeTestWebFrameClient>(
+            *create_notifications_, *release_notifications_),
+        std::move(policy_container_bind_params), finish_creation);
   }
 
   void DidCreateScriptContext(v8::Local<v8::Context> context,
                               int32_t world_id) override {
-    create_notifications_.push_back(
+    create_notifications_->push_back(
         std::make_unique<Notification>(Frame(), context, world_id));
   }
 
   void WillReleaseScriptContext(v8::Local<v8::Context> context,
                                 int32_t world_id) override {
-    release_notifications_.push_back(
+    release_notifications_->push_back(
         std::make_unique<Notification>(Frame(), context, world_id));
   }
 
  private:
-  Vector<std::unique_ptr<Notification>>& create_notifications_;
-  Vector<std::unique_ptr<Notification>>& release_notifications_;
+  const raw_ref<Vector<std::unique_ptr<Notification>>,
+                UnprotectedInRelease | DanglingUntriaged>
+      create_notifications_;
+  const raw_ref<Vector<std::unique_ptr<Notification>>,
+                UnprotectedInRelease | DanglingUntriaged>
+      release_notifications_;
 };
 
 TEST_F(WebFrameTest, ContextNotificationsLoadUnload) {
@@ -5188,9 +5196,8 @@ TEST_F(WebFrameTest, FindInPageMatchRects) {
     Range* result = main_frame->GetTextFinder()->ActiveMatch();
     ASSERT_TRUE(result);
     result->setEnd(result->endContainer(), result->endOffset() + 3);
-    EXPECT_EQ(
-        result->GetText(),
-        UNSAFE_TODO(String::Format("%s %02d", kFindString, result_index + 2)));
+    EXPECT_EQ(result->GetText(),
+              Format("{} {:02d}", kFindString, result_index + 2));
 
     // Verify that the expected match rect also matches the currently active
     // match.  Compare the enclosing rects to prevent precision issues caused by
@@ -9195,7 +9202,8 @@ class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
     }
 
     bool did_propagate_display_none_ = false;
-    WebFrameSwapTestClient* parent_ = nullptr;
+    raw_ptr<WebFrameSwapTestClient, UnprotectedInRelease | DanglingUntriaged>
+        parent_ = nullptr;
   };
 
   std::unique_ptr<TestLocalFrameHostForFrameOwnerPropertiesChanges>
@@ -11477,7 +11485,7 @@ class WebRemoteFrameVisibilityChangeTest : public WebFrameTest {
  private:
   TestRemoteFrameHostForVisibility remote_frame_host_;
   frame_test_helpers::WebViewHelper web_view_helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
   Persistent<WebRemoteFrameImpl> web_remote_frame_;
 };
 
@@ -11580,7 +11588,7 @@ class WebLocalFrameVisibilityChangeTest
   TestLocalFrameHostForVisibility child_host_;
   frame_test_helpers::TestWebFrameClient child_client_;
   frame_test_helpers::WebViewHelper web_view_helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
 };
 
 TEST_F(WebLocalFrameVisibilityChangeTest, FrameVisibilityChange) {
@@ -11786,7 +11794,7 @@ class TestLocalFrameHostForSaveImageFromDataURL : public FakeLocalFrameHost {
 
    private:
     base::RunLoop run_loop_;
-    String* output_;
+    raw_ptr<String, UnprotectedInRelease | DanglingUntriaged> output_;
   };
 
   BlobRegistryForSaveImageFromDataURL blob_registry_;
@@ -14927,7 +14935,8 @@ class IframeBeginNavivationCountTestWebFrameClient
   TestNewWindowWebFrameClient* iframe_client() const { return client_; }
 
  private:
-  TestNewWindowWebFrameClient* client_ = nullptr;
+  raw_ptr<TestNewWindowWebFrameClient, UnprotectedInRelease | DanglingUntriaged>
+      client_ = nullptr;
 };
 
 TEST_F(WebFrameTest, SandboxedIframePopupCtrlClick) {

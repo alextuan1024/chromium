@@ -35,7 +35,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
@@ -469,6 +468,33 @@ IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest, InvokeWhileInvokeInProgress) {
 
   // The second invoke should fail synchronously.
   EXPECT_EQ(error_future2.Get(), GlicInvokeError::kInvokeInProgress);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest, InvokeSupersedesInProgress) {
+  tabs::TabInterface* tab = GetTabListInterface()->GetActiveTab();
+
+  base::test::TestFuture<GlicInvokeError> error_future1;
+  GlicInvokeOptions options1(glic::Target(*tab),
+                             mojom::InvocationSource::kOsButton);
+  options1.on_error = error_future1.GetCallback();
+
+  coordinator().Invoke(std::move(options1));
+
+  base::test::TestFuture<void> success_future2;
+  GlicInvokeOptions options2(glic::Target(*tab),
+                             mojom::InvocationSource::kOsButton);
+  options2.supersede_if_in_progress = true;
+  options2.on_success = success_future2.GetCallback();
+
+  // Try to invoke again while the first one is still in progress for the same
+  // instance, but this time specify that it should supersede the first.
+  coordinator().Invoke(std::move(options2));
+
+  // The first invoke should fail synchronously.
+  EXPECT_EQ(error_future1.Get(), GlicInvokeError::kSuperseded);
+
+  // The second invoke should succeed.
+  EXPECT_TRUE(success_future2.Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest, InvokeTimeoutBehaviors) {
@@ -1077,11 +1103,10 @@ IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest,
                        ResolveTargetSurfaceSkipsAppWindow) {
-  Browser* app_browser =
+  BrowserWindowInterface* app_browser =
       CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
-                              "test_app", /*trusted_source=*/true, gfx::Rect(),
-                              GetProfile(), /*user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+          "test_app", /*trusted_source=*/true, gfx::Rect(), GetProfile(),
+          /*user_gesture=*/true));
   app_browser->GetWindow()->Show();
 
   // 1. DefaultSurface targeting app_browser falls back to a normal browser.
@@ -1678,4 +1703,38 @@ IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest,
   // Glic should be bound to this new tab.
   EXPECT_TRUE(GetInstanceForTab(active_tab));
 }
+
+IN_PROC_BROWSER_TEST_F(GlicInvokeBrowserTest,
+                       InvokeTargetLastActiveOrNew_UsesLastActiveSurface) {
+  tabs::TabInterface* tab1 = GetTabListInterface()->GetActiveTab();
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+
+  auto* tab_list = GetTabListInterface();
+  int initial_tab_count = tab_list->GetTabCount();
+  BrowserWindowInterface* browser = tab1->GetBrowserWindowInterface();
+
+  PreventDeletionOnClose(instance);
+  instance->CloseAllEmbedders();
+  ASSERT_TRUE(WaitForGlicClose(instance));
+
+  base::test::TestFuture<void> success_future;
+  GlicInvokeOptions options(mojom::InvocationSource::kOsButton);
+
+  options.target.conversation = glic::InstanceId(instance->id());
+  options.target.surface =
+      glic::LastActiveOrNew{browser, /*open_in_foreground=*/true};
+  options.on_success = success_future.GetCallback();
+
+  coordinator().Invoke(std::move(options));
+
+  EXPECT_TRUE(success_future.Wait());
+
+  // No new tab should have been created.
+  EXPECT_EQ(tab_list->GetTabCount(), initial_tab_count);
+  EXPECT_EQ(tab_list->GetActiveTab(), tab1);
+
+  // Glic should be bound to tab1 again.
+  EXPECT_EQ(GetInstanceForTab(tab1), instance);
+}
+
 }  // namespace glic

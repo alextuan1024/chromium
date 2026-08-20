@@ -1373,7 +1373,8 @@ WebContentsImpl::WebContentsImpl(BrowserContext* browser_context)
       SlowWebPreferenceCache::GetInstance());
   renderer_preferences_.caret_blink_interval =
       native_theme->caret_blink_interval();
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
   renderer_preferences_.use_overlay_scrollbar =
       native_theme->use_overlay_scrollbar();
 #endif
@@ -1766,6 +1767,18 @@ void WebContentsImpl::SetDelegate(WebContentsDelegate* delegate) {
   // Re-read values from the new delegate and apply them.
   if (view_) {
     view_->SetOverscrollControllerEnabled(CanOverscrollContent());
+  }
+}
+
+void WebContentsImpl::OptOutFrameEviction(
+    base::PassKey<FrameEvictionOptOutClient>) {
+  if (opt_out_frame_eviction_) {
+    return;
+  }
+  opt_out_frame_eviction_ = true;
+  if (RenderWidgetHostViewBase* view =
+          static_cast<RenderWidgetHostViewBase*>(GetRenderWidgetHostView())) {
+    view->OptOutFrameEviction();
   }
 }
 
@@ -3626,7 +3639,32 @@ void WebContentsImpl::ClearSurfaceEmbedConnector() {
     view_ = nullptr;
   }
 
+  // The child main frame derives its embed-parent AX tree id from the
+  // connector. Clear that id from the child's AX tree data *before* freeing the
+  // connector. AccessibilityIsRootFrame() consults the connector, so if the
+  // connector were freed first the frame would report itself as the AX root
+  // while its tree data still carried the embedder's parent tree id.
+  // Serializing in that window trips
+  // BrowserAccessibilityManager::IsRootFrameManager()'s invariant that a root
+  // tree has no parent tree id. Note AXTree::Unserialize() notifies observers
+  // before it applies the new tree data, so the clear must happen while the
+  // connector still makes the frame a non-root. This runs even during
+  // destruction because the BrowserAccessibilityManagers are torn down after
+  // this point and cannot have a stale embedder parent tree id.
+  const bool had_embed_parent_ax_tree_id =
+      surface_embed_connector_->GetParentAXTreeID() != ui::AXTreeIDUnknown();
+  if (had_embed_parent_ax_tree_id) {
+    primary_frame_tree_.root()->current_frame_host()->ClearEmbedderAXTreeData();
+  }
+
   surface_embed_connector_.reset();
+
+  // The frame is now a true AX root. Refresh so the renderer and platform
+  // managers observe the final state. The tree data no longer carries the
+  // embedder's parent tree id, so this no longer sees an inconsistent state.
+  if (had_embed_parent_ax_tree_id && !IsBeingDestroyed()) {
+    primary_frame_tree_.root()->current_frame_host()->UpdateAXTreeData();
+  }
 
   // Recreate and register RenderWidgetHostView.
   if (!IsBeingDestroyed()) {
@@ -5074,6 +5112,10 @@ DevicePostureProviderImpl* WebContentsImpl::GetDevicePostureProvider() {
 
 bool WebContentsImpl::GetResizable() {
   return GetDelegate() && GetDelegate()->GetCanResize();
+}
+
+bool WebContentsImpl::GetIsAlwaysOnTop() {
+  return GetDelegate() && GetDelegate()->GetIsAlwaysOnTop();
 }
 
 void WebContentsImpl::FullscreenFrameSetUpdated() {
@@ -6640,7 +6682,7 @@ const std::optional<gfx::Rect> WebContentsImpl::GetTextSelectionBounds(
   return std::nullopt;
 }
 
-const std::optional<gfx::Point> WebContentsImpl::GetFocusSelectionPoint(
+const std::optional<gfx::Rect> WebContentsImpl::GetFocusSelectionBounds(
     RenderFrameHost* render_frame_host) const {
   if (text_input_manager_ && render_frame_host) {
     auto* view =
@@ -6654,8 +6696,7 @@ const std::optional<gfx::Point> WebContentsImpl::GetFocusSelectionPoint(
         gfx::Rect bounds = gfx::BoundingRect(start, end);
         gfx::Point origin = bounds.origin();
         origin += root_view->GetViewBounds().OffsetFromOrigin();
-        origin += gfx::Vector2d(bounds.width(), bounds.height());
-        return origin;
+        return gfx::Rect(origin, bounds.size());
       }
     }
   }
@@ -11358,6 +11399,13 @@ void WebContentsImpl::CreateRenderWidgetHostViewForRenderManager(
     view_->SetOverscrollControllerEnabled(CanOverscrollContent());
     rwh_view->SetSize(GetSizeForMainFrame());
   }
+
+  if (opt_out_frame_eviction_) {
+    if (RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+            render_view_host->GetWidget()->GetView())) {
+      view->OptOutFrameEviction();
+    }
+  }
 }
 
 void WebContentsImpl::ReattachOuterDelegateIfNeeded() {
@@ -12589,7 +12637,8 @@ void WebContentsImpl::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
   HandleColorRelatedStateChanges();
 
   const auto caret_blink_interval = observed_theme->caret_blink_interval();
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
   const auto use_overlay_scrollbar = observed_theme->use_overlay_scrollbar();
 #endif
   bool renderer_preference_changed = false;
@@ -12597,7 +12646,8 @@ void WebContentsImpl::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
     renderer_preferences_.caret_blink_interval = caret_blink_interval;
     renderer_preference_changed = true;
   }
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
   if (renderer_preferences_.use_overlay_scrollbar != use_overlay_scrollbar) {
     renderer_preferences_.use_overlay_scrollbar = use_overlay_scrollbar;
     renderer_preference_changed = true;

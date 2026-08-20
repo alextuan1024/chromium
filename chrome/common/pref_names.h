@@ -26,6 +26,7 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/chrome_pref_names.h"
+#include "components/content_settings/core/common/pref_names.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace prefs {
@@ -1106,15 +1107,6 @@ inline constexpr char kGCMProductCategoryForSubtypes[] =
 // Whether a user is allowed to use Easy Unlock.
 inline constexpr char kEasyUnlockAllowed[] = "easy_unlock.allowed";
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-// Used to indicate whether or not the toolbar redesign bubble has been shown
-// and acknowledged, and the last time the bubble was shown.
-inline constexpr char kToolbarIconSurfacingBubbleAcknowledged[] =
-    "toolbar_icon_surfacing_bubble_acknowledged";
-inline constexpr char kToolbarIconSurfacingBubbleLastShowTime[] =
-    "toolbar_icon_surfacing_bubble_show_time";
-#endif
-
 // Define the IP handling policy override that WebRTC should follow. When not
 // set, it defaults to "default".
 inline constexpr char kWebRTCIPHandlingPolicy[] = "webrtc.ip_handling_policy";
@@ -1247,6 +1239,11 @@ inline constexpr char kProjectsPanelPinnedToTabstrip[] =
 // strip.
 inline constexpr char kEverythingMenuPinnedToTabstrip[] =
     "everything_menu.pinned_to_tabstrip";
+
+// Boolean determining whether the tab scroll buttons are pinned to the tab
+// strip.
+inline constexpr char kTabScrollButtonsPinnedToTabstrip[] =
+    "tab_scroll_buttons.pinned_to_tabstrip";
 
 // Boolean indicating whether the one-time migration for
 // kEverythingMenuPinnedToTabstrip has been completed. This sets the pinned
@@ -2215,38 +2212,15 @@ inline constexpr char kDnsOverHttpsAutomaticModeFallbackToDoh[] =
 inline constexpr char kAdditionalDnsQueryTypesEnabled[] =
     "async_dns.additional_dns_query_types_enabled";
 
-// A pref holding the value of the policy used to explicitly allow or deny
-// access to audio capture devices.  When enabled or not set, the user is
-// prompted for device access.  When disabled, access to audio capture devices
-// is not allowed and no prompt will be shown.
-// See also kAudioCaptureAllowedUrls.
-inline constexpr char kAudioCaptureAllowed[] = "hardware.audio_capture_enabled";
+// Ensure that the preference names defined in components match those in Ash.
 #if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kAudioCaptureAllowed) ==
+static_assert(std::string_view(kManagedAudioCaptureAllowed) ==
               std::string_view(ash::chrome_prefs::kAudioCaptureAllowed));
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Holds URL patterns that specify URLs that will be granted access to audio
-// capture devices without prompt.
-inline constexpr char kAudioCaptureAllowedUrls[] =
-    "hardware.audio_capture_allowed_urls";
-
-// A pref holding the value of the policy used to explicitly allow or deny
-// access to video capture devices.  When enabled or not set, the user is
-// prompted for device access.  When disabled, access to video capture devices
-// is not allowed and no prompt will be shown.
-inline constexpr char kVideoCaptureAllowed[] = "hardware.video_capture_enabled";
-#if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kVideoCaptureAllowed) ==
+static_assert(std::string_view(kManagedAudioCaptureAllowedUrls) ==
+              std::string_view(ash::chrome_prefs::kAudioCaptureAllowedUrls));
+static_assert(std::string_view(kManagedVideoCaptureAllowed) ==
               std::string_view(ash::chrome_prefs::kVideoCaptureAllowed));
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Holds URL patterns that specify URLs that will be granted access to video
-// capture devices without prompt.
-inline constexpr char kVideoCaptureAllowedUrls[] =
-    "hardware.video_capture_allowed_urls";
-#if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kVideoCaptureAllowedUrls) ==
+static_assert(std::string_view(kManagedVideoCaptureAllowedUrls) ==
               std::string_view(ash::chrome_prefs::kVideoCaptureAllowedUrls));
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -2494,6 +2468,11 @@ inline constexpr char kAppShortcutsVersion[] = "apps.shortcuts_version";
 // from an Intel mac to an ARM mac), then this will cause all shortcuts to be
 // re-created.
 inline constexpr char kAppShortcutsArch[] = "apps.shortcuts_arch";
+
+// A string indicating the OS version under which app shortcuts have been
+// created. If this changes (e.g., due to updating macOS version), then all
+// app shortcuts will be re-created.
+inline constexpr char kAppShortcutsOsVersion[] = "apps.shortcuts_os_version";
 
 // This references a default content setting value which we expose through the
 // preferences extensions API and also used for migration of the old

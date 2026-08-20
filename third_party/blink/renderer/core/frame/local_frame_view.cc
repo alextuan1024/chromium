@@ -179,6 +179,7 @@
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/cull_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
+#include "third_party/blink/renderer/platform/graphics/paint/ignore_paint_timing_scope.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record_builder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -1159,7 +1160,7 @@ void LocalFrameView::RunIntersectionObserverSteps() {
 void LocalFrameView::ForceUpdateViewportIntersections() {
   // IntersectionObserver targets in this frame (and its frame tree) need to
   // update; but we can't wait for a lifecycle update to run them, because a
-  // hidden frame won't run lifecycle updates. Force layout and run them now.
+  // hidden frame won't run lifecycle updates. Force pre-paint and run them now.
   DisallowThrottlingScope disallow_throttling(*this);
   UpdateAllLifecyclePhasesExceptPaint(
       DocumentUpdateReason::kIntersectionObservation);
@@ -2124,13 +2125,13 @@ bool LocalFrameView::UpdateAllLifecyclePhases(DocumentUpdateReason reason) {
                 DocumentLifecycle::kPaintClean);
     });
 
-    // A required intersection observation should run throttled frames to
-    // kLayoutClean.
+    // A required intersection observation should run throttled frames through
+    // kPrePaintClean.
     ForAllThrottledLocalFrameViews([](LocalFrameView& frame_view) {
       DCHECK(frame_view.intersection_observation_state_ != kRequired ||
              frame_view.IsDisplayLocked() ||
              frame_view.Lifecycle().GetState() >=
-                 DocumentLifecycle::kLayoutClean);
+                 DocumentLifecycle::kPrePaintClean);
     });
   }
 #endif
@@ -2899,13 +2900,12 @@ bool LocalFrameView::RunPrePaintLifecyclePhase(
             if (layout_view->ShouldCheckForPaintInvalidation()) {
               owner->SetShouldCheckForPaintInvalidation();
             }
-            if (layout_view->EffectiveAllowedTouchActionChanged() ||
-                layout_view->DescendantEffectiveAllowedTouchActionChanged()) {
-              owner->MarkDescendantEffectiveAllowedTouchActionChanged();
-            }
-            if (layout_view->BlockingWheelEventHandlerChanged() ||
-                layout_view->DescendantBlockingWheelEventHandlerChanged()) {
-              owner->MarkDescendantBlockingWheelEventHandlerChanged();
+            PrePaintSubtreeWalkReasons reasons =
+                CrossFramePrePaintSubtreeWalkReasons(base::Union(
+                    layout_view->GetPrePaintSubtreeWalkReasons(),
+                    layout_view->GetDescendantPrePaintSubtreeWalkReasons()));
+            if (!reasons.empty()) {
+              owner->SetDescendantNeedsPrePaintSubtreeWalk(reasons);
             }
           }
         }
@@ -4321,6 +4321,16 @@ void LocalFrameView::PaintOutsideOfLifecycle(GraphicsContext& context,
   UpdateAllLifecyclePhasesExceptPaint(DocumentUpdateReason::kPrinting);
 
   SCOPED_UMA_AND_UKM_TIMER(GetUkmAggregator(), LocalFrameUkmAggregator::kPaint);
+
+  // Ignore paint timing while painting outside of the normal lifecycle (e.g.
+  // paint preview, printing, etc.), as it can change LCP and cause spurious
+  // element timings to be reported (see crbug.com/40838402 and
+  // crbug.com/547997751).
+  IgnorePaintTimingScope ignore_paint_timing;
+  if (base::FeatureList::IsEnabled(
+          features::kPaintTimingIngnoreOutOfLifecyclePaints)) {
+    IgnorePaintTimingScope::IncrementIgnoreDepth();
+  }
 
   ForAllNonThrottledLocalFrameViews([](LocalFrameView& frame_view) {
     frame_view.Lifecycle().AdvanceTo(DocumentLifecycle::kInPaint);

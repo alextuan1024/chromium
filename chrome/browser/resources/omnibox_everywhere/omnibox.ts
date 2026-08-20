@@ -19,6 +19,7 @@ import {ComposeboxContextAddedMethod, GlowAnimationState} from '//resources/cr_c
 import {DragAndDropHandler} from '//resources/cr_components/search/drag_drop_handler.js';
 import type {DragAndDropHost} from '//resources/cr_components/search/drag_drop_host.js';
 import {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import type {ComposeClickEventDetail} from '//resources/cr_components/searchbox/searchbox_compose_button.js';
 import type {SearchboxDropdownElement} from '//resources/cr_components/searchbox/searchbox_dropdown.js';
 import type {SearchboxInputElement} from '//resources/cr_components/searchbox/searchbox_input.js';
 import type {SearchboxMixinInterface} from '//resources/cr_components/searchbox/searchbox_mixin.js';
@@ -321,11 +322,22 @@ export class OmniboxEverywhereOmniboxElement extends
   }
 
   protected onScreenshotWindowClick_() {
+    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
+    // trigger.
     this.shadowRoot.querySelector<CrActionMenuElement>(
                        '#screenshotMenu')!.close();
   }
 
   protected onScreenshotEntireScreenClick_() {
+    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
+    // trigger.
+    this.shadowRoot.querySelector<CrActionMenuElement>(
+                       '#screenshotMenu')!.close();
+  }
+
+  protected onScreenshotRegionClick_() {
+    // TODO(crbug.com/532198850): Hook up screenshot/screenshare capture
+    // trigger.
     this.shadowRoot.querySelector<CrActionMenuElement>(
                        '#screenshotMenu')!.close();
   }
@@ -425,8 +437,27 @@ export class OmniboxEverywhereOmniboxElement extends
     }, 300);
   }
 
-  protected onComposeClick_() {
-    this.openComposeboxWithMode_();
+  protected onComposeClick_(e: CustomEvent<ComposeClickEventDetail>) {
+    this.pageHandler().activateMetricsFunnel('AiModeButton');
+
+    const isSearch = this.selectedMatch?.isSearchType ?? true;
+    if (!isSearch) {
+      this.setInputText('');
+    }
+    const queryText = isSearch ? this.$.input.inputElement.value.trim() : '';
+
+    if (queryText) {
+      this.pageHandler().notifySessionStarted();
+      // TODO(crbug.com/548024751): Add metrics here like normal omnibox and
+      // realbox.
+      this.pageHandler().submitQuery(
+          queryText, e.detail.button, false, /* altKey */
+          e.detail.ctrlKey, e.detail.metaKey, e.detail.shiftKey,
+          /* isVoiceSearch */ false);
+      this.clearAutocompleteMatches();
+    } else {
+      this.openComposeboxWithMode_();
+    }
   }
 
   protected onContextMenuEntrypointClick_() {

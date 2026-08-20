@@ -51,11 +51,13 @@ gfx::Rect TabDragWindowAdapterImpl::GetBoundsInScreen() const {
   return browser_window_->GetWindow()->GetBounds();
 }
 
-bool TabDragWindowAdapterImpl::IsDraggingEntireWindow(
+bool TabDragWindowAdapterImpl::ShouldDragWholeWindow(
     size_t dragged_tab_count) const {
-  return browser_window_ &&
-         dragged_tab_count ==
-             static_cast<size_t>(browser_window_->GetTabStripModel()->count());
+  if (!browser_window_ || browser_window_->GetWindow()->IsFullscreen()) {
+    return false;
+  }
+  return dragged_tab_count ==
+         static_cast<size_t>(browser_window_->GetTabStripModel()->count());
 }
 
 namespace {
@@ -95,28 +97,6 @@ gfx::Point TabDragWindowAdapterImpl::ConvertScreenPointToLocal(
   return local_point;
 }
 
-void TabDragWindowAdapterImpl::SetCapture() {
-  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
-      browser_window_->GetWindow()->GetNativeWindow());
-  if (widget) {
-    widget->SetCapture(nullptr);
-  }
-}
-
-void TabDragWindowAdapterImpl::ReleaseCapture() {
-  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
-      browser_window_->GetWindow()->GetNativeWindow());
-  if (widget) {
-    widget->ReleaseCapture();
-  }
-}
-
-bool TabDragWindowAdapterImpl::HasCapture() const {
-  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
-      browser_window_->GetWindow()->GetNativeWindow());
-  return widget && widget->HasCapture();
-}
-
 void TabDragWindowAdapterImpl::Activate() {
   if (!browser_window_ || !browser_window_->GetWindow()) {
     return;
@@ -145,13 +125,16 @@ TabDragWindowAdapterImpl::DetachToNewWindow(
         mojo_base::mojom::Code::kFailedPrecondition, "Profile is null"));
   }
 
-  gfx::Rect initial_bounds(screen_point - drag_offset,
-                           browser_window_->GetWindow()->GetBounds().size());
+  gfx::Rect initial_bounds(
+      screen_point - drag_offset,
+      browser_window_->GetWindow()->GetRestoredBounds().size());
 
   BrowserWindowCreateParams params(BrowserWindowInterface::Type::TYPE_NORMAL,
                                    *profile,
                                    /*from_user_gesture=*/true);
   params.initial_bounds = initial_bounds;
+  params.initial_show_state = ui::mojom::WindowShowState::kDefault;
+  params.initial_workspace = std::string();
 
   BrowserWindowInterface* new_window = CreateBrowserWindow(std::move(params));
   if (!new_window) {
@@ -161,6 +144,10 @@ TabDragWindowAdapterImpl::DetachToNewWindow(
   }
 
   new_window->GetWindow()->SetBounds(initial_bounds);
+
+  views::Widget* new_widget = views::Widget::GetWidgetForNativeWindow(
+      new_window->GetWindow()->GetNativeWindow());
+  new_widget->SetCanAppearInExistingFullscreenSpaces(true);
 
   CHECK(registry_);
   gfx::NativeWindow native_window = new_window->GetWindow()->GetNativeWindow();
@@ -219,6 +206,8 @@ tabs_api::DragMoveLoopResult TabDragWindowAdapterImpl::RunWindowMoveLoop(
 
   widget_observation_.Reset();
   move_callback_.Reset();
+
+  widget->SetCanAppearInExistingFullscreenSpaces(false);
 
   return result == views::Widget::MoveLoopResult::kSuccessful
              ? tabs_api::DragMoveLoopResult::kSuccess

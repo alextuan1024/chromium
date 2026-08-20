@@ -591,6 +591,7 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kInlineScriptCacheEnabledForDefaultHint);
+
 // Gating the migration of Android IME cursor anchor updates from Mojo IPC to
 // RenderFrameMetadata.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kInputCursorAnchorInfoMigration);
@@ -1274,6 +1275,11 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kPath2DPaintCache);
 
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kPaintHolding);
 
+// When enabled, paint timing ignores all out-of-lifecycle paints, e.g. printing
+// paint preview, etc.
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
+    kPaintTimingIngnoreOutOfLifecyclePaints);
+
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
     kPopulateDOMNodeIdInFocusedNodeDetails);
 
@@ -1819,6 +1825,11 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebFontsCacheAwareTimeoutAdaption);
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebRtcHideLocalIpsWithMdns);
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebRtcIgnoreUnspecifiedColorSpace);
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebRtcUseMinMaxVEADimensions);
+
+// If enabled, WebUI renderer processes will bypass non-critical Mojo interface
+// registrations (like TimeZoneMonitor, DevicePosture, MediaDecoder, and
+// PowerMonitor).
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebUIBypassMojoConnections);
 
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebUSBTransferSizeLimit);
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kWebUSBWorldIsolatedCache);

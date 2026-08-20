@@ -129,7 +129,6 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
@@ -261,8 +260,7 @@ void DefaultBindingsDelegate::OpenInNewTab(const std::string& url) {
   // TODO(https://crbug.com/403946437): We should definitely understand why this
   // happens.
   if (browser) {
-    browser->GetBrowserForMigrationOnly()->OpenURL(
-        params, /*navigation_handle_callback=*/{});
+    browser->OpenURL(params, /*navigation_handle_callback=*/{});
   }
 #endif
 }
@@ -282,8 +280,7 @@ void DefaultBindingsDelegate::OpenSearchResultsInNewTab(
   content::OpenURLParams params(GURL(url), content::Referrer(),
                                 WindowOpenDisposition::NEW_FOREGROUND_TAB,
                                 ui::PAGE_TRANSITION_LINK, false);
-  browser->GetBrowserForMigrationOnly()->OpenURL(
-      params, /*navigation_handle_callback=*/{});
+  browser->OpenURL(params, /*navigation_handle_callback=*/{});
 #endif
 }
 
@@ -870,6 +867,11 @@ DevToolsUIBindings::DevToolsUIBindings(content::WebContents* web_contents)
 #if !BUILDFLAG(IS_ANDROID)
   ThemeServiceFactory::GetForProfile(profile_->GetOriginalProfile())
       ->AddObserver(this);
+#endif
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (auto* registry = extensions::ExtensionRegistry::Get(profile_)) {
+    extension_registry_observation_.Observe(registry);
+  }
 #endif
   can_access_aida_ = IsAnyAidaPoweredFeatureEnabled();
   is_local_frontend_ =
@@ -2252,6 +2254,13 @@ base::DictValue DevToolsUIBindings::GetHostConfigDictionary(Profile* profile) {
                                        ::features::kDevToolsAriaLiveRecording,
                                        enabled_by_flags, disabled_by_flags)));
 
+  response_dict.Set(
+      "devToolsMobileSafeAreaEmulation",
+      base::DictValue().Set("enabled",
+                            GetFeatureStateForDevTools(
+                                ::features::kDevToolsMobileSafeAreaEmulation,
+                                enabled_by_flags, disabled_by_flags)));
+
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // We check AreExtensionsOnExtensionURLsAllowed() here because this is used to
   // restrict access to chrome-extension:// URLs, and that helper covers both
@@ -2862,6 +2871,7 @@ void DevToolsUIBindings::AddDevToolsExtensionsToClient() {
             .Set("runtimeAllowedHosts", std::move(runtime_allowed_hosts))
             .Set("runtimeBlockedHosts", std::move(runtime_blocked_hosts)));
     results.Append(std::move(extension_info));
+    devtools_extension_ids_.insert(extension->id());
   }
 
   CallClientMethod("DevToolsAPI", "setOriginsForbiddenForExtensions",
@@ -2870,6 +2880,30 @@ void DevToolsUIBindings::AddDevToolsExtensionsToClient() {
                    base::Value(std::move(results)));
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+void DevToolsUIBindings::OnExtensionUnloaded(
+    content::BrowserContext* browser_context,
+    const extensions::Extension* extension,
+    extensions::UnloadedExtensionReason reason) {
+  // If an extension that had devtools bindings was unloaded, we just close the
+  // devtools window.
+  // This is important, because extensions might be reloaded with different
+  // privileges, and we need to ensure we clear out any old state or bindings.
+  // This is also inline with our behavior for other extension pages, like
+  // tabs, popups, etc.
+  // Extensions aren't unloaded that often (and should only be so when they're
+  // idle or via a direct signal, e.g. from the user), so this shouldn't be too
+  // disruptive.
+  if (devtools_extension_ids_.contains(extension->id())) {
+    CloseWindow();
+  }
+}
+
+void DevToolsUIBindings::OnShutdown(extensions::ExtensionRegistry* registry) {
+  extension_registry_observation_.Reset();
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 void DevToolsUIBindings::RegisterExtensionsAPI(const std::string& origin,
                                                const std::string& script) {

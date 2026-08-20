@@ -34,6 +34,8 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace {
 
@@ -403,12 +405,9 @@ String GenerateTransitionHTMLFrom(const FlagData& data) {
 
   StringBuilder builder;
   builder.Append("<style>");
-  builder.Append(
-      UNSAFE_TODO(String::Format("#test { transition:%s 1s; }", property)));
-  builder.Append(
-      UNSAFE_TODO(String::Format("#test.before { %s:%s; }", property, before)));
-  builder.Append(
-      UNSAFE_TODO(String::Format("#test.after { %s:%s; }", property, after)));
+  FormatTo(builder, "#test {{ transition:{} 1s; }}", property);
+  FormatTo(builder, "#test.before {{ {}:{}; }}", property, before);
+  FormatTo(builder, "#test.after {{ {}:{}; }}", property, after);
   builder.Append("</style>");
   builder.Append("<div id=test class=before>Test</div>");
   return builder.ToString();
@@ -422,9 +421,8 @@ String GenerateCSSAnimationHTMLFrom(const FlagData& data) {
   StringBuilder builder;
   builder.Append("<style>");
   builder.Append("@keyframes anim {");
-  builder.Append(
-      UNSAFE_TODO(String::Format("from { %s:%s; }", property, before)));
-  builder.Append(UNSAFE_TODO(String::Format("to { %s:%s; }", property, after)));
+  FormatTo(builder, "from {{ {}:{}; }}", property, before);
+  FormatTo(builder, "to {{ {}:{}; }}", property, after);
   builder.Append("}");
   builder.Append("#test.after { animation:anim 1s; }");
   builder.Append("</style>");
@@ -2838,6 +2836,18 @@ TEST_P(CSSAnimationsTriggerTest, CoordinatedTimelineTriggerDeclarations) {
         timeline-trigger-name: --trigger1, --trigger2;
         timeline-trigger-source: auto, view();
       }
+      .view_none {
+        timeline-trigger-name: --trigger1, --trigger2;
+        timeline-trigger-source: view(), none;
+      }
+      .none_view {
+        timeline-trigger-name: --trigger1, --trigger2;
+        timeline-trigger-source: none, view();
+      }
+      .none {
+        timeline-trigger-name: --trigger1, --trigger2;
+        timeline-trigger-source: none;
+      }
 
       #source {
         height: 50px;
@@ -2920,6 +2930,38 @@ TEST_P(CSSAnimationsTriggerTest, CoordinatedTimelineTriggerDeclarations) {
   test_timeline_type(get_trigger(AtomicString("--trigger2")),
                      /*is_view=*/true,
                      /*is_scroll=*/true, /*is_document=*/false);
+
+  source->classList().Remove(AtomicString("auto_view"));
+  source->classList().Add(AtomicString("view_none"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      window->getComputedStyle(source)->getPropertyValue("timeline-trigger"),
+      String("--trigger1 view(), --trigger2 none"));
+  test_timeline_type(get_trigger(AtomicString("--trigger1")),
+                     /*is_view=*/true, /*is_scroll=*/true,
+                     /*is_document=*/false);
+  EXPECT_EQ(get_trigger(AtomicString("--trigger2"))->Timeline(), nullptr);
+
+  source->classList().Remove(AtomicString("view_none"));
+  source->classList().Add(AtomicString("none_view"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      window->getComputedStyle(source)->getPropertyValue("timeline-trigger"),
+      String("--trigger1 none, --trigger2 view()"));
+  EXPECT_EQ(get_trigger(AtomicString("--trigger1"))->Timeline(), nullptr);
+  test_timeline_type(get_trigger(AtomicString("--trigger2")),
+                     /*is_view=*/true, /*is_scroll=*/true,
+                     /*is_document=*/false);
+
+  source->classList().Remove(AtomicString("none_view"));
+  source->classList().Add(AtomicString("none"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      window->getComputedStyle(source)->getPropertyValue("timeline-trigger"),
+      String("--trigger1 none, --trigger2 none"));
+  EXPECT_EQ(source->NamedTriggers()->size(), 2);
+  EXPECT_EQ(get_trigger(AtomicString("--trigger1"))->Timeline(), nullptr);
+  EXPECT_EQ(get_trigger(AtomicString("--trigger2"))->Timeline(), nullptr);
 }
 
 TEST_P(CSSAnimationsTriggerTest, NestedScopeAvoidsTriggerUpdates) {

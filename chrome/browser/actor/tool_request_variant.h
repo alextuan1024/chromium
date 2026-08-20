@@ -18,6 +18,7 @@ using ToolRequestVariant = std::variant<
     ActivateTabToolRequest,
     ActivateWindowToolRequest,
 #endif
+    AddBookmarkToolRequest,
     AttemptLoginToolRequest,
     AttemptFormFillingToolRequest,
     AttemptOtpFillingToolRequest,
@@ -29,6 +30,10 @@ using ToolRequestVariant = std::variant<
     CreateWindowToolRequest,
 #endif
     DragAndReleaseToolRequest,
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+    EnterFullscreenToolRequest,
+    ExitFullscreenToolRequest,
+#endif
     HistoryToolRequest,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     LoadAndExtractContentToolRequest,
@@ -36,10 +41,12 @@ using ToolRequestVariant = std::variant<
     MediaControlToolRequest,
     MoveMouseToolRequest,
     NavigateToolRequest,
+    RemoveBookmarkToolRequest,
     ScriptToolRequest,
     ScrollToolRequest,
     ScrollToToolRequest,
     SelectToolRequest,
+    TranslatePageToolRequest,
     TypeToolRequest,
     WaitToolRequest>;
 // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/histograms.xml:ToolRequest)
@@ -54,6 +61,7 @@ class ConvertToVariantFn : public ToolRequestVisitorFunctor {
   void Apply(const ActivateTabToolRequest&) override;
   void Apply(const ActivateWindowToolRequest&) override;
 #endif
+  void Apply(const AddBookmarkToolRequest&) override;
   void Apply(const AttemptLoginToolRequest&) override;
   void Apply(const AttemptFormFillingToolRequest&) override;
   void Apply(const AttemptOtpFillingToolRequest&) override;
@@ -65,6 +73,10 @@ class ConvertToVariantFn : public ToolRequestVisitorFunctor {
   void Apply(const CreateWindowToolRequest&) override;
 #endif
   void Apply(const DragAndReleaseToolRequest&) override;
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+  void Apply(const EnterFullscreenToolRequest&) override;
+  void Apply(const ExitFullscreenToolRequest&) override;
+#endif
   void Apply(const HistoryToolRequest&) override;
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
   void Apply(const LoadAndExtractContentToolRequest&) override;
@@ -72,10 +84,12 @@ class ConvertToVariantFn : public ToolRequestVisitorFunctor {
   void Apply(const MediaControlToolRequest&) override;
   void Apply(const MoveMouseToolRequest&) override;
   void Apply(const NavigateToolRequest&) override;
+  void Apply(const RemoveBookmarkToolRequest&) override;
   void Apply(const ScriptToolRequest&) override;
   void Apply(const ScrollToolRequest&) override;
   void Apply(const ScrollToToolRequest&) override;
   void Apply(const SelectToolRequest&) override;
+  void Apply(const TranslatePageToolRequest&) override;
   void Apply(const TypeToolRequest&) override;
   void Apply(const WaitToolRequest&) override;
 

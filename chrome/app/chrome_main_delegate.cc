@@ -130,7 +130,7 @@
 #if !defined(BUILDING_CHROME_RENDERER)
 #include "chrome/browser/chrome_browser_main_win.h"       // nogncheck
 #include "chrome/browser/win/browser_util.h"              // nogncheck
-#include "chrome/browser/win/isolated_browser_support.h"  // nogncheck
+#include "chrome/browser/win/isolated_browser/isolated_browser_support.h"  // nogncheck
 #include "chrome/chrome_elf/chrome_elf_main.h"
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 #endif  // BUILDFLAG(IS_WIN)
@@ -1655,10 +1655,9 @@ std::variant<int, content::MainFunctionParams> ChromeMainDelegate::RunProcess(
       {switches::kNoOpForTestingProcess, NoOpMain},
   };
 
-  for (size_t i = 0; i < std::size(kMainFunctions); ++i) {
-    if (process_type == UNSAFE_TODO(kMainFunctions[i]).name) {
-      return UNSAFE_TODO(kMainFunctions[i])
-          .function(std::move(main_function_params));
+  for (const MainFunction& main_function : kMainFunctions) {
+    if (process_type == main_function.name) {
+      return main_function.function(std::move(main_function_params));
     }
   }
 #endif  // BUILDFLAG(IS_MAC)

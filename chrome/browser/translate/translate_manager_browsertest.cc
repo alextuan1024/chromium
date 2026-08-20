@@ -31,7 +31,7 @@
 #include "chrome/browser/ui/toasts/toast_view.h"
 #include "chrome/browser/ui/views/translate/translate_bubble_controller.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -821,8 +821,8 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerBrowserTest,
   GetChromeTranslateClient()
       ->GetTranslateManager()
       ->SetIgnoreMissingKeyForTesting(true);
-  GetChromeTranslateClient()->GetTranslatePrefs()->AddToLanguageList("fr",
-                                                                     true);
+  GetChromeTranslateClient()->GetTranslatePrefs()->AddToLanguageList(
+      base::i18n::GetKnownLanguageTag("fr"), true);
 
   ClickFrenchHrefTranslateLinkOnGooglePage();
 
@@ -871,8 +871,8 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerBrowserTest,
   GetChromeTranslateClient()
       ->GetTranslateManager()
       ->SetIgnoreMissingKeyForTesting(true);
-  GetChromeTranslateClient()->GetTranslatePrefs()->AddToLanguageList("fr",
-                                                                     true);
+  GetChromeTranslateClient()->GetTranslatePrefs()->AddToLanguageList(
+      base::i18n::GetKnownLanguageTag("fr"), true);
   GetChromeTranslateClient()->GetTranslatePrefs()->AddSiteToNeverPromptList(
       "www.google.com");
 

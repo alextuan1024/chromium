@@ -31,6 +31,7 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/cast_config/cast_config_controller_media_router.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_constants.h"
@@ -117,7 +118,7 @@ class JSTestStarter : public content::TestNavigationObserver {
   }
 
   // TestNavigationObserver:
-  void OnDidFinishNavigation(
+  void NavigationOfInterestDidFinish(
       content::NavigationHandle* navigation_handle) override {
     // If the background page scripts have run, the test will exist, so just run
     // it. Otherwise, schedule the test to be run at the end of the background
@@ -132,8 +133,6 @@ class JSTestStarter : public content::TestNavigationObserver {
     ASSERT_TRUE(content::ExecJs(
         navigation_handle->GetRenderFrameHost(),
         base::ReplaceStringPlaceholders(kScript, {test_name_}, nullptr)));
-
-    TestNavigationObserver::OnDidFinishNavigation(navigation_handle);
   }
 
  private:
@@ -454,7 +453,8 @@ class DriveFileSystemExtensionApiTest : public FileSystemExtensionApiTestBase {
     fake_drivefs_helper_ = std::make_unique<drive::FakeDriveFsHelper>(
         profile, drivefs_mount_point.DirName());
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, "",
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), "",
         test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
   }
@@ -563,8 +563,9 @@ class MultiProfileDriveFileSystemExtensionApiTest
     const auto& drivefs_helper = fake_drivefs_helpers_[profile] =
         std::make_unique<drive::FakeDriveFsHelper>(profile, drivefs_dir);
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, std::string(), cache_dir,
-        drivefs_helper->CreateFakeDriveFsListenerFactory());
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), std::string(),
+        cache_dir, drivefs_helper->CreateFakeDriveFsListenerFactory());
   }
 
   base::ScopedTempDir tmp_dir_;
@@ -632,7 +633,8 @@ class LocalAndDriveFileSystemExtensionApiTest
     fake_drivefs_helper_ = std::make_unique<drive::FakeDriveFsHelper>(
         profile, drivefs_mount_point.DirName());
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, "",
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), "",
         test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
   }

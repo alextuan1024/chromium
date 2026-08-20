@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/event_utils.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
@@ -56,6 +57,7 @@
 #include "chrome/grit/theme_resources.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/tabs/public/tab_alert.h"
+#include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
@@ -324,14 +326,12 @@ TabView::TabView(TabCollectionNode* collection_node)
                                  tab->GetHandle()),
                              browser_window, tab->GetHandle()))
                          .Build());
-    if (orientation_ == TabStripOrientation::kVertical) {
-      glic_tab_underline_view_->SetOrientation(
-          glic::TabUnderlineView::Orientation::kVertical);
-      glic_tab_underline_view_->SetProperty(views::kViewIgnoredByLayoutKey,
-                                            true);
-      glic_tab_underline_view_->SetBoundsRect(
-          gfx::Rect(0, 0, 2 * glic::TabUnderlineView::kEffectThickness,
-                    GetLayoutConstant(LayoutConstant::kVerticalTabHeight)));
+    const bool is_horizontal = orientation_ == TabStripOrientation::kHorizontal;
+    glic_tab_underline_view_->SetOrientation(
+        is_horizontal ? glic::TabUnderlineView::Orientation::kHorizontal
+                      : glic::TabUnderlineView::Orientation::kVertical);
+    if (is_horizontal) {
+      glic_tab_underline_view_->SetInsets(tab_styling_->GetContentsInsets());
     }
   }
 
@@ -431,6 +431,29 @@ bool TabView::HasFreezingVote(FreezingVoteReason reason) const {
 bool TabView::HasFreezingVote() const {
   return collapsed_freezing_vote_.has_value() ||
          focus_mode_freezing_vote_.has_value();
+}
+
+void TabView::UpdateFocusFreezing() {
+  if (!features::IsTabGroupsFocusFreezingEnabled()) {
+    return;
+  }
+  const tabs::TabInterface* tab = GetTabInterface();
+  if (!tab) {
+    return;
+  }
+  const auto* controller =
+      collection_node_ ? collection_node_->GetController() : nullptr;
+  if (!controller) {
+    return;
+  }
+  const std::optional<tab_groups::TabGroupId> focused_group =
+      controller->GetFocusedGroup();
+  if (focused_group.has_value() && !tab->IsPinned() &&
+      tab->GetGroup() != focused_group.value()) {
+    CreateFreezingVote(FreezingVoteReason::kFocusedGroup);
+  } else {
+    ReleaseFreezingVote(FreezingVoteReason::kFocusedGroup);
+  }
 }
 
 void TabView::UpdateHovered(bool hovered) {
@@ -987,6 +1010,8 @@ void TabView::OnTabStateChanged() {
   SetSelection(tab->IsSelected());
   UpdateTabData(tab);
 
+  UpdateFocusFreezing();
+
   UpdateColors();
   InvalidateLayout();
 }
@@ -1224,7 +1249,8 @@ const tabs::TabInterface* TabView::GetTabInterface() const {
   if (!collection_node_) {
     return nullptr;
   }
-  return std::get<const tabs::TabInterface*>(collection_node_->GetNodeData());
+  return std::get<tabs::ConstDanglingUntriagedTabInterface>(
+      collection_node_->GetNodeData());
 }
 
 void TabView::UpdateHoverCard(HoverCardAnchorTarget* target,

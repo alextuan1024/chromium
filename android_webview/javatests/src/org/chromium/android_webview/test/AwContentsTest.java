@@ -27,6 +27,7 @@ import android.util.Pair;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
@@ -72,6 +73,7 @@ import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.MaxAndroidSdkLevel;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.content_public.browser.test.util.RenderProcessHostUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
@@ -155,6 +157,11 @@ public class AwContentsTest extends AwParameterizedTest {
     @Feature({"AndroidWebView"})
     public void testUpdateContextAndAdopt() throws Throwable {
         mActivityTestRule.startBrowserProcess();
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.WebContent.AdoptResult",
+                        AwContents.AdoptResult.SUCCESS);
+
         MutableContextWrapper oldContext =
                 new MutableContextWrapper(mActivityTestRule.getActivity());
         AwTestContainerView testContainer =
@@ -180,6 +187,7 @@ public class AwContentsTest extends AwParameterizedTest {
         TouchCommon.longPressView(testContainer);
 
         AwTestContainerView newContainer = mActivityTestRule.reparentAwContents(testContainer);
+        histogramWatcher.assertExpected();
         oldContext.setBaseContext(null);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -198,6 +206,43 @@ public class AwContentsTest extends AwParameterizedTest {
                 "<html><body>Hello</body></html>",
                 "text/html",
                 false);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @MaxAndroidSdkLevel(Build.VERSION_CODES.R)
+    public void testAdoptRegistersWindowInsetsListener() throws Throwable {
+        mActivityTestRule.startBrowserProcess();
+        AwTestContainerView testContainer =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        AwContents awContents = testContainer.getAwContents();
+
+        class SpyingContainerView extends AwTestContainerView {
+            View.OnApplyWindowInsetsListener mInsetsListener;
+
+            SpyingContainerView() {
+                super(mActivityTestRule.getActivity(), false);
+            }
+
+            @Override
+            public void setOnApplyWindowInsetsListener(View.OnApplyWindowInsetsListener listener) {
+                super.setOnApplyWindowInsetsListener(listener);
+                mInsetsListener = listener;
+            }
+        }
+        SpyingContainerView newContainer = new SpyingContainerView();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ((ViewGroup) testContainer.getParent()).removeView(testContainer);
+                    awContents.adopt(newContainer, newContainer.getInternalAccessDelegate());
+                });
+
+        Assert.assertNotNull(
+                "AwContents.adopt() must register an OnApplyWindowInsetsListener on the new"
+                    + " container.",
+                newContainer.mInsetsListener);
     }
 
     @Test

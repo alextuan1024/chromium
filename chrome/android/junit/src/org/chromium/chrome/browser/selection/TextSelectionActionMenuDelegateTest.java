@@ -210,7 +210,9 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
-    public void testAskGemini_notShownOnDropdownMenu() {
+    public void testAskGemini_shownOnDropdownMenu_mobile() {
+        // When configured for mobile (side panel disabled, tab bottom sheet enabled),
+        // DROPDOWN menu should still show the item.
         enableAskGeminiForSelection();
 
         List<SelectionMenuItem> items =
@@ -220,7 +222,44 @@ public class TextSelectionActionMenuDelegateTest {
                         /* isSelectionReadOnly= */ true,
                         /* selectedText= */ "test");
 
-        assertNull(findItem(items, R.id.contextmenu_ask_gemini));
+        assertNotNull(findItem(items, R.id.contextmenu_ask_gemini));
+    }
+
+    @Test
+    public void testAskGemini_shownOnDropdownMenu_desktop() {
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.DROPDOWN,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+        // Placed in the secondary assist section (the default position).
+        assertTrue(askGemini.order >= ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.TEXT_PROCESSING_ITEMS);
+        assertEquals(R.id.select_action_menu_delegate_items, askGemini.groupId);
+    }
+
+    @Test
+    public void testAskGemini_shownOnFloatingMenu_desktop() {
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
+        assertNotNull(findItem(items, R.id.contextmenu_ask_gemini));
     }
 
     @Test
@@ -260,21 +299,6 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
-    public void testAskGemini_notShownWhenSidePanelEnabled() {
-        enableAskGeminiForSelection();
-        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
-
-        List<SelectionMenuItem> items =
-                mDelegate.getAdditionalMenuItems(
-                        MenuType.FLOATING,
-                        /* isSelectionPassword= */ false,
-                        /* isSelectionReadOnly= */ true,
-                        /* selectedText= */ "test");
-
-        assertNull(findItem(items, R.id.contextmenu_ask_gemini));
-    }
-
-    @Test
     public void testAskGemini_notShownOnIncognito() {
         enableAskGeminiForSelection();
         when(mProfile.isOffTheRecord()).thenReturn(true);
@@ -292,6 +316,30 @@ public class TextSelectionActionMenuDelegateTest {
     @Test
     public void testAskGemini_orderAndCategoryDefaultPosition() {
         enableAskGeminiForSelection();
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        // The default position is the secondary assist section.
+        assertTrue(askGemini.order >= ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.TEXT_PROCESSING_ITEMS);
+    }
+
+    @Test
+    public void testAskGemini_orderAndCategoryAssistPosition() {
+        enableAskGeminiForSelection();
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
+                .param(
+                        TextSelectionActionMenuDelegate.PARAM_ASK_GEMINI_SELECTION_MENU_POSITION,
+                        TextSelectionActionMenuDelegate.ASK_GEMINI_POSITION_ASSIST)
+                .apply();
 
         List<SelectionMenuItem> items =
                 mDelegate.getAdditionalMenuItems(
@@ -394,7 +442,10 @@ public class TextSelectionActionMenuDelegateTest {
         when(mTemplateUrl.getKeyword()).thenReturn("google");
         when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
 
-        Context context = ApplicationProvider.getApplicationContext();
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
         String title = mDelegate.getWebSearchMenuItemTitle(context, "test query");
 
         assertEquals(
@@ -405,7 +456,10 @@ public class TextSelectionActionMenuDelegateTest {
     @Test
     public void testGetWebSearchMenuItemTitle_nullOrEmpty() {
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
-        Context context = ApplicationProvider.getApplicationContext();
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
 
         // TemplateUrl null
         when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(null);
@@ -420,5 +474,42 @@ public class TextSelectionActionMenuDelegateTest {
         // Selected text empty
         when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
         assertNull(mDelegate.getWebSearchMenuItemTitle(context, ""));
+    }
+
+    @Test
+    public void testGetWebSearchMenuItemTitle_longTextTruncated() {
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(mTemplateUrl);
+        when(mTemplateUrl.getKeyword()).thenReturn("google");
+        when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
+
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        String longText = "a".repeat(1000);
+        String title = mDelegate.getWebSearchMenuItemTitle(context, longText);
+
+        assertNotNull(title);
+        assertTrue(
+                title.startsWith(
+                        context.getString(R.string.contextmenu_search_web_for_text, "Google", "")
+                                .replace("\"", "")));
+        assertTrue(title.endsWith("\""));
+        assertTrue(title.length() < longText.length());
+    }
+
+    @Test
+    public void testGetWebSearchMenuItemTitle_searchEngineNameTooLong() {
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(mTemplateUrl);
+        when(mTemplateUrl.getKeyword()).thenReturn("google");
+        when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("a".repeat(1000));
+
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        assertNull(mDelegate.getWebSearchMenuItemTitle(context, "test query"));
     }
 }

@@ -12,7 +12,6 @@ import '//resources/cr_components/composebox/composebox_submit.js';
 import '//resources/cr_components/composebox/file_carousel.js';
 import '//resources/cr_components/search/animated_glow.js';
 import '//resources/cr_components/composebox/composebox_voice_search.js';
-import './profile_icon.js';
 import '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 
 import {getLoadTimeBoolean} from '//resources/cr_components/composebox/common.js';
@@ -119,13 +118,22 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   }
 
   protected onScreenshotWindowClick_() {
-    // TODO(follow-up): Hook up screenshot/screenshare capture trigger.
+    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
+    // trigger.
     this.shadowRoot.querySelector<CrActionMenuElement>(
                        '#screenshotMenu')!.close();
   }
 
   protected onScreenshotEntireScreenClick_() {
-    // TODO(follow-up): Hook up screenshot/screenshare capture trigger.
+    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
+    // trigger.
+    this.shadowRoot.querySelector<CrActionMenuElement>(
+                       '#screenshotMenu')!.close();
+  }
+
+  protected onScreenshotRegionClick_() {
+    // TODO(crbug.com/532198850): Hook up screenshot/screenshare capture
+    // trigger.
     this.shadowRoot.querySelector<CrActionMenuElement>(
                        '#screenshotMenu')!.close();
   }

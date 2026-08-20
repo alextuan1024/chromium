@@ -35,6 +35,7 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_collection.h"
+#include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "ui/base/models/list_selection_model.h"
@@ -466,8 +467,10 @@ class TabStripModel {
   // notifications this method causes.
   void CloseAllTabs();
 
-  // Close all tabs in the given `group` at once, but sets the focus state
-  // first.
+  // Closes all tabs in the given `group`. If the group is focused, focus is
+  // unset before closing. If all tabs in the tabstrip are in `group`, a new
+  // fallback tab is added outside the group to prevent the browser window from
+  // closing.
   void CloseAllTabsInGroup(const tab_groups::TabGroupId& group);
 
   // Returns true if there are any WebContentses that are currently loading
@@ -1301,6 +1304,13 @@ class TabStripModel {
       const std::optional<tab_groups::TabGroupId> initial_group,
       const std::optional<tab_groups::TabGroupId> new_group);
 
+  // Exits or updates focus mode when a moved or reparented tab was the active
+  // tab in the focused group.
+  void MaybeUpdateFocusModeForMovedTab(
+      tabs::TabInterface* tab,
+      bool initial_pinned_state,
+      const std::optional<tab_groups::TabGroupId>& initial_focused_group);
+
   // Updates the `group_model` by incrementing the tab count of `group`.
   void AddTabToGroupModel(const tab_groups::TabGroupId& group);
 
@@ -1399,7 +1409,8 @@ class TabStripModel {
 
   // Determine where to shift selection after a tab or collection is closed.
   std::optional<int> DetermineNewSelectedIndex(
-      std::variant<tabs::TabInterface*, tabs::TabCollection*> tab_or_collection)
+      std::variant<tabs::DanglingUntriagedTabInterface,
+                   tabs::DanglingUntriagedTabCollection> tab_or_collection)
       const;
 
   std::vector<std::pair<tabs::TabInterface*, int>> GetTabsAndIndicesInSplit(

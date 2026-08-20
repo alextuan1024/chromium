@@ -1879,53 +1879,6 @@ ci.thin_tester(
 )
 
 ci.thin_tester(
-    name = "android-cronet-x86-dbg-marshmallow-tests",
-    parent = "ci/android-cronet-x86-dbg",
-    builder_spec = builder_config.builder_spec(
-        execution_mode = builder_config.execution_mode.TEST,
-        gclient_config = builder_config.gclient_config(
-            config = "chromium",
-            apply_configs = [
-                "android",
-            ],
-        ),
-        chromium_config = builder_config.chromium_config(
-            config = "main_builder",
-            apply_configs = [
-                "cronet_builder",
-                "mb",
-            ],
-            build_config = builder_config.build_config.DEBUG,
-            target_arch = builder_config.target_arch.INTEL,
-            target_bits = 32,
-            target_platform = builder_config.target_platform.ANDROID,
-        ),
-        android_config = builder_config.android_config(
-            config = "base_config",
-        ),
-    ),
-    targets = targets.bundle(
-        targets = [
-            "cronet_gtests",
-        ],
-        mixins = [
-            "marshmallow-x86-emulator",
-            "emulator-4-cores",
-            "has_native_resultdb_integration",
-            "linux-jammy",
-            "x86-64",
-        ],
-    ),
-    gardener_rotations = args.ignore_default(gardener_rotations.CRONET),
-    console_view_entry = consoles.console_view_entry(
-        category = "cronet|test",
-        short_name = "m",
-    ),
-    contact_team_email = "cronet-team@google.com",
-    notifies = ["cronet"],
-)
-
-ci.thin_tester(
     name = "android-cronet-x86-dbg-nougat-tests",
     parent = "ci/android-cronet-x86-dbg",
     builder_spec = builder_config.builder_spec(
@@ -2569,7 +2522,6 @@ ci.builder(
                     "--disable-field-trial-config",
                     "--skia-gold-consider-unsupported",
                 ],
-                ci_only = True,
                 swarming = targets.swarming(
                     dimensions = {
                         # use 8-core to shorten runtime
@@ -3182,6 +3134,11 @@ ci.builder(
             "panther_on_14",
         ],
         per_test_modifications = {
+            "android_webview_unittests": targets.mixin(
+                # TODO(crbug.com/546581718): Re-enable on CQ once the high
+                # pending time is gone.
+                ci_only = True,
+            ),
             "android_browsertests": targets.mixin(
                 # TODO Re-enable on CQ once the high
                 # pending time is gone
@@ -3190,19 +3147,35 @@ ci.builder(
                     shards = 7,
                 ),
             ),
-            "android_webview_unittests": targets.mixin(
+            "blink_platform_unittests": targets.mixin(
+                # TODO(crbug.com/546581718): Re-enable on CQ once the high
+                # pending time is gone.
                 ci_only = True,
             ),
             "cc_unittests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/android.device.cc_unittests.filter",
                 ],
-                ci_only = True,
             ),
             "chrome_public_test_apk": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/android.device_14.chrome_public_test_apk.filter",
                 ],
+                ci_only = True,
+            ),
+            "chrome_public_unit_test_apk": targets.mixin(
+                # TODO(crbug.com/546581718): Re-enable on CQ once the high
+                # pending time is gone.
+                ci_only = True,
+            ),
+            "chrome_public_smoke_test": targets.mixin(
+                # TODO(crbug.com/546581718): Re-enable on CQ once the high
+                # pending time is gone.
+                ci_only = True,
+            ),
+            "chrome_public_bundle_smoke_test": targets.mixin(
+                # TODO(crbug.com/546581718): Re-enable on CQ once the high
+                # pending time is gone.
                 ci_only = True,
             ),
             "content_browsertests": targets.mixin(
@@ -4117,6 +4090,12 @@ ci.builder(
                 ),
             ),
             "android_sync_integration_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 4,
+                ),
+            ),
+            # TODO(https://crbug.com/548718762): Investigate the long runtime.
+            "android_webview_unittests": targets.mixin(
                 swarming = targets.swarming(
                     shards = 4,
                 ),

@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -652,7 +653,8 @@ class ScriptOnDestroyPlugin : public GarbageCollected<ScriptOnDestroyPlugin>,
   bool DestroyCalled() const { return destroy_called_; }
 
  private:
-  WebPluginContainer* container_;
+  raw_ptr<WebPluginContainer, UnprotectedInRelease | DanglingUntriaged>
+      container_;
   bool destroy_called_ = false;
 };
 
@@ -1287,6 +1289,9 @@ TEST_F(ElementTest, FocusgroupMinimumAriaRole) {
   EXPECT_EQ(ax::mojom::blink::Role::kMenuBar,
             focusgroup::FocusgroupMinimumAriaRole(
                 {FocusgroupBehavior::kMenubar, FocusgroupFlags::kNone}));
+  EXPECT_EQ(ax::mojom::blink::Role::kFeed,
+            focusgroup::FocusgroupMinimumAriaRole(
+                {FocusgroupBehavior::kFeed, FocusgroupFlags::kNone}));
   EXPECT_EQ(ax::mojom::blink::Role::kGrid,
             focusgroup::FocusgroupMinimumAriaRole(
                 {FocusgroupBehavior::kGrid, FocusgroupFlags::kNone}));
@@ -1300,6 +1305,13 @@ TEST_F(ElementTest, FocusgroupMinimumAriaRole) {
   EXPECT_EQ(ax::mojom::blink::Role::kGrid,
             focusgroup::FocusgroupMinimumAriaRole(
                 {FocusgroupBehavior::kGrid, FocusgroupFlags::kWrapInline}));
+}
+
+TEST_F(ElementTest, FocusgroupFeedItemMinimumAriaRole) {
+  EXPECT_EQ(ax::mojom::blink::Role::kArticle,
+            focusgroup::FocusgroupItemMinimumAriaRole(
+                {FocusgroupBehavior::kFeed,
+                 FocusgroupFlags::kBlock | FocusgroupFlags::kItemControls}));
 }
 
 TEST_F(ElementTest, MixStyleAttributeAndCSSOMChanges) {

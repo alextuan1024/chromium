@@ -507,6 +507,20 @@ void ActorKeyedService::NotifyTaskVisibilityChanged(ActorTask& task) {
   task_visibility_change_callback_list_.Notify(task);
 }
 
+base::CallbackListSubscription
+ActorKeyedService::AddTaskStepProgressChangedCallback(
+    TaskStepProgressChangedCallback callback) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  return task_step_progress_change_callback_list_.Add(std::move(callback));
+}
+
+void ActorKeyedService::NotifyTaskStepProgressChanged(
+    ActorTask& task,
+    const std::string& step_progress) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  task_step_progress_change_callback_list_.Notify(task, step_progress);
+}
+
 void ActorKeyedService::RequestTabObservation(
     tabs::TabInterface& tab,
     TaskId task_id,
@@ -742,6 +756,19 @@ ActorTask* ActorKeyedService::GetTask(TaskId task_id) {
 
 ActorUiStateManagerInterface* ActorKeyedService::GetActorUiStateManager() {
   return actor_ui_state_manager_.get();
+}
+
+void ActorKeyedService::SetTabPendingActuation(tabs::TabHandle tab_handle) {
+  if (actor_ui_state_manager_) {
+    actor_ui_state_manager_->SetTabPendingActuation(tab_handle);
+  }
+}
+
+bool ActorKeyedService::ClearTabPendingActuation(tabs::TabHandle tab_handle) {
+  if (actor_ui_state_manager_) {
+    return actor_ui_state_manager_->ClearTabPendingActuation(tab_handle);
+  }
+  return false;
 }
 
 bool ActorKeyedService::IsActiveOnTab(const tabs::TabInterface& tab) const {

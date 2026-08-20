@@ -134,7 +134,7 @@
       "fullscreen"
     ],
     "args": [
-      "--enable-features=OverlayScrollbar",
+      "--enable-features=OverlayScrollbar:mode/overlay",
       "--enable-threaded-compositing",
       "--enable-prefer-compositing-to-lcd-text",
       "--enable-overscroll-notifications",
@@ -1287,7 +1287,7 @@
       "virtual/overlay-scrollbar/overlay-scrollbar-smoke-test.html"
     ],
     "args": [
-      "--enable-features=OverlayScrollbar",
+      "--enable-features=OverlayScrollbar:mode/overlay",
       "--enable-threaded-compositing",
       "--disable-features=RasterInducingScroll"
     ],
@@ -2208,7 +2208,7 @@
     ],
     "bases": [],
     "args": [
-      "--disable-features=OverlayScrollbar"
+      "--enable-features=OverlayScrollbar:mode/classic"
     ],
     "expires": "never",
     "owners": [
@@ -2438,7 +2438,7 @@
       "external/wpt/css/css-ui/pointer-events-no-scrollbars-002.html"
     ],
     "args": [
-      "--enable-features=OverlayScrollbar"
+      "--enable-features=OverlayScrollbar:mode/overlay"
     ],
     "expires": "never",
     "owners": [
@@ -2535,6 +2535,25 @@
     ],
     "args": [
       "--enable-features=PrefetchOffTheMainThread,PrefetchOffTheMainThreadForceForTesting"
+    ],
+    "expires": "Dec 31, 2026"
+  },
+  {
+    "prefix": "prefetch-force-off-the-main-thread-wculf",
+    "owners": [
+      "hiroshige@chromium.org",
+      "taiyo@chromium.org"
+    ],
+    "platforms": [
+      "Linux",
+      "Mac",
+      "Win"
+    ],
+    "bases": [
+      "external/wpt/speculation-rules/prefetch/"
+    ],
+    "args": [
+      "--enable-features=PrefetchOffTheMainThread:check_will_create_url_loader_factory/true,PrefetchOffTheMainThreadForceForTesting"
     ],
     "expires": "Dec 31, 2026"
   },
@@ -3019,7 +3038,7 @@
     "expires": "Apr 1, 2027"
   },
   {
-    "prefix": "speculation-rules-renderer-side-heuristics",
+    "prefix": "speculation-rules-browser-side-heuristics",
     "platforms": [
       "Linux",
       "Mac",
@@ -3027,12 +3046,11 @@
     ],
     "bases": [
       "external/wpt/speculation-rules/prefetch",
-      "external/wpt/speculation-rules/speculation-tags",
-      "external/wpt/speculation-rules/speculation-measurement"
+      "external/wpt/speculation-rules/speculation-tags"
     ],
     "exclusive_tests": [],
     "args": [
-      "--enable-features=SpeculationRulesRendererSideHeuristics"
+      "--disable-features=SpeculationRulesRendererSideHeuristics"
     ],
     "owners": [
       "yoavweiss@chromium.org",

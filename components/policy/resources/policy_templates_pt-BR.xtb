@@ -182,6 +182,16 @@ O rótulo pode ser personalizado usando a política <ph name="ENTERPRISE_CUSTOM_
 <translation id="1100840127293327071">Não marcar a opção para manter os dados de navegação existentes por padrão</translation>
 <translation id="1105572260329131950">Usar os ícones padrão em conexões seguras</translation>
 <translation id="1105711894873068933">Após a desativação do <ph name="LACROS_NAME" />, todos os dados do usuário vão ser removidos no próximo login.</translation>
+<translation id="1106279506320506502">Especifica se o Modo Isolado está ativado.
+
+O Modo Isolado é um modo de navegação temporário exclusivo para empresas.
+Ele é compatível com políticas empresariais relacionadas à DLP e extensões de instalação forçada.
+
+Se for definida como 1 (Ativado), o Modo Isolado será ativado e o Modo de Navegação Anônima será desativado.
+
+Se for definida como 0 (Desativado) ou deixada sem definição, o Modo Isolado será desativado.
+
+Esta política exige uma licença do <ph name="CHROME_ENTERPRISE_PREMIUM_NAME" /> para entrar em vigor.</translation>
 <translation id="1106342730891876476">Configurações de compartilhamento</translation>
 <translation id="1107538157073168076">Desativar extensão de insights</translation>
 <translation id="1110426799149444997">Desativar a pesquisa por região do <ph name="GOOGLE_LENS_PRODUCT_NAME" />.</translation>
@@ -2103,18 +2113,6 @@ Se a política for deixada sem definição, os usuários poderão mudar a lista 
 
       Se ela for definida como falsa ou não for definida, nenhum botão será exibido.</translation>
 <translation id="2294382669900758280">A reprodução de vídeos em apps Android não é levada em consideração, mesmo se esta política estiver definida como <ph name="TRUE" />.</translation>
-<translation id="2296529215567227994">Especifica se o Modo de Navegação Anônima deve ser substituído pelo Modo Isolado.
-
-O Modo Isolado é um modo de navegação temporário exclusivo para empresas que substitui o Modo de Navegação Anônima.
-Ao contrário do Modo de Navegação Anônima, o Modo Isolado é compatível com políticas empresariais relacionadas à DLP e extensões de instalação forçada.
-
-Tenha em mente que as políticas relacionadas à Navegação Anônima não são aplicadas ao Modo Isolado.
-
-Se for definida como 1 – Ativado, o Modo Isolado será ativado e substituirá o Modo de Navegação Anônima.
-
-Se for definida como 0 – Desativada ou deixada sem definição, o Modo Isolado será desativado e a Navegação Anônima será usada como comportamento padrão.
-
-Esta política exige uma licença do <ph name="CHROME_ENTERPRISE_PREMIUM_NAME" /> para entrar em vigor.</translation>
 <translation id="2299220924812062390">Especifica uma lista de plug-ins ativados</translation>
 <translation id="2299815818824242485">Não permitir pesquisas por proxy com maior proteção</translation>
 <translation id="2303795211377219696">Ativar o preenchimento automático para cartões de crédito</translation>

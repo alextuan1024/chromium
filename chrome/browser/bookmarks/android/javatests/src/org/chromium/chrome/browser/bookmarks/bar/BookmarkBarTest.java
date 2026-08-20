@@ -65,6 +65,7 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
@@ -109,9 +110,9 @@ public class BookmarkBarTest {
     @Before
     public void setUp() {
         mOverrideContextRule.setIsDesktop(true);
+        BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
 
         mCtaTestRule.startOnBlankPage();
-        BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         ThreadUtils.runOnUiThreadBlocking(() -> setBookmarkBarSetting(/* enabled= */ true));
         waitForBookmarkBarVisibility(/* visible= */ true);
         BookmarkTestUtil.waitForBookmarkModelLoaded();
@@ -129,6 +130,7 @@ public class BookmarkBarTest {
             ThreadUtils.runOnUiThreadBlocking(() -> mItemIds.forEach(mModel::deleteBookmark));
             mItemIds = null;
         }
+        ThreadUtils.runOnUiThreadBlocking(() -> setBookmarkBarSetting(/* enabled= */ false));
     }
 
     @Test
@@ -187,7 +189,7 @@ public class BookmarkBarTest {
                         BookmarkBarUtils.setBookmarkBarVisibilityState(
                                 activity.getProfileProviderSupplier().get().getOriginalProfile(),
                                 BookmarkBarVisibilityState.ALWAYS_HIDE,
-                                /* fromKeyboardShortcut= */ false));
+                                BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS));
         waitForBookmarkBarVisibility(/* visible= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(() -> activity.onKeyDown(evt.getKeyCode(), evt));
@@ -204,7 +206,7 @@ public class BookmarkBarTest {
                         BookmarkBarUtils.setBookmarkBarVisibilityState(
                                 activity.getProfileProviderSupplier().get().getOriginalProfile(),
                                 BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP,
-                                /* fromKeyboardShortcut= */ false));
+                                BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS));
         waitForBookmarkBarVisibility(/* visible= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(() -> activity.onKeyDown(evt.getKeyCode(), evt));
@@ -213,6 +215,7 @@ public class BookmarkBarTest {
 
     @Test
     @MediumTest
+    @EnableFeatures(ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR)
     public void testOnBookmarkFolderClick() throws ExecutionException {
         final String title = "Folder";
         mItemIds = List.of(addFolder(title));
@@ -222,11 +225,11 @@ public class BookmarkBarTest {
         // clicked.
         onView(withClassName(endsWith("BookmarkToolbar"))).check(doesNotExist());
 
-        // When the folder is empty, the list should not be displayed.
-        onView(withId(R.id.menu_list)).inRoot(isPlatformPopup()).check(matches(not(isDisplayed())));
+        // When the folder is empty, the list should be displayed.
+        onView(withId(R.id.menu_list)).inRoot(isPlatformPopup()).check(matches(isDisplayed()));
 
-        // The empty view should be displayed.
-        onView(withText(R.string.bookmarks_bar_empty_message))
+        // The empty message should be displayed.
+        onView(allOf(withText(R.string.bookmarks_bar_empty_message), isDisplayed()))
                 .inRoot(isPlatformPopup())
                 .check(matches(isDisplayed()));
     }
@@ -502,7 +505,7 @@ public class BookmarkBarTest {
                     enabled
                             ? BookmarkBarVisibilityState.ALWAYS_SHOW
                             : BookmarkBarVisibilityState.ALWAYS_HIDE,
-                    /* fromKeyboardShortcut= */ false);
+                    BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS);
         } else {
             BookmarkBarUtils.setUserPrefsShowBookmarksBar(
                     profile, enabled, /* fromKeyboardShortcut= */ false);

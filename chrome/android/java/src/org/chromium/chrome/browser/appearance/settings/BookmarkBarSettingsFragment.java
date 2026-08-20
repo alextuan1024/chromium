@@ -20,11 +20,13 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarConstants;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
+import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.ManagedPreferenceDelegate;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
@@ -67,7 +69,7 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         super.onDestroy();
 
         if (mPrefChangeRegistrar != null) {
-            mPrefChangeRegistrar.removeObserver(Pref.SHOW_BOOKMARK_BAR);
+            mPrefChangeRegistrar.removeObserver(Pref.BOOKMARK_BAR_VISIBILITY_STATE);
             mPrefChangeRegistrar.destroy();
             mPrefChangeRegistrar = null;
         }
@@ -112,22 +114,44 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         } else {
             initBookmarkBarPrefForDevicePreference();
         }
+        updateBookmarkBarPref();
     }
 
     private ChromeManagedPreferenceDelegate createManagedPreferenceDelegate() {
         return new ChromeManagedPreferenceDelegate(getProfile()) {
+            // If true, helper methods in ManagedPreferencesUtils will disable the preference
+            // and display the text "Managed by your organization" with the business icon.
             @Override
             public boolean isPreferenceControlledByPolicy(Preference preference) {
-                return BookmarkBarUtils.isUserPrefsShowBookmarkBarManagedByPolicy(getProfile());
+                return BookmarkBarUtils.isUserPrefsBookmarkBarVisibilityStateManagedByPolicy(
+                        getProfile());
             }
 
+            // If true, helper methods in ManagedPreferencesUtils will display the text
+            // "Recommended by your organization" with the business icon.
             @Override
             public @Nullable Boolean isPreferenceRecommendation(Preference preference) {
-                if (!BookmarkBarUtils.isUserPrefsShowBookmarkBarRecommended(getProfile())) {
+                if (!BookmarkBarUtils.isUserPrefsBookmarkBarVisibilityStateRecommended(
+                        getProfile())) {
+                    // No recommendation exists.
                     return null;
                 }
-                return BookmarkBarUtils.isUserPrefsShowBookmarkBarFollowingRecommendation(
-                        getProfile());
+
+                // On tablets, we use device-specific SharedPreferences. This requires
+                // special treatment for enterprise policies; which are UserPrefs bound. If
+                // a user has set a SharedPreference value, we must compare that value to
+                // the UserPrefs policy's recommended value directly.
+                if (BookmarkBarUtils.hasUserSetDevicePrefBookmarkBarVisibilityState()) {
+                    return BookmarkBarUtils.getDevicePrefBookmarkBarVisibilityState(getProfile())
+                            == BookmarkBarUtils
+                                    .getUserPrefsBookmarkBarVisibilityStateRecommendedValue(
+                                            getProfile());
+                }
+
+                // In the user has not set a SharedPreferences value (which is always the
+                // case on Desktop), we can simply follow the standard UserPrefs flow.
+                return BookmarkBarUtils
+                        .isUserPrefsBookmarkBarVisibilityStateFollowingRecommendation(getProfile());
             }
         };
     }
@@ -136,14 +160,15 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         mPrefChangeRegistrar = PrefServiceUtil.createFor(getProfile());
         mPrefObserver = this::updateBookmarkBarPref;
 
-        mPrefChangeRegistrar.addObserver(Pref.SHOW_BOOKMARK_BAR, mPrefObserver);
+        mPrefChangeRegistrar.addObserver(Pref.BOOKMARK_BAR_VISIBILITY_STATE, mPrefObserver);
         if (mBookmarkBarPref != null) {
             mBookmarkBarPref.setOnPreferenceChangeListener(
                     (pref, newValue) -> {
-                        BookmarkBarUtils.setUserPrefsShowBookmarksBar(
+                        @BookmarkBarVisibilityState int state = (int) newValue;
+                        BookmarkBarUtils.setUserPrefsBookmarkBarVisibilityState(
                                 getProfile(),
-                                (boolean) newValue,
-                                /* fromKeyboardShortcut= */ false);
+                                state,
+                                BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS);
                         return true;
                     });
         }
@@ -154,7 +179,9 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         mDevicePrefsListener =
                 (sharedPreferences, key) -> {
                     if (key != null
-                            && key.equals(BookmarkBarConstants.BOOKMARK_BAR_SHOW_BOOKMARK_BAR)) {
+                            && key.equals(
+                                    BookmarkBarConstants
+                                            .BOOKMARK_BAR_BOOKMARK_BAR_VISIBILITY_STATE)) {
                         updateBookmarkBarPref();
                     }
                 };
@@ -164,8 +191,9 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
         if (mBookmarkBarPref != null) {
             mBookmarkBarPref.setOnPreferenceChangeListener(
                     (pref, newValue) -> {
-                        BookmarkBarUtils.setDevicePrefShowBookmarksBar(
-                                (boolean) newValue, /* fromKeyboardShortcut= */ false);
+                        @BookmarkBarVisibilityState int state = (int) newValue;
+                        BookmarkBarUtils.setDevicePrefBookmarkBarVisibilityState(
+                                state, BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS);
                         return true;
                     });
         }
@@ -176,13 +204,12 @@ public class BookmarkBarSettingsFragment extends ChromeBaseSettingsFragment
             return;
         }
 
-        if (mUseProfileUserPrefs) {
-            mBookmarkBarPref.setCheckedState(
-                    BookmarkBarUtils.isUserPrefsShowBookmarksBarEnabled(getProfile()));
-        } else {
-            mBookmarkBarPref.setCheckedState(
-                    BookmarkBarUtils.isDevicePrefShowBookmarksBarEnabled(getProfile()));
-        }
+        @BookmarkBarVisibilityState
+        int state =
+                mUseProfileUserPrefs
+                        ? BookmarkBarUtils.getUserPrefsBookmarkBarVisibilityState(getProfile())
+                        : BookmarkBarUtils.getDevicePrefBookmarkBarVisibilityState(getProfile());
+        mBookmarkBarPref.setCheckedState(state);
     }
 
     @Override

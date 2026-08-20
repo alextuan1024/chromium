@@ -553,6 +553,35 @@ TEST_F(ContextualTasksUiServiceTest, IsGoogleCaptchaUrl) {
       GURL("https://example.com/sorry/index")));
 }
 
+TEST_F(ContextualTasksUiServiceTest, IsAiUrl) {
+  // Mock IsAimUrl to return false for everything.
+  ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
+      .WillByDefault(Return(false));
+
+  // g.ai should be recognized as AI URL.
+  EXPECT_TRUE(service_for_nav_->IsAiUrl(GURL("https://g.ai/")));
+  EXPECT_TRUE(service_for_nav_->IsAiUrl(GURL("https://www.g.ai/")));
+  EXPECT_TRUE(service_for_nav_->IsAiUrl(GURL("http://g.ai/path")));
+
+  // Non-HTTP/HTTPS URLs or invalid URLs should return false.
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL("chrome://g.ai/")));
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL("file://g.ai/")));
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL()));
+
+  // Other URLs should fall back to mock service (which returns false).
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL("https://example.com/")));
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL("https://google.com/")));
+
+  // When IsAimUrl returns true for valid URLs:
+  ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
+      .WillByDefault(Return(true));
+  EXPECT_TRUE(service_for_nav_->IsAiUrl(GURL("https://example.com/")));
+  EXPECT_TRUE(service_for_nav_->IsAiUrl(GURL("https://google.com/")));
+  // But invalid/non-HTTP/HTTPS URLs should still return false for g.ai.
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL("chrome://g.ai/")));
+  EXPECT_FALSE(service_for_nav_->IsAiUrl(GURL()));
+}
+
 TEST_F(ContextualTasksUiServiceTest, HandleNavigation_AiPage_ChecksCobrowse) {
   GURL ai_url(kAiPageUrl);
   ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
@@ -572,6 +601,113 @@ TEST_F(ContextualTasksUiServiceTest, HandleNavigation_AiPage_ChecksCobrowse) {
       blink::mojom::WindowFeatures()));
 
   run_loop.Run();
+}
+
+TEST_F(
+    ContextualTasksUiServiceTest,
+    HandleNavigation_AiPage_CobrowseIneligible_NoAttachedTab_NotIntercepted) {
+  base::test::ScopedFeatureList scoped_feature_list(kContextualTasksSidePanel);
+  GURL ai_url(kAiPageUrl);
+  ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
+      .WillByDefault(Return(true));
+  ON_CALL(*aim_eligibility_service_, IsCobrowseEligible())
+      .WillByDefault(Return(false));
+
+  auto web_contents = content::WebContentsTester::CreateTestWebContents(
+      profile_.get(), content::SiteInstance::Create(profile_.get()));
+
+  EXPECT_CALL(*service_for_nav_, OnNavigationToAiPageIntercepted(_, _, _))
+      .Times(0);
+
+  EXPECT_FALSE(service_for_nav_->HandleNavigation(
+      CreateOpenUrlParams(ai_url, false), web_contents.get(),
+      /*is_from_embedded_page=*/false, /*from_can_create_window=*/false,
+      /*is_same_site_or_from_ui=*/true, false, std::nullopt, std::nullopt,
+      blink::mojom::WindowFeatures()));
+}
+
+TEST_F(
+    ContextualTasksUiServiceTest,
+    HandleNavigation_AiPage_CobrowseIneligible_WithAttachedTab_NotIntercepted) {
+  base::test::ScopedFeatureList scoped_feature_list(kContextualTasksSidePanel);
+  GURL ai_url(kAiPageUrl);
+  ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
+      .WillByDefault(Return(true));
+  ON_CALL(*aim_eligibility_service_, IsCobrowseEligible())
+      .WillByDefault(Return(false));
+
+  auto web_contents = content::WebContentsTester::CreateTestWebContents(
+      profile_.get(), content::SiteInstance::Create(profile_.get()));
+  sessions::SessionTabHelper::CreateForWebContents(
+      web_contents.get(),
+      base::BindRepeating([](content::WebContents* contents) {
+        return static_cast<sessions::SessionTabHelperDelegate*>(nullptr);
+      }));
+
+  auto mock_session = std::make_unique<testing::NiceMock<
+      contextual_search::MockContextualSearchSessionHandle>>();
+  contextual_search::FileInfo file_info;
+  file_info.tab_session_id =
+      sessions::SessionTabHelper::IdForTab(web_contents.get());
+  std::vector<contextual_search::FileInfo> submitted_files = {file_info};
+  ON_CALL(*mock_session, GetSubmittedContextFileInfos)
+      .WillByDefault(Return(submitted_files));
+
+  auto* helper = ContextualSearchWebContentsHelper::GetOrCreateForWebContents(
+      web_contents.get());
+  helper->SetTaskSession(std::nullopt, std::move(mock_session),
+                         /*input_state_model=*/nullptr);
+
+  EXPECT_CALL(*service_for_nav_, OnNavigationToAiPageIntercepted(_, _, _))
+      .Times(0);
+
+  EXPECT_FALSE(service_for_nav_->HandleNavigation(
+      CreateOpenUrlParams(ai_url, false), web_contents.get(),
+      /*is_from_embedded_page=*/false, /*from_can_create_window=*/false,
+      /*is_same_site_or_from_ui=*/true, false, std::nullopt, std::nullopt,
+      blink::mojom::WindowFeatures()));
+}
+
+TEST_F(
+    ContextualTasksUiServiceTest,
+    HandleNavigation_AiPage_CobrowseIneligible_WithDifferentTabInContext_NotIntercepted) {
+  base::test::ScopedFeatureList scoped_feature_list(kContextualTasksSidePanel);
+  GURL ai_url(kAiPageUrl);
+  ON_CALL(*aim_eligibility_service_, IsAimUrl(_, _))
+      .WillByDefault(Return(true));
+  ON_CALL(*aim_eligibility_service_, IsCobrowseEligible())
+      .WillByDefault(Return(false));
+
+  auto web_contents = content::WebContentsTester::CreateTestWebContents(
+      profile_.get(), content::SiteInstance::Create(profile_.get()));
+  sessions::SessionTabHelper::CreateForWebContents(
+      web_contents.get(),
+      base::BindRepeating([](content::WebContents* contents) {
+        return static_cast<sessions::SessionTabHelperDelegate*>(nullptr);
+      }));
+
+  auto mock_session = std::make_unique<testing::NiceMock<
+      contextual_search::MockContextualSearchSessionHandle>>();
+  contextual_search::FileInfo file_info;
+  // Use a different tab ID than the active tab's ID.
+  file_info.tab_session_id = SessionID::FromSerializedValue(9999);
+  std::vector<contextual_search::FileInfo> submitted_files = {file_info};
+  ON_CALL(*mock_session, GetSubmittedContextFileInfos)
+      .WillByDefault(Return(submitted_files));
+
+  auto* helper = ContextualSearchWebContentsHelper::GetOrCreateForWebContents(
+      web_contents.get());
+  helper->SetTaskSession(std::nullopt, std::move(mock_session),
+                         /*input_state_model=*/nullptr);
+
+  EXPECT_CALL(*service_for_nav_, OnNavigationToAiPageIntercepted(_, _, _))
+      .Times(0);
+
+  EXPECT_FALSE(service_for_nav_->HandleNavigation(
+      CreateOpenUrlParams(ai_url, false), web_contents.get(),
+      /*is_from_embedded_page=*/false, /*from_can_create_window=*/false,
+      /*is_same_site_or_from_ui=*/true, false, std::nullopt, std::nullopt,
+      blink::mojom::WindowFeatures()));
 }
 
 TEST_F(ContextualTasksUiServiceTest,
@@ -1544,9 +1680,8 @@ TEST_F(ContextualTasksUiServiceTest,
       .WillByDefault(Return(&metrics_recorder));
   mock_session->set_smart_tab_sharing_active(true);
 
-  auto input_state_model =
-      std::make_unique<contextual_search::InputStateModel>(
-          *mock_session, omnibox::SearchboxConfig(), GURL(), false, false);
+  auto input_state_model = std::make_unique<contextual_search::InputStateModel>(
+      *mock_session, omnibox::SearchboxConfig(), GURL(), false, false, false);
   input_state_model->SetSmartTabSharingActive(true);
   std::vector<int32_t> selected_tabs = {123, 456};
   helper->SetTaskSession(std::nullopt, std::move(mock_session),
@@ -2114,12 +2249,103 @@ TEST_F(ContextualTasksUiServiceTest,
       ContextualTasksUiService::GetAiUrlFromWebUIUrl(base_url, webui_url));
 }
 
+TEST_F(ContextualTasksUiServiceTest,
+       GetAiUrlFromWebUIUrl_BypassAttemptWithSlash) {
+  GURL base_url("https://google.com/search");
+  GURL webui_url(
+      "chrome://"
+      "contextual-tasks?param1=1&chrome_host=attacker.com%2F.corp.google.com");
+
+  EXPECT_EQ(
+      GURL("https://google.com/search?param1=1"),
+      ContextualTasksUiService::GetAiUrlFromWebUIUrl(base_url, webui_url));
+}
+
+TEST_F(ContextualTasksUiServiceTest, IsTrustedHost) {
+  // Valid trusted hosts
+  EXPECT_TRUE(
+      ContextualTasksUiService::IsTrustedHost("gws-prod.corp.google.com"));
+  EXPECT_TRUE(
+      ContextualTasksUiService::IsTrustedHost("GWS-PROD.CORP.GOOGLE.COM"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("corp.google.com"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("test.c.googlers.com"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("c.googlers.com"));
+  EXPECT_TRUE(
+      ContextualTasksUiService::IsTrustedHost("myproxy.proxy.googlers.com"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("proxy.googlers.com"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("localhost"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("127.0.0.1"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("[::1]"));
+  EXPECT_TRUE(ContextualTasksUiService::IsTrustedHost("::1"));
+
+  // Delimiter and bypass attempts
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("attacker.com/.corp.google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost(
+      "attacker.com\\.corp.google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost(
+      "attacker.com@gws-prod.corp.google.com"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("attacker.com?.corp.google.com"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("attacker.com#.corp.google.com"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("attacker.com:.corp.google.com"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("gws-prod.corp.google.com:8080"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("attacker.com .corp.google.com"));
+
+  // Domain boundary and near-domain bypass attempts
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost("evilcorp.google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost("notcorp.google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost("corp0google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost("corp-google.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost(
+      "gws-prod.corp.google.com.evil.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost(".corp.google.com"));
+  EXPECT_FALSE(
+      ContextualTasksUiService::IsTrustedHost("malicious.example.com"));
+  EXPECT_FALSE(ContextualTasksUiService::IsTrustedHost(""));
+}
+
 TEST_F(ContextualTasksUiServiceTest, GetHostFromUrl) {
   EXPECT_EQ("gws-prod.corp.google.com",
             ContextualTasksUiService::GetHostFromUrl(GURL(
                 "https://google.com?chrome_host=gws-prod.corp.google.com")));
+  EXPECT_EQ("gws-prod.corp.google.com",
+            ContextualTasksUiService::GetHostFromUrl(GURL(
+                "https://google.com?chrome_host=GWS-PROD.CORP.GOOGLE.COM")));
+  EXPECT_EQ("test.c.googlers.com",
+            ContextualTasksUiService::GetHostFromUrl(
+                GURL("https://google.com?chrome_host=test.c.googlers.com")));
+  EXPECT_EQ("myproxy.proxy.googlers.com",
+            ContextualTasksUiService::GetHostFromUrl(GURL(
+                "https://google.com?chrome_host=myproxy.proxy.googlers.com")));
+  EXPECT_EQ("localhost", ContextualTasksUiService::GetHostFromUrl(
+                             GURL("https://google.com?chrome_host=localhost")));
   EXPECT_EQ("127.0.0.1", ContextualTasksUiService::GetHostFromUrl(
                              GURL("https://google.com?chrome_host=127.0.0.1")));
+  EXPECT_EQ("[::1]", ContextualTasksUiService::GetHostFromUrl(
+                         GURL("https://google.com?chrome_host=%5B%3A%3A1%5D")));
+
+  // Bypasses using URL encoding / delimiters
+  EXPECT_EQ(std::nullopt, ContextualTasksUiService::GetHostFromUrl(GURL(
+                              "https://google.com?"
+                              "chrome_host=attacker.com%2F.corp.google.com")));
+  EXPECT_EQ(std::nullopt, ContextualTasksUiService::GetHostFromUrl(GURL(
+                              "https://google.com?"
+                              "chrome_host=attacker.com%5C.corp.google.com")));
+  EXPECT_EQ(std::nullopt,
+            ContextualTasksUiService::GetHostFromUrl(
+                GURL("https://google.com?"
+                     "chrome_host=attacker.com@gws-prod.corp.google.com")));
+  EXPECT_EQ(std::nullopt,
+            ContextualTasksUiService::GetHostFromUrl(
+                GURL("https://google.com?chrome_host=evilcorp.google.com")));
+  EXPECT_EQ(std::nullopt,
+            ContextualTasksUiService::GetHostFromUrl(GURL(
+                "https://google.com?chrome_host=corp.google.com.evil.com")));
   EXPECT_EQ(std::nullopt,
             ContextualTasksUiService::GetHostFromUrl(
                 GURL("https://google.com?chrome_host=malicious.example.com")));

@@ -231,6 +231,7 @@
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/sms_fetcher.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/surface_embed_connector.h"
 #include "content/public/browser/tracing_support.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_ui_url_loader_factory.h"
@@ -531,6 +532,39 @@ RendererEvictionReasonToNotRestoredReason(
       return BackForwardCacheMetrics::NotRestoredReason::kSharedWorkerMessage;
   }
   NOTREACHED();
+}
+
+bool CanApplyFrameReplicationUpdate(
+    RenderFrameHostImpl* rfh,
+    BackForwardCacheMetrics::NotRestoredReason eviction_reason) {
+  // These updates apply to the BrowsingContextState that this RenderFrameHost
+  // shares with the FrameTreeNode's current document, so only accept them once
+  // this RenderFrameHost has been (or is about to be) swapped in (kActive,
+  // kPendingCommit, or kPrerendering):
+  // - kPendingCommit: Accepted because the renderer sends updates (e.g. ad
+  //   tagging) while committing the new document and before the browser has
+  //   processed the corresponding DidCommitNavigation message.
+  //   TODO(crbug.com/547754865): Consider sending replication state at
+  //   DidCommitNavigation time so updates during kPendingCommit can be avoided.
+  // - kPrerendering: Accepted because prerendered pages run in a completely
+  //   isolated FrameTree that has never seen any active RenderFrameHost before
+  //   activation. Their updates only mutate their own isolated
+  //   BrowsingContextState, and prerendered pages actively load and can
+  //   legitimately update state (e.g. CSP headers, ad tags).
+  //   TODO(crbug.com/547754865): Investigate if any replication updates in
+  //   prerendering should be deferred until activation.
+  if (rfh->lifecycle_state() ==
+          RenderFrameHostImpl::LifecycleStateImpl::kActive ||
+      rfh->lifecycle_state() ==
+          RenderFrameHostImpl::LifecycleStateImpl::kPendingCommit ||
+      rfh->lifecycle_state() ==
+          RenderFrameHostImpl::LifecycleStateImpl::kPrerendering) {
+    return true;
+  }
+  if (rfh->IsInBackForwardCache()) {
+    rfh->EvictFromBackForwardCacheWithReason(eviction_reason);
+  }
+  return false;
 }
 
 // Ensure that we reset nav_entry_id_ in DidCommitProvisionalLoad if any of
@@ -4242,7 +4276,15 @@ bool RenderFrameHostImpl::AccessibilityIsRootFrame() const {
   // this RenderFrameHost is embedded. In addition, IsOutermostMainFrame()
   // does not escape guest views. Therefore, we must check for any kind of
   // parent document or embedder.
-  return !GetParentOrOuterDocumentOrEmbedderExcludingProspectiveOwners();
+  if (GetParentOrOuterDocumentOrEmbedderExcludingProspectiveOwners()) {
+    return false;
+  }
+  // A surface-embedded frame has an AX parent in another tree, so it is not
+  // the AX root even though it is the root of its own frame tree.
+  if (delegate_->GetSurfaceEmbedConnector()) {
+    return false;
+  }
+  return true;
 }
 
 WebContentsAccessibility*
@@ -8543,11 +8585,21 @@ void RenderFrameHostImpl::DidChangeName(const std::string& name,
 
 void RenderFrameHostImpl::EnforceInsecureRequestPolicy(
     blink::mojom::InsecureRequestPolicy policy) {
+  if (!CanApplyFrameReplicationUpdate(
+          this, BackForwardCacheMetrics::NotRestoredReason::
+                    kRfhEnforceInsecureRequestPolicy)) {
+    return;
+  }
   browsing_context_state_->SetInsecureRequestPolicy(policy);
 }
 
 void RenderFrameHostImpl::EnforceInsecureNavigationsSet(
     const std::vector<uint32_t>& set) {
+  if (!CanApplyFrameReplicationUpdate(
+          this, BackForwardCacheMetrics::NotRestoredReason::
+                    kRfhEnforceInsecureNavigationsSet)) {
+    return;
+  }
   browsing_context_state_->SetInsecureNavigationsSet(set);
 }
 
@@ -9820,6 +9872,11 @@ void RenderFrameHostImpl::DidConsumeHistoryUserActivation() {
 
 void RenderFrameHostImpl::HadStickyUserActivationBeforeNavigationChanged(
     bool value) {
+  if (!CanApplyFrameReplicationUpdate(
+          this, BackForwardCacheMetrics::NotRestoredReason::
+                    kRfhHadStickyUserActivationBeforeNavigationChanged)) {
+    return;
+  }
   browsing_context_state_->OnSetHadStickyUserActivationBeforeNavigation(value);
 }
 
@@ -14016,6 +14073,23 @@ void RenderFrameHostImpl::UpdateAXTreeData() {
   delegate_->ProcessAccessibilityUpdatesAndEvents(detail);
 }
 
+void RenderFrameHostImpl::ClearEmbedderAXTreeData() {
+  if (!browser_accessibility_manager_) {
+    return;
+  }
+  ui::AXTree* ax_tree = browser_accessibility_manager_->ax_tree();
+  if (!ax_tree || ax_tree->data().parent_tree_id == ui::AXTreeIDUnknown()) {
+    return;
+  }
+  ui::AXTreeUpdate update;
+  update.has_tree_data = true;
+  update.tree_data = ax_tree->data();
+  update.tree_data.parent_tree_id = ui::AXTreeIDUnknown();
+
+  DCHECK(!AccessibilityIsRootFrame());
+  ax_tree->Unserialize(update);
+}
+
 RenderFrameHostImpl::UpdateAXFocusDeferScope::UpdateAXFocusDeferScope(
     RenderFrameHostImpl& rfh)
     : rfh_(rfh.GetSafeRef()) {
@@ -14539,6 +14613,13 @@ RenderFrameHost* RenderFrameHost::FromPlaceholderToken(
 ui::AXTreeID RenderFrameHostImpl::GetParentAXTreeID() {
   auto* parent = GetParentOrOuterDocumentOrEmbedderExcludingProspectiveOwners();
   if (!parent) {
+    // A surface-embedded frame has no frame-tree parent but may still have an
+    // AX parent in another tree. Return the connector's id directly, even when
+    // it is not yet known, since an embedded frame is never the AX root.
+    if (SurfaceEmbedConnector* connector =
+            delegate_->GetSurfaceEmbedConnector()) {
+      return connector->GetParentAXTreeID();
+    }
     CHECK(AccessibilityIsRootFrame())
         << "Child frame requires a parent, root=" << GetLastCommittedURL();
     return ui::AXTreeIDUnknown();
@@ -16286,10 +16367,25 @@ bool RenderFrameHostImpl::DidCommitNavigationInternal(
       features::IsEnforceSameDocumentOriginInvariantsEnabled()) {
     if (params->insecure_request_policy !=
         frame_tree_node_->current_replication_state().insecure_request_policy) {
-      bad_message::ReceivedBadMessage(
-          GetProcess(),
-          bad_message::RFH_SAME_DOC_INSECURE_REQUEST_POLICY_CHANGE);
-      return false;
+      // Log crash keys to diagnose the mismatch direction.
+      SCOPED_CRASH_KEY_NUMBER(
+          "SameDocIRP", "renderer_policy",
+          static_cast<int>(params->insecure_request_policy));
+      SCOPED_CRASH_KEY_NUMBER(
+          "SameDocIRP", "browser_policy",
+          static_cast<int>(frame_tree_node_->current_replication_state()
+                               .insecure_request_policy));
+      SCOPED_CRASH_KEY_BOOL("SameDocIRP", "is_main_frame", !GetParent());
+      SCOPED_CRASH_KEY_NUMBER("SameDocIRP", "lifecycle",
+                              static_cast<int>(lifecycle_state()));
+      SCOPED_CRASH_KEY_STRING256("SameDocIRP", "url", params->url.spec());
+      SCOPED_CRASH_KEY_STRING256("SameDocIRP", "origin",
+                                 GetLastCommittedOrigin().GetDebugString());
+      // TODO(crbug.com/549229687): Collect data on the mismatch before
+      // enforcing. The root cause is not yet identified — keeping as
+      // DumpWithoutCrashing to gather crash reports without killing the
+      // renderer.
+      base::debug::DumpWithoutCrashing();
     }
 
     if (params->insecure_navigations_set !=
@@ -19055,6 +19151,11 @@ bool RenderFrameHostImpl::IsDOMContentLoaded() {
 }
 
 void RenderFrameHostImpl::UpdateIsAdFrame(bool is_ad_frame) {
+  if (!CanApplyFrameReplicationUpdate(
+          this,
+          BackForwardCacheMetrics::NotRestoredReason::kRfhUpdateIsAdFrame)) {
+    return;
+  }
   browsing_context_state_->SetIsAdFrame(is_ad_frame);
 }
 

@@ -21,6 +21,7 @@
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "services/network/test/test_network_context.h"
@@ -52,7 +53,8 @@ class MockNetworkContext : public network::TestNetworkContext {
           auth_handler,
       mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
-      const base::UnguessableToken& network_restrictions_id) override {
+      const base::UnguessableToken& network_restrictions_id,
+      network::mojom::IPAddressSpace target_address_space) override {
     create_called = true;
     pending_handshake_client = std::move(handshake_client);
     additional_headers_ = std::move(additional_headers);
@@ -126,6 +128,14 @@ class MockDelegate : public StreamingWebSocketClient::Delegate {
     NotifyEvent();
   }
 
+  std::vector<network::mojom::HttpHeaderPtr> GetAdditionalHeaders() override {
+    std::vector<network::mojom::HttpHeaderPtr> headers;
+    for (const auto& header : additional_headers) {
+      headers.push_back(header.Clone());
+    }
+    return headers;
+  }
+
   struct ConnectionError {
     std::string message;
     int net_error;
@@ -150,6 +160,7 @@ class MockDelegate : public StreamingWebSocketClient::Delegate {
   std::optional<DropChannel> drop_channel;
   std::optional<std::string> error_message;
   bool closed = false;
+  std::vector<network::mojom::HttpHeaderPtr> additional_headers;
   base::RepeatingClosure on_event_callback;
 };
 
@@ -296,6 +307,17 @@ TEST_F(StreamingWebSocketClientTest, NoXClientDataHeader) {
             "application/x-protobuf");
   EXPECT_FALSE(network_context_.GetHeader("X-Client-Data").has_value());
   EXPECT_FALSE(network_context_.GetHeader("x-client-data").has_value());
+}
+
+TEST_F(StreamingWebSocketClientTest, AdditionalHeaders) {
+  delegate_.additional_headers.push_back(
+      network::mojom::HttpHeader::New("Custom-Header", "custom-value"));
+  client_.Send(std::vector<uint8_t>{1});
+
+  EXPECT_TRUE(network_context_.create_called);
+  EXPECT_EQ(network_context_.GetHeader("X-WebChannel-Content-Type"),
+            "application/x-protobuf");
+  EXPECT_EQ(network_context_.GetHeader("Custom-Header"), "custom-value");
 }
 
 TEST_F(StreamingWebSocketClientTest, InvalidFrameType) {
@@ -451,6 +473,10 @@ TEST_F(StreamingWebSocketClientTest, DataPipeWriteFailure) {
   EXPECT_TRUE(future.Wait());
   ASSERT_TRUE(delegate_.error_message.has_value());
   EXPECT_EQ(*delegate_.error_message, "Failed to write to WebSocket.");
+}
+
+TEST_F(StreamingWebSocketClientTest, ServiceUrl) {
+  EXPECT_EQ(client_.service_url(), GURL("wss://example.com/websocket"));
 }
 
 }  // namespace

@@ -37,6 +37,11 @@ class PA_COMPONENT_EXPORT(ALLOCATOR_SHIM) PartitionAllocMalloc {
   // May return |nullptr|, will never return the same pointer as  |Allocator()|.
   static partition_alloc::PartitionRoot* OriginalAllocator(
       AllocToken alloc_token = AllocToken(kDefaultPartitionIndex));
+  // Returns the dedicated PartitionRoot for allocations that are intended to be
+  // quarantined and leaked upon free. Will never return nullptr, and will never
+  // return the same pointer as |Allocator()|. Allocations routed here are never
+  // reused after being freed.
+  static partition_alloc::PartitionRoot* IntendedLeakAllocator();
 };
 
 template <partition_alloc::AllocFlags base_alloc_flags,
@@ -244,10 +249,6 @@ PA_ALWAYS_INLINE void ConfigurePartitionsForTesting() {
       partition_alloc::internal::SchedulerLoopQuarantineConfig();
 
   auto eventually_zero_freed_memory = EventuallyZeroFreedMemory(false);
-  auto enable_free_with_size = allocator_shim::EnableFreeWithSize(
-      PA_BUILDFLAG(SHIM_SUPPORTS_SIZED_DEALLOC));
-  auto enable_strict_free_size_check =
-      allocator_shim::EnableStrictFreeSizeCheck(true);
 
   ConfigurePartitions(
       enable_brp, brp_extra_extras_size, enable_memory_tagging,
@@ -255,8 +256,7 @@ PA_ALWAYS_INLINE void ConfigurePartitionsForTesting() {
       scheduler_loop_quarantine_global_config,
       scheduler_loop_quarantine_thread_local_config,
       scheduler_loop_quarantine_for_advanced_memory_safety_checks_config,
-      eventually_zero_freed_memory, enable_free_with_size,
-      enable_strict_free_size_check);
+      eventually_zero_freed_memory);
 }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 

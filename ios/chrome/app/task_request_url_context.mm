@@ -11,6 +11,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
+#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/password_manager/core/browser/manage_passwords_referrer.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
@@ -34,7 +35,6 @@
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/app_group/widget_constants.h"
 #import "ios/chrome/common/x_callback_url.h"
-#import "net/base/apple/url_conversions.h"
 
 namespace {
 
@@ -151,7 +151,6 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
 
 @interface TaskRequestForURLContext ()
 
-@property(nonatomic, assign, readonly) GURL parsedURL;
 @property(nonatomic, assign, readonly) MobileSessionCallerApp callerApp;
 
 @end
@@ -168,7 +167,7 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
                                                         sceneState:sceneState
                                                        isColdStart:isColdStart];
   }
-  if (IsXCallbackURL(net::GURLWithNSURL(url))) {
+  if ([url.host isEqualToString:@"x-callback-url"]) {
     return [[TaskRequestForXCallbackURLContext alloc]
         initWithURLContext:URLContext
                 sceneState:sceneState
@@ -185,7 +184,7 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
                        isColdStart:(BOOL)isColdStart {
   if ((self = [super initWithSceneState:sceneState isColdStart:isColdStart])) {
     _URLContext = URLContext;
-    _parsedURL = net::GURLWithNSURL(_URLContext.URL);
+
     _callerApp =
         GetCallerApp(_URLContext.options.sourceApplication, _URLContext.URL);
     [self extractGaiaID];
@@ -202,6 +201,11 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
     base::UmaHistogramEnumeration("Startup.ShowDefaultPromoFromApps",
                                   _callerApp, MOBILE_SESSION_CALLER_APP_COUNT);
   }
+}
+
+- (void)handleCommandWithSceneState:(SceneState*)sceneState {
+  NOTREACHED()
+      << "-handleCommandWithSceneState: must be implemented by sub-classes";
 }
 
 - (void)execute {
@@ -222,17 +226,7 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
       return;
     }
   }
-
-  ProfileState* profileState = sceneState.profileState;
-  URLOpenerParams* options =
-      [[URLOpenerParams alloc] initWithUIOpenURLContext:_URLContext];
-  [URLOpener openURL:options
-          applicationActive:YES
-                  tabOpener:sceneState.controller
-      connectionInformation:sceneState.controller
-         startupInformation:profileState.startupInformation
-                prefService:profileState.profile->GetPrefs()
-                  initStage:profileState.initStage];
+  [self handleCommandWithSceneState:sceneState];
 }
 
 #pragma mark - Private
@@ -269,4 +263,3 @@ void RecordRuntimeMetrics(UIOpenURLContext* url_context, bool is_first_run) {
 }
 
 @end
-

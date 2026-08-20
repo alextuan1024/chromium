@@ -63,6 +63,7 @@ export import ImageInfo = generated.ImageInfo;
 export import InvokeOptions = generated.InvokeOptions;
 export import MetaTag = generated.MetaTag;
 export import OnResponseStoppedDetails = generated.OnResponseStoppedDetails;
+export import OpenPinnedTabPickerOptions = generated.OpenPinnedTabPickerOptions;
 export import OpenSettingsOptions = generated.OpenSettingsOptions;
 export import PageMetadata = generated.PageMetadata;
 export import PanelOpeningData = generated.PanelOpeningData;
@@ -1015,6 +1016,25 @@ export declare interface GlicBrowserHost {
   getPinnedTabs?(): ObservableValue<TabData[]>;
 
   /**
+   * Opens the browser's native tab picker UI (such as the Grid Tab Switcher
+   * on Android) on top of Chrome, allowing the user to select one or more tabs
+   * to pin as context.
+   *
+   * Selected tabs are pinned to the conversation and asynchronously emitted to
+   * the web client via `getPinnedTabs()`.
+   *
+   * The returned promise resolves when the user finishes interacting with the
+   * picker (either by confirming their selection or dismissing/cancelling).
+   *
+   * Note: This method is supported on mobile platforms (Android phone and
+   * tablet). On desktop and other non-mobile form factors, this is currently a
+   * no-op and resolves immediately.
+   *
+   * @param options Optional configuration for the picker.
+   */
+  openPinnedTabPicker?(options?: OpenPinnedTabPickerOptions): Promise<void>;
+
+  /**
    * Returns an observable that emits a ranked list of pin tab candidates per
    * the given options. The list is returned once, and then again whenever the
    * list of candidates changes. The results are sorted by string match and then
@@ -1045,9 +1065,17 @@ export declare interface GlicBrowserHost {
     ObservableValue<ZeroStateSuggestionsV2>;
 
   /**
+   * Returns an observable of the skills functionality. Emits an instance of
+   * GlicBrowserSkills when skills are enabled, or undefined while skills are
+   * not enabled. Skills may be enabled or disabled dynamically.
+   */
+  skills?(): ObservableValue<GlicBrowserSkills|undefined>;
+
+  /**
    * Creates a skill. The request contains a prompt or an empty string.
    * A Chrome modal will be shown to allow the user to edit and save a skill.
    * The promise will fail if the modal is not opened.
+   * @deprecated Use skills() instead.
    */
   createSkill?(request: CreateSkillRequest): Promise<void>;
 
@@ -1055,22 +1083,26 @@ export declare interface GlicBrowserHost {
    * Updates a skill. The request only contains a skill id.
    * The Chrome modal will display the corresponding skill and allow the user to
    * edit and save it. The promise will fail if the modal is not opened.
+   * @deprecated Use skills() instead.
    */
   updateSkill?(request: UpdateSkillRequest): Promise<void>;
 
   /**
    * Requests that the browser open skill management UI.
+   * @deprecated Use skills() instead.
    */
   showManageSkillsUi?(): void;
 
   /**
    * Requests that the browser open skill browsing UI.
+   * @deprecated Use skills() instead.
    */
   showBrowseSkillsUi?(): void;
 
   /**
    * Logs metrics for UI interactions and state transitions specific to the
    * Skills feature in the web client.
+   * @deprecated Use skills() instead.
    */
   recordSkillsWebClientEvent?(event: SkillsWebClientEvent): void;
 
@@ -1078,6 +1110,7 @@ export declare interface GlicBrowserHost {
    * Gets a skill by id. The web client should use this method to get the
    * full skill details including the prompt for display or run in the UI.
    * The promise will fail if the skill is not found.
+   * @deprecated Use skills() instead.
    */
   getSkill?(id: string): Promise<Skill>;
 
@@ -1087,6 +1120,7 @@ export declare interface GlicBrowserHost {
    * mutated. Chrome Sync can update multiple skills at once. The web client
    * should use this method to display the full list of skill previews in the
    * "/" menu.
+   * @deprecated Use skills() instead.
    */
   getSkillPreviews?(): ObservableValue<SkillPreview[]>;
 
@@ -1094,6 +1128,7 @@ export declare interface GlicBrowserHost {
    * Returns an observable skill to invoke. This happens when user chooses
    * a skill to run in the chrome://skills page. The web client should
    * automatically run the skill when it is received.
+   * @deprecated Use skills() instead.
    */
   getSkillToInvoke?(): ObservableValue<Skill>;
 
@@ -1329,6 +1364,58 @@ export declare interface ResizeWindowOptions {
  * The concepts of session and rating are less well defined. There are
  * intentionally no constraints on when or how often they are called.
  */
+
+/**
+ * Methods for managing and invoking skills.
+ */
+export declare interface GlicBrowserSkills {
+  /**
+   * Creates a skill. The request contains a prompt or an empty string.
+   * A Chrome modal will be shown to allow the user to edit and save a skill.
+   * The promise will fail if the modal is not opened.
+   */
+  createSkill?(request: CreateSkillRequest): Promise<void>;
+
+  /**
+   * Updates a skill. The request only contains a skill id.
+   * The Chrome modal will display the corresponding skill and allow the user to
+   * edit and save it. The promise will fail if the modal is not opened.
+   */
+  updateSkill?(request: UpdateSkillRequest): Promise<void>;
+
+  /**
+   * Requests that the browser open skill management UI.
+   */
+  showManageSkillsUi?(): void;
+
+  /**
+   * Requests that the browser open skill browsing UI.
+   */
+  showBrowseSkillsUi?(): void;
+
+  /**
+   * Logs metrics for UI interactions and state transitions specific to the
+   * Skills feature in the web client.
+   */
+  recordSkillsWebClientEvent?(event: SkillsWebClientEvent): void;
+
+  /**
+   * Gets a skill by id. The web client should use this method to get the
+   * full skill details including the prompt for display or run in the UI.
+   * The promise will fail if the skill is not found.
+   */
+  getSkill?(id: string): Promise<Skill>;
+
+  /**
+   * Returns an observable list of skills, which include both 1P and
+   * user-created skills. Chrome will update the list when a skill is
+   * mutated. Chrome Sync can update multiple skills at once. The web client
+   * should use this method to display the full list of skill previews in the
+   * "/" menu.
+   */
+  getSkillPreviews?(): ObservableValue<SkillPreview[]>;
+}
+
 export declare interface GlicBrowserHostMetrics {
   /** Called when the opt-in CTA is shown. */
   onOptinImpression?(): void;

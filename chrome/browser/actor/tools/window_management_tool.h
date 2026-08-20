@@ -13,21 +13,30 @@
 #include "components/actor/core/task_id.h"
 #include "components/tabs/public/tab_interface.h"
 
+class BrowserWindowInterface;
+
 namespace actor {
 
 // A tool to manage browser windows, e.g. create, close, activate, etc.
 class WindowManagementTool : public Tool {
  public:
-  enum class Action { kCreate, kActivate, kClose };
+  enum class Action {
+    kCreate,
+    kActivate,
+    kClose,
+    kEnterFullscreen,
+    kExitFullscreen
+  };
 
   // Create constructor
   explicit WindowManagementTool(TaskId task_id, ToolDelegate& tool_delegate);
 
-  // Activate|Close constructor.
+  // Activate|Close|EnterFullscreen|ExitFullscreen constructor.
   WindowManagementTool(Action action,
                        TaskId task_id,
                        ToolDelegate& tool_delegate,
                        int32_t window_id);
+
   ~WindowManagementTool() override;
 
   // actor::Tool:
@@ -46,10 +55,12 @@ class WindowManagementTool : public Tool {
   tabs::TabHandle GetTargetTab() const override;
 
  private:
+  BrowserWindowInterface* GetTargetBrowser() const;
+
   // Called when the browser with `window_id_` has closed.
   void OnBrowserDidClose(BrowserWindowInterface* browser);
 
-  void OnBrowserDidBecomeActive(BrowserWindowInterface* Browser);
+  void OnBrowserDidBecomeActive(BrowserWindowInterface* browser);
   void OnInvokeFinished(mojom::ActionResultPtr result);
 
   mojom::ActionResultPtr CheckCrossProfile(BrowserWindowInterface* browser);
@@ -62,8 +73,8 @@ class WindowManagementTool : public Tool {
 
   ToolCallback callback_;
 
-  // Subscription to the close event for the Browser corresponding to
-  // `window_id_`.
+  // Subscription to the close event for the BrowserWindowInterface
+  // corresponding to `window_id_`.
   base::CallbackListSubscription browser_did_close_subscription_;
 
   base::CallbackListSubscription browser_did_become_active_subscription_;

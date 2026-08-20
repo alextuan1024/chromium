@@ -22,7 +22,6 @@
 
 class AppMenuIconController;
 class BookmarkSubMenuModel;
-class Browser;
 class BrowserWindowInterface;
 
 // Values should correspond to 'WrenchMenuAction' enum in enums.xml.
@@ -145,7 +144,8 @@ class ToolsMenuModel : public ui::SimpleMenuModel {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kChromeLabsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kReadingModeMenuItem);
 
-  ToolsMenuModel(ui::SimpleMenuModel::Delegate* delegate, Browser* browser);
+  ToolsMenuModel(ui::SimpleMenuModel::Delegate* delegate,
+                 BrowserWindowInterface* browser);
 
   ToolsMenuModel(const ToolsMenuModel&) = delete;
   ToolsMenuModel& operator=(const ToolsMenuModel&) = delete;
@@ -153,7 +153,7 @@ class ToolsMenuModel : public ui::SimpleMenuModel {
   ~ToolsMenuModel() override;
 
  private:
-  void Build(Browser* browser);
+  void Build(BrowserWindowInterface* browser);
 };
 
 class ExtensionsMenuModel : public ui::SimpleMenuModel {
@@ -162,7 +162,7 @@ class ExtensionsMenuModel : public ui::SimpleMenuModel {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kVisitChromeWebStoreMenuItem);
 
   ExtensionsMenuModel(ui::SimpleMenuModel::Delegate* delegate,
-                      Browser* browser);
+                      BrowserWindowInterface* browser);
 
   ExtensionsMenuModel(const ExtensionsMenuModel&) = delete;
   ExtensionsMenuModel& operator=(const ExtensionsMenuModel&) = delete;
@@ -170,14 +170,15 @@ class ExtensionsMenuModel : public ui::SimpleMenuModel {
   ~ExtensionsMenuModel() override;
 
  private:
-  void Build(Browser* browser);
+  void Build(BrowserWindowInterface* browser);
 };
 
 class HelpMenuModel : public ui::SimpleMenuModel {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kReportUnsafeSiteMenuItem);
 
-  HelpMenuModel(ui::SimpleMenuModel::Delegate* delegate, Browser* browser);
+  HelpMenuModel(ui::SimpleMenuModel::Delegate* delegate,
+                BrowserWindowInterface* browser);
 
   HelpMenuModel(const HelpMenuModel&) = delete;
   HelpMenuModel& operator=(const HelpMenuModel&) = delete;
@@ -185,7 +186,7 @@ class HelpMenuModel : public ui::SimpleMenuModel {
   ~HelpMenuModel() override;
 
  private:
-  void Build(Browser* browser);
+  void Build(BrowserWindowInterface* browser);
 };
 
 // A menu model that builds the contents of the app menu.
@@ -217,21 +218,22 @@ class AppMenuModel : public ui::SimpleMenuModel,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kHelpMenuItem);
 
   // Internal placeholder container command IDs.
-  static constexpr int kEditMenuPlaceholder = kEditMenuId;
-  static constexpr int kZoomMenuPlaceholder = kZoomMenuId;
+  static constexpr int kEditMenuPlaceholder = IDC_EDIT_MENU;
+  static constexpr int kZoomMenuPlaceholder = IDC_ZOOM_MENU;
   static constexpr int kPasswordsAndAutofillMenuPlaceholder =
-      kPasswordsAndAutofillMenuId;
-  static constexpr int kFindAndEditMenuPlaceholder = kFindAndEditMenuId;
-  static constexpr int kSaveAndShareMenuPlaceholder = kSaveAndShareMenuId;
-  static constexpr int kRecentTabsMenuPlaceholder = kRecentTabsMenuId;
-  static constexpr int kSharingHubMenuPlaceholder = kSharingHubMenuId;
-  static constexpr int kProfileMenuPlaceholder = kProfileMenuId;
-  static constexpr int kReadingListMenuPlaceholder = kReadingListMenuId;
-  static constexpr int kExtensionsSubmenuPlaceholder = kExtensionsSubMenuId;
-  static constexpr int kBookmarksMenuPlaceholder = kBookmarksMenuId;
-  static constexpr int kSavedTabGroupsMenuPlaceholder = kSavedTabGroupsMenuId;
-  static constexpr int kMoreToolsMenuPlaceholder = kMoreToolsMenuId;
-  static constexpr int kHelpMenuPlaceholder = kHelpMenuId;
+      IDC_PASSWORDS_AND_AUTOFILL_MENU;
+  static constexpr int kFindAndEditMenuPlaceholder = IDC_FIND_AND_EDIT_MENU;
+  static constexpr int kSaveAndShareMenuPlaceholder = IDC_SAVE_AND_SHARE_MENU;
+  static constexpr int kRecentTabsMenuPlaceholder = IDC_RECENT_TABS_MENU;
+  static constexpr int kSharingHubMenuPlaceholder = IDC_SHARING_HUB_MENU;
+  static constexpr int kProfileMenuPlaceholder = IDC_PROFILE_MENU_IN_APP_MENU;
+  static constexpr int kReadingListMenuPlaceholder = IDC_READING_LIST_MENU;
+  static constexpr int kExtensionsSubmenuPlaceholder = IDC_EXTENSIONS_SUBMENU;
+  static constexpr int kBookmarksMenuPlaceholder = IDC_BOOKMARKS_MENU;
+  static constexpr int kSavedTabGroupsMenuPlaceholder =
+      IDC_SAVED_TAB_GROUPS_MENU;
+  static constexpr int kMoreToolsMenuPlaceholder = IDC_MORE_TOOLS_MENU;
+  static constexpr int kHelpMenuPlaceholder = IDC_HELP_MENU;
 
   // Number of menus within the app menu with an arbitrarily high (variable)
   // number of menu items. For example, the number of bookmarks menu items
@@ -262,7 +264,7 @@ class AppMenuModel : public ui::SimpleMenuModel,
   // is used to decide whether or not to include an item for opening the upgrade
   // dialog.
   AppMenuModel(ui::AcceleratorProvider* provider,
-               Browser* browser,
+               BrowserWindowInterface* browser,
                AppMenuIconController* app_menu_icon_controller = nullptr,
                AlertMenuItem alert_item = AlertMenuItem::kNone);
 
@@ -286,7 +288,7 @@ class AppMenuModel : public ui::SimpleMenuModel,
                                   ui::Accelerator* accelerator) const override;
 
   // Getters.
-  Browser* browser() const { return browser_; }
+  BrowserWindowInterface* browser() const { return browser_; }
 
   BookmarkSubMenuModel* bookmark_sub_menu_model() const {
     return bookmark_sub_menu_model_.get();
@@ -361,7 +363,7 @@ class AppMenuModel : public ui::SimpleMenuModel,
 
   raw_ptr<ui::AcceleratorProvider> provider_;  // weak
 
-  const raw_ptr<Browser> browser_;  // weak
+  const raw_ptr<BrowserWindowInterface> browser_;  // weak
   const raw_ptr<AppMenuIconController> app_menu_icon_controller_;
 
   PrefChangeRegistrar local_state_pref_change_registrar_;

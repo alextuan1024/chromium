@@ -183,9 +183,15 @@ COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
                            kAutofillAmbientAutofillUnmaskedSpiiCacheTTL);
 COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillAmbientAutofillSourceAttribution);
+COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillAmbientAutofillSpiiCache);
+COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAmbientAutofillSuppression);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAmbientAutofillSuppressionUI);
+COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillAndPasswordsRemoveSignInPromo);
 
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAndroidDesktopKeyboardAccessoryRevamp);
@@ -211,11 +217,13 @@ BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kAutofillAtMemoryRequestTimeout);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAtMemoryInactivityNudge);
 COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillAtMemoryPreviouslyFilled);
+COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillAtMemorySearchStatefulness);
+COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAtMemorySupportContenteditableOnAndroid);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAtMemoryTriggerShortcut);
-COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillAtMemoryTypedFetchPlan);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillBetterLocalHeuristicPlaceholderSupport);
 COMPONENT_EXPORT(AUTOFILL)
@@ -284,6 +292,8 @@ BASE_DECLARE_FEATURE(kAutofillEnableImportOfUnchangedValuesForCountryAndState);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableImportWhenMultiplePhoneNumbers);
 COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillEnableKeyboardAccessoryOnSearchFields);
+COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableNonAffiliatedLoyaltyCardsFilling);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableOneTimeCodeHeuristics);
@@ -343,8 +353,6 @@ BASE_DECLARE_FEATURE(kAutofillPopupCheckHtmlFormPopupOverlap);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillPopupDontAcceptNonVisibleEnoughSuggestion);
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillPreventAutofillFromSavingToAutocomplete);
-COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillReplaceFormElementObserver);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillRestrictOtpToSameTldPlusOne);
@@ -364,6 +372,8 @@ BASE_DECLARE_FEATURE(kAutofillSupportCombinedZipAndCityFR);
 COMPONENT_EXPORT(AUTOFILL) BASE_DECLARE_FEATURE(kAutofillSupportSplitZipCode);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillSupportStandaloneZipCodeGlobally);
+COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillThrottleAskForValuesToFillByTriggerSource);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillThrottleBruteForceProbing);
 COMPONENT_EXPORT(AUTOFILL)

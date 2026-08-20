@@ -292,7 +292,6 @@
 <translation id="1202116106683864634">क्या वाकई यह पासकी मिटानी है?</translation>
 <translation id="1202892408424955784">ट्रैक किए गए प्रॉडक्ट</translation>
 <translation id="1203247227716551969">अपने खाते की पुष्टि करें</translation>
-<translation id="1203559206734265703">सुरक्षित ऑडियंस को डीबग करने की सुविधा चालू है.</translation>
 <translation id="120368089816228251">संगीत नोट</translation>
 <translation id="1203942045716040624">शेयर किया गया वर्कर: <ph name="SCRIPT_URL" /></translation>
 <translation id="1206832039833782423">आपका सिक्योरिटी कोड आपके कार्ड के पीछे वाले हिस्से पर होता है</translation>
@@ -1886,6 +1885,7 @@
 <translation id="2458379781610688953">खाता अपडेट करें, <ph name="EMAIL" /></translation>
 <translation id="2459703812219683497">ऐक्टिवेशन कोड की पहचान की गई</translation>
 <translation id="2459706890611560967"><ph name="DEVICE_NAME" /> पर, टैब को कास्ट करना फिर से शुरू करें</translation>
+<translation id="245979889539926662">स्क्रीनशॉट शेयर करें</translation>
 <translation id="2460150227008936698">{COUNT,plural, =0{समयसीमा आज खत्म हो जाएगी}=1{समयसीमा कल खत्म हो जाएगी}one{समयसीमा # दिन में खत्म हो जाएगी}other{समयसीमा # दिनों में खत्म हो जाएगी}}</translation>
 <translation id="2460482211073772897">अन्य फ़ोल्डर में</translation>
 <translation id="2460826998961521840">इससे Google खाते में सेव की गई पासकी इस्तेमाल की जा सकेंगी</translation>
@@ -2845,6 +2845,7 @@
 <translation id="3175862692832442091">जंगल</translation>
 <translation id="3176347586396987181">माउस बटन को दबाकर रखने के लिए, “z” का इस्तेमाल करें</translation>
 <translation id="3176984568033229317">Edge में Google Search का इस्तेमाल करें</translation>
+<translation id="3177338796769255211">अपने सभी डिवाइसों पर बुकमार्क वगैरह का ऐक्सेस पाने के लिए साइन इन करें</translation>
 <translation id="3177430966804511955">आइसोलेटेड वेब ऐप्लिकेशन मैनेज करें (बीटा वर्शन)</translation>
 <translation id="31774765611822736">बाईं ओर का नया टैब</translation>
 <translation id="3177909033752230686">पेज की भाषा:</translation>

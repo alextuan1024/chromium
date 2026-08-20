@@ -320,6 +320,7 @@ bool IsPasswordSuggestion(FormSuggestion* suggestion) {
     case SuggestionType::kAutofillAiOtherOrders:
     case SuggestionType::kAutofillAiOtherShipments:
     case SuggestionType::kAutofillAiPrivateInferenceNotice:
+    case SuggestionType::kAutofillAiSourceAttribution:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kFetchingAmbientData:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
@@ -608,9 +609,8 @@ void ConfigureFetchingAmbientDataSuggestion(UIStackView* stackView,
   stackView.translatesAutoresizingMaskIntoConstraints = NO;
   [self addSubview:stackView];
   if (IsLiquidGlassEffectEnabled()) {
-    AddSameConstraintsToSides(
-        stackView, self,
-        LayoutSides::kTop | LayoutSides::kLeading | LayoutSides::kTrailing);
+    AddSameConstraintsToSides(stackView, self,
+                              LayoutSides::kTop | LayoutSides::kHorizontal);
     [stackView.heightAnchor constraintEqualToAnchor:self.heightAnchor].active =
         YES;
   } else {

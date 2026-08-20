@@ -82,10 +82,6 @@ inline constexpr char kChromeUIConstrainedHTMLTestHost[] = "constrained-test";
 inline constexpr char kChromeUIConstrainedHTMLTestURL[] =
     "chrome://constrained-test/";
 inline constexpr char kChromeUIContactInfoPath[] = "/contactInfo";
-#if !BUILDFLAG(IS_ANDROID)
-inline constexpr char kChromeUIContentAnnotatorInternalsHost[] =
-    "content-annotator-internals";
-#endif
 inline constexpr char kChromeUIContextHubHost[] = "context-hub";
 #if !BUILDFLAG(IS_ANDROID)
 inline constexpr char kChromeUIContextualCueingInternalsHost[] =
@@ -238,6 +234,8 @@ inline constexpr char kChromeUIUntrustedNtpMicrosoftAuthURL[] =
     "chrome-untrusted://ntp-microsoft-auth/";
 inline constexpr char kChromeUINTPTilesInternalsHost[] = "ntp-tiles-internals";
 inline constexpr char kChromeUIOmniboxHost[] = "omnibox";
+inline constexpr char kChromeUIOmniboxAimEligibilityPage[] =
+    "omnibox/aim-eligibility";
 inline constexpr char kChromeUIOmniboxPopupHost[] = "omnibox-popup.top-chrome";
 inline constexpr char kChromeUIOmniboxEverywhereHost[] =
     "omnibox-everywhere.top-chrome";

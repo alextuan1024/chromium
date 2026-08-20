@@ -1138,7 +1138,7 @@ Node* Element::Clone(Document& factory,
   // 2-3. If registry is a global custom element registry, then set
   // registry to document's effective global custom element registry.
   if (registry && registry->IsGlobalRegistry()) {
-    registry = factory.customElementRegistry();
+    registry = factory.EffectiveGlobalCustomElementRegistry();
   }
   if (!data.Has(CloneOption::kIncludeDescendants)) {
     copy = &CloneWithoutChildren(data, registry, &factory);
@@ -1165,7 +1165,7 @@ Node* Element::Clone(Document& factory,
       // set shadowRootRegistry to document's effective global custom element
       // registry
       if (shadow_root_registry && shadow_root_registry->IsGlobalRegistry()) {
-        shadow_root_registry = factory.customElementRegistry();
+        shadow_root_registry = factory.EffectiveGlobalCustomElementRegistry();
       }
       // 6.4 Run attach a shadow root with copy, node's shadow root's mode,
       // true, node’s shadow root’s delegates focus, and node’s shadow root’s
@@ -3471,12 +3471,10 @@ DOMRect* Element::GetBoundingClientRectForBinding() {
 ContainerQueryList* Element::matchContainer(const String& query) {
   CSSParserContext* context =
       MakeGarbageCollected<CSSParserContext>(GetDocument());
-  ContainerQueryParser parser(*context);
-  auto* conditional = parser.ParseCondition(query);
-  auto* container_query = MakeGarbageCollected<ContainerQuery>(
-      ContainerSelector(AtomicString(), conditional), conditional);
+  auto* container_queries =
+      ContainerQueryParser::ParseContainerQuerySet(query, *context);
   return MakeGarbageCollected<ContainerQueryList>(
-      GetDocument().GetExecutionContext(), container_query, this);
+      GetDocument().GetExecutionContext(), container_queries, this);
 }
 
 const AtomicString& Element::computedRole() {
@@ -4354,39 +4352,45 @@ void Element::MovedFrom(ContainerNode& old_parent) {
 }
 
 #if DCHECK_IS_ON()
-void VerifySubtreeIsInCanvas(const Element& element, bool value) {
-  DCHECK(element.IsInCanvasSubtree() == value);
-  if (IsA<HTMLCanvasElement>(element)) {
-    DCHECK(element.IsCanvasOrInCanvasSubtree());
+void Element::VerifySubtreeIsInCanvas(bool value) {
+  DCHECK(IsInCanvasSubtree() == value);
+  if (IsA<HTMLCanvasElement>(this)) {
+    DCHECK(IsCanvasOrInCanvasSubtree());
     // When the verifier starts with an element outside the tree that should
     // have value false, but then reaches a canvas within the subtree (e.g.
     // in an iframe or nested), we should set the expected value back to true.
     value = true;
   }
-  if (ShadowRoot* shadow_root = element.GetShadowRoot()) {
+  if (ShadowRoot* shadow_root = GetShadowRoot()) {
     for (Element& child : ElementTraversal::ChildrenOf(*shadow_root)) {
-      VerifySubtreeIsInCanvas(child, value);
+      child.VerifySubtreeIsInCanvas(value);
     }
   }
-  if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(element)) {
+  if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(*this)) {
     for (Node* node : slot->AssignedNodesNoRecalc()) {
       if (auto* child = DynamicTo<Element>(node)) {
-        VerifySubtreeIsInCanvas(*child, value);
+        child->VerifySubtreeIsInCanvas(value);
       }
     }
   }
-  if (const auto* frame_owner = DynamicTo<HTMLFrameOwnerElement>(element)) {
+  if (const auto* frame_owner = DynamicTo<HTMLFrameOwnerElement>(this)) {
     if (Document* inner_document = frame_owner->contentDocument()) {
       if (Element* root = inner_document->documentElement()) {
-        VerifySubtreeIsInCanvas(*root, value);
+        root->VerifySubtreeIsInCanvas(value);
       }
     }
   }
-  for (Element& child : ElementTraversal::ChildrenOf(element)) {
+  if (const NodeRareData* rare_data = RareData()) {
+    for (PseudoElement* pseudo_element : rare_data->GetPseudoElements()) {
+      pseudo_element->VerifySubtreeIsInCanvas(value);
+    }
+  }
+
+  for (Element& child : ElementTraversal::ChildrenOf(*this)) {
     if (child.AssignedSlotWithoutRecalc()) {
       continue;
     }
-    VerifySubtreeIsInCanvas(child, value);
+    child.VerifySubtreeIsInCanvas(value);
   }
 }
 #endif
@@ -4395,7 +4399,7 @@ void Element::SetIsInCanvasSubtree(bool value) {
   if (value == IsInCanvasSubtree()) {
 #if DCHECK_IS_ON()
     if (!GetDocument().IsSlotAssignmentRecalcForbidden()) {
-      VerifySubtreeIsInCanvas(*this, value);
+      VerifySubtreeIsInCanvas(value);
     }
 #endif
     return;
@@ -4426,6 +4430,11 @@ void Element::SetIsInCanvasSubtree(bool value) {
       continue;
     }
     child.SetIsInCanvasSubtree(value);
+  }
+  if (const NodeRareData* rare_data = RareData()) {
+    for (PseudoElement* pseudo_element : rare_data->GetPseudoElements()) {
+      pseudo_element->SetIsInCanvasSubtree(value);
+    }
   }
 }
 
@@ -4469,12 +4478,9 @@ bool Element::IsCanvasOrInCanvasSubtree() const {
 void Element::DidChangeIsInCanvasSubtree() {
   if (auto* layout_object = GetLayoutObject()) {
     layout_object->SetNeedsPaintPropertyUpdate();
-    if (layout_object->HasLayer()) {
-      To<LayoutBoxModelObject>(layout_object)->Layer()->SetNeedsRepaint();
-    }
     ObjectPaintInvalidator(*layout_object)
-        .InvalidateDisplayItemClient(*layout_object,
-                                     PaintInvalidationReason::kUncacheable);
+        .SlowSetPaintingLayerNeedsRepaintAndInvalidateDisplayItemClient(
+            *layout_object, PaintInvalidationReason::kUncacheable);
   }
 }
 
@@ -4519,14 +4525,25 @@ const gfx::Transform* Element::GetUsedCanvasTransform() const {
 }
 
 void Element::SetCanvasTransformInternal(const gfx::Transform& transform) {
+  if (const gfx::Transform* existing = GetCanvasTransformInternal()) {
+    if (*existing == transform) {
+      return;
+    }
+  }
   data_ = EnsureRareData().SetWrappedField<gfx::Transform>(
       NodeRareData::FieldId::kCanvasTransform, transform);
   if (LayoutObject* layout_object = GetLayoutObject()) {
     layout_object->SetNeedsPaintPropertyUpdate();
-    // Layout is needed to update the PaintLayer transform (which is updated
-    // during layout in LayoutBox::UpdateLayout). We cannot rely on style recalc
-    // because canvas transform is not stored in ComputedStyle.
-    layout_object->SetNeedsLayout(layout_invalidation_reason::kDomChanged);
+    const auto* box = DynamicTo<LayoutBox>(layout_object);
+    if (box && box->TransformsChangeMayRequireLayout()) {
+      layout_object->SetNeedsLayout(layout_invalidation_reason::kDomChanged);
+    } else {
+      if (layout_object->HasLayer()) {
+        // Directly update the PaintLayer transform to avoid a repaint from
+        // layout invalidation.
+        To<LayoutBoxModelObject>(layout_object)->Layer()->UpdateTransform();
+      }
+    }
   }
 }
 
@@ -5181,28 +5198,6 @@ bool Element::SkipStyleRecalcForContainer(
   return true;
 }
 
-void Element::MarkNonSlottedHostChildrenForStyleRecalc() {
-  // Mark non-slotted children of shadow hosts for style recalc for forced
-  // subtree recalcs when they have ensured computed style outside the flat
-  // tree. Elements outside the flat tree are not recomputed during the style
-  // recalc step, but we need to make sure the ensured styles are dirtied so
-  // that we know to clear out old styles from
-  // StyleEngine::ClearEnsuredDescendantStyles() the next time we call
-  // getComputedStyle() on any of the descendant elements.
-  for (Node* child = firstChild(); child; child = child->nextSibling()) {
-    if (child->NeedsStyleRecalc()) {
-      continue;
-    }
-    if (auto* element = DynamicTo<Element>(child)) {
-      if (auto* style = element->GetComputedStyle()) {
-        if (style->IsEnsuredOutsideFlatTree()) {
-          child->SetStyleChangeForNonSlotted();
-        }
-      }
-    }
-  }
-}
-
 const ComputedStyle* Element::ParentComputedStyle() const {
   if (IsSkeletonPseudoElement()) {
     return GetDocument().GetStyleResolver().InitialStyleForElement();
@@ -5401,9 +5396,6 @@ void Element::RecalcStyle(const StyleRecalcChange change,
   if (child_change.TraverseChildren(*this)) {
     if (ShadowRoot* root = GetShadowRoot()) {
       root->RecalcDescendantStyles(child_change, child_recalc_context, *this);
-      if (child_change.RecalcDescendants()) {
-        MarkNonSlottedHostChildrenForStyleRecalc();
-      }
     } else if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(this)) {
       SelectorFilterParentScope filter_scope(
           this, SelectorFilterParentScope::ScopeType::kParent);
@@ -5710,7 +5702,9 @@ StyleRecalcChange Element::RecalcOwnStyle(
   // also clear GetOverscrollContainer() on `this`).
   bool is_valid_overscroll_area =
       new_style && new_style->IsInternalOverscrollPositionAuto() &&
-      style_recalc_context.parent_is_overscroll_container &&
+      parent_style &&
+      parent_style->EffectiveOverscrollContainerType() !=
+          EOverscrollContainerType::kNone &&
       GetDocument().IsOverscrollCommandTarget(*this);
   Element* parent = parentElement();
 
@@ -10212,18 +10206,13 @@ bool Element::IsInDescendantTreeOf(const Element* shadow_host) const {
 
 namespace {
 
-bool NeedsEnsureComputedStyle(Element& element) {
-  const ComputedStyle* style = element.GetComputedStyle();
-  return !style || style->IsEnsuredOutsideFlatTree();
-}
-
 HeapVector<Member<Element>> CollectAncestorsToEnsure(Element& element) {
   HeapVector<Member<Element>> ancestors;
 
   Element* ancestor = &element;
   while ((ancestor = DynamicTo<Element>(
               LayoutTreeBuilderTraversal::Parent(*ancestor)))) {
-    if (!NeedsEnsureComputedStyle(*ancestor)) {
+    if (ancestor->GetComputedStyle()) {
       break;
     }
     ancestors.push_back(ancestor);
@@ -10289,18 +10278,9 @@ const ComputedStyle* Element::EnsureComputedStyle(
   Element* filter_root = FlatTreeTraversal::ParentElement(*top);
   Element* document_element = top->GetDocument().documentElement();
 
-  // The filter doesn't support rejecting rules for elements outside of the
-  // flat tree.  Detect that case and disable calls to the filter until
-  // https://crbug.com/831568 is fixed.
-  bool is_in_flat_tree =
-      top == document_element ||
-      (filter_root &&
-       !filter_root->ComputedStyleRef().IsEnsuredOutsideFlatTree());
-  if (!is_in_flat_tree) {
-    if (!RuntimeEnabledFeatures::GetComputedStyleOutsideFlatTreeEnabled()) {
-      return nullptr;
-    }
-    filter_root = nullptr;
+  if (top != document_element && !filter_root) {
+    // Ensuring ComputedStyle outside the flat tree is not allowed.
+    return nullptr;
   }
 
   // The SelectorFilter relies on FlatTreeTraversal matching the inheritance
@@ -10321,20 +10301,15 @@ const ComputedStyle* Element::EnsureComputedStyle(
       top->GetDocument().GetStyleResolver().GetSelectorFilter();
   GetDocument().GetStyleEngine().UpdateViewportSize();
 
-  // Don't call FromAncestors for elements whose parent is outside the
-  // flat-tree, since those elements don't actually participate in style recalc.
   auto style_recalc_context = LayoutTreeBuilderTraversal::Parent(*top)
                                   ? StyleRecalcContext::FromAncestors(*top)
                                   : StyleRecalcContext();
-  style_recalc_context.is_outside_flat_tree = !is_in_flat_tree;
 
   SelectorFilter::Mark mark = filter.SetMark();
   for (Element* ancestor : base::Reversed(ancestors)) {
     const ComputedStyle* style =
         ancestor->EnsureOwnComputedStyle(style_recalc_context, kPseudoIdNone);
-    if (is_in_flat_tree) {
-      filter.PushParent(*ancestor);
-    }
+    filter.PushParent(*ancestor);
     if (style->IsContainerForSizeContainerQueries()) {
       style_recalc_context.size_container = ancestor;
     }
@@ -10343,10 +10318,7 @@ const ComputedStyle* Element::EnsureComputedStyle(
   const ComputedStyle* style = EnsureOwnComputedStyle(
       style_recalc_context, pseudo_element_specifier, pseudo_argument);
 
-  if (is_in_flat_tree) {
-    filter.PopTo(mark);
-  }
-
+  filter.PopTo(mark);
   return style;
 }
 
@@ -10359,35 +10331,19 @@ const ComputedStyle* Element::EnsureOwnComputedStyle(
   // layoutObject because it did the layout, will be correct and so that the
   // values returned for the ":selection" pseudo-element will be correct.
   const ComputedStyle* element_style = GetComputedStyle();
-  if (NeedsEnsureComputedStyle(*this)) {
-    if (element_style && NeedsStyleRecalc()) {
-      // RecalcStyle() will not traverse into connected elements outside the
-      // flat tree and we may have a dirty element or ancestors if this
-      // element is not in the flat tree. If we don't need a style recalc,
-      // we can just reuse the ComputedStyle from the last
-      // getComputedStyle(). Otherwise, we need to clear the ensured styles
-      // for the uppermost dirty ancestor and all of its descendants. If
-      // this element was not the uppermost dirty element, we would not end
-      // up here because a dirty ancestor would have cleared the
-      // ComputedStyle via EnsureComputedStyle and element_style would
-      // have been null.
-      GetDocument().GetStyleEngine().ClearEnsuredDescendantStyles(*this);
-      element_style = nullptr;
+  if (!element_style) {
+    StyleRecalcContext local_style_recalc_context = style_recalc_context;
+    local_style_recalc_context.is_ensuring_style = true;
+    const ComputedStyle* new_style = nullptr;
+    // TODO(crbug.com/41453415): Avoid setting inline style during
+    // HTMLImageElement::CustomStyleForLayoutObject.
+    if (HasCustomStyleCallbacks() && !IsA<HTMLImageElement>(*this)) {
+      new_style = CustomStyleForLayoutObject(local_style_recalc_context);
+    } else {
+      new_style = OriginalStyleForLayoutObject(local_style_recalc_context);
     }
-    if (!element_style) {
-      StyleRecalcContext local_style_recalc_context = style_recalc_context;
-      local_style_recalc_context.is_ensuring_style = true;
-      const ComputedStyle* new_style = nullptr;
-      // TODO(crbug.com/953707): Avoid setting inline style during
-      // HTMLImageElement::CustomStyleForLayoutObject.
-      if (HasCustomStyleCallbacks() && !IsA<HTMLImageElement>(*this)) {
-        new_style = CustomStyleForLayoutObject(local_style_recalc_context);
-      } else {
-        new_style = OriginalStyleForLayoutObject(local_style_recalc_context);
-      }
-      element_style = new_style;
-      SetComputedStyle(new_style);
-    }
+    element_style = new_style;
+    SetComputedStyle(new_style);
   }
 
   if (!pseudo_element_specifier) {
@@ -11849,6 +11805,14 @@ void Element::SetIsInTopLayer(bool in_top_layer) {
       // added between two lifecycle updates since the overlay computed value
       // would not change, but the layout object order may have.
       SetForceReattachLayoutTree();
+    }
+
+    if (IsA<HTMLDialogElement>(*this)) {
+      PseudoStateChanged(CSSSelector::kPseudoDialogInTopLayer);
+    }
+    if (auto* html_element = DynamicTo<HTMLElement>(this);
+        html_element && html_element->IsPopover()) {
+      PseudoStateChanged(CSSSelector::kPseudoPopoverInTopLayer);
     }
   }
 }
@@ -14090,6 +14054,16 @@ bool Element::ShouldAdjustContainerTimingForInsert(
 void Element::AdjustContainerTimingIfNeededAfterChildrenChanged(
     const ChildrenChange& change) {
   if (!RuntimeEnabledFeatures::ContainerTimingEnabled(GetExecutionContext())) {
+    return;
+  }
+
+  // Prepaint mode does not maintain the SelfOrAncestorHasContainerTiming() node
+  // flag: newly inserted subtrees are attributed by the pre-paint attribution
+  // tracker on the next walk (new LayoutObjects default their
+  // ContainerTimingChanged bit to true, and the paint-invalidation walk reaches
+  // them), so this O(subtree) DOM traversal is unnecessary.
+  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
+          GetExecutionContext())) {
     return;
   }
 

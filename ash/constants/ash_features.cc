@@ -526,9 +526,6 @@ BASE_FEATURE(kDoNotDisturbShortcut, base::FEATURE_ENABLED_BY_DEFAULT);
 // Enables or disables Sync for desk templates on ChromeOS.
 BASE_FEATURE(kDeskTemplateSync, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables or disables the new window occlusion calculator.
-BASE_FEATURE(kNewWindowOcclusionCalculator, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kDesksTemplates, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables diacritics on longpress on the physical keyboard by default.
@@ -813,6 +810,10 @@ BASE_FEATURE(kViewTreeHostRootViewNewBackend,
 
 // Enables the new backend for `FastInkHost` backend.
 BASE_FEATURE(kFastInkHostNewBackend, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables low priority hint instead of overlay candidate override in
+// `FastInkHost`.
+BASE_FEATURE(kFastInkHostLowPriorityHint, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables the new backend for `RoundedDisplayHost` backend.
 BASE_FEATURE(kRoundedDisplayHostNewBackend, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1602,10 +1603,6 @@ BASE_FEATURE(kReleaseNotesNotificationAlwaysEligible,
 BASE_FEATURE(kRenderArcNotificationsByChrome,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Reset audio I/O selection improvement pref, used for testing purpose.
-BASE_FEATURE(kResetAudioSelectionImprovementPref,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // If enabled, will reset all shortcut customizations on startup.
 BASE_FEATURE(kResetShortcutCustomizations, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -1803,10 +1800,6 @@ BASE_FEATURE(kTrafficCountersForWiFiTesting, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables trilinear filtering.
 BASE_FEATURE(kTrilinearFiltering, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables the Device Trust connector client code on unmanaged devices
-BASE_FEATURE(kUnmanagedDeviceDeviceTrustConnectorEnabled,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Use the Android staging SM-DS server when fetching pending eSIM profiles.
 BASE_FEATURE(kUseAndroidStagingSmds, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -2006,8 +1999,6 @@ BASE_FEATURE(kDeviceMoveConfigSave, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kDeviceWeeklyScheduledSuspendMgs,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables peripheral customization to be split per device.
-BASE_FEATURE(kPeripheralCustomization, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables or disables peripherals logging.
 BASE_FEATURE(kEnablePeripheralsLogging,
@@ -2471,10 +2462,6 @@ bool IsDemoModeSignInFileCleanupEnabled() {
   return base::FeatureList::IsEnabled(kDemoModeSignInFileCleanup);
 }
 
-bool IsNewWindowOcclusionCalculatorEnabled() {
-  return base::FeatureList::IsEnabled(kNewWindowOcclusionCalculator);
-}
-
 bool IsDeskTemplateSyncEnabled() {
   return base::FeatureList::IsEnabled(kDeskTemplateSync);
 }
@@ -2487,9 +2474,6 @@ bool IsDisplayPerformanceModeEnabled() {
   return base::FeatureList::IsEnabled(kDisplayPerformanceMode);
 }
 
-bool IsPeripheralCustomizationEnabled() {
-  return base::FeatureList::IsEnabled(kPeripheralCustomization);
-}
 
 bool IsPeripheralsLoggingEnabled() {
   return base::FeatureList::IsEnabled(kEnablePeripheralsLogging);
@@ -2649,6 +2633,10 @@ bool IsViewTreeHostNewBackendEnabled() {
 
 bool IsFastInkHostNewBackendEnabled() {
   return base::FeatureList::IsEnabled(kFastInkHostNewBackend);
+}
+
+bool IsFastInkHostLowPriorityHintEnabled() {
+  return base::FeatureList::IsEnabled(kFastInkHostLowPriorityHint);
 }
 
 bool IsRoundedDisplayHostNewBackendEnabled() {
@@ -3001,8 +2989,7 @@ bool IsPerDeskShelfEnabled() {
 }
 
 bool IsPeripheralNotificationEnabled() {
-  return base::FeatureList::IsEnabled(kPeripheralNotification) &&
-         IsPeripheralCustomizationEnabled();
+  return base::FeatureList::IsEnabled(kPeripheralNotification);
 }
 
 bool IsPhoneHubMonochromeNotificationIconsEnabled() {
@@ -3064,10 +3051,6 @@ bool IsRecoveryFlowReorderEnabled() {
 
 bool IsRenderArcNotificationsByChromeEnabled() {
   return base::FeatureList::IsEnabled(kRenderArcNotificationsByChrome);
-}
-
-bool IsResetAudioSelectionImprovementPrefEnabled() {
-  return base::FeatureList::IsEnabled(kResetAudioSelectionImprovementPref);
 }
 
 bool IsResetShortcutCustomizationsEnabled() {
@@ -3207,11 +3190,6 @@ bool IsTrilinearFilteringEnabled() {
   static bool use_trilinear_filtering =
       base::FeatureList::IsEnabled(kTrilinearFiltering);
   return use_trilinear_filtering;
-}
-
-bool IsUnmanagedDeviceDeviceTrustConnectorFeatureEnabled() {
-  return base::FeatureList::IsEnabled(
-      kUnmanagedDeviceDeviceTrustConnectorEnabled);
 }
 
 bool ShouldUseAndroidStagingSmds() {

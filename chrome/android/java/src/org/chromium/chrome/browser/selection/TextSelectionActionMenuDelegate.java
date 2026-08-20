@@ -6,12 +6,16 @@ package org.chromium.chrome.browser.selection;
 
 import android.content.Context;
 import android.content.pm.ResolveInfo;
+import android.content.res.Resources;
+import android.text.TextPaint;
 import android.text.TextUtils;
-import android.view.Menu;
+import android.view.ContextThemeWrapper;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
+import androidx.core.widget.TextViewCompat;
 
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
@@ -30,8 +34,8 @@ import org.chromium.chrome.browser.share.link_to_text.LinkToTextCoordinator;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils;
 import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
+import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -62,6 +66,8 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
 
     @VisibleForTesting static final String ASK_GEMINI_POSITION_SECONDARY = "secondary";
 
+    @VisibleForTesting static final String ASK_GEMINI_POSITION_ASSIST = "assist";
+
     private final Tab mTab;
     private @Nullable String mSelectedText;
 
@@ -83,21 +89,25 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                             .setId(R.id.contextmenu_open_in_reading_mode)
                             .setGroupId(R.id.select_action_menu_delegate_items)
                             .setOrderAndCategory(
-                                    Menu.CATEGORY_SECONDARY, // Show at end of section.
+                                    SelectionMenuItem.ItemOrder.OPEN_IN_READING_MODE,
                                     SelectionMenuItem.ItemGroupOffset.DEFAULT_ITEMS)
                             .setShowAsActionFlags(
                                     MenuItem.SHOW_AS_ACTION_NEVER
                                             | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                             .build());
         }
-        if (shouldShowAskGeminiForSelection(menuType, isSelectionPassword, selectedText)) {
+        if (shouldShowAskGeminiForSelection(isSelectionPassword, selectedText)) {
             SelectionMenuItem.Builder builder =
                     new SelectionMenuItem.Builder(R.string.glic_button_entrypoint_ask_gemini_label)
                             .setId(R.id.contextmenu_ask_gemini)
-                            .setGroupId(R.id.select_action_menu_delegate_items)
-                            .setShowAsActionFlags(
-                                    MenuItem.SHOW_AS_ACTION_ALWAYS
-                                            | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+                            .setGroupId(R.id.select_action_menu_delegate_items);
+            if (menuType == MenuType.DROPDOWN) {
+                builder.setShowAsActionFlags(
+                        MenuItem.SHOW_AS_ACTION_NEVER | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+            } else {
+                builder.setShowAsActionFlags(
+                        MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+            }
             setAskGeminiOrderAndCategory(builder);
             items.add(builder.build());
         }
@@ -110,7 +120,9 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                     new SelectionMenuItem.Builder(R.string.contextmenu_copy_link_to_highlight)
                             .setId(R.id.contextmenu_copy_link_to_highlight)
                             .setGroupId(org.chromium.content.R.id.select_action_menu_delegate_items)
-                            .setOrderAndCategory(1, ItemGroupOffset.DEFAULT_ITEMS)
+                            .setOrderAndCategory(
+                                    SelectionMenuItem.ItemOrder.COPY_LINK_TO_HIGHLIGHT,
+                                    ItemGroupOffset.DEFAULT_ITEMS)
                             .build();
 
             items.add(copyLinkItem);
@@ -178,19 +190,75 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         if (TextUtils.isEmpty(fullName)) return null;
         String sanitizedText = SelectionUtils.sanitizeTextForMenu(selectedText);
         if (sanitizedText.isEmpty()) return null;
-        return context.getString(R.string.contextmenu_search_web_for_text, fullName, sanitizedText);
+
+        String fullText =
+                context.getString(
+                        R.string.contextmenu_search_web_for_text, fullName, sanitizedText);
+        String template =
+                context.getString(R.string.contextmenu_search_web_for_text, fullName, "%s");
+        int separatorIndex = template.indexOf("%s");
+        if (separatorIndex == -1) {
+            return fullText;
+        }
+
+        String prefix = template.substring(0, separatorIndex);
+        String suffix = template.substring(separatorIndex + 2);
+        if (!fullText.startsWith(prefix) || !fullText.endsWith(suffix)) {
+            return fullText;
+        }
+        return getTruncatedText(context, prefix, sanitizedText, suffix);
+    }
+
+    private @Nullable String getTruncatedText(
+            Context context, String prefix, String sanitizedText, String suffix) {
+        int availableTextWidth = getAvailableTextWidth(context);
+        Context themedContext = new ContextThemeWrapper(context, R.style.Theme_BrowserUI_DayNight);
+        TextView placeholderTextView = new TextView(themedContext);
+        TextViewCompat.setTextAppearance(
+                placeholderTextView, BrowserUiListMenuUtils.getDefaultTextAppearanceStyle());
+        TextPaint paint = placeholderTextView.getPaint();
+
+        float templateWidth = paint.measureText(prefix) + paint.measureText(suffix);
+        float remainingWidth = availableTextWidth - templateWidth;
+
+        if (remainingWidth < paint.measureText("…")) {
+            return null;
+        }
+
+        CharSequence truncatedText =
+                TextUtils.ellipsize(sanitizedText, paint, remainingWidth, TextUtils.TruncateAt.END);
+        return prefix + truncatedText + suffix;
+    }
+
+    private int getAvailableTextWidth(Context context) {
+        Resources res = context.getResources();
+        int viewportWidthPx =
+                (mTab.getView() != null && mTab.getView().getWidth() > 0)
+                        ? mTab.getView().getWidth()
+                        : res.getDisplayMetrics().widthPixels;
+        int maxWidthPx = res.getDimensionPixelSize(R.dimen.text_selection_context_menu_max_width);
+        int gutterPx =
+                res.getDimensionPixelSize(R.dimen.text_selection_context_menu_viewport_gutter);
+        int maxMenuWidthPx = Math.min(viewportWidthPx - 2 * gutterPx, maxWidthPx);
+
+        int itemPadding = res.getDimensionPixelSize(R.dimen.list_menu_item_horizontal_padding) * 2;
+        int safetyBufferPx = (int) Math.ceil(1 * res.getDisplayMetrics().density);
+        return maxMenuWidthPx - itemPadding - safetyBufferPx;
     }
 
     // TODO(b/543135302): Move Ask Gemini menu enabling checks and feature params into GlicEnabling
     // as helper methods.
     /**
-     * Whether to show the "Ask Gemini" item in the mobile text selection (floating action mode)
-     * menu. Mirrors {@code ChromeContextMenuPopulator#shouldShowAskGeminiForLink}: targets the
-     * mobile form factor where Glic is presented in a bottom sheet.
+     * Whether to show the "Ask Gemini" item in the text selection menu. Supports both mobile
+     * (floating action mode with bottom sheet) and desktop Android (right-click dropdown menu with
+     * side panel).
      */
     private boolean shouldShowAskGeminiForSelection(
-            @MenuType int menuType, boolean isSelectionPassword, String selectedText) {
-        if (menuType != MenuType.FLOATING) return false;
+            boolean isSelectionPassword, String selectedText) {
+        boolean isContainerAvailable =
+                AndroidSidePanelEnabledFn.isEnabled()
+                        || TabBottomSheetUtils.isTabBottomSheetEnabled();
+        if (!isContainerAvailable) return false;
         if (TextUtils.isEmpty(selectedText) || isSelectionPassword) return false;
         if (mTab.isDestroyed() || mTab.isIncognito()) return false;
         Profile profile = mTab.getProfile();
@@ -200,8 +268,6 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                         ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
                         PARAM_SHOW_ASK_GEMINI_ON_SELECTION,
                         true)
-                && !AndroidSidePanelEnabledFn.isEnabled()
-                && TabBottomSheetUtils.isTabBottomSheetEnabled()
                 && !DeviceInfo.isAutomotive()
                 && GlicEnabling.isEnabledForProfile(profile);
     }
@@ -211,10 +277,12 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                 ChromeFeatureList.getFieldTrialParamByFeature(
                         ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
                         PARAM_ASK_GEMINI_SELECTION_MENU_POSITION);
-        if (ASK_GEMINI_POSITION_SECONDARY.equals(position)) {
-            builder.setOrderAndCategory(0, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
-        } else {
+        // Defaults to the secondary assist section; the field trial can opt into the assist
+        // section instead.
+        if (ASK_GEMINI_POSITION_ASSIST.equals(position)) {
             builder.setOrderAndCategory(0, ItemGroupOffset.ASSIST_ITEMS);
+        } else {
+            builder.setOrderAndCategory(0, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
         }
     }
 
@@ -224,11 +292,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         GURL pageUrl = mTab.getUrl();
         if (pageUrl == null || !pageUrl.isValid()) return false;
 
-        String scheme = pageUrl.getScheme();
-        boolean isChromeOrNativePage =
-                UrlConstants.CHROME_SCHEME.equals(scheme)
-                        || UrlConstants.CHROME_NATIVE_SCHEME.equals(scheme)
-                        || mTab.isNativePage();
+        boolean isChromeOrNativePage = UrlUtilities.isChromeScheme(pageUrl) || mTab.isNativePage();
         return !isChromeOrNativePage
                 && !DomDistillerUrlUtils.isDistilledPage(pageUrl)
                 && menuType == MenuType.DROPDOWN;

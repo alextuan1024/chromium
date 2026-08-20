@@ -10,6 +10,7 @@
 #import "components/feature_engagement/public/tracker.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/assistant/coordinator/assistant_container_commands.h"
+#import "ios/chrome/browser/assistant/ui/assistant_container_view_controller.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_event_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
@@ -31,6 +32,8 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -156,10 +159,16 @@
   return shouldShow;
 }
 
-- (BOOL)shouldRequireFullPageContextForEntryPoint:
+- (BOOL)shouldBlockQuerySubmissionWhileLoadingForEntryPoint:
     (gemini::EntryPoint)entryPoint {
-  return IsAppSwitcherAISummarizationEnabled() &&
-         entryPoint == gemini::EntryPoint::AppSwitcherAISummarization;
+  return entryPoint == gemini::EntryPoint::AppSwitcherAISummarization &&
+         IsAppSwitcherAISummarizationEnabled();
+}
+
+- (BOOL)shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
+    (gemini::EntryPoint)entryPoint {
+  return entryPoint == gemini::EntryPoint::AppSwitcherAISummarization &&
+         IsAppSwitcherAISummarizationEnabled();
 }
 
 - (void)onFloatyDismiss {
@@ -191,11 +200,47 @@
 
   _eventHandler = nullptr;
   _containerHandler = nil;
+  _geminiHandler = nil;
   _consumer = nil;
   _webStateList = nullptr;
   _profile = nullptr;
   [_gatewayManager disconnect];
   _gatewayManager = nil;
+}
+
+#pragma mark - AssistantContainerDelegate
+
+- (void)assistantContainerDidUpdateDetentHeights:
+    (AssistantContainerViewController*)container {
+  NSInteger collapsedHeight =
+      [container heightForDetent:AssistantContainerDetent::kMinimized];
+  NSInteger extendedHeight =
+      [container heightForDetent:AssistantContainerDetent::kMedium];
+
+  if (collapsedHeight > 0 && extendedHeight > 0) {
+    ios::provider::UpdateDetentHeights(collapsedHeight, extendedHeight);
+  }
+}
+
+- (void)assistantContainer:(AssistantContainerViewController*)container
+           didChangeDetent:(AssistantContainerDetent)newDetent {
+  // Ignore delegate notifications for detent changes that were triggered
+  // programmatically. We should not dismiss if the container was minimized
+  // programmatically.
+  if (newDetent == self.detentSize) {
+    return;
+  }
+
+  self.detentSize = newDetent;
+  if (newDetent == AssistantContainerDetent::kMinimized && self.isZeroState &&
+      IsChromeNextIaEnabled()) {
+    [self.geminiHandler dismissGeminiFlowWithCompletion:nil];
+  }
+}
+
+- (void)assistantContainerDidRequestDismissal:
+    (AssistantContainerViewController*)container {
+  [self.geminiHandler dismissGeminiFlowWithCompletion:nil];
 }
 
 #pragma mark - GeminiViewStateDelegate
@@ -366,9 +411,16 @@
   }
   config.contextualCueChipLabel = startupState.prepopulatedPrompt;
   config.entryPoint = startupState.entryPoint;
-  config.requireFullPageContext =
-      [self shouldRequireFullPageContextForEntryPoint:startupState.entryPoint];
-  RecordRequireFullPageContext(config.requireFullPageContext);
+  config.blockQuerySubmissionWhileLoading =
+      [self shouldBlockQuerySubmissionWhileLoadingForEntryPoint:
+          startupState.entryPoint];
+  RecordBlockQuerySubmissionWhileLoading(
+      config.blockQuerySubmissionWhileLoading);
+  config.showPageLoadingSnackbarOnOpeningInvocation =
+      [self shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
+          startupState.entryPoint];
+  RecordShowPageLoadingSnackbarOnOpeningInvocation(
+      config.showPageLoadingSnackbarOnOpeningInvocation);
   config.imageRemixIPHShouldShow =
       startupState.entryPoint == gemini::EntryPoint::ImageRemixIPH;
 

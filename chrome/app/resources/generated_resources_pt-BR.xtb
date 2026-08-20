@@ -292,7 +292,6 @@ Verifique suas senhas a qualquer momento no <ph name="GOOGLE_PASSWORD_MANAGER" /
 <translation id="1202116106683864634">Você quer mesmo excluir essa chave de acesso?</translation>
 <translation id="1202892408424955784">Produtos monitorados</translation>
 <translation id="1203247227716551969">Verificar sua conta</translation>
-<translation id="1203559206734265703">A depuração de públicos protegidos está ativada.</translation>
 <translation id="120368089816228251">Nota musical</translation>
 <translation id="1203942045716040624">Worker compartilhado: <ph name="SCRIPT_URL" /></translation>
 <translation id="1206832039833782423">O código de segurança está no verso do cartão</translation>
@@ -717,6 +716,7 @@ Verifique suas senhas a qualquer momento no <ph name="GOOGLE_PASSWORD_MANAGER" /
 <translation id="1554640914375980459">Piscar a tela ao receber notificações. Tenha cuidado com as notificações com flash se você tiver sensibilidade à luz.</translation>
 <translation id="1555130319947370107">Azul</translation>
 <translation id="1556127816860282890">A atividade em segundo plano e alguns efeitos visuais, como a rolagem suave, podem ser limitados</translation>
+<translation id="1557806604681757705">seu computador</translation>
 <translation id="1557939148300698553">Criar perfil</translation>
 <translation id="155803912725350982">Teclas lentas</translation>
 <translation id="155865706765934889">Touchpad</translation>
@@ -1026,6 +1026,7 @@ Verifique suas senhas a qualquer momento no <ph name="GOOGLE_PASSWORD_MANAGER" /
 <translation id="1784707308176068866">Executar em segundo plano quando solicitado por um aplicativo nativo de cooperação</translation>
 <translation id="1784849162047402014">O dispositivo está com pouco espaço em disco</translation>
 <translation id="1784864038959330497">{NUM_SUB_APPS,plural, =1{Se você desinstalar "<ph name="APP_NAME" />", este app também será desinstalado:}one{Se você desinstalar "<ph name="APP_NAME" />", este app também será desinstalado:}other{Se você desinstalar "<ph name="APP_NAME" />", estes apps também serão desinstalados:}}</translation>
+<translation id="1785698972112179866">Faça login para ter acesso aos seus favoritos e muito mais do<ph name="DEVICE" /></translation>
 <translation id="1786290960428378411">Solicitação para leitura e mudança</translation>
 <translation id="1789543093145556097">Ocultar sempre</translation>
 <translation id="179021551944139249">Adicionar link à Lista de leitura</translation>
@@ -1164,7 +1165,7 @@ Verifique suas senhas a qualquer momento no <ph name="GOOGLE_PASSWORD_MANAGER" /
 <translation id="1890026367080681123">Acessar as configurações de conteúdo incorporado</translation>
 <translation id="189210018541388520">Abrir tela cheia</translation>
 <translation id="1892341345406963517">Olá, <ph name="PARENT_NAME" /></translation>
-<translation id="1892453608039100484">1. Clique em <ph name="BUTTON_LABEL" /> abaixo
+<translation id="1892453608039100484">1. Clique abaixo em <ph name="BUTTON_LABEL" />
 2. Clique em <ph name="BUTTON_2" /> nas configurações do Windows</translation>
 <translation id="1895658205118569222">Encerramento</translation>
 <translation id="1896353439080510710">As conversas são analisadas e usadas para aprimorar a IA do Google. O Gemini é uma IA e pode cometer erros. Você pode <ph name="BEGIN_LINK_MANAGE_ACTIVITY" />gerenciar a sua atividade<ph name="END_LINK_MANAGE_ACTIVITY" />, incluindo informações sobre a sua localização. <ph name="BEGIN_LINK_LEARN_MORE" />Saiba mais sobre suas escolhas<ph name="END_LINK_LEARN_MORE" />.</translation>
@@ -2845,6 +2846,7 @@ Para gerenciar as configurações dessa conta, instale o app Family Link no seu 
 <translation id="3175862692832442091">Floresta</translation>
 <translation id="3176347586396987181">Use a tecla “z” para tocar em um botão do mouse e pressionar</translation>
 <translation id="3176984568033229317">Use a Pesquisa Google no Edge</translation>
+<translation id="3177338796769255211">Faça login para ter acesso a favoritos e muito mais em todos os seus dispositivos</translation>
 <translation id="3177430966804511955">Gerenciar apps isolados da Web (Beta)</translation>
 <translation id="31774765611822736">Nova guia à esquerda</translation>
 <translation id="3177909033752230686">Idioma da página:</translation>
@@ -4238,7 +4240,7 @@ Para gerenciar as configurações dessa conta, instale o app Family Link no seu 
 <translation id="4241224519481557898">Categoria</translation>
 <translation id="4242245038391716252">Baixado pela extensão: &lt;a href="<ph name="URL" />"&gt;<ph name="EXTENSION" />&lt;/a&gt;</translation>
 <translation id="4242344119782070019">Agora você pode expandir as guias ao passar o cursor sobre elas. Para ativar essa função, clique com o botão direito aqui.</translation>
-<translation id="4242533952199664413">Abrir configurações.</translation>
+<translation id="4242533952199664413">Abrir configurações</translation>
 <translation id="4242825475818569385"><ph name="BEGIN_LINK" />Seu navegador e seu perfil são gerenciados<ph name="END_LINK" /> por <ph name="DOMAIN" /></translation>
 <translation id="424315890655130736">Digite a senha longa</translation>
 <translation id="4243504193894350135">A impressora está pausada</translation>
@@ -8649,6 +8651,7 @@ Há # outras senhas comprometidas. O Gerenciador de senhas do Google recomenda q
 Isso pode incluir informações sobre softwares instalados, arquivos, seu navegador, o sistema operacional do dispositivo e endereços IP.</translation>
 <translation id="7683834360226457448">Ferramentas de exibição para pessoas com baixa visão</translation>
 <translation id="7684212569183643648">Instalada pelo administrador</translation>
+<translation id="7684547908663093354">Faça login para acessar suas senhas e muito mais do <ph name="DEVICE" /></translation>
 <translation id="7684718995427157417">Para criar e testar seus apps, ative o Android Debug Bridge (ADB). Essa ação permite a instalação de apps Android que não foram verificados pelo Google. Para desativá-lo, será necessária uma redefinição para a configuração original.</translation>
 <translation id="7684803937028953000">Sua organização bloqueou o download local deste arquivo.</translation>
 <translation id="7684913007876670600">Para mostrar uma visualização simplificada desta página, abra o painel lateral e selecione o modo de leitura</translation>
@@ -9069,6 +9072,7 @@ Mantenha a sua chave de arquivo em um local seguro. Você precisará dela para c
 <translation id="8011372169388649948">O favorito "<ph name="BOOKMARK_TITLE" />" foi movido.</translation>
 <translation id="8012188750847319132">caps lock</translation>
 <translation id="8013181884974864006">Tarefas contextuais</translation>
+<translation id="8013462234418290522">Faça login para acessar suas informações salvas e muito mais do <ph name="DEVICE" /></translation>
 <translation id="8013534738634318212">Esses sites estão em um grupo definido por <ph name="RWS_OWNER" /> e podem ver sua atividade no grupo.</translation>
 <translation id="8013993649590906847">Se uma imagem não tiver uma descrição útil, o Chrome tentará fornecer uma para você. As imagens serão enviadas ao Google para a criação de descrições.</translation>
 <translation id="8014154204619229810">O atualizador está sendo executado no momento. Aguarde um minuto e atualize para verificar novamente.</translation>

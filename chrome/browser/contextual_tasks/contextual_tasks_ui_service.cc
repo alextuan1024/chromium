@@ -4,6 +4,7 @@
 
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "base/command_line.h"
@@ -28,10 +29,12 @@
 #include "chrome/browser/contextual_tasks/active_task_context_provider.h"
 #include "chrome/browser/contextual_tasks/contextual_search_session_finder.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_cookie_synchronizer.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_eligibility_manager.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_interface.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_delegate.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_window_tracker.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_window_tracker_manager.h"
@@ -99,7 +102,6 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/lens/lens_media_link_handler.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
@@ -259,6 +261,40 @@ void LoadUrlInSidePanel(content::WebContents* web_contents, const GURL& url) {
   web_contents->GetController().LoadURL(url, content::Referrer(),
                                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
                                         std::string());
+}
+
+// Returns true if `web_contents` corresponds to an active tab that is attached
+// as context in the current contextual search session.
+bool IsActiveTabInContext(content::WebContents* web_contents) {
+  if (!contextual_tasks::IsContextualTasksUIEnabled() || !web_contents) {
+    return false;
+  }
+
+  SessionID current_tab_id = SessionTabHelper::IdForTab(web_contents);
+  if (!current_tab_id.is_valid()) {
+    return false;
+  }
+
+  auto* helper =
+      ContextualSearchWebContentsHelper::FromWebContents(web_contents);
+  if (!helper || !helper->session_handle()) {
+    return false;
+  }
+
+  auto* session_handle = helper->session_handle();
+  for (const auto& file : session_handle->GetSubmittedContextFileInfos()) {
+    if (file.tab_session_id.has_value() &&
+        file.tab_session_id.value() == current_tab_id) {
+      return true;
+    }
+  }
+  for (const auto& file : session_handle->GetUploadedContextFileInfos()) {
+    if (file.tab_session_id.has_value() &&
+        file.tab_session_id.value() == current_tab_id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -866,7 +902,8 @@ void ContextualTasksUiService::OnThreadLinkClicked(
     tabs::TabInterface* existing_tab = nullptr;
     existing_tab = MaybeFocusExistingOpenTab(url, tab_list, task_id);
     if (!existing_tab) {
-      if (task_id.is_valid()) {
+      if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
+          task_id.is_valid()) {
         AssociateWebContentsToTask(new_contents_ptr, task_id);
       }
 
@@ -1017,7 +1054,10 @@ void ContextualTasksUiService::OnTextFinderLookupComplete(
     new_contents->GetController().LoadURLWithParams(
         content::NavigationController::LoadURLParams(url));
 
-    AssociateWebContentsToTask(new_contents_ptr, task_id);
+    if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
+        task_id.is_valid()) {
+      AssociateWebContentsToTask(new_contents_ptr, task_id);
+    }
 
     TabListInterface* tab_list = TabListInterface::From(browser.get());
     // Insert the WebContents after the current active.
@@ -1160,8 +1200,10 @@ bool ContextualTasksUiService::ShouldRedirectIneligibleRequest(
 
   // Bypasses the redirect check if the session was started from Lens and the
   // Lens side panel unification feature is enabled (either as an active
-  // session or a pending session for the given task ID).
-  if (IsSessionAllowedWhileIneligible(source_contents, task_id)) {
+  // session or a pending session for the given task ID), or if the active tab
+  // is present in context on the WebContents.
+  if (IsSessionAllowedWhileIneligible(source_contents, task_id) ||
+      IsActiveTabInContext(source_contents)) {
     return false;
   }
 
@@ -1189,6 +1231,8 @@ bool ContextualTasksUiService::IsSessionAllowedWhileIneligible(
     return false;
   }
 
+  // Allow cobrowse session if we reached here from lens entry points. It will
+  // end up in opening the side panel.
   if (web_contents) {
     auto* helper =
         ContextualSearchWebContentsHelper::FromWebContents(web_contents);
@@ -1429,9 +1473,7 @@ ContextualTasksUiService::GetCommonSearchParamsMapForContextualTasks(
 #if !BUILDFLAG(IS_ANDROID)
   Profile* profile =
       Profile::FromBrowserContext(source_contents->GetBrowserContext());
-  ThemeService* theme_service =
-      profile ? ThemeServiceFactory::GetForProfile(profile) : nullptr;
-  is_dark_mode = theme_service ? theme_service->BrowserUsesDarkColors() : false;
+  is_dark_mode = contextual_tasks::ShouldUseDarkMode(profile);
 #endif
 
   bool is_side_panel =
@@ -1753,6 +1795,7 @@ bool ContextualTasksUiService::HandleNavigationImpl(
 
   if (is_nav_to_ai) {
     should_bypass_interception =
+        aim_eligibility_service_ &&
         aim_eligibility_service_->HasNoCobrowseParams(url_params.url);
 
     // If the page is to AI and the navigation is not same site, apply a param
@@ -2185,7 +2228,8 @@ bool ContextualTasksUiService::HandleNavigationImpl(
   // Navigations to the AI URL in the topmost frame should always be
   // intercepted.
   if (is_nav_to_ai) {
-    if (!aim_eligibility_service_->IsCobrowseEligible()) {
+    if (!aim_eligibility_service_ ||
+        !aim_eligibility_service_->IsCobrowseEligible()) {
       OMNIBOX_LOG("nav_trace")
           << "ContextualTasks navigation trace: HandleNavigationImpl "
              "returning false, nav to AI but not cobrowse eligible";
@@ -2522,13 +2566,32 @@ void ContextualTasksUiService::CloseTrackedWindow(
 }
 
 bool ContextualTasksUiService::IsTrustedHost(const std::string& host) {
-  if (base::EndsWith(host, ".corp.google.com") ||
-      base::EndsWith(host, ".c.googlers.com") ||
-      base::EndsWith(host, ".proxy.googlers.com")) {
+  if (host.empty()) {
+    return false;
+  }
+
+  // Handle localhost and loopback addresses. Note: `net::HostStringIsLocalhost`
+  // does not recognize bracketed IPv6 literals like "[::1]", so we explicitly
+  // check for "[::1]" in addition to standard loopback host strings.
+  if (host == "localhost" || host == "127.0.0.1" || host == "[::1]" ||
+      host == "::1" || net::HostStringIsLocalhost(host)) {
     return true;
   }
 
-  if (host == "localhost" || host == "127.0.0.1" || host == "[::1]") {
+  url::CanonHostInfo host_info;
+  std::string canonical_host = net::CanonicalizeHost(host, &host_info);
+  if (canonical_host.empty() ||
+      host_info.family == url::CanonHostInfo::BROKEN) {
+    return false;
+  }
+
+  if (!net::IsCanonicalizedHostCompliant(canonical_host)) {
+    return false;
+  }
+
+  if (net::IsSubdomainOf(canonical_host, "corp.google.com") ||
+      net::IsSubdomainOf(canonical_host, "c.googlers.com") ||
+      net::IsSubdomainOf(canonical_host, "proxy.googlers.com")) {
     return true;
   }
 
@@ -2540,6 +2603,15 @@ std::optional<std::string> ContextualTasksUiService::GetHostFromUrl(
   std::string host;
   if (net::GetValueForKeyInQuery(url, kChromeHostParam, &host) &&
       IsTrustedHost(host)) {
+    if (host == "[::1]" || host == "::1") {
+      return "[::1]";
+    }
+    url::CanonHostInfo host_info;
+    std::string canonical_host = net::CanonicalizeHost(host, &host_info);
+    if (!canonical_host.empty() &&
+        host_info.family != url::CanonHostInfo::BROKEN) {
+      return canonical_host;
+    }
     return host;
   }
   return std::nullopt;
@@ -2994,7 +3066,35 @@ void ContextualTasksUiService::StartTaskUiInSidePanelWithErrorPage(
 }
 
 bool ContextualTasksUiService::IsAiUrl(const GURL& url) {
-  return aim_eligibility_service_->IsAimUrl(url, GetForcedEmbeddedPageHost());
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+
+  // TODO(crbug.com/543997783): Have the PEC API return this as an AIM URL
+  // instead of hardcoding it here.
+  if (url.host() == "g.ai" || url.host() == "www.g.ai") {
+    return true;
+  }
+  return aim_eligibility_service_ &&
+         aim_eligibility_service_->IsAimUrl(url, GetForcedEmbeddedPageHost());
+}
+
+bool ContextualTasksUiService::IsSidePanelOpenAndRequestInSidePanel(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return false;
+  }
+  BrowserWindowInterface* browser =
+      webui::GetBrowserWindowInterface(web_contents);
+  if (!browser) {
+    return false;
+  }
+  auto* controller = ContextualTasksPanelController::From(browser);
+  if (!controller || !controller->IsPanelOpenForContextualTask()) {
+    return false;
+  }
+  return std::ranges::contains(controller->GetPanelWebContentsList(),
+                               web_contents);
 }
 
 bool ContextualTasksUiService::IsPendingErrorPage(const base::Uuid& task_id) {
@@ -3290,7 +3390,8 @@ void ContextualTasksUiService::OnImageClickedFromSourcesMenu(
 }
 
 bool ContextualTasksUiService::IsAllowedHost(const GURL& url) {
-  return aim_eligibility_service_->IsAimHost(url, GetForcedEmbeddedPageHost());
+  return aim_eligibility_service_ &&
+         aim_eligibility_service_->IsAimHost(url, GetForcedEmbeddedPageHost());
 }
 
 void ContextualTasksUiService::OnInitialThreadUrlAvailable(

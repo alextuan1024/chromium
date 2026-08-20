@@ -1695,6 +1695,9 @@ BASE_FEATURE(kOriginAgentClusterDefaultEnabled,
 // Enable defer commits to avoid flash of unstyled content, for all navigations.
 BASE_FEATURE(kPaintHolding, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPaintTimingIngnoreOutOfLifecyclePaints,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 // A parameter to exclude or not exclude CanvasFontCache from
 // PartialLowModeOnMidRangeDevices. This is used to see how
@@ -1788,7 +1791,7 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 // non-immediate candidates on the renderer side (see the declaration in
 // features.h for details).
 BASE_FEATURE(kSpeculationRulesRendererSideHeuristics,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPreloadingHeuristicsMLModel, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(int,
@@ -2363,6 +2366,8 @@ BASE_FEATURE(kVisualRectMappingApplyLocalVisualViewportTransform,
 
 BASE_FEATURE(kWebBluetoothCancelConnect,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kWebUIBypassMojoConnections, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kWebRtcUseCaptureBeginTimestamp, base::FEATURE_ENABLED_BY_DEFAULT);
 

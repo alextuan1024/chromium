@@ -312,6 +312,10 @@ const base::FeatureParam<base::TimeDelta>
     kAccountPreviewDataPeriodicRefreshTiming{
         &kEnableAccountPreviewData, "AccountPreviewDataPeriodicRefreshTiming",
         base::Hours(24)};
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kAccountPreviewData429RateLimitDuration,
+                   &kEnableAccountPreviewData,
+                   base::Hours(24));
 // Controls whether fetching entity preview data is enabled (via a specific api
 // method). This flag has no effect if `kEnableAccountPreviewData` is not
 // enabled.
@@ -384,7 +388,13 @@ const base::FeatureParam<bool> kAccountPreviewDataPersistAccounts{
 // AccountPreviewService
 BASE_FEATURE(kEnableAccountPreviewUseAppAccount,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kAccountPreviewAppAccountExpirationDuration,
+                   &kEnableAccountPreviewUseAppAccount,
+                   base::Days(180));
+#endif
 
+#if BUILDFLAG(IS_ANDROID)
 // Whether activityless sign-in should be used for all entry points.
 // Extensions are not shipped on Android yet. The flow is newly implemented. We
 // enable activityless signin by default on this new userless entrypoint to
@@ -870,6 +880,8 @@ bool IsSigninWindows10DepreciationState() {
 }
 
 #if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kSignOutOfChrome, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Feature to bypass double-checking that signin callers have correctly gotten
 // the user to accept account management. This check is slow and not strictly
 // necessary, so disable it while we work on adding caching.

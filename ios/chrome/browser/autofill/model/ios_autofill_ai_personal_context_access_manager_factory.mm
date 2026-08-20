@@ -9,9 +9,12 @@
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/personal_context/core/personal_context_eligibility_service.h"
 #import "components/personal_context/core/personal_context_service.h"
+#import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_eligibility_service_factory.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
+#import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 
 // static
 autofill::AutofillAiPersonalContextAccessManager*
@@ -36,6 +39,8 @@ IOSAutofillAiPersonalContextAccessManagerFactory::
                                     ProfileSelection::kNoInstanceInIncognito) {
   DependsOn(IOSPersonalContextEligibilityServiceFactory::GetInstance());
   DependsOn(IOSPersonalContextServiceFactory::GetInstance());
+  DependsOn(SubscriptionEligibilityServiceFactory::GetInstance());
+  DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
 }
 
 IOSAutofillAiPersonalContextAccessManagerFactory::
@@ -54,6 +59,9 @@ IOSAutofillAiPersonalContextAccessManagerFactory::BuildServiceInstanceFor(
   personal_context::PersonalContextEligibilityService*
       personal_context_eligibility_service =
           IOSPersonalContextEligibilityServiceFactory::GetForProfile(profile);
+  subscription_eligibility::SubscriptionEligibilityService*
+      subscription_eligibility_service =
+          SubscriptionEligibilityServiceFactory::GetForProfile(profile);
 
   if (!personal_context_service || !personal_context_eligibility_service) {
     return nullptr;
@@ -61,5 +69,6 @@ IOSAutofillAiPersonalContextAccessManagerFactory::BuildServiceInstanceFor(
 
   return std::make_unique<autofill::AutofillAiPersonalContextAccessManagerImpl>(
       personal_context_service, personal_context_eligibility_service,
-      profile->GetPrefs());
+      subscription_eligibility_service, profile->GetPrefs(),
+      DeviceInfoSyncServiceFactory::GetForProfile(profile));
 }

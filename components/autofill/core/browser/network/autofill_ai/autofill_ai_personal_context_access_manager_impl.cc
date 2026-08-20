@@ -26,7 +26,6 @@
 #include "components/autofill/core/browser/manual_testing_import.h"
 #include "components/autofill/core/browser/network/autofill_ai/personal_context_conversion_util.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_personal_context_enablement_utils.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/personal_context/core/context_memory_error.h"
@@ -37,7 +36,9 @@
 #include "components/personal_context/proto/context_memory_service.pb.h"
 #include "components/personal_context/proto/features/ambient_autofill.pb.h"
 #include "components/prefs/pref_service.h"
-#include "components/subscription_eligibility/subscription_eligibility_prefs.h"
+#include "components/sync_device_info/device_info.h"
+#include "components/sync_device_info/device_info_sync_service.h"
+#include "components/sync_device_info/local_device_info_provider.h"
 #include "net/base/backoff_entry.h"
 
 namespace autofill {
@@ -59,13 +60,6 @@ constexpr net::BackoffEntry::Policy kBackoffPolicy = {
     .entry_lifetime_ms = -1,
     .always_use_initial_delay = false};
 
-// Delay before logging the non-eligibility reason on startup. Instead of
-// reporting immediately at startup (which would incorrectly report non-eligible
-// before preferences are loaded from disk), this delay ensures initial
-// preference and device state have been populated.
-constexpr base::TimeDelta kNonEligibilityLoggingDelayOnStartup =
-    base::Seconds(30);
-
 bool IsPersonalContextEligible(
     personal_context::PersonalContextEligibilityState state) {
   using enum personal_context::PersonalContextEligibilityState;
@@ -79,13 +73,15 @@ bool IsPersonalContextEligible(
 
 personal_context::proto::ContextMemoryAmbientAutofillRequest
 CreateAmbientAutofillRequest(base::span<const EntityType> types,
-                             bool return_spii_presence) {
+                             bool return_spii_presence,
+                             std::string client_id) {
   personal_context::proto::ContextMemoryAmbientAutofillRequest request;
   for (const EntityType& type : types) {
     request.add_requested_types(
         AutofillEntityTypeToPersonalContextEntityType(type));
   }
   request.set_return_spii_presence(return_spii_presence);
+  request.set_client_id(std::move(client_id));
   return request;
 }
 
@@ -119,6 +115,23 @@ void LogRequestLatency(
   }
 }
 
+std::string GetLocalDeviceGuid(
+    syncer::DeviceInfoSyncService* device_info_sync_service) {
+  if (!device_info_sync_service) {
+    return std::string();
+  }
+  const syncer::LocalDeviceInfoProvider* provider =
+      device_info_sync_service->GetLocalDeviceInfoProvider();
+  if (!provider) {
+    return std::string();
+  }
+  const syncer::DeviceInfo* device_info = provider->GetLocalDeviceInfo();
+  if (!device_info) {
+    return std::string();
+  }
+  return device_info->guid();
+}
+
 }  // namespace
 
 AutofillAiPersonalContextAccessManagerImpl::
@@ -126,24 +139,27 @@ AutofillAiPersonalContextAccessManagerImpl::
         personal_context::PersonalContextService* personal_context_service,
         personal_context::PersonalContextEligibilityService*
             personal_context_eligibility_service,
-        PrefService* pref_service)
+        subscription_eligibility::SubscriptionEligibilityService*
+            subscription_eligibility_service,
+        PrefService* pref_service,
+        syncer::DeviceInfoSyncService* device_info_sync_service)
     : personal_context_service_(CHECK_DEREF(personal_context_service)),
       personal_context_eligibility_service_(
           CHECK_DEREF(personal_context_eligibility_service)),
-      pref_service_(pref_service) {
+      pref_service_(pref_service),
+      device_info_sync_service_(device_info_sync_service) {
   eligibility_service_observation_.Observe(
       personal_context_eligibility_service);
+  if (subscription_eligibility_service) {
+    subscription_eligibility_observation_.Observe(
+        subscription_eligibility_service);
+  }
   if (pref_service_) {
     pref_registrar_.Init(pref_service_);
     pref_registrar_.Add(
         personal_context::prefs::kPersonalContextInAutofillSettingsToggleStatus,
         base::BindRepeating(&AutofillAiPersonalContextAccessManagerImpl::
                                 OnPersonalContextSettingsToggleChanged,
-                            base::Unretained(this)));
-    pref_registrar_.Add(
-        subscription_eligibility::prefs::kAiSubscriptionTier,
-        base::BindRepeating(&AutofillAiPersonalContextAccessManagerImpl::
-                                ComputeAndMaybeLogNonEligibilityReason,
                             base::Unretained(this)));
   }
 
@@ -202,13 +218,15 @@ void AutofillAiPersonalContextAccessManagerImpl::PrefetchContext(
   }
 
   const bool has_spii_types = !spii_to_request.empty();
+  const std::string client_id = GetLocalDeviceGuid(device_info_sync_service_);
 
   // Request 1: collects non-spii entities and asks for spii presence if any of
   // the requested_types contains SPII types.
   {
     personal_context::proto::ContextMemoryAmbientAutofillRequest request =
         CreateAmbientAutofillRequest(non_spii_and_presence_to_request,
-                                     /*return_spii_presence=*/has_spii_types);
+                                     /*return_spii_presence=*/has_spii_types,
+                                     client_id);
     personal_context_service_->FetchContext(
         personal_context::proto::CONTEXT_MEMORY_FEATURE_AMBIENT_AUTOFILL,
         request,
@@ -225,7 +243,7 @@ void AutofillAiPersonalContextAccessManagerImpl::PrefetchContext(
   if (has_spii_types) {
     personal_context::proto::ContextMemoryAmbientAutofillRequest request =
         CreateAmbientAutofillRequest(spii_to_request,
-                                     /*return_spii_presence=*/false);
+                                     /*return_spii_presence=*/false, client_id);
     personal_context_service_->FetchContext(
         personal_context::proto::CONTEXT_MEMORY_FEATURE_AMBIENT_AUTOFILL,
         request,
@@ -538,8 +556,14 @@ void AutofillAiPersonalContextAccessManagerImpl::OnEligibilityStateChanged(
   }
 }
 
+void AutofillAiPersonalContextAccessManagerImpl::OnAiSubscriptionTierUpdated(
+    int32_t /*new_subscription_tier*/) {
+  ComputeAndMaybeLogNonEligibilityReason();
+}
+
 void AutofillAiPersonalContextAccessManagerImpl::
     OnPersonalContextSettingsToggleChanged() {
+  ComputeAndMaybeLogNonEligibilityReason();
   if (pref_service_ &&
       !pref_service_->GetBoolean(
           personal_context::prefs::
@@ -555,19 +579,24 @@ void AutofillAiPersonalContextAccessManagerImpl::
     return;
   }
 
-  // TODO(crbug.com/537686190): Consolidate this non-eligibility logic with the
-  // permission checks in `autofill_ai_permission_utils.cc`.
   std::optional<PersonalContextNonEligibilityReason> non_eligibility_reason =
       personal_context_eligibility_service_->GetNonEligibilityReason();
-  const int32_t tier = pref_service_->GetInteger(
-      subscription_eligibility::prefs::kAiSubscriptionTier);
 
   if (non_eligibility_reason ==
           PersonalContextNonEligibilityReason::kEligible &&
-      !GetAutofillAmbientAutofillEligibleTiers().contains(tier) &&
-      !IsAndroidDeviceEligibleForAmbientAutofill()) {
+      !IsDeviceOrSubscriptionTierEligibleForAmbientAutofill(
+          subscription_eligibility_observation_.GetSource())) {
     non_eligibility_reason = PersonalContextNonEligibilityReason::
         kNotG1SubscriberOrAndroidPremiumDevice;
+  }
+
+  if (non_eligibility_reason ==
+          PersonalContextNonEligibilityReason::kEligible &&
+      !pref_service_->GetBoolean(
+          personal_context::prefs::
+              kPersonalContextInAutofillSettingsToggleStatus)) {
+    non_eligibility_reason =
+        PersonalContextNonEligibilityReason::kPersonalIntelligencePrefDisabled;
   }
 
   if (last_non_eligibility_reason_ == non_eligibility_reason) {

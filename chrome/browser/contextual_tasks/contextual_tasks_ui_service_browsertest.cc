@@ -12,15 +12,16 @@
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/companion/text_finder/text_highlighter_manager.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_cookie_synchronizer.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_eligibility_manager.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_delegate.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/lens/lens_media_link_handler.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -553,10 +554,14 @@ class ContextualTasksUiServiceRearchitectureEnabledTest
         {});
   }
 
-  std::string GetExpectedCs() {
+  std::string GetExpectedCs(Browser* browser = nullptr) {
+    Browser* target_browser = browser ? browser : this->browser();
     ThemeService* theme_service =
-        ThemeServiceFactory::GetForProfile(browser()->GetProfile());
-    return theme_service && theme_service->BrowserUsesDarkColors() ? "1" : "0";
+        ThemeServiceFactory::GetForProfile(target_browser->GetProfile());
+    bool is_dark_mode =
+        (theme_service && theme_service->BrowserUsesDarkColors()) ||
+        target_browser->GetProfile()->IsOffTheRecord();
+    return is_dark_mode ? "1" : "0";
   }
 
  private:
@@ -591,6 +596,40 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceRearchitectureEnabledTest,
   expected_url =
       net::AppendOrReplaceQueryParameter(expected_url, "hl", "en-US");
   EXPECT_EQ(panel_contents->GetLastCommittedURL(), expected_url);
+}
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceRearchitectureEnabledTest,
+                       StartTaskUiInSidePanel_IncognitoUsesDarkMode) {
+  Browser* incognito_browser = CreateIncognitoBrowser();
+  ContextualTasksUiService* ui_service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          incognito_browser->GetProfile());
+  GURL initial_url("https://example.com/ai-page");
+  tabs::TabInterface* tab =
+      incognito_browser->tab_strip_model()->GetActiveTab();
+
+  ui_service->StartTaskUiInSidePanel(incognito_browser, tab, initial_url,
+                                     nullptr);
+
+  auto* controller = ContextualTasksPanelController::From(incognito_browser);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return controller && controller->IsPanelOpenForContextualTask();
+  }));
+
+  content::WebContents* panel_contents = controller->GetActiveWebContents();
+  ASSERT_TRUE(panel_contents);
+  content::WaitForLoadStop(panel_contents);
+
+  GURL expected_url =
+      net::AppendOrReplaceQueryParameter(initial_url, "sourceid", "chrome");
+  expected_url = net::AppendOrReplaceQueryParameter(expected_url, "ccb", "1");
+  expected_url = net::AppendOrReplaceQueryParameter(
+      expected_url, "cs", GetExpectedCs(incognito_browser));
+  expected_url = net::AppendOrReplaceQueryParameter(expected_url, "gsc", "2");
+  expected_url =
+      net::AppendOrReplaceQueryParameter(expected_url, "hl", "en-US");
+  EXPECT_EQ(panel_contents->GetLastCommittedURL(), expected_url);
+  EXPECT_EQ(GetExpectedCs(incognito_browser), "1");
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceRearchitectureEnabledTest,

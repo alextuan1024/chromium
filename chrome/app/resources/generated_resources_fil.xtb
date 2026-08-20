@@ -292,7 +292,6 @@ Suriin ang iyong mga password anumang oras sa <ph name="GOOGLE_PASSWORD_MANAGER"
 <translation id="1202116106683864634">Sigurado ka bang gusto mong i-delete ang passkey na ito?</translation>
 <translation id="1202892408424955784">Mga sinusubaybayang produkto</translation>
 <translation id="1203247227716551969">I-verify ang Iyong Account</translation>
-<translation id="1203559206734265703">Naka-enable ang Pag-debug para sa Mga Pinoprotektahang Audience.</translation>
 <translation id="120368089816228251">Nota ng musika</translation>
 <translation id="1203942045716040624">Nakabahaging Worker: <ph name="SCRIPT_URL" /></translation>
 <translation id="1206832039833782423">Nasa likod ng iyong card ang panseguridad na code mo</translation>
@@ -1886,6 +1885,7 @@ Puwede mong pamahalaan ang mga setting ng account na ito sa pamamagitan ng pag-i
 <translation id="2458379781610688953">I-update ang account, <ph name="EMAIL" /></translation>
 <translation id="2459703812219683497">Na-detect ang code sa pag-activate</translation>
 <translation id="2459706890611560967">Ipagpatuloy ang pag-cast ng tab sa <ph name="DEVICE_NAME" /></translation>
+<translation id="245979889539926662">Mag-share ng screenshot</translation>
 <translation id="2460150227008936698">{COUNT,plural, =0{Mag-e-expire ngayong araw}=1{Mag-e-expire bukas}one{Mag-e-expire sa loob ng # araw}other{Mag-e-expire sa loob ng # na araw}}</translation>
 <translation id="2460482211073772897">Sa iba pang folder</translation>
 <translation id="2460826998961521840">Para magamit ang mga naka-save na passkey sa Google Account mo</translation>
@@ -2845,6 +2845,7 @@ Puwede mong pamahalaan ang mga setting ng account na ito sa pamamagitan ng pag-i
 <translation id="3175862692832442091">Gubat</translation>
 <translation id="3176347586396987181">Gamitin ang “z” para pindutin nang matagal ang button ng mouse</translation>
 <translation id="3176984568033229317">Dalhin ang Google Search sa Edge</translation>
+<translation id="3177338796769255211">Mag-sign in para makuha ang iyong mga bookmark at higit pa sa lahat ng device mo</translation>
 <translation id="3177430966804511955">Pamahalaan ang mga naka-isolate na web app (beta)</translation>
 <translation id="31774765611822736">Bagong tab sa kaliwa</translation>
 <translation id="3177909033752230686">Wika ng Page:</translation>

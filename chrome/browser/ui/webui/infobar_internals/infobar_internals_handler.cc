@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/infobar_internals/infobar_internals_handler.h"
 
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,22 +21,28 @@
 #include "chrome/browser/buildflags.h"
 #include "chrome/browser/devtools/devtools_infobar_delegate.h"
 #include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/devtools/global_confirm_info_bar.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/infobars/browser_infobar_manager.h"
 #include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/browser/infobars/simple_alert_infobar_creator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/omnibox/alternate_nav_infobar_delegate.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/simple_alert_infobar_delegate.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/prefs/pref_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/common/buildflags.h"
@@ -104,7 +111,7 @@ void InfoBarInternalsHandler::TriggerInfoBar(InfoBarType type,
 }
 
 void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
-  // Please keep the entries in alphabetized order base on the type.
+  // Please keep the entries in alphabetized order based on the type.
   std::vector<InfoBarEntryPtr> infobar_list;
   if (base::FeatureList::IsEnabled(features::kInfoBarInlineLinks)) {
     infobar_list.emplace_back(InfoBarEntry::New(
@@ -134,11 +141,6 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
       "Chrome as their default browser. This trigger resets any browser "
       "state can prevents the infobar to shown, then shows the infobar. "
       "This can only be triggered on non-ChromeOS Desktop platforms."));
-  infobar_list.emplace_back(InfoBarEntry::New(
-      /*type=*/InfoBarType::kSessionRestore, /*name=*/"Session Restore",
-      /*description=*/
-      "Triggers the session restore infobar. This infobar can only be "
-      "triggered on Mac, Windows and Linux."));
 #endif
 
   infobar_list.emplace_back(InfoBarEntry::New(
@@ -184,6 +186,13 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
 #endif
 
   infobar_list.emplace_back(InfoBarEntry::New(
+      /*type=*/InfoBarType::kLocalTestPoliciesApplied,
+      /*name=*/"Local Test Policies Applied",
+      /*description=*/
+      "The Local Test Policies Applied infobar warns the user that local "
+      "test policies are active."));
+
+  infobar_list.emplace_back(InfoBarEntry::New(
       /*type=*/InfoBarType::kPageInfo, /*name=*/"Page Info",
       /*description=*/
       "The Page Info infobar is shown when a user changes permissions, "
@@ -208,8 +217,15 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
       "shows the infobar."));
 #endif
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  infobar_list.emplace_back(InfoBarEntry::New(
+      /*type=*/InfoBarType::kSessionRestore, /*name=*/"Session Restore",
+      /*description=*/
+      "Triggers the session restore infobar. This infobar can only be "
+      "triggered on Mac, Windows and Linux."));
+#endif
 
+#if BUILDFLAG(IS_WIN)
   infobar_list.emplace_back(InfoBarEntry::New(
       /*type=*/InfoBarType::kStartupLaunch, /*name=*/"Startup Launch",
       /*description=*/
@@ -234,8 +250,10 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
   BrowserWindowInterface* const bwi =
       GetLastActiveBrowserWindowInterfaceWithAnyProfile();
   Profile* const profile = bwi ? bwi->GetProfile() : nullptr;
+  auto* const browser_infobar_manager =
+      infobars::BrowserInfoBarManager::From(g_browser_process);
 
-  // Please keep the entries in alphabetized order base on the type.
+  // Please keep the entries in alphabetized order based on the type.
   switch (type) {
     case InfoBarType::kAlternateNav: {
       if (!bwi || !bwi->GetActiveTabInterface()) {
@@ -256,8 +274,6 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
     case InfoBarType::kChromeForTesting: {
       if (infobars::IsInfoBarMigrated(
               infobars::InfoBarDelegate::CHROME_FOR_TESTING_INFOBAR_DELEGATE)) {
-        auto* browser_infobar_manager =
-            infobars::BrowserInfoBarManager::From(g_browser_process);
         if (!browser_infobar_manager) {
           return false;
         }
@@ -298,16 +314,6 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
 
       chrome::startup::default_prompt::ResetPromptPrefs(profile);
       DefaultBrowserPromptManager::GetInstance()->MaybeShowPrompt();
-      return true;
-    }
-    case InfoBarType::kSessionRestore: {
-      if (!profile) {
-        return false;
-      }
-      session_restore_infobar::SessionRestoreInfoBarManager::GetInstance()
-          ->ShowInfoBar(*profile,
-                        session_restore_infobar::SessionRestoreInfoBarDelegate::
-                            InfobarMessageType::kTurnOffFromRestart);
       return true;
     }
 #endif
@@ -429,6 +435,40 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
       return false;
     }
 #endif
+#if BUILDFLAG(IS_MAC)
+    case InfoBarType::kKeystone: {
+#if BUILDFLAG(ENABLE_UPDATER)
+      if (!profile) {
+        return false;
+      }
+
+      profile->GetPrefs()->SetBoolean(prefs::kShowUpdatePromotionInfoBar, true);
+      ShowUpdaterPromotionInfoBar();
+      return true;
+#else
+      return false;
+#endif
+    }
+#endif
+    case InfoBarType::kLocalTestPoliciesApplied: {
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        browser_infobar_manager->ShowGlobally(
+            infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR);
+      } else {
+        GlobalConfirmInfoBar::Show(std::make_unique<SimpleAlertInfoBarDelegate>(
+            infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR,
+            /*vector_icon=*/nullptr,
+            l10n_util::GetStringUTF16(IDS_LOCAL_TEST_POLICIES_ENABLED),
+            /*auto_expire=*/false, /*should_animate=*/false,
+            /*closeable=*/false,
+            infobars::InfoBarDelegate::InfobarPriority::kLow));
+      }
+      return true;
+    }
     case InfoBarType::kPageInfo: {
       if (!bwi || !bwi->GetActiveTabInterface()) {
         return false;
@@ -438,8 +478,6 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
 
       if (infobars::IsInfoBarMigrated(
               infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE)) {
-        auto* browser_infobar_manager =
-            infobars::BrowserInfoBarManager::From(g_browser_process);
         if (!browser_infobar_manager) {
           return false;
         }
@@ -456,37 +494,6 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
       }
       return true;
     }
-#if BUILDFLAG(ENABLE_PLUGINS)
-    case InfoBarType::kReloadPlugin: {
-      if (!bwi || !bwi->GetActiveTabInterface()) {
-        return false;
-      }
-
-      content::WebContents* web_contents =
-          bwi->GetActiveTabInterface()->GetContents();
-      ReloadPluginInfoBarDelegate::Create(
-          infobars::ContentInfoBarManager::FromWebContents(web_contents),
-          &web_contents->GetController(),
-          l10n_util::GetStringFUTF16(IDS_PLUGIN_CRASHED_PROMPT,
-                                     u"Infobar Internals"));
-      return true;
-    }
-#endif
-#if BUILDFLAG(IS_MAC)
-    case InfoBarType::kKeystone: {
-#if BUILDFLAG(ENABLE_UPDATER)
-      if (!profile) {
-        return false;
-      }
-
-      profile->GetPrefs()->SetBoolean(prefs::kShowUpdatePromotionInfoBar, true);
-      ShowUpdaterPromotionInfoBar();
-      return true;
-#else
-      return false;
-#endif
-    }
-#endif
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     case InfoBarType::kPdf: {
       if (!bwi || !bwi->GetActiveTabInterface()) {
@@ -506,6 +513,34 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
 
       controller->MaybeShowInfoBarCallback(
           shell_integration::DefaultWebClientState::NOT_DEFAULT);
+      return true;
+    }
+#endif
+#if BUILDFLAG(ENABLE_PLUGINS)
+    case InfoBarType::kReloadPlugin: {
+      if (!bwi || !bwi->GetActiveTabInterface()) {
+        return false;
+      }
+
+      content::WebContents* web_contents =
+          bwi->GetActiveTabInterface()->GetContents();
+      ReloadPluginInfoBarDelegate::Create(
+          infobars::ContentInfoBarManager::FromWebContents(web_contents),
+          &web_contents->GetController(),
+          l10n_util::GetStringFUTF16(IDS_PLUGIN_CRASHED_PROMPT,
+                                     u"Infobar Internals"));
+      return true;
+    }
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+    case InfoBarType::kSessionRestore: {
+      if (!profile) {
+        return false;
+      }
+      session_restore_infobar::SessionRestoreInfoBarManager::GetInstance()
+          ->ShowInfoBar(*profile,
+                        session_restore_infobar::SessionRestoreInfoBarDelegate::
+                            InfobarMessageType::kTurnOffFromRestart);
       return true;
     }
 #endif

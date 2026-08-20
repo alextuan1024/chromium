@@ -362,7 +362,6 @@ struct Suggestion {
     ShouldTruncate should_truncate = ShouldTruncate(false);
   };
 
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.ui.suggestion
   enum class Icon {
     // kNoIcon is kept at the top of the list.
     kNoIcon,
@@ -407,6 +406,7 @@ struct Suggestion {
     kLoyalty,
     kMagic,
     kOfferTag,
+    kOpenInNew,
     kOrder,
     kOrderSpark,
     kPassport,
@@ -477,6 +477,8 @@ struct Suggestion {
 
   // Describes the behavioral interaction contract of a suggestion: whether it
   // can be selected/focused and whether it can be accepted (clicked/filled).
+  //
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
   enum class Acceptability {
     // The suggestion can be selected and accepted.
     kSelectableAndAcceptable,
@@ -536,6 +538,7 @@ struct Suggestion {
       case SuggestionType::kTroubleSigningInEntry:
         return std::holds_alternative<PasswordSuggestionDetails>(payload);
       case SuggestionType::kSeePromoCodeDetails:
+      case SuggestionType::kAutofillAiSourceAttribution:
         return std::holds_alternative<GURL>(payload);
       case SuggestionType::kIbanEntry:
         return std::holds_alternative<Guid>(payload) ||

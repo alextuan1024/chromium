@@ -30,12 +30,15 @@ struct ProcessedKey {
 // this key are in b/469921004.
 base::span<const ProcessedKey> GetServerVerificationKey(const GURL& url);
 
+// Returns whether the URL targets a non-prod server verification key variant.
+bool IsNonProdServerVerificationKey(const GURL& url);
+
 // The following functions are for testing only and return the server
 // verification keys for the corresponding environment.
 base::span<const ProcessedKey> GetAutopushKeysForTesting();
 base::span<const ProcessedKey> GetDevKeysForTesting();
+base::span<const ProcessedKey> GetLabsKeysForTesting();
 base::span<const ProcessedKey> GetProdKeysForTesting();
-base::span<const ProcessedKey> GetStagingKeysForTesting();
 
 }  // namespace private_ai
 

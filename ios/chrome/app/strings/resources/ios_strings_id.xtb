@@ -226,7 +226,6 @@
 <translation id="1674504678466460478"><ph name="SOURCE_LANGUAGE" /> ke <ph name="TARGET_LANGUAGE" /></translation>
 <translation id="1678855624321223424">Berdasarkan kebijakan organisasi Anda, file ini mungkin berisi informasi sensitif</translation>
 <translation id="1683276189281028863">Pemeriksaan sandi</translation>
-<translation id="168389590065701766">Anda kini dapat membuka Google Lens langsung dari kolom URL dan menelusuri apa pun yang Anda lihat</translation>
 <translation id="1689333818294560261">Nama panggilan</translation>
 <translation id="169048873465870056">Hapus tab dan grup?</translation>
 <translation id="1692115862433274081">Gunakan akun lain</translation>
@@ -1564,7 +1563,7 @@ Handoff juga harus diaktifkan pada bagian General di Settings, dan perangkat And
 <translation id="6152406514676263192">Sinkronkan untuk melihat konten yang paling relevan berdasarkan minat Anda.</translation>
 <translation id="6159839020698489198">opsional</translation>
 <translation id="6160780110287872296">Download file?</translation>
-<translation id="6165508094623778733">Pelajari selengkapnya</translation>
+<translation id="6165508094623778733">Pelajari lebih lanjut</translation>
 <translation id="6168647875670665004">Saran artikel</translation>
 <translation id="6169031022444660352">Untuk menghapus semua kredensial tersimpan, Anda harus menyiapkan kode sandi di perangkat terlebih dahulu.</translation>
 <translation id="6172428250974276014">Ya, pisahkan data (direkomendasikan)</translation>
@@ -2528,6 +2527,7 @@ Untuk melanjutkan dari komputer, beralihlah ke <ph name="OTHER_EMAIL" />. Anda a
 <translation id="9203951165704618409">Pindahkan kolom URL dari atas ke bawah untuk mendapatkan pengalaman penjelajahan yang disesuaikan.</translation>
 <translation id="9205189991633470489">Kunci Samaran</translation>
 <translation id="9206887540681440657">Kecepatan</translation>
+<translation id="9218430445555521422">Jadikan default</translation>
 <translation id="9219103736887031265">Gambar</translation>
 <translation id="9219154867334666734">Telusuri Tab…</translation>
 <translation id="9223358826628549784">Laporan kerusakan terkirim.</translation>

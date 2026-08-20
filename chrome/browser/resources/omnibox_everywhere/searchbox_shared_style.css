@@ -89,7 +89,7 @@
 #profileIcon {
   border-radius: 50%;
   height: 36px;
-  pointer-events: auto;
+  pointer-events: none;
   position: absolute;
   right: 16px;
   top: 10px;
@@ -168,4 +168,9 @@
 #screenshotMenu .icon.window {
   -webkit-mask-image: url(
     '//resources/cr_components/searchbox/icons/screenshot_window.svg');
+}
+
+#screenshotMenu .icon.region {
+  -webkit-mask-image: url(
+    '//resources/cr_components/searchbox/icons/screenshot_region.svg');
 }

@@ -2126,7 +2126,8 @@ void NetworkContext::CreateWebSocket(
     mojo::PendingRemote<mojom::WebSocketAuthenticationHandler> auth_handler,
     mojo::PendingRemote<mojom::TrustedHeaderClient> header_client,
     const std::optional<base::UnguessableToken>& throttling_profile_id,
-    const base::UnguessableToken& network_restrictions_id) {
+    const base::UnguessableToken& network_restrictions_id,
+    mojom::IPAddressSpace target_address_space) {
 #if BUILDFLAG(ENABLE_WEBSOCKETS)
   if (!websocket_factory_) {
     websocket_factory_ = std::make_unique<WebSocketFactory>(this);
@@ -2141,7 +2142,7 @@ void NetworkContext::CreateWebSocket(
       static_cast<net::NetworkTrafficAnnotationTag>(traffic_annotation),
       std::move(handshake_client), std::move(url_loader_network_observer),
       std::move(auth_handler), std::move(header_client), throttling_profile_id,
-      network_restrictions_id);
+      network_restrictions_id, target_address_space);
 #endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
 }
 
@@ -4049,10 +4050,6 @@ void NetworkContext::SetVariationsHeaders(
   variations_headers_ = std::move(variations_headers);
 }
 
-void NetworkContext::SetExpectedTargetNetworkForTesting(
-    std::optional<int64_t> target_network) {
-  url_request_context_->set_expected_target_network_for_testing(target_network);
-}
 
 bool NetworkContext::HasCookieAccessForDeviceBoundSession(
     const net::device_bound_sessions::CookieAccessCheckParams& params) {

@@ -40,7 +40,6 @@
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/drivefs/drivefs_bootstrap.h"
 #include "chromeos/ash/components/drivefs/drivefs_pinning_manager.h"
 #include "chromeos/ash/components/drivefs/drivefs_search_query.h"
@@ -474,6 +473,7 @@ class DriveIntegrationService::DriveFsHolder
   // `local_state` must be non-null and must outlive `this`.
   DriveFsHolder(PrefService* local_state,
                 Profile* profile,
+                signin::IdentityManager* identity_manager,
                 drivefs::DriveFsHost::MountObserver* mount_observer,
                 DriveFsMojoListenerFactory test_drivefs_mojo_listener_factory)
       : local_state_(CHECK_DEREF(local_state)),
@@ -482,6 +482,7 @@ class DriveIntegrationService::DriveFsHolder
         test_drivefs_mojo_listener_factory_(
             std::move(test_drivefs_mojo_listener_factory)),
         drivefs_host_(profile_->GetPath(),
+                      identity_manager,
                       this,
                       this,
                       content::GetNetworkConnectionTracker(),
@@ -499,10 +500,6 @@ class DriveIntegrationService::DriveFsHolder
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory()
       override {
     return profile_->GetURLLoaderFactory();
-  }
-
-  signin::IdentityManager* GetIdentityManager() override {
-    return IdentityManagerFactory::GetForProfile(profile_);
   }
 
   const AccountId& GetAccountId() override {
@@ -649,10 +646,12 @@ class DriveIntegrationService::DriveFsHolder
 DriveIntegrationService::DriveIntegrationService(
     PrefService* local_state,
     Profile* const profile,
+    signin::IdentityManager* identity_manager,
     const std::string& test_mount_point_name,
     const base::FilePath& test_cache_root,
     DriveFsMojoListenerFactory test_drivefs_mojo_listener_factory)
     : profile_(profile),
+      identity_manager_(CHECK_DEREF(identity_manager)),
       mount_point_name_(test_mount_point_name),
       cache_root_directory_(!test_cache_root.empty()
                                 ? test_cache_root
@@ -660,6 +659,7 @@ DriveIntegrationService::DriveIntegrationService(
       drivefs_holder_(std::make_unique<DriveFsHolder>(
           local_state,
           profile,
+          identity_manager,
           this,
           std::move(test_drivefs_mojo_listener_factory))) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -1618,14 +1618,12 @@ void DriveIntegrationService::ImmediatelyUpload(
 void DriveIntegrationService::GetReadOnlyAuthenticationToken(
     GetReadOnlyAuthenticationTokenCallback callback) {
   if (!auth_service_) {
-    signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(profile_);
     // This class doesn't care about browser sync consent.
     const CoreAccountId& account_id =
-        identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+        identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
 
     auth_service_ = std::make_unique<google_apis::AuthService>(
-        identity_manager, account_id, profile_->GetURLLoaderFactory(),
+        &identity_manager_.get(), account_id, profile_->GetURLLoaderFactory(),
         signin::OAuthConsumerId::kAshDriveIntegration);
   }
 

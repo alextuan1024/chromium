@@ -164,7 +164,6 @@ class InitialWebUIBrowserTestBase : public InProcessBrowserTest {
     std::vector<base::test::FeatureRefAndParams> base_features = {
         {features::kInitialWebUI, {{"use_separate_process", "true"}}},
         {features::kWebUIReloadButton, {}},
-        {features::kInitialWebUIMetrics, {}},
         {features::kSkipIPCChannelPausingForNonGuests, {}},
         {features::kWebUIInProcessResourceLoadingV2, {}}};
 
@@ -377,7 +376,6 @@ class InitialWebUINavigationTimelineBrowserTest : public InProcessBrowserTest {
     std::vector<base::test::FeatureRefAndParams> features = {
         {features::kInitialWebUI, {{"use_separate_process", "true"}}},
         {features::kWebUIReloadButton, {{"prewarm_webui", "false"}}},
-        {features::kInitialWebUIMetrics, {}},
         {features::kSkipIPCChannelPausingForNonGuests, {}},
         {features::kWebUIInProcessResourceLoadingV2, {}}};
     scoped_feature_list_.InitWithFeaturesAndParameters(
@@ -481,7 +479,6 @@ class PrewarmedWebUINavigationTimelineBrowserTest
     std::vector<base::test::FeatureRefAndParams> features = {
         {features::kInitialWebUI, {{"use_separate_process", "true"}}},
         {features::kWebUIReloadButton, {{"prewarm_webui", "true"}}},
-        {features::kInitialWebUIMetrics, {}},
         {features::kSkipIPCChannelPausingForNonGuests, {}},
         {features::kWebUIInProcessResourceLoadingV2, {}}};
     scoped_feature_list_.InitWithFeaturesAndParameters(
@@ -873,9 +870,18 @@ IN_PROC_BROWSER_TEST_F(InitialWebUISurfaceSyncBrowserTest,
 
 #if BUILDFLAG(IS_WIN)
 
+class InitialWebUIMinimizedWindowBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ public:
+  InitialWebUIMinimizedWindowBrowserTest()
+      : InitialWebUIBrowserTestBase(
+            {{features::kWebUIReloadButton,
+              {{"WebUIReloadButtonDeferBrowserViewShow", "true"}}}}) {}
+};
+
 // Tests that the duration metrics are not recorded for windows created as
 // minimized.
-IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
+IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
                        InitiallyMinimizedWindowSkipsMetrics) {
   base::HistogramTester histogram_tester;
 
@@ -924,7 +930,7 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
 
 // Tests that the duration metrics should be skipped for the windows that are
 // restored as minimized.
-IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
+IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
                        SessionRestoreMinimizedWindow) {
   Profile* profile = browser()->GetProfile();
 

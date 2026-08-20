@@ -17,6 +17,7 @@
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/constants.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -27,6 +28,11 @@ namespace {
 constexpr size_t kMaxIncomingMessageSize = 1 << 20;
 
 }  // namespace
+
+std::vector<network::mojom::HttpHeaderPtr>
+StreamingWebSocketClient::Delegate::GetAdditionalHeaders() {
+  return {};
+}
 
 StreamingWebSocketClient::StreamingWebSocketClient(
     const GURL& service_url,
@@ -83,7 +89,8 @@ void StreamingWebSocketClient::Connect() {
 
   std::vector<std::string> requested_protocols;
 
-  std::vector<network::mojom::HttpHeaderPtr> additional_headers{};
+  std::vector<network::mojom::HttpHeaderPtr> additional_headers =
+      delegate_->GetAdditionalHeaders();
   additional_headers.push_back(network::mojom::HttpHeader::New(
       "X-WebChannel-Content-Type", "application/x-protobuf"));
 
@@ -103,7 +110,8 @@ void StreamingWebSocketClient::Connect() {
       /*throttling_profile_id=*/std::nullopt,
       // WebSocket connections are browser-wide operations not associated with
       // any page/frame, so no Connection Allowlist restrictions should apply.
-      network::GetNoOpNetworkRestrictionsId());
+      network::GetNoOpNetworkRestrictionsId(),
+      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
 }
 
 void StreamingWebSocketClient::InternalWrite(base::span<const uint8_t> data) {

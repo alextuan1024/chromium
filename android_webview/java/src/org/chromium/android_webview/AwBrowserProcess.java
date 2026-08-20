@@ -207,7 +207,7 @@ public final class AwBrowserProcess {
      * Configures child process launcher. This is required only if child services are used in
      * WebView.
      */
-    public static void configureChildProcessLauncher(boolean isNativeWebViewZygoteEnabled) {
+    public static void configureChildProcessLauncher(boolean forceNativeSandboxedServices) {
         final boolean isExternalService = true;
         final boolean bindToCaller = true;
         final boolean ignoreVisibilityForImportance = true;
@@ -218,7 +218,7 @@ public final class AwBrowserProcess {
                 LibraryProcessType.PROCESS_WEBVIEW_CHILD,
                 bindToCaller,
                 ignoreVisibilityForImportance,
-                isNativeWebViewZygoteEnabled);
+                forceNativeSandboxedServices);
 
         ChildProcessLauncherHelper.initialize();
     }

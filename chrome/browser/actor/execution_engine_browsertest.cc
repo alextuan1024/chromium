@@ -11,10 +11,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/run_loop.h"
-#include "base/strings/strcat.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -42,7 +39,7 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
@@ -82,12 +79,10 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
+#include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
-#include "content/public/test/test_navigation_observer.h"
-#include "content/public/test/test_utils.h"
-#include "net/base/features.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -95,8 +90,6 @@
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/gfx/geometry/point.h"
-#include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
@@ -787,6 +780,8 @@ IN_PROC_BROWSER_TEST_P(ExecutionEngineDropdownCaptureOopifBrowserTest,
   content::RenderFrameHost* iframe =
       ChildFrameAt(web_contents()->GetPrimaryMainFrame(), 0);
   ASSERT_NE(iframe, nullptr);
+  EXPECT_TRUE(WaitForRenderFrameReady(iframe));
+  content::WaitForHitTestData(iframe);
 
   // Now click on the <select> in the out of process iframe, and then look for
   // red pixels.
@@ -859,7 +854,7 @@ class ExecutionEngineFileSystemAccessApiBrowserTest
     return result;
   }
 
-  bool IsUsageIndicatorVisible(Browser* browser) {
+  bool IsUsageIndicatorVisible(BrowserWindowInterface* browser) {
     auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
     auto* provider = browser_view->toolbar_button_provider();
     auto* icon_view = page_actions::GetIconLabelBubbleViewForTesting(
@@ -1182,13 +1177,7 @@ constexpr char kLookalikeHostWarning[] = "accounts-google.com";
 
 class ExecutionEngineUrlGatingBrowserTest : public InProcessBrowserTest {
  public:
-  ExecutionEngineUrlGatingBrowserTest() {
-    base::FieldTrialParams params;
-    params["allowlist"] = "a.com,b.com";
-    params["allowlist_only"] = "false";
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        kGlicActionAllowlist, std::move(params));
-  }
+  ExecutionEngineUrlGatingBrowserTest() = default;
 
   ~ExecutionEngineUrlGatingBrowserTest() override = default;
 
@@ -1252,7 +1241,6 @@ class ExecutionEngineUrlGatingBrowserTest : public InProcessBrowserTest {
 
  private:
   base::HistogramTester histogram_tester_for_init_;
-  base::test::ScopedFeatureList scoped_feature_list_;
   base::ScopedTempDir temp_dir_;
   // Must outlive any ActorTask created with it as the policy checker.
   MockPolicyChecker policy_checker_{

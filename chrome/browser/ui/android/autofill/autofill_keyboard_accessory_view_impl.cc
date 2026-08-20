@@ -76,6 +76,7 @@ bool IsSuggestionTypeEligibleForKeyboardAccessory(SuggestionType type) {
     case SuggestionType::kAtMemoryAiDisclosure:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAtMemoryFetching:
+    case SuggestionType::kAutofillAiSourceAttribution:
     case SuggestionType::kRemoveAutofillAi:
       return false;
 
@@ -232,7 +233,8 @@ void AutofillKeyboardAccessoryViewImpl::Show() {
             custom_icon_url
                 ? url::GURLAndroid::FromNativeGURL(env, **custom_icon_url)
                 : url::GURLAndroid::EmptyGURL(env),
-            !suggestion.IsSelectable(), *suggestion.is_loading, payload, i));
+            std::to_underlying(suggestion.acceptability),
+            *suggestion.is_loading, payload, i));
   }
   gfx::RectF bounds = controller_->element_bounds();
   Java_AutofillKeyboardAccessoryViewBridge_show(

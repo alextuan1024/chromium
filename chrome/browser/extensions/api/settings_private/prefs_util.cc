@@ -286,6 +286,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[::prefs::kTabSearchPinnedToTabstrip] =
       settings_api::PrefType::kBoolean;
+  (*s_allowlist)[::prefs::kTabScrollButtonsPinnedToTabstrip] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)[::prefs::kOrganizerPanelPinnedToTabstrip] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[::prefs::kEverythingMenuPinnedToTabstrip] =
@@ -387,6 +389,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[password_manager::prefs::kAutomaticPasskeyUpgrades] =
       settings_api::PrefType::kBoolean;
+  (*s_allowlist)[password_manager::prefs::kAutomatedPasswordChangeEnabled] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)[password_manager::prefs::kPasswordSharingEnabled] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[password_manager::prefs::kPasswordLeakDetectionEnabled] =
@@ -481,8 +485,6 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   (*s_allowlist)[::content_settings::kThirdPartyCookieBlockingSetting] =
       settings_api::PrefType::kNumber;
   (*s_allowlist)[::prefs::kPrivacySandboxRelatedWebsiteSetsEnabled] =
-      settings_api::PrefType::kBoolean;
-  (*s_allowlist)[::prefs::kBlockAll3pcToggleEnabled] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[::prefs::kEnableDoNotTrack] = settings_api::PrefType::kBoolean;
 

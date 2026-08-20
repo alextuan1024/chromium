@@ -1111,6 +1111,8 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="No tabs in window"/>
   <int value="4" label="Recent Tabs page"/>
   <int value="5" label="Recently closed limit exceeded"/>
+  <int value="6" label="Keyboard shortcut"/>
+  <int value="7" label="Menu"/>
 </enum>
 
 <enum name="ContactsPickerDialogAction">
@@ -1548,7 +1550,7 @@ chromium-metrics-reviews@google.com.
   <int value="37" label="DEPRECATED: RestoreCustomTab"/>
   <int value="38" label="DEPRECATED: UndoCustomTabRestoration"/>
   <int value="39" label="CvcSave"/>
-  <int value="40" label="TrackingProtectionNotice"/>
+  <int value="40" label="DEPRECATED: TrackingProtectionNotice"/>
   <int value="41" label="DesktopSiteWindowSetting"/>
   <int value="42" label="PromptHatsLocationCustomInvitation"/>
   <int value="43" label="PromptHatsLocationGenericInvitation"/>
@@ -1686,6 +1688,7 @@ chromium-metrics-reviews@google.com.
   <int value="11" label="Upgrade to Android S multi-instance support"/>
   <int value="12" label="Crash recovery"/>
   <int value="13" label="Relaunch"/>
+  <int value="14" label="Settings"/>
 </enum>
 
 <enum name="NTPImpressionType">
@@ -2215,6 +2218,7 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Tab Selected"/>
   <int value="5" label="Tab Group Selected"/>
   <int value="6" label="URL Loaded / Query Submitted"/>
+  <int value="7" label="Window Resized"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/TabSearchOverlayCoordinator.java:TabSearchDismissalReason) -->
@@ -2409,6 +2413,13 @@ chromium-metrics-reviews@google.com.
              WebChromeClient$FileChooserParams)"/>
   <int value="28" label="void openFileChooser(ValueCallback, String, String)"/>
   <int value="29" label="void setupAutoFill(Message)"/>
+</enum>
+
+<enum name="WebContentAdoptResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Failed: AwContents destroyed"/>
+  <int value="2" label="Failed: Old container view attached"/>
+  <int value="3" label="Failed: New container view attached"/>
 </enum>
 
 <enum name="WebPageContentProviderEvent">

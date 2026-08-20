@@ -292,7 +292,6 @@ Check your passwords at any time in <ph name="GOOGLE_PASSWORD_MANAGER" />.</tran
 <translation id="1202116106683864634">Are you sure that you want to delete this passkey?</translation>
 <translation id="1202892408424955784">Tracked products</translation>
 <translation id="1203247227716551969">Verify your account</translation>
-<translation id="1203559206734265703">Protected audiences debugging is enabled.</translation>
 <translation id="120368089816228251">Music note</translation>
 <translation id="1203942045716040624">Shared worker: <ph name="SCRIPT_URL" /></translation>
 <translation id="1206832039833782423">Your security code is on the back of your card</translation>
@@ -1886,6 +1885,7 @@ You can manage this account’s settings by installing the Family Link app on yo
 <translation id="2458379781610688953">Update account, <ph name="EMAIL" /></translation>
 <translation id="2459703812219683497">Activation code detected</translation>
 <translation id="2459706890611560967">Resume casting tab to <ph name="DEVICE_NAME" /></translation>
+<translation id="245979889539926662">Share a screenshot</translation>
 <translation id="2460150227008936698">{COUNT,plural, =0{Expires today}=1{Expires tomorrow}other{Expires in # days}}</translation>
 <translation id="2460482211073772897">In other folders</translation>
 <translation id="2460826998961521840">To use passkeys saved in your Google Account</translation>
@@ -2845,6 +2845,7 @@ You can manage this account’s settings by installing the Family Link app on yo
 <translation id="3175862692832442091">Forest</translation>
 <translation id="3176347586396987181">Use 'z' to press a mouse button and hold</translation>
 <translation id="3176984568033229317">Bring Google Search to Edge</translation>
+<translation id="3177338796769255211">Sign in to get your bookmarks and more on all your devices</translation>
 <translation id="3177430966804511955">Manage isolated web apps (beta)</translation>
 <translation id="31774765611822736">New tab to the left</translation>
 <translation id="3177909033752230686">Page Language:</translation>

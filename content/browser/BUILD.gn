@@ -46,8 +46,8 @@ if (is_android) {
     deps = [
       "//components/vrp_flags:buildflags",
       "//third_party/rust/font_types/v0_12:lib",
-      "//third_party/rust/read_fonts/v0_41:lib",
-      "//third_party/rust/skrifa/v0_44:lib",
+      "//third_party/rust/read_fonts/v0_43:lib",
+      "//third_party/rust/skrifa/v0_46:lib",
     ]
   }
 }
@@ -824,8 +824,6 @@ source_set("browser") {
     "devtools/forwarding_agent_host.h",
     "devtools/frame_auto_attacher.cc",
     "devtools/frame_auto_attacher.h",
-    "devtools/mojom_devtools_agent_host.cc",
-    "devtools/mojom_devtools_agent_host.h",
     "devtools/network_service_devtools_observer.cc",
     "devtools/network_service_devtools_observer.h",
     "devtools/protocol/audits_handler.cc",
@@ -1075,6 +1073,8 @@ source_set("browser") {
     "generic_sensor/web_contents_sensor_provider_proxy.h",
     "geolocation/geolocation_service_impl.cc",
     "geolocation/geolocation_service_impl.h",
+    "global_privacy_control_util.cc",
+    "global_privacy_control_util.h",
     "gpu/browser_gpu_channel_host_factory.cc",
     "gpu/browser_gpu_channel_host_factory.h",
     "gpu/browser_gpu_client_delegate.cc",
@@ -2872,6 +2872,11 @@ source_set("browser") {
           "media/captured_surface_controller.h",
         ]
       }
+    } else {
+      sources += [
+        "media/capture/screenshot_capture_request_impl.h",
+        "media/capture/screenshot_capture_request_impl_ios.cc",
+      ]
     }
     if (use_aura) {
       sources += [
@@ -3114,6 +3119,8 @@ source_set("browser") {
       "android/additional_navigation_params.h",
       "android/android_overlay_provider_impl.cc",
       "android/android_overlay_provider_impl.h",
+      "android/android_surface_control_compositor.cc",
+      "android/android_surface_control_compositor.h",
       "android/app_web_message_port.cc",
       "android/app_web_message_port.h",
       "android/background_sync_network_observer_android.cc",

@@ -223,7 +223,8 @@ class TestNetworkContext : public mojom::NetworkContext {
       mojo::PendingRemote<mojom::WebSocketAuthenticationHandler> auth_handler,
       mojo::PendingRemote<mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
-      const base::UnguessableToken& network_restrictions_id) override {}
+      const base::UnguessableToken& network_restrictions_id,
+      mojom::IPAddressSpace target_address_space) override {}
   void CreateWebTransport(
       const GURL& url,
       const url::Origin& origin,
@@ -412,8 +413,6 @@ class TestNetworkContext : public mojom::NetworkContext {
       const net::NetworkAnonymizationKey& network_anonymization_key) override {}
   void SetVariationsHeaders(
       variations::mojom::VariationsHeadersPtr variations_headers) override {}
-  void SetExpectedTargetNetworkForTesting(
-      std::optional<int64_t> target_network) override {}
 };
 
 }  // namespace network

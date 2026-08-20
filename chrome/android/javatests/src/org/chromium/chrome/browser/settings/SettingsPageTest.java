@@ -11,6 +11,7 @@ import static androidx.test.espresso.contrib.RecyclerViewActions.scrollTo;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.isFocused;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
@@ -295,6 +296,7 @@ public class SettingsPageTest {
 
     @Test
     @MediumTest
+    @Restriction(DeviceFormFactor.PHONE) // TODO(crbug.com/547765865): Fix for tablets/auto.
     public void testAccessibilityPageZoomDoesNotShowPopup() {
         mActivityTestRule.loadUrl("chrome-native://settings/");
 
@@ -322,6 +324,7 @@ public class SettingsPageTest {
     }
 
     /** Regression test for https://crbug.com/546419920. */
+    // TODO(crbug.com/547889541): Disabled on android-12l-landscape bots due to viewport height.
     @Test
     @MediumTest
     @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
@@ -364,6 +367,34 @@ public class SettingsPageTest {
 
         // Verify Autofill and passwords is highlighted.
         onView(autofillInHeader).check(matches(isHighlighted()));
+    }
+
+    @Test
+    @MediumTest
+    public void testSearchBoxAutoFocus() {
+        mActivityTestRule.loadUrl("chrome-native://settings/");
+
+        onView(withId(R.id.search_box)).check(matches(isDisplayed()));
+        onView(withId(R.id.search_box)).check(matches(isFocused()));
+    }
+
+    @Test
+    @MediumTest
+    public void testAutoFocusOnSettingsPageByTabSwitching() {
+        // Load Settings in Tab 0.
+        mActivityTestRule.loadUrl("chrome-native://settings/");
+        onView(withId(R.id.search_box)).check(matches(isDisplayed()));
+        onView(withId(R.id.search_box)).check(matches(isFocused()));
+
+        // Open a second tab (about:blank).
+        mActivityTestRule.loadUrlInNewTab("about:blank");
+
+        // Switch back to Tab 0 (Settings).
+        ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), 0);
+
+        // Verify the search box is automatically focused on tab switch.
+        onView(withId(R.id.search_box)).check(matches(isDisplayed()));
+        onView(withId(R.id.search_box)).check(matches(isFocused()));
     }
 
     /**

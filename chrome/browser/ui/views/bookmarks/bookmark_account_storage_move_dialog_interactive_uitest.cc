@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/bookmarks/bookmark_account_storage_move_dialog.h"
+
 #include "base/location.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -12,9 +14,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/views/bookmarks/bookmark_account_storage_move_dialog.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -669,13 +671,13 @@ IN_PROC_BROWSER_TEST_F(
   // Create Incognito Mode browser.
   Profile* otr_profile =
       original_profile->GetPrimaryOTRProfile(/*create_if_needed*/ true);
-  Browser* otr_browser = CreateBrowser(otr_profile);
+  BrowserWindowInterface* otr_browser = CreateBrowser(otr_profile);
   CloseBrowserSynchronously(browser());
   ASSERT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
 
   // A new browser should open on the Original Profile with the bookmarks
   // manager tab opened.
-  base::test::TestFuture<Browser*> browser_waiter;
+  base::test::TestFuture<BrowserWindowInterface*> browser_waiter;
   // Deletes itself.
   new profiles::BrowserAddedForProfileObserver(original_profile,
                                                browser_waiter.GetCallback());
@@ -688,7 +690,7 @@ IN_PROC_BROWSER_TEST_F(
                                        /*index=*/1,
                                        closed_waiter.GetCallback());
 
-  Browser* new_browser = browser_waiter.Get();
+  BrowserWindowInterface* new_browser = browser_waiter.Get();
   ASSERT_TRUE(new_browser);
   EXPECT_EQ(new_browser->GetProfile(), original_profile);
   bookmarks_manager_observer.WaitForNavigationFinished();

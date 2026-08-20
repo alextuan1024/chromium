@@ -103,6 +103,7 @@ PersonalContextSourceReferenceToSource(
     case personal_context::proto::SourceReference::kPhotos:
       return Source{.type = Source::Type::kPhotos,
                     .url = std::string(source_reference.photos().photos_url())};
+    case personal_context::proto::SourceReference::kDrive:
     case personal_context::proto::SourceReference::SOURCE_REFERENCE_NOT_SET:
       return std::nullopt;
   }
@@ -312,13 +313,6 @@ EntityInstance PersonalContextShipmentToEntityInstance(
     AddStringAttribute(kShipmentProductNames, base::JoinString(products, ", "),
                        attributes);
   }
-  if (shipment.associated_order_ids_size() > 0) {
-    const std::vector<std::string> order_ids(
-        shipment.associated_order_ids().begin(),
-        shipment.associated_order_ids().end());
-    AddStringAttribute(kShipmentOrderIds, base::JoinString(order_ids, ", "),
-                       attributes);
-  }
 
   return CreateEntityInstance(EntityTypeName::kShipment, std::move(attributes),
                               entity);
@@ -367,6 +361,8 @@ std::optional<EntityInstance> PersonalContextEntityToEntityInstance(
       return PersonalContextKnownTravelerNumberToEntityInstance(entity,
                                                                 passkey);
     case personal_context::proto::Entity::kSensitivePiiPresence:
+      return std::nullopt;
+    case personal_context::proto::Entity::kEncryptedEntity:
       return std::nullopt;
     case personal_context::proto::Entity::ENTITY_NOT_SET:
       return std::nullopt;
@@ -419,6 +415,7 @@ std::optional<EntityType> ToEntityType(
     case personal_context::proto::Entity::kKnownTravelerNumber:
       return EntityType(EntityTypeName::kKnownTravelerNumber);
     case personal_context::proto::Entity::kSensitivePiiPresence:
+    case personal_context::proto::Entity::kEncryptedEntity:
     case personal_context::proto::Entity::ENTITY_NOT_SET:
       return std::nullopt;
   }

@@ -91,7 +91,7 @@ _CONFIG = [
             'base::GetUniqueIdForProcess',
             'base::GetSystemMemoryInfo',
             'base::GiBS',
-            'base::GiBU',
+            'base::GiB',
             'base::HashingLRUCache',
             'base::HashInts',
             'base::HashMetricName',
@@ -115,7 +115,7 @@ _CONFIG = [
             'base::JobDelegate',
             'base::JobHandle',
             'base::KiBS',
-            'base::KiBU',
+            'base::KiB',
             'base::kCriticalMemoryPressureThreshold',
             'base::kInvalidThreadId',
             'base::kStatefulMemoryPressure',
@@ -130,7 +130,7 @@ _CONFIG = [
             'base::MemoryPressureListenerTag',
             'base::MessagePump',
             'base::MiBS',
-            'base::MiBU',
+            'base::MiB',
             'base::Microseconds',
             'base::Milliseconds',
             'base::Minutes',
@@ -1363,6 +1363,15 @@ _CONFIG = [
     {
         'paths': [
             'third_party/blink/renderer/core/html/anchor_element_utils.cc',
+        ],
+        'allowed': [
+            'base::CommandLine',
+        ]
+    },
+    {
+        'paths': [
+            'third_party/blink/renderer/core/timezone/timezone_controller.cc',
+            'third_party/blink/renderer/core/frame/local_frame_mojo_handler.cc',
         ],
         'allowed': [
             'base::CommandLine',

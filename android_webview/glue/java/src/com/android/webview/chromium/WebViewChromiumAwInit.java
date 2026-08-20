@@ -37,6 +37,7 @@ import org.chromium.android_webview.DualTraceEvent;
 import org.chromium.android_webview.HttpAuthDatabase;
 import org.chromium.android_webview.R;
 import org.chromium.android_webview.StartupCallSite;
+import org.chromium.android_webview.StartupController;
 import org.chromium.android_webview.StartupDiagnostics;
 import org.chromium.android_webview.StartupMetrics;
 import org.chromium.android_webview.StartupTasksRunner;
@@ -53,9 +54,7 @@ import org.chromium.base.ApkInfo;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.EarlyTraceEvent;
 import org.chromium.base.Log;
-import org.chromium.base.PathService;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LoaderErrors;
 import org.chromium.base.library_loader.ProcessInitException;
@@ -73,9 +72,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Class controlling the Chromium initialization for WebView. We hold on to most static objects used
@@ -137,17 +134,40 @@ public class WebViewChromiumAwInit {
     private static final int INIT_FINISHED = 2;
 
     private final AtomicInteger mInitState = new AtomicInteger(INIT_NOT_STARTED);
-
-    // Looper on which `getDefaultCookieManager` is called for the first time.
-    private final AtomicReference<Looper> mFirstGetDefaultCookieManagerLooper =
-            new AtomicReference<Looper>();
-    // Set to true if/when `getDefaultCookieManager` is called.
-    private final AtomicBoolean mGetDefaultCookieManagerCalled = new AtomicBoolean(false);
-
     private final WebViewChromiumFactoryProvider mFactory;
     private final StartupDiagnostics mStartupDiagnostics = new StartupDiagnostics();
     private final WebViewChromiumRunQueue mWebViewStartUpCallbackRunQueue =
             new WebViewChromiumRunQueue();
+
+    private final StartupController.Delegate mStartupDelegate =
+            new StartupController.Delegate() {
+                @Override
+                public void waitForJavaResourcesSetup() {
+                    WebViewChromiumAwInit.this.waitForJavaResourcesSetup();
+                }
+
+                @Override
+                public boolean shouldForceNativeSandboxedServices() {
+                    AconfigFlaggedApiDelegate aconfigDelegate =
+                            AconfigFlaggedApiDelegate.getInstance();
+                    return aconfigDelegate != null
+                            && aconfigDelegate.isNativeWebViewZygoteEnabled(
+                                    mFactory.getWebViewDelegate());
+                }
+
+                @Override
+                public long getDrawFnFunctionTable() {
+                    return DrawFunctor.getDrawFnFunctionTable();
+                }
+
+                @Override
+                public long getDrawSWFunctionTable() {
+                    return GraphicsUtils.getDrawSWFunctionTable();
+                }
+            };
+
+    @SuppressWarnings("UnusedVariable")
+    private final StartupController mStartupController = new StartupController(mStartupDelegate);
 
     private final AtomicInteger mChromiumFirstStartupRequestMode =
             new AtomicInteger(StartupTasksRunner.StartupRequestMode.UNSET);
@@ -158,12 +178,6 @@ public class WebViewChromiumAwInit {
     private boolean mRunStartupTasksAsync;
 
     private volatile boolean mShouldInitializeDefaultProfile = true;
-
-    // TODO: DIR_RESOURCE_PAKS_ANDROID needs to live somewhere sensible,
-    // inlined here for simplicity setting up the HTMLViewer demo. Unfortunately
-    // it can't go into base.PathService, as the native constant it refers to
-    // lives in the ui/ layer. See ui/base/ui_base_paths.h
-    private static final int DIR_RESOURCE_PAKS_ANDROID = 3003;
 
     WebViewChromiumAwInit(WebViewChromiumFactoryProvider factory) {
         mFactory = factory;
@@ -219,10 +233,6 @@ public class WebViewChromiumAwInit {
                 LibraryLoader.getInstance().ensureInitialized();
             }
 
-            // TODO(crbug.com/400414092): PathService overrides should be obsolete now.
-            PathService.override(PathService.DIR_MODULE, "/system/lib/");
-            PathService.override(DIR_RESOURCE_PAKS_ANDROID, "/system/framework/webview/paks");
-
             initPlatSupportLibrary();
             AwContentsStatics.setCheckClearTextPermitted(
                     ContextUtils.getApplicationContext().getApplicationInfo().targetSdkVersion
@@ -262,8 +272,9 @@ public class WebViewChromiumAwInit {
         return new StartupTasksRunner(
                 new StartupTasksRunner.Delegate() {
                     @Override
-                    public void onStartupComplete(StartupDiagnostics diagnostics) {
-                        recordStartupMetrics();
+                    public void onStartupComplete(StartupTasksRunner.StartupTimings timings) {
+                        mStartupDiagnostics.setStartupTimings(timings);
+                        recordStartupMetrics(timings);
                     }
 
                     @Override
@@ -281,7 +292,6 @@ public class WebViewChromiumAwInit {
                         return mInitState.get() == INIT_FINISHED;
                     }
                 },
-                mStartupDiagnostics,
                 preBrowserProcessStartTasks,
                 postBrowserProcessStartTasks,
                 mRunStartupTasksAsync,
@@ -315,7 +325,7 @@ public class WebViewChromiumAwInit {
         } else {
             runNonUiThreadCapableStartupTasks();
         }
-        waitUntilSetUpResources();
+        mStartupDelegate.waitForJavaResourcesSetup();
         // NOTE: Finished writing Java resources. From this point on, it's safe
         // to use them.
 
@@ -359,11 +369,8 @@ public class WebViewChromiumAwInit {
             mFactory.addWebViewAssetPath(ContextUtils.getApplicationContext());
         }
 
-        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-        boolean isNativeWebViewZygoteEnabled =
-                delegate != null
-                        && delegate.isNativeWebViewZygoteEnabled(mFactory.getWebViewDelegate());
-        AwBrowserProcess.configureChildProcessLauncher(isNativeWebViewZygoteEnabled);
+        AwBrowserProcess.configureChildProcessLauncher(
+                mStartupDelegate.shouldForceNativeSandboxedServices());
 
         // finishVariationsInit() must precede native initialization so
         // the seed is available when AwFeatureListCreator::SetUpFieldTrials()
@@ -490,29 +497,24 @@ public class WebViewChromiumAwInit {
         AwBrowserProcess.doNetworkInitializations(ContextUtils.getApplicationContext());
     }
 
-    private void recordStartupMetrics() {
+    private void recordStartupMetrics(StartupTasksRunner.StartupTimings timings) {
         mWebViewStartUpCallbackRunQueue.notifyChromiumStarted();
 
         // Stop early trace event collection.
         // They have already been emitted if a trace session was started to capture startup.
         EarlyTraceEvent.reset();
 
-         // Record histograms
-        StartupMetrics.recordChromiumInitTimes(mStartupDiagnostics);
-
+        // Record histograms
+        StartupMetrics.recordChromiumInitTimes(timings);
         // Also create the trace events for the earlier WebViewChromiumFactoryProvider init, which
         // happens before tracing is ready.
-        TraceEvent.webViewStartupTotalFactoryInit(
-                mFactory.getInitInfo().mTotalFactoryInitStartTime,
-                mFactory.getInitInfo().mTotalFactoryInitDuration);
-        TraceEvent.webViewStartupStage1(
-                mFactory.getInitInfo().mStartTime, mFactory.getInitInfo().mDuration);
+        mFactory.recordInitTraces();
     }
 
     /**
      * Set up resources on a background thread, in parallel with chromium initialization as it takes
      * some time. This method is called once during WebViewChromiumFactoryProvider initialization
-     * which is guaranteed to finish before this field is accessed by waitUntilSetUpResources.
+     * which is guaranteed to finish before this field is accessed by waitForJavaResourcesSetup.
      *
      * @param context The context.
      */
@@ -542,9 +544,9 @@ public class WebViewChromiumAwInit {
         }
     }
 
-    private void waitUntilSetUpResources() {
+    private void waitForJavaResourcesSetup() {
         try (DualTraceEvent e =
-                DualTraceEvent.scoped("WebViewChromiumAwInit.waitUntilSetUpResources")) {
+                DualTraceEvent.scoped("WebViewChromiumAwInit.waitForJavaResourcesSetup")) {
             mSetUpResourcesTask.get();
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
@@ -617,7 +619,7 @@ public class WebViewChromiumAwInit {
      * <p>If the UI thread is not set explicitly before calling this method, the main looper is
      * chosen as the UI thread.
      *
-     * @returns true if Chromium startup is finished, false if startup will be finished in the near
+     * @return true if Chromium startup is finished, false if startup will be finished in the near
      *     future. If false, caller may choose to wait on the {@code mStartupFinished} latch, or
      *     {@link WebViewStartUpCallback}.
      */
@@ -641,7 +643,7 @@ public class WebViewChromiumAwInit {
                 mStartupDiagnostics.setSynchronousChromiumInitLocation(
                         new Throwable(
                                 "Location where Chromium init was started synchronously on the UI"
-                                        + " thread"));
+                                         + " thread"));
                 // If we are currently running on the UI thread then we must do init now. If there
                 // was already a task posted to the UI thread from another thread to do it, it will
                 // just no-op when it runs.
@@ -688,8 +690,8 @@ public class WebViewChromiumAwInit {
     private void initPlatSupportLibrary() {
         try (DualTraceEvent e =
                 DualTraceEvent.scoped("WebViewChromiumAwInit.initPlatSupportLibrary")) {
-            AwDrawFnImpl.setDrawFnFunctionTable(DrawFunctor.getDrawFnFunctionTable());
-            AwContents.setAwDrawSWFunctionTable(GraphicsUtils.getDrawSWFunctionTable());
+            AwDrawFnImpl.setDrawFnFunctionTable(mStartupDelegate.getDrawFnFunctionTable());
+            AwContents.setAwDrawSWFunctionTable(mStartupDelegate.getDrawSWFunctionTable());
         }
     }
 
@@ -723,21 +725,12 @@ public class WebViewChromiumAwInit {
     }
 
     public CookieManager getDefaultCookieManager() {
-        if (!mGetDefaultCookieManagerCalled.get()) {
-            mFirstGetDefaultCookieManagerLooper.compareAndSet(null, Looper.myLooper());
-            mGetDefaultCookieManagerCalled.set(true);
-        }
-        if (WebViewCachedFlags.get()
-                .isCachedFeatureEnabled(AwFeatures.WEBVIEW_BYPASS_PROVISIONAL_COOKIE_MANAGER)) {
-            return getDefaultProfile(StartupCallSite.GET_DEFAULT_COOKIE_MANAGER).getCookieManager();
-        } else {
-            synchronized (mLazyInitLock) {
-                if (mDefaultCookieManager == null) {
-                    mDefaultCookieManager =
-                            new CookieManagerAdapter(AwCookieManager.getDefaultCookieManager());
-                }
-                return mDefaultCookieManager;
+        synchronized (mLazyInitLock) {
+            if (mDefaultCookieManager == null) {
+                mDefaultCookieManager =
+                        new CookieManagerAdapter(AwCookieManager.getDefaultCookieManager());
             }
+            return mDefaultCookieManager;
         }
     }
 

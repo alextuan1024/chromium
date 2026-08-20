@@ -87,6 +87,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/test/base/android/android_ui_test_utils.h"
 #else
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
 
@@ -369,26 +370,6 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
 
   ~VariationsHttpHeadersBrowserTest() override = default;
 
-  void TearDownOnMainThread() override {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-#if BUILDFLAG(IS_ANDROID)
-    // TODO(crbug.com/480962318): Remove this workaround when fixed.
-    // On Android there seems to be a race between deinitialization of the
-    // FeatureList through the browsertest and Android actual UI thread.
-    // This results in rare crash in
-    // BluetoothNotificationManager.clearBluetoothNotifications().
-    // The workaround is to drain the RunLoop before allowing the test
-    // to tear down.
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, run_loop.QuitClosure());
-    run_loop.Run();
-    sync();
-#endif
-    PlatformBrowserTest::TearDownOnMainThread();
-  }
-
   // TODO(crbug.com/452922329): Share the helpers around Android Incognito in
   // more general helper library if it actually doesn't flake for a while.
   void CreateIncognitoTab() {
@@ -401,7 +382,7 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
             /*create_if_needed=*/true);
     OpenUrlInNewTab(otr_profile, GetWebContents(), url);
 #else
-    Browser* incognito =
+    BrowserWindowInterface* incognito =
         CreateIncognitoBrowser(chrome_test_utils::GetProfile(this));
     SetBrowser(incognito);
     NavigateToURL(url);

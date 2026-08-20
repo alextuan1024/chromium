@@ -16,7 +16,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
-#include "components/remote_cocoa/app_shim/immersive_mode_delegate_mac.h"
+#include "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #include "components/remote_cocoa/app_shim/mouse_capture.h"
 #include "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
@@ -33,6 +33,7 @@
 #include "ui/base/hit_test.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/recyclable_compositor_mac.h"
@@ -257,17 +258,6 @@ std::map<uint64_t, NativeWidgetMacNSWindowHost*>& GetIdToWidgetHostImplMap() {
 
 uint64_t g_last_bridged_native_widget_id = 0;
 
-NSWindow* OriginalHostingWindowFromFullScreenWindow(
-    NSWindow* full_screen_window) {
-  if ([full_screen_window.delegate
-          conformsToProtocol:@protocol(ImmersiveModeDelegate)]) {
-    return base::apple::ObjCCastStrict<NSObject<ImmersiveModeDelegate>>(
-               full_screen_window.delegate)
-        .originalHostingWindow;
-  }
-  return nullptr;
-}
-
 }  // namespace
 
 // static
@@ -285,7 +275,8 @@ NativeWidgetMacNSWindowHost* NativeWidgetMacNSWindowHost::GetFromNativeWindow(
   // TODO(mek): Figure out how to make this work with remote remote_cocoa
   // windows.
   if (remote_cocoa::IsNSToolbarFullScreenWindow(window)) {
-    NSWindow* original = OriginalHostingWindowFromFullScreenWindow(window);
+    NSWindow* original =
+        remote_cocoa::OriginalHostingWindowFromFullScreenWindow(window);
     if (NativeWidgetMacNSWindow* widget_window =
             base::apple::ObjCCast<NativeWidgetMacNSWindow>(original)) {
       return GetFromId([widget_window bridgedNativeWidgetId]);
@@ -1156,7 +1147,13 @@ void NativeWidgetMacNSWindowHost::OnSpaceActivationChanged(
 }
 
 void NativeWidgetMacNSWindowHost::OnWindowNativeThemeChanged() {
-  ui::NativeTheme::GetInstanceForNativeUi()->NotifyOnNativeThemeUpdated();
+  if (base::FeatureList::IsEnabled(::features::kThemeChangeOptimization)) {
+    if (Widget* widget = GetWidget()) {
+      widget->ScheduleThemeChanged();
+    }
+  } else {
+    ui::NativeTheme::GetInstanceForNativeUi()->NotifyOnNativeThemeUpdated();
+  }
 }
 
 void NativeWidgetMacNSWindowHost::OnScrollEvent(
