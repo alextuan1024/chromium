@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 
+#include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
@@ -13,7 +14,9 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
@@ -26,8 +29,11 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/invalidate_type.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/theme_change_waiter.h"
 #include "ui/base/mojom/themes.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
@@ -42,6 +48,34 @@
 #include "ui/views/views_delegate.h"
 
 namespace {
+
+#if BUILDFLAG(IS_MAC)
+class FirstPaintWaiter : public content::WebContentsObserver {
+ public:
+  explicit FirstPaintWaiter(content::WebContents* web_contents)
+      : content::WebContentsObserver(web_contents) {}
+
+  void Wait() {
+    if (!did_paint_) {
+      run_loop_.Run();
+    }
+    base::RunLoop().RunUntilIdle();
+  }
+
+  void PrepareForNextPaint() { did_paint_ = false; }
+
+ private:
+  void PrimaryPageChanged(content::Page&) override { did_paint_ = false; }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    did_paint_ = true;
+    run_loop_.Quit();
+  }
+
+  bool did_paint_ = false;
+  base::RunLoop run_loop_;
+};
+#endif
 
 class MockCustomThemeSupplier : public CustomThemeSupplier {
  public:
@@ -249,6 +283,84 @@ class BrowserWidgetColorProviderTest : public BrowserWidgetTest {
  private:
   ui::MockOsSettingsProvider os_settings_provider_;
 };
+
+#if BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
+                       PageThemeColorIsLatchedPerPage) {
+  content::WebContents* first_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  FirstPaintWaiter first_paint_waiter(first_contents);
+  first_paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("data:text/html,<meta id=theme-color name=theme-color "
+                      "content=red><body style='background:blue'>page")));
+  first_paint_waiter.Wait();
+  EXPECT_EQ(SK_ColorRED, GetBrowserWidget(browser())
+                             ->GetColorProvider()
+                             ->GetColor(kColorToolbar));
+
+  {
+    content::ThemeChangeWaiter theme_change_waiter(first_contents);
+    ASSERT_TRUE(content::ExecJs(
+        first_contents,
+        "document.getElementById('theme-color').setAttribute('content', "
+        "'yellow')"));
+    theme_change_waiter.Wait();
+  }
+  EXPECT_EQ(SK_ColorRED, GetBrowserWidget(browser())
+                             ->GetColorProvider()
+                             ->GetColor(kColorToolbar));
+
+  const GURL second_url(
+      "data:text/html,<body style='background:green'>page");
+  content::WebContents* second_contents = chrome::AddAndReturnTabAt(
+      browser(), second_url, -1, true);
+  FirstPaintWaiter second_paint_waiter(second_contents);
+  second_paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(content::WaitForLoadStop(second_contents));
+  second_paint_waiter.Wait();
+  EXPECT_EQ(
+      SkColorSetRGB(0, 128, 0),
+      GetBrowserWidget(browser())->GetColorProvider()->GetColor(
+          kColorToolbar));
+
+  browser()->tab_strip_model()->ActivateTabAt(0);
+  EXPECT_EQ(SK_ColorRED, GetBrowserWidget(browser())
+                             ->GetColorProvider()
+                             ->GetColor(kColorToolbar));
+
+  FirstPaintWaiter third_paint_waiter(first_contents);
+  third_paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("data:text/html,<body style='background:blue'>page")));
+  third_paint_waiter.Wait();
+  EXPECT_EQ(SK_ColorBLUE, GetBrowserWidget(browser())
+                              ->GetColorProvider()
+                              ->GetColor(kColorToolbar));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
+                       PageThemeColorDoesNotAffectIncognito) {
+  Browser* incognito_browser = CreateIncognitoBrowser(profile());
+  const SkColor baseline_toolbar_color =
+      GetBrowserWidget(incognito_browser)->GetColorProvider()->GetColor(
+          kColorToolbar);
+
+  content::WebContents* incognito_contents =
+      incognito_browser->tab_strip_model()->GetActiveWebContents();
+  FirstPaintWaiter first_paint_waiter(incognito_contents);
+  first_paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      incognito_browser,
+      GURL("data:text/html,<meta name=theme-color content=red>"
+           "<body style='background:blue'>page")));
+  first_paint_waiter.Wait();
+
+  EXPECT_EQ(baseline_toolbar_color,
+            GetBrowserWidget(incognito_browser)->GetColorProvider()->GetColor(
+                kColorToolbar));
+}
+#endif
 
 // Verifies the BrowserWidget honors the BrowserColorScheme pref.
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
