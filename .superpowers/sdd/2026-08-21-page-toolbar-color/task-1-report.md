@@ -74,4 +74,5 @@ the feature commit; it remains in its separate prerequisite commit.
 ## Commits
 
 The prerequisite commit is `79ca931e6c`. The feature commit is
-`4049d6ec9c` (`Add per-page toolbar colors on macOS`).
+`35970933df` (`Add per-page toolbar colors on macOS`). This report update is
+recorded in a separate documentation commit.
