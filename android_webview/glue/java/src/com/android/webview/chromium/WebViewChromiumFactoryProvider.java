@@ -586,7 +586,7 @@ public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {
                                                 .WEBVIEW_MOVE_WORK_TO_PROVIDER_INIT_THREAD_POOL)) {
                     PostTask.postTask(
                             TaskTraits.USER_VISIBLE,
-                            () -> mAwInit.runNonUiThreadCapableStartupTasks());
+                            mAwInit.getStartupController()::runNonUiThreadCapableStartupTasks);
                 }
 
                 boolean enableSystemTracing =
@@ -662,7 +662,7 @@ public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {
             }
 
             // This must happen after pref value has been read and SafeMode setup has completed.
-            setupStartupTaskExperiments(androidXConfig);
+            setupStartupTasksRunMode(androidXConfig);
 
             AwBrowserProcess.startVariationsInit();
 
@@ -671,7 +671,7 @@ public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {
                     && !WebViewCachedFlags.get()
                             .isCachedFeatureEnabled(
                                     AwFeatures.WEBVIEW_MOVE_WORK_TO_PROVIDER_INIT_THREAD_POOL)) {
-                mAwInit.runNonUiThreadCapableStartupTasks();
+                mAwInit.getStartupController().runNonUiThreadCapableStartupTasks();
             }
 
             FlagOverrideHelper helper =
@@ -713,51 +713,52 @@ public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {
     }
 
     // The startup tasks are setup to run based on the following logic:
-    // 1. The AndroidX preference is checked first,
-    // 2. If it's not set, the manifest metadata is checked,
-    // 3. Then the commandline switch is checked,
-    // 4. Finally, the feature flag is checked.
-    private void setupStartupTaskExperiments(AndroidXProcessGlobalConfig androidXConfig) {
+    // 1. The commandline switch is checked first (developer/test override),
+    // 2. The AndroidX preference is checked next,
+    // 3. If it's not set, the manifest metadata is checked,
+    // 4. Finally, the default (async) is used.
+    private void setupStartupTasksRunMode(AndroidXProcessGlobalConfig androidXConfig) {
+        if (CommandLine.getInstance().hasSwitch(AwSwitches.WEBVIEW_RUN_STARTUP_TASKS_SYNC)) {
+            return;
+        }
+
+        boolean forceSync;
         switch (androidXConfig.getUiThreadStartupMode()) {
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_DEFAULT:
-                {
-                    if (ManifestMetadataUtil.shouldForceSyncBrowserStartup()) {
-                        runStartupTasksAsync(false);
-                    } else {
-                        runStartupTasksAsync(true);
-                    }
-                    return;
-                }
+                forceSync = ManifestMetadataUtil.shouldForceSyncBrowserStartup();
+                break;
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_SYNC:
-                runStartupTasksAsync(false);
-                return;
+                forceSync = true;
+                break;
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_ASYNC_LONG_TASKS:
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_ASYNC_SHORT_TASKS:
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_ASYNC_VERY_SHORT_TASKS:
             case ProcessGlobalConfigConstants.UI_THREAD_STARTUP_MODE_ASYNC_PLUS_MULTI_PROCESS:
-                runStartupTasksAsync(true);
-                return;
+                forceSync = false;
+                break;
             default:
                 throw new RuntimeException(
                         "Invalid AndroidXProcessGlobalConfig UI thread startup mode: "
                                 + androidXConfig.getUiThreadStartupMode());
         }
-    }
-
-    private void runStartupTasksAsync(boolean enabled) {
-        mAwInit.runStartupTasksAsync(enabled);
-        AwBrowserMainParts.setRunStartupTasksAsync(enabled);
+        if (forceSync) {
+            CommandLine.getInstance().appendSwitch(AwSwitches.WEBVIEW_RUN_STARTUP_TASKS_SYNC);
+        }
     }
 
     /* package */ static void checkStorageIsNotDeviceProtected(Context context) {
-        // The PAC processor service uses WebViewFactoryProvider.getPacProcessor() to
-        // get the JS engine it needs to run PAC scripts. It doesn't use the rest of
-        // WebView and this use case does not really store any meaningful data in the
-        // WebView data directory, but the PAC service needs to be able to run before
-        // the device is unlocked so that other apps running in that state can make
-        // proxy lookups. So, we just skip the check for it and don't care whether it
-        // is using DE or CE storage.
-        if ("com.android.pacprocessor".equals(context.getPackageName())) {
+        // Both the legacy PAC processor service and the multi PAC processor service
+        // use WebViewFactoryProvider.getPacProcessor() to get the JS engine it needs
+        // to run PAC scripts. They don't use the rest of WebView and this use case
+        // does not really store any meaningful data in the WebView data directory,
+        // but the PAC service needs to be able to run before the device is unlocked
+        // so that other apps running in that state can make proxy lookups. So, we
+        // just skip the check for these services and don't care whether they are
+        // using DE or CE storage.
+        String pkg = context.getPackageName();
+        if ("com.android.pacprocessor".equals(pkg)
+                || "com.android.multipacprocessor".equals(pkg)
+                || "com.google.android.multipacprocessor".equals(pkg)) {
             return;
         }
 

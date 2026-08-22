@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
-#include "base/run_loop.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -22,6 +21,8 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
+#include "components/keep_alive_registry/keep_alive_registry.h"
+#include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/ntp_tiles/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/context_menu_params.h"
@@ -33,7 +34,7 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/menu_runner_handler.h"
 #include "ui/views/test/menu_runner_test_api.h"
-#include "ui/views/test/widget_test.h"
+#include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
@@ -198,7 +199,7 @@ TEST_F(OmniboxEverywhereUIManagerTest, MAYBE_InitialBoundsMatchRestingHeight) {
   EXPECT_EQ(
       widget->GetWindowBoundsInScreen(),
       gfx::Rect(
-          536, 464,
+          596, 464,
           omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth,
           omnibox_everywhere::OmniboxEverywhereUIManager::
               kDefaultRestingHeight));
@@ -222,8 +223,8 @@ TEST_F(OmniboxEverywhereUIManagerTest,
                                         /*register_screen=*/false);
   ScopedScreenOverride screen_override(&test_screen);
 
-  // Display smaller than default popup width (800 < 848).
-  display::Display small_display(1, gfx::Rect(0, 0, 800, 600));
+  // Display smaller than default popup width (700 < 728).
+  display::Display small_display(1, gfx::Rect(0, 0, 700, 600));
   test_screen.display_list().AddDisplay(small_display,
                                         display::DisplayList::Type::PRIMARY);
 
@@ -232,9 +233,9 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   views::Widget* widget = ui_manager->widget();
   ASSERT_TRUE(widget);
 
-  // Width is clamped to work area width (800) and x starts at 0 (non-negative).
+  // Width is clamped to work area width (700) and x starts at 0 (non-negative).
   EXPECT_EQ(widget->GetWindowBoundsInScreen().x(), 0);
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 800);
+  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 700);
   EXPECT_EQ(
       widget->GetWindowBoundsInScreen().height(),
       omnibox_everywhere::OmniboxEverywhereUIManager::kDefaultRestingHeight);
@@ -265,14 +266,123 @@ TEST_F(OmniboxEverywhereUIManagerTest, DismissOnDeactivationInEphemeralMode) {
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
 
-  // Simulating deactivation (active = false) in ephemeral mode should hide the
-  // widget.
+  // Advance time past the activation grace period.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod +
+      base::Milliseconds(1));
+
+  // Simulating deactivation (active = false) in ephemeral mode after the grace
+  // period should hide the widget.
   ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
   EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
   EXPECT_TRUE(ui_manager->widget());
 }
 
-TEST_F(OmniboxEverywhereUIManagerTest, PersistentDeactivationDemotesZOrder) {
+// TODO(crbug.com/546604786): Deactivation within grace period tests are flaky
+// on Linux due to lack of window manager activation synchronization in tests.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_DeactivationWithinGracePeriodReactivatesWidget \
+  DISABLED_DeactivationWithinGracePeriodReactivatesWidget
+#else
+#define MAYBE_DeactivationWithinGracePeriodReactivatesWidget \
+  DeactivationWithinGracePeriodReactivatesWidget
+#endif
+TEST_F(OmniboxEverywhereUIManagerTest,
+       MAYBE_DeactivationWithinGracePeriodReactivatesWidget) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, true);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Advance time within the grace period (e.g. 100ms < 500ms).
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+
+  // Simulating deactivation (active = false) within the grace period should NOT
+  // hide the widget, but instead reactivate it and keep it visible.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return widget->IsActive(); }));
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Advance time past the grace period.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod);
+
+  // Deactivation after the grace period has elapsed should cleanly dismiss.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
+}
+
+// TODO(crbug.com/546604786): Explicit close within grace period tests are flaky
+// on Linux due to lack of window manager activation synchronization in tests.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_ExplicitCloseWithinGracePeriodStaysClosed \
+  DISABLED_ExplicitCloseWithinGracePeriodStaysClosed
+#else
+#define MAYBE_ExplicitCloseWithinGracePeriodStaysClosed \
+  ExplicitCloseWithinGracePeriodStaysClosed
+#endif
+TEST_F(OmniboxEverywhereUIManagerTest,
+       MAYBE_ExplicitCloseWithinGracePeriodStaysClosed) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, true);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Advance time within the grace period (e.g. 100ms < 500ms).
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+
+  // Simulate deactivation within the grace period, which schedules
+  // reactivation.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+
+  // Explicitly closing the widget (e.g. Esc key) within the grace period should
+  // cancel the reactivation task and hide the widget.
+  ui_manager->Close();
+  EXPECT_FALSE(widget->IsVisible());
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest,
+       PersistentDeactivationKeepsWidgetVisible) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  // Simulating deactivation (active = false) in persistent mode keeps the
+  // widget visible without auto-closing.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  // Re-invoking ShowForProfile keeps widget visible and active.
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  ui_manager->Close();
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest,
+       PersistentDeactivationWithinGracePeriodDoesNotReactivate) {
   if (g_browser_process && g_browser_process->local_state()) {
     g_browser_process->local_state()->SetBoolean(
         omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
@@ -284,19 +394,165 @@ TEST_F(OmniboxEverywhereUIManagerTest, PersistentDeactivationDemotesZOrder) {
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
 
-  // Initial show promotes ZOrder to kFloatingUIElement.
-  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kFloatingUIElement);
+  // Advance time within the grace period (e.g. 100ms < 500ms).
+  task_environment()->FastForwardBy(base::Milliseconds(100));
 
-  // Simulating deactivation (active = false) in persistent mode should demote
-  // ZOrder to kNormal while keeping widget visible.
+  // Simulating deactivation in persistent mode within 500ms should NOT trigger
+  // auto-close or reactivation tasks, keeping the widget visible.
   ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
   EXPECT_TRUE(widget->IsVisible());
+
+  // Advancing time past the grace period confirms the widget remains visible
+  // and no delayed close or reactivation tasks run.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod);
+  EXPECT_TRUE(widget->IsVisible());
+
+  ui_manager->Close();
+}
+
+// Tests that Demote() deactivates and keeps the widget visible.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_DemoteWidget DemoteWidget
+#else
+#define MAYBE_DemoteWidget DISABLED_DemoteWidget
+#endif
+TEST_F(OmniboxEverywhereUIManagerTest, MAYBE_DemoteWidget) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+  views::test::WaitForWidgetActive(widget, true);
+  EXPECT_TRUE(ui_manager->IsActive());
   EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
 
-  // Re-invoking ShowForProfile should re-elevate ZOrder to kFloatingUIElement.
+  // Demote() should deactivate and keep visible.
+  ui_manager->Demote();
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_FALSE(ui_manager->IsActive());
+  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  // Calling ShowForProfile again activates.
   ui_manager->ShowForProfile(&profile_, GetContext());
   EXPECT_TRUE(widget->IsVisible());
-  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kFloatingUIElement);
+  views::test::WaitForWidgetActive(widget, true);
+  EXPECT_TRUE(ui_manager->IsActive());
+  EXPECT_EQ(widget->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  ui_manager->Close();
+}
+
+// Tests that Demote() cancels any open context menu before demoting.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_DemoteCancelsOpenContextMenu DemoteCancelsOpenContextMenu
+#else
+#define MAYBE_DemoteCancelsOpenContextMenu DISABLED_DemoteCancelsOpenContextMenu
+#endif
+TEST_F(OmniboxEverywhereUIManagerTest, MAYBE_DemoteCancelsOpenContextMenu) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+
+  auto* rfh = ui_manager->contents_wrapper_for_testing()
+                  ->web_contents()
+                  ->GetPrimaryMainFrame();
+  content::ContextMenuParams params;
+  params.is_editable = true;
+
+  bool menu_runner_created = false;
+  ui_manager->SetMenuRunnerFactoryForTesting(base::BindRepeating(
+      [](bool* created, ui::MenuModel* model,
+         base::RepeatingClosure on_closed) {
+        *created = true;
+        auto runner = std::make_unique<views::MenuRunner>(
+            model,
+            views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
+            on_closed);
+        views::test::MenuRunnerTestAPI(runner.get())
+            .SetMenuRunnerHandler(std::make_unique<TestMenuRunnerHandler>());
+        return runner;
+      },
+      &menu_runner_created));
+
+  ui_manager->HandleContextMenu(*rfh, params);
+  EXPECT_TRUE(menu_runner_created);
+  EXPECT_TRUE(ui_manager->is_context_menu_open_for_testing());
+
+  // Demote() while context menu is open should cancel the runner and demote.
+  ui_manager->Demote();
+  EXPECT_FALSE(ui_manager->is_context_menu_open_for_testing());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  EXPECT_EQ(ui_manager->widget()->GetZOrderLevel(), ui::ZOrderLevel::kNormal);
+
+  ui_manager->Close();
+}
+
+// Tests that Demote() is a no-op while a file chooser is open.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_DemoteBypassedDuringFileChooser DemoteBypassedDuringFileChooser
+#else
+#define MAYBE_DemoteBypassedDuringFileChooser \
+  DISABLED_DemoteBypassedDuringFileChooser
+#endif
+TEST_F(OmniboxEverywhereUIManagerTest, MAYBE_DemoteBypassedDuringFileChooser) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  views::test::WaitForWidgetActive(ui_manager->widget(), true);
+
+  ui_manager->OnFileChooserOpened();
+  EXPECT_TRUE(ui_manager->HasOpenModalDialog());
+
+  ui_manager->Demote();
+  // Demote should have returned early, leaving widget active.
+  EXPECT_TRUE(ui_manager->IsActive());
+
+  ui_manager->OnFileChooserClosed();
+  EXPECT_FALSE(ui_manager->HasOpenModalDialog());
+
+  ui_manager->Close();
+}
+
+// Tests that closing a context menu in persistent mode leaves the widget
+// visible.
+TEST_F(OmniboxEverywhereUIManagerTest,
+       ContextMenuClosedInPersistentModeDoesNotDismiss) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+
+  ui_manager->set_is_context_menu_open_for_testing(true);
+
+  // Simulate deactivation while menu is open.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Closing context menu while inactive in persistent mode leaves widget
+  // visible.
+  ui_manager->OnContextMenuClosedForTesting();
+  EXPECT_TRUE(widget->IsVisible());
 
   ui_manager->Close();
 }
@@ -323,8 +579,11 @@ TEST_F(OmniboxEverywhereUIManagerTest, DismissBypassedDuringFileChooser) {
   EXPECT_TRUE(ui_manager->widget());
   EXPECT_TRUE(widget->IsVisible());
 
-  // Clean up: closing file chooser and triggering deactivation should hide the
-  // widget in ephemeral mode.
+  // Clean up: closing file chooser and triggering deactivation after grace
+  // period should hide the widget in ephemeral mode.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod +
+      base::Milliseconds(1));
   ui_manager->OnFileChooserClosed();
   ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
   EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
@@ -497,8 +756,11 @@ TEST_F(OmniboxEverywhereUIManagerTest, DismissBypassedDuringDrivePicker) {
   EXPECT_TRUE(ui_manager->widget());
   EXPECT_TRUE(widget->IsVisible());
 
-  // Clean up: closing drive picker and triggering deactivation should hide the
-  // widget in ephemeral mode.
+  // Clean up: closing drive picker and triggering deactivation after grace
+  // period should hide the widget in ephemeral mode.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod +
+      base::Milliseconds(1));
   ui_manager->OnDrivePickerClosed();
   ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
   EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
@@ -611,8 +873,11 @@ TEST_F(OmniboxEverywhereUIManagerTest, DismissBypassedDuringContextMenu) {
   EXPECT_TRUE(ui_manager->widget());
   EXPECT_TRUE(widget->IsVisible());
 
-  // Clean up: closing context menu and triggering deactivation should close the
-  // widget in ephemeral mode.
+  // Clean up: closing context menu and triggering deactivation after grace
+  // period should close the widget in ephemeral mode.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod +
+      base::Milliseconds(1));
   ui_manager->OnContextMenuClosedForTesting();
   ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
   EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
@@ -817,17 +1082,28 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   views::Widget* widget = ui_manager->widget();
   ASSERT_TRUE(widget);
 
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 848);
+  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(),
+            omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth);
 
   // Resize above minimum height should resize the widget height directly.
-  ui_manager->ResizeDueToAutoResize(nullptr, gfx::Size(848, 150));
+  ui_manager->ResizeDueToAutoResize(
+      nullptr,
+      gfx::Size(
+          omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth,
+          150));
   EXPECT_EQ(widget->GetWindowBoundsInScreen().height(), 150);
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 848);
+  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(),
+            omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth);
 
   // Resize below minimum height (56) should clamp to 56.
-  ui_manager->ResizeDueToAutoResize(nullptr, gfx::Size(848, 30));
+  ui_manager->ResizeDueToAutoResize(
+      nullptr,
+      gfx::Size(
+          omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth,
+          30));
   EXPECT_EQ(widget->GetWindowBoundsInScreen().height(), 56);
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 848);
+  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(),
+            omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth);
 
   // Even if widget width was temporarily modified (e.g. edge clamping),
   // ResizeDueToAutoResize enforces the fixed width.
@@ -836,13 +1112,22 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   widget->SetBounds(clamped_bounds);
   EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 400);
 
-  ui_manager->ResizeDueToAutoResize(nullptr, gfx::Size(848, 200));
+  ui_manager->ResizeDueToAutoResize(
+      nullptr,
+      gfx::Size(
+          omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth,
+          200));
   EXPECT_EQ(widget->GetWindowBoundsInScreen().height(), 200);
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(), 848);
+  EXPECT_EQ(widget->GetWindowBoundsInScreen().width(),
+            omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth);
 
   // While dragging, AutoResize should be deferred.
   ui_manager->OnWidgetUserDragStarted(widget);
-  ui_manager->ResizeDueToAutoResize(nullptr, gfx::Size(848, 300));
+  ui_manager->ResizeDueToAutoResize(
+      nullptr,
+      gfx::Size(
+          omnibox_everywhere::OmniboxEverywhereUIManager::kPopupFixedWidth,
+          300));
   // Size remains unchanged during drag.
   EXPECT_EQ(widget->GetWindowBoundsInScreen().height(), 200);
 
@@ -953,4 +1238,82 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   EXPECT_TRUE(ui_manager->widget()->IsVisible());
 
   ui_manager->Shutdown();
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest, ScreensharePickerStateTracking) {
+  auto ui_manager = CreateUIManager();
+  EXPECT_FALSE(ui_manager->is_screenshare_picker_open_for_testing());
+
+  ui_manager->OnScreensharePickerOpened();
+  EXPECT_TRUE(ui_manager->is_screenshare_picker_open_for_testing());
+
+  ui_manager->OnScreensharePickerClosed();
+  EXPECT_FALSE(ui_manager->is_screenshare_picker_open_for_testing());
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest, DismissBypassedDuringScreensharePicker) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, true);
+  }
+  auto ui_manager = CreateUIManager();
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Mark screenshare picker as open.
+  ui_manager->OnScreensharePickerOpened();
+  EXPECT_TRUE(ui_manager->is_screenshare_picker_open_for_testing());
+
+  // Simulating deactivation while screenshare picker is open should NOT close
+  // the widget.
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(widget->IsVisible());
+
+  // Clean up: closing screenshare picker and triggering deactivation after
+  // grace period should hide the widget in ephemeral mode.
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kActivationGracePeriod +
+      base::Milliseconds(1));
+  ui_manager->OnScreensharePickerClosed();
+  ui_manager->OnWidgetActivationChanged(widget, /*active=*/false);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
+}
+
+TEST_F(OmniboxEverywhereUIManagerTest,
+       AcquiresAndReleasesKeepAliveOnWidgetLifecycle) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+
+  EXPECT_FALSE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
+      KeepAliveOrigin::OMNIBOX_EVERYWHERE_UI));
+
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  EXPECT_TRUE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
+      KeepAliveOrigin::OMNIBOX_EVERYWHERE_UI));
+
+  // Closing the widget releases the keep-alive.
+  ui_manager->Close();
+  EXPECT_TRUE(base::test::RunUntil([]() {
+    return !KeepAliveRegistry::GetInstance()->IsOriginRegistered(
+        KeepAliveOrigin::OMNIBOX_EVERYWHERE_UI);
+  }));
+
+  // Showing again re-acquires the keep-alive.
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  EXPECT_TRUE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
+      KeepAliveOrigin::OMNIBOX_EVERYWHERE_UI));
+
+  // Shutdown cleans up the widget and releases keep-alive.
+  ui_manager->Shutdown();
+  EXPECT_FALSE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
+      KeepAliveOrigin::OMNIBOX_EVERYWHERE_UI));
 }

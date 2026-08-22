@@ -331,6 +331,7 @@
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_action_handler_registry.h"
 #include "ui/accessibility/ax_common.h"
 #include "ui/accessibility/ax_location_and_scroll_updates.h"
@@ -1285,14 +1286,15 @@ bool BoostRendererInitiatedNavigation() {
 }
 
 std::optional<std::string_view> GetHostnameMinusRegistry(const GURL& url) {
-  const size_t registry_length =
-      net::registry_controlled_domains::GetRegistryLength(
+  ASSIGN_OR_RETURN(
+      const size_t registry_length,
+      net::registry_controlled_domains::GetRegistry(
           url, net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
-          net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
+          net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES)
+          .transform(&std::string_view::size));
 
   const std::string_view hostname = url.host();
-  if (registry_length == 0 || registry_length == std::string::npos ||
-      registry_length >= hostname.length()) {
+  if (registry_length == 0 || registry_length >= hostname.length()) {
     return std::nullopt;
   }
 
@@ -12940,8 +12942,7 @@ bool RenderFrameHostImpl::ShouldDispatchPagehideAndVisibilitychangeDuringCommit(
   DCHECK(is_main_frame());
   DCHECK_NE(old_frame_host, this);
   DCHECK_NE(old_frame_host->GetSiteInstance(), GetSiteInstance());
-  return GetContentClient()->browser()->ShouldDispatchPagehideDuringCommit(
-      GetSiteInstance()->GetBrowserContext(), dest_url_info.url);
+  return true;
 }
 
 bool RenderFrameHostImpl::is_initial_empty_document() const {
@@ -13732,6 +13733,14 @@ bool RenderFrameHostImpl::IsFullCookieAccessAllowed() {
   return GetContentClient()->browser()->IsFullCookieAccessAllowed(
       GetBrowserContext(), WebContents::FromRenderFrameHost(this),
       GetLastCommittedURL(), GetStorageKey(), GetCookieSettingOverrides());
+}
+
+bool RenderFrameHostImpl::IsStorageAccessRestricted() {
+  return GetLastCommittedOrigin().opaque() || IsCredentialless() ||
+         IsNestedWithinFencedFrame() ||
+         IsSandboxed(
+             network::mojom::WebSandboxFlags::kStorageAccessByUserActivation) ||
+         GetStorageKey().ForbidsUnpartitionedStorageAccess();
 }
 
 void RenderFrameHostImpl::BindBlobUrlStoreAssociatedReceiver(
@@ -14622,6 +14631,15 @@ ui::AXTreeID RenderFrameHostImpl::GetParentAXTreeID() {
     }
     CHECK(AccessibilityIsRootFrame())
         << "Child frame requires a parent, root=" << GetLastCommittedURL();
+    // With ViewsAX enabled, the Views tree is above the web content tree. Only
+    // the primary main frame takes a place in it, so a prerendered or cached
+    // main frame must not name a parent.
+    if (::features::IsAccessibilityTreeForViewsEnabled() &&
+        IsInPrimaryMainFrame()) {
+      RenderWidgetHostViewBase* view = GetView();
+      return view ? view->AccessibilityGetParentAXTreeID()
+                  : ui::AXTreeIDUnknown();
+    }
     return ui::AXTreeIDUnknown();
   }
   // TODO(accessibility) The following check fails when running this test with
@@ -15406,6 +15424,21 @@ void RenderFrameHostImpl::BindRestrictedCookieManagerWithOrigin(
   devtools_instrumentation::ApplyNetworkCookieControlsOverrides(
       *this, devtools_cookie_setting_overrides);
 
+  // When the embedder declares an effective top frame for this frame's
+  // subtree, the bound IsolationInfo carries a cookie context the renderer
+  // cannot compute from its frame tree; the RestrictedCookieManager must
+  // prefer the bound context over the renderer-provided values.
+  //
+  // Unlike `ShouldPreferFactorySiteForCookies()`, this predicate must not
+  // require a non-null bound site_for_cookies: a cross-site child of the
+  // effective top frame has a null one, and the bound top_frame_origin is
+  // what matters there. (A URLRequest already takes top_frame_origin from
+  // the factory's IsolationInfo; RestrictedCookieManager takes both values
+  // per call.)
+  const bool prefer_bound_cookie_context =
+      GetContentClient()->browser()->GetEffectiveTopFrameForPartitioning(
+          this) != nullptr;
+
   // CookieSettingOverrides is passesd in instead of calling
   // GetCookieSettingOverrides, because this call can happen before the frame
   // is committed.
@@ -15413,7 +15446,7 @@ void RenderFrameHostImpl::BindRestrictedCookieManagerWithOrigin(
       network::mojom::RestrictedCookieManagerRole::SCRIPT, origin,
       isolation_info,
       /*is_service_worker=*/false, GetProcess()->GetDeprecatedID(),
-      GetRoutingID(), cookie_setting_overrides,
+      GetRoutingID(), prefer_bound_cookie_context, cookie_setting_overrides,
       devtools_cookie_setting_overrides, std::move(receiver),
       CreateCookieAccessObserver(CookieAccessDetails::Source::kNonNavigation));
 }
@@ -19110,11 +19143,14 @@ void RenderFrameHostImpl::EnableMojoJsBindings(
 
 void RenderFrameHostImpl::EnableMojoJsBindingsWithBroker(
     mojo::PendingRemote<blink::mojom::BrowserInterfaceBroker> broker) {
-  // This method should only be called on RenderFrameHost that has an associated
-  // WebUI, because it needs to transfer the broker's ownership to its
-  // WebUIController. EnableMojoJsBindings does this differently and can be
-  // called before the WebUI object is created.
-  CHECK(GetWebUI());
+  // For a frame with an associated WebUI, the broker implementation is owned
+  // by its WebUIController. Any other frame must be allowlisted by the
+  // embedder, exactly like EnableMojoJsBindings; the (embedder-side) caller
+  // owns the broker implementation and must keep it alive for as long as the
+  // document may use it.
+  CHECK(
+      GetWebUI() ||
+      GetContentClient()->browser()->ShouldAllowMojoJsBindingsForFrame(*this));
   GetFrameBindingsControl()->EnableMojoJsBindingsWithBroker(std::move(broker));
 }
 

@@ -282,6 +282,7 @@ FillDataType GetEventTypeFromSingleFieldSuggestionType(SuggestionType type) {
     case SuggestionType::kAtMemoryGenericError:
     case SuggestionType::kAtMemoryInactivityNudge:
     case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
     case SuggestionType::kAtMemorySearchResult:
     case SuggestionType::kAtMemorySourceAttribution:
@@ -324,7 +325,6 @@ FillDataType GetEventTypeFromSingleFieldSuggestionType(SuggestionType type) {
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMixedFormMessage:
     case SuggestionType::kOneTimePasswordEntry:
-    case SuggestionType::kOpenGemini:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -2964,19 +2964,22 @@ std::vector<Suggestion> BrowserAutofillManager::GetProfileSuggestions(
     const FormFieldData& trigger_field,
     const AutofillField& trigger_autofill_field,
     AutofillSuggestionTriggerSource trigger_source) {
-  std::vector<Suggestion> suggestions;
+  std::vector<Suggestion> address_suggestions;
   AddressSuggestionGenerator address_suggestion_generator(trigger_source);
 
   auto on_suggestions_generated =
-      [&suggestions](
+      [&address_suggestions](
           SuggestionGenerator::ReturnedSuggestions returned_suggestions) {
-        suggestions = std::move(returned_suggestions.second);
+        auto& [source, suggestions] = returned_suggestions;
+        if (source == SuggestionGenerator::SuggestionDataSource::kAddress) {
+          address_suggestions = std::move(returned_suggestions.second);
+        }
       };
 
   address_suggestion_generator.GenerateSuggestions(
       form, trigger_field, &form_structure, &trigger_autofill_field, client(),
       on_suggestions_generated);
-  return suggestions;
+  return address_suggestions;
 }
 
 std::vector<Suggestion> BrowserAutofillManager::GetLoyaltyCardSuggestions(

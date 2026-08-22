@@ -1207,6 +1207,7 @@ void NetworkContext::GetRestrictedCookieManager(
     const net::IsolationInfo& isolation_info,
     const net::CookieSettingOverrides& cookie_setting_overrides,
     const net::CookieSettingOverrides& devtools_cookie_setting_overrides,
+    bool prefer_bound_cookie_context,
     mojo::PendingRemote<mojom::CookieAccessObserver> cookie_observer) {
   net::FirstPartySetMetadata first_party_set_metadata =
       RestrictedCookieManager::ComputeFirstPartySetMetadata(
@@ -1217,7 +1218,8 @@ void NetworkContext::GetRestrictedCookieManager(
           role, url_request_context_->cookie_store(),
           cookie_manager_->cookie_settings(), origin, isolation_info,
           cookie_setting_overrides, devtools_cookie_setting_overrides,
-          std::move(cookie_observer), std::move(first_party_set_metadata),
+          prefer_bound_cookie_context, std::move(cookie_observer),
+          std::move(first_party_set_metadata),
           network_service_->GetMetricsUpdater());
 
   auto callback = base::BindOnce(&NetworkContext::OnRCMDisconnect,
@@ -1694,6 +1696,18 @@ void NetworkContext::SendReportsAndRemoveSource(
       url_request_context()->reporting_service();
   if (reporting_service) {
     reporting_service->SendReportsAndRemoveSource(reporting_source);
+  }
+#endif  // BUILDFLAG(ENABLE_REPORTING)
+}
+
+void NetworkContext::SendReportsForSource(
+    const base::UnguessableToken& reporting_source) {
+#if BUILDFLAG(ENABLE_REPORTING)
+  CHECK(!reporting_source.is_empty());
+  net::ReportingService* reporting_service =
+      url_request_context()->reporting_service();
+  if (reporting_service) {
+    reporting_service->SendReportsForSource(reporting_source);
   }
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 }
@@ -3622,7 +3636,8 @@ void NetworkContext::CreateTrustedUrlLoaderFactoryForNetworkService(
                          std::move(url_loader_factory_params));
 }
 
-void NetworkContext::SetSharedDictionaryCacheMaxSize(uint64_t cache_max_size) {
+void NetworkContext::SetSharedDictionaryCacheMaxSize(
+    std::optional<uint64_t> cache_max_size) {
   if (!shared_dictionary_manager_) {
     return;
   }

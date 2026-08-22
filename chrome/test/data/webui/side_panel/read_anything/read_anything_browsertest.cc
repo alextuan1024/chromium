@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
@@ -275,11 +274,6 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, LanguageToast) {
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, RateMenu) {
   RunSidePanelTest("side_panel/read_anything/rate_menu_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, ToolbarOverflow) {
-  RunSidePanelTest("side_panel/read_anything/toolbar_overflow_test.js",
-                   "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SpeechUsesMaxTextLength) {

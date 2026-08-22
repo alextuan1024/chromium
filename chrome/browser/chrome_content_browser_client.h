@@ -737,6 +737,7 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       bool is_service_worker,
       int process_id,
       int routing_id,
+      bool prefer_bound_cookie_context,
       mojo::PendingReceiver<network::mojom::RestrictedCookieManager>* receiver)
       override;
   void OnNetworkServiceCreated(
@@ -1158,10 +1159,6 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       base::OnceCallback<void(std::optional<blink::mojom::RelatedApplication>)>
           callback) override;
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-  bool ShouldDispatchPagehideDuringCommit(
-      content::BrowserContext* browser_context,
-      const GURL& destination_url) override;
 
 #if BUILDFLAG(IS_WIN)
   void OnTracingServiceStarted() override;

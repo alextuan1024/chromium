@@ -36,6 +36,8 @@
 #include "chrome/browser/finds/core/finds_features.h"
 #include "chrome/browser/finds/core/finds_tab_helper.h"
 #include "chrome/browser/finds/finds_service_factory.h"
+#include "chrome/browser/glic/glic_marketing_page_tab_helper.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/history/history_tab_helper.h"
 #include "chrome/browser/history/top_sites_factory.h"
 #include "chrome/browser/history_clusters/history_clusters_tab_helper.h"
@@ -72,7 +74,6 @@
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
 #include "chrome/browser/site_protection/site_protection_metrics_observer.h"
 #include "chrome/browser/ssl/chrome_security_blocking_page_factory.h"
-#include "chrome/browser/ssl/connection_help_tab_helper.h"
 #include "chrome/browser/ssl/https_only_mode_tab_helper.h"
 #include "chrome/browser/storage_access_api/storage_access_api_service_factory.h"
 #include "chrome/browser/storage_access_api/storage_access_api_service_impl.h"
@@ -337,6 +338,9 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
   // infobars::ContentInfoBarManager comes before common tab helpers since
   // ChromeSubresourceFilterClient has it as a dependency.
   infobars::ContentInfoBarManager::CreateForWebContents(web_contents);
+  if (base::FeatureList::IsEnabled(features::kGlicMarketingAutoOpen)) {
+    glic::GlicMarketingPageTabHelper::CreateForWebContents(web_contents);
+  }
 
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
@@ -440,7 +444,6 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
       web_contents, profile->IsOffTheRecord(),
       commerce::ShoppingServiceFactory::GetForBrowserContext(profile),
       ISOLATED_WORLD_ID_CHROME_INTERNAL);
-  ConnectionHelpTabHelper::CreateForWebContents(web_contents);
   content_settings::PageSpecificContentSettings::CreateForWebContents(
       web_contents,
       std::make_unique<PageSpecificContentSettingsDelegate>(web_contents));

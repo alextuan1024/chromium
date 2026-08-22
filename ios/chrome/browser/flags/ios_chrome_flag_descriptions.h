@@ -52,6 +52,11 @@ inline constexpr char kAiAvatarRingIosName[] = "AiAvatarRing";
 inline constexpr char kAiAvatarRingIosDescription[] =
     "Display a ring around the avatar if the primary account has a AI Tier";
 
+inline constexpr char kAimButtonRefactorName[] = "AIM Button Refactor";
+inline constexpr char kAimButtonRefactorDescription[] =
+    "When enabled, the location and presentation of the AI Mode button on the "
+    "New Tab Page will change.";
+
 inline constexpr char kAimCobrowseName[] = "AimCobrowse";
 inline constexpr char kAimCobrowseDescription[] =
     "Enables the AimCobrowse feature.";
@@ -686,12 +691,6 @@ inline constexpr char kEnableBulkDataEntryConnectorIOSName[] =
 inline constexpr char kEnableBulkDataEntryConnectorIOSDescription[] =
     "When enabled, the enterprise pasted content DLP feature is available on "
     "iOS.";
-
-inline constexpr char kEnableClientCertificateProvisioningOnIOSName[] =
-    "Enable client certificate provisioning on iOS";
-inline constexpr char kEnableClientCertificateProvisioningOnIOSDescription[] =
-    "When enabled, client certificate provisioning from the cloud is allowed "
-    "for enterprise users on iOS.";
 
 inline constexpr char kEnableCompromisedPasswordsMutingName[] =
     "Enable the muting of compromised passwords in the Password Manager";
@@ -1373,16 +1372,6 @@ inline constexpr char kLensUnaryApiSalientTextEnabledName[] =
 inline constexpr char kLensUnaryApiSalientTextEnabledDescription[] =
     "Enables the unary salient text API.";
 
-inline constexpr char kLensUnaryApisWithHttpTransportEnabledName[] =
-    "Lens unary APIs with HTTP transport enabled";
-inline constexpr char kLensUnaryApisWithHttpTransportEnabledDescription[] =
-    "Enables the unary APIs with HTTP transport.";
-
-inline constexpr char kLensUnaryHttpTransportEnabledName[] =
-    "Lens unary HTTP transport enabled";
-inline constexpr char kLensUnaryHttpTransportEnabledDescription[] =
-    "Enables the HTTP transport for unary requests.";
-
 inline constexpr char kLocationBarBadgeMigrationName[] =
     "LocationBarBadgeMigration";
 inline constexpr char kLocationBarBadgeMigrationDescription[] =
@@ -1755,6 +1744,12 @@ inline constexpr char kPrepopulatedEnginesShadowVariantsDescription[] =
     "Enables shadow variants for prepopulated engines resolution, allowing "
     "alternative engines to be resolved in specific regions.";
 
+inline constexpr char kPreventCobrowseOnAimSrpTapName[] =
+    "Prevent Cobrowse on AIM SRP Tap";
+inline constexpr char kPreventCobrowseOnAimSrpTapDescription[] =
+    "Prevents Cobrowse from automatically opening when a user taps a link on "
+    "an AIM SRP page.";
+
 inline constexpr char kPriceTrackingPromoName[] =
     "Enables price tracking notification promo card";
 inline constexpr char kPriceTrackingPromoDescription[] =
@@ -1808,6 +1803,11 @@ inline constexpr char kRemoveExcessNTPsExperimentName[] =
 inline constexpr char kRemoveExcessNTPsExperimentDescription[] =
     "When enabled, extra tabs with the New Tab Page open and no navigation "
     "history will be removed.";
+
+inline constexpr char kSaasUsageReportingName[] = "Saas Usage Reporting";
+inline constexpr char kSaasUsageReportingDescription[] =
+    "Enable reporting of SaaS usage. This feature only takes effect if a "
+    "related enterprise policy is also configured by an administrator.";
 
 inline constexpr char kSafeBrowsingAvailableName[] =
     "Make Safe Browsing available";

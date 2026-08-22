@@ -527,6 +527,10 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, GlicLoginPermissionsPage) {
   RunTest("settings/glic_login_permissions_page_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(SettingsTest, GmailOtpDisclaimerDialog) {
+  RunTest("settings/gmail_otp_disclaimer_dialog_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(SettingsTest, WebuiRefresh2026) {
   RunTest("settings/settings_ui_test.js", "runMochaSuite('WebuiRefresh2026')");
 }
@@ -1065,6 +1069,10 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, FeatureShortcutsPage) {
 
 IN_PROC_BROWSER_TEST_F(SettingsTest, KeyboardShortcutPage) {
   RunTest("settings/keyboard_shortcut_page_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsTest, OmniboxEverywhereSection) {
+  RunTest("settings/omnibox_everywhere_section_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(SettingsTest, ProtocolHandlers) {

@@ -153,12 +153,14 @@ std::unique_ptr<content::WebContents> CreateWebContents(
   }
   webui::SetBrowserWindowInterface(web_contents.get(), browser_window);
 
-  // Add the side panel params to the url being loaded into the WebContents.
-  // This is important since loading begins before the WebContents is
-  // attached to a side panel and therefore the navigation handler won't
+  // Apply required side panel URL changes to the url being loaded into the
+  // WebContents. This is important since loading begins before the WebContents
+  // is attached to a side panel and therefore the navigation handler won't
   // trigger.
-  url = contextual_tasks::ContextualTasksUiService::AddCommonSidePanelParams(
-      url, web_contents.get());
+  if (contextual_tasks::IsContextualTasksSidePanelRearchitectureEnabled()) {
+    url = contextual_tasks::ContextualTasksUiService::
+        AddRequiredSidePanelUrlChanges(url, web_contents.get());
+  }
   web_contents->GetController().LoadURL(url, content::Referrer(),
                                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
                                         std::string());
@@ -699,12 +701,6 @@ ContextualTasksSidePanelCoordinator::GetWebContentsCacheItemForWebContents(
 void ContextualTasksSidePanelCoordinator::OnTabAdded(TabListInterface& tab_list,
                                                      tabs::TabInterface* tab,
                                                      int index) {
-  // Do not associate newly opened child tabs with the contextual tasks session
-  // when the feature is disabled.
-  if (!base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks)) {
-    return;
-  }
-
   content::WebContents* content = tab->GetContents();
   // If the new tab is already associated with a task, do nothing.
   if (contextual_tasks_service_->GetContextualTaskForTab(

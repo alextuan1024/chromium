@@ -11,15 +11,18 @@ import android.graphics.Bitmap;
 import android.view.View;
 
 import org.chromium.base.Token;
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.chrome.browser.tabmodel.TabGroupObserver;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
@@ -98,6 +101,15 @@ abstract class TabListLayoutDelegate implements TabGroupObserver {
     }
 
     /**
+     * Handles UI model updates when a tab closure is undone in the tab model.
+     *
+     * @param tab The {@link Tab} whose closure was undone.
+     */
+    void tabClosureUndone(Tab tab) {
+        onTabAdded(tab);
+    }
+
+    /**
      * Resolves the UI index in {@link #mModelList} of the card representing the given tab in this
      * layout.
      *
@@ -111,6 +123,28 @@ abstract class TabListLayoutDelegate implements TabGroupObserver {
      */
     int getUiIndexForTab(int tabId) {
         return mModelList.indexFromTabId(tabId);
+    }
+
+    /**
+     * Records user action metrics when a tab item is clicked in the UI list.
+     *
+     * <p>Subclasses can override to customize or suppress metrics (e.g. {@link
+     * GroupedLayoutDelegate}).
+     *
+     * @param tabId The ID of the tab that was selected.
+     */
+    void recordTabSelection(int tabId) {
+        Tab tab = mMediator.getCurrentTabModelChecked().getTabById(tabId);
+        if (tab != null
+                && tab.getIsPinned()
+                && mMediator.getComponentId() == TabComponentId.VERTICAL_TABS) {
+            RecordUserAction.record("MobileTabSwitched.VerticalTabsPinned");
+        } else {
+            RecordUserAction.record(
+                    "MobileTabSwitched."
+                            + TabUiMetricsHelper.getComponentNameForMetrics(
+                                    mMediator.getComponentId()));
+        }
     }
 
     /**
@@ -143,6 +177,37 @@ abstract class TabListLayoutDelegate implements TabGroupObserver {
         @Nullable PropertyModel model = mModelList.getModelFromTabId(updatedTab.getId());
         if (model == null) return;
         mMediator.updateFaviconForTab(model, updatedTab, icon, iconUrl);
+    }
+
+    /**
+     * Updates the URL domain, thumbnail, and favicon for a tab or its representing card when its
+     * URL changes.
+     *
+     * @param updatedTab The {@link Tab} whose URL changed.
+     */
+    void onUrlUpdated(Tab updatedTab) {
+        @Nullable PropertyModel model = mModelList.getModelFromTabId(updatedTab.getId());
+        if (!TabUtils.isValid(updatedTab) || model == null) return;
+
+        model.set(TabProperties.URL_DOMAIN, mMediator.getDomainForTab(updatedTab, model));
+        mMediator.updateThumbnailFetcher(model, updatedTab.getId());
+        mMediator.updateFaviconForTab(model, updatedTab, null, null);
+    }
+
+    /**
+     * Updates the media indicator for a tab or its representing card when media state changes.
+     *
+     * @param updatedTab The {@link Tab} whose media state changed.
+     * @param mediaState The new {@link MediaState}.
+     */
+    void onMediaStateChanged(Tab updatedTab, @MediaState int mediaState) {
+        @Nullable PropertyModel model = mModelList.getModelFromTabId(updatedTab.getId());
+        if (model == null || model.get(TabProperties.USE_SHRINK_CLOSE_ANIMATION)) {
+            return;
+        }
+        model.set(
+                TabProperties.MEDIA_INDICATOR,
+                mMediator.getTabListMediaIndicator(updatedTab, model));
     }
 
     /**
@@ -231,6 +296,48 @@ abstract class TabListLayoutDelegate implements TabGroupObserver {
      * @param model The {@link PropertyModel} of the child tab card.
      */
     void setupGroupPropertiesForChildTab(Tab tab, PropertyModel model) {}
+
+    /**
+     * Returns the {@link ModelType} for tab group cards in this layout. Flat layouts do not have
+     * tab groups and use {@link ModelType#TAB}.
+     */
+    @ModelType
+    int getGroupCardType() {
+        return ModelType.TAB;
+    }
+
+    /**
+     * Returns whether the tab group is collapsed in this layout. Flat layouts do not have tab
+     * groups and default to true.
+     *
+     * @param tabGroupId The {@link Token} identifying the tab group.
+     */
+    boolean isGroupCollapsed(Token tabGroupId) {
+        return true;
+    }
+
+    /**
+     * Called when a tab or group card's selection state is toggled in multi-select mode.
+     *
+     * @param model The {@link PropertyModel} of the toggled card.
+     * @param tabId The ID of the tab associated with the card.
+     * @param wasSelected Whether the card was selected prior to the toggle.
+     */
+    void onTabSelectionToggled(PropertyModel model, int tabId, boolean wasSelected) {}
+
+    /**
+     * Returns whether an existing card representing {@code previousTabId} and {@code newTab} are in
+     * the same tab group represented by this card, allowing the card's tab ID to be updated in
+     * place rather than resetting the list. Flat and nested layouts do not share cards across group
+     * tabs and default to false.
+     *
+     * @param previousTabId The ID of the tab currently represented by the model.
+     * @param newTab The incoming {@link Tab} to be displayed at this position.
+     * @return Whether the two tabs belong to the same group card in this layout.
+     */
+    boolean areTabsInSameGroup(int previousTabId, Tab newTab) {
+        return false;
+    }
 
     /**
      * Adjusts the proposed insertion UI index if the tab is being moved from an earlier position.

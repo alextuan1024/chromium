@@ -99,7 +99,7 @@ export class FakeReadingMode {
   htmlIds: Map<number, string> = new Map();
 
   // Whether the Immersive Read Anything feature flag is enabled.
-  isImmersiveEnabled: boolean = false;
+  isImmersiveEnabled: boolean = true;
 
   // Whether the Read Anything Translate Entry Point feature flag is enabled.
   isReadAnythingTranslateEntryPointEnabled: boolean = false;
@@ -226,15 +226,6 @@ export class FakeReadingMode {
   // Returns true if the element is a leaf node.
   isLeafNode(nodeId: number): boolean {
     return nodeId === this.maxNodeId;
-  }
-
-  // Returns true if the original page has a section with key points.
-  maybeHasKeyPointsSection(): boolean {
-    return false;
-  }
-
-  getKeyPointsRegex(): string {
-    return 'key points|summary|the bottom line|why it matters';
   }
 
   // Connects to the browser process. Called by ts when the read anything
@@ -599,10 +590,6 @@ export class FakeReadingMode {
   // Called by the Read Anything app to close the immersive mode UI.
   close() {}
 
-  // Called by the Read Anything app to toggle between Side Panel and Immersive
-  // Mode.
-  togglePresentation() {}
-
   // There has been a long delay between starting speech and speech
   // playing.
   onSpeechEngineStalled() {}
@@ -618,8 +605,4 @@ export class FakeReadingMode {
       Array<{axNodeId: number, start: number, end: number}> {
     return [];
   }
-
-  requestShouldShowLineFocusNewBadge() {}
-  onShouldShowLineFocusNewBadgeResponse() {}
-  onLineFocusFeatureUsed() {}
 }

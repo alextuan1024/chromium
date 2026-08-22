@@ -24,21 +24,26 @@
 #include "chrome/browser/devtools/global_confirm_info_bar.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/infobars/browser_infobar_manager.h"
+#include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/infobars/simple_alert_infobar_creator.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ssl/known_interception_disclosure_infobar_delegate.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/omnibox/alternate_nav_infobar_delegate.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
+#include "chrome/browser/ui/startup/google_api_keys_infobar_delegate.h"
+#include "chrome/browser/ui/startup/obsolete_system_infobar_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/infobar.h"
 #include "components/infobars/core/simple_alert_infobar_delegate.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/prefs/pref_service.h"
@@ -156,6 +161,12 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
       "that an extension is debugging the browser. This trigger shows "
       "the infobar."));
 
+  infobar_list.emplace_back(InfoBarEntry::New(
+      /*type=*/InfoBarType::kGoogleApiKeys, /*name=*/"Google API Keys",
+      /*description=*/
+      "The Google API Keys infobar warns users when Google API keys are "
+      "missing. This trigger shows the infobar."));
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   infobar_list.emplace_back(InfoBarEntry::New(
       /*type=*/InfoBarType::kIncognitoConnectability,
@@ -186,11 +197,25 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
 #endif
 
   infobar_list.emplace_back(InfoBarEntry::New(
+      /*type=*/InfoBarType::kKnownInterception,
+      /*name=*/"Known Interception Disclosure",
+      /*description=*/
+      "The Known Interception Disclosure infobar alerts users when network "
+      "interception or monitoring is detected. This trigger shows the "
+      "infobar."));
+
+  infobar_list.emplace_back(InfoBarEntry::New(
       /*type=*/InfoBarType::kLocalTestPoliciesApplied,
       /*name=*/"Local Test Policies Applied",
       /*description=*/
       "The Local Test Policies Applied infobar warns the user that local "
       "test policies are active."));
+
+  infobar_list.emplace_back(InfoBarEntry::New(
+      /*type=*/InfoBarType::kObsoleteSystem, /*name=*/"Obsolete System",
+      /*description=*/
+      "The Obsolete System infobar warns users when their operating "
+      "system is no longer supported. This trigger shows the infobar."));
 
   infobar_list.emplace_back(InfoBarEntry::New(
       /*type=*/InfoBarType::kPageInfo, /*name=*/"Page Info",
@@ -362,6 +387,31 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
       return false;
 #endif
     }
+    case InfoBarType::kGoogleApiKeys: {
+      if (!bwi || !bwi->GetActiveTabInterface()) {
+        return false;
+      }
+
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::GOOGLE_API_KEYS_INFOBAR_DELEGATE)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        browser_infobar_manager->Show(
+            bwi->GetActiveTabInterface(),
+            infobars::InfoBarDelegate::GOOGLE_API_KEYS_INFOBAR_DELEGATE);
+      } else {
+        content::WebContents* web_contents =
+            bwi->GetActiveTabInterface()->GetContents();
+        infobars::ContentInfoBarManager* infobar_manager =
+            infobars::ContentInfoBarManager::FromWebContents(web_contents);
+        if (!infobar_manager) {
+          return false;
+        }
+        GoogleApiKeysInfoBarDelegate::Create(infobar_manager);
+      }
+      return true;
+    }
     case InfoBarType::kIncognitoConnectability: {
 #if BUILDFLAG(ENABLE_EXTENSIONS)
       if (!profile || !bwi->GetActiveTabInterface()) {
@@ -450,6 +500,39 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
 #endif
     }
 #endif
+    case InfoBarType::kKnownInterception: {
+      if (!bwi || !bwi->GetActiveTabInterface()) {
+        return false;
+      }
+
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  KNOWN_INTERCEPTION_DISCLOSURE_INFOBAR_DELEGATE)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        browser_infobar_manager->Show(
+            bwi->GetActiveTabInterface(),
+            infobars::InfoBarDelegate::
+                KNOWN_INTERCEPTION_DISCLOSURE_INFOBAR_DELEGATE);
+      } else {
+        if (!profile) {
+          return false;
+        }
+        content::WebContents* web_contents =
+            bwi->GetActiveTabInterface()->GetContents();
+        infobars::ContentInfoBarManager* infobar_manager =
+            infobars::ContentInfoBarManager::FromWebContents(web_contents);
+        if (!infobar_manager) {
+          return false;
+        }
+        auto delegate =
+            std::make_unique<KnownInterceptionDisclosureInfoBarDelegate>(
+                profile);
+        infobar_manager->AddInfoBar(CreateConfirmInfoBar(std::move(delegate)));
+      }
+      return true;
+    }
     case InfoBarType::kLocalTestPoliciesApplied: {
       if (infobars::IsInfoBarMigrated(
               infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR)) {
@@ -466,6 +549,31 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
             /*auto_expire=*/false, /*should_animate=*/false,
             /*closeable=*/false,
             infobars::InfoBarDelegate::InfobarPriority::kLow));
+      }
+      return true;
+    }
+    case InfoBarType::kObsoleteSystem: {
+      if (!bwi || !bwi->GetActiveTabInterface()) {
+        return false;
+      }
+
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::OBSOLETE_SYSTEM_INFOBAR_DELEGATE)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        browser_infobar_manager->Show(
+            bwi->GetActiveTabInterface(),
+            infobars::InfoBarDelegate::OBSOLETE_SYSTEM_INFOBAR_DELEGATE);
+      } else {
+        content::WebContents* web_contents =
+            bwi->GetActiveTabInterface()->GetContents();
+        infobars::ContentInfoBarManager* infobar_manager =
+            infobars::ContentInfoBarManager::FromWebContents(web_contents);
+        if (!infobar_manager) {
+          return false;
+        }
+        ObsoleteSystemInfoBarDelegate::Create(infobar_manager);
       }
       return true;
     }
@@ -584,9 +692,16 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
         }
       }
 
-      ThemeInstalledInfoBarDelegate::CreateForLastActiveTab(
-          profile, theme_name, theme_id,
-          theme_service->BuildReinstallerForCurrentTheme());
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::THEME_INSTALLED_INFOBAR_DELEGATE)) {
+        ThemeService::ShowThemeInstalledInfoBar(
+            profile, theme_name, theme_id,
+            theme_service->BuildReinstallerForCurrentTheme());
+      } else {
+        ThemeInstalledInfoBarDelegate::CreateForLastActiveTab(
+            profile, theme_name, theme_id,
+            theme_service->BuildReinstallerForCurrentTheme());
+      }
       return true;
     }
 #endif

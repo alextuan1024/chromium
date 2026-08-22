@@ -148,6 +148,7 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE(kEnforceSharedWorkerSameOriginCheck);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmAutofill);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmAmbientUI);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmDelegation);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmIdentityHandler);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmIdPRegistration);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmLightweightMode);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFedCmMetricsEndpoint);
@@ -282,10 +283,6 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE(kSpareRendererProcessPriority);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kSkipIPCChannelPausingForNonGuests);
 CONTENT_EXPORT extern const base::FeatureParam<bool>
     kSkipIPCChannelPausingForNonGuestsInternalWebUiOnly;
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kSkipPagehideInCommitForDSENavigation);
-CONTENT_EXPORT BASE_DECLARE_FEATURE_PARAM(
-    base::TimeDelta,
-    kSkipPagehideInCommitForDSENavigationDelay);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kProcessPerSiteUpToMainFrameThreshold);
 CONTENT_EXPORT extern const base::FeatureParam<int>
     kProcessPerSiteMainFrameThreshold;

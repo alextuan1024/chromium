@@ -1630,12 +1630,6 @@
       // https://chromestatus.com/feature/5157805733183488
       name: "CSSGapDecoration",
       status: "stable",
-      depends_on: ["CSSGridGapSuppression"],
-    },
-    {
-      // https://chromestatus.com/feature/5157805733183488
-      name: "CSSGridGapSuppression",
-      status: "stable",
     },
     {
       name: "CSSGridLanesLayout",
@@ -1804,6 +1798,15 @@
     {
       name: "CSSPositionStickyStaticScrollPosition",
       status: "test",
+    },
+    {
+      // The @private rule declares lexically-scoped custom properties that are
+      // visible only within the enclosing style rule and the elements it
+      // matches, with their names rewritten so they are never observable as
+      // author custom properties.
+      // crbug.com/542651959
+      name: "CSSPrivate",
+      status: "experimental",
     },
     // https://drafts.csswg.org/css-values-5/#progress
     // progress()
@@ -2210,11 +2213,6 @@
     {
       name: "DesktopPWAsAdditionalWindowingControls",
       status: "experimental",
-      origin_trial_feature_name: "DesktopPWAsAdditionalWindowingControls",
-      origin_trial_os: ["win", "mac", "linux", "chromeos"],
-      origin_trial_allows_third_party: true,
-      base_feature_status: "enabled",
-      copied_from_base_feature_if: "overridden",
     },
     {
       name: "DesktopPWAsAdditionalWindowingControlsOnMove",
@@ -2782,6 +2780,13 @@
     },
     {
       name: "FedCmDelegation",
+      depends_on: ["FedCm"],
+      public: true,
+      status: "test",
+      base_feature: "none",
+    },
+    {
+      name: "FedCmIdentityHandler",
       depends_on: ["FedCm"],
       public: true,
       status: "test",
@@ -3996,10 +4001,10 @@
     {
       name: "MediaCaptionSettingsButton",
       status: {
-        "Win": "experimental",
-        "Mac": "experimental",
-        "Linux": "experimental",
-        "ChromeOS": "experimental",
+        "Win": "stable",
+        "Mac": "stable",
+        "Linux": "stable",
+        "ChromeOS": "stable",
       },
     },
     {
@@ -5130,7 +5135,6 @@
     },
     {
       name: "RequestStorageAccessFor",
-      status: "stable",
       base_feature: "none",
     },
     {
@@ -5180,6 +5184,12 @@
       origin_trial_feature_name: "RtcAudioJitterBufferMaxPackets",
       status: "experimental",
       base_feature: "none",
+    },
+    {
+      // Non-standard RTCConfiguration.iceTransports alias. Off by default
+      // (alias removed). Enable via Finch to restore if sites break.
+      // https://crbug.com/488071544
+      name: "RTCConfigurationIceTransports",
     },
     {
       name: "RTCDataChannelPriority",
@@ -5643,11 +5653,6 @@
       name: "SetShape",
       status: {"ChromeOS": "experimental", "default": ""},
       browser_process_read_write_access: true,
-    },
-    // https://chromestatus.com/feature/5176753681203200
-    {
-      name: "ShadowContourFollowsBorder",
-      status: "stable",
     },
     // https://crbug.com/448174611
     {
@@ -6976,6 +6981,10 @@
       name: "WebGPUMultithreadDawnWireOnWorkers",
       status: "experimental",
       implied_by: ["WebGPUMapSyncOnWorkers"],
+    },
+    {
+      name: "WebHaptics",
+      status: "experimental",
     },
     {
       name: "WebHID",

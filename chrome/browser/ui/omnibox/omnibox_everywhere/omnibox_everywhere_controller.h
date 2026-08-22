@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -20,6 +21,7 @@
 #include "ui/gfx/native_ui_types.h"
 
 class Profile;
+class ScopedKeepAlive;
 
 namespace omnibox_everywhere {
 
@@ -33,6 +35,8 @@ enum class InvocationSource {
   kProfilePicker,
   // Triggered from the status tray/menu bar icon.
   kStatusTrayIcon,
+  // Triggered by command-line switch or OS shortcut.
+  kCommandLine,
 };
 
 // Coordinator class that manages the Omnibox Everywhere desktop feature.
@@ -55,6 +59,15 @@ class OmniboxEverywhereController
   void OnInvoke(InvocationSource source,
                 Profile* profile,
                 gfx::NativeWindow context = gfx::NativeWindow());
+
+  // Launches Omnibox Everywhere triggered during startup.
+  // Loads profile asynchronously if not yet loaded in memory and holds a
+  // ScopedKeepAlive during initialization.
+  // Returns true if launch was initiated/handled, false if no eligible profile
+  // exists.
+  bool InvokeForStartup(InvocationSource source,
+                        Profile* fallback_profile,
+                        gfx::NativeWindow context = gfx::NativeWindow());
 
   OmniboxEverywhereUIManager* ui_manager() { return ui_manager_.get(); }
   const OmniboxEverywhereUIManager* ui_manager() const {
@@ -81,6 +94,15 @@ class OmniboxEverywhereController
   // background mode manager.
   void SetTargetProfile(Profile* profile);
 
+  // Creates the Start Menu shortcut for Omnibox Everywhere.
+  // Performs blocking operations asynchronously on a COM STA background runner.
+  void CreateStartMenuShortcut(base::OnceCallback<void(bool)> callback = {});
+
+  // Offers to pin Omnibox Everywhere to the Windows taskbar via Windows
+  // ITaskbarManager, which checks eligibility and prompts the user with the
+  // native OS confirmation dialog.
+  void OfferPinToTaskbar(base::OnceCallback<void(bool)> callback = {});
+
   // Returns the current target profile.
   Profile* target_profile() const { return target_profile_; }
 
@@ -101,6 +123,13 @@ class OmniboxEverywhereController
   void OnProfilePicked(Profile* new_profile);
   void InvokeForActiveBrowserProfile(InvocationSource source);
 
+  // Invokes UI for the provided profile path.
+  // Returns true if launch was initiated/handled, false if the path didn't
+  // resolve into a valid profile.
+  bool InvokeForProfilePath(const base::FilePath& profile_path,
+                            InvocationSource source,
+                            gfx::NativeWindow context = gfx::NativeWindow());
+
   // Returns the current target profile for Omnibox Everywhere.
   Profile* GetTargetProfile() const;
 
@@ -118,6 +147,7 @@ class OmniboxEverywhereController
   void UpdateHotkeyRegistration();
 
   BooleanPrefMember hotkey_pref_member_;
+  StringPrefMember hotkey_string_pref_member_;
   std::unique_ptr<OmniboxEverywhereUIManager> ui_manager_;
   std::unique_ptr<OmniboxEverywhereBackgroundModeManager>
       background_mode_manager_;

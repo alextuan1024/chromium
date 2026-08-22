@@ -41,6 +41,7 @@
 #import "components/dom_distiller/core/dom_distiller_switches.h"
 #import "components/download/public/background_service/features.h"
 #import "components/enterprise/browser/enterprise_switches.h"
+#import "components/enterprise/browser/reporting/reporting_features.h"
 #import "components/enterprise/client_certificates/core/features.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/data_controls/core/browser/features.h"
@@ -1053,12 +1054,22 @@ const FeatureEntry::FeatureVariation kBWGPromoConsentVariations[] = {
 
 const FeatureEntry::FeatureParam kGeminiFREExperimentVisualRich[] = {
     {kGeminiFREExperimentParam, kGeminiFREExperimentParamVisualRich}};
-const FeatureEntry::FeatureParam kGeminiFREExperimentLightweight[] = {
-    {kGeminiFREExperimentParam, kGeminiFREExperimentParamLightweight}};
+const FeatureEntry::FeatureParam kGeminiFREExperimentLightweightConvenience[] =
+    {{kGeminiFREExperimentParam,
+      kGeminiFREExperimentParamLightweightConvenience}};
+const FeatureEntry::FeatureParam kGeminiFREExperimentLightweightPageSharing[] =
+    {{kGeminiFREExperimentParam,
+      kGeminiFREExperimentParamLightweightPageSharing}};
+const FeatureEntry::FeatureParam kGeminiFREExperimentLightweightDiverse[] = {
+    {kGeminiFREExperimentParam, kGeminiFREExperimentParamLightweightDiverse}};
 
 const FeatureEntry::FeatureVariation kGeminiFREExperimentVariations[] = {
     {"Visual Rich", kGeminiFREExperimentVisualRich, nullptr},
-    {"Lightweight", kGeminiFREExperimentLightweight, nullptr},
+    {"Lightweight (Convenience)", kGeminiFREExperimentLightweightConvenience,
+     nullptr},
+    {"Lightweight (Page Sharing)", kGeminiFREExperimentLightweightPageSharing,
+     nullptr},
+    {"Lightweight (Diverse)", kGeminiFREExperimentLightweightDiverse, nullptr},
 };
 
 const FeatureEntry::FeatureParam kGeminiExperimentalGuidedOnboardingForce[] = {
@@ -1367,6 +1378,27 @@ const FeatureEntry::FeatureVariation kNewTabPageUICleanupVariations[] = {
     {" - Preferred Padding", kNewTabPageUICleanupPreferredPadding, nullptr},
     {" - Fakebox Background and Shadow Update",
      kNewTabPageUICleanupFakeboxBackgroundAndShadow, nullptr},
+};
+
+constexpr FeatureEntry::FeatureParam kAimButtonRefactorOneMerchandisingChip[] =
+    {{kAimButtonRefactorArmParam, "1"}};
+constexpr FeatureEntry::FeatureParam kAimButtonRefactorTwoMerchandisingChips[] =
+    {{kAimButtonRefactorArmParam, "2"}};
+constexpr FeatureEntry::FeatureParam kAimButtonRefactorAimAsModule[] = {
+    {kAimButtonRefactorArmParam, "3"}};
+constexpr FeatureEntry::FeatureParam kAimButtonRefactorAimAsMvt[] = {
+    {kAimButtonRefactorArmParam, "4"}};
+constexpr FeatureEntry::FeatureParam kAimButtonRefactorNoChips[] = {
+    {kAimButtonRefactorArmParam, "5"}};
+
+constexpr FeatureEntry::FeatureVariation kAimButtonRefactorVariations[] = {
+    {" - One Merchandising Chip", kAimButtonRefactorOneMerchandisingChip,
+     nullptr},
+    {" - Two Merchandising Chips", kAimButtonRefactorTwoMerchandisingChips,
+     nullptr},
+    {" - AIM as Module", kAimButtonRefactorAimAsModule, nullptr},
+    {" - AIM as MVT", kAimButtonRefactorAimAsMvt, nullptr},
+    {" - No Chips", kAimButtonRefactorNoChips, nullptr},
 };
 
 const FeatureEntry::FeatureParam
@@ -1867,11 +1899,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      FEATURE_WITH_PARAMS_VALUE_TYPE(kIOSSoftLock,
                                     kIOSSoftLockVariations,
                                     "IOSSoftLock")},
-    {"lens-unary-apis-with-http-transport-enabled",
-     flag_descriptions::kLensUnaryApisWithHttpTransportEnabledName,
-     flag_descriptions::kLensUnaryApisWithHttpTransportEnabledDescription,
-     flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(kLensUnaryApisWithHttpTransportEnabled)},
     {"autofill-throttle-doc-form-scans",
      flag_descriptions::kAutofillThrottleDocumentFormScanName,
      flag_descriptions::kAutofillThrottleDocumentFormScanDescription,
@@ -1891,10 +1918,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      flag_descriptions::kAutofillPaymentsSheetV2Name,
      flag_descriptions::kAutofillPaymentsSheetV2Description, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kAutofillPaymentsSheetV2Ios)},
-    {"lens-unary-http-transport-enabled",
-     flag_descriptions::kLensUnaryHttpTransportEnabledName,
-     flag_descriptions::kLensUnaryHttpTransportEnabledDescription,
-     flags_ui::kOsIos, FEATURE_VALUE_TYPE(kLensUnaryHttpTransportEnabled)},
     {"lens-bypass-compression-for-c2pa",
      flag_descriptions::kLensBypassCompressionForC2paName,
      flag_descriptions::kLensBypassCompressionForC2paDescription,
@@ -2679,12 +2702,6 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
     {"ios-cobalt", flag_descriptions::kIOSCobaltName,
      flag_descriptions::kIOSCobaltDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(web::features::kIOSCobalt)},
-    {"enable-client-certificate-provisioning-on-ios",
-     flag_descriptions::kEnableClientCertificateProvisioningOnIOSName,
-     flag_descriptions::kEnableClientCertificateProvisioningOnIOSDescription,
-     flags_ui::kOsIos,
-     FEATURE_VALUE_TYPE(client_certificates::features::
-                            kEnableClientCertificateProvisioningOnIOS)},
     {"ask-about-this-page", flag_descriptions::kAskAboutThisPageName,
      flag_descriptions::kAskAboutThisPageDescription, flags_ui::kOsIos,
      FEATURE_VALUE_TYPE(kAskAboutThisPage)},
@@ -2966,6 +2983,18 @@ constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
      flag_descriptions::kRecoverTabsOfLastClosedWindowName,
      flag_descriptions::kRecoverTabsOfLastClosedWindowDescription,
      flags_ui::kOsIos, FEATURE_VALUE_TYPE(kRecoverTabsOfLastClosedWindow)},
+    {"saas-usage-reporting", flag_descriptions::kSaasUsageReportingName,
+     flag_descriptions::kSaasUsageReportingDescription, flags_ui::kOsIos,
+     FEATURE_VALUE_TYPE(enterprise_reporting::kSaasUsageReporting)},
+    {"aim-button-refactor", flag_descriptions::kAimButtonRefactorName,
+     flag_descriptions::kAimButtonRefactorDescription, flags_ui::kOsIos,
+     FEATURE_WITH_PARAMS_VALUE_TYPE(kAimButtonRefactor,
+                                    kAimButtonRefactorVariations,
+                                    "AimButtonRefactor")},
+    {"prevent-cobrowse-on-aim-srp-tap",
+     flag_descriptions::kPreventCobrowseOnAimSrpTapName,
+     flag_descriptions::kPreventCobrowseOnAimSrpTapDescription,
+     flags_ui::kOsIos, FEATURE_VALUE_TYPE(kPreventCobrowseOnAimSrpTap)},
 });
 
 bool SkipConditionalFeatureEntry(const flags_ui::FeatureEntry& entry) {

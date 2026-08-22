@@ -1849,6 +1849,28 @@ TEST_F(BrowserAutofillManagerTest,
   EXPECT_FALSE(external_delegate()->on_suggestions_returned_seen());
 }
 
+// Tests that `GetProfileSuggestions()` does not return AddressOnTyping
+// suggestions.
+TEST_F(BrowserAutofillManagerTest,
+       GetProfileSuggestions_DoesNotReturnAddressOnTypingSuggestions) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillAddressSuggestionsOnTyping},
+      /*disabled_features=*/{features::kAutofillNewSuggestionGeneration});
+
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
+  profile.SetInfo(ADDRESS_HOME_LINE1, u"sherman wallaby 42 sidney", "en-US");
+  personal_data().test_address_data_manager().AddProfile(profile);
+
+  FormData form =
+      test::GetFormData({.fields = {{.role = UNKNOWN_TYPE, .value = u"she"}}});
+  FormsSeen({form});
+
+  EXPECT_THAT(test_api(autofill_manager())
+                  .GetProfileSuggestions(form, form.fields()[0]),
+              IsEmpty());
+}
+
 // Tests that when `features::kAutofillTrackSelectFieldEdits` is enabled,
 // changing the selection of a <select> control is correctly recorded as a
 // user modification in the UKM metrics.
@@ -2101,22 +2123,12 @@ TEST_F(BrowserAutofillManagerTest, GetAddressAndCreditCardSuggestionsNonHttps) {
 
   // Clear the test credit cards and try again -- we shouldn't return a warning.
   personal_data().test_payments_data_manager().ClearCreditCards();
+  // Set the value of the trigger field to be longer than 3 characters, so that
+  // the "Save and Fill" promo is not shown.
+  cc_number_field.set_value(u"1234");
   OnAskForValuesToFill(form, cc_number_field);
-#if BUILDFLAG(IS_IOS)
-  // On iOS, the Scan Card / Save and Fill promo is enabled by default. Even
-  // though the promo itself doesn't check for secure context, its presence
-  // causes the generic secure context check to replace it with a warning.
-  external_delegate()->CheckSuggestions(
-      cc_number_field.global_id(),
-      {Suggestion(
-          l10n_util::GetStringUTF16(IDS_AUTOFILL_WARNING_INSECURE_CONNECTION),
-          u"", Suggestion::Icon::kNoIcon,
-          SuggestionType::kInsecureContextPaymentDisabledMessage)});
-#else
-  // On other platforms, the promo is not enabled by default, so no suggestions
-  // are generated.
+
   external_delegate()->CheckNoSuggestions(cc_number_field.global_id());
-#endif
 }
 
 TEST_F(BrowserAutofillManagerTest,
@@ -2385,11 +2397,9 @@ TEST_F(BrowserAutofillManagerTest,
       .Times(0);
 #endif
 
-#if BUILDFLAG(IS_IOS)
   // Set the value of the trigger field to be longer than 3 characters, so that
   // the "Save and Fill" promo is not shown.
   test_api(form).field(0).set_value(u"1234");
-#endif
   OnAskForValuesToFill(form, form.fields()[0]);
 
   // Verify that no suggestion is returned.
@@ -2569,13 +2579,13 @@ TEST_P(BrowserAutofillManagerLogAblationTest, TestLogging) {
   // Simulate retrieving autofill suggestions with the first field as a trigger
   // script. This should emit signals that lead to recorded metrics later on.
   FormFieldData& field = test_api(form).field(0);
-#if BUILDFLAG(IS_IOS)
+
   if (!params.run_with_data_on_file) {
     // Set the field value to > 3 characters to suppress the "Save and Fill"
-    // promo on iOS, ensuring that NO suggestions are generated.
+    // promo, ensuring that NO suggestions are generated.
     field.set_value(u"1234");
   }
-#endif
+
   OnAskForValuesToFill(form, field);
 
   // Simulate user typing into field (due to the ablation we would not fill).

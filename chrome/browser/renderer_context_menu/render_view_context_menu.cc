@@ -1356,13 +1356,8 @@ void RenderViewContextMenu::InitMenu() {
     AppendSharingItems();
   }
 
-  bool show_glic = false;
-  if (features::IsMenuSimplificationEnabled()) {
-    show_glic = !params_.selection_text.empty();
-  } else {
-    show_glic = !params_.selection_text.empty() || !params_.link_url.is_empty();
-  }
-  show_glic = show_glic && !use_simplified_menu_for_text_selection;
+  bool show_glic = !params_.selection_text.empty() &&
+                   !use_simplified_menu_for_text_selection;
 
   const bool glic_below_search =
       base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
@@ -2579,7 +2574,7 @@ void RenderViewContextMenu::AppendPageItems() {
     // Cast
     AppendMediaRouterItem();
 
-    // Send to your devices
+    // Send to your device
     if (GetBrowser() &&
         send_tab_to_self::ShouldDisplayEntryPoint(embedder_web_contents_)) {
       AppendSendTabToSelfItem(/*add_separator=*/false);
@@ -2991,8 +2986,7 @@ void RenderViewContextMenu::AppendSpellingAndSearchSuggestionItems() {
 
   if (!params_.misspelled_word.empty() &&
       !features::IsMenuSimplificationEnabled()) {
-    bool show_glic =
-        !params_.selection_text.empty() || !params_.link_url.is_empty();
+    bool show_glic = !params_.selection_text.empty();
     const bool glic_below_search =
         base::FeatureList::IsEnabled(features::kGlicContextMenuBelowSearch);
     if (show_glic && !glic_below_search) {

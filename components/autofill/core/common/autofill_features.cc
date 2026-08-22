@@ -445,6 +445,14 @@ BASE_FEATURE_PARAM(std::string,
                    &kAutofillAmbientAutofill,
                    "ambient_autofill_eligible_tiers",
                    "");
+// A comma-separated list of EntityType string names (e.g. "Passport,Driver's
+// license,Vehicle") supported for Ambient Autofill. If empty, no entity types
+// are supported.
+BASE_FEATURE_PARAM(std::string,
+                   kAutofillAmbientAutofillSupportedEntityTypes,
+                   &kAutofillAmbientAutofill,
+                   "ambient_autofill_supported_entity_types",
+                   "");
 BASE_FEATURE_PARAM(std::string,
                    kAutofillAmbientAutofillEnabledDevices,
                    &kAutofillAmbientAutofill,
@@ -826,15 +834,6 @@ BASE_FEATURE(kAutofillFixStateCountryMisclassification,
 
 // When enabled, Greek regexes are used for parsing in branded builds.
 BASE_FEATURE(kAutofillGreekRegexes, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// LINT.IfChange(autofill_ignore_checkable_elements)
-// If enabled, checkboxes and radio buttons aren't extracted anymore.
-// TODO(crbug.com/40283901): Remove once launched. Also remove
-// - autofill::FormControlType::kInputCheckbox
-// - autofill::FormControlType::kInputRadio
-BASE_FEATURE(kAutofillIgnoreCheckableElements,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-// LINT.ThenChange(//components/autofill/ios/form_util/resources/autofill_form_features.ts:autofill_ignore_checkable_elements)
 
 // Controls whether `AutofillPopupHideHelper` ignores frame resize events
 // when the `WebContents` size is unchanged.

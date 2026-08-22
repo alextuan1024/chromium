@@ -12,6 +12,10 @@ namespace android_webview::features {
 
 // Alphabetical:
 
+// When enabled, creates a spare renderer for the default webview profile
+BASE_FEATURE(kCreateSpareRendererForDefaultProfile,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Post Chromium startup in the WebView constructor. Only has any effect
 // when kStartupNonBlockingWebViewConstructor is enabled.
 BASE_FEATURE(kPostChromiumStartupInWebViewConstructor,
@@ -203,7 +207,7 @@ const base::FeatureParam<bool> kWebViewHttpCacheQuotaApiForceBackendInit{
     &kWebViewHttpCacheQuotaApi, "ForceBackendInit", true};
 
 // This enables WebView's hyperlink context menu.
-BASE_FEATURE(kWebViewHyperlinkContextMenu, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kWebViewHyperlinkContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls whether we ignore duplicate navigations or not, in favor of
 // preserving the already ongoing navigation.

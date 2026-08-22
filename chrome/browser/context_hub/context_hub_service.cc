@@ -26,11 +26,11 @@
 #include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/features.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank.h"
-#include "chrome/browser/context_hub/prefs.h"
 #include "chrome/browser/context_hub/storage/context_hub_backend.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry_conversions.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_store.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_tab_visit_tracker.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
@@ -41,12 +41,12 @@
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
 #include "components/personal_context/core/personal_context_service.h"
 #include "components/personal_context/proto/features/auto_todos.pb.h"
-#include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/signin/public/base/persistent_repeating_timer.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/web_contents.h"
@@ -92,6 +92,18 @@ optimization_guide::proto::MemoryBankEntry ToMemoryBankEntryProto(
   return mb_proto;
 }
 
+base::TimeDelta GetDurationOfCurrentOrLastVisit(
+    content::WebContents* web_contents) {
+  if (tabs::TabInterface* tab =
+          tabs::TabInterface::MaybeGetFromContents(web_contents)) {
+    if (contextual_tasks::ContextualTasksTabVisitTracker* tracker =
+            contextual_tasks::ContextualTasksTabVisitTracker::From(tab)) {
+      return tracker->GetDurationOfCurrentOrLastVisit();
+    }
+  }
+  return base::TimeDelta();
+}
+
 using TabContextBarrierCallback = base::RepeatingCallback<void(
     std::pair<TabData, std::optional<optimization_guide::proto::PageContext>>)>;
 
@@ -115,6 +127,8 @@ void OnPageContentExtracted(
   tab.title = base::UTF16ToUTF8(web_contents->GetTitle());
   tab.url = web_contents->GetLastCommittedURL();
   tab.last_active_time = web_contents->GetLastActiveTime();
+  tab.last_foreground_duration =
+      GetDurationOfCurrentOrLastVisit(web_contents.get());
 
   std::optional<optimization_guide::proto::PageContext> page_context;
   if (extracted_result && extracted_result->page_content) {
@@ -182,6 +196,7 @@ personal_context::proto::AutoTodoItem ToAutoTodoItemProto(
 
 ContextHubService::ContextHubService(
     Profile* profile,
+    signin::IdentityManager* identity_manager,
     personal_context::PersonalContextService* personal_context_service,
     optimization_guide::RemoteModelExecutor*
         optimization_guide_remote_model_executor,
@@ -193,6 +208,7 @@ ContextHubService::ContextHubService(
     std::unique_ptr<ContextHubBackend> context_hub_backend,
     std::unique_ptr<AutoTodosStore> auto_todos_store)
     : profile_(CHECK_DEREF(profile)),
+      identity_manager_(CHECK_DEREF(identity_manager)),
       personal_context_service_(CHECK_DEREF(personal_context_service)),
       optimization_guide_remote_model_executor_(
           CHECK_DEREF(optimization_guide_remote_model_executor)),
@@ -207,16 +223,15 @@ ContextHubService::ContextHubService(
       tab_group_store_(std::move(tab_group_store)),
       auto_todos_store_(std::move(auto_todos_store)) {
   CHECK(memory_bank_);
+  identity_manager_observation_.Observe(&identity_manager_.get());
   if (auto_todos_store_) {
     auto_todos_store_->AddObserver(this);
-    first_party_auto_todos_timer_ =
-        std::make_unique<signin::PersistentRepeatingTimer>(
-            profile_->GetPrefs(), prefs::kContextHubLastAutoTodosGenerationTime,
-            features::kFirstPartyAutoTodosInterval.Get(),
-            base::BindRepeating(
-                &ContextHubService::OnFirstPartyAutoTodosTimerTriggered,
-                weak_factory_.GetWeakPtr()));
-    first_party_auto_todos_timer_->Start();
+    first_party_auto_todos_timer_.Start(
+        FROM_HERE, features::kFirstPartyAutoTodosInterval.Get(),
+        base::BindRepeating(
+            &ContextHubService::OnFirstPartyAutoTodosTimerTriggered,
+            weak_factory_.GetWeakPtr()));
+    MaybeTriggerFirstPartyAutoTodosGeneration();
 
 #if !BUILDFLAG(IS_ANDROID)
     browser_tab_strip_tracker_ =
@@ -238,6 +253,11 @@ ContextHubService::~ContextHubService() {
   if (is_generating_first_party_auto_todos_) {
     observers_.Notify(&Observer::OnFirstPartyAutoTodosGenerationStateChanged,
                       false);
+    for (auto& cb : std::exchange(pending_first_party_callbacks_, {})) {
+      if (cb) {
+        std::move(cb).Run(false);
+      }
+    }
   }
 }
 
@@ -272,8 +292,56 @@ void ContextHubService::OnTabStripModelChanged(
 }
 #endif
 
-void ContextHubService::OnFirstPartyAutoTodosTimerTriggered() {
+void ContextHubService::MaybeTriggerFirstPartyAutoTodosGeneration() {
+  if (!identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin) ||
+      !identity_manager_->AreRefreshTokensLoaded()) {
+    return;
+  }
+  const base::TimeDelta time_since_last_generation =
+      base::Time::Now() - last_first_party_generation_time_;
+  if (!last_first_party_generation_time_.is_null() &&
+      time_since_last_generation >= base::TimeDelta() &&
+      time_since_last_generation <
+          features::kFirstPartyAutoTodosInterval.Get()) {
+    return;
+  }
   GenerateFirstPartyAutoTodos(base::DoNothing());
+}
+
+void ContextHubService::OnFirstPartyAutoTodosTimerTriggered() {
+  if (auto_todos_store_) {
+    auto_todos_store_->DeleteExpiredEntries(base::DoNothing());
+  }
+  MaybeTriggerFirstPartyAutoTodosGeneration();
+}
+
+void ContextHubService::OnPrimaryAccountChanged(
+    const signin::PrimaryAccountChangeEvent& event_details) {
+  // Trigger generation when a primary account signs in to ensure 1P AutoTodos
+  // are fetched as soon as the user is authenticated.
+  if (event_details.GetEventTypeFor(signin::ConsentLevel::kSignin) ==
+      signin::PrimaryAccountChangeEvent::Type::kSet) {
+    MaybeTriggerFirstPartyAutoTodosGeneration();
+  }
+}
+
+void ContextHubService::OnRefreshTokensLoaded() {
+  // Trigger generation once refresh tokens finish loading after startup to
+  // ensure authenticated network requests can succeed.
+  MaybeTriggerFirstPartyAutoTodosGeneration();
+}
+
+void ContextHubService::OnErrorStateOfRefreshTokenUpdatedForAccount(
+    const CoreAccountInfo& account_info,
+    const GoogleServiceAuthError& error,
+    signin_metrics::SourceForRefreshTokenOperation token_operation_source) {
+  // Trigger generation if an authentication error has been resolved for the
+  // primary account (e.g. after the user re-authenticates).
+  if (account_info.account_id == identity_manager_->GetPrimaryAccountId(
+                                     signin::ConsentLevel::kSignin) &&
+      error.state() == GoogleServiceAuthError::NONE) {
+    MaybeTriggerFirstPartyAutoTodosGeneration();
+  }
 }
 
 void ContextHubService::AddObserver(Observer* observer) {
@@ -291,8 +359,20 @@ void ContextHubService::OnAutoTodosChanged(
 
 void ContextHubService::GenerateFirstPartyAutoTodos(
     AutoTodosStore::OperationCallback callback) {
-  if (!auto_todos_store_ || is_generating_first_party_auto_todos_) {
-    std::move(callback).Run(false);
+  if (!auto_todos_store_) {
+    if (callback) {
+      std::move(callback).Run(false);
+    }
+    return;
+  }
+
+  if (callback) {
+    pending_first_party_callbacks_.push_back(std::move(callback));
+  }
+
+  // If a request is already in flight, simply attach the callback and wait for
+  // completion instead of rejecting the call or sending duplicate requests.
+  if (is_generating_first_party_auto_todos_) {
     return;
   }
 
@@ -304,14 +384,13 @@ void ContextHubService::GenerateFirstPartyAutoTodos(
   // the server.
   auto_todos_store_->GetAllItems(
       base::BindOnce(&ContextHubService::OnCachedFirstPartyAutoTodosFetched,
-                     weak_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_factory_.GetWeakPtr()));
 }
 
 void ContextHubService::OnCachedFirstPartyAutoTodosFetched(
-    AutoTodosStore::OperationCallback callback,
     std::vector<AutoTodoEntry> stored_todos) {
   if (!auto_todos_store_ || !is_generating_first_party_auto_todos_) {
-    FinishFirstPartyAutoTodosGeneration(std::move(callback), /*success=*/false);
+    FinishFirstPartyAutoTodosGeneration(/*success=*/false);
     return;
   }
 
@@ -329,7 +408,7 @@ void ContextHubService::OnCachedFirstPartyAutoTodosFetched(
       personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
       request_metadata, options,
       base::BindOnce(&ContextHubService::OnFirstPartyAutoTodosFetched,
-                     weak_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_factory_.GetWeakPtr()));
 }
 
 bool ContextHubService::IsGeneratingFirstPartyAutoTodos() const {
@@ -562,16 +641,15 @@ void ContextHubService::FinishTabBasedTodosGeneration(bool success) {
 }
 
 void ContextHubService::OnFirstPartyAutoTodosFetched(
-    AutoTodosStore::OperationCallback callback,
     personal_context::FetchContextResult result) {
   if (!result.response.has_value()) {
-    FinishFirstPartyAutoTodosGeneration(std::move(callback), /*success=*/false);
+    FinishFirstPartyAutoTodosGeneration(/*success=*/false);
     return;
   }
 
   personal_context::proto::AutoTodosResponse response;
   if (!response.ParseFromString(result.response.value().value())) {
-    FinishFirstPartyAutoTodosGeneration(std::move(callback), /*success=*/false);
+    FinishFirstPartyAutoTodosGeneration(/*success=*/false);
     return;
   }
 
@@ -603,17 +681,21 @@ void ContextHubService::OnFirstPartyAutoTodosFetched(
   auto_todos_store_->AddAllTodos(
       std::move(entries),
       base::BindOnce(&ContextHubService::FinishFirstPartyAutoTodosGeneration,
-                     weak_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_factory_.GetWeakPtr()));
 }
 
-void ContextHubService::FinishFirstPartyAutoTodosGeneration(
-    AutoTodosStore::OperationCallback callback,
-    bool success) {
+void ContextHubService::FinishFirstPartyAutoTodosGeneration(bool success) {
   is_generating_first_party_auto_todos_ = false;
+  if (success) {
+    last_first_party_generation_time_ = base::Time::Now();
+    first_party_auto_todos_timer_.Reset();
+  }
   observers_.Notify(&Observer::OnFirstPartyAutoTodosGenerationStateChanged,
                     false);
-  if (callback) {
-    std::move(callback).Run(success);
+  for (auto& cb : std::exchange(pending_first_party_callbacks_, {})) {
+    if (cb) {
+      std::move(cb).Run(success);
+    }
   }
 }
 
@@ -964,8 +1046,15 @@ void ContextHubService::HandleTabGroupModelExecutionResult(
         optimization_guide::proto::ContextHubResponse>(*result.response);
   }
   if (!response || !response->has_group_response()) {
-    std::move(callback).Run({}, std::move(tabs));
+    std::move(callback).Run({}, std::move(tabs), /*text_response=*/"");
     return;
+  }
+
+  std::string text_response = response->group_response().text_response();
+  if (!text_response.empty()) {
+    AddTabGroupChatHistoryTurn(
+        optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT,
+        text_response);
   }
 
   std::vector<TabGroupEntry> groups;
@@ -1021,14 +1110,15 @@ void ContextHubService::HandleTabGroupModelExecutionResult(
     }
   }
 
-  std::move(callback).Run(std::move(groups), std::move(ungrouped_tabs));
+  std::move(callback).Run(std::move(groups), std::move(ungrouped_tabs),
+                          std::move(text_response));
 }
 
 void ContextHubService::GroupTabs(std::vector<TabData> tabs,
                                   const std::string& user_command,
                                   GroupTabsCallback callback) {
   if (tabs.size() < 2) {
-    std::move(callback).Run({}, std::move(tabs));
+    std::move(callback).Run({}, std::move(tabs), /*text_response=*/"");
     return;
   }
 

@@ -2019,7 +2019,6 @@ interface Document : Node
     method releaseEvents
     method replaceChildren
     method requestStorageAccess
-    method requestStorageAccessFor
     method startViewTransition
     method webkitCancelFullScreen
     method webkitExitFullscreen
@@ -2734,7 +2733,6 @@ interface Fence
 interface FencedFrameConfig
     attribute @@toStringTag
     method constructor
-    method setSharedStorageContext
 interface FetchLaterResult
     attribute @@toStringTag
     getter activated

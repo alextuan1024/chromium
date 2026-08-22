@@ -11,6 +11,8 @@ import android.os.SystemClock;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -35,6 +37,7 @@ import org.chromium.chrome.browser.ui.actions.ActionId;
 import org.chromium.chrome.browser.ui.actions.ActionProperties;
 import org.chromium.chrome.browser.ui.actions.ActionRegistry;
 import org.chromium.chrome.browser.ui.android.bars_common.IphIntent;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager.Host;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarMetrics.AimIneligibilityReason;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarMetrics.CandidateAction;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -102,7 +105,7 @@ public class BottomBarMediator
     private @Nullable GlicKeyedService mGlicKeyedService;
     private @Nullable Profile mOriginalProfile;
     private @Nullable Tab mCurrentTab;
-    private @Nullable Boolean mIsVisible;
+    private @TriState int mIsVisible;
     private @Nullable IphIntent mNewTabIphIntent;
     private @Nullable TemplateUrlService mTemplateUrlService;
     private @Nullable TemplateUrlServiceObserver mTemplateUrlServiceObserver;
@@ -118,6 +121,7 @@ public class BottomBarMediator
     private long mGlicAppearedTimeMs = -1;
     private boolean mStartupPromoFlowFinished;
     private boolean mObservingSharedPrefs;
+    private @Host int mHost = Host.TABBED;
 
     /**
      * @param context The context to use for the bottom bar.
@@ -207,7 +211,7 @@ public class BottomBarMediator
         updateVisibility();
     }
 
-    private void onOmniboxFocusChanged(Boolean focused) {
+    private void onOmniboxFocusChanged(boolean focused) {
         updateVisibility();
     }
 
@@ -237,10 +241,10 @@ public class BottomBarMediator
                 BottomBarConfigUtils.shouldDisableOnNtp() && currentTabIsRegularNtp;
         boolean isVisible = !shouldDisableOnNtp && !isOmniboxFocused && !mShouldHideForHub;
 
-        if (mIsVisible != null && mIsVisible == isVisible) return;
+        if (mIsVisible == TriStateUtils.from(isVisible)) return;
 
-        boolean didBecomeVisible = isVisible && (mIsVisible == null || !mIsVisible);
-        mIsVisible = isVisible;
+        boolean didBecomeVisible = isVisible && mIsVisible != TriState.TRUE;
+        mIsVisible = TriStateUtils.from(isVisible);
 
         mModel.set(BottomBarProperties.IS_VISIBLE, isVisible);
         mVisibilityDelegate.onVisibilityChanged(isVisible);
@@ -274,9 +278,8 @@ public class BottomBarMediator
 
     private void maybeShowIphs() {
         if (!mStartupPromoFlowFinished) return;
-        boolean isBottomBarVisible = Boolean.TRUE.equals(mIsVisible);
-        boolean isExtraVisible =
-                Boolean.TRUE.equals(mModel.get(BottomBarProperties.IS_EXTRA_BUTTON_VISIBLE));
+        boolean isBottomBarVisible = mIsVisible == TriState.TRUE;
+        boolean isExtraVisible = mModel.get(BottomBarProperties.IS_EXTRA_BUTTON_VISIBLE);
         if (isBottomBarVisible && isExtraVisible) {
             Profile profile = mProfileSupplier.get();
             Tracker tracker =
@@ -487,9 +490,22 @@ public class BottomBarMediator
 
     private void updateNewTabButtonBackground() {
         boolean isCentered = mButtonManager.hasCenteredButton();
-        Boolean current = mModel.get(BottomBarProperties.IS_NEW_TAB_BACKGROUND_VISIBLE);
-        if (current == null || current != isCentered) {
+        boolean current = mModel.get(BottomBarProperties.IS_NEW_TAB_BACKGROUND_VISIBLE);
+        if (current != isCentered) {
             mModel.set(BottomBarProperties.IS_NEW_TAB_BACKGROUND_VISIBLE, isCentered);
+        }
+    }
+
+    /**
+     * Updates the current host of the bottom bar.
+     *
+     * @param host The {@link Host} where the bottom bar is currently hosted.
+     */
+    public void setParent(@Host int host) {
+        if (mHost == host) return;
+        mHost = host;
+        if (host == Host.TABBED) {
+            updateColorSchemeFromThemeColorProvider();
         }
     }
 
@@ -498,6 +514,7 @@ public class BottomBarMediator
             @Nullable ColorStateList tint,
             @Nullable ColorStateList activityFocusTint,
             @BrandedColorScheme int brandedColorScheme) {
+        if (mHost != Host.TABBED) return;
         mModel.set(BottomBarProperties.COLOR_SCHEME, brandedColorScheme);
         mVisibilityDelegate.onBackgroundColorChanged();
     }
@@ -595,6 +612,17 @@ public class BottomBarMediator
                         .build();
         newTabModel.set(ActionProperties.IPH_INTENT, newTabIph);
         mNewTabIphIntent = newTabIph;
+    }
+
+    private void updateColorSchemeFromThemeColorProvider() {
+        @BrandedColorScheme int brandedColorScheme = mThemeColorProvider.getBrandedColorScheme();
+        mModel.set(BottomBarProperties.COLOR_SCHEME, brandedColorScheme);
+        mVisibilityDelegate.onBackgroundColorChanged();
+    }
+
+    /*package*/ @Host
+    int getHostForTesting() {
+        return mHost;
     }
 
     @Override

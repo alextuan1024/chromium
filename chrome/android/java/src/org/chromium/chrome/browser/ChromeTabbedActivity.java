@@ -254,6 +254,7 @@ import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareHelper;
 import org.chromium.chrome.browser.share.qrcode.QrCodeCoordinator;
+import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfAndroidBridge;
 import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfGestureDetector;
 import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfMetricsRecorder;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
@@ -2703,33 +2704,43 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
         mPendingInitialTabCreation = false;
         boolean incognito = mSupportedProfileType == SupportedProfileType.OFF_THE_RECORD;
 
-        String url = null;
-        GURL homepageGurl = HomepageManager.getInstance().getHomepageGurlForZeroTabs(incognito);
-
-        ProfileProvider profileProvider = getProfileProviderSupplier().get();
-        Profile profile =
-                incognito
-                        ? profileProvider.getOffTheRecordProfile()
-                        : profileProvider.getOriginalProfile();
-        UrlConstantResolver urlConstantResolver = UrlConstantResolverFactory.getForProfile(profile);
-        if (homepageGurl.isEmpty()) {
-            url = urlConstantResolver.getNtpUrl();
+        List<String> startupUrls =
+                TabbedStartupWindowPolicyDelegate.getInstance().resolveStartupUrls(incognito);
+        if (!startupUrls.isEmpty()) {
+            LoadUrlParams loadUrlParams = new LoadUrlParams(startupUrls.get(0));
+            getTabCreator(incognito)
+                    .createNewTabs(
+                            loadUrlParams,
+                            startupUrls.subList(1, startupUrls.size()),
+                            TabLaunchType.FROM_SESSION_STARTUP_WITH_URLS_PREF,
+                            /* parent= */ null,
+                            /* openInTabGroup= */ false,
+                            /* intent= */ null);
         } else {
+            String url = null;
+            GURL homepageGurl = HomepageManager.getInstance().getHomepageGurlForZeroTabs(incognito);
+
+            ProfileProvider profileProvider = getProfileProviderSupplier().get();
+            Profile profile =
+                    incognito
+                            ? profileProvider.getOffTheRecordProfile()
+                            : profileProvider.getOriginalProfile();
+            UrlConstantResolver urlConstantResolver =
+                    UrlConstantResolverFactory.getForProfile(profile);
             // Migrate legacy NTP URLs (chrome://newtab) to the newer format
-            // (chrome-native://newtab)
-            if (UrlUtilities.isNtpUrl(homepageGurl)) {
+            // (chrome-native://newtab).
+            if (homepageGurl.isEmpty() || UrlUtilities.isNtpUrl(homepageGurl)) {
                 url = urlConstantResolver.getNtpUrl();
             } else {
                 url = homepageGurl.getSpec();
             }
+            getTabCreator(incognito).launchUrl(url, TabLaunchType.FROM_STARTUP);
+            PartnerBrowserCustomizations.getInstance()
+                    .onCreateInitialTab(
+                            url,
+                            getLifecycleDispatcher(),
+                            HomepageManager::getHomepageCharacterizationHelper);
         }
-
-        getTabCreator(incognito).launchUrl(url, TabLaunchType.FROM_STARTUP);
-        PartnerBrowserCustomizations.getInstance()
-                .onCreateInitialTab(
-                        url,
-                        getLifecycleDispatcher(),
-                        HomepageManager::getHomepageCharacterizationHelper);
 
         // If we didn't call setInitialOverviewState() in onStartWithNative() because
         // mPendingInitialTabCreation was true then do so now.
@@ -3073,12 +3084,12 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
             // Hides the overview page to ensure proper layout change signals are sent.
             hideOverview(/* animate= */ false);
         }
-        maybeAttachSendTabToSelfScrollObserver(resultTab, intent, loadUrlParams);
+        maybeAttachSendTabToSelfObservers(resultTab, intent, loadUrlParams);
 
         return resultTab;
     }
 
-    private void maybeAttachSendTabToSelfScrollObserver(
+    private void maybeAttachSendTabToSelfObservers(
             @Nullable Tab resultTab, Intent intent, LoadUrlParams loadUrlParams) {
         if (resultTab != null
                 && IntentUtils.safeGetBooleanExtra(
@@ -3086,6 +3097,16 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                 && IntentUtils.isTrustedIntentFromSelf(intent)) {
             SendTabToSelfMetricsRecorder.attachScrollObserverToTab(
                     resultTab, loadUrlParams.getInternalScrollToTextFragment());
+            if (ChromeFeatureList.isEnabled(
+                    ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)) {
+                byte[] pageContext =
+                        IntentUtils.safeGetByteArrayExtra(
+                                intent, IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT);
+                if (pageContext != null) {
+                    SendTabToSelfAndroidBridge.fillWebContents(
+                            resultTab, pageContext, loadUrlParams.getUrl());
+                }
+            }
         }
     }
 
@@ -3699,16 +3720,6 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
     private VerticalTabsActionDelegate createVerticalTabsActionDelegate() {
         return new VerticalTabsActionDelegate() {
             @Override
-            public void openHubPane(int paneId) {
-                if (mLayoutManager == null) return;
-
-                // Opens the tab switcher and displays a specific pane.
-                HubShowPaneHelper hubShowPaneHelper = mHubProvider.getHubShowPaneHelper();
-                hubShowPaneHelper.setPaneToShow(paneId);
-                mLayoutManager.showLayout(LayoutType.HUB, true);
-            }
-
-            @Override
             public void openTabSearch() {
                 if (mRootUiCoordinator != null) {
                     ((TabbedRootUiCoordinator) mRootUiCoordinator)
@@ -3718,7 +3729,6 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
 
             @Override
             public void openHubSearch() {
-                openHubPane(PaneId.TAB_SWITCHER);
                 onMenuOrKeyboardAction(R.id.tab_search, /* fromMenu= */ false);
             }
         };
@@ -4393,17 +4403,15 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
                 return false;
             }
 
+            Profile profile = mTabModelProfileSupplier.get();
             TabModel tabModel = mTabModelSelector.getCurrentModel();
-            List<Tab> groupTabs = tabModel.getTabsInGroup(groupId);
-            if (groupTabs.isEmpty()) {
-                return false;
-            }
-
-            Tab destTab = groupTabs.get(0);
-            TabGroupUtils.mergeTabsToDest(
-                    List.of(currentTab), destTab.getId(), tabModel, /* tabMovedCallback= */ null);
-            RecordUserAction.record("MobileMenuAddToExistingGroup");
-            return true;
+            return new TabGroupMenuActionHandler(
+                            this,
+                            tabModel,
+                            assertNonNull(mRootUiCoordinator.getBottomSheetController()),
+                            getModalDialogManager(),
+                            profile)
+                    .handleAddToExistingGroupAction(currentTab, groupId);
         } else if (id == R.id.create_new_tab_group_menu_id) {
             RecordUserAction.record("MobileMenuCreateTabGroup");
             return handleCreateNewTabGroupAction(currentTab);

@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -144,7 +145,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetTest, WebAppsHasBoundsOnOpen) {
   webapps::AppId app_id = web_app::test::InstallWebApp(browser()->GetProfile(),
                                                        std::move(web_app_info));
 
-  Browser* app_browser =
+  BrowserWindowInterface* app_browser =
       web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
   ASSERT_EQ(app_browser->GetType(), BrowserWindowInterface::Type::TYPE_APP);
   app_browser->GetWindow()->Close();

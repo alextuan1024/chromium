@@ -1175,7 +1175,7 @@
       "cbiesinger@chromium.org",
       "goto@chromium.org"
     ],
-    "expires": "Aug 1, 2026"
+    "expires": "Feb 1, 2027"
   },
   {
     "prefix": "fedcm-register",
@@ -4691,7 +4691,7 @@
     "owners": ["aran.donohue@gmail.com"],
     "platforms": ["Linux", "Mac", "Win"],
     "bases": [
-      "wpt_internal/webtransport/headers.https.any.js"
+      "external/wpt/webtransport/headers.https.any.js"
     ],
     "exclusive_tests": "ALL",
     "args": ["--enable-blink-features=WebTransportHeaders"],
@@ -5043,7 +5043,10 @@
     "platforms": ["Mac"],
     "bases": ["external/wpt/resource-timing/response-status-code.html"],
     "exclusive_tests": "ALL",
-    "args": ["--disable-features=TcpPortRandomizationMac"],
+    "args": [
+      "--disable-field-trial-config",
+      "--disable-features=TcpPortRandomizationMac"
+    ],
     "expires": "Oct 31, 2026"
   },
   {
@@ -5123,5 +5126,25 @@
       "--disable-blink-features=ElementCanvasTransform"
     ],
     "expires": "Jan 1, 2027"
+  },
+  {
+    "prefix": "static-routing-api-devtools-improvement",
+    "platforms": [
+      "Linux",
+      "Mac",
+      "Win"
+    ],
+    "bases": [
+      "http/tests/inspector-protocol/service-worker/tentative/static-router/receive-typed-router-rules-on-update.js"
+    ],
+    "exclusive_tests": "ALL",
+    "args": [
+      "--enable-features=ServiceWorkerStaticRouterTypedRulesForDevTools"
+    ],
+    "owners": [
+      "yyanagisawa@chromium.org",
+      "tnak@chromium.org"
+    ],
+    "expires": "Jul 1, 2027"
   }
 ]

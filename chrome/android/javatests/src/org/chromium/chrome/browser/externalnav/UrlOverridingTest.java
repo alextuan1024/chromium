@@ -218,8 +218,6 @@ public class UrlOverridingTest {
             BASE_PATH + "navigation_from_java_redirection.html";
     private static final String NAVIGATION_TO_CCT_FROM_INTENT_URI =
             BASE_PATH + "navigation_to_cct_via_intent_uri.html";
-    private static final String FALLBACK_URL =
-            "https://play.google.com/store/apps/details?id=com.android.chrome";
     private static final String SUBFRAME_REDIRECT_WITH_PLAY_FALLBACK =
             BASE_PATH + "subframe_navigation_with_play_fallback_parent.html";
     private static final String REDIRECT_TO_OTHER_BROWSER =
@@ -922,6 +920,10 @@ public class UrlOverridingTest {
 
     @Test
     @SmallTest
+    // https://crbug.com/427139583: Disabled on Desktop because this test expects an async
+    // navigation
+    // prompt for a same-tab navigation, which is silently blocked in Desktop mode.
+    @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testNavigationFromXHRCallbackAndLostActivationLongTimeout() throws Exception {
         WebPageStation ctaPage = mTabbedActivityTestRule.startOnBlankPage();
 
@@ -2562,6 +2564,31 @@ public class UrlOverridingTest {
                 },
                 10000L,
                 CriteriaHelper.DEFAULT_POLLING_INTERVAL);
+    }
+
+    @Test
+    @LargeTest
+    public void testSameTabLinkNavigationInDesktopWindowingMode() throws Exception {
+        InterceptNavigationDelegateClientImpl.setIsDesktopWindowingModeForTesting(true);
+
+        IntentFilter filter = createHelloIntentFilter();
+        mActivityMonitor =
+                InstrumentationRegistry.getInstrumentation()
+                        .addMonitor(
+                                filter,
+                                new Instrumentation.ActivityResult(Activity.RESULT_OK, null),
+                                true);
+        mTestContext.setIntentFilterForHost("127.0.0.1", filter);
+
+        WebPageStation ctaPage = mTabbedActivityTestRule.startOnBlankPage();
+
+        String pageWithSelfLink =
+                getUrlWithParam(NAVIGATION_FROM_TARGET_SELF_LINK, mTestServer.getURL(HELLO_PAGE));
+
+        TestParams testParams = new TestParams(pageWithSelfLink, true, false);
+        testParams.shouldFailNavigation = false;
+        testParams.expectedFinalUrl = mTestServer.getURL(HELLO_PAGE);
+        loadUrlAndWaitForIntentUrl(testParams, ctaPage);
     }
 
     private void launchTwa(String twaPackageName, String url) throws TimeoutException {

@@ -98,6 +98,7 @@
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/test/test_sync_service.h"
+#include "components/user_education/common/user_education_class_properties.h"
 #include "components/user_education/common/user_education_features.h"
 #include "components/user_education/views/help_bubble_view.h"
 #include "content/public/browser/browser_context.h"
@@ -2534,6 +2535,106 @@ TEST_WITH_SIGNED_IN_FROM_PRE(
   EXPECT_TRUE(avatar_accessor2.GetText().empty());
 }
 
+// Regression test for crbug.com/532899594.
+// Tests the scenario where a promo is showing in browser 1 with its
+// auto-collapse timer actively running, and browser 2 is opened for the same
+// profile. When browser 2 shows a temporary explicit state and then clears it,
+// browser 2 transitions back to `kNormal`. This verifies that transitioning
+// back to `kNormal` across windows properly cleans up any active promo timers.
+TEST_WITH_SIGNED_IN_FROM_PRE(
+    IN_PROC_BROWSER_TEST_P,
+    MAYBE_AvatarToolbarButtonPromoClickBrowserTest,
+    MultiWindowTransitionToNormalWhilePromoTimerRunning) {
+  SetupRequirementsForPromoType(GetAvatarPromoType());
+
+  base::AutoReset<std::optional<base::TimeDelta>> delay_override_reset =
+      signin_ui_util::
+          CreateZeroOverrideDelayForCrossWindowAnimationReplayForTesting();
+
+  AvatarToolbarButtonInterface* avatar_1 =
+      GetAvatarToolbarButtonInterface(browser());
+  AvatarToolbarButtonTestAccessor avatar_accessor1(browser());
+  ASSERT_EQ(avatar_accessor1.GetText(),
+            l10n_util::GetStringFUTF16(IDS_AVATAR_BUTTON_GREETING,
+                                       test_given_name()));
+  avatar_1->ClearActiveStateForTesting();
+
+  // The greeting should be followed by the promo.
+  EXPECT_EQ(avatar_accessor1.GetText(), GetExpectedPromoText());
+
+  // Open the second browser while the promo is showing in the first browser.
+  Browser* browser_2 = CreateBrowser(browser()->GetProfile());
+  AvatarToolbarButtonInterface* avatar_2 =
+      GetAvatarToolbarButtonInterface(browser_2);
+  AvatarToolbarButtonTestAccessor avatar_accessor2(browser_2);
+  EXPECT_EQ(avatar_accessor2.GetText(), GetExpectedPromoText());
+
+  // Set an explicit state on browser_2 and then clear it.
+  const std::u16string explicit_text(u"Explicit State");
+  base::ScopedClosureRunner hide_callback = avatar_2->SetExplicitButtonState(
+      explicit_text, /*accessibility_label=*/std::nullopt,
+      /*explicit_action=*/std::nullopt);
+  ASSERT_EQ(avatar_accessor2.GetText(), explicit_text);
+
+  // Clearing the explicit state resets browser_2's state back to normal.
+  // In the buggy code, this would fail invariant checks asserting that promo
+  // timers are stopped when returning to the normal state.
+  hide_callback.RunAndReset();
+
+  EXPECT_TRUE(avatar_accessor1.GetText().empty());
+  EXPECT_TRUE(avatar_accessor2.GetText().empty());
+}
+
+// Regression test for crbug.com/532899594.
+// Tests the scenario where a promo is showing in the avatar button with its
+// auto-collapse timer actively running, and an In-Product Help (IPH) promo
+// bubble is displayed attached to the avatar button.
+// This sets `kHasInProductHelpPromoKey` on the avatar button, which triggers
+// `ShowIdentityNameStateProvider::OnIPHPromoChanged(true)` and transitions
+// the button to `kShowIdentityName`.
+// This verifies that preemption by `kShowIdentityName` while the promo timer
+// is running does not hit invariant assertions or crash.
+TEST_WITH_SIGNED_IN_FROM_PRE(
+    IN_PROC_BROWSER_TEST_P,
+    MAYBE_AvatarToolbarButtonPromoClickBrowserTest,
+    IPHPromoPreemptsActiveAvatarPromoWhileTimerRunning) {
+  SetupRequirementsForPromoType(GetAvatarPromoType());
+
+  AvatarToolbarButtonTestAccessor avatar_accessor(browser());
+  ASSERT_EQ(avatar_accessor.GetText(),
+            l10n_util::GetStringFUTF16(IDS_AVATAR_BUTTON_GREETING,
+                                       test_given_name()));
+  AvatarToolbarButtonInterface* avatar =
+      GetAvatarToolbarButtonInterface(browser());
+  ASSERT_NE(avatar, nullptr);
+  avatar->ClearActiveStateForTesting();
+
+  // The greeting should be followed by the promo.
+  ASSERT_EQ(avatar_accessor.GetText(), GetExpectedPromoText());
+
+  // Simulate an IPH promo bubble attaching to the avatar button.
+  AvatarToolbarButton* avatar_button = static_cast<AvatarToolbarButton*>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->toolbar_button_provider()
+          ->GetAvatarToolbarButtonInterface());
+  ASSERT_NE(avatar_button, nullptr);
+
+  // Setting `kHasInProductHelpPromoKey` triggers `NotifyIPHPromoChanged(true)`.
+  // In the buggy code, this transitions to `kShowIdentityName` while
+  // `collapse_timer_` is still running, which triggers
+  // CHECK(!collapse_timer_.IsRunning()) and crashes.
+  avatar_button->SetProperty(user_education::kHasInProductHelpPromoKey, true);
+
+  // The greeting/identity text should now be shown for the IPH without
+  // crashing.
+  EXPECT_EQ(avatar_accessor.GetText(),
+            l10n_util::GetStringFUTF16(IDS_AVATAR_BUTTON_GREETING,
+                                       test_given_name()));
+
+  // Simulating the IPH promo bubble closing.
+  avatar_button->SetProperty(user_education::kHasInProductHelpPromoKey, false);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ,
     MAYBE_AvatarToolbarButtonPromoClickBrowserTest,
@@ -4333,6 +4434,57 @@ TEST_WITH_SIGNED_IN_FROM_PRE(IN_PROC_BROWSER_TEST_F,
   // Click the button to trigger a crash in the original code.
   avatar_accessor.Click();
 }
+
+// Regression test for crbug.com/532899594.
+// Tests the scenario where a Batch Upload promo is showing in the avatar button
+// with its auto-collapse timer running. While the promo is displayed, local
+// on-device data is cleared (e.g. uploaded via settings or deleted by the user
+// from chrome://bookmarks), triggering an asynchronous promo recomputation.
+// When the async computation returns `std::nullopt`, the promo collapses back
+// to `kNormal`. This verifies that the promo timer is stopped properly before
+// returning to `kNormal`.
+// TODO(crbug.com/331746545): Check flaky test issue on Windows.
+#if !BUILDFLAG(IS_WIN)
+TEST_WITH_SIGNED_IN_FROM_PRE(
+    IN_PROC_BROWSER_TEST_F,
+    AvatarToolbarButtonAsyncPromoRaceRegressionTest,
+    PromoShowingAsyncPromoResultResolvesToNoPromoRegressionTest) {
+  AvatarToolbarButtonTestAccessor avatar_accessor(browser());
+
+  // Wait for the identity name to show up and then clear it.
+  ASSERT_TRUE(avatar_accessor.WaitForTextNotEqual(std::u16string()));
+  AvatarToolbarButtonInterface* avatar =
+      GetAvatarToolbarButtonInterface(browser());
+  avatar->ClearActiveStateForTesting();
+  ASSERT_TRUE(avatar_accessor.WaitForText(std::u16string()));
+
+  // Specifically enable BatchUploadPromo conditions and disable
+  // HistorySyncPromo.
+  SetHistoryAndTabsSyncingPreference(true);
+  batch_upload_test_helper().SetLocalDataDescriptionForAllAvailableTypes();
+  batch_upload_test_helper().SetReturnDescriptionOnRequest(true);
+
+  // Set infinite promo delay so the collapse timer is actively running.
+  SetInfiniteAvatarDelay(AvatarDelayType::kPromo);
+
+  // Trigger promo fetch.
+  avatar->ForceShowingPromoForTesting();
+  batch_upload_test_helper().FireReturnDescriptionRequest();
+
+  // The BatchUpload promo should now be showing and the collapse timer is
+  // running.
+  ASSERT_TRUE(avatar_accessor.WaitForText(
+      l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_BATCH_UPLOAD_PROMO)));
+
+  // Now clear local data and trigger validation recomputation.
+  batch_upload_test_helper().ClearReturnDescriptions();
+  GetTestSyncService()->FireStateChanged();
+  batch_upload_test_helper().FireReturnDescriptionRequest();
+
+  // The promo should collapse to normal without triggering invariant failures.
+  EXPECT_TRUE(avatar_accessor.WaitForText(std::u16string()));
+}
+#endif  // !BUILDFLAG(IS_WIN)
 
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 

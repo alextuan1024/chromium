@@ -9,9 +9,11 @@
 #include <optional>
 #include <vector>
 
+#include "base/cancelable_callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
@@ -26,6 +28,7 @@
 #include "ui/views/widget/widget_observer.h"
 
 class Profile;
+class ScopedKeepAlive;
 
 namespace views {
 class MenuRunner;
@@ -48,8 +51,15 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOmniboxEverywhereElementId);
 
-  static constexpr int kPopupFixedWidth = 848;
+  // Fixed popup window width:
+  //   680px (Loomnibox searchbox content width)
+  // +  48px (24px left + 24px right body padding in omnibox_everywhere.html to
+  //          accommodate the drop shadow without clipping).
+  // = 728px total window width.
+  static constexpr int kPopupFixedWidth = 728;
   static constexpr int kDefaultRestingHeight = 152;
+  static constexpr base::TimeDelta kActivationGracePeriod =
+      base::Milliseconds(500);
 
   enum ContextMenuCommandId {
     kCut = 1,
@@ -74,6 +84,9 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   // Closes the Omnibox Everywhere widget.
   void Close();
 
+  // Demotes the widget to normal Z-order and deactivates it without hiding.
+  void Demote();
+
   // Synchronously closes the widget and destroys the WebContents during profile
   // shutdown.
   void Shutdown();
@@ -83,6 +96,10 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
 
   // Returns true if the widget is active/focused.
   bool IsActive() const;
+
+  // Returns true if a file chooser, drive picker, or screenshare picker modal
+  // dialog is open.
+  bool HasOpenModalDialog() const;
 
   // views::WidgetObserver:
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
@@ -125,6 +142,9 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   void OnDrivePickerOpened();
   void OnDrivePickerClosed();
 
+  void OnScreensharePickerOpened();
+  void OnScreensharePickerClosed();
+
   // BrowserCollectionObserver:
   void OnBrowserCreated(BrowserWindowInterface* browser) override {}
   void OnBrowserClosed(BrowserWindowInterface* browser) override;
@@ -135,6 +155,13 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   const Profile* profile() const { return profile_; }
   views::Widget* widget() { return widget_.get(); }
   const views::Widget* widget() const { return widget_.get(); }
+  content::WebContents* web_contents() const;
+  OmniboxEverywhereWidgetDelegate* widget_delegate();
+  const OmniboxEverywhereWidgetDelegate* widget_delegate() const;
+
+  bool IsPointInDraggableRegion(const gfx::Point& point) const;
+
+  // For testing:
   WebUIContentsWrapper* contents_wrapper_for_testing() {
     return contents_wrapper_.get();
   }
@@ -146,6 +173,9 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   }
   bool is_drive_picker_open_for_testing() const {
     return is_drive_picker_open_;
+  }
+  bool is_screenshare_picker_open_for_testing() const {
+    return is_screenshare_picker_open_;
   }
   bool is_context_menu_open_for_testing() const {
     return is_context_menu_open_;
@@ -163,13 +193,7 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
     menu_runner_factory_ = std::move(factory);
   }
 
-  OmniboxEverywhereWidgetDelegate* widget_delegate();
-  const OmniboxEverywhereWidgetDelegate* widget_delegate() const;
-
-  bool IsPointInDraggableRegion(const gfx::Point& point) const;
-
  private:
-  content::WebContents* web_contents() const;
   void EnsureContentsWrapperInitialized(Profile* profile);
   void CreateAndInitWidget(gfx::NativeWindow context);
   void ActivateAndFocus();
@@ -177,11 +201,20 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   void OnMostVisitedPrefChanged();
   static gfx::Rect CalculateWidgetBounds(int height);
 
+  // Try and acquire process and profile keep alives. If unsuccessful, releases
+  // keep alives (if any) and returns false.
+  bool TryAcquireKeepAlives();
+  // Try and acquire process and profile keep alives. Returns true if
+  // successful, false otherwise.
+  bool AcquireKeepAlives();
+  void ReleaseKeepAlives();
+
   std::unique_ptr<WebUIContentsWrapper> CreateContentsWrapper(Profile* profile);
 
   void CleanUpWidget();
   void OnWidgetClosed(views::Widget::ClosedReason reason);
   void OnContextMenuClosed();
+  void HandleWidgetDeactivated();
 
 #if defined(USE_AURA)
   std::unique_ptr<OmniboxEverywhereEventHandlerAura> event_handler_;
@@ -195,10 +228,13 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   std::unique_ptr<WebUIContentsWrapper> contents_wrapper_;
   std::unique_ptr<OmniboxEverywhereWidgetDelegate> widget_delegate_;
   std::unique_ptr<views::Widget> widget_;
+  std::unique_ptr<ScopedKeepAlive> keep_alive_;
 
   bool is_file_chooser_open_ = false;
   bool is_drive_picker_open_ = false;
   bool is_context_menu_open_ = false;
+  bool is_demoted_ = false;
+  bool is_screenshare_picker_open_ = false;
   bool is_dragging_ = false;
   std::optional<gfx::Size> pending_auto_resize_size_;
   std::optional<SkRegion> draggable_region_;
@@ -209,12 +245,18 @@ class OmniboxEverywhereUIManager : public views::WidgetObserver,
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
   std::unique_ptr<views::MenuRunner> context_menu_runner_;
 
+  std::optional<base::TimeTicks> last_shown_time_;
+  // Task posted when the widget is deactivated, used to either dismiss or
+  // reactivate the widget after the grace period.
+  base::CancelableOnceClosure deactivation_task_;
+
   PrefChangeRegistrar local_state_pref_change_registrar_;
   PrefChangeRegistrar profile_pref_change_registrar_;
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       widget_observation_{this};
   base::ScopedObservation<ProfileBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
+
   base::WeakPtrFactory<OmniboxEverywhereUIManager> weak_factory_{this};
 };
 

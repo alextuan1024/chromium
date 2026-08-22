@@ -20,7 +20,6 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/existing_base_sub_menu_model.h"
@@ -661,8 +660,7 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelGlicMultiTabTest, SomeShared) {
   chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
 
   auto* service = glic::GlicKeyedService::Get(profile());
-  service->ToggleUI(browser(), true,
-                    glic::mojom::InvocationSource::kOsButtonMenu);
+  service->ShowUI(browser(), glic::mojom::InvocationSource::kOsButtonMenu);
   auto* instance =
       service->GetInstanceForTab(browser()->GetActiveTabInterface());
   ASSERT_TRUE(instance);
@@ -681,8 +679,7 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelGlicMultiTabTest, SomeShared) {
 
 IN_PROC_BROWSER_TEST_F(TabMenuModelGlicMultiTabTest, TooManyShared) {
   auto* service = glic::GlicKeyedService::Get(profile());
-  service->ToggleUI(browser(), true,
-                    glic::mojom::InvocationSource::kOsButtonMenu);
+  service->ShowUI(browser(), glic::mojom::InvocationSource::kOsButtonMenu);
   auto* instance =
       service->GetInstanceForTab(browser()->GetActiveTabInterface());
   ASSERT_TRUE(instance);

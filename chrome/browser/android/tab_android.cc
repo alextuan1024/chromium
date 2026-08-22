@@ -28,7 +28,6 @@
 #include "chrome/browser/android/compositor/tab_content_manager.h"
 #include "chrome/browser/android/media_state_observer.h"
 #include "chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.h"
-#include "chrome/browser/android/tab_android_conversions.h"
 #include "chrome/browser/android/tab_features.h"
 #include "chrome/browser/android/tab_web_contents_delegate_android.h"
 #include "chrome/browser/android/web_contents_theme_client.h"
@@ -136,8 +135,19 @@ TabAndroid* TabAndroid::FromWebContents(content::WebContents* web_contents) {
 }
 
 // static
+TabAndroid* TabAndroid::FromTabInterface(tabs::TabInterface* tab_interface) {
+  return static_cast<TabAndroid*>(tab_interface);
+}
+
+// static
+const TabAndroid* TabAndroid::FromTabInterface(
+    const tabs::TabInterface* tab_interface) {
+  return static_cast<const TabAndroid*>(tab_interface);
+}
+
+// static
 TabAndroid* TabAndroid::FromTabHandle(tabs::TabHandle handle) {
-  return tabs::ToTabAndroidOrNull(handle.Get());
+  return FromTabInterface(handle.Get());
 }
 
 // static
@@ -932,7 +942,12 @@ base::CallbackListSubscription TabAndroid::RegisterWillDiscardContents(
 
 bool TabAndroid::IsActivated() const {
   JNIEnv* env = AttachCurrentThread();
-  return Java_TabImpl_isActivated(env, GetJavaObject(env));
+  auto j_obj = GetJavaObject(env);
+  // May be null in C++ unit tests.
+  if (!j_obj) {
+    return false;
+  }
+  return Java_TabImpl_isActivated(env, j_obj);
 }
 
 base::CallbackListSubscription TabAndroid::RegisterDidActivate(

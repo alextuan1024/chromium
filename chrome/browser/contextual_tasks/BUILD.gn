@@ -209,6 +209,7 @@ source_set("impl") {
     deps += [
       "//chrome/browser/ui:browser_actions",
       "//chrome/browser/ui/lens",
+      "//chrome/browser/ui/views/permissions:permission_prompt_observer",
       "//chrome/browser/ui/webui:webui_util",
       "//components/policy/core/browser",
     ]
@@ -258,6 +259,7 @@ source_set("ui") {
     ":mojo_bindings",
     ":mojom_traits",
     "//base",
+    "//chrome/browser/actor",
     "//chrome/browser/autocomplete:aim_eligibility_service",
     "//chrome/browser/contextual_search",
     "//chrome/browser/tab_list",
@@ -269,6 +271,7 @@ source_set("ui") {
     "//components/contextual_search:public",
     "//components/contextual_tasks/public:feature_list",
     "//components/contextual_tasks/public:query_contextualizer",
+    "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/prefs",
     "//components/signin/public/identity_manager",
     "//components/tabs:public",
@@ -748,7 +751,10 @@ source_set("interactive_ui_tests") {
       ":ui",
       "//chrome/browser/tab_list",
       "//chrome/browser/ui/contextual_search",
+      "//chrome/browser/ui/lens:lens",
+      "//chrome/browser/ui/lens:test_support",
       "//chrome/browser/ui/webui/searchbox:searchbox_test_utils",
+      "//components/lens:enterprise_policy",
     ]
   }
 }

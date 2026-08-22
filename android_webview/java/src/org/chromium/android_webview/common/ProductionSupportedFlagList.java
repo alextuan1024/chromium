@@ -1005,6 +1005,10 @@ public final class ProductionSupportedFlagList {
         Flag.baseFeature("ServiceWorkerAutoPreload"),
         Flag.baseFeature(GpuFeatures.WEB_GPU_USE_SPIRV14, "Use WebGPU's SPIR-V 1.4"),
         Flag.commandLine(
+                AwSwitches.WEBVIEW_RUN_STARTUP_TASKS_SYNC,
+                "Forces WebView startup tasks to run synchronously on the UI thread instead of "
+                        + "asynchronously."),
+        Flag.commandLine(
                 AwSwitches.STARTUP_NON_BLOCKING_WEBVIEW_CONSTRUCTOR,
                 "When enabled, WebView constructor will not block on WebView process global"
                         + " startup"),
@@ -1029,13 +1033,6 @@ public final class ProductionSupportedFlagList {
                 AccessibilityFeatures.ACCESSIBILITY_TEXT_FORMATTING,
                 "Enables text formatting information to be surfaced as Spans on"
                     + " AccessibilityNodeInfo text for consumption by ATs like screen readers."),
-        Flag.baseFeature(
-                ContentFeatures.SPARE_RENDERER_PROCESS_PRIORITY,
-                "When enabled, sends the spare renderer information when setting the priority of"
-                        + " renderers. Currently only Android handles the spare renderer"
-                        + " information in priority. The target priority of a spare renderer in"
-                        + " Android is decided by the feature parameters in"
-                        + " ContentFeatureList.java."),
         Flag.baseFeature(
                 ContentFeatures.WEBVIEW_ASYNC_DRAW_ONLY,
                 "Disable synchronous draw. Experiment to reduce ANRs."),
@@ -1231,9 +1228,7 @@ public final class ProductionSupportedFlagList {
 
         // Features for PerfCombined2025_WebView study
         Flag.baseFeature("ReducePPMs"),
-        Flag.baseFeature("GCOnArrayBufferAllocationFailure"),
         Flag.baseFeature("RemoveCancelledScriptedIdleTasks"),
-        Flag.baseFeature("SlimDirectReceiverIpc"),
         Flag.baseFeature("MemoryCacheChangeStrongReferencePruneDelay"),
         Flag.baseFeature("MemoryCacheStrongReference"),
         Flag.baseFeature("ReleaseResourceStrongReferencesOnMemoryPressure"),
@@ -1457,6 +1452,9 @@ public final class ProductionSupportedFlagList {
                 AwFeatures.WEBVIEW_NAVIGATE_DRAIN_PREFETCH,
                 "Enables draining the prefetch queue before loading the URL in the WebView"
                         + " navigate method"),
+        Flag.baseFeature(
+                AwFeatures.CREATE_SPARE_RENDERER_FOR_DEFAULT_PROFILE,
+                "When enabled, creates a spare renderer process for the default WebView profile."),
         Flag.baseFeature(
                 AwFeatures.WEBVIEW_SINGLE_SHARED_CONTEXT_STATE,
                 "Allows Webview to allocate and share a single shared context for all the"

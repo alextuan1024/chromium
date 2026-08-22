@@ -49,6 +49,7 @@
 #include "third_party/blink/renderer/core/css/css_nested_declarations_rule.h"
 #include "third_party/blink/renderer/core/css/css_page_rule.h"
 #include "third_party/blink/renderer/core/css/css_position_try_rule.h"
+#include "third_party/blink/renderer/core/css/css_private_rule.h"
 #include "third_party/blink/renderer/core/css/css_property_rule.h"
 #include "third_party/blink/renderer/core/css/css_result_rule.h"
 #include "third_party/blink/renderer/core/css/css_scope_rule.h"
@@ -212,6 +213,9 @@ void StyleRuleBase::Trace(Visitor* visitor) const {
     case kCustomMedia:
       To<StyleRuleCustomMedia>(this)->TraceAfterDispatch(visitor);
       return;
+    case kPrivate:
+      To<StyleRulePrivate>(this)->TraceAfterDispatch(visitor);
+      return;
   }
   DUMP_WILL_BE_NOTREACHED();
 }
@@ -316,6 +320,9 @@ void StyleRuleBase::FinalizeGarbageCollectedObject() {
       return;
     case kCustomMedia:
       To<StyleRuleCustomMedia>(this)->~StyleRuleCustomMedia();
+      return;
+    case kPrivate:
+      To<StyleRulePrivate>(this)->~StyleRulePrivate();
       return;
   }
   NOTREACHED();
@@ -443,6 +450,10 @@ CSSRule* StyleRuleBase::CreateCSSOMWrapper(wtf_size_t position_hint,
     case kResult:
       rule = MakeGarbageCollected<CSSResultRule>(To<StyleRuleResult>(self),
                                                  parent_sheet);
+      break;
+    case kPrivate:
+      rule = MakeGarbageCollected<CSSPrivateRule>(To<StyleRulePrivate>(self),
+                                                  parent_sheet);
       break;
     case kApplyMixin:
       rule = MakeGarbageCollected<CSSApplyMixinRule>(
@@ -797,6 +808,9 @@ StyleRuleBase* StyleRuleBase::Clone(
     case kCustomMedia:
       return MakeGarbageCollected<StyleRuleCustomMedia>(
           To<StyleRuleCustomMedia>(*this));
+    case kPrivate:
+      return MakeGarbageCollected<StyleRulePrivate>(
+          To<StyleRulePrivate>(*this));
   }
 }
 
@@ -1190,6 +1204,26 @@ StyleRuleResult::StyleRuleResult(const StyleRuleResult& other,
 
 void StyleRuleResult::TraceAfterDispatch(blink::Visitor* visitor) const {
   StyleRuleGroup::TraceAfterDispatch(visitor);
+}
+
+StyleRulePrivate::StyleRulePrivate(
+    HeapVector<Member<const CSSPrivateVariable>> private_variables)
+    : StyleRuleBase(kPrivate),
+      private_variables_(std::move(private_variables)) {}
+
+StyleRulePrivate::StyleRulePrivate(const StyleRulePrivate& other)
+    : StyleRuleBase(other) {
+  private_variables_.ReserveInitialCapacity(other.private_variables_.size());
+  // Deep copy each private variable.
+  for (const CSSPrivateVariable* variable : other.private_variables_) {
+    private_variables_.push_back(
+        MakeGarbageCollected<CSSPrivateVariable>(*variable));
+  }
+}
+
+void StyleRulePrivate::TraceAfterDispatch(blink::Visitor* visitor) const {
+  visitor->Trace(private_variables_);
+  StyleRuleBase::TraceAfterDispatch(visitor);
 }
 
 StyleRuleApplyMixin::StyleRuleApplyMixin(

@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/personal_context/core/mock_personal_context_service.h"
 #include "components/personal_context/core/personal_context_service.h"
@@ -180,7 +181,8 @@ class ContextHubPageHandlerTest : public testing::Test {
     feature_list.InitWithFeatures(
         {features::kContextHub, features::kMemoryBanks,
          browser::context_hub::mojom::kAutoTabGroups,
-         browser::context_hub::mojom::kAutoTodos},
+         browser::context_hub::mojom::kAutoTodos,
+         optimization_guide::features::kOptimizationHints},
         {});
     return feature_list;
   }
@@ -1123,6 +1125,7 @@ TEST_F(ContextHubPageHandlerTest, RetrieveAndGroupTabs_WithTabs) {
         optimization_guide::proto::ContextHubResponse response;
         optimization_guide::proto::GroupResponse* group_response =
             response.mutable_group_response();
+        group_response->set_text_response("Here are your organized tabs.");
         optimization_guide::proto::TabGroupMinimal* group1 =
             group_response->add_minimal_tab_groups();
         group1->set_label("Group 1");
@@ -1164,7 +1167,10 @@ TEST_F(ContextHubPageHandlerTest, RetrieveAndGroupTabs_WithTabs) {
     EXPECT_GE(group->tabs.size(), 2u);
   }
   EXPECT_EQ(total_tabs, 5u);
-  EXPECT_FALSE(llm_response);
+  ASSERT_TRUE(llm_response);
+  EXPECT_EQ(llm_response->role,
+            browser::context_hub::mojom::ChatRole::kAssistant);
+  EXPECT_EQ(llm_response->content, "Here are your organized tabs.");
 }
 
 TEST_F(ContextHubPageHandlerTest, GetExistingTabGroupsAndChats_WithGroups) {

@@ -372,6 +372,10 @@ should be able to be added at any place in this file.
       summary="For Contextual Tasks ephemeral toolbar button."/>
   <variant name="_CookieControls"
       summary="For CookieControls feature. (obsolete)"/>
+  <variant name="_CriticalActionAppMenu"
+      summary="For CriticalActionAppMenu IPH feature."/>
+  <variant name="_CriticalActionFilterChip"
+      summary="For CriticalActionFilterChip IPH feature."/>
   <variant name="_Crow" summary="For Crow feature."/>
   <variant name="_DataSaverDetail" summary="For DataSaverDetail feature."/>
   <variant name="_DataSaverMilestonePromo"
@@ -8333,6 +8337,15 @@ should be able to be added at any place in this file.
 
     This user action is of special interest to the chrome-analysis-team@. Do not
     change its semantics or retire it without talking to them first.
+  </description>
+</action>
+
+<action name="BookmarkBar_ContextMenu_OpenAllIsolated">
+  <owner>przybytniowska@google.com</owner>
+  <owner>zmin@chromium.org</owner>
+  <description>
+    The user opened one or more bookmarks in the Bookmarks Bar using the context
+    menu option to open in an Isolated window.
   </description>
 </action>
 
@@ -46662,6 +46675,15 @@ should be able to be added at any place in this file.
   </description>
 </action>
 
+<action name="SidePanel_Bookmarks_ContextMenu_OpenAllIsolated">
+  <owner>przybytniowska@google.com</owner>
+  <owner>zmin@chromium.com</owner>
+  <description>
+    The user opened one or more bookmarks in the Side Panel using the context
+    menu option to open in an Isolated window.
+  </description>
+</action>
+
 <action name="SidePanel_Bookmarks_ContextMenu_OpenSplitView">
   <owner>dpenning@chromium.org</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
@@ -58330,6 +58352,15 @@ should be able to be added at any place in this file.
 
     This user action is of special interest to the chrome-analysis-team@. Do not
     change its semantics or retire it without talking to them first.
+  </description>
+</action>
+
+<action name="WrenchMenu_Bookmarks_ContextMenu_OpenAllIsolated">
+  <owner>przybytniowska@google.com</owner>
+  <owner>zmin@chromium.org</owner>
+  <description>
+    The user opened one or more bookmarks in the App Menu (Wrench Menu) using
+    the context menu option to open in an Isolated window.
   </description>
 </action>
 

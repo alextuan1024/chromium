@@ -195,9 +195,8 @@ found in the LICENSE file.
     <dimen name="pinned_tabs_strip_row_coverage_height">85dp</dimen>
     <!-- Height of the pinned tab strip 40dp item height + 2 * 16dp margin. -->
     <dimen name="pinned_tab_strip_height">72dp</dimen>
-    <dimen name="pinned_tab_strip_gap">4dp</dimen>
 
-    <!-- Dimens for Vertical Tabs -->
+    <!-- Dimens for Vertical Tabs (Desktop / Default) -->
     <dimen name="vertical_tabs_rail_horizontal_margin">12dp</dimen>
     <dimen name="vertical_tabs_scrollbar_margin_end">-9dp</dimen>
     <dimen name="vertical_tabs_scrollbar_padding_end">9dp</dimen>
@@ -218,10 +217,22 @@ found in the LICENSE file.
     <dimen name="vertical_tab_item_corner_radius">8dp</dimen>
     <dimen name="vertical_tab_item_margin_bottom">4dp</dimen>
     <dimen name="vertical_tab_item_collapsed_size">32dp</dimen>
-    <dimen name="vertical_tab_action_button_touch_target_height">40dp</dimen>
+    <dimen name="vertical_tab_action_button_touch_target_size">24dp</dimen>
     <dimen name="vertical_tab_child_nesting_margin">8dp</dimen>
     <dimen name="vertical_tab_spine_width">2dp</dimen>
     <dimen name="vertical_tab_spine_radius">4dp</dimen>
+
+    <!-- Dimens for Vertical Tabs on Tablet -->
+    <dimen name="vertical_tab_item_height_tablet">40dp</dimen>
+    <dimen name="vertical_tab_item_padding_vertical_tablet">2dp</dimen>
+    <dimen name="vertical_tab_item_touch_target_inset_tablet">2dp</dimen>
+    <dimen name="vertical_tab_item_margin_bottom_tablet">0dp</dimen>
+    <dimen name="vertical_tab_item_collapsed_size_tablet">36dp</dimen>
+    <dimen name="vertical_tab_pinned_item_height_tablet">36dp</dimen>
+    <dimen name="vertical_tabs_footer_button_height_tablet">40dp</dimen>
+    <dimen name="vertical_tabs_header_button_size_tablet">36dp</dimen>
+    <dimen name="vertical_tab_action_button_touch_target_width_tablet">48dp</dimen>
+    <dimen name="vertical_tab_action_button_touch_target_height_tablet">40dp</dimen>
 
     <!-- Dimens for Vertical Tabs pinned tabs -->
     <dimen name="vertical_tab_pinned_item_width">42dp</dimen>
@@ -230,21 +241,24 @@ found in the LICENSE file.
     <dimen name="vertical_tab_pinned_item_gap">4dp</dimen>
     <dimen name="vertical_tab_pinned_item_ai_indicator_margin_start">2dp</dimen>
     <dimen name="vertical_tab_pinned_item_margin_bottom">4dp</dimen>
+    <dimen name="vertical_tab_pinned_tabs_padding_top">8dp</dimen>
+    <dimen name="vertical_tab_pinned_tabs_padding_bottom">4dp</dimen>
 
     <!-- Dimens for Vertical Tabs New Tab button.-->
     <dimen name="vertical_tabs_footer_button_height">32dp</dimen>
     <dimen name="vertical_tabs_new_tab_button_margin_top">8dp</dimen>
     <dimen name="vertical_tabs_new_tab_button_margin_bottom">12dp</dimen>
-    <dimen name="vertical_tabs_new_tab_button_corner_radius">8dp</dimen>
+    <dimen name="vertical_tabs_button_corner_radius">8dp</dimen>
     <dimen name="vertical_tabs_footer_button_gap">8dp</dimen>
 
     <!-- Dimens for Vertical Tabs Header. -->
-    <dimen name="vertical_tabs_button_corner_radius_small">2dp</dimen>
     <dimen name="vertical_tabs_header_margin_vertical">4dp</dimen>
     <dimen name="vertical_tabs_header_padding_vertical">8dp</dimen>
     <dimen name="vertical_tabs_header_button_size">32dp</dimen>
     <dimen name="vertical_tabs_header_button_padding">4dp</dimen>
-    <dimen name="vertical_tabs_header_button_gap">2dp</dimen>
+
+    <!-- Dimens for Vertical Tabs hover cards. -->
+    <dimen name="vertical_tab_hover_card_margin_to_rail">4dp</dimen>
 
     <!-- Dimens for Vertical Tabs tab group hover cards. -->
     <dimen name="tab_group_hover_card_corner_radius">16dp</dimen>

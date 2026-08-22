@@ -177,7 +177,7 @@ BASE_FEATURE(kBackgroundFetch, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables Local Network Access checks for Background Fetch.
 BASE_FEATURE(kBackgroundFetchLocalNetworkAccess,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enable using the BackForwardCache.
 BASE_FEATURE(kBackForwardCache, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -445,6 +445,17 @@ BASE_FEATURE(kFedCmIdPRegistration, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables Lightweight FedCM Mode
 BASE_FEATURE(kFedCmLightweightMode, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables FedCM Identity Handler (Service Worker interception of FedCM
+// requests). When enabled, IDPs can declare a Service Worker in their
+// .well-known/web-identity file to intercept credentialed FedCM requests
+// (accounts, id-assertion, disconnect).
+// Explainer: https://github.com/w3c-fedid/identity-handler
+// Spec: https://w3c-fedid.github.io/FedCM/
+// Design doc:
+// https://docs.google.com/document/d/1PgiLzfvE8NsSnxgJYA3WUEld0FguPfPETHDPjUb6wlo/
+// Bug: 526074797
+BASE_FEATURE(kFedCmIdentityHandler, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables usage of the FedCM API with metrics endpoint at the same time.
 BASE_FEATURE(kFedCmMetricsEndpoint, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -948,18 +959,6 @@ BASE_FEATURE(kSkipIPCChannelPausingForNonGuests,
 const base::FeatureParam<bool>
     kSkipIPCChannelPausingForNonGuestsInternalWebUiOnly{
         &kSkipIPCChannelPausingForNonGuests, "internal_webui_only", false};
-
-// When enabled, skip pagehide-in-commit when navigating to DSE.
-// (See: https://crbug.com/375385416)
-BASE_FEATURE(kSkipPagehideInCommitForDSENavigation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// A parameter to delay pagehide-in-commit.
-BASE_FEATURE_PARAM(base::TimeDelta,
-                   kSkipPagehideInCommitForDSENavigationDelay,
-                   &kSkipPagehideInCommitForDSENavigation,
-                   "delay",
-                   base::Milliseconds(0));
 
 // Reuses RenderProcessHost up to a certain threshold. This mode ignores the
 // soft process limit and behaves just like a process-per-site policy for all

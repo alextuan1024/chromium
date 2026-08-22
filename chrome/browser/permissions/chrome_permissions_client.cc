@@ -27,6 +27,7 @@
 #include "chrome/browser/hid/hid_chooser_context_factory.h"
 #include "chrome/browser/infobars/browser_infobar_manager.h"
 #include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/browser/media/webrtc/media_stream_device_permissions.h"
 #include "chrome/browser/metrics/ukm_background_recorder_service.h"
 #include "chrome/browser/permissions/origin_keyed_permission_action_service_factory.h"
 #include "chrome/browser/permissions/permission_actions_history_factory.h"
@@ -99,8 +100,9 @@
 #include "components/permissions/android/permissions_android_feature_map.h"
 #include "components/permissions/permission_request_manager.h"
 #else
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/permission_bubble/permission_prompt.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/vector_icons/vector_icons.h"
 #endif
 
@@ -211,6 +213,15 @@ std::optional<url::Origin> GetCurrentKioskOrigin() {
 }
 
 #endif
+
+bool IsPermissionSetByAdministator(
+    PermissionSetting setting,
+    const content_settings::PermissionSettingsInfo* permission_info,
+    const content_settings::SettingInfo& info) {
+  return !permission_info->delegate().IsUndecided(setting) &&
+         (info.source == content_settings::SettingSource::kPolicy ||
+          info.source == content_settings::SettingSource::kSupervised);
+}
 
 #if !BUILDFLAG(IS_ANDROID)
 // Infobar exists only on Desktop platforms.
@@ -1019,8 +1030,73 @@ bool ChromePermissionsClient::CanRequestDevicePermission(
 #endif
 }
 
+// TODO(41014586): Integrate policy-set media permissions into
+// SettingsSource.policy. Currently, AudioCaptureAllowed, VideoCaptureAllowed
+// are not checked within |IsPermissionSetByAdministrator|, so
+// |IsPermissionBlockedByDevicePolicy| and |IsPermissionAllowedByDevicePolicy|
+// methods are needed to show the appropriate policy screen.
+bool ChromePermissionsClient::IsPermissionBlockedByDevicePolicy(
+    content::WebContents* web_contents,
+    PermissionSetting setting,
+    const content_settings::SettingInfo& info,
+    ContentSettingsType type) const {
+  auto* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(type);
 
+  if (IsPermissionSetByAdministator(setting, permission_info, info) &&
+      permission_info->delegate().IsBlocked(setting)) {
+    return true;
+  }
 
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  if (type == ContentSettingsType::MEDIASTREAM_MIC) {
+    return GetDevicePolicy(profile, web_contents->GetLastCommittedURL(),
+                           prefs::kAudioCaptureAllowed,
+                           prefs::kAudioCaptureAllowedUrls) ==
+           MediaStreamDevicePolicy::ALWAYS_DENY;
+  }
+
+  if (type == ContentSettingsType::MEDIASTREAM_CAMERA) {
+    return GetDevicePolicy(profile, web_contents->GetLastCommittedURL(),
+                           prefs::kVideoCaptureAllowed,
+                           prefs::kVideoCaptureAllowedUrls) ==
+           MediaStreamDevicePolicy::ALWAYS_DENY;
+  }
+
+  return false;
+}
+
+bool ChromePermissionsClient::IsPermissionAllowedByDevicePolicy(
+    content::WebContents* web_contents,
+    PermissionSetting setting,
+    const content_settings::SettingInfo& info,
+    ContentSettingsType type) const {
+  auto* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(type);
+  if (IsPermissionSetByAdministator(setting, permission_info, info) &&
+      permission_info->delegate().IsAnyPermissionAllowed(setting)) {
+    return true;
+  }
+
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  if (type == ContentSettingsType::MEDIASTREAM_MIC) {
+    return GetDevicePolicy(profile, web_contents->GetLastCommittedURL(),
+                           prefs::kAudioCaptureAllowed,
+                           prefs::kAudioCaptureAllowedUrls) ==
+           MediaStreamDevicePolicy::ALWAYS_ALLOW;
+  }
+
+  if (type == ContentSettingsType::MEDIASTREAM_CAMERA) {
+    return GetDevicePolicy(profile, web_contents->GetLastCommittedURL(),
+                           prefs::kVideoCaptureAllowed,
+                           prefs::kVideoCaptureAllowedUrls) ==
+           MediaStreamDevicePolicy::ALWAYS_ALLOW;
+  }
+
+  return false;
+}
 
 bool ChromePermissionsClient::IsSystemDenied(ContentSettingsType type) const {
   return system_permission_settings::IsDenied(type);

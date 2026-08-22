@@ -153,6 +153,7 @@ export type {
   ToolbarActionMixinInterface,
   ToolbarFlatStateSchema,
 };
+export {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
 // clang-format on
 
 // LINT.IfChange(InitialWebUIRendererMilestones)
@@ -441,6 +442,7 @@ export class ToolbarAppElement extends AppElementBase {
           isClickable: false,
           isTextDangerous: false,
           isVisible: true,
+          isContextMenuVisible: false,
         },
         activityIndicators: [],
         permissionDashboard: null,

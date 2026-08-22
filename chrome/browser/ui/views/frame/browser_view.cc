@@ -202,6 +202,7 @@
 #include "chrome/browser/ui/views/sharing_hub/screenshot/screenshot_captured_bubble.h"
 #include "chrome/browser/ui/views/sharing_hub/sharing_hub_bubble_view_impl.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
+#include "chrome/browser/ui/views/side_panel/side_panel_animation_content_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "chrome/browser/ui/views/status_bubble_views.h"
 #include "chrome/browser/ui/views/tab_contents/chrome_web_contents_view_focus_helper.h"
@@ -321,6 +322,7 @@
 #include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/color/color_id.h"
+#include "ui/compositor/debug_utils.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/content_accelerators/accelerator_util.h"
@@ -1039,6 +1041,11 @@ BrowserView::BrowserView(Browser* browser)
   window_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
   window_scrim_view_->layer()->SetName("WindowScrimView");
 
+  side_panel_content_transition_scrim_view_ =
+      AddChildView(std::make_unique<ScrimView>(kColorToolbar));
+  side_panel_content_transition_scrim_view_->layer()->SetOpacity(0.0f);
+  side_panel_content_transition_scrim_view_->SetVisible(false);
+
 #if BUILDFLAG(IS_WIN)
   // Create a custom JumpList and add it to an observer of TabRestoreService
   // so we can update the custom JumpList when a tab is added or removed.
@@ -1142,6 +1149,7 @@ BrowserView::~BrowserView() {
   multi_contents_view_ = nullptr;
   main_shadow_overlay_ = nullptr;
   window_scrim_view_ = nullptr;
+  side_panel_content_transition_scrim_view_ = nullptr;
   vertical_tab_strip_region_view_ = nullptr;
   vertical_tab_strip_background_blur_backdrop_ = nullptr;
   vertical_tab_strip_top_corner_ = nullptr;
@@ -1265,15 +1273,26 @@ gfx::Size BrowserView::GetWebAppFrameToolbarPreferredSize() const {
                                 : gfx::Size();
 }
 
-void BrowserView::SetSidePanelAnimationContent(views::View* content) {
+SidePanelAnimationContentView* BrowserView::SetSidePanelAnimationContent(
+    std::unique_ptr<SidePanelAnimationContentView> content) {
   CHECK(!content || !GetSidePanelAnimationContent());
+  SidePanelAnimationContentView* content_ptr = content.get();
+  SidePanelAnimationContentView* current = GetSidePanelAnimationContent();
+  GetBrowserViewLayout()->set_side_panel_animation_content(content_ptr);
   if (content) {
-    AddChildView(content);
+    // Insert the animation content at the scrim's index so that the scrim
+    // covers the animation content when it is visible.
+    const std::optional<size_t> scrim_index =
+        GetIndexOf(side_panel_content_transition_scrim_view_.get());
+    CHECK(scrim_index.has_value());
+    AddChildViewAt(std::move(content), *scrim_index);
+  } else if (current) {
+    RemoveChildViewT(current);
   }
-  GetBrowserViewLayout()->set_side_panel_animation_content(content);
+  return content_ptr;
 }
 
-views::View* BrowserView::GetSidePanelAnimationContent() {
+SidePanelAnimationContentView* BrowserView::GetSidePanelAnimationContent() {
   return GetBrowserViewLayout()->side_panel_animation_content();
 }
 
@@ -5090,6 +5109,8 @@ void BrowserView::AddedToWidget() {
   // LINT.IfChange(BrowserViewLayoutViews)
   layout_views.browser_view = this;
   layout_views.window_scrim = window_scrim_view_;
+  layout_views.side_panel_content_transition_scrim =
+      side_panel_content_transition_scrim_view_;
   layout_views.main_shadow_overlay = main_shadow_overlay_;
   layout_views.main_background_region = main_background_region_;
   layout_views.top_container = top_container_;

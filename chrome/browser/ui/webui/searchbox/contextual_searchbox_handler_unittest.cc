@@ -91,6 +91,7 @@
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/web_contents_tester.h"
+#include "media/base/media_switches.h"
 #include "mojo/public/cpp/base/unguessable_token_mojom_traits.h"
 #include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
@@ -107,6 +108,10 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_MAC)
+#include "base/mac/mac_util.h"
+#endif  // BUILDFLAG(IS_MAC)
 
 using contextual_search::SessionState;
 
@@ -448,6 +453,22 @@ class ContextualSearchboxHandlerTest
 
   FakeContextualSearchboxHandler& handler() { return *handler_; }
   MockQueryController& query_controller() { return *query_controller_; }
+
+  void SetupScreenshotUploadConfig() {
+    profile()->GetPrefs()->SetInteger(
+        contextual_search::kSearchContentSharingSettings,
+        static_cast<int>(
+            contextual_search::SearchContentSharingSettingsValue::kEnabled));
+    scoped_config().config.mutable_composebox()->set_max_num_files(5);
+    scoped_config()
+        .config.mutable_composebox()
+        ->mutable_attachment_upload()
+        ->set_max_size_bytes(1024 * 1024);
+    scoped_config()
+        .config.mutable_composebox()
+        ->mutable_image_upload()
+        ->set_mime_types_allowed("image/png");
+  }
 
   void SetUpMockFpopService(bool accepted) {
     SetUpMockFpopServiceWithStatus(
@@ -2365,7 +2386,8 @@ TEST_F(ContextualSearchboxHandlerTest, QueryAutocomplete_SetsLensInputs) {
       std::move(autocomplete_controller));
 
   handler().QueryAutocomplete(
-      0, u"test", /*prevent_inline_autocomplete=*/false, 0,
+      0, /*tab_id=*/std::nullopt, u"test",
+      /*prevent_inline_autocomplete=*/false, 0,
       omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
       /*is_on_focus=*/false, /*keyword=*/"",
       searchbox::mojom::InputMethod::kKeyboard);
@@ -2390,7 +2412,8 @@ TEST_F(ContextualSearchboxHandlerTest,
   // Should execute cleanly without crashing even when BrowserWindowInterface
   // is null.
   handler().QueryAutocomplete(
-      0, u"test", /*prevent_inline_autocomplete=*/false, 0,
+      0, /*tab_id=*/std::nullopt, u"test",
+      /*prevent_inline_autocomplete=*/false, 0,
       omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
       /*is_on_focus=*/false, /*keyword=*/"",
       searchbox::mojom::InputMethod::kKeyboard);
@@ -2422,7 +2445,8 @@ TEST_F(ContextualSearchboxHandlerTest,
         std::move(autocomplete_controller));
 
     handler().QueryAutocomplete(
-        0, u"test", /*prevent_inline_autocomplete=*/false, 0,
+        0, /*tab_id=*/std::nullopt, u"test",
+        /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
         /*is_on_focus=*/false, /*keyword=*/"",
         searchbox::mojom::InputMethod::kKeyboard);
@@ -2449,7 +2473,8 @@ TEST_F(ContextualSearchboxHandlerTest,
         std::move(autocomplete_controller));
 
     handler().QueryAutocomplete(
-        0, u"test", /*prevent_inline_autocomplete=*/false, 0,
+        0, /*tab_id=*/std::nullopt, u"test",
+        /*prevent_inline_autocomplete=*/false, 0,
         omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
         /*is_on_focus=*/false, /*keyword=*/"",
         searchbox::mojom::InputMethod::kKeyboard);
@@ -3967,21 +3992,20 @@ class FakeDesktopCapturer : public webrtc::DesktopCapturer {
   raw_ptr<Callback> callback_ = nullptr;
 };
 
-TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_Success) {
-  profile()->GetPrefs()->SetInteger(
-      contextual_search::kSearchContentSharingSettings,
-      static_cast<int>(
-          contextual_search::SearchContentSharingSettingsValue::kEnabled));
+class MockScreenshareDelegate
+    : public ContextualSearchboxHandler::ScreenshareDelegate {
+ public:
+  MOCK_METHOD(void, OnScreensharePickerOpened, (), (override));
+  MOCK_METHOD(void, OnScreensharePickerClosed, (), (override));
+};
 
-  scoped_config().config.mutable_composebox()->set_max_num_files(5);
-  scoped_config()
-      .config.mutable_composebox()
-      ->mutable_attachment_upload()
-      ->set_max_size_bytes(1024 * 1024);
-  scoped_config()
-      .config.mutable_composebox()
-      ->mutable_image_upload()
-      ->set_mime_types_allowed("image/png");
+TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_Success) {
+  SetupScreenshotUploadConfig();
+
+  MockScreenshareDelegate delegate;
+  EXPECT_CALL(delegate, OnScreensharePickerOpened());
+  EXPECT_CALL(delegate, OnScreensharePickerClosed());
+  handler().set_screenshare_delegate(&delegate);
 
   FakeDesktopMediaPickerFactory picker_factory;
   handler().set_desktop_media_picker_factory_for_testing(&picker_factory);
@@ -4132,9 +4156,15 @@ TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_SmallImageNotResized) {
   EXPECT_EQ(main_bitmap.height(), 30);
 
   handler().set_desktop_media_picker_factory_for_testing(nullptr);
+  handler().set_screenshare_delegate(nullptr);
 }
 
 TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_Cancelled) {
+  MockScreenshareDelegate delegate;
+  EXPECT_CALL(delegate, OnScreensharePickerOpened());
+  EXPECT_CALL(delegate, OnScreensharePickerClosed());
+  handler().set_screenshare_delegate(&delegate);
+
   FakeDesktopMediaPickerFactory picker_factory;
   handler().set_desktop_media_picker_factory_for_testing(&picker_factory);
 
@@ -4150,7 +4180,161 @@ TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_Cancelled) {
 
   EXPECT_FALSE(future.Get().has_value());
   handler().set_desktop_media_picker_factory_for_testing(nullptr);
+  handler().set_screenshare_delegate(nullptr);
 }
+
+#if BUILDFLAG(IS_MAC)
+using content::desktop_capture::ScopedNativePickerForTesting;
+
+TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_NativePicker_Success) {
+  if (base::mac::MacOSMajorVersion() < 14) {
+    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(media::kUseSCContentSharingPicker);
+  SetupScreenshotUploadConfig();
+
+  MockScreenshareDelegate delegate;
+  EXPECT_CALL(delegate, OnScreensharePickerOpened());
+  EXPECT_CALL(delegate, OnScreensharePickerClosed());
+  handler().set_screenshare_delegate(&delegate);
+
+  content::desktop_capture::ScopedDesktopCapturerForTesting scoped_capturer(
+      std::make_unique<FakeDesktopCapturer>());
+  ScopedNativePickerForTesting scoped_picker(
+      ScopedNativePickerForTesting::Action::kSelectSource);
+
+  std::unique_ptr<lens::ContextualInputData> captured_input_data;
+  EXPECT_CALL(query_controller(), StartFileUploadFlow)
+      .WillOnce([&](const base::UnguessableToken& token,
+                    std::unique_ptr<lens::ContextualInputData> input_data,
+                    std::optional<lens::ImageEncodingOptions> image_options) {
+        captured_input_data = std::move(input_data);
+        EXPECT_TRUE(image_options.has_value());
+      });
+
+  base::UnguessableToken callback_token;
+  EXPECT_CALL(mock_searchbox_page_, AddFileContext)
+      .WillOnce([&](const base::UnguessableToken& token,
+                    searchbox::mojom::SelectedFileInfoPtr file_info) {
+        callback_token = token;
+        EXPECT_EQ(file_info->file_name, "Screenshot.png");
+        EXPECT_EQ(file_info->mime_type, "image/png");
+        EXPECT_TRUE(file_info->image_data_url.has_value());
+        if (file_info->image_data_url.has_value()) {
+          EXPECT_TRUE(base::StartsWith(*file_info->image_data_url,
+                                       "data:image/png;base64,"));
+        }
+      });
+
+  base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;
+  handler().StartScreenshare(/*prefer_entire_screen=*/false,
+                             future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  mock_searchbox_page_.FlushForTesting();
+
+  auto uploaded_tokens = handler().GetUploadedContextTokens();
+  ASSERT_EQ(uploaded_tokens.size(), 1u);
+  EXPECT_EQ(uploaded_tokens[0], callback_token);
+
+  handler().set_screenshare_delegate(nullptr);
+}
+
+TEST_F(ContextualSearchboxHandlerTest,
+       StartScreenshare_NativePicker_Cancelled) {
+  if (base::mac::MacOSMajorVersion() < 14) {
+    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(media::kUseSCContentSharingPicker);
+
+  MockScreenshareDelegate delegate;
+  EXPECT_CALL(delegate, OnScreensharePickerOpened());
+  EXPECT_CALL(delegate, OnScreensharePickerClosed());
+  handler().set_screenshare_delegate(&delegate);
+
+  ScopedNativePickerForTesting scoped_picker(
+      ScopedNativePickerForTesting::Action::kCancel);
+
+  base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;
+  handler().StartScreenshare(/*prefer_entire_screen=*/false,
+                             future.GetCallback());
+
+  EXPECT_FALSE(future.Get().has_value());
+  handler().set_screenshare_delegate(nullptr);
+}
+
+TEST_F(ContextualSearchboxHandlerTest,
+       StartScreenshare_NativePicker_Error_FallsBackToDefaultPicker) {
+  if (base::mac::MacOSMajorVersion() < 14) {
+    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(media::kUseSCContentSharingPicker);
+  SetupScreenshotUploadConfig();
+
+  MockScreenshareDelegate delegate;
+  EXPECT_CALL(delegate, OnScreensharePickerOpened());
+  EXPECT_CALL(delegate, OnScreensharePickerClosed());
+  handler().set_screenshare_delegate(&delegate);
+
+  FakeDesktopMediaPickerFactory picker_factory;
+  handler().set_desktop_media_picker_factory_for_testing(&picker_factory);
+
+  FakeDesktopMediaPickerFactory::TestFlags test_flags;
+  test_flags.expect_screens = true;
+  test_flags.expect_windows = true;
+  test_flags.picker_result =
+      content::DesktopMediaID(content::DesktopMediaID::TYPE_WINDOW, 42);
+  picker_factory.SetTestFlags(base::span_from_ref(test_flags));
+
+  content::desktop_capture::ScopedDesktopCapturerForTesting scoped_capturer(
+      std::make_unique<FakeDesktopCapturer>());
+  ScopedNativePickerForTesting scoped_picker(
+      ScopedNativePickerForTesting::Action::kError);
+
+  std::unique_ptr<lens::ContextualInputData> captured_input_data;
+  EXPECT_CALL(query_controller(), StartFileUploadFlow)
+      .WillOnce([&](const base::UnguessableToken& token,
+                    std::unique_ptr<lens::ContextualInputData> input_data,
+                    std::optional<lens::ImageEncodingOptions> image_options) {
+        captured_input_data = std::move(input_data);
+        EXPECT_TRUE(image_options.has_value());
+      });
+
+  base::UnguessableToken callback_token;
+  EXPECT_CALL(mock_searchbox_page_, AddFileContext)
+      .WillOnce([&](const base::UnguessableToken& token,
+                    searchbox::mojom::SelectedFileInfoPtr file_info) {
+        callback_token = token;
+        EXPECT_EQ(file_info->file_name, "Screenshot.png");
+        EXPECT_EQ(file_info->mime_type, "image/png");
+        EXPECT_TRUE(file_info->image_data_url.has_value());
+        if (file_info->image_data_url.has_value()) {
+          EXPECT_TRUE(base::StartsWith(*file_info->image_data_url,
+                                       "data:image/png;base64,"));
+        }
+      });
+
+  base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;
+  handler().StartScreenshare(/*prefer_entire_screen=*/false,
+                             future.GetCallback());
+
+  EXPECT_TRUE(future.Get().has_value());
+  mock_searchbox_page_.FlushForTesting();
+
+  auto uploaded_tokens = handler().GetUploadedContextTokens();
+  ASSERT_EQ(uploaded_tokens.size(), 1u);
+  EXPECT_EQ(uploaded_tokens[0], callback_token);
+
+  handler().set_desktop_media_picker_factory_for_testing(nullptr);
+  handler().set_screenshare_delegate(nullptr);
+}
+#endif
 #else
 TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_AndroidAlwaysFails) {
   base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;

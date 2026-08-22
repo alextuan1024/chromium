@@ -53,6 +53,7 @@ namespace lens {
 class TabContextualizationController;
 }  // namespace lens
 
+class ConnectionHelpTabHelper;
 class HttpAuthCacheStatus;
 class SecurityStateEventObserver;
 
@@ -65,6 +66,7 @@ class SidePanelController;
 namespace tabs {
 
 class TabInterface;
+class PageContextEligibilityHelper;
 
 // This class holds state that is scoped to a tab in Android. It is constructed
 // after the WebContents/tab_helpers, and destroyed before.
@@ -109,6 +111,7 @@ class TabFeatures {
 
   std::unique_ptr<sync_sessions::SyncSessionsRouterTabHelper>
       sync_sessions_router_;
+  std::unique_ptr<ConnectionHelpTabHelper> connection_help_tab_helper_;
   std::unique_ptr<HttpAuthCacheStatus> http_auth_cache_status_;
   std::unique_ptr<SecurityStateEventObserver> security_state_event_observer_;
   std::unique_ptr<QwacWebContentsObserver> qwac_web_contents_observer_;
@@ -128,6 +131,8 @@ class TabFeatures {
   std::unique_ptr<customize_chrome::SidePanelController>
       customize_chrome_side_panel_controller_;
 #endif
+  std::unique_ptr<tabs::PageContextEligibilityHelper>
+      page_context_eligibility_helper_;
   std::unique_ptr<glic::GlicInstanceHelper> glic_instance_helper_;
   std::unique_ptr<glic::GlicSidePanelCoordinator> glic_side_panel_coordinator_;
   std::unique_ptr<actor::ui::ActorUiTabControllerInterface>

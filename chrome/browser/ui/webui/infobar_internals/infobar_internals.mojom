@@ -28,6 +28,9 @@ enum InfoBarType {
   // Extension DevTools infobar.
   kExtensionDevTools,
 
+  // Google API keys infobar.
+  kGoogleApiKeys,
+
   // Incognito connectability infobar.
   [EnableIf=enable_extensions]
   kIncognitoConnectability,
@@ -40,8 +43,14 @@ enum InfoBarType {
   [EnableIf=is_mac]
   kKeystone,
 
+  // Known interception disclosure infobar.
+  kKnownInterception,
+
   // Local test policies infobar.
   kLocalTestPoliciesApplied,
+
+  // Obsolete system infobar.
+  kObsoleteSystem,
 
   // Page Info infobar.
   kPageInfo,

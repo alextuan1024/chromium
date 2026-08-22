@@ -85,7 +85,6 @@
 #include "chrome/browser/ui/webui/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_ui.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search_ui.h"
-#include "chrome/browser/ui/webui/user_education_internals/user_education_internals.mojom.h"
 #include "chrome/browser/ui/webui/user_education_internals/user_education_internals_ui.h"
 #include "chrome/browser/ui/webui/web_app_internals/web_app_internals.mojom.h"
 #include "chrome/browser/ui/webui/web_app_internals/web_app_internals_ui.h"
@@ -434,6 +433,10 @@ void PopulateChromeWebUIFrameBindersPartsDesktop(
 #endif  //! BUILDFLAG(IS_CHROMEOS)
       >(map);
 
+  RegisterWebUIControllerInterfaceBinder<
+      user_education::mojom::UserEducationMixedTrustHandlerFactory,
+      UserEducationInternalsUI>(map);
+
 #if !defined(OFFICIAL_BUILD)
   RegisterWebUIControllerInterfaceBinder<foo::mojom::FooHandler, NewTabPageUI>(
       map);
@@ -692,7 +695,8 @@ void PopulateChromeWebUIFrameInterfaceBrokersTrustedPartsDesktop(
     registry.ForWebUI<WebUIToolbarUI>()
         .Add<browser_controls_api::mojom::BrowserControlsService>()
         .Add<toolbar_ui_api::mojom::ToolbarUIService>()
-        .Add<help_bubble::mojom::HelpBubbleHandlerFactory>();
+        .Add<help_bubble::mojom::HelpBubbleHandlerFactory>()
+        .Add<searchbox::mojom::PageHandlerFactory>();
   }
 
   // TODO(crbug.com/452983498): Migrate all remaining
@@ -718,7 +722,8 @@ void PopulateChromeWebUIFrameInterfaceBrokersUntrustedPartsDesktop(
         .Add<searchbox::mojom::PageHandlerFactory>();
   }
   registry.ForWebUI<ReadAnythingUntrustedUI>()
-      .Add<help_bubble::mojom::HelpBubbleHandlerFactory>();
+      .Add<help_bubble::mojom::HelpBubbleHandlerFactory>()
+      .Add<user_education::mojom::UserEducationMixedTrustHandlerFactory>();
 
   if (data_sharing::features::IsDataSharingFunctionalityEnabled()) {
     registry.ForWebUI<DataSharingUI>()

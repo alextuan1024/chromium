@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {CancelActionsResult, ClientCapabilities, ExperimentalTriggeringUpdateType, FileUploadPolicyState, FormFactor, HostCapability, InvocationSource, MetricUserInputReactionType, PanelStateKind, Platform, ResponseStopCause, SbThreatType, ScreenshotEncryptionScheme, ScrollToErrorReason, SkillSource, SkillsWebClientEvent, WebClientMode} from '/glic/glic_api/glic_api.js';
+import {CancelActionsResult, ClientCapabilities, ExperimentalTriggeringUpdateType, FileUploadPolicyState, FormFactor, HostCapability, InvocationSource, MetricUserInputReactionType, PanelStateKind, Platform, PromptType, ResponseStopCause, SbThreatType, ScreenshotEncryptionScheme, ScrollToErrorReason, SkillSource, SkillsWebClientEvent, WebClientMode} from '/glic/glic_api/glic_api.js';
 import type {AdditionalContext, CounterAbuseVerdict, ExperimentalTriggeringUpdate, FocusedTabData, GetPinCandidatesOptions, GlicBrowserHost, GlicWebClient, InvokeOptions, Observable, Observable2, OpenPanelInfo, PageMetadata, PanelOpeningData, PanelState, ScrollToError, TabContextResult, TabData, UserConfirmationDialogRequest, UserProfileInfo, ZeroStateSuggestionsV2} from '/glic/glic_api/glic_api.js';
 import {Subject} from '/glic/observable.js';
 
@@ -2743,6 +2743,14 @@ class ApiTests extends ApiTestFixtureBase {
     metrics.onClosedCaptionsShown();
   }
 
+  async testUserInputSubmittedPromptType() {
+    assertDefined(this.host.getMetrics);
+    const metrics = this.host.getMetrics();
+    assertDefined(metrics);
+    assertDefined(metrics.onUserInputSubmitted);
+    metrics.onUserInputSubmitted(WebClientMode.TEXT, PromptType.TYPED_TEXT);
+  }
+
   // TODO(crbug.com/454083080): Fix this, it hangs.
   async testCaptureScreenshot() {
     assertDefined(this.host.captureScreenshot);
@@ -2753,6 +2761,59 @@ class ApiTests extends ApiTestFixtureBase {
     assertTrue(screenshot.data.byteLength > 0);
     assertEquals(screenshot.mimeType, 'image/jpeg');
   }
+
+  async fetchInactiveTabScreenshot(expectNoFocus: boolean = false) {
+    assertDefined(this.host.getFocusedTabStateV2);
+    assertDefined(this.host.getContextFromTab);
+    assertDefined(this.host.pinTabs);
+    assertDefined(this.host.getPinnedTabs);
+
+    // Pin the focused tab.
+    const focusSequence = observeSequence(this.host.getFocusedTabStateV2());
+    let focus = await focusSequence.next();
+    const tabId = checkDefined(focus?.hasFocus?.tabData.tabId);
+    await this.host.pinTabs([tabId]);
+
+    // Select the other tab.
+    await this.advanceToNextStep();
+    focus = await focusSequence.waitFor(
+        (f) => (!!f.hasFocus && f.hasFocus.tabData.tabId !== tabId) ||
+            (expectNoFocus && !!f.hasNoFocus));
+
+    // Get context and verify we have a screenshot.
+    const context = await this.host.getContextFromTab(tabId, {
+      viewportScreenshot: true,
+    });
+    return context;
+  }
+
+  async testFetchInactiveTabScreenshot() {
+    const context = await this.fetchInactiveTabScreenshot();
+    const screenshot = checkDefined(context.viewportScreenshot);
+    assertEquals(screenshot.mimeType, 'image/jpeg');
+    assertTrue(screenshot.data.byteLength > 0);
+    assertTrue(screenshot.widthPixels > 0);
+    assertTrue(screenshot.heightPixels > 0);
+  }
+
+  async testFetchInactiveTabScreenshotWhileMinimized() {
+    const shouldGetScreenshot = this.testParams;
+    // Tests fetching the screenshot of a tab while the browser is minimized.
+    // Ideally this would work, but it currently times out and provides no
+    // screenshot on some platforms.
+    const context = await this.fetchInactiveTabScreenshot(
+        /*expectNoFocus=*/ true);
+
+    if (shouldGetScreenshot) {
+      assertDefined(context.viewportScreenshot);
+    } else {
+      // For platforms where screenshotting fails while minimized, it fails
+      // randomly, so we don't assert anything here. This test at least confirms
+      // this call does not crash.
+    }
+  }
+
+  async testHibernateAllOnMemoryPressure() {}
 }
 
 class DaisyChainApiTests extends ApiTestFixtureBase {
@@ -3355,6 +3416,41 @@ class SkillsApiTests extends ApiTests {
 
 // TODO(b/546606964): enable these tests on android.
 class SkillsDesktopOnlyApiTests extends SkillsApiTests {
+  async testSkillsEnabledToggledAtRuntime() {
+    assertDefined(this.host.skills);
+    const skillsSequence = observeSequence(this.host.skills());
+    // 1. Initially disabled.
+    assertUndefined(await skillsSequence.next());
+
+    // 2. Enable skills pref at runtime.
+    await this.advanceToNextStep();
+    const enabledSkills = await skillsSequence.next();
+    assertDefined(enabledSkills);
+
+    // 3. Disable skills pref at runtime.
+    await this.advanceToNextStep();
+    assertUndefined(await skillsSequence.next());
+  }
+
+  async testContextualSkillsRetainedWhenStartingPrefDisabled() {
+    assertDefined(this.host.skills);
+    const skillsSequence = observeSequence(this.host.skills());
+    // Initially disabled.
+    assertUndefined(await skillsSequence.next());
+
+    // Step 1: Enable skills pref at runtime and verify cached contextual skills
+    // are received.
+    await this.advanceToNextStep();
+    const enabledSkills = await skillsSequence.next();
+    assertDefined(enabledSkills);
+    assertDefined(enabledSkills.getSkillPreviews);
+
+    const previewsSeq = observeSequence(enabledSkills.getSkillPreviews());
+    const previews = await previewsSeq.waitFor(s => s.length === 1);
+    assertEquals('contextual_skill_id_1', previews[0]?.id);
+    assertEquals('contextual_skill_1', previews[0]?.name);
+  }
+
   async testSkillsEnabledState() {
     assertDefined(this.host.skills);
     const skillsSequence = observeSequence(this.host.skills());

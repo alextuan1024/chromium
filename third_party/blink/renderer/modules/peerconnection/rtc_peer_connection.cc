@@ -2032,15 +2032,6 @@ std::optional<webrtc::RtpTransceiverInit> ValidateRtpTransceiverInit(
     ExceptionState& exception_state,
     const RTCRtpTransceiverInit* init,
     const String kind) {
-  if (init->hasSendEncodings()) {
-    for (const auto& encoding : init->sendEncodings()) {
-      if (encoding->hasMaxBitrate() && encoding->maxBitrate() == 0) {
-        exception_state.ThrowRangeError("maxBitrate must be greater than 0.");
-        return std::nullopt;
-      }
-    }
-  }
-
   auto webrtc_init = ToRtpTransceiverInit(execution_context, init, kind);
   // Validate sendEncodings.
   for (auto& encoding : webrtc_init.send_encodings) {
@@ -2223,7 +2214,7 @@ RTCDataChannel* RTCPeerConnection::createDataChannel(
   }
   init.protocol = data_channel_dict->protocol().Utf8();
   init.negotiated = data_channel_dict->negotiated();
-  if (data_channel_dict->hasId()) {
+  if (init.negotiated && data_channel_dict->hasId()) {
     init.id = data_channel_dict->id();
   }
   if (data_channel_dict->hasPriority()) {

@@ -188,6 +188,7 @@ class WebUIToolbarWebView
   std::unique_ptr<toolbar_ui_api::IconTableFetcher> GetIconTableFetcher()
       override;
   CommandUpdater* GetCommandUpdater() override;
+  OmniboxController* GetOmniboxController() override;
 
   // ToolbarUIService::ToolbarUIServiceDelegate:
   void HandleContextMenu(toolbar_ui_api::mojom::ContextMenuType menu_type,
@@ -272,6 +273,7 @@ class WebUIToolbarWebView
       const views::SizeBounds& available_size) const override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void PreferredSizeChanged() override;
+  void OnBlur() override;
 
   // content::WebContentsObserver:
   void DidStartNavigation(

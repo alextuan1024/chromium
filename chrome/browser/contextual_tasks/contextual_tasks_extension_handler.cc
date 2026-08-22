@@ -41,6 +41,14 @@ ContextualTasksExtensionHandler::ContextualTasksExtensionHandler(
 
 ContextualTasksExtensionHandler::~ContextualTasksExtensionHandler() = default;
 
+void ContextualTasksExtensionHandler::OnPermissionPromptChanged(
+    bool is_showing,
+    const gfx::Size& prompt_size) {
+  if (searchbox_page_) {
+    searchbox_page_->OnPermissionPromptChanged(is_showing, prompt_size);
+  }
+}
+
 void ContextualTasksExtensionHandler::BindComposeboxFactory(
     mojo::PendingReceiver<composebox::mojom::PageHandlerFactory> receiver) {
   composebox_factory_receiver_.reset();
@@ -59,6 +67,17 @@ void ContextualTasksExtensionHandler::CreatePageHandler(
   searchbox_page_.Bind(std::move(searchbox_page));
   searchbox_handler_receiver_.reset();
   searchbox_handler_receiver_.Bind(std::move(searchbox_handler));
+
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&render_frame_host());
+  if (web_contents) {
+    PermissionPromptObserver::CreateForWebContents(web_contents);
+    if (auto* observer =
+            PermissionPromptObserver::FromWebContents(web_contents)) {
+      permission_prompt_observation_.Reset();
+      permission_prompt_observation_.Observe(observer);
+    }
+  }
 
   InitializeInputStateModel();
 }
@@ -145,13 +164,18 @@ void ContextualTasksExtensionHandler::OnContextMenuOpened() {}
 void ContextualTasksExtensionHandler::OnFocusChanged(bool focused) {}
 void ContextualTasksExtensionHandler::QueryAutocomplete(
     int32_t query_id,
+    std::optional<int32_t> tab_id,
     const std::u16string& input,
     bool prevent_inline_autocomplete,
     uint32_t cursor_position,
     omnibox::SuggestInventory suggest_inventory,
     bool is_on_focus,
     const std::string& keyword,
-    searchbox::mojom::InputMethod input_method) {}
+    searchbox::mojom::InputMethod input_method) {
+  DCHECK(!tab_id.has_value())
+      << "QueryAutocomplete with tab_id is only supported for the full WebUI "
+         "Omnibox.";
+}
 void ContextualTasksExtensionHandler::StopAutocomplete(bool clear_result) {}
 void ContextualTasksExtensionHandler::OpenAutocompleteMatch(
     uint8_t line,

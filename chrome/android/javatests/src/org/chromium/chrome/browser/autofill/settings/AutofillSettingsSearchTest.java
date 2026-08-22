@@ -32,11 +32,14 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.autofill.AutofillTestHelper;
+import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
@@ -44,11 +47,14 @@ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsRefe
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighterTestUtils;
+import org.chromium.components.user_prefs.UserPrefs;
 
 /** Tests for searching autofill settings. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -157,6 +163,41 @@ public class AutofillSettingsSearchTest {
 
     @Test
     @SmallTest
+    public void testSearchDeleteSavedCvcs() throws Exception {
+        mSettingsActivityTestRule.startSettingsActivity();
+
+        CreditCard card =
+                AutofillTestHelper.createLocalCreditCard(
+                        "John Doe", "1234567890123456", "12", "2025");
+        card.setCvc("123");
+        new AutofillTestHelper().addServerCreditCard(card);
+
+        onView(withId(R.id.search_box)).perform(click());
+        onView(withId(R.id.search_query)).perform(replaceText("delete saved security codes"));
+
+        onViewWaiting(withText(R.string.autofill_settings_page_bulk_remove_cvc_label))
+                .perform(click());
+
+        onView(
+                        allOf(
+                                hasDescendant(
+                                        withText(
+                                                R.string
+                                                        .autofill_settings_page_bulk_remove_cvc_label)),
+                                isHighlighted()))
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
+    public void testSearchDeleteSavedCvcs_noMatchWithoutCards() {
+        searchSettings("delete saved security codes");
+
+        onViewWaiting(withText(R.string.search_in_settings_no_match)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
     public void testSearchContact() {
         searchSettings("contact");
 
@@ -172,6 +213,57 @@ public class AutofillSettingsSearchTest {
                                 hasDescendant(withText(R.string.autofill_contact_info_title)),
                                 isHighlighted()))
                 .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_ENABLE_BUY_NOW_PAY_LATER)
+    public void testSearchBuyNowPayLater() {
+        mSettingsActivityTestRule.startSettingsActivity();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                            .setBoolean(Pref.AUTOFILL_HAS_SEEN_BNPL, true);
+                });
+
+        onView(withId(R.id.search_box)).perform(click());
+        onView(withId(R.id.search_query)).perform(replaceText("show pay later options"));
+
+        onViewWaiting(withText(R.string.autofill_bnpl_settings_label)).perform(click());
+
+        onView(
+                        allOf(
+                                hasDescendant(withText(R.string.autofill_bnpl_settings_label)),
+                                isHighlighted()))
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_ENABLE_BUY_NOW_PAY_LATER)
+    public void testSearchBuyNowPayLater_noMatchWithFlagOff() {
+        mSettingsActivityTestRule.startSettingsActivity();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                            .setBoolean(Pref.AUTOFILL_HAS_SEEN_BNPL, true);
+                });
+
+        onView(withId(R.id.search_box)).perform(click());
+        onView(withId(R.id.search_query)).perform(replaceText("show pay later options"));
+
+        onViewWaiting(withText(R.string.search_in_settings_no_match)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_ENABLE_BUY_NOW_PAY_LATER)
+    public void testSearchBuyNowPayLater_noMatchWithoutPreferenceSet() {
+        searchSettings("show pay later options");
+
+        onViewWaiting(withText(R.string.search_in_settings_no_match)).check(matches(isDisplayed()));
     }
 
     @Test

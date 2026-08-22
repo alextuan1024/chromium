@@ -969,43 +969,28 @@ class PromoStateProviderCoordinator
   // AvatarToolbarButtonStateManager::Observer:
   void OnButtonStateChanged(std::optional<ButtonState> old_state,
                             ButtonState new_state) override {
-    switch (new_state) {
-      case ButtonState::kPromo:
-        CHECK(promo_type_.has_value());
-        // Ensure that the promo can still be shown if it is not already shown.
-        // It is possible that events not allowing the promo to show anymore
-        // happened before reaching `this` notification. E.g. clearing primary
-        // account triggering an update request through another StateProvider
-        // while `this` is active.
-        if (!IsPromoShowing() &&
-            !promo_manager_.ShouldShowPromo(promo_type_.value())) {
-          // Resets the coordinator.
-          Collapse();
-          return;
-        }
-
-        PromoShown();
-        return;
-      case ButtonState::kUpgradeClientError:
-      case ButtonState::kPassphraseError:
-      case ButtonState::kBookmarksLimitExceeded:
-      case ButtonState::kSyncError:
-      case ButtonState::kSigninPending:
-      case ButtonState::kSyncPaused:
-      case ButtonState::kExplicitTextShowing:
-      case ButtonState::kPasskeysLockedError:
+    if (new_state == ButtonState::kPromo) {
+      CHECK(promo_type_.has_value());
+      // Ensure that the promo can still be shown if it is not already shown.
+      // It is possible that events not allowing the promo to show anymore
+      // happened before reaching `this` notification. E.g. clearing primary
+      // account triggering an update request through another StateProvider
+      // while `this` is active.
+      if (!IsPromoShowing() &&
+          !promo_manager_.ShouldShowPromo(promo_type_.value())) {
+        // Resets the coordinator.
         Collapse();
         return;
-      case ButtonState::kOnSignin:
-      case ButtonState::kShowIdentityName:
-      case ButtonState::kIncognitoProfile:
-      case ButtonState::kGuestSession:
-        break;
-      case ButtonState::kNormal:
-      case ButtonState::kManagement:
-        CHECK(!collapse_timer_.IsRunning());
-        break;
+      }
+
+      PromoShown();
+      return;
     }
+
+    // Collapse the promo state on any button state change to ensure that promo
+    // timers are stopped and promo state is cleaned up when higher-priority
+    // states (such as `kShowIdentityName` triggered by IPH) become active.
+    Collapse();
     if (!old_state.has_value()) {
       return;
     }
@@ -1195,19 +1180,26 @@ class PromoStateProviderCoordinator
       promo_type_ = promo_info.type;
     }
 
+    if (old_promo_type != promo_type_ || !promo_type_.has_value()) {
+      if (collapse_timer_.IsRunning()) {
+        collapse_timer_.Stop();
+      }
+      before_promo_used_elapsed_timer_.reset();
+    }
+
     if (old_promo_type != promo_type_) {
       promo_type_changed_callbacks_.Notify();
     }
   }
 
   void Collapse() {
-    if (!promo_type_.has_value()) {
-      return;
-    }
-    if (IsPromoShowing()) {
+    if (collapse_timer_.IsRunning()) {
       collapse_timer_.Stop();
     }
     before_promo_used_elapsed_timer_.reset();
+    if (!promo_type_.has_value()) {
+      return;
+    }
     promo_type_.reset();
     promo_type_changed_callbacks_.Notify();
   }

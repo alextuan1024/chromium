@@ -89,6 +89,7 @@ source_set("misc") {
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/dom_distiller",
     "//chrome/browser/download",
+    "//chrome/browser/enterprise/isolated_mode",
     "//chrome/browser/file_system_access",
     "//chrome/browser/first_run",
     "//chrome/browser/heavy_ad_intervention",
@@ -715,7 +716,6 @@ source_set("profiles_extra_parts_impl") {
     "//chrome/browser:chrome_browser_main",
     "//chrome/browser:font_pref",
     "//chrome/browser/accessibility",
-    "//chrome/browser/accessibility_annotator",
     "//chrome/browser/account_settings",
     "//chrome/browser/affiliations",
     "//chrome/browser/ai",
@@ -1255,7 +1255,10 @@ if (!is_android) {
         "profile_list_desktop_browsertest.cc",
         "profile_window_browsertest.cc",
       ]
-      deps += [ "//chrome/browser/profiles/keep_alive:test_support" ]
+      deps += [
+        "//chrome/browser/prefs",
+        "//chrome/browser/profiles/keep_alive:test_support",
+      ]
     }
 
     if (is_mac || is_win || is_linux) {

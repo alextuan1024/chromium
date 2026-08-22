@@ -1005,6 +1005,9 @@ interface CSSPositionValue : CSSStyleValue
     method constructor
     setter x
     setter y
+interface CSSPrivateRule : CSSRule
+    attribute @@toStringTag
+    method constructor
 interface CSSPropertyRule : CSSRule
     attribute @@toStringTag
     getter inherits
@@ -2237,7 +2240,6 @@ interface Document : Node
     method releaseEvents
     method replaceChildren
     method requestStorageAccess
-    method requestStorageAccessFor
     method setSequentialFocusStartingPoint
     method startViewTransition
     method webkitCancelFullScreen
@@ -3001,7 +3003,6 @@ interface Fence
 interface FencedFrameConfig
     attribute @@toStringTag
     method constructor
-    method setSharedStorageContext
 interface FetchLaterResult
     attribute @@toStringTag
     getter activated
@@ -3369,6 +3370,7 @@ interface GPUQueue
     method constructor
     method copyElementImageToTexture
     method copyExternalImageToTexture
+    method drawElementImageToTexture
     method onSubmittedWorkDone
     method submit
     method writeBuffer
@@ -4674,6 +4676,7 @@ interface HTMLInputElement : HTMLElement
     getter size
     getter src
     getter step
+    getter switch
     getter type
     getter useMap
     getter validationMessage
@@ -4734,6 +4737,7 @@ interface HTMLInputElement : HTMLElement
     setter size
     setter src
     setter step
+    setter switch
     setter type
     setter useMap
     setter value
@@ -7117,6 +7121,7 @@ interface Navigator
     method getUserMedia
     method install
     method javaEnabled
+    method playHaptics
     method queryHandwritingRecognizer
     method registerProtocolHandler
     method requestMIDIAccess

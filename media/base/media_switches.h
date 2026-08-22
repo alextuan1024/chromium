@@ -130,6 +130,8 @@ namespace media {
 // alongside the definition of their values in the .cc file.
 
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAVDColorSpaceChanges);
+// TODO(crbug.com/467555325): Remove after M153 reaches stable.
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kAccurateVideoFrameConverterColorSpace);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAomVpxUsePresentationThreadType);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAudioFocusDuckFlash);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPictureOnWindowOccluded);
@@ -183,7 +185,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureAnimateResize);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureNavigation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureReparenting);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kEnableHighChannelLayouts);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kEnableRtcpReporting);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kEnableTabMuting);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kEncryptedMediaOcclusionTracking);
@@ -383,6 +384,7 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowDelayedAudioFocusGainAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowEnhancedPipTransition);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowMediaCodecSoftwareDecoder);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidEnableBackgroundMediaCapturing);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidSuspendWebRtcOnScreenOff);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidZeroCopyVideoCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoDocPiPPermissionPromptAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPictureAndroid);

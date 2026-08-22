@@ -454,12 +454,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // an external texture.
   virtual bool HasExternalContent() const;
 
-  // Returns true if the layer has a transferable resource. A transferable
-  // resource is an externally provided GPU resource (e.g., a texture or
-  // hardware buffer) that the layer can display without needing to paint
-  // content itself.
-  virtual bool HasTransferableResource() const;
-
   // Returns true if the layer should schedule a paint when requested. By
   // default, this is true for layers with painted content or external
   // transferable resources, but false for layers that do not draw or draw
@@ -787,10 +781,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
 
   // A cached copy of |Compositor::device_scale_factor()|.
   float device_scale_factor_;
-
-  // The size of the frame or texture in DIP, set when SetShowDelegatedContent
-  // or SetTransferableResource() was called.
-  gfx::Size frame_size_in_dip_;
 
   // The counter to maintain how many cache render surface requests we have. If
   // the value > 0, means we need to cache the render surface. If the value

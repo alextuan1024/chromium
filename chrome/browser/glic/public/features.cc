@@ -13,6 +13,8 @@
 namespace features {
 
 BASE_FEATURE(kGlicAndroidSidePanel, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicDragAndDropFileUploadAndroid,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicChromeStatusIcon, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kGlicChromeStatusIconSizePx{
@@ -249,7 +251,26 @@ BASE_FEATURE(kGlicEnableMojoJs, base::FEATURE_DISABLED_BY_DEFAULT);
 // Runs the glic client in a PrivilegedWebContents instead of a webview.
 // This is a work in progress. See b/534807813.
 BASE_FEATURE(kGlicNoWebview, base::FEATURE_DISABLED_BY_DEFAULT);
+// Whether to disallow webview communication directly with the glic host
+// (chrome/browser/resources/glic/glic_api_impl/host). When enabled, some
+// functionality implemented by glic's webview.ts is implemented instead by c++
+// code.
+BASE_FEATURE(kGlicDisconnectedWebview, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicShakeTrigger,
              "GlicShakeTrigger",
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicAndroidTablet, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicMarketingAutoOpen, base::FEATURE_ENABLED_BY_DEFAULT);
+const base::FeatureParam<std::string> kGlicMarketingUrlAllowlist{
+    &kGlicMarketingAutoOpen, "allowlisted_urls",
+#if BUILDFLAG(IS_ANDROID)
+    "https://www.google.com/chrome/ai-innovations/gemini-in-chrome/"
+#else
+    ""
+#endif
+};
+const base::FeatureParam<int> kGlicMarketingAutoOpenMaxCount{
+    &kGlicMarketingAutoOpen, "max_impressions", 1};
 }  // namespace features
