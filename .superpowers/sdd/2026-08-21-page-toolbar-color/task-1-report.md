@@ -76,3 +76,79 @@ the feature commit; it remains in its separate prerequisite commit.
 The prerequisite commit is `79ca931e6c`. The feature commit is
 `35970933df` (`Add per-page toolbar colors on macOS`). This report update is
 recorded in a separate documentation commit.
+
+## Fix round: activation and non-macOS guards
+
+Review verification found two issues in `35970933df`:
+
+1. `page_theme_pack_` was referenced unconditionally by `GetThemeProvider()`
+   and `GetCustomTheme()`, despite its macOS-only declaration.
+2. `OnActiveTabChanged()` called `UpdatePageToolbarThemeColor(false)`. A page
+   that had already painted while BrowserView observed another tab was then
+   cleared on activation and could not latch because no second first-paint
+   callback was delivered.
+
+The regression test
+`BrowserWidgetColorProviderTest.PageThemeColorActivatingAlreadyPaintedPage`
+loads a normal red page, creates a background green tab, forces its WebContents
+visible and waits for its real first paint while BrowserView observes the red
+tab, then activates the painted green tab.
+
+### Fix-round RED
+
+Commands:
+
+```sh
+/Users/xiguoduan/go/src/github.com/alextuan1024/depot_tools/autoninja \
+  -C out/Release browser_tests
+out/Release/browser_tests \
+  --gtest_filter='BrowserWidgetColorProviderTest.PageThemeColor*'
+```
+
+The build succeeded. The focused run passed the existing page-latching test and
+Incognito test, but failed the new activation test:
+
+```text
+Expected: SkColorSetRGB(0, 128, 0) = 4278222848
+Actual:   kColorToolbar = 4294967295
+[  FAILED  ] BrowserWidgetColorProviderTest.PageThemeColorActivatingAlreadyPaintedPage
+```
+
+### Fix-round GREEN
+
+The minimum production changes were to guard both `page_theme_pack_` consumer
+blocks with `#if BUILDFLAG(IS_MAC)` and to allow latching on active-tab
+activation; the existing `CompletedFirstVisuallyNonEmptyPaint()` check still
+prevents premature sampling.
+
+Commands:
+
+```sh
+git diff --check
+/Users/xiguoduan/go/src/github.com/alextuan1024/depot_tools/autoninja \
+  -C out/Release browser_tests
+out/Release/browser_tests \
+  --gtest_filter='BrowserWidgetColorProviderTest.PageThemeColor*'
+```
+
+Exact focused outcome:
+
+```text
+[       OK ] BrowserWidgetColorProviderTest.PageThemeColorIsLatchedPerPage
+[       OK ] BrowserWidgetColorProviderTest.PageThemeColorActivatingAlreadyPaintedPage
+[       OK ] BrowserWidgetColorProviderTest.PageThemeColorDoesNotAffectIncognito
+Tests took 30 seconds.
+```
+
+For the non-macOS guard, the final source inspection shows the member and both
+consumer blocks enclosed by `BUILDFLAG(IS_MAC)`. The focused GN static check
+also passed:
+
+```sh
+./buildtools/mac/gn check out/Release //chrome/browser/ui:ui \
+  --check-system-headers=false
+```
+
+Output: `Header dependency check OK`.
+
+The fix commit is `c858c32cb8` (`Fix page color activation and non-mac guards`).
