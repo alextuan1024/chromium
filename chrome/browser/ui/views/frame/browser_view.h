@@ -690,6 +690,12 @@ class BrowserView : public BrowserWindow,
   void TitleWasSet(content::NavigationEntry* entry) override;
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
+#if BUILDFLAG(IS_MAC)
+  void DidFirstVisuallyNonEmptyPaint() override;
+  void PrimaryPageChanged(content::Page& page) override;
+
+  void UpdatePageToolbarThemeColor(bool allow_latching = true);
+#endif
 
   // views::ClientView:
   views::CloseRequestResult OnWindowCloseRequested() override;

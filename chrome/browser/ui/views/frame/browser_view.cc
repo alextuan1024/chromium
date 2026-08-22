@@ -518,6 +518,26 @@ bool ShouldUseImmersiveFullscreenForUrl(ExclusiveAccessBubbleType type) {
 }
 #endif
 
+#if BUILDFLAG(IS_MAC)
+class PageToolbarThemeColor
+    : public content::PageUserData<PageToolbarThemeColor> {
+ public:
+  const std::optional<SkColor>& color() const { return color_; }
+
+ private:
+  friend content::PageUserData<PageToolbarThemeColor>;
+  PageToolbarThemeColor(content::Page& page,
+                        std::optional<SkColor> color)
+      : content::PageUserData<PageToolbarThemeColor>(page),
+        color_(std::move(color)) {}
+
+  std::optional<SkColor> color_;
+  PAGE_USER_DATA_KEY_DECL();
+};
+
+PAGE_USER_DATA_KEY_IMPL(PageToolbarThemeColor);
+#endif
+
 // Overlay view that owns TopContainerView in some cases (such as during
 // immersive fullscreen reveal).
 class TopContainerOverlayView : public views::View {
@@ -1956,6 +1976,10 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
 
   WebContentsObserver::Observe(new_contents);
 
+#if BUILDFLAG(IS_MAC)
+  UpdatePageToolbarThemeColor();
+#endif
+
   // If |contents_web_view| already has the correct WebContents, we can save
   // some work.  This also prevents extra events from being reported by the
   // Visibility API under Windows, as ChangeWebContents will briefly hide
@@ -2958,6 +2982,46 @@ void BrowserView::DidFinishNavigation(
         navigation_handle->GetWebContents());
   }
 }
+
+#if BUILDFLAG(IS_MAC)
+void BrowserView::UpdatePageToolbarThemeColor(bool allow_latching) {
+  content::WebContents* contents = web_contents();
+  if (!contents) {
+    browser_widget()->SetPageThemeColor(std::nullopt);
+    return;
+  }
+
+  content::Page& page = contents->GetPrimaryPage();
+  auto* data = PageToolbarThemeColor::GetForPage(page);
+  if (data) {
+    browser_widget()->SetPageThemeColor(data->color());
+    return;
+  }
+  if (!allow_latching || !contents->CompletedFirstVisuallyNonEmptyPaint()) {
+    browser_widget()->SetPageThemeColor(std::nullopt);
+    return;
+  }
+
+  std::optional<SkColor> color = contents->GetThemeColor();
+  if (!color) {
+    color = contents->GetBackgroundColor();
+  }
+  if (color) {
+    color = SkColorSetA(*color, SK_AlphaOPAQUE);
+  }
+  PageToolbarThemeColor::CreateForPage(page, color);
+  data = PageToolbarThemeColor::GetForPage(page);
+  browser_widget()->SetPageThemeColor(data->color());
+}
+
+void BrowserView::PrimaryPageChanged(content::Page&) {
+  UpdatePageToolbarThemeColor(false);
+}
+
+void BrowserView::DidFirstVisuallyNonEmptyPaint() {
+  UpdatePageToolbarThemeColor();
+}
+#endif
 
 void BrowserView::TouchModeChanged() {
 #if BUILDFLAG(IS_CHROMEOS)

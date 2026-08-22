@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
@@ -125,9 +126,10 @@ class VerticalTabStripRegionViewTest
   }
 
   void PressCollapseButton() {
-    browser()
-        ->GetBrowserView()
-        .toolbar()
+    BrowserWindow::FindBrowserWindowWithWebContents(
+        browser()->tab_strip_model()->GetActiveWebContents())
+        ->AsBrowserView()
+        ->toolbar()
         ->vertical_tabs_collapse_button()
         ->button_controller()
         ->NotifyClick();

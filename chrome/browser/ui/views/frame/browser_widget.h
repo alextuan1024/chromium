@@ -5,7 +5,10 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_
 
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
@@ -14,14 +17,13 @@
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/widget/widget.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include <optional>
-#endif
+#include "third_party/skia/include/core/SkColor.h"
 
 class BrowserFrameView;
 class BrowserRootView;
 enum class BrowserThemeChangeType;
 class BrowserView;
+class BrowserThemePack;
 class BrowserNativeWidget;
 class SystemMenuModelBuilder;
 
@@ -100,6 +102,10 @@ class BrowserWidget : public views::Widget,
   // that it's time to redraw everything.
   void UserChangedTheme(BrowserThemeChangeType theme_change_type);
 
+#if BUILDFLAG(IS_MAC)
+  void SetPageThemeColor(std::optional<SkColor> color);
+#endif
+
   // views::Widget:
   views::internal::RootView* CreateRootView() override;
   std::unique_ptr<views::FrameView> CreateFrameView() override;
@@ -156,6 +162,10 @@ class BrowserWidget : public views::Widget,
 
   // Returns true if the browser instance belongs to an incognito profile.
   bool IsIncognitoBrowser() const;
+
+#if BUILDFLAG(IS_MAC)
+  scoped_refptr<BrowserThemePack> page_theme_pack_;
+#endif
 
   raw_ptr<BrowserNativeWidget> browser_native_widget_;
 
