@@ -1977,7 +1977,7 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   WebContentsObserver::Observe(new_contents);
 
 #if BUILDFLAG(IS_MAC)
-  UpdatePageToolbarThemeColor(false);
+  UpdatePageToolbarThemeColor();
 #endif
 
   // If |contents_web_view| already has the correct WebContents, we can save

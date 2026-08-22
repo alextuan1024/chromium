@@ -357,11 +357,13 @@ const ui::ThemeProvider* BrowserWidget::GetThemeProvider() const {
                 ->GetDefaultThemeProvider();
   }
 
+#if BUILDFLAG(IS_MAC)
   if (page_theme_pack_.get()) {
     Profile* profile = browser_view_->browser()->GetProfile();
     return &ThemeServiceFactory::GetForProfile(profile)
                 ->GetDefaultThemeProvider();
   }
+#endif
   return GetBaseThemeProvider();
 }
 
@@ -387,9 +389,11 @@ ui::ColorProviderKey::ThemeInitializerSupplier* BrowserWidget::GetCustomTheme()
     return nullptr;
   }
 
+#if BUILDFLAG(IS_MAC)
   if (page_theme_pack_.get()) {
     return page_theme_pack_.get();
   }
+#endif
 
   BrowserWindowInterface* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);

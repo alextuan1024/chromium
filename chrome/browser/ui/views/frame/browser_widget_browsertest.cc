@@ -340,6 +340,34 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
+                       PageThemeColorActivatingAlreadyPaintedPage) {
+  content::WebContents* active_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  FirstPaintWaiter active_paint_waiter(active_contents);
+  active_paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("data:text/html,<meta name=theme-color content=red>")));
+  active_paint_waiter.Wait();
+
+  const GURL inactive_url(
+      "data:text/html,<body style='background:green'>page");
+  content::WebContents* inactive_contents = chrome::AddAndReturnTabAt(
+      browser(), inactive_url, -1, false);
+  FirstPaintWaiter inactive_paint_waiter(inactive_contents);
+  inactive_paint_waiter.PrepareForNextPaint();
+  inactive_contents->WasShown();
+  ASSERT_TRUE(content::WaitForLoadStop(inactive_contents));
+  inactive_paint_waiter.Wait();
+  ASSERT_TRUE(inactive_contents->CompletedFirstVisuallyNonEmptyPaint());
+
+  browser()->tab_strip_model()->ActivateTabAt(1);
+  EXPECT_EQ(
+      SkColorSetRGB(0, 128, 0),
+      GetBrowserWidget(browser())->GetColorProvider()->GetColor(
+          kColorToolbar));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
                        PageThemeColorDoesNotAffectIncognito) {
   Browser* incognito_browser = CreateIncognitoBrowser(profile());
   const SkColor baseline_toolbar_color =
