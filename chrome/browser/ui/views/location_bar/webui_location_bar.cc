@@ -12,16 +12,20 @@
 #include "build/branding_buildflags.h"
 #include "build/buildflag.h"
 #include "chrome/browser/actor/ui/actor_ui_window_controller.h"
+#include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
 #include "chrome/browser/ui/omnibox/chrome_omnibox_client.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
+#include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_actions.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_state_helper.h"
@@ -87,7 +91,7 @@ toolbar_ui_api::mojom::SecurityLevel GetMojoSecurityLevel(
 
 }  // namespace
 
-WebUILocationBar::WebUILocationBar(Browser* browser,
+WebUILocationBar::WebUILocationBar(BrowserWindowInterface* browser,
                                    LocationBarView::Delegate* delegate)
     : LocationBar(browser ? chrome::BrowserCommandController::From(browser)
                           : nullptr),
@@ -114,8 +118,7 @@ void WebUILocationBar::Init(WebUIToolbarControlDelegate* delegate) {
 
   omnibox_controller_ =
       std::make_unique<OmniboxController>(std::make_unique<ChromeOmniboxClient>(
-          /*location_bar=*/this, browser_->GetBrowserForMigrationOnly(),
-          browser_->GetProfile()));
+          /*location_bar=*/this, browser_, browser_->GetProfile()));
   omnibox_view_ = std::make_unique<WebUIReadOnlyOmnibox>(
       /*location_bar=*/this, toolbar_delegate_, omnibox_controller_.get(),
       /*update_propagator=*/*this);
@@ -613,7 +616,7 @@ void WebUILocationBar::UpdateLhsChipsState(bool icon_known) {
 void WebUILocationBar::UpdatePageActions(content::WebContents* contents) {
   content::WebContents* active_contents = contents;
   if (!active_contents && browser_) {
-    active_contents = browser_->tab_strip_model()->GetActiveWebContents();
+    active_contents = browser_->GetTabStripModel()->GetActiveWebContents();
   }
   page_action_control_.UpdateController(active_contents);
   page_action_control_.SetShouldHidePageActions(ShouldHideRHSIcons());
@@ -681,8 +684,17 @@ bool WebUILocationBar::IsContentSettingBubbleShowing(size_t index) {
 }
 
 void WebUILocationBar::OnLhsChipMousePressed(
-    toolbar_ui_api::mojom::LhsChipIdentifier identifier) {
+    toolbar_ui_api::mojom::LhsChipIdentifier identifier,
+    bool is_middle_click) {
   if (identifier == toolbar_ui_api::mojom::LhsChipIdentifier::kLocationIcon) {
+    if (location_bar::InitiateMiddleClickPasteIfSupported(
+            is_middle_click,
+            base::BindOnce(&WebUILocationBar::OnMiddleClickPaste,
+                           weak_ptr_factory_.GetWeakPtr(),
+                           base::TimeTicks::Now()))) {
+      return;
+    }
+
     page_info_reopen_suppressor_.OnMousePressed();
   } else if (identifier ==
              toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest) {
@@ -1088,4 +1100,15 @@ void WebUILocationBar::RefreshAiModePageAction() {
   }
 
   // TODO(crbug.com/491707187): kShowRhsAimHint support, if relevant.
+}
+
+void WebUILocationBar::OnMiddleClickPaste(base::TimeTicks event_timestamp,
+                                          std::u16string text) {
+  if (!omnibox_controller_) {
+    return;
+  }
+  location_bar::ExecutePasteAndGo(
+      *omnibox_controller_,
+      AutocompleteClassifierFactory::GetForProfile(GetProfile()), text,
+      event_timestamp);
 }

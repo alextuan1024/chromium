@@ -1329,6 +1329,10 @@
       status: "experimental",
     },
     {
+      name: "ConstructableStylesheetCache",
+      status: "stable",
+    },
+    {
       name: "ContactsManager",
       status:  {"Android": "stable", "default": "test"},
     },
@@ -1345,10 +1349,6 @@
       origin_trial_feature_name: "ContainerTiming",
       origin_trial_allows_third_party: true,
       status: "experimental",
-    },
-    {
-      name: "ContainerTimingPrepaintTraversal",
-      depends_on: ["ContainerTiming"],
     },
     {
       name: "ContentIndex",
@@ -1624,11 +1624,6 @@
     {
       // https://drafts.csswg.org/css-mixins-1/#function-rule
       name: "CSSFunctions",
-      status: "stable",
-    },
-    {
-      // https://chromestatus.com/feature/5157805733183488
-      name: "CSSGapDecoration",
       status: "stable",
     },
     {
@@ -5223,6 +5218,10 @@
       name: "RTCEncodedVideoFrameAdditionalMetadata",
       status: "experimental",
     },
+    {
+      name: "RTCEncodedVideoFrameConstructor",
+      status: "experimental",
+    },
     // Enables the use of jitterBufferTarget attribute in WebRTC.
     // Spec: https://w3c.github.io/webrtc-extensions/#dom-rtcrtpreceiver-jitterbuffertarget
     {
@@ -5732,7 +5731,7 @@
     {
       name: "SingleAxisScrollContainersForScrollSnap",
       depends_on: ["SingleAxisScrollContainers"],
-      status: "test",
+      status: "experimental",
     },
     {
       name: "SkipAd",
@@ -6080,6 +6079,10 @@
     },
     {
       name: "SvgSupportMediaFragments",
+      status: "experimental",
+    },
+    {
+      name: "SVGTextPathSideAttribute",
       status: "experimental",
     },
     {

@@ -7,6 +7,7 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "build/build_config.h"
 #include "chrome/browser/background/omnibox_everywhere/omnibox_everywhere_background_mode_manager.h"
 #include "chrome/browser/browser_process.h"
@@ -30,6 +31,13 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/widget/widget.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "base/task/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
+#endif
+
 namespace omnibox_everywhere {
 
 OmniboxEverywhereController::OmniboxEverywhereController(
@@ -43,9 +51,21 @@ OmniboxEverywhereController::OmniboxEverywhereController(
                   &OmniboxEverywhereController::OnStatusIconClicked,
                   base::Unretained(this)))),
       listener_(listener ? listener
-                         : ui::GlobalAcceleratorListener::GetInstance()) {
+                         : ui::GlobalAcceleratorListener::GetInstance())
+#if BUILDFLAG(IS_WIN)
+      ,
+      shortcut_helper_(base::ThreadPool::CreateCOMSTATaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN}))
+#endif
+{
   CHECK(base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere));
   if (g_browser_process && g_browser_process->local_state()) {
+    enabled_pref_member_.Init(
+        prefs::kOmniboxEverywhereEnabled, g_browser_process->local_state(),
+        base::BindRepeating(
+            &OmniboxEverywhereController::UpdateHotkeyRegistration,
+            base::Unretained(this)));
     hotkey_pref_member_.Init(
         prefs::kHotkeyEnabled, g_browser_process->local_state(),
         base::BindRepeating(
@@ -58,6 +78,13 @@ OmniboxEverywhereController::OmniboxEverywhereController(
             base::Unretained(this)));
   }
   UpdateHotkeyRegistration();
+
+#if BUILDFLAG(IS_WIN)
+  // TODO(crbug.com/532193825): Move icon creation to First Run Experience
+  // (FRE).
+  shortcut_helper_.AsyncCall(base::IgnoreResult(
+      &OmniboxEverywhereShortcutHelperWin::EnsureIconPersisted));
+#endif
 
   if (g_browser_process && g_browser_process->profile_manager()) {
     profile_manager_observation_.Observe(g_browser_process->profile_manager());
@@ -128,8 +155,7 @@ void OmniboxEverywhereController::OnProfileManagerDestroying() {
 }
 
 bool OmniboxEverywhereController::IsProfileEligible(Profile* profile) const {
-  return profile && !profile->IsOffTheRecord() &&
-         omnibox::IsOmniboxEverywhereEnabled(profile) &&
+  return omnibox::IsOmniboxEverywhereEligible(profile) &&
          OmniboxEverywhereServiceFactory::GetForProfile(profile);
 }
 
@@ -243,6 +269,14 @@ void OmniboxEverywhereController::PersistTargetProfilePath(
   }
 }
 
+bool OmniboxEverywhereController::IsEnabled() const {
+  return !enabled_pref_member_.prefs() || enabled_pref_member_.GetValue();
+}
+
+bool OmniboxEverywhereController::IsHotkeyEnabled() const {
+  return !hotkey_pref_member_.prefs() || hotkey_pref_member_.GetValue();
+}
+
 void OmniboxEverywhereController::UpdateHotkeyRegistration() {
   // `GlobalAcceleratorListener::GetInstance()` may return null on platforms
   // where global accelerators are not supported or unavailable (e.g. Wayland).
@@ -269,9 +303,7 @@ void OmniboxEverywhereController::UpdateHotkeyRegistration() {
 
   listener_->UnregisterAccelerators(this);
 
-  const bool is_enabled =
-      hotkey_pref_member_.prefs() && hotkey_pref_member_.GetValue();
-  if (is_enabled) {
+  if (IsEnabled() && IsHotkeyEnabled()) {
     PrefService* local_state =
         g_browser_process ? g_browser_process->local_state() : nullptr;
     const ui::Accelerator hotkey =
@@ -287,8 +319,22 @@ void OmniboxEverywhereController::UpdateHotkeyRegistration() {
 void OmniboxEverywhereController::OnInvoke(InvocationSource source,
                                            Profile* profile,
                                            gfx::NativeWindow context) {
+  if (!IsEnabled()) {
+    return;
+  }
+
   if (!IsProfileEligible(profile)) {
     return;
+  }
+
+  // Disabling the global hotkey in settings causes `UpdateHotkeyRegistration()`
+  // to unregister the accelerator with the OS listener. This check provides a
+  // defensive guard against in-flight keypress events queued right as the
+  // preference is toggled, as well as direct programmatic/test invocations.
+  if (source == InvocationSource::kGlobalHotkey) {
+    if (!IsHotkeyEnabled()) {
+      return;
+    }
   }
 
   SetTargetProfile(profile);

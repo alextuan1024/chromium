@@ -270,7 +270,7 @@ import org.chromium.chrome.browser.user_education.UserEducationUtils.OptionalPro
 import org.chromium.chrome.browser.webapps.PwaRestorePromoUtils;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.widget.CoordinatorLayoutForPointer;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.TouchEventObserver;
@@ -1132,7 +1132,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
             var controller = getBottomSheetController();
             assert controller != null;
             controller.addObserver(
-                    new EmptyBottomSheetObserver() {
+                    new BottomSheetObserver() {
                         @Override
                         public void onSheetClosed(int reason) {
                             var bottomSheetController = getBottomSheetController();
@@ -1385,6 +1385,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                     EnterpriseSignalsDisclaimerController.maybeCreateForProfile(
                             mProfileSupplier.asNonNull().get().getOriginalProfile(),
                             assertNonNull(getBottomSheetController()),
+                            mModalDialogManagerSupplier.get(),
                             mActivity,
                             url -> CustomTabActivity.showInfoPage(mActivity, url));
         }
@@ -2038,8 +2039,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
                             /* itemDelegate= */ null,
                             mShareDelegateSupplier,
                             ChromeContextMenuPopulator.ContextMenuMode.THIN_WEB_VIEW,
-                            /* customContentActions= */ Collections.emptyList(),
-                            getLeftSideUiWidthSupplier());
+                            /* customContentActions= */ Collections.emptyList());
             mCoBrowseViewFactory =
                     new CoBrowseViewFactory(
                             mActivity,
@@ -3209,19 +3209,6 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
     @Override
     public OneshotSupplier<SideUiStateProvider> getSideUiStateProviderSupplier() {
         return mSideUiStateProviderSupplier;
-    }
-
-    @Override
-    public Supplier<Integer> getLeftSideUiWidthSupplier() {
-        return () -> {
-            var sideUiStateProvider = mSideUiStateProviderSupplier.get();
-            if (sideUiStateProvider != null) {
-                return sideUiStateProvider
-                        .getCurrentSideUiSpecs()
-                        .getWidth(SideUiCoordinator.AnchorSide.LEFT);
-            }
-            return 0;
-        };
     }
 
     /**

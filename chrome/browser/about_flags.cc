@@ -45,6 +45,8 @@
 #include "chrome/browser/enterprise/platform_auth/platform_auth_features.h"
 #include "chrome/browser/finds/core/finds_features.h"
 #include "chrome/browser/flag_descriptions.h"
+#include "chrome/browser/geic/geic_enabling.h"
+#include "chrome/browser/geic/geic_pwc_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/login_detection/login_detection_util.h"
@@ -2589,15 +2591,12 @@ const FeatureEntry::FeatureParam kAndroidVerticalTabs_ExternalDrag[] = {
     {"external_drag", "true"}};
 const FeatureEntry::FeatureParam kAndroidVerticalTabs_AutoResize[] = {
     {"auto_resize", "true"}};
-const FeatureEntry::FeatureParam kAndroidVerticalTabs_MultiSelect[] = {
-    {"multi_select", "true"}};
 const FeatureEntry::FeatureParam kAndroidVerticalTabs_IncognitoButton[] = {
     {"incognito_button", "true"}};
 const FeatureEntry::FeatureParam kAndroidVerticalTabs_All[] = {
     {"external_drag", "true"},
     {"auto_resize", "true"},
     {"group_hover_card", "true"},
-    {"multi_select", "true"},
     {"incognito_button", "true"}};
 const FeatureEntry::FeatureParam kAndroidVerticalTabs_EnableByDefault[] = {
     {"enable_by_default", "true"}};
@@ -2605,7 +2604,6 @@ const FeatureEntry::FeatureParam kAndroidVerticalTabs_EnableByDefault[] = {
 const FeatureEntry::FeatureVariation kAndroidVerticalTabsVariations[] = {
     {"with external-drag", kAndroidVerticalTabs_ExternalDrag, nullptr},
     {"with auto-resize", kAndroidVerticalTabs_AutoResize, nullptr},
-    {"with multi-select", kAndroidVerticalTabs_MultiSelect, nullptr},
     {"with incognito-button", kAndroidVerticalTabs_IncognitoButton, nullptr},
     {"with all experimental features", kAndroidVerticalTabs_All, nullptr},
     {"with enabled-by-default", kAndroidVerticalTabs_EnableByDefault, nullptr},
@@ -3846,15 +3844,15 @@ const FeatureEntry::FeatureVariation kGlicTabGroupsVariations[] = {
 const FeatureEntry::Choice kGlicSelectionPromptChoices[] = {
     {flags_ui::kGenericExperimentChoiceDefault, "", ""},
     {"Enabled (Defaults: Explain CTA + Settings)", switches::kEnableFeatures,
-     "GlicSelectionPrompt"},
+     "GlicSelectionPrompt:updates_only/false"},
     {"Enabled with Updates Only", switches::kEnableFeatures,
-     "GlicSelectionPrompt:updates_only/true"},
+     "GlicSelectionPrompt"},
     {"Enabled with Copy Buttons", switches::kEnableFeatures,
-     "GlicSelectionPrompt:show_copy_buttons/true"},
+     "GlicSelectionPrompt:show_copy_buttons/true/updates_only/false"},
     {"Enabled (CTA: Tell me about this)", switches::kEnableFeatures,
-     "GlicSelectionPrompt:cta/tell_me_about_this"},
+     "GlicSelectionPrompt:cta/tell_me_about_this/updates_only/false"},
     {"Enabled (Inline Fulfillment)", switches::kEnableFeatures,
-     "GlicSelectionPrompt:inline_fulfillment/true"}};
+     "GlicSelectionPrompt:inline_fulfillment/true/updates_only/false"}};
 
 const FeatureEntry::FeatureParam kAutofillShowTypePredictionsAsTitle[] = {
     {"as-title", "true"}};
@@ -4722,11 +4720,6 @@ const FeatureEntry::Choice kAISemanticEmbedderChoices[] = {
     {flags_ui::kGenericExperimentChoiceEnabled, switches::kEnableFeatures,
      "AIEmbeddingsAPI,AIEmbeddingsAPIForWorkers"}};
 
-// Classifier requires LiteRT-LM.
-const FeatureEntry::Choice kAIClassifierChoices[] = {
-    {flags_ui::kGenericExperimentChoiceDefault, "", ""},
-    {flags_ui::kGenericExperimentChoiceEnabled, switches::kEnableFeatures,
-     "AIClassifierAPI,OnDeviceModelLitertLmBackend"}};
 
 const FeatureEntry::Choice kGemma4Choices[] = {
     {flags_ui::kGenericExperimentChoiceDefault, "", ""},
@@ -6388,6 +6381,11 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kAppStoreBillingDebugName,
      flag_descriptions::kAppStoreBillingDebugDescription, kOsAll,
      FEATURE_VALUE_TYPE(payments::features::kAppStoreBillingDebug)},
+    {"enable-spc-locale-validation",
+     flag_descriptions::kSPCLocaleValidationName,
+     flag_descriptions::kSPCLocaleValidationDescription,
+     kOsMac | kOsWin | kOsAndroid,
+     FEATURE_VALUE_TYPE(payments::features::kSPCLocaleValidation)},
 #if BUILDFLAG(IS_ANDROID)
     {"show-ready-to-pay-debug-info",
      flag_descriptions::kShowReadyToPayDebugInfoName,
@@ -6731,11 +6729,6 @@ const FeatureEntry kFeatureEntries[] = {
          kContextualSuggestionsAblateOthersWhenPresentVariations,
          "ContextualSuggestionsAblateOthersWhenPresent")},
 
-    {"enable-force-download-to-onedrive",
-     flag_descriptions::kEnableForceDownloadToOneDriveName,
-     flag_descriptions::kEnableForceDownloadToOneDriveDescription, kOsDesktop,
-     FEATURE_VALUE_TYPE(
-         enterprise_data_protection::kEnableForceDownloadToOneDrive)},
 
     {"omnibox-contextual-search-on-focus-suggestions",
      flag_descriptions::kOmniboxContextualSearchOnFocusSuggestionsName,
@@ -7467,6 +7460,11 @@ const FeatureEntry kFeatureEntries[] = {
      FEATURE_WITH_PARAMS_VALUE_TYPE(ntp_features::kRealboxCr23Theming,
                                     kNtpRealboxCr23ThemingVariations,
                                     "NtpRealboxCr23Theming")},
+
+    {"ntp-rich-image-suggestions",
+     flag_descriptions::kNtpRichImageSuggestionsName,
+     flag_descriptions::kNtpRichImageSuggestionsDescription, kOsDesktop,
+     FEATURE_VALUE_TYPE(ntp_features::kNtpRichImageSuggestions)},
 
     {"ntp-scaled-action-chips", flag_descriptions::kNtpScaledActionChipsName,
      flag_descriptions::kNtpScaledActionChipsDescription, kOsDesktop,
@@ -8388,10 +8386,6 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kUseOutOfProcessVideoDecodingDescription,
      kOsLinux | kOsCrOS,
      FEATURE_VALUE_TYPE(media::kUseOutOfProcessVideoDecoding)},
-    {"use-shared-image-in-oop-vd",
-     flag_descriptions::kUseSharedImageInOOPVDName,
-     flag_descriptions::kUseSharedImageInOOPVDDescription, kOsLinux | kOsCrOS,
-     FEATURE_VALUE_TYPE(media::kUseSharedImageInOOPVDProcess)},
 #endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -8920,6 +8914,11 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kLensEnableSendUrlsInComposeboxesName,
      flag_descriptions::kLensEnableSendUrlsInComposeboxesDescription, kOsAll,
      FEATURE_VALUE_TYPE(lens::features::kLensSendUrlsInComposeboxes)},
+
+    {"lens-composebox-identity-delegation",
+     flag_descriptions::kLensComposeboxIdentityDelegationName,
+     flag_descriptions::kLensComposeboxIdentityDelegationDescription, kOsAll,
+     FEATURE_VALUE_TYPE(lens::features::kLensComposeboxIdentityDelegation)},
 
     {"lens-bypass-compression-for-c2pa",
      flag_descriptions::kLensBypassCompressionForC2paName,
@@ -9899,6 +9898,14 @@ const FeatureEntry kFeatureEntries[] = {
      kOsDesktop, FEATURE_VALUE_TYPE(media::kGetDisplayMediaConfersActivation)},
 #endif
 
+    {"geic-enabled", flag_descriptions::kGeicEnabledName,
+     flag_descriptions::kGeicEnabledDescription, kOsDesktop,
+     SINGLE_VALUE_TYPE(geic::switches::kGeicEnabled)},
+
+    {"geic-guest-url", flag_descriptions::kGeicGuestUrlName,
+     flag_descriptions::kGeicGuestUrlDescription, kOsDesktop,
+     STRING_VALUE_TYPE(geic::kGeicGuestURLSwitch, "")},
+
     {"glass-frame", flag_descriptions::kGlassFrameName,
      flag_descriptions::kGlassFrameDescription, kOsMac,
      FEATURE_WITH_PARAMS_VALUE_TYPE(features::kGlassFrame,
@@ -10499,9 +10506,6 @@ const FeatureEntry kFeatureEntries[] = {
      MULTI_VALUE_TYPE(kAISemanticEmbedderChoices),
      flag_descriptions::kAIAPIsLinks},
 
-    {"classifier-api", flag_descriptions::kClassifierAPIName,
-     flag_descriptions::kClassifierAPIDescription, kOsDesktop,
-     MULTI_VALUE_TYPE(kAIClassifierChoices), flag_descriptions::kAIAPIsLinks},
 
     {"gemma4-for-built-in-ai", flag_descriptions::kGemma4ForBuiltInAIName,
      flag_descriptions::kGemma4ForBuiltInAIDescription, kOsDesktop,
@@ -10940,6 +10944,16 @@ const FeatureEntry kFeatureEntries[] = {
      FEATURE_VALUE_TYPE(
          browser_actuator::
              kEnableBrowserActuatorForGlicExperimentalTriggering)},
+    {"glic-background-actuation",
+     flag_descriptions::kGlicBackgroundActuationName,
+     flag_descriptions::kGlicBackgroundActuationDescription,
+     kOsDesktop | kOsAndroid,
+     FEATURE_VALUE_TYPE(features::kGlicBackgroundActuation)},
+    {"glic-background-triggering",
+     flag_descriptions::kGlicBackgroundTriggeringName,
+     flag_descriptions::kGlicBackgroundTriggeringDescription,
+     kOsDesktop | kOsAndroid,
+     FEATURE_VALUE_TYPE(features::kGlicBackgroundTriggering)},
     {"glic-settings-a11y-context-fix",
      flag_descriptions::kGlicSettingsA11yContextFixName,
      flag_descriptions::kGlicSettingsA11yContextFixDescription, kOsDesktop,
@@ -10993,6 +11007,12 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kGlicActorSkipScreenshotName,
      flag_descriptions::kGlicActorSkipScreenshotDescription, kOsDesktop,
      FEATURE_VALUE_TYPE(actor::kGlicActorSkipScreenshot)},
+#if BUILDFLAG(IS_ANDROID)
+    {"actor-notification-intent-routing",
+     flag_descriptions::kActorNotificationIntentRoutingName,
+     flag_descriptions::kActorNotificationIntentRoutingDescription, kOsAndroid,
+     FEATURE_VALUE_TYPE(chrome::android::kActorNotificationIntentRouting)},
+#endif  // BUILDFLAG(IS_ANDROID)
     {"actor-observe-screenshot-default",
      flag_descriptions::kActorObserveScreenshotDefaultName,
      flag_descriptions::kActorObserveScreenshotDefaultDescription, kOsDesktop,
@@ -11009,6 +11029,12 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kActorScriptToolSkipPageContentName,
      flag_descriptions::kActorScriptToolSkipPageContentDescription, kOsDesktop,
      FEATURE_VALUE_TYPE(actor::kActorScriptToolSkipPageContent)},
+#if BUILDFLAG(IS_ANDROID)
+    {"actor-step-progress-notification",
+     flag_descriptions::kActorStepProgressNotificationName,
+     flag_descriptions::kActorStepProgressNotificationDescription, kOsAndroid,
+     FEATURE_VALUE_TYPE(chrome::android::kActorStepProgressNotification)},
+#endif  // BUILDFLAG(IS_ANDROID)
 
     {"glic-print-menu-item", flag_descriptions::kGlicPrintMenuItemName,
      flag_descriptions::kGlicPrintMenuItemDescription,
@@ -12448,14 +12474,6 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kHandleMdmErrorsForDasherAccountsName,
      flag_descriptions::kHandleMdmErrorsForDasherAccountsDescription, kOsAll,
      FEATURE_VALUE_TYPE(switches::kHandleMdmErrorsForDasherAccounts)},
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-    {"disable-u18-feedback-desktop",
-     flag_descriptions::kDisableU18FeedbackDesktopName,
-     flag_descriptions::kDisableU18FeedbackDesktopDescription,
-     kOsWin | kOsMac | kOsLinux,
-     FEATURE_VALUE_TYPE(switches::kDisableU18FeedbackDesktop)},
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
     {"profile-creation-decline-signin-cta-experiment",

@@ -6540,6 +6540,28 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
+<histogram name="Net.QuicSession.GoogleSearch.NonReuseReason{Initiator}{Used}"
+    enum="QuicSessionNonReuseReason" expires_after="2027-07-01">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>blink-network-stack@google.com</owner>
+  <summary>
+    The session non-reuse reason for a QUIC session to GoogleSearch. This is
+    recorded when closing the session to GoogleSearch, and when {Used} with
+    {Initiator}.
+  </summary>
+  <token key="Initiator">
+    <variant name="" summary="any connection initiator"/>
+    <variant name=".NonPreconnect"
+        summary="the connection was not established via preconnect"/>
+    <variant name=".Preconnect"
+        summary="the connection was established via preconnect"/>
+  </token>
+  <token key="Used">
+    <variant name=".Unused" summary="session was unused"/>
+    <variant name=".Used" summary="session was used"/>
+  </token>
+</histogram>
+
 <histogram name="Net.QuicSession.HandshakeConfirmedTime" units="Milliseconds"
     expires_after="2027-02-02">
   <owner>dschinazi@chromium.org</owner>
@@ -10102,6 +10124,19 @@ chromium-metrics-reviews@google.com.
     Receive Offload (UDP_GRO) is enabled on a UDPSocketPosix. This metric is
     sampled at 1% of successful GRO read operations. This metric is only emitted
     if `ReadMultiple()` is called.
+  </summary>
+</histogram>
+
+<histogram name="Net.UDPSocketPosix.RecvMmsgPacketsRead" units="packets"
+    expires_after="2027-07-17">
+  <owner>aymanm@google.com</owner>
+  <owner>ricea@chromium.org</owner>
+  <owner>src/net/OWNERS</owner>
+  <summary>
+    Records the number of UDP datagrams read in a single batch read (recvmmsg)
+    operation on a UDPSocketPosix. This metric is sampled at 1% of successful
+    recvmmsg read operations. This metric is only emitted if `ReadMultiple()` is
+    called and recvmmsg is used.
   </summary>
 </histogram>
 

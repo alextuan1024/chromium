@@ -415,6 +415,14 @@ bool ContextHubService::IsGeneratingFirstPartyAutoTodos() const {
   return is_generating_first_party_auto_todos_;
 }
 
+base::Time ContextHubService::GetLastFirstPartyGenerationTime() const {
+  return last_first_party_generation_time_;
+}
+
+base::Time ContextHubService::GetLastThirdPartyGenerationTime() const {
+  return last_third_party_generation_time_;
+}
+
 void ContextHubService::GenerateTabBasedTodos(
     std::vector<base::WeakPtr<content::WebContents>> tabs,
     AutoTodosStore::OperationCallback callback) {
@@ -477,6 +485,7 @@ void ContextHubService::OnAllAutoTodosFetchedForTabBasedTodos(
   }
 
   if (eligible_tabs.empty()) {
+    last_third_party_generation_time_ = base::Time::Now();
     if (callback) {
       // Return early if there are no eligible tabs to process. Return true to
       // indicate that the operation was successful, just with no results.
@@ -631,6 +640,10 @@ void ContextHubService::FinishTabBasedTodosGeneration(bool success) {
   active_tab_todos_requests_ = 0;
   pending_tab_todos_requests_ = {};
   generated_tab_todos_.clear();
+
+  if (success) {
+    last_third_party_generation_time_ = base::Time::Now();
+  }
 
   observers_.Notify(&Observer::OnThirdPartyAutoTodosGenerationStateChanged,
                     false);
@@ -795,15 +808,18 @@ std::optional<MemoryBankEntry> ContextHubService::GetPendingMemoryBankEntry()
 }
 
 bool ContextHubService::SavePendingMemoryBankEntry(
-    const std::vector<std::string>& tags) {
+    std::vector<std::string> tags,
+    std::optional<std::string> note,
+    std::optional<std::string> collection) {
   if (!pending_memory_bank_entry_.has_value()) {
     return false;
   }
   MemoryBankEntry entry = std::move(*pending_memory_bank_entry_);
   pending_memory_bank_entry_.reset();
 
-  entry.tags = tags;
-  // TODO(crbug.com/523377643): Add support for notes and collections.
+  entry.tags = std::move(tags);
+  entry.note = std::move(note);
+  entry.collection = std::move(collection);
   SaveMemoryBankEntry(std::move(entry), base::DoNothing());
   return true;
 }
@@ -939,14 +955,38 @@ void ContextHubService::ConnectLocalTabGroup(
 }
 
 // TODO(crbug.com/531938478): Update to handle APC ingestion.
-// TODO(crbug.com/542642727): Include confirmed tab groups in the request
-// payload for model execution workflow for regrouping.
 void ContextHubService::GenerateTabGroups(std::vector<TabData> tabs,
                                           const std::string& user_command,
                                           GroupTabsCallback callback) {
   optimization_guide::proto::ContextHubRequest request;
   request.set_request_type(
       optimization_guide::proto::CONTEXT_HUB_REQUEST_TYPE_GROUPING);
+
+  std::vector<TabGroupEntry> confirmed_groups = GetConfirmedTabGroups();
+  base::flat_set<int64_t> existing_ids =
+      base::MakeFlatSet<int64_t>(tabs, {}, &TabData::id);
+
+  for (const TabGroupEntry& confirmed_group : confirmed_groups) {
+    optimization_guide::proto::TabGroupMinimal* group_proto =
+        request.add_pre_existing_tab_groups();
+    group_proto->set_label(confirmed_group.label);
+    group_proto->set_group_id(confirmed_group.id);
+    for (const TabData& tab : confirmed_group.tabs) {
+      if (tab.id != SessionID::InvalidValue().id()) {
+        group_proto->add_tab_ids(tab.id);
+        if (!existing_ids.contains(tab.id)) {
+          existing_ids.insert(tab.id);
+          tabs.push_back(tab);
+        }
+      }
+    }
+  }
+
+  if (tabs.size() < 2) {
+    std::move(callback).Run({}, std::move(tabs), /*text_response=*/"");
+    return;
+  }
+
   for (const TabData& tab : tabs) {
     optimization_guide::proto::EntryItem* entry_item =
         request.add_entry_items();
@@ -1117,11 +1157,6 @@ void ContextHubService::HandleTabGroupModelExecutionResult(
 void ContextHubService::GroupTabs(std::vector<TabData> tabs,
                                   const std::string& user_command,
                                   GroupTabsCallback callback) {
-  if (tabs.size() < 2) {
-    std::move(callback).Run({}, std::move(tabs), /*text_response=*/"");
-    return;
-  }
-
   GenerateTabGroups(std::move(tabs), user_command, std::move(callback));
 }
 

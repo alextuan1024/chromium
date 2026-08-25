@@ -28,8 +28,6 @@
 #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
 #include "chrome/browser/ui/webui/access_code_cast/access_code_cast.mojom.h"
 #include "chrome/browser/ui/webui/access_code_cast/access_code_cast_ui.h"
-#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog.mojom.h"
-#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog_untrusted_ui.h"
 #include "chrome/browser/ui/webui/app_service_internals/app_service_internals.mojom.h"
 #include "chrome/browser/ui/webui/app_service_internals/app_service_internals_ui.h"
 #include "chrome/browser/ui/webui/autofill_ml_internals/autofill_ml_internals_ui.h"
@@ -434,7 +432,7 @@ void PopulateChromeWebUIFrameBindersPartsDesktop(
       >(map);
 
   RegisterWebUIControllerInterfaceBinder<
-      user_education::mojom::UserEducationMixedTrustHandlerFactory,
+      user_education::mojom::UserEducationMixedTrustHandlerFactory, HistoryUI,
       UserEducationInternalsUI>(map);
 
 #if !defined(OFFICIAL_BUILD)
@@ -735,11 +733,6 @@ void PopulateChromeWebUIFrameInterfaceBrokersUntrustedPartsDesktop(
                MicrosoftAuthUntrustedDocumentInterfacesFactory>();
   registry.ForWebUI<glic::SelectionOverlayUntrustedUI>()
       .Add<glic::selection::SelectionOverlayPageHandlerFactory>();
-
-  if (base::FeatureList::IsEnabled(features::kAiOverlayDialog)) {
-    registry.ForWebUI<ttc::AiOverlayDialogUntrustedUI>()
-        .Add<ai_overlay_dialog::mojom::PageHandlerFactory>();
-  }
 
   if (base::FeatureList::IsEnabled(
           omnibox::kComposeboxDriveContextMenuOption)) {

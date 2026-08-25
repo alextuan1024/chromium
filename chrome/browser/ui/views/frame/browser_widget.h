@@ -163,6 +163,10 @@ class BrowserWidget : public views::Widget,
   // Returns true if the browser instance belongs to an incognito profile.
   bool IsIncognitoBrowser() const;
 
+  // Returns true if the browser instance belongs to an enterprise isolated mode
+  // profile.
+  bool IsEnterpriseIsolatedModeBrowser() const;
+
 #if BUILDFLAG(IS_MAC)
   scoped_refptr<BrowserThemePack> page_theme_pack_;
 #endif

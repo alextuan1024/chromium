@@ -96,12 +96,19 @@ void ContextHubPageHandler::GetAutoTodos(GetAutoTodosCallback callback) {
   context_hub::ContextHubService* service =
       ContextHubServiceFactory::GetForProfile(profile_);
   if (!service) {
-    std::move(callback).Run({}, {});
+    std::move(callback).Run({}, {}, base::Time(), base::Time());
     return;
   }
 
+  base::Time last_first_party_generation_time =
+      service->GetLastFirstPartyGenerationTime();
+  base::Time last_third_party_generation_time =
+      service->GetLastThirdPartyGenerationTime();
+
   service->GetAutoTodos(base::BindOnce(
       [](GetAutoTodosCallback callback,
+         base::Time last_first_party_generation_time,
+         base::Time last_third_party_generation_time,
          std::vector<context_hub::AutoTodoEntry> entries) {
         std::vector<context_hub::AutoTodoEntry> first_party_todos;
         std::vector<context_hub::AutoTodoEntry> third_party_todos;
@@ -115,10 +122,12 @@ void ContextHubPageHandler::GetAutoTodos(GetAutoTodosCallback callback) {
             third_party_todos.push_back(std::move(entry));
           }
         }
-        std::move(callback).Run(std::move(first_party_todos),
-                                std::move(third_party_todos));
+        std::move(callback).Run(
+            std::move(first_party_todos), std::move(third_party_todos),
+            last_first_party_generation_time, last_third_party_generation_time);
       },
-      std::move(callback)));
+      std::move(callback), last_first_party_generation_time,
+      last_third_party_generation_time));
 }
 
 void ContextHubPageHandler::UpdateAutoTodo(
@@ -264,8 +273,10 @@ void ContextHubPageHandler::SaveMemoryBankEntry(
   auto* service = ContextHubServiceFactory::GetForProfile(profile_);
   if (service && annotations) {
     std::vector<std::string> tags =
-        annotations->tags.value_or(std::vector<std::string>{});
-    bool success = service->SavePendingMemoryBankEntry(tags);
+        std::move(annotations->tags).value_or(std::vector<std::string>{});
+    bool success = service->SavePendingMemoryBankEntry(
+        std::move(tags), std::move(annotations->note),
+        std::move(annotations->collection));
     std::move(callback).Run(success);
     return;
   }
@@ -359,8 +370,6 @@ void ContextHubPageHandler::RetrieveAndGroupTabs(
     return;
   }
 
-  // TODO(crbug.com/546564997): Include confirmed tab groups in the request
-  // payload for model execution workflow for regrouping.
   service->GroupTabs(
       GetOpenUngroupedTabs(tab_provider_.get()), user_command,
       base::BindOnce(

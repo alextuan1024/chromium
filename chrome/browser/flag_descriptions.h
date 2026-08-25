@@ -562,11 +562,6 @@ inline constexpr char
         "payments, so that merchants that are not on the allowlist can also be "
         "tested for the supported features.";
 
-inline constexpr char kDisableU18FeedbackDesktopName[] =
-    "Disable U18 Feedback Desktop";
-inline constexpr char kDisableU18FeedbackDesktopDescription[] =
-    "Disables the feedback for U18 users on desktop platforms.";
-
 inline constexpr char kFieldClassificationModelCachingName[] =
     "Enable caching field classification predictions";
 inline constexpr char kFieldClassificationModelCachingDescription[] =
@@ -1663,6 +1658,15 @@ inline constexpr char kContextualCueingV2Name[] = "Contextual cueing V2";
 inline constexpr char kContextualCueingV2Description[] =
     "Enables the contextual cueing system version 2.";
 
+inline constexpr char kGeicEnabledName[] = "GEiC enabled";
+inline constexpr char kGeicEnabledDescription[] =
+    "Enables Gemini Enterprise in Chrome (GEiC) side panel integration.";
+
+inline constexpr char kGeicGuestUrlName[] = "GEiC guest URL";
+inline constexpr char kGeicGuestUrlDescription[] =
+    "Configures the guest URL loaded into the GEiC PrivilegedWebContents "
+    "container.";
+
 inline constexpr char kGlassFrameName[] = "Glass Frame";
 inline constexpr char kGlassFrameDescription[] =
     "Enables a glass effect on the browser frame.";
@@ -1689,6 +1693,14 @@ inline constexpr char
     kGlicExperimentalTriggeringSuppressDoneNotificationDescription[] =
         "Suppresses the done notification for GLIC experimental triggering "
         "tasks";
+inline constexpr char kGlicBackgroundActuationName[] =
+    "Glic background actuation";
+inline constexpr char kGlicBackgroundActuationDescription[] =
+    "Enables background actuation for Glic.";
+inline constexpr char kGlicBackgroundTriggeringName[] =
+    "Glic background triggering";
+inline constexpr char kGlicBackgroundTriggeringDescription[] =
+    "Enables background triggering for Glic.";
 inline constexpr char kGlicOptInDialogA11yFixName[] =
     "Glic Opt-in dialog accessibility fix";
 inline constexpr char kGlicOptInDialogA11yFixDescription[] =
@@ -1727,6 +1739,12 @@ inline constexpr char kGlicActorSkipScreenshotDescription[] =
     "If enabled, Glic actor will skip capturing and uploading screenshots when "
     "an actor turn is completed.";
 
+inline constexpr char kActorNotificationIntentRoutingName[] =
+    "Actor notification intent routing";
+inline constexpr char kActorNotificationIntentRoutingDescription[] =
+    "Enables routing Actor task notifications to Glic and restoring "
+    "conversations on Android.";
+
 inline constexpr char kActorObserveScreenshotDefaultName[] =
     "Actor observe screenshot default";
 inline constexpr char kActorObserveScreenshotDefaultDescription[] =
@@ -1748,6 +1766,12 @@ inline constexpr char kActorScriptToolSkipPageContentName[] =
     "Actor script tool skip page content";
 inline constexpr char kActorScriptToolSkipPageContentDescription[] =
     "If enabled, script tools will explicitly vote to skip page content.";
+
+inline constexpr char kActorStepProgressNotificationName[] =
+    "Actor step progress notification";
+inline constexpr char kActorStepProgressNotificationDescription[] =
+    "Enables streaming Actor task step progress worklog notification updates "
+    "on Android.";
 inline constexpr char kGlicCaptureRegionDescription[] =
     "Enables Glic to capture a region of the screen.";
 inline constexpr char kGlicCaptureRegionName[] = "Glic Capture Region";
@@ -3208,6 +3232,11 @@ inline constexpr char kLensEnableSendUrlsInComposeboxesName[] =
 inline constexpr char kLensEnableSendUrlsInComposeboxesDescription[] =
     "Enables sending urls in AIM composeboxes.";
 
+inline constexpr char kLensComposeboxIdentityDelegationName[] =
+    "Lens Composebox Identity Delegation";
+inline constexpr char kLensComposeboxIdentityDelegationDescription[] =
+    "Enables identity delegation in the Lens composebox.";
+
 inline constexpr char kLensOverlayName[] = "Lens overlay";
 inline constexpr char kLensOverlayDescription[] =
     "Enables Lens search via an overlay on any page.";
@@ -4139,6 +4168,13 @@ inline constexpr char kDeduplicateNativePaymentAppsDescription[] =
     "that are known to have 'internal' apps, such as Google Pay. This avoids "
     "multiple factories (internal and external) processing the same underlying "
     "app.";
+
+inline constexpr char kSPCLocaleValidationName[] =
+    "Secure Payment Confirmation Locale Validation";
+inline constexpr char kSPCLocaleValidationDescription[] =
+    "When enabled, Payment Request methods throw a NotSupportedError "
+    "DOMException when the SPC request contains at least one locale and none "
+    "of the supplied locales match against the locale used by the SPC dialog.";
 
 inline constexpr char kPdfXfaFormsName[] = "PDF XFA support";
 inline constexpr char kPdfXfaFormsDescription[] =
@@ -5318,12 +5354,6 @@ inline constexpr char kSemanticEmbedderAPIDescription[] =
     "The API may be subject to changes including the supported options. "
     "Please refer to the built-in AI documentation [1] for details.";
 
-inline constexpr char kClassifierAPIName[] = "Classifier API";
-inline constexpr char kClassifierAPIDescription[] =
-    "Enables the Classifier API, allowing you to classify a piece of text "
-    "with a built-in small expert model. "
-    "The API may be subject to changes including the supported options. "
-    "Please refer to the built-in AI documentation [1] for details.";
 
 inline constexpr char kSummarizerAPIWithPerformancePreferenceName[] =
     "Summarizer API Performance Preference";
@@ -6154,10 +6184,6 @@ inline constexpr char kEnableEscapeHandlingForSecondaryActivitiesName[] =
 inline constexpr char kEnableEscapeHandlingForSecondaryActivitiesDescription[] =
     "Enables handling escape events on secondary activities and native pages.";
 
-inline constexpr char kEnableForceDownloadToOneDriveName[] =
-    "Enable forced download to OneDrive";
-inline constexpr char kEnableForceDownloadToOneDriveDescription[] =
-    "Enables forced download to OneDrive for enterprise users.";
 
 inline constexpr char kEnableSwipeToSwitchPaneName[] =
     "Enable Swipe To Switch Pane";
@@ -7024,6 +7050,12 @@ inline constexpr char kNtpRealboxCr23ThemingName[] =
     "Chrome Refresh Themed Realbox";
 inline constexpr char kNtpRealboxCr23ThemingDescription[] =
     "CR23 theming will be applied in Realbox when enabled.";
+
+inline constexpr char kNtpRichImageSuggestionsName[] =
+    "NTP Rich Image Suggestions";
+inline constexpr char kNtpRichImageSuggestionsDescription[] =
+    "Enables richer image suggestions in the NTP Composebox for image "
+    "generation.";
 
 inline constexpr char kNtpScaledActionChipsName[] = "NTP Scaled Action Chips";
 inline constexpr char kNtpScaledActionChipsDescription[] =
@@ -8584,12 +8616,6 @@ inline constexpr char kUseOutOfProcessVideoDecodingName[] =
     "Use out-of-process video decoding (OOP-VD)";
 inline constexpr char kUseOutOfProcessVideoDecodingDescription[] =
     "Start utility processes to do hardware video decoding.";
-
-inline constexpr char kUseSharedImageInOOPVDName[] =
-    "Use Shared Image in OOP-VD";
-inline constexpr char kUseSharedImageInOOPVDDescription[] =
-    "Use shared image interface to transport video frame resources in out of "
-    "process video decoding.";
 
 inline constexpr char kWebBluetoothConfirmPairingSupportName[] =
     "Web Bluetooth confirm pairing support";

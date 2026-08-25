@@ -44,9 +44,9 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -533,7 +533,7 @@ class AvatarToolbarButtonInterfaceBaseBrowserTest {
   AccountInfo SigninWithImage(const std::u16string& email,
                               const std::u16string& name = u"account_name") {
     AccountInfo account_info = Signin(email, name);
-    AddSignedInImage(account_info.account_id);
+    AddSignedInImage(account_info.GetAccountId());
     return account_info;
   }
 
@@ -639,7 +639,7 @@ class AvatarToolbarButtonInterfaceBaseBrowserTest {
     // Using a default name, this function is not expected to be used if we care
     // about the name.
     AccountInfo account_info = EnableSync(email, u"account_name");
-    AddSignedInImage(account_info.account_id);
+    AddSignedInImage(account_info.GetAccountId());
     return account_info;
   }
 
@@ -834,7 +834,7 @@ class AvatarToolbarButtonInterfaceBaseBrowserTest {
         CHECK(!primary_account.IsEmpty());
         GetBrowser()->GetProfile()->GetPrefs()->SetString(
             prefs::kGoogleServicesLastSyncingGaiaId,
-            primary_account.gaia.ToString());
+            primary_account.GetGaiaId().ToString());
         break;
       }
       case signin::ProfileMenuAvatarButtonPromoInfo::Type::
@@ -1045,13 +1045,11 @@ IN_PROC_BROWSER_TEST_P(AvatarToolbarButtonBrowserTest, SigninBrowser) {
   // Create a portal signin browser which will not be the Incognito browser.
   Profile::OTRProfileID profile_id(
       Profile::OTRProfileID::CreateUniqueForCaptivePortal());
-  Browser* browser1 =
-      CreateBrowserWindow(BrowserWindowCreateParams(
-                              browser()->GetProfile()->GetOffTheRecordProfile(
-                                  profile_id,
-                                  /*create_if_needed=*/true),
-                              /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* browser1 = CreateBrowserWindow(
+      BrowserWindowCreateParams(browser()->GetProfile()->GetOffTheRecordProfile(
+                                    profile_id,
+                                    /*create_if_needed=*/true),
+                                /*from_user_gesture=*/true));
   AddBlankTabAndShow(browser1);
   AvatarToolbarButtonTestAccessor avatar_accessor1(browser1);
   // On ChromeOS, captive portal signin windows show a
@@ -1177,7 +1175,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(avatar_accessor.GetText(), std::u16string());
 
   // The greeting will only show when the image is loaded.
-  AddSignedInImage(account_info.account_id);
+  AddSignedInImage(account_info.GetAccountId());
   EXPECT_EQ(avatar_accessor.GetText(),
             l10n_util::GetStringFUTF16(IDS_AVATAR_BUTTON_GREETING, name));
 
@@ -1487,7 +1485,7 @@ IN_PROC_BROWSER_TEST_P(AvatarToolbarButtonBrowserTest, SignedInChangeIcon) {
       "png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAAByTg0kAAAAFElEQVR4nGNk+"
       "M/"
       "wn4GBgRGEAQAA1QMDAwYhywAAAABJRU5ErkJggg==";
-  AddAccountImage(account_info.account_id, updated_image, kUpdatedUrl);
+  AddAccountImage(account_info.GetAccountId(), updated_image, kUpdatedUrl);
 
   EXPECT_TRUE(WaitForIsSignedInImageUsed(true, updated_image, kUpdatedUrl));
 }
@@ -1517,7 +1515,7 @@ IN_PROC_BROWSER_TEST_P(AvatarToolbarButtonBrowserTest, TooltipText) {
   const std::u16string account_name(u"Account name");
   AccountInfo account_info = Signin(u"test@gmail.com", account_name);
 
-  AddSignedInImage(account_info.account_id);
+  AddSignedInImage(account_info.GetAccountId());
 
   EXPECT_TRUE(avatar_accessor.WaitForRenderedTooltipText(account_name));
 
@@ -2261,7 +2259,7 @@ TEST_WITH_SIGNED_IN_FROM_PRE(IN_PROC_BROWSER_TEST_P,
     ScopedDictPrefUpdate scoped_update(browser()->GetProfile()->GetPrefs(),
                                        "signin.accounts_metadata_dict");
     base::DictValue* account_dict =
-        scoped_update->EnsureDict(account.gaia.ToString());
+        scoped_update->EnsureDict(account.GetGaiaId().ToString());
     account_dict->Set("SyncPromoIdentityPillShownCount", 0);
   }
 

@@ -9,6 +9,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
@@ -84,6 +85,10 @@ class OmniboxEverywhereControllerTest : public ChromeViewsTestBase {
     set_native_widget_type(NativeWidgetType::kDesktop);
     ChromeViewsTestBase::SetUp();
     profile_ = std::make_unique<TestingProfile>();
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, true);
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+        omnibox_everywhere::prefs::kHotkeyEnabled, true);
     template_url_service_test_util_ =
         std::make_unique<TemplateURLServiceFactoryTestUtil>(profile_.get());
     template_url_service_test_util_->VerifyLoad();
@@ -134,7 +139,11 @@ TEST_F(OmniboxEverywhereGlobalFeaturesTest,
 
   GlobalFeatures* features = TestingBrowserProcess::GetGlobal()->GetFeatures();
   ASSERT_TRUE(features);
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   EXPECT_TRUE(features->omnibox_everywhere_controller());
+#else
+  EXPECT_FALSE(features->omnibox_everywhere_controller());
+#endif
 
   TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
 }
@@ -488,7 +497,6 @@ TEST_F(OmniboxEverywhereControllerTest, ControllerUpdatesCustomHotkey) {
   EXPECT_FALSE(fake_listener.IsRegistered(default_hotkey));
   EXPECT_TRUE(fake_listener.IsRegistered(new_hotkey));
 }
-
 TEST_F(OmniboxEverywhereControllerTest,
        ControllerUpdatesCustomHotkeyWhileSuspended) {
   TestingPrefServiceSimple* local_state =
@@ -676,4 +684,73 @@ TEST_F(OmniboxEverywhereControllerTest, PinToTaskbar) {
   base::test::TestFuture<bool> future;
   controller.OfferPinToTaskbar(future.GetCallback());
   EXPECT_FALSE(future.Get());
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       DisabledOmniboxEverywhereBlocksHotkeyRegistration) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+
+  FakeGlobalAcceleratorListener fake_listener;
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }),
+      &fake_listener);
+
+  ui::Accelerator default_hotkey(ui::VKEY_SPACE, ui::EF_ALT_DOWN);
+  EXPECT_TRUE(fake_listener.IsRegistered(default_hotkey));
+
+  local_state->SetBoolean(omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+                          false);
+  EXPECT_FALSE(fake_listener.IsRegistered(default_hotkey));
+
+  local_state->SetBoolean(omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+                          true);
+  EXPECT_TRUE(fake_listener.IsRegistered(default_hotkey));
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       DisabledOmniboxEverywhereBlocksInvocation) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  local_state->SetBoolean(omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+                          false);
+
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }));
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                      profile_.get(), GetContext());
+  EXPECT_FALSE(controller.IsVisible());
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kStatusTrayIcon,
+                      profile_.get(), GetContext());
+  EXPECT_FALSE(controller.IsVisible());
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kProfilePicker,
+                      profile_.get());
+  EXPECT_FALSE(controller.IsVisible());
+}
+
+TEST_F(OmniboxEverywhereControllerTest, DisabledHotkeyBlocksHotkeyInvocation) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  local_state->SetBoolean(omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+                          true);
+  local_state->SetBoolean(omnibox_everywhere::prefs::kHotkeyEnabled, false);
+
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }));
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                      profile_.get(), GetContext());
+  EXPECT_FALSE(controller.IsVisible());
 }

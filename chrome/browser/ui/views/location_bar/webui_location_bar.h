@@ -25,7 +25,6 @@
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/mouse_constants.h"
 
-class Browser;
 class BrowserWindowInterface;
 class OmniboxController;
 class OmniboxPopupView;
@@ -50,7 +49,8 @@ class WebUILocationBar : public LocationBar,
                          public WebUIReadOnlyOmnibox::UpdatePropagator,
                          public OmniboxPopupPresenterDelegate {
  public:
-  WebUILocationBar(Browser* browser, LocationBarView::Delegate* delegate);
+  WebUILocationBar(BrowserWindowInterface* browser,
+                   LocationBarView::Delegate* delegate);
   ~WebUILocationBar() override;
 
   void Init(WebUIToolbarControlDelegate* delegate);
@@ -79,6 +79,7 @@ class WebUILocationBar : public LocationBar,
   void FocusLocation(bool is_user_initiated,
                      bool clear_focus_if_failed) override;
   void FocusSearch() override;
+
   void UpdateFocusBehavior(bool toolbar_visible) override;
   void UpdateContentSettingsIcons() override;
   void SaveStateToContents(content::WebContents* contents) override;
@@ -125,7 +126,8 @@ class WebUILocationBar : public LocationBar,
 
   // Left hand side (LHS) chip events (called from WebUIToolbarWebView)
   void OnLhsChipMousePressed(
-      toolbar_ui_api::mojom::LhsChipIdentifier identifier);
+      toolbar_ui_api::mojom::LhsChipIdentifier identifier,
+      bool is_middle_click);
   void OnLhsChipClicked(toolbar_ui_api::mojom::LhsChipIdentifier identifier,
                         bool is_mouse_interaction);
   void OnLhsChipPointerEntered(
@@ -167,6 +169,8 @@ class WebUILocationBar : public LocationBar,
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold);
 
  private:
+  void OnMiddleClickPaste(base::TimeTicks event_timestamp, std::u16string text);
+
   friend class WebUILocationBarTest;
   friend class WebUIPermissionChipTest;
 

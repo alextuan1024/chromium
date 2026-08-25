@@ -144,6 +144,12 @@ class ContextHubService : public KeyedService,
   // `callback` on completion indicating whether the generation was successful.
   void GenerateFirstPartyAutoTodos(AutoTodosStore::OperationCallback callback);
 
+  // Returns the timestamp when First Party Auto Todos were last generated.
+  base::Time GetLastFirstPartyGenerationTime() const;
+
+  // Returns the timestamp when Third Party Auto Todos were last generated.
+  base::Time GetLastThirdPartyGenerationTime() const;
+
   // Generates tab-based todos and saves them in the AutoTodos store. Invokes
   // `callback` on completion indicating whether the generation was successful.
   void GenerateTabBasedTodos(
@@ -206,8 +212,11 @@ class ContextHubService : public KeyedService,
   std::optional<MemoryBankEntry> GetPendingMemoryBankEntry() const;
 
   // Commits the current pending memory bank entry to the memory bank with the
-  // provided tags, and clears the pending entry.
-  bool SavePendingMemoryBankEntry(const std::vector<std::string>& tags);
+  // provided tags, note, and collection, and clears the pending entry.
+  bool SavePendingMemoryBankEntry(
+      std::vector<std::string> tags = {},
+      std::optional<std::string> note = std::nullopt,
+      std::optional<std::string> collection = std::nullopt);
 
   // Memory bank wrappers that forward operations to the underlying storage
   // backend.
@@ -430,6 +439,10 @@ class ContextHubService : public KeyedService,
   // Timestamp of the most recent successful First Party Auto Todos generation
   // during the current browser session.
   base::Time last_first_party_generation_time_;
+
+  // Timestamp of the most recent successful Third Party Auto Todos generation
+  // during the current browser session.
+  base::Time last_third_party_generation_time_;
 
   // Periodic timer that generates and stores 1P AutoTodos during the session.
   base::RepeatingTimer first_party_auto_todos_timer_;

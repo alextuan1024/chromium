@@ -215,6 +215,9 @@ class ContextHubServiceTest : public testing::Test {
 };
 
 TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceSuccess) {
+  // No previous generation time.
+  EXPECT_TRUE(service_.GetLastFirstPartyGenerationTime().is_null());
+
   personal_context::proto::AutoTodosResponse expected_response;
   auto* todo = expected_response.add_todos();
   todo->set_title("Test Todo");
@@ -248,6 +251,7 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceSuccess) {
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastFirstPartyGenerationTime(), base::Time::Now());
 }
 
 TEST_F(ContextHubServiceTest,
@@ -432,6 +436,7 @@ TEST_F(ContextHubServiceTest,
   base::test::TestFuture<bool> future;
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastFirstPartyGenerationTime(), base::Time::Now());
 
   // Verify the cache contains both the updated 1p todo (including the
   // updated source references) and unchanged 3p todo.
@@ -504,6 +509,7 @@ TEST_F(ContextHubServiceTest,
   base::test::TestFuture<bool> future;
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastFirstPartyGenerationTime(), base::Time::Now());
 
   // Verify that the new todo is in the cache, along with the existing todo.
   base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
@@ -538,6 +544,7 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ServiceError) {
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
   EXPECT_FALSE(future.Get());
+  EXPECT_TRUE(service_.GetLastFirstPartyGenerationTime().is_null());
 }
 
 TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ParseError) {
@@ -564,6 +571,7 @@ TEST_F(ContextHubServiceTest, GenerateFirstPartyAutoTodos_ParseError) {
   service_.GenerateFirstPartyAutoTodos(future.GetCallback());
 
   EXPECT_FALSE(future.Get());
+  EXPECT_TRUE(service_.GetLastFirstPartyGenerationTime().is_null());
 }
 
 TEST_F(ContextHubServiceTest, IsGeneratingStateAccessors) {
@@ -613,6 +621,7 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_NoEligibleTabs) {
                                  future.GetCallback());
 
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastThirdPartyGenerationTime(), base::Time::Now());
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_VisibleTabNotEligible) {
@@ -732,6 +741,8 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_NullWebContents) {
 
 TEST_F(ContextHubServiceTest,
        GenerateTabBasedTodos_SuccessfulGenerationSavesTodo) {
+  EXPECT_TRUE(service_.GetLastThirdPartyGenerationTime().is_null());
+
   auto web_contents = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/item"), "Item Details");
 
@@ -773,6 +784,7 @@ TEST_F(ContextHubServiceTest,
   service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
                                  future.GetCallback());
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastThirdPartyGenerationTime(), base::Time::Now());
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_MissingPageContentSkipped) {
@@ -1164,6 +1176,90 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithTabs) {
                     testing::Ne(base::Time()), testing::Ne(base::Time())),
           FieldsAre(testing::Ne(""), "Group 2", ElementsAre(3, 4), _,
                     testing::Ne(base::Time()), testing::Ne(base::Time()))));
+}
+
+TEST_F(ContextHubServiceTest, GroupTabs_WithConfirmedGroupsPayload) {
+  tab_groups::SavedTabGroup confirmed_group(
+      u"Confirmed Group", tab_groups::TabGroupColorId::kBlue, {},
+      /*position=*/std::nullopt);
+  tab_groups::SavedTabGroupTab confirmed_tab1(
+      GURL("https://example1.com"), u"Tab 1", confirmed_group.saved_guid(),
+      /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/1);
+  tab_groups::SavedTabGroupTab confirmed_tab2(
+      GURL("https://example2.com"), u"Tab 2", confirmed_group.saved_guid(),
+      /*position=*/1, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/2);
+  confirmed_group.AddTabLocally(confirmed_tab1);
+  confirmed_group.AddTabLocally(confirmed_tab2);
+  fake_tab_group_sync_service_.AddGroup(confirmed_group);
+
+  std::vector<TabData> ungrouped_tabs = {
+      {3, "Tab 3", GURL("https://example3.com")},
+      {4, "Tab 4", GURL("https://example4.com")}};
+
+  EXPECT_CALL(
+      mock_remote_model_executor_,
+      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
+                   _, _))
+      .WillOnce([confirmed_guid =
+                     confirmed_group.saved_guid().AsLowercaseString()](
+                    optimization_guide::ModelBasedCapabilityKey feature,
+                    const google::protobuf::MessageLite& request_metadata,
+                    const optimization_guide::ModelExecutionOptions& options,
+                    optimization_guide::
+                        OptimizationGuideModelExecutionResultCallback
+                            callback) {
+        const auto& request =
+            static_cast<const optimization_guide::proto::ContextHubRequest&>(
+                request_metadata);
+        EXPECT_EQ(request.user_command(), "regroup");
+        EXPECT_EQ(request.entry_items_size(), 4);
+        ASSERT_EQ(request.pre_existing_tab_groups_size(), 1);
+        EXPECT_EQ(request.pre_existing_tab_groups(0).label(),
+                  "Confirmed Group");
+        EXPECT_EQ(request.pre_existing_tab_groups(0).group_id(),
+                  confirmed_guid);
+        ASSERT_EQ(request.pre_existing_tab_groups(0).tab_ids_size(), 2);
+        EXPECT_EQ(request.pre_existing_tab_groups(0).tab_ids(0), 1);
+        EXPECT_EQ(request.pre_existing_tab_groups(0).tab_ids(1), 2);
+
+        optimization_guide::proto::ContextHubResponse response;
+        optimization_guide::proto::GroupResponse* group_response =
+            response.mutable_group_response();
+        optimization_guide::proto::TabGroupMinimal* group1 =
+            group_response->add_minimal_tab_groups();
+        group1->set_label("Regrouped");
+        group1->add_tab_ids(1);
+        group1->add_tab_ids(3);
+
+        optimization_guide::proto::Any any_response;
+        any_response.set_type_url(
+            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
+        response.SerializeToString(any_response.mutable_value());
+
+        std::move(callback).Run(
+            optimization_guide::OptimizationGuideModelExecutionResult(
+                base::ok(std::move(any_response)), nullptr),
+            nullptr);
+      });
+
+  base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
+                         std::string>
+      future;
+  service_.GroupTabs(
+      std::move(ungrouped_tabs), "regroup",
+      future.GetCallback<std::vector<TabGroupEntry>, std::vector<TabData>,
+                         std::string>());
+  auto [groups, ungrouped, text_response] = future.Take();
+
+  ASSERT_EQ(groups.size(), 1u);
+  EXPECT_EQ(groups[0].label, "Regrouped");
+  ASSERT_EQ(groups[0].tabs.size(), 2u);
+  EXPECT_EQ(groups[0].tabs[0].id, 1);
+  EXPECT_EQ(groups[0].tabs[1].id, 3);
+
+  ASSERT_EQ(ungrouped.size(), 2u);
+  EXPECT_EQ(ungrouped[0].id, 4);
+  EXPECT_EQ(ungrouped[1].id, 2);
 }
 
 TEST_F(ContextHubServiceTest, GroupTabs_MESError) {
@@ -2106,8 +2202,9 @@ TEST_F(ContextHubServiceTest, PendingMemoryBankEntryLifecycle) {
   EXPECT_EQ(fetched->tab_title, "Pending Title");
   EXPECT_EQ(fetched->selected_text, "Pending selected text");
 
-  // Save pending entry with tags.
-  bool saved = service.SavePendingMemoryBankEntry({"tag1", "tag2"});
+  // Save pending entry with tags, note, and collection.
+  bool saved = service.SavePendingMemoryBankEntry(
+      {"tag1", "tag2"}, "Pending Note", "Pending Collection");
   EXPECT_TRUE(saved);
 
   // After saving, the pending entry should no longer exist.
@@ -2122,6 +2219,39 @@ TEST_F(ContextHubServiceTest, PendingMemoryBankEntryLifecycle) {
   EXPECT_EQ(entries[0].tab_title, "Pending Title");
   EXPECT_EQ(entries[0].selected_text, "Pending selected text");
   EXPECT_THAT(entries[0].tags, UnorderedElementsAre("tag1", "tag2"));
+  EXPECT_EQ(entries[0].note, "Pending Note");
+  EXPECT_EQ(entries[0].collection, "Pending Collection");
+}
+
+TEST_F(ContextHubServiceTest,
+       PendingMemoryBankEntryLifecycleDefaultParameters) {
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service_, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      std::make_unique<InMemoryMemoryBank>(),
+      std::make_unique<InMemoryTabGroupStore>(),
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+
+  MemoryBankEntry pending(MemoryBankType::kTextSelection,
+                          GURL("https://example.com/pending"), "Pending Title",
+                          "Pending selected text");
+  service.SetPendingMemoryBankEntry(std::move(pending));
+
+  // Save pending entry using default parameters (no tags, note, or collection).
+  bool saved = service.SavePendingMemoryBankEntry();
+  EXPECT_TRUE(saved);
+  EXPECT_FALSE(service.GetPendingMemoryBankEntry().has_value());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> entries_future;
+  service.GetAllEntries(entries_future.GetCallback());
+  auto entries = entries_future.Take();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].url, GURL("https://example.com/pending"));
+  EXPECT_TRUE(entries[0].tags.empty());
+  EXPECT_FALSE(entries[0].note.has_value());
+  EXPECT_FALSE(entries[0].collection.has_value());
 }
 
 }  // namespace

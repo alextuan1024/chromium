@@ -38,6 +38,7 @@
 #include "components/favicon_base/favicon_url_parser.h"
 #include "components/lens/lens_features.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
+#include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/omnibox/common/composebox_features.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search/ntp_features.h"
@@ -182,18 +183,27 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddString("profileAvatarUrl", profile_avatar_url);
   source->AddBoolean("omniboxEverywhereProfilePickerEnabled",
                      omnibox::kOmniboxEverywhereProfilePickerParam.Get());
-  source->AddLocalizedString("profileButtonLabel",
-                             IDS_OVERFLOW_MENU_ITEM_TEXT_PROFILE);
-  source->AddLocalizedString("searchBoxHintAskOrType",
-                             IDS_NTP_SEARCH_BOX_PLACEHOLDER_ASK_OR_TYPE);
-  source->AddLocalizedString("shareScreenshotLabel",
-                             IDS_OMNIBOX_EVERYWHERE_SHARE_SCREENSHOT);
-  source->AddLocalizedString("screenshotWindowLabel",
-                             IDS_OMNIBOX_EVERYWHERE_WINDOW);
-  source->AddLocalizedString("screenshotEntireScreenLabel",
-                             IDS_OMNIBOX_EVERYWHERE_ENTIRE_SCREEN);
-  source->AddLocalizedString("screenshotRegionLabel",
-                             IDS_OMNIBOX_EVERYWHERE_REGION);
+  static constexpr webui::LocalizedString kStrings[] = {
+      {"loomniboxFreAcceptHotkey", IDS_LOOMNIBOX_FRE_ACCEPT_HOTKEY},
+      {"loomniboxFreCloseButtonAria", IDS_LOOMNIBOX_FRE_CLOSE_BUTTON_ARIA},
+      {"loomniboxFreEditOwn", IDS_LOOMNIBOX_FRE_KEYBOARD_OPTION_EDIT_OWN},
+      {"loomniboxFreKeyboardBadgeOption",
+       IDS_LOOMNIBOX_FRE_KEYBOARD_BADGE_OPTION},
+      {"loomniboxFreKeyboardBadgeSpace",
+       IDS_LOOMNIBOX_FRE_KEYBOARD_BADGE_SPACE},
+      {"loomniboxFreKeyboardPrimary", IDS_LOOMNIBOX_FRE_KEYBOARD_PRIMARY},
+      {"loomniboxFreLensPrimary", IDS_LOOMNIBOX_FRE_LENS_PRIMARY},
+      {"loomniboxFreLensSecondary", IDS_LOOMNIBOX_FRE_LENS_SECONDARY},
+      {"loomniboxFreOr", IDS_LOOMNIBOX_FRE_OR},
+      {"loomniboxFreTitle", IDS_LOOMNIBOX_FRE_TITLE},
+      {"profileButtonLabel", IDS_OVERFLOW_MENU_ITEM_TEXT_PROFILE},
+      {"screenshotEntireScreenLabel", IDS_OMNIBOX_EVERYWHERE_ENTIRE_SCREEN},
+      {"screenshotRegionLabel", IDS_OMNIBOX_EVERYWHERE_REGION},
+      {"screenshotWindowLabel", IDS_OMNIBOX_EVERYWHERE_WINDOW},
+      {"searchBoxHintAskOrType", IDS_NTP_SEARCH_BOX_PLACEHOLDER_ASK_OR_TYPE},
+      {"shareScreenshotLabel", IDS_OMNIBOX_EVERYWHERE_SHARE_SCREENSHOT},
+  };
+  source->AddLocalizedStrings(kStrings);
 
   // Sanitized image and favicon source initialization
   content::URLDataSource::Add(profile_,
@@ -258,7 +268,10 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
 
   AddMostVisitedSourceStrings(source);
 
-  source->AddBoolean("searchboxShowComposeEntrypoint", IsAimEligible(profile_));
+  source->AddBoolean(
+      "searchboxShowComposeEntrypoint",
+      IsAimEligible(profile_) &&
+          profile_->GetPrefs()->GetBoolean(omnibox::kShowAiModeOmniboxButton));
   source->AddBoolean("isFuseboxEnabled", IsFuseboxEligible(profile_));
   source->AddBoolean("ntpRealboxDynamicAiModeButton",
                      IsFuseboxEligible(profile_) &&

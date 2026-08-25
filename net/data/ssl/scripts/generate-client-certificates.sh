@@ -24,6 +24,7 @@
 #   - L (end-entity, ML-DSA-44) -> E -> C (self-signed root)
 #   - M (end-entity, ML-DSA-65) -> E -> C (self-signed root)
 #   - N (end-entity, ML-DSA-87) -> E -> C (self-signed root)
+#   - O (end-entity, X25519) -> E -> C (self-signed root)
 #
 # In which the certificates all have distinct keypairs. The client
 # certificates share the same root, but are issued by different
@@ -38,109 +39,51 @@ try () {
 try rm -rf out
 try mkdir out
 
-echo Create the serial number files and indices.
-serial=2000
-for i in B C E
-do
-  try /bin/sh -c "echo $serial > out/$i-serial"
-  serial=$(expr $serial + 1)
-  touch out/$i-index.txt
-  touch out/$i-index.txt.attr
-done
+keygen() {
+  local out_path=$1; shift
+  local final_path=$1; shift
+  if [ -f "$final_path" ]; then
+    echo "Reusing $final_path to generate $out_path"
+    cp "$final_path" "$out_path"
+  else
+    # OpenSSL defaults to the less common (and technically unsound) "both"
+    # format for ML-DSA. Override the bad defaults, needed to interoperate with
+    # other libraries like BoringSSL.
+    try openssl genpkey  -provparam ml-dsa.output_formats=seed-only \
+      -outform pem -out "$out_path" "$@"
+  fi
+}
 
 echo Generate the keys.
-for i in A B C D E F
+keygen out/A.key ../certificates/client_1.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/B.key ../certificates/client_1_ca.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/C.key ../certificates/client_root_ca.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/D.key ../certificates/client_2.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/E.key ../certificates/client_2_ca.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/F.key ../certificates/client_3.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+keygen out/G.key ../certificates/client_p256.key \
+  -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1
+keygen out/H.key ../certificates/client_p384.key \
+  -algorithm EC -pkeyopt ec_paramgen_curve:secp384r1
+keygen out/I.key ../certificates/client_p521.key \
+  -algorithm EC -pkeyopt ec_paramgen_curve:secp521r1
+keygen out/J.key ../certificates/client_rsa1024.key \
+  -algorithm RSA -pkeyopt rsa_keygen_bits:1024
+keygen out/K.key ../certificates/client_ed25519.key -algorithm ed25519
+keygen out/L.key ../certificates/client_mldsa44.key -algorithm ML-DSA-44
+keygen out/M.key ../certificates/client_mldsa65.key -algorithm ML-DSA-65
+keygen out/N.key ../certificates/client_mldsa87.key -algorithm ML-DSA-87
+keygen out/O.key ../certificates/client_x25519.key -algorithm x25519
+
+echo "Store the keys also in PKCS#8 format."
+for id in A D F G H I J K L M N O
 do
-  try openssl genrsa -out out/$i.key 2048
-done
-
-try openssl ecparam -name prime256v1 -genkey -noout -out out/G.key
-try openssl ecparam -name secp384r1 -genkey -noout -out out/H.key
-try openssl ecparam -name secp521r1 -genkey -noout -out out/I.key
-try openssl genrsa -out out/J.key 1024
-try openssl genpkey -algorithm ed25519 -outform pem -out out/K.key
-# OpenSSL defaults to the less common (and technically unsound) "both" format
-# for ML-DSA. Override the bad defaults, needed to interoperate with other
-# libraries like BoringSSL.
-try openssl genpkey -provparam ml-dsa.output_formats=seed-only \
-  -algorithm ML-DSA-44 -outform pem -out out/L.key
-try openssl genpkey -provparam ml-dsa.output_formats=seed-only \
-  -algorithm ML-DSA-65 -outform pem -out out/M.key
-try openssl genpkey -provparam ml-dsa.output_formats=seed-only \
-  -algorithm ML-DSA-87 -outform pem -out out/N.key
-
-echo Generate the C CSR
-COMMON_NAME="C Root CA" \
-  CA_DIR=out \
-  ID=C \
-  try openssl req \
-    -new \
-    -key out/C.key \
-    -out out/C.csr \
-    -config client-certs.cnf
-
-echo C signs itself.
-COMMON_NAME="C Root CA" \
-  CA_DIR=out \
-  ID=C \
-  try openssl x509 \
-    -req -days 3650 \
-    -in out/C.csr \
-    -extensions ca_cert \
-    -extfile client-certs.cnf \
-    -signkey out/C.key \
-    -out out/C.pem
-
-echo Generate the intermediates
-COMMON_NAME="B CA" \
-  CA_DIR=out \
-  ID=B \
-  try openssl req \
-    -new \
-    -key out/B.key \
-    -out out/B.csr \
-    -config client-certs.cnf
-
-COMMON_NAME="C CA" \
-  CA_DIR=out \
-  ID=C \
-  try openssl ca \
-    -batch \
-    -extensions ca_cert \
-    -in out/B.csr \
-    -out out/B.pem \
-    -config client-certs.cnf
-
-COMMON_NAME="E CA" \
-  CA_DIR=out \
-  ID=E \
-  try openssl req \
-    -new \
-    -key out/E.key \
-    -out out/E.csr \
-    -config client-certs.cnf
-
-COMMON_NAME="C CA" \
-  CA_DIR=out \
-  ID=C \
-  try openssl ca \
-    -batch \
-    -extensions ca_cert \
-    -in out/E.csr \
-    -out out/E.pem \
-    -config client-certs.cnf
-
-echo Generate the leaf certs
-for id in A D F G H I J K L M N
-do
-  COMMON_NAME="Client Cert $id" \
-  ID=$id \
-  try openssl req \
-    -new \
-    -key out/$id.key \
-    -out out/$id.csr \
-    -config client-certs.cnf
-  # Store the private key also in PKCS#8 format.
   try openssl pkcs8 \
     -provparam ml-dsa.output_formats=seed-only \
     -topk8 -nocrypt \
@@ -149,57 +92,98 @@ do
     -out out/$id.pk8
 done
 
-echo B signs A
+validity="-not_before 20200101000000Z -not_after 20401231235959Z"
+serial=8192
+
+echo C signs itself
+COMMON_NAME="C Root CA" \
+  CA_DIR=out \
+  try openssl req \
+    -new -x509 -text \
+    $validity -set_serial $((serial++)) \
+    -key out/C.key \
+    -out out/C.pem \
+    -extensions ca_cert \
+    -config client-certs.cnf
+
+echo Generate the intermediates
 COMMON_NAME="B CA" \
   CA_DIR=out \
-  ID=B \
-  try openssl ca \
-    -batch \
-    -extensions user_cert \
-    -in out/A.csr \
+  try openssl req \
+    -new -text \
+    -CA out/C.pem -CAkey out/C.key \
+    $validity -set_serial $((serial++)) \
+    -key out/B.key \
+    -out out/B.pem \
+    -extensions ca_cert \
+    -config client-certs.cnf
+
+COMMON_NAME="E CA" \
+  CA_DIR=out \
+  try openssl req \
+    -new -text \
+    -CA out/C.pem -CAkey out/C.key \
+    $validity -set_serial $((serial++)) \
+    -key out/E.key \
+    -out out/E.pem \
+    -extensions ca_cert \
+    -config client-certs.cnf
+
+echo B signs A
+COMMON_NAME="Client Cert A" \
+  CA_DIR=out \
+  try openssl req \
+    -new -text \
+    -CA out/B.pem -CAkey out/B.key \
+    $validity -set_serial $((serial++)) \
+    -key out/A.key \
     -out out/A.pem \
+    -extensions user_cert \
     -config client-certs.cnf
 
 echo E signs D
-COMMON_NAME="E CA" \
+COMMON_NAME="Client Cert D" \
   CA_DIR=out \
-  ID=E \
-  try openssl ca \
-    -batch \
-    -extensions user_cert \
-    -in out/D.csr \
+  try openssl req \
+    -new -text \
+    -CA out/E.pem -CAkey out/E.key \
+    $validity -set_serial $((serial++)) \
+    -key out/D.key \
     -out out/D.pem \
+    -extensions user_cert \
     -config client-certs.cnf
 
 echo E signs F
-COMMON_NAME="E CA" \
+COMMON_NAME="Client Cert F" \
   CA_DIR=out \
-  ID=E \
-  try openssl ca \
-    -batch \
-    -extensions san_user_cert \
-    -in out/F.csr \
+  try openssl req \
+    -new -text \
+    -CA out/E.pem -CAkey out/E.key \
+    $validity -set_serial $((serial++)) \
+    -key out/F.key \
     -out out/F.pem \
+    -extensions san_user_cert \
     -config client-certs.cnf
 
-for id in G H I J K L M N
+for id in G H I J K L M N O
 do
   echo E signs $id
-  COMMON_NAME="E CA" \
+  COMMON_NAME="Client Cert $id" \
     CA_DIR=out \
-    ID=E \
-    try openssl ca \
-      -batch \
-      -extensions user_cert \
-      -in out/$id.csr \
+    try openssl req \
+      -new -text \
+      -CA out/E.pem -CAkey out/E.key \
+      $validity -set_serial $((serial++)) \
+      -key out/$id.key \
       -out out/$id.pem \
+      -extensions user_cert \
       -config client-certs.cnf
 done
 
 echo Package the client certs and private keys into PKCS12 files
 # This is done for easily importing all of the certs needed for clients.
 try /bin/sh -c "cat out/A.pem out/A.key out/B.pem out/C.pem > out/A-chain.pem"
-for id in D F G H I J K L M N
+for id in D F G H I J K L M N O
 do
   try /bin/sh -c \
     "cat out/$id.pem out/$id.key out/E.pem out/C.pem > out/$id-chain.pem"
@@ -275,6 +259,12 @@ try openssl pkcs12 \
   -passout pass:chrome
 
 try openssl pkcs12 \
+  -in out/O-chain.pem \
+  -out out/client_x25519.p12 \
+  -export \
+  -passout pass:chrome
+
+try openssl pkcs12 \
   -inkey out/A.key \
   -in out/A.pem \
   -out out/client_1_u16_password.p12 \
@@ -286,11 +276,13 @@ try cp out/A.pem ../certificates/client_1.pem
 try cp out/A.key ../certificates/client_1.key
 try cp out/A.pk8 ../certificates/client_1.pk8
 try cp out/B.pem ../certificates/client_1_ca.pem
+try cp out/B.key ../certificates/client_1_ca.key
 
 try cp out/D.pem ../certificates/client_2.pem
 try cp out/D.key ../certificates/client_2.key
 try cp out/D.pk8 ../certificates/client_2.pk8
 try cp out/E.pem ../certificates/client_2_ca.pem
+try cp out/E.key ../certificates/client_2_ca.key
 
 try cp out/F.pem ../certificates/client_3.pem
 try cp out/F.key ../certificates/client_3.key
@@ -337,9 +329,15 @@ try cp out/N.key ../certificates/client_mldsa87.key
 try cp out/N.pk8 ../certificates/client_mldsa87.pk8
 try cp out/E.pem ../certificates/client_mldsa87_ca.pem
 
-for name in 1 1_u16_password 2 3 p256 p384 p521 rsa1024 ed25519 mldsa44 mldsa65 mldsa87;
+try cp out/O.pem ../certificates/client_x25519.pem
+try cp out/O.key ../certificates/client_x25519.key
+try cp out/O.pk8 ../certificates/client_x25519.pk8
+try cp out/E.pem ../certificates/client_x25519_ca.pem
+
+for name in 1 1_u16_password 2 3 p256 p384 p521 rsa1024 ed25519 mldsa44 mldsa65 mldsa87 x25519;
 do
   try cp out/client_$name.p12 ../certificates/client_$name.p12
 done
 
 try cp out/C.pem ../certificates/client_root_ca.pem
+try cp out/C.key ../certificates/client_root_ca.key

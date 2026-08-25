@@ -10,7 +10,9 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
@@ -19,6 +21,11 @@
 #include "components/prefs/pref_member.h"
 #include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener.h"
 #include "ui/gfx/native_ui_types.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/threading/sequence_bound.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
+#endif
 
 class Profile;
 class ScopedKeepAlive;
@@ -142,10 +149,17 @@ class OmniboxEverywhereController
   // Persists or clears the target profile path in Local State preferences.
   void PersistTargetProfilePath(const base::FilePath& path);
 
+  // Returns true if the Omnibox Everywhere master pref is enabled.
+  bool IsEnabled() const;
+
+  // Returns true if the Omnibox Everywhere global hotkey pref is enabled.
+  bool IsHotkeyEnabled() const;
+
   // Registers or unregisters the global hotkey accelerator according to feature
   // flag and preference settings.
   void UpdateHotkeyRegistration();
 
+  BooleanPrefMember enabled_pref_member_;
   BooleanPrefMember hotkey_pref_member_;
   StringPrefMember hotkey_string_pref_member_;
   std::unique_ptr<OmniboxEverywhereUIManager> ui_manager_;
@@ -157,6 +171,11 @@ class OmniboxEverywhereController
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
   raw_ptr<ui::GlobalAcceleratorListener> listener_ = nullptr;
+
+#if BUILDFLAG(IS_WIN)
+  base::SequenceBound<OmniboxEverywhereShortcutHelperWin> shortcut_helper_;
+#endif
+
   base::WeakPtrFactory<OmniboxEverywhereController> weak_factory_{this};
 };
 

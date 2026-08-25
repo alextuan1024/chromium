@@ -6,11 +6,15 @@
 
 #include <utility>
 
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
+#include "chrome/browser/ui/autofill/payments/wallet_reminder_notice_page_action_controller.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace autofill {
@@ -25,8 +29,13 @@ WalletReminderNoticeBubbleController::WalletReminderNoticeBubbleController(
       scoped_unowned_user_data_(tab_interface.GetUnownedUserDataHost(), *this) {
 }
 
-WalletReminderNoticeBubbleController::~WalletReminderNoticeBubbleController() =
-    default;
+WalletReminderNoticeBubbleController::~WalletReminderNoticeBubbleController() {
+  if (IsShowingBubble()) {
+    if (actions::ActionItem* action_item = GetActionItem()) {
+      action_item->SetIsShowingBubble(false);
+    }
+  }
+}
 
 // static
 WalletReminderNoticeBubbleController*
@@ -73,6 +82,20 @@ WalletReminderNoticeBubbleController::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
+void WalletReminderNoticeBubbleController::OnAcceptButton() {
+  if (WalletReminderNoticePageActionController* page_action_controller =
+          WalletReminderNoticePageActionController::From(*tab_interface_)) {
+    page_action_controller->Hide();
+  }
+}
+
+void WalletReminderNoticeBubbleController::OnBubbleClosed() {
+  if (actions::ActionItem* action_item = GetActionItem()) {
+    action_item->SetIsShowingBubble(false);
+  }
+  ResetBubbleViewAndInformBubbleManager();
+}
+
 BubbleType WalletReminderNoticeBubbleController::GetBubbleType() const {
   return BubbleType::kWalletReminderNotice;
 }
@@ -96,7 +119,29 @@ void WalletReminderNoticeBubbleController::DoShowBubble() {
           autofill_bubble_handler->ShowWalletReminderNoticeBubble(
               web_contents(), this, is_reshow_)) {
     SetBubbleView(*bubble_view);
+
+    if (actions::ActionItem* action_item = GetActionItem()) {
+      action_item->SetIsShowingBubble(true);
+    }
   }
+}
+
+actions::ActionItem* WalletReminderNoticeBubbleController::GetActionItem() {
+  BrowserWindowInterface* browser_window =
+      tab_interface_->GetBrowserWindowInterface();
+  if (!browser_window) {
+    return nullptr;
+  }
+  BrowserActions* browser_actions = BrowserActions::From(browser_window);
+  if (!browser_actions) {
+    return nullptr;
+  }
+  actions::ActionItem* root_action_item = browser_actions->root_action_item();
+  if (!root_action_item) {
+    return nullptr;
+  }
+  return actions::ActionManager::Get().FindAction(kActionWalletReminderNotice,
+                                                  root_action_item);
 }
 
 }  // namespace autofill

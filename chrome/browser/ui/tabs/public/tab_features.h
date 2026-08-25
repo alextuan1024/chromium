@@ -37,6 +37,7 @@
 class AskBeforeHttpDialogController;
 class BookmarkBarPreloadPipelineManager;
 class BookmarkPageActionController;
+class BrowserSyncedTabDelegate;
 class CollaborationMessagingPageActionController;
 class CommitLimitOOMRecoveryTracker;
 class ConnectionHelpTabHelper;
@@ -44,6 +45,8 @@ class CookieControlsPageActionController;
 class FileSystemAccessPageActionController;
 class FocusTabAfterNavigationHelper;
 class FramebustBlockTabHelper;
+
+class FormInteractionTabHelper;
 class FromGWSNavigationAndKeepAliveRequestObserver;
 class HttpAuthCacheStatus;
 class IntentPickerTabHelper;
@@ -442,6 +445,9 @@ class TabFeatures {
   std::unique_ptr<sync_sessions::SyncSessionsRouterTabHelper>
       sync_sessions_router_;
 
+  // Provides this tab's session identity to sync.
+  std::unique_ptr<BrowserSyncedTabDelegate> browser_synced_tab_delegate_;
+
   // Responsible for keeping a tab within a tab group in sync with its remote
   // tab counterpart from sync.
   std::unique_ptr<tab_groups::SavedTabGroupWebContentsListener>
@@ -561,6 +567,9 @@ class TabFeatures {
 
   // Redirects cert-error loads of the help center to bundled help content.
   std::unique_ptr<ConnectionHelpTabHelper> connection_help_tab_helper_;
+
+  // Indicates if the tab contains forms that have been interacted with.
+  std::unique_ptr<FormInteractionTabHelper> form_interaction_tab_helper_;
 
   std::unique_ptr<FromGWSNavigationAndKeepAliveRequestObserver>
       from_gws_navigation_and_keep_alive_request_observer_;

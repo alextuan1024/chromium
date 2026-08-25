@@ -34,6 +34,7 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   distillationTypeScreen2x: number = 0;
   distillationTypeReadability: number = 1;
   lineFocusEnabled: boolean = false;
+  lineFocusOn: boolean = false;
   lineFocusOff: number = 50;
   lineFocusSmallStaticWindow: number = 51;
   lineFocusMediumStaticWindow: number = 52;
@@ -57,6 +58,7 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   experimentalPlaybackUiEnabled: boolean = false;
   imagesEnabled: boolean = true;
   linksEnabled: boolean = true;
+  readAnythingImprovedUiEnabled: boolean = false;
   fetchedImages: number[] = [];
 
   constructor() {
@@ -111,8 +113,15 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
       'isReadAnythingTranslateEntryPointEnabled',
       'onTranslationRequested',
       'togglePresentation',
+      'togglePinState',
+      'sendPinStateRequest',
+      'sendGetPresentationStateRequest',
+      'shouldShowUi',
+      'getLastNonDisabledLineFocus',
+      'isLineFocusOn',
       'close',
       'isImmersiveEnabled',
+      'isReadAnythingImprovedUiEnabled',
       'isImagesEnabled',
       'isLinksEnabled',
       'getActivePresentationState',
@@ -430,5 +439,37 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   onImagesEnabledToggled(): void {
     this.methodCalled('onImagesEnabledToggled');
     this.imagesEnabled = !this.imagesEnabled;
+  }
+
+  isReadAnythingImprovedUiEnabled(): boolean {
+    this.methodCalled('isReadAnythingImprovedUiEnabled');
+    return this.readAnythingImprovedUiEnabled;
+  }
+
+  togglePinState(): void {
+    this.methodCalled('togglePinState');
+  }
+
+  sendPinStateRequest(): void {
+    this.methodCalled('sendPinStateRequest');
+  }
+
+  sendGetPresentationStateRequest(): void {
+    this.methodCalled('sendGetPresentationStateRequest');
+  }
+
+  shouldShowUi(): boolean {
+    this.methodCalled('shouldShowUi');
+    return true;
+  }
+
+  getLastNonDisabledLineFocus(): number {
+    this.methodCalled('getLastNonDisabledLineFocus');
+    return this.lineFocusLastNonDisabledValue;
+  }
+
+  isLineFocusOn(): boolean {
+    this.methodCalled('isLineFocusOn');
+    return this.lineFocusOn;
   }
 }

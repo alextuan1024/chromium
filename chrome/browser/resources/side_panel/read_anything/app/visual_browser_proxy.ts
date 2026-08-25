@@ -11,11 +11,13 @@ export interface VisualBrowserProxy {
   getInHiddenPresentationState(): number;
   getActivePresentationState(): number;
   isImmersiveEnabled(): boolean;
+  isReadAnythingImprovedUiEnabled(): boolean;
   isReadAnythingReadAloudExperimentalPlaybackUiEnabled(): boolean;
   isReadAnythingTranslateEntryPointEnabled(): boolean;
   isImagesEnabled(): boolean;
   isLinksEnabled(): boolean;
   isPdf(): boolean;
+  shouldShowUi(): boolean;
 
   getMaxLineWidth(): number;
 
@@ -54,6 +56,8 @@ export interface VisualBrowserProxy {
   requestImageData(nodeId: number): void;
 
   isLineFocusEnabled(): boolean;
+  isLineFocusOn(): boolean;
+  getLastNonDisabledLineFocus(): number;
   getLineFocusOff(): number;
   getLineFocusSmallStaticWindow(): number;
   getLineFocusMediumStaticWindow(): number;
@@ -76,6 +80,9 @@ export interface VisualBrowserProxy {
   onTranslationRequested(): void;
 
   togglePresentation(): void;
+  togglePinState(): void;
+  sendPinStateRequest(): void;
+  sendGetPresentationStateRequest(): void;
   close(): void;
 }
 
@@ -323,6 +330,34 @@ export class VisualBrowserProxyImpl implements VisualBrowserProxy {
 
   onImagesEnabledToggled(): void {
     chrome.readingMode.onImagesEnabledToggled();
+  }
+
+  isReadAnythingImprovedUiEnabled(): boolean {
+    return chrome.readingMode.isReadAnythingImprovedUiEnabled;
+  }
+
+  togglePinState(): void {
+    chrome.readingMode.togglePinState();
+  }
+
+  sendPinStateRequest(): void {
+    chrome.readingMode.sendPinStateRequest();
+  }
+
+  sendGetPresentationStateRequest(): void {
+    chrome.readingMode.sendGetPresentationStateRequest();
+  }
+
+  shouldShowUi(): boolean {
+    return chrome.readingMode.shouldShowUi();
+  }
+
+  getLastNonDisabledLineFocus(): number {
+    return chrome.readingMode.lastNonDisabledLineFocus;
+  }
+
+  isLineFocusOn(): boolean {
+    return chrome.readingMode.isLineFocusOn;
   }
 
   static getInstance(): VisualBrowserProxy {

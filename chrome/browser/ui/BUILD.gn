@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/config/buildflags_paint_preview.gni")
+import("//build/config/chrome_build.gni")
 import("//build/config/compiler/compiler.gni")
 import("//build/config/features.gni")
 import("//build/config/ozone.gni")
@@ -1412,7 +1413,6 @@ static_library("ui") {
       "//chrome/browser/ui/web_applications:launch_utils",
       "//chrome/browser/ui/webui/access_code_cast",
       "//chrome/browser/ui/webui/access_code_cast:impl",
-      "//chrome/browser/ui/webui/ai_overlay_dialog",
       "//chrome/browser/ui/webui/bookmarks",
       "//chrome/browser/ui/webui/data_sharing:impl",
       "//chrome/browser/ui/webui/drive_picker_host",
@@ -2214,6 +2214,10 @@ static_library("ui") {
     ]
   }
 
+  if (!is_android || is_desktop_android) {
+    public_deps += [ "//chrome/browser/ui/webui/ai_overlay_dialog" ]
+  }
+
   if (!is_android) {
     deps += [ "//chrome/browser/ui/webui/downloads" ]
   }
@@ -2515,25 +2519,10 @@ static_library("ui") {
       "views/autofill/payments/bnpl_issuer_linked_pill.h",
       "views/autofill/payments/bnpl_issuer_view.cc",
       "views/autofill/payments/bnpl_issuer_view.h",
-      "views/autofill/payments/card_unmask_authentication_selection_dialog_view.cc",
-      "views/autofill/payments/card_unmask_authentication_selection_dialog_view.h",
-      "views/autofill/payments/card_unmask_otp_input_dialog_views.cc",
-      "views/autofill/payments/card_unmask_otp_input_dialog_views.h",
-      "views/autofill/payments/card_unmask_prompt_views.cc",
-      "views/autofill/payments/card_unmask_prompt_views.h",
-      "views/autofill/payments/filled_card_information_bubble_views.cc",
-      "views/autofill/payments/filled_card_information_bubble_views.h",
-      "views/autofill/payments/offer_notification_bubble_views.cc",
       "views/autofill/payments/omnibox_autofill_bubble_view.cc",
       "views/autofill/payments/omnibox_autofill_bubble_view.h",
       "views/autofill/payments/omnibox_autofill_suggestion_view.cc",
       "views/autofill/payments/omnibox_autofill_suggestion_view.h",
-      "views/autofill/payments/payments_churned_users_bubble_view.cc",
-      "views/autofill/payments/payments_churned_users_bubble_view.h",
-      "views/autofill/payments/save_and_fill_dialog.cc",
-      "views/autofill/payments/save_and_fill_dialog.h",
-      "views/autofill/payments/save_and_fill_view_desktop.cc",
-      "views/autofill/payments/save_and_fill_view_desktop.h",
       "views/autofill/payments/save_card_bubble_views.cc",
       "views/autofill/payments/save_card_bubble_views.h",
       "views/autofill/payments/save_card_manage_cards_bubble_views.cc",
@@ -2544,19 +2533,13 @@ static_library("ui") {
       "views/autofill/payments/save_payment_method_and_virtual_card_enroll_confirmation_bubble_views.h",
       "views/autofill/payments/select_bnpl_issuer_dialog.cc",
       "views/autofill/payments/select_bnpl_issuer_dialog.h",
-      "views/autofill/payments/virtual_card_enroll_bubble_views.cc",
-      "views/autofill/payments/virtual_card_enroll_bubble_views.h",
-      "views/autofill/popup/custom_cursor_suppressor.cc",
       "views/autofill/popup/popup_at_memory_ai_disclosure_view.cc",
       "views/autofill/popup/popup_at_memory_ai_disclosure_view.h",
       "views/autofill/popup/popup_base_view.cc",
       "views/autofill/popup/popup_cell_utils.cc",
       "views/autofill/popup/popup_cell_utils.h",
-      "views/autofill/popup/popup_interactive_row_view.cc",
       "views/autofill/popup/popup_loading_view.cc",
       "views/autofill/popup/popup_loading_view.h",
-      "views/autofill/popup/popup_row_content_view.cc",
-      "views/autofill/popup/popup_row_content_view.h",
       "views/autofill/popup/popup_row_factory_utils.cc",
       "views/autofill/popup/popup_row_factory_utils.h",
       "views/autofill/popup/popup_row_view.cc",
@@ -2583,8 +2566,6 @@ static_library("ui") {
       "views/context_hub/save_to_memory_bank_bubble_controller.h",
       "views/context_hub/save_to_memory_bank_bubble_view.cc",
       "views/context_hub/save_to_memory_bank_bubble_view.h",
-      "views/dotted_icon.cc",
-      "views/dotted_icon.h",
       "views/extensions/extension_install_dialog_view.cc",
       "views/extensions/extension_install_dialog_view.h",
       "views/extensions/extension_view_utils.cc",
@@ -2726,16 +2707,6 @@ static_library("ui") {
       "views/tab_search_bubble_host.h",
       "views/tabs/browser_tab_strip_controller.cc",
       "views/tabs/browser_tab_strip_controller.h",
-      "views/tabs/dragging/drag_session_data.cc",
-      "views/tabs/dragging/drag_session_data.h",
-      "views/tabs/dragging/dragging_tabs_session.cc",
-      "views/tabs/dragging/dragging_tabs_session.h",
-      "views/tabs/dragging/tab_drag_context.cc",
-      "views/tabs/dragging/tab_drag_context.h",
-      "views/tabs/dragging/tab_drag_controller.cc",
-      "views/tabs/dragging/tab_drag_controller.h",
-      "views/tabs/dragging/window_finder.cc",
-      "views/tabs/dragging/window_finder.h",
       "views/tabs/groups/color_picker_view.cc",
       "views/tabs/groups/color_picker_view.h",
       "views/tabs/groups/recent_activity_bubble_dialog_view.cc",
@@ -2828,16 +2799,12 @@ static_library("ui") {
       "views/web_apps/frame_toolbar/window_controls_overlay_toggle_button.h",
       "views/web_apps/image_carousel_view.cc",
       "views/web_apps/image_carousel_view.h",
-      "views/web_apps/isolated_web_apps/isolated_web_app_identity_view.cc",
-      "views/web_apps/isolated_web_apps/isolated_web_app_identity_view.h",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_coordinator.cc",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_coordinator.h",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_view_controller.cc",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_view_controller.h",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_view_impl.cc",
       "views/web_apps/isolated_web_apps/isolated_web_app_installer_view_impl.h",
-      "views/web_apps/isolated_web_apps/uninstall_sub_app_identity_view.cc",
-      "views/web_apps/isolated_web_apps/uninstall_sub_app_identity_view.h",
       "views/web_apps/view_visible_in_active_widget_notifier.cc",
       "views/web_apps/view_visible_in_active_widget_notifier.h",
       "views/web_apps/web_app_detailed_install_dialog.cc",
@@ -2851,8 +2818,6 @@ static_library("ui") {
       "views/web_apps/web_app_install_not_supported_dialog.cc",
       "views/web_apps/web_app_install_options_view.cc",
       "views/web_apps/web_app_install_options_view.h",
-      "views/web_apps/web_app_install_progress_view.cc",
-      "views/web_apps/web_app_install_progress_view.h",
       "views/web_apps/web_app_launch_dialog.cc",
       "views/web_apps/web_app_modal_dialog_delegate.cc",
       "views/web_apps/web_app_modal_dialog_delegate.h",
@@ -2915,6 +2880,7 @@ static_library("ui") {
       "//chrome/browser/ui/views:confirm_bubble",
       "//chrome/browser/ui/views:content_setting_site_row_view",
       "//chrome/browser/ui/views:device_chooser_content_view",
+      "//chrome/browser/ui/views:dotted_icon",
       "//chrome/browser/ui/views:elevation_icon_setter",
       "//chrome/browser/ui/views:external_protocol_dialog",
       "//chrome/browser/ui/views:find_bar_owner",
@@ -2950,18 +2916,30 @@ static_library("ui") {
       "//chrome/browser/ui/views/autofill/payments:bnpl_dialog_footnote",
       "//chrome/browser/ui/views/autofill/payments:bnpl_tos_dialog",
       "//chrome/browser/ui/views/autofill/payments:bnpl_tos_view_desktop",
+      "//chrome/browser/ui/views/autofill/payments:card_unmask_authentication_selection_dialog_view",
+      "//chrome/browser/ui/views/autofill/payments:card_unmask_otp_input_dialog_views",
+      "//chrome/browser/ui/views/autofill/payments:card_unmask_prompt_views",
       "//chrome/browser/ui/views/autofill/payments:dialog_view_ids",
+      "//chrome/browser/ui/views/autofill/payments:filled_card_information_bubble_views",
       "//chrome/browser/ui/views/autofill/payments:mandatory_reauth_confirmation_bubble_view",
       "//chrome/browser/ui/views/autofill/payments:mandatory_reauth_opt_in_bubble_view",
+      "//chrome/browser/ui/views/autofill/payments:offer_notification_bubble_views",
+      "//chrome/browser/ui/views/autofill/payments:payments_churned_users_bubble_view",
       "//chrome/browser/ui/views/autofill/payments:payments_window_user_consent_dialog_view",
       "//chrome/browser/ui/views/autofill/payments:promo_code_label_button",
+      "//chrome/browser/ui/views/autofill/payments:save_and_fill_dialog",
+      "//chrome/browser/ui/views/autofill/payments:save_and_fill_view_desktop",
+      "//chrome/browser/ui/views/autofill/payments:virtual_card_enroll_bubble_views",
       "//chrome/browser/ui/views/autofill/payments:wallet_reminder_notice_bubble_view",
       "//chrome/browser/ui/views/autofill/popup",
+      "//chrome/browser/ui/views/autofill/popup:custom_cursor_suppressor",
       "//chrome/browser/ui/views/autofill/popup:lazy_loading_image_view",
       "//chrome/browser/ui/views/autofill/popup:password_favicon_loader",
       "//chrome/browser/ui/views/autofill/popup:popup_bnpl_footnote_view",
       "//chrome/browser/ui/views/autofill/popup:popup_centered_text_view",
+      "//chrome/browser/ui/views/autofill/popup:popup_interactive_row_view",
       "//chrome/browser/ui/views/autofill/popup:popup_notice_view",
+      "//chrome/browser/ui/views/autofill/popup:popup_row_content_view",
       "//chrome/browser/ui/views/autofill/popup:popup_search_bar_view",
       "//chrome/browser/ui/views/autofill/popup:popup_separator_view",
       "//chrome/browser/ui/views/autofill/popup:popup_title_view",
@@ -3042,6 +3020,8 @@ static_library("ui") {
       "//chrome/browser/ui/views/tab_contents",
       "//chrome/browser/ui/views/tab_sharing",
       "//chrome/browser/ui/views/tabs/common",
+      "//chrome/browser/ui/views/tabs/dragging",
+      "//chrome/browser/ui/views/tabs/dragging:impl",
       "//chrome/browser/ui/views/tabs/dragging:tab_drag_target",
       "//chrome/browser/ui/views/tabs/groups",
       "//chrome/browser/ui/views/tabs/horizontal",
@@ -3062,10 +3042,12 @@ static_library("ui") {
       "//chrome/browser/ui/views/web_apps:progress_delay",
       "//chrome/browser/ui/views/web_apps:web_app_blocked_migration_infobar_delegate",
       "//chrome/browser/ui/views/web_apps:web_app_icon_name_and_origin_view",
+      "//chrome/browser/ui/views/web_apps:web_app_install_progress_view",
       "//chrome/browser/ui/views/web_apps:web_app_update_identity_view",
       "//chrome/browser/ui/views/web_apps/frame_toolbar:system_app_accessible_name",
       "//chrome/browser/ui/views/web_apps/frame_toolbar:web_app_frame_toolbar_utils",
       "//chrome/browser/ui/views/web_apps/isolated_web_apps:installer_base",
+      "//chrome/browser/ui/views/web_apps/isolated_web_apps:isolated_web_app_identity_view",
       "//chrome/browser/ui/views/web_apps/isolated_web_apps:user_installability_checker",
       "//chrome/browser/ui/views/webauthn",
       "//chrome/browser/ui/views/webid",
@@ -3305,15 +3287,26 @@ static_library("ui") {
       "//chrome/browser/ui/views/tabs/tab:impl",
 
       # TODO(crbug.com/451609048): Remove this circular dependency when the
+      # following header gets componentized:
+      # - c/b/ui/views/tabs/tab_slot_view.h
+      "//chrome/browser/ui/views/tabs/dragging",
+
+      # TODO(crbug.com/451609048): Remove this circular dependency when the
+      # following headers get componentized:
+      # - c/b/ui/browser_commands.h
+      # - c/b/ui/views/frame/browser_view.h
+      # - c/b/ui/views/tabs/tab.h
+      # - c/b/ui/views/tabs/tab_slot_view.h
+      # - c/b/ui/views/tabs/tab_strip.h
+      "//chrome/browser/ui/views/tabs/dragging:impl",
+
+      # TODO(crbug.com/451609048): Remove this circular dependency when the
       # following headers get componentized:
       # - c/b/ui/browser_commands.h
       # - c/b/ui/views/frame/browser_frame_view.h
       # - c/b/ui/views/frame/browser_view.h
       # - c/b/ui/views/frame/themed_background.h
       # - c/b/ui/views/frame/vertical_tab_strip_region_view.h
-      # - c/b/ui/views/tabs/dragging/drag_session_data.h
-      # - c/b/ui/views/tabs/dragging/tab_drag_context.h
-      # - c/b/ui/views/tabs/dragging/tab_drag_controller.h
       # - c/b/ui/views/tabs/groups/tab_group_accessibility.h
       # - c/b/ui/views/tabs/hovercard/hover_card_anchor_target.h
       # - c/b/ui/views/tabs/hovercard/tab_hover_card_controller.h
@@ -4201,7 +4194,10 @@ if (use_aura) {
       "overscroll_pref_manager.cc",
       "overscroll_pref_manager.h",
     ]
-    deps = [ "//base" ]
+    deps = [
+      "//base",
+      "//chrome/browser/ui/browser_window",
+    ]
     public_deps = [
       "//chrome/browser:browser_process",
       "//chrome/browser/ui/tabs",
@@ -4209,6 +4205,7 @@ if (use_aura) {
       "//chrome/common",
       "//components/prefs",
       "//content/public/browser",
+      "//ui/base/unowned_user_data",
     ]
   }
 }

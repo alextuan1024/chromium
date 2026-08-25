@@ -13,11 +13,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -94,7 +94,7 @@ class VerticalTabStripRegionViewTest
         content::WebContents::Create(
             content::WebContents::CreateParams(browser()->GetProfile()));
     content::WebContents* raw_contents = contents.get();
-    browser()->tab_strip_model()->AppendWebContents(std::move(contents), true);
+    browser()->GetTabStripModel()->AppendWebContents(std::move(contents), true);
     return raw_contents;
   }
 
@@ -102,8 +102,8 @@ class VerticalTabStripRegionViewTest
   content::WebContents* AppendPinnedTab() {
     content::WebContents* contents = AppendTab();
     const int index =
-        browser()->tab_strip_model()->GetIndexOfWebContents(contents);
-    browser()->tab_strip_model()->SetTabPinned(index, true);
+        browser()->GetTabStripModel()->GetIndexOfWebContents(contents);
+    browser()->GetTabStripModel()->SetTabPinned(index, true);
     return contents;
   }
 
@@ -112,7 +112,8 @@ class VerticalTabStripRegionViewTest
         content::WebContents::Create(
             content::WebContents::CreateParams(browser()->GetProfile()));
     content::WebContents* raw_contents = contents.get();
-    browser()->tab_strip_model()->AppendWebContents(std::move(contents), false);
+    browser()->GetTabStripModel()->AppendWebContents(std::move(contents),
+                                                     false);
     return raw_contents;
   }
 
@@ -122,7 +123,7 @@ class VerticalTabStripRegionViewTest
 
   views::View* GetTabViewAt(int index) {
     return region_view()->GetTabAnchorView(
-        browser()->tab_strip_model()->GetTabAtIndex(index)->GetHandle());
+        browser()->GetTabStripModel()->GetTabAtIndex(index)->GetHandle());
   }
 
   void PressCollapseButton() {
@@ -661,7 +662,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   // Verify GetTabAnchorView for a valid tab handle.
   const int tab_index = 1;
   tabs::TabInterface* tab =
-      browser()->tab_strip_model()->GetTabAtIndex(tab_index);
+      browser()->GetTabStripModel()->GetTabAtIndex(tab_index);
   views::View* tab_anchor_view =
       region_view()->GetTabAnchorView(tab->GetHandle());
   EXPECT_NE(nullptr, tab_anchor_view);
@@ -680,7 +681,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   AppendTab();
   AppendTab();
 
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
 
   // Create a tab group.
   std::vector<int> tab_indices = {0, 1};
@@ -744,7 +745,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   AppendTab();
   AppendTab();
 
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
 
   // 2. Activate the first tab and explicitly set the focus on the tab's view
   // using FocusManager.
@@ -775,7 +776,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
                        SplitTabsShareSpace) {
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
   // Add split tabs.
   content::WebContents* contents1 = AppendTab();
   content::WebContents* contents2 = AppendTab();
@@ -836,7 +837,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, SwitchModes) {
   EXPECT_TRUE(root_node());
 
-  TabStripModel* model = browser()->tab_strip_model();
+  TabStripModel* model = browser()->GetTabStripModel();
 
   // 1. Unpinned Tab
   // This tab is added by default for browser tests.
@@ -1515,7 +1516,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   std::unique_ptr<content::WebContents> contents = content::WebContents::Create(
       content::WebContents::CreateParams(browser()->GetProfile()));
-  browser()->tab_strip_model()->InsertWebContentsAt(
+  browser()->GetTabStripModel()->InsertWebContentsAt(
       kNewBackgroundTabIndex, std::move(contents), AddTabTypes::ADD_NONE);
 
   WaitForTrackersCleared();
@@ -1576,7 +1577,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   std::unique_ptr<content::WebContents> contents = content::WebContents::Create(
       content::WebContents::CreateParams(browser()->GetProfile()));
-  browser()->tab_strip_model()->InsertWebContentsAt(
+  browser()->GetTabStripModel()->InsertWebContentsAt(
       kFarDistantBackgroundTabIndex, std::move(contents),
       AddTabTypes::ADD_NONE);
 
@@ -1760,8 +1761,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
   EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
 
   // New browser should contain the group and have it focused.
-  EXPECT_EQ(2, new_browser->tab_strip_model()->count());
-  EXPECT_EQ(new_browser->tab_strip_model()->GetFocusedGroup(), group_id);
+  EXPECT_EQ(2, new_browser->GetTabStripModel()->count());
+  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
@@ -1790,8 +1791,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
   EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
 
   // New browser should contain the group and have it focused.
-  EXPECT_EQ(2, new_browser->tab_strip_model()->count());
-  EXPECT_EQ(new_browser->tab_strip_model()->GetFocusedGroup(), group_id);
+  EXPECT_EQ(2, new_browser->GetTabStripModel()->count());
+  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
@@ -1825,9 +1826,9 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   // New browser should contain the pinned tab and the group, with the group
   // focused.
-  EXPECT_EQ(3, new_browser->tab_strip_model()->count());
-  EXPECT_TRUE(new_browser->tab_strip_model()->IsTabPinned(0));
-  EXPECT_EQ(new_browser->tab_strip_model()->GetFocusedGroup(), group_id);
+  EXPECT_EQ(3, new_browser->GetTabStripModel()->count());
+  EXPECT_TRUE(new_browser->GetTabStripModel()->IsTabPinned(0));
+  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
@@ -1848,7 +1849,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   Browser* target_browser = CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(target_browser);
-  ASSERT_EQ(1, target_browser->tab_strip_model()->count());
+  ASSERT_EQ(1, target_browser->GetTabStripModel()->count());
 
   chrome::MoveGroupToExistingWindow(browser(), target_browser, group_id);
 
@@ -1858,12 +1859,12 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   // Target browser contains the moved group along with its original tab, so the
   // group should not be focused in the target window.
-  EXPECT_EQ(3, target_browser->tab_strip_model()->count());
+  EXPECT_EQ(3, target_browser->GetTabStripModel()->count());
   EXPECT_TRUE(
-      target_browser->tab_strip_model()->group_model()->ContainsTabGroup(
+      target_browser->GetTabStripModel()->group_model()->ContainsTabGroup(
           group_id));
   EXPECT_FALSE(
-      target_browser->tab_strip_model()->GetFocusedGroup().has_value());
+      target_browser->GetTabStripModel()->GetFocusedGroup().has_value());
 }
 
 class VerticalTabStripFocusSwipeTest : public VerticalTabStripRegionViewTest {

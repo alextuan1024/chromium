@@ -2234,7 +2234,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
         kCustomPinnedActionToolbarButtonFactoryKey,
         std::make_unique<CreateCustomPinnedActionToolbarButtonCallback>(
             base::BindRepeating(
-                [](Browser* browser, actions::ActionId action_id,
+                [](BrowserWindowInterface* browser, actions::ActionId action_id,
                    base::WeakPtr<PinnedToolbarActionsContainer> container)
                     -> std::unique_ptr<PinnedActionToolbarButton> {
                   return std::make_unique<AiOverlayToolbarButton>(
@@ -2744,6 +2744,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
               features::IsRoundedIconsEnabled() ? kExitToAppIcon
                                                 : kExitMenuOldIcon,
               ui::kColorIcon))
+          .SetAccelerator(GetAcceleratorForCommandId(IDC_EXIT))
           .Build());
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
@@ -3837,6 +3838,7 @@ void BrowserActions::InitializeToolbarAndMiscActions() {
               features::IsRoundedIconsEnabled() ? kSettingsIcon
                                                 : kSettingsMenuOldIcon,
               ui::kColorIcon))
+          .SetAccelerator(GetAcceleratorForCommandId(IDC_OPTIONS))
           .Build());
 
   root_action_item_->AddChild(

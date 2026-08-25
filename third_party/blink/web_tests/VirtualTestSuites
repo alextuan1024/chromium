@@ -425,14 +425,6 @@
     "expires": "Dec 1, 2026"
   },
   {
-    "prefix": "container-timing-pre-paint-traversal",
-    "owners": [ "jdapena@igalia.com" ],
-    "platforms": ["Linux", "Mac", "Win"],
-    "bases": [ "external/wpt/container-timing/" ],
-    "args": [ "--enable-features=ContainerTimingPrepaintTraversal" ],
-    "expires": "Nov 1, 2026"
-  },
-  {
     "prefix": "controls-refresh-hc",
     "owners": [
       "masonf@chromium.org",
@@ -1383,8 +1375,7 @@
     ],
     "args": [
       "--force-high-contrast",
-      "--enable-blink-features=ForcedColors",
-      "--enable-blink-features=CSSGapDecoration"
+      "--enable-blink-features=ForcedColors"
     ],
     "expires": "Jul 1, 2027"
   },
@@ -5036,18 +5027,6 @@
     ],
     "args": ["--use-gpu-in-tests", "--enable-threaded-compositing"],
     "expires": "never"
-  },
-  {
-    "prefix": "disable-tcp-port-randomization-mac",
-    "owners": ["arichiv@chromium.org", "awillia@chromium.org"],
-    "platforms": ["Mac"],
-    "bases": ["external/wpt/resource-timing/response-status-code.html"],
-    "exclusive_tests": "ALL",
-    "args": [
-      "--disable-field-trial-config",
-      "--disable-features=TcpPortRandomizationMac"
-    ],
-    "expires": "Oct 31, 2026"
   },
   {
     "prefix": "disable-css-line-clamp-longhands",

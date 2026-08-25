@@ -3252,6 +3252,14 @@ def CheckNoDEPSGIT(input_api, output_api):
     return []
 
 
+def _IsIgnoredLine(line: str) -> bool:
+    """Returns True if the line is a full-line comment or marked with // nocheck.
+
+    Note that GN comments (#) are not ignored.
+    """
+    return line.lstrip().startswith('//') or line.endswith(' nocheck')
+
+
 def _GetMessageForMatchingType(input_api, affected_file, line_number, line,
                                ban_rule):
     """Helper method for checking for banned constructs.
@@ -3261,14 +3269,6 @@ def _GetMessageForMatchingType(input_api, affected_file, line_number, line,
     target type name matches the text inside the line passed as parameter.
     """
     result = []
-
-    # Ignore comments about banned types.
-    if input_api.re.search(r'^ *//', line):
-        return result
-    # A // nocheck comment will bypass this error.
-    if line.endswith(' nocheck'):
-        return result
-
     matched = False
     if ban_rule.pattern[0:1] == '/':
         regex = ban_rule.pattern[1:]
@@ -3350,6 +3350,8 @@ def CheckNoBannedPatterns(input_api, output_api):
             matching_ban_rules = MatchingBanRules(f, ban_rules)
             if matching_ban_rules:
                 for line_num, line in f.ChangedContents():
+                    if _IsIgnoredLine(line):
+                        continue
                     for ban_rule in matching_ban_rules:
                         CheckForMatch(f, line_num, line, ban_rule)
 
@@ -6232,7 +6234,7 @@ def _CheckNewImagesWarning(input_api, output_api):
     return errors
 
 
-def ChecksAndroidSpecificOnUpload(input_api, output_api):
+def CheckAndroidSpecificOnUpload(input_api, output_api):
     """Groups upload checks that target android code."""
     results = []
     results.extend(_CheckAndroidCrLogUsage(input_api, output_api))
@@ -6249,7 +6251,7 @@ def ChecksAndroidSpecificOnUpload(input_api, output_api):
     return results
 
 
-def ChecksAndroidSpecificOnCommit(input_api, output_api):
+def CheckAndroidSpecificOnCommit(input_api, output_api):
     """Groups commit checks that target android code."""
     results = []
     results.extend(_CheckAndroidXmlStyle(input_api, output_api, False))
@@ -6380,7 +6382,7 @@ _NON_INCLUSIVE_TERMS = (
         True), )
 
 
-def ChecksCommon(input_api, output_api):
+def CheckCommon(input_api, output_api):
     """Checks common to both upload and commit."""
     results = []
     results.extend(
@@ -7085,51 +7087,29 @@ def CheckNoDirectRefToAndroidSidePanelCachedFlag(input_api, output_api):
     return results
 
 
-def CheckChangeOnUpload(input_api, output_api):
-    if input_api.version < [2, 0, 0]:
-        return [
-            output_api.PresubmitError(
-                'Your depot_tools is out of date. '
-                'This PRESUBMIT.py requires at least presubmit_support version 2.0.0, '
-                'but your version is %d.%d.%d' % tuple(input_api.version))
-        ]
-    results = []
-    results.extend(
-        input_api.canned_checks.CheckPatchFormatted(input_api, output_api))
-    results.extend(CheckNoMainLayoutSwitcher(input_api, output_api))
-    results.extend(
-        CheckNoDirectRefToAndroidSidePanelCachedFlag(input_api, output_api))
-    return results
+def CheckPatchFormatted(input_api, output_api):
+    """Checks that the patch is formatted properly."""
+    return input_api.canned_checks.CheckPatchFormatted(input_api, output_api)
 
 
-def CheckChangeOnCommit(input_api, output_api):
-    if input_api.version < [2, 0, 0]:
-        return [
-            output_api.PresubmitError(
-                'Your depot_tools is out of date. '
-                'This PRESUBMIT.py requires at least presubmit_support version 2.0.0, '
-                'but your version is %d.%d.%d' % tuple(input_api.version))
-        ]
+def CheckTreeIsOpenOnCommit(input_api, output_api):
+    """Makes sure the tree is 'open' before committing."""
+    return input_api.canned_checks.CheckTreeIsOpen(
+        input_api,
+        output_api,
+        json_url='https://chromium-status.appspot.com/current?format=json')
 
-    results = []
-    # Make sure the tree is 'open'.
-    results.extend(
-        input_api.canned_checks.CheckTreeIsOpen(
-            input_api,
-            output_api,
-            json_url='http://chromium-status.appspot.com/current?format=json'))
 
-    results.extend(
-        input_api.canned_checks.CheckPatchFormatted(input_api, output_api))
-    results.extend(
-        input_api.canned_checks.CheckChangeHasBugField(input_api, output_api))
-    results.extend(
-        input_api.canned_checks.CheckChangeHasNoUnwantedTags(
-            input_api, output_api))
-    results.extend(CheckNoMainLayoutSwitcher(input_api, output_api))
-    results.extend(
-        CheckNoDirectRefToAndroidSidePanelCachedFlag(input_api, output_api))
-    return results
+def CheckChangeHasBugFieldOnCommit(input_api, output_api):
+    """Checks that the commit description contains a BUG= field."""
+    return input_api.canned_checks.CheckChangeHasBugField(
+        input_api, output_api)
+
+
+def CheckChangeHasNoUnwantedTagsOnCommit(input_api, output_api):
+    """Checks that the commit description does not contain unwanted tags."""
+    return input_api.canned_checks.CheckChangeHasNoUnwantedTags(
+        input_api, output_api)
 
 
 def CheckStrings(input_api, output_api):

@@ -74,6 +74,20 @@ GridLanesLayoutAlgorithm::GridLanesLayoutAlgorithm(
   }
 }
 
+GridLineResolver GridLanesLayoutAlgorithm::BuildGridLineResolver(
+    const GridArea& subgrid_area,
+    const GridLineResolver* parent_line_resolver,
+    bool can_inherit_line_names_from_parent) const {
+  DCHECK(parent_line_resolver);
+
+  // TODO(yanlingwang): Handle automatic repetitions for grid-lanes
+  // subgrids.
+  return GridLineResolver(Style(), *parent_line_resolver, subgrid_area,
+                          /*column_auto_repetitions=*/0,
+                          /*row_auto_repetitions=*/0,
+                          can_inherit_line_names_from_parent);
+}
+
 MinMaxSizesResult GridLanesLayoutAlgorithm::ComputeMinMaxSizes(
     const MinMaxSizesFloatInput&) {
   // If the intrinsic inline size has been overridden, use the provided value.
@@ -252,9 +266,7 @@ const LayoutResult* GridLanesLayoutAlgorithm::Layout() {
     ApplyTrackReverseOverflowShift(layout_data, total_intrinsic_block_size);
 
     // TODO(javiercon): Handle gap decorations in fragmented grid lanes.
-    if (!has_block_fragmentation &&
-        RuntimeEnabledFeatures::CSSGapDecorationEnabled() &&
-        style.HasGapRule()) {
+    if (!has_block_fragmentation && style.HasGapRule()) {
       gap_accumulator.emplace();
       gap_accumulator->BuildMainGaps(track_collection);
     }

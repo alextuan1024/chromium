@@ -47,6 +47,7 @@
 #include "chrome/browser/sync/sessions/sync_sessions_router_tab_helper.h"
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/tab_contents/form_interaction_tab_helper.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
 #include "chrome/browser/themes/theme_service_factory.h"
@@ -79,6 +80,7 @@
 #include "chrome/browser/ui/sad_tab_helper.h"
 #include "chrome/browser/ui/search_engine_choice/search_engine_choice_tab_helper.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
+#include "chrome/browser/ui/sync/browser_synced_tab_delegate.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/back_to_opener/back_to_opener_controller.h"
@@ -508,6 +510,10 @@ void TabFeatures::Init(TabInterface& tab, Profile* profile) {
           ChromeTranslateClient::FromWebContents(tab.GetContents()),
           favicon::ContentFaviconDriver::FromWebContents(tab.GetContents()));
 
+  browser_synced_tab_delegate_ =
+      GetUserDataFactory().CreateInstance<BrowserSyncedTabDelegate>(
+          tab, tab, tab.GetContents());
+
   focus_tab_after_navigation_helper_ =
       std::make_unique<FocusTabAfterNavigationHelper>(tab.GetContents());
 
@@ -518,6 +524,9 @@ void TabFeatures::Init(TabInterface& tab, Profile* profile) {
   connection_help_tab_helper_ =
       GetUserDataFactory().CreateInstance<ConnectionHelpTabHelper>(
           tab, tab, tab.GetContents());
+
+  form_interaction_tab_helper_ =
+      GetUserDataFactory().CreateInstance<FormInteractionTabHelper>(tab, tab);
 
   zero_suggest_prefetch_tab_helper_ =
       std::make_unique<ZeroSuggestPrefetchTabHelper>(tab.GetContents());
@@ -751,6 +760,14 @@ void TabFeatures::WillDiscardContents(tabs::TabInterface* tab,
       GetUserDataFactory().CreateInstance<ConnectionHelpTabHelper>(
           *tab, *tab, new_contents);
 
+  // Recreated to reset its state: the swapped-in contents has not had any
+  // form interactions. The reset() must happen first so that the old
+  // instance deregisters itself from the UnownedUserDataHost before the new
+  // instance registers itself.
+  form_interaction_tab_helper_.reset();
+  form_interaction_tab_helper_ =
+      GetUserDataFactory().CreateInstance<FormInteractionTabHelper>(*tab, *tab);
+
   zero_suggest_prefetch_tab_helper_ =
       std::make_unique<ZeroSuggestPrefetchTabHelper>(new_contents);
 
@@ -798,6 +815,14 @@ void TabFeatures::WillDiscardContents(tabs::TabInterface* tab,
               profile),
           ChromeTranslateClient::FromWebContents(new_contents),
           favicon::ContentFaviconDriver::FromWebContents(new_contents));
+
+  // The reset() must happen first so that the old instance deregisters
+  // itself from the UnownedUserDataHost before the new instance registers
+  // itself.
+  browser_synced_tab_delegate_.reset();
+  browser_synced_tab_delegate_ =
+      GetUserDataFactory().CreateInstance<BrowserSyncedTabDelegate>(
+          *tab, *tab, new_contents);
 
   if (permission_indicators_tab_data_) {
     permission_indicators_tab_data_ =

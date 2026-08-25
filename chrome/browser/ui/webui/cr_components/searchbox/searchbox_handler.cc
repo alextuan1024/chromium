@@ -57,6 +57,8 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/contextual_search_provider.h"
+#include "components/omnibox/browser/fusebox_action.mojom.h"
+#include "components/omnibox/browser/fusebox_action_mojo_utils.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/omnibox_metrics_constants.h"
@@ -77,7 +79,6 @@
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/url_constants.h"
-#include "third_party/omnibox_proto/answer_data.pb.h"
 #include "third_party/omnibox_proto/answer_type.pb.h"
 #include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
 #include "third_party/omnibox_proto/groups.pb.h"
@@ -963,32 +964,6 @@ SearchboxHandler::CreateAutocompleteMatch(
   mojom_match->show_contextual_description = false;
   mojom_match->type = AutocompleteMatchType::ToString(match.type);
   mojom_match->supports_deletion = match.SupportsDeletion();
-  if (match.answer_template.has_value()) {
-    const omnibox::AnswerData& answer_data = match.answer_template->answers(0);
-    const omnibox::FormattedString& headline = answer_data.headline();
-    std::u16string headline_substr;
-    if (headline.fragments_size() > 0) {
-      const std::string& headline_text = headline.text();
-      // Grab the substring of headline starting after the first fragment text
-      // ends. Not making use of the first fragment because it contains the
-      // same data as `match.contents` but with HTML tags.
-      headline_substr = base::UTF8ToUTF16(headline_text.substr(
-          headline.fragments(0).text().size(),
-          headline_text.size() - headline.fragments(0).text().size()));
-    }
-
-    const auto& subhead_text = base::UTF8ToUTF16(answer_data.subhead().text());
-    // Reusing SuggestionAnswer because `headline` and `subhead` are
-    // equivalent to `first_line` and `second_line`.
-    mojom_match->answer = searchbox::mojom::SuggestionAnswer::New(
-        headline_substr.empty()
-            ? match.contents
-            : base::JoinString({match.contents, headline_substr}, u" "),
-        subhead_text);
-    mojom_match->image_url = answer_data.image().url();
-    mojom_match->is_weather_answer_suggestion =
-        match.answer_type == omnibox::ANSWER_TYPE_WEATHER;
-  }
   mojom_match->is_rich_suggestion =
       !mojom_match->image_url.empty() ||
       match.type == AutocompleteMatchType::CALCULATOR ||
@@ -1037,6 +1012,11 @@ SearchboxHandler::CreateAutocompleteMatch(
       match.suggestion_group_id == omnibox::GROUP_MIA_RECOMMENDATIONS;
 
   mojom_match->is_contextual_suggestion = match.IsContextualSearchSuggestion();
+
+  if (match.suggest_template && match.suggest_template->has_fusebox_action()) {
+    mojom_match->fusebox_action = fusebox_action::SyncFuseboxActionProtoToMojo(
+        match.suggest_template->fusebox_action());
+  }
 
   return mojom_match;
 }
