@@ -1067,6 +1067,12 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
 #endif
 
   registrar_.Init(GetProfile()->GetPrefs());
+#if BUILDFLAG(IS_MAC)
+  registrar_.Add(
+      prefs::kAdaptToolbarColor,
+      base::BindRepeating(&BrowserView::UpdatePageToolbarThemeColor,
+                          base::Unretained(this), true));
+#endif
   registrar_.Add(
       prefs::kFullscreenAllowed,
       base::BindRepeating(&BrowserView::UpdateFullscreenAllowedFromPolicy,
@@ -3011,7 +3017,8 @@ void BrowserView::DidFinishNavigation(
 #if BUILDFLAG(IS_MAC)
 void BrowserView::UpdatePageToolbarThemeColor(bool allow_latching) {
   content::WebContents* contents = web_contents();
-  if (!contents) {
+  if (!GetProfile()->GetPrefs()->GetBoolean(prefs::kAdaptToolbarColor) ||
+      !contents) {
     browser_widget()->SetPageThemeColor(std::nullopt);
     return;
   }

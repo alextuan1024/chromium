@@ -122,6 +122,10 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterIntegerPref(prefs::kSessionRestoreInfoBarTimesShown, 0);
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_MAC)
+  registry->RegisterBooleanPref(prefs::kAdaptToolbarColor, true);
+#endif
+
   registry->RegisterBooleanPref(prefs::kHomePageIsNewTabPage, true,
                                 pref_registration_flags);
   registry->RegisterBooleanPref(prefs::kShowHomeButton, false,
