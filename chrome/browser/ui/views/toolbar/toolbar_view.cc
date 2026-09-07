@@ -422,7 +422,7 @@ void ToolbarView::Init() {
     actions::ActionItem* collapse_action =
         actions::ActionManager::Get().FindAction(
             kActionToggleCollapseVertical,
-            browser_->GetFeatures().browser_actions()->root_action_item());
+            BrowserActions::From(browser_)->root_action_item());
     CHECK(collapse_action);
 
     std::unique_ptr<ToolbarButton> collapse_button =
