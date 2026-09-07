@@ -33,7 +33,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils.MAX_TAB_WIDTH_DP;
-import static org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils.MIN_TAB_WIDTH_DP;
 import static org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils.PINNED_TAB_WIDTH_DP;
 import static org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils.TAB_GROUP_BOTTOM_INDICATOR_WIDTH_OFFSET;
 import static org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils.TAB_OVERLAP_WIDTH_DP;
@@ -110,6 +109,7 @@ import org.chromium.chrome.browser.data_sharing.DataSharingServiceFactory;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.dragdrop.ChromeDropDataAndroid;
 import org.chromium.chrome.browser.dragdrop.ChromeTabDropDataAndroid;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.layouts.SceneOverlay;
@@ -155,6 +155,7 @@ import org.chromium.components.data_sharing.DataSharingService;
 import org.chromium.components.data_sharing.DataSharingUIDelegate;
 import org.chromium.components.data_sharing.SharedGroupTestHelper;
 import org.chromium.components.data_sharing.configs.DataSharingAvatarBitmapConfig;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
@@ -183,7 +184,6 @@ import java.util.stream.IntStream;
 /** Tests for {@link StripLayoutHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(
-        manifest = Config.NONE,
         qualifiers = "sw600dp",
         shadows = {ShadowAppCompatResources.class})
 @DisableFeatures({
@@ -240,6 +240,7 @@ public class StripLayoutHelperTest {
     @Mock private ActivityResultTracker mActivityResultTracker;
     @Mock private SendTabToSelfAndroidBridge.Natives mSendTabToSelfAndroidBridgeNatives;
     @Mock private LeadingButtonDelegate mLeadingButtonDelegate;
+    @Mock private Tracker mTracker;
 
     @Captor private ArgumentCaptor<DataSharingService.Observer> mSharingObserverCaptor;
     @Captor private ArgumentCaptor<TabModelActionListener> mTabModelActionListenerCaptor;
@@ -323,10 +324,12 @@ public class StripLayoutHelperTest {
 
         TabUnderlineManagerJni.setInstanceForTesting(mTabUnderlineMock);
         SendTabToSelfAndroidBridgeJni.setInstanceForTesting(mSendTabToSelfAndroidBridgeNatives);
+        TrackerFactory.setTrackerForTests(mTracker);
     }
 
     @After
     public void tearDown() {
+        TrackerFactory.setTrackerForTests(null);
         CompositorAnimationHandler.setTestingMode(false);
         if (mStripLayoutHelper != null) {
             mStripLayoutHelper.setTabAtPositionForTesting(null);
@@ -782,8 +785,7 @@ public class StripLayoutHelperTest {
         assertTrue(
                 "Tab getting closed should be outside of the visible bounds",
                 tabs[closeTabIndex].getDrawX()
-                        > mStripLayoutHelper.getVisibleRightBound(
-                                /* clampToUnpinnedViews= */ true));
+                        > mStripLayoutHelper.getFullyVisibleRightUnpinnedBound());
 
         final StripLayoutHelper stripLayoutHelperSpy = spy(mStripLayoutHelper);
         closeTabAt(stripLayoutHelperSpy, closeTabIndex);
@@ -815,7 +817,7 @@ public class StripLayoutHelperTest {
         assertTrue(
                 "Tab getting closed should be outside of the visible bounds",
                 tabs[closeTabIndex].getDrawX() + tabs[closeTabIndex].getWidth()
-                        < mStripLayoutHelper.getVisibleLeftBound(/* clampToUnpinnedViews= */ true));
+                        < mStripLayoutHelper.getFullyVisibleLeftUnpinnedBound());
 
         final StripLayoutHelper stripLayoutHelperSpy = spy(mStripLayoutHelper);
         closeTabAt(stripLayoutHelperSpy, closeTabIndex);
@@ -845,8 +847,8 @@ public class StripLayoutHelperTest {
                         .filter(
                                 i ->
                                         tabs[i].getDrawX()
-                                                > mStripLayoutHelper.getVisibleRightBound(
-                                                        /* clampToUnpinnedViews= */ true))
+                                                > mStripLayoutHelper
+                                                        .getFullyVisibleRightUnpinnedBound())
                         .findFirst()
                         .getAsInt();
 
@@ -854,8 +856,7 @@ public class StripLayoutHelperTest {
         assertTrue(
                 "Tab getting closed should be inside of the visible bounds",
                 tabs[closeTabIndex].getDrawX()
-                        <= mStripLayoutHelper.getVisibleRightBound(
-                                /* clampToUnpinnedViews= */ true));
+                        <= mStripLayoutHelper.getFullyVisibleRightUnpinnedBound());
 
         final StripLayoutHelper stripLayoutHelperSpy = spy(mStripLayoutHelper);
         closeTabAt(stripLayoutHelperSpy, closeTabIndex);
@@ -884,7 +885,7 @@ public class StripLayoutHelperTest {
 
         assertEquals(
                 "Tabs should be at minimum width for this test to be valid",
-                MIN_TAB_WIDTH_DP,
+                StripLayoutUtils.getMinTabWidthDp(),
                 mStripLayoutHelper.getUnpinnedTabWidth(),
                 EPSILON);
 
@@ -1906,15 +1907,14 @@ public class StripLayoutHelperTest {
                 STRIP_WIDTH, STRIP_HEIGHT, false, TIMESTAMP, PADDING_LEFT, PADDING_RIGHT, 0f);
         mStripLayoutHelper.updateLayout(TIMESTAMP);
 
-        // Verify mReservedStartMargin is 38.f (BUTTON_TOUCH_TARGET_SIZE_DP (48) - 10.f)
+        // Verify mReservedStartMargin is 38.f (buttonTouchTargetSize (48) - 10.f)
         assertEquals(
                 "Reserved start margin should be 38.f",
                 38.f,
                 mStripLayoutHelper.getReservedStartMarginForTesting(),
                 EPSILON);
 
-        // Verify left fade opaque width: BUTTON_TOUCH_TARGET_SIZE_DP (48) + mButtonSideFadePadding
-        // (8)
+        // Verify left fade opaque width: buttonTouchTargetSize (48) + mButtonSideFadePadding (8)
         assertEquals(
                 "Left fade opaque width should be 56.f",
                 56.f,
@@ -1931,15 +1931,14 @@ public class StripLayoutHelperTest {
                 STRIP_WIDTH, STRIP_HEIGHT, false, TIMESTAMP, PADDING_LEFT, PADDING_RIGHT, 0f);
         mStripLayoutHelper.updateLayout(TIMESTAMP);
 
-        // Verify mReservedStartMargin is 38.f (BUTTON_TOUCH_TARGET_SIZE_DP (48) - 10.f)
+        // Verify mReservedStartMargin is 38.f (buttonTouchTargetSize (48) - 10.f)
         assertEquals(
                 "Reserved start margin should be 38.f",
                 38.f,
                 mStripLayoutHelper.getReservedStartMarginForTesting(),
                 EPSILON);
 
-        // Verify right fade opaque width: BUTTON_TOUCH_TARGET_SIZE_DP (48) + mButtonSideFadePadding
-        // (8)
+        // Verify right fade opaque width: buttonTouchTargetSize (48) + mButtonSideFadePadding (8)
         assertEquals(
                 "Right fade opaque width should be 56.f",
                 56.f,
@@ -3521,6 +3520,50 @@ public class StripLayoutHelperTest {
                 "Bottom indicator end width is incorrect",
                 expectedStartWidth2,
                 groupTitle2.getBottomIndicatorWidth(),
+                EPSILON);
+    }
+
+    @Test
+    public void testCollapsedGroupSpacing() {
+        // Initialize with 3 tabs: Tab 0, Tab 1, Tab 2.
+        initializeTest(false, false, 0, 3);
+        mStripLayoutHelper.onSizeChanged(
+                STRIP_WIDTH, STRIP_HEIGHT, false, TIMESTAMP, PADDING_LEFT, PADDING_RIGHT, 0f);
+
+        // Group Tab 1 (the middle tab).
+        groupTabs(1, 2, TAB_GROUP_ID_1);
+
+        // Collapse the tab group.
+        StripLayoutView[] views = mStripLayoutHelper.getStripLayoutViewsForTesting();
+        assertTrue(views[1] instanceof StripLayoutGroupTitle);
+        StripLayoutGroupTitle groupTitle = (StripLayoutGroupTitle) views[1];
+        mStripLayoutHelper.collapseTabGroupForTesting(groupTitle, true);
+
+        // Force positions to be recomputed.
+        mStripLayoutHelper.updateLayout(TIMESTAMP);
+
+        // The views are now: [Tab 0, GroupTitle, Collapsed Tab 1, Tab 2].
+        StripLayoutTab tab0 = (StripLayoutTab) views[0];
+        StripLayoutTab tab2 = (StripLayoutTab) views[3];
+
+        // Spacing on the left of groupTitle: the distance from tab0's flat end to the start of
+        // groupTitle's bubble.
+        // tab0's flat end = tab0.getIdealX() + tab0.getWidth() - 16.f (FOLIO_FOOT_LENGTH_DP)
+        // groupTitle's bubble start = groupTitle.getPaddedX()
+        float leftSpacing = groupTitle.getPaddedX() - (tab0.getIdealX() + tab0.getWidth() - 16.f);
+
+        // Spacing on the right of groupTitle: the distance from the end of groupTitle's bubble to
+        // tab2's flat start.
+        // groupTitle's bubble end = groupTitle.getPaddedX() + groupTitle.getPaddedWidth()
+        // tab2's flat start = tab2.getIdealX() + 16.f (FOLIO_FOOT_LENGTH_DP)
+        float rightSpacing =
+                (tab2.getIdealX() + 16.f) - (groupTitle.getPaddedX() + groupTitle.getPaddedWidth());
+
+        // Assert: left and right spacings of the collapsed group should be equal / even.
+        assertEquals(
+                "Left and right visual spacing of a collapsed group should be even.",
+                leftSpacing,
+                rightSpacing,
                 EPSILON);
     }
 

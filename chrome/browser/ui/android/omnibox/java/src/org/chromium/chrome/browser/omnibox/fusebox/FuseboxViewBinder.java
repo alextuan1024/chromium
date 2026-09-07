@@ -44,7 +44,6 @@ import org.chromium.chrome.browser.omnibox.fusebox.FuseboxViewHolder.AnchoringMo
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.browser_ui.widget.RoundedCornerOutlineProvider;
-import org.chromium.components.browser_ui.widget.chips.ChipView;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.IconResourceIdsProto.IconResourceIds;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -65,26 +64,11 @@ class FuseboxViewBinder {
         mResourceProvider = resourceProvider;
     }
 
-    private static final int[][] HOVER_STATES =
-            new int[][] {
-                new int[] {android.R.attr.state_hovered}, new int[] {} // Default, must be last
-            };
-
     /**
      * @see PropertyModelChangeProcessor.ViewBinder#bind(Object, Object, Object)
      */
     public void bind(PropertyModel model, FuseboxViewHolder view, PropertyKey propertyKey) {
-        if (propertyKey == FuseboxProperties.ACTIVATION_CHIP_CLICKED) {
-            view.activationChip.setOnClickListener(
-                    v -> model.get(FuseboxProperties.ACTIVATION_CHIP_CLICKED).run());
-        } else if (propertyKey == FuseboxProperties.ACTIVATION_CHIP_COMPACT) {
-            view.activationChip.setIsCompact(model.get(FuseboxProperties.ACTIVATION_CHIP_COMPACT));
-        } else if (propertyKey == FuseboxProperties.ACTIVATION_CHIP_SELECTED) {
-            view.activationChip.setSelected(model.get(FuseboxProperties.ACTIVATION_CHIP_SELECTED));
-        } else if (propertyKey == FuseboxProperties.ACTIVATION_CHIP_VISIBLE) {
-            updateButtonVisibility(
-                    model, FuseboxProperties.ACTIVATION_CHIP_VISIBLE, view.activationChip);
-        } else if (propertyKey == FuseboxProperties.ADAPTER) {
+        if (propertyKey == FuseboxProperties.ADAPTER) {
             view.attachmentsView.setAdapter(model.get(FuseboxProperties.ADAPTER));
         } else if (propertyKey == FuseboxProperties.ATTACHMENTS_VISIBLE) {
             boolean visible = model.get(FuseboxProperties.ATTACHMENTS_VISIBLE);
@@ -111,9 +95,9 @@ class FuseboxViewBinder {
             }
         } else if (propertyKey == FuseboxProperties.COLOR_SCHEME) {
             updateButtonsVisibilityAndStyling(model, view);
-        } else if (propertyKey == FuseboxProperties.FUSEBOX_STATE) {
-            reanchorViewsForCompactFusebox(model, view);
         } else if (propertyKey == FuseboxProperties.FUSEBOX_LAYOUT_MODE) {
+            reanchorViewsForCompactFusebox(model, view);
+        } else if (propertyKey == FuseboxProperties.FUSEBOX_STATE) {
             reanchorViewsForCompactFusebox(model, view);
         } else if (propertyKey == FuseboxProperties.PLUS_BUTTON_BACKGROUND_STYLE) {
             updatePlusButtonVisuals(model, view);
@@ -136,17 +120,10 @@ class FuseboxViewBinder {
             view.popup.mAddCurrentTab.setOnClickListener(
                     v -> model.get(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_CLICKED).run());
         } else if (propertyKey == FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED) {
-            boolean hasFavicon =
-                    model.get(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_FAVICON) != null;
-            if (hasFavicon) {
-                setIsEnabledAndReapplyColorFilter(
-                        model,
-                        FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED,
-                        view.popup.mAddCurrentTab);
-            } else {
-                view.popup.mAddCurrentTab.setEnabled(
-                        model.get(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED));
-            }
+            setIsEnabledAndReapplyColorFilter(
+                    model,
+                    FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED,
+                    view.popup.mAddCurrentTab);
         } else if (propertyKey == FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_FAVICON) {
             updateForCurrentTabFavicon(model, view);
         } else if (propertyKey == FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_VISIBLE) {
@@ -211,9 +188,10 @@ class FuseboxViewBinder {
         } else if (propertyKey == FuseboxProperties.POPUP_RECENT_TABS_ENABLED) {
             ViewGroup container = view.popup.mRecentTabsContainer;
             if (container != null) {
-                boolean enabled = model.get(FuseboxProperties.POPUP_RECENT_TABS_ENABLED);
                 for (int i = 0; i < container.getChildCount(); i++) {
-                    container.getChildAt(i).setEnabled(enabled);
+                    View child = container.getChildAt(i);
+                    setIsEnabledAndReapplyColorFilter(
+                            model, FuseboxProperties.POPUP_RECENT_TABS_ENABLED, child);
                 }
             }
         } else if (propertyKey == FuseboxProperties.POPUP_RECENT_TABS_HEADER_VISIBLE) {
@@ -282,6 +260,8 @@ class FuseboxViewBinder {
      */
     private static void reapplyColorFilter(View buttonView) {
         FuseboxItemViewHolder holder = getViewHolder(buttonView);
+        if (!holder.mHasColor) return;
+
         ImageView imageView = holder.mActionIcon;
         if (imageView == null) return;
 
@@ -322,7 +302,10 @@ class FuseboxViewBinder {
             } else {
                 buttonView =
                         LayoutInflater.from(group.getContext())
-                                .inflate(R.layout.fusebox_list_item, group, false);
+                                .inflate(
+                                        R.layout.fusebox_list_item,
+                                        group,
+                                        /* attachToRoot= */ false);
                 group.addView(buttonView, startIndex + i);
             }
             bindDynamicButton(
@@ -411,6 +394,7 @@ class FuseboxViewBinder {
                         buttonView.getContext(), isBottomSheet);
 
         FuseboxItemViewHolder holder = getViewHolder(buttonView);
+        holder.mHasColor = data.hasColor;
         updateIconSize(holder.mActionIcon, iconSize);
         updateIconSize(holder.mActionEndIcon, iconSize);
 
@@ -560,7 +544,6 @@ class FuseboxViewBinder {
         updateNavigateButton(model, view);
         updateRequestTypeButton(model, view);
         updatePopupTheme(model, view);
-        updateActivationChip(model, view);
         view.popup.mPopupWindow.setBackgroundDrawable(
                 mResourceProvider.getPopupBackgroundDrawable());
     }
@@ -644,32 +627,6 @@ class FuseboxViewBinder {
         button.setTextAppearance(
                 OmniboxResourceProvider.getRequestTypeButtonTextRes(brandedColorScheme));
         button.setCompoundDrawablesRelative(startDrawable, null, endDrawable, null);
-    }
-
-    private static void updateActivationChip(
-            PropertyModel propertyModel, FuseboxViewHolder viewHolder) {
-        Context context = viewHolder.parentView.getContext();
-        @BrandedColorScheme
-        int brandedColorScheme = propertyModel.get(FuseboxProperties.COLOR_SCHEME);
-        @ColorInt
-        int buttonColor =
-                OmniboxResourceProvider.getColorSurfaceContainerHigh(context, brandedColorScheme);
-        @ColorInt
-        int buttonColorHovered =
-                OmniboxResourceProvider.getColorSurfaceContainerHighest(
-                        context, brandedColorScheme);
-        int[] backgroundColors = new int[] {buttonColorHovered, buttonColor};
-
-        ChipView button = viewHolder.activationChip;
-        button.setBackgroundTintList(new ColorStateList(HOVER_STATES, backgroundColors));
-
-        @ColorInt
-        int colorOnSurface = OmniboxResourceProvider.getColorOnSurface(context, brandedColorScheme);
-        button.setIconTint(ColorStateList.valueOf(colorOnSurface));
-        @ColorInt
-        int focusRingColor = OmniboxResourceProvider.getColorPrimary(context, brandedColorScheme);
-        button.setForegroundTintList(ColorStateList.valueOf(focusRingColor));
-        button.setTextColor(colorOnSurface);
     }
 
     @SuppressLint("SwitchIntDef")
@@ -808,6 +765,7 @@ class FuseboxViewBinder {
                                 context, model.get(FuseboxProperties.POPUP_IS_BOTTOM_SHEET)));
         setCustomButtonDrawables(addCurrentTabButton, drawable, /* selected= */ false);
 
+        getViewHolder(addCurrentTabButton).mHasColor = favicon != null;
         if (favicon != null) {
             // This will change the alpha value based on the enabled state. The rgb values will
             // always be unaffected because the multiplied color is white.
@@ -846,6 +804,7 @@ class FuseboxViewBinder {
         public final ImageView mActionIcon;
         public final TextView mActionText;
         public final ImageView mActionEndIcon;
+        public boolean mHasColor;
 
         public FuseboxItemViewHolder(View itemView) {
             mActionIcon = itemView.findViewById(R.id.start_icon);

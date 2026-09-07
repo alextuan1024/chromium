@@ -9,6 +9,8 @@
 
 #import <vector>
 
+#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/suggestions_from_gemini_entry_point_consumer.h"
+
 @class TableViewItem;
 
 namespace autofill {
@@ -16,7 +18,7 @@ class EntityType;
 }  // namespace autofill
 
 // Consumer protocol for the Travel Info settings page.
-@protocol TravelInfoConsumer <NSObject>
+@protocol TravelInfoConsumer <SuggestionsFromGeminiEntryPointConsumer>
 
 // Sets the lists of travel information.
 - (void)setTravelInfoWithFlightReservations:

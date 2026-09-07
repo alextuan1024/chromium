@@ -15,13 +15,13 @@ cr-input {
   --cr-input-width: 100%;
 }
 
-#error-message {
+.error-message {
   color: var(--google-red-700);
   font-size: 0.85rem;
 }
 
 @media (prefers-color-scheme: dark) {
-  #error-message {
+  .error-message {
     color: var(--google-red-300);
   }
 }
@@ -43,11 +43,15 @@ cr-input {
   margin-bottom: 8px;
 }
 
-.dropdown-container label {
+.dropdown-container label,
+.toggle-container span {
   color: var(--cr-secondary-text-color);
-  display: block;
   font-size: 0.85rem;
   font-weight: 500;
+}
+
+.dropdown-container label {
+  display: block;
 }
 
 .dropdown-select {
@@ -86,4 +90,33 @@ select.dropdown-select {
 .dropdown-select:focus {
   outline: 2px solid var(--cr-focus-outline-color);
   outline-offset: -2px;
+}
+
+.dropdown-select.invalid,
+.dropdown-select[aria-invalid='true'] {
+  border-color: var(--google-red-700);
+}
+
+.dropdown-select.invalid:focus,
+.dropdown-select[aria-invalid='true']:focus {
+  caret-color: var(--google-red-700);
+  outline-color: var(--google-red-700);
+}
+
+@media (prefers-color-scheme: dark) {
+  .dropdown-select.invalid,
+  .dropdown-select[aria-invalid='true'] {
+    border-color: var(--google-red-300);
+  }
+
+  .dropdown-select.invalid:focus,
+  .dropdown-select[aria-invalid='true']:focus {
+    caret-color: var(--google-red-300);
+    outline-color: var(--google-red-300);
+  }
+}
+
+.icon-16 {
+  height: 16px;
+  width: 16px;
 }

@@ -58,12 +58,14 @@
 #include "components/policy/core/common/schema.h"
 #include "components/policy/policy_constants.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
@@ -79,7 +81,7 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/account_id/account_id.h"
@@ -454,11 +456,11 @@ bool PolicyUIStatusTest::ReloadPolicies(content::WebContents* contents) {
 #if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(PolicyUIStatusTest, CheckPolicyUiInGuestProfile) {
   // Verifies that the page opens in guest session.
-  const Browser* policy_browser = OpenURLOffTheRecord(
+  const BrowserWindowInterface* policy_browser = OpenURLOffTheRecord(
       browser()->GetProfile(), GURL(chrome::kChromeUIPolicyURL));
   ASSERT_TRUE(policy_browser);
   content::WebContents* contents =
-      policy_browser->tab_strip_model()->GetActiveWebContents();
+      policy_browser->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(ReloadPolicies(contents));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -765,11 +767,11 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonWithProfileReporting) {
 
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonOTRProfile) {
-  Browser* otr_browser = OpenURLOffTheRecord(browser()->GetProfile(),
-                                             GURL(chrome::kChromeUIPolicyURL));
+  BrowserWindowInterface* otr_browser = OpenURLOffTheRecord(
+      browser()->GetProfile(), GURL(chrome::kChromeUIPolicyURL));
   ASSERT_TRUE(otr_browser);
   content::WebContents* otr_contents =
-      otr_browser->tab_strip_model()->GetActiveWebContents();
+      otr_browser->GetTabStripModel()->GetActiveWebContents();
 
   // Concretely assert that CloudProfileReportingServiceFactory returns nullptr
   // for OTR profile, so no reporting service / scheduler is available.
@@ -798,7 +800,8 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonOTRProfile) {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
-#if !BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/442259475): Crashes on Android WebUI.
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 class PolicyPrecedenceUITest
     : public PolicyUITestBase,
       public ::testing::WithParamInterface<std::tuple<
@@ -900,7 +903,7 @@ INSTANTIATE_TEST_SUITE_P(PolicyPrecedenceUITestInstance,
                                           testing::Bool(),
                                           testing::Bool(),
                                           testing::Bool()));
-#endif  // !BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
 // TODO(https://crbug.com/1027135) Add tests to verify extension policies are

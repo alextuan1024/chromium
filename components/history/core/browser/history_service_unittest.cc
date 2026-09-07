@@ -121,11 +121,7 @@ class HistoryServiceTest : public testing::Test {
     history_dir_ = temp_dir_.GetPath().AppendASCII("HistoryServiceTest");
     ASSERT_TRUE(base::CreateDirectory(history_dir_));
     history_service_ = std::make_unique<history::HistoryService>();
-    if (!history_service_->Init(
-            TestHistoryDatabaseParamsForPath(history_dir_))) {
-      history_service_.reset();
-      ADD_FAILURE();
-    }
+    history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
   }
 
   void TearDown() override {
@@ -1154,10 +1150,6 @@ TEST_F(HistoryServiceTest, GetDomainDiversityBitmaskTest) {
 }
 
 TEST_F(HistoryServiceTest, GetDomainDiversity404sTest) {
-  // Allow 404 visits to be saved to History.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(history::kVisitedLinksOn404);
-
   HistoryService* history = history_service_.get();
   ASSERT_TRUE(history);
 
@@ -1214,10 +1206,6 @@ TEST_F(HistoryServiceTest, GetDomainDiversity404sTest) {
 // Gets unique local and synced domains visited and the last visited domain
 // within a time range.
 TEST_F(HistoryServiceTest, GetUniqueDomainsVisited) {
-  // Allow 404 visits to be saved to History.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(history::kVisitedLinksOn404);
-
   base::Time base_time = base::Time::Now();
   HistoryService* history = history_service_.get();
   ASSERT_TRUE(history);
@@ -1427,10 +1415,6 @@ TEST_F(HistoryServiceTest, GetDomainDiversityLocalVsSynced) {
 }
 
 TEST_F(HistoryServiceTest, GetMostRecentVisitsForGurl) {
-  // Allow 404s to be saved to history.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(history::kVisitedLinksOn404);
-
   HistoryService* history = history_service_.get();
   ASSERT_TRUE(history);
 
@@ -1510,11 +1494,7 @@ class OrderingHistoryServiceTest : public HistoryServiceTest {
     // Set up the HistoryService.
     history_service_ = std::make_unique<history::HistoryService>(
         nullptr, std::move(visit_delegate), nullptr, nullptr);
-    if (!history_service_->Init(
-            TestHistoryDatabaseParamsForPath(history_dir_))) {
-      history_service_.reset();
-      ADD_FAILURE();
-    }
+    history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
   }
 
   base::RunLoop run_loop_;

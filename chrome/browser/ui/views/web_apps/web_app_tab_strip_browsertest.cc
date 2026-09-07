@@ -24,7 +24,10 @@
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/existing_window_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
+#include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
@@ -77,6 +80,8 @@
 #include "content/public/test/url_loader_interceptor.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/view_utils.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -378,7 +383,7 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, PopOutTabOnInstall) {
   NavigateViaLinkClickToURLAndWait(browser(), start_url);
 
   // Install the site with the user display mode set to kTabbed.
-  Browser* app_browser;
+  BrowserWindowInterface* app_browser;
   webapps::AppId app_id;
   {
     ui_test_utils::BrowserCreatedObserver browser_created_observer;
@@ -886,7 +891,7 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, MoveTabsToNewWindow) {
 
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   chrome::MoveTabsToNewWindow(app_browser, {1});
-  Browser* new_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_created_observer.Wait();
   ASSERT_TRUE(new_browser);
 
   EXPECT_EQ(initial_browser_count + 1,
@@ -916,15 +921,14 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, MoveTabsToExistingWindow) {
   // Open a second app browser window.
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   chrome::MoveTabsToNewWindow(app_browser, {1});
-  Browser* app_browser2 = browser_created_observer.Wait();
+  BrowserWindowInterface* app_browser2 = browser_created_observer.Wait();
   ASSERT_TRUE(app_browser2);
 
   EXPECT_EQ(app_browser->GetTabStripModel()->count(), 1);
   EXPECT_EQ(app_browser2->GetTabStripModel()->count(), 2);
 
   // Test the "open in existing window" menu option.
-  TabMenuModel menu(nullptr,
-                    app_browser2->GetFeatures().tab_menu_model_delegate(),
+  TabMenuModel menu(nullptr, TabMenuModelDelegate::From(app_browser2),
                     app_browser2->GetTabStripModel(), 1);
   size_t submenu_index =
       menu.GetIndexOfCommandId(TabStripModel::CommandMoveToExistingWindow)

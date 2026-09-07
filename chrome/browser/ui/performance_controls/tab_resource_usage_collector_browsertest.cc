@@ -5,7 +5,7 @@
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_collector.h"
 
 #include "base/byte_size.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
 #include "chrome/browser/ui/performance_controls/test_support/resource_usage_collector_observer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -13,6 +13,7 @@
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 class TabResourceUsageCollectorBrowserTest : public InProcessBrowserTest {
@@ -34,7 +35,7 @@ class TabResourceUsageCollectorBrowserTest : public InProcessBrowserTest {
     run_loop.Run();
   }
 
-  TabStripModel* GetTabStripModel() { return browser()->tab_strip_model(); }
+  TabStripModel* GetTabStripModel() { return browser()->GetTabStripModel(); }
 };
 
 // TODO(crbug.com/368862390): This test fails on ChromeOS and Mac builds.

@@ -45,7 +45,6 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/metrics/metrics_service.h"
 #include "components/omnibox/common/omnibox_features.h"
-#include "components/plus_addresses/core/common/features.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/core/browser/cookie_settings_util.h"
@@ -63,9 +62,11 @@
 #include "components/version_info/channel.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_auth_fetcher.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/models/tree_node_iterator.h"
 #include "url/gurl.h"
 
@@ -157,6 +158,8 @@ signin_metrics::ProfileSignout kAlwaysAllowedSignoutSources[] = {
     signin_metrics::ProfileSignout::kSignoutDuringProfileDeletion,
     // Allowed as the user declined the enterprise management disclaimer.
     signin_metrics::ProfileSignout::kUserDeclinedEnterpriseManagementDisclaimer,
+    // Allowed as the user declined the enterprise signals disclaimer.
+    signin_metrics::ProfileSignout::kUserDeclinedEnterpriseSignalsDisclaimer,
 };
 
 // Returns the HaTS survey trigger corresponding to the given AccessPoint, or
@@ -187,15 +190,6 @@ std::string HatsSurveyTriggerForAccessPoint(
 
 class ChromeOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
  protected:
-  signin::OAuthConsumer GetOAuthConsumerForEnterprisePlusAddress()
-      const override {
-    CHECK(base::FeatureList::IsEnabled(
-        plus_addresses::features::kPlusAddressesEnabled));
-    return signin::OAuthConsumer(
-        signin::oauth_consumer_name::kEnterprisePlusAddressName,
-        {plus_addresses::features::kEnterprisePlusAddressOAuthScope.Get()});
-  }
-
   signin::OAuthConsumer GetOAuthConsumerForGlicUserStatus() const override {
     CHECK(base::FeatureList::IsEnabled(features::kGlicUserStatusCheck));
     return signin::OAuthConsumer(
@@ -230,12 +224,15 @@ class ChromeOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
         kCalendarListOAuth2Scope,
         GaiaConstants::kClearCutOAuth2Scope,
         kDocumentsOAuth2Scope,
-        GaiaConstants::kDriveOAuth2Scope,
         kGmailModifyOAuth2Scope,
         GaiaConstants::kLensOAuth2Scope,
         kPeopleReadOnlyOAuth2Scope,
         kSpreadsheetsOAuth2Scope,
     };
+    if (base::FeatureList::IsEnabled(
+            contextual_tasks::kContextualTasksDriveOAuthScope)) {
+      scopes.insert(GaiaConstants::kDriveOAuth2Scope);
+    }
     if (base::FeatureList::IsEnabled(
             contextual_tasks::kContextualTasksExtraOauthScopes)) {
       std::string extra_scopes_str =

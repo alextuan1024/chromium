@@ -35,6 +35,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace focus {
@@ -164,13 +165,14 @@ IN_PROC_BROWSER_TEST_F(FocusHandlerBrowserTest, IncognitoIsolation_NoMatch) {
   const GURL test_url("https://example.com/secret");
 
   // Create an incognito browser and navigate to a test URL
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   ui_test_utils::NavigateToURLWithDisposition(
       incognito_browser, test_url, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Verify the incognito tab exists
-  EXPECT_EQ(test_url, incognito_browser->tab_strip_model()
+  EXPECT_EQ(test_url, incognito_browser->GetTabStripModel()
                           ->GetActiveWebContents()
                           ->GetLastCommittedURL());
 
@@ -185,7 +187,7 @@ IN_PROC_BROWSER_TEST_F(FocusHandlerBrowserTest, IncognitoIsolation_NoMatch) {
   EXPECT_EQ(FocusStatus::kNoMatch, result.status);
 
   // Incognito browser should still be the active one (unchanged)
-  EXPECT_EQ(test_url, incognito_browser->tab_strip_model()
+  EXPECT_EQ(test_url, incognito_browser->GetTabStripModel()
                           ->GetActiveWebContents()
                           ->GetLastCommittedURL());
 }
@@ -198,7 +200,8 @@ IN_PROC_BROWSER_TEST_F(FocusHandlerBrowserTest,
   NavigateToURLInCurrentTab(test_url);
 
   // Create incognito browser and navigate to same URL
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   ui_test_utils::NavigateToURLWithDisposition(
       incognito_browser, test_url, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
@@ -214,7 +217,7 @@ IN_PROC_BROWSER_TEST_F(FocusHandlerBrowserTest,
   EXPECT_EQ(FocusStatus::kFocused, result.status);
 
   // Should focus the incognito tab, not the regular browser tab
-  EXPECT_EQ(test_url, incognito_browser->tab_strip_model()
+  EXPECT_EQ(test_url, incognito_browser->GetTabStripModel()
                           ->GetActiveWebContents()
                           ->GetLastCommittedURL());
 }
@@ -440,7 +443,8 @@ IN_PROC_BROWSER_TEST_F(FocusHandlerBrowserTest,
   const GURL test_url("https://example.com/secret");
 
   // Create incognito browser and navigate to test URL.
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   ui_test_utils::NavigateToURLWithDisposition(
       incognito_browser, test_url, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);

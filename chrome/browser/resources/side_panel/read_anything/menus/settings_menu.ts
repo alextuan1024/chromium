@@ -15,6 +15,7 @@ import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mix
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {browserProxyFactory as userEducationProxyFactory} from '//resources/mojo/components/user_education/webui/user_education.mojom-webui.js';
 
 import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
 import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
@@ -24,7 +25,6 @@ import {openMenu} from '../shared/common.js';
 import {isActivationKey, isBackwardArrow, isForwardArrow, isVerticalArrow} from '../shared/keyboard_util.js';
 import {ReadAnythingSettingsAction, ReadAnythingSettingsChange} from '../shared/metrics_browser_proxy.js';
 import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
-import {browserProxyFactory as userEducationProxyFactory} from '../user_education.mojom-webui.js';
 
 import {LINE_FOCUS_FEATURE_NAME} from './line_focus_menu.js';
 import {SettingsItemType} from './menu_util.js';
@@ -45,6 +45,12 @@ const MENU_ITEM_DATA: Record<SettingsOption, SettingsItem> = {
     id: SettingsOption.APPEARANCE,
     icon: 'read-anything:appearance',
     title: 'appearanceTitle',
+    itemType: SettingsItemType.MENU,
+  },
+  [SettingsOption.AUDIO]: {
+    id: SettingsOption.AUDIO,
+    icon: 'read-anything:volume-up',
+    title: 'audioTitle',
     itemType: SettingsItemType.MENU,
   },
   [SettingsOption.COLOR]: {
@@ -145,7 +151,7 @@ const MENU_ITEM_DATA: Record<SettingsOption, SettingsItem> = {
   },
   [SettingsOption.TRANSLATION_REQUESTED]: {
     id: SettingsOption.TRANSLATION_REQUESTED,
-    icon: 'read-anything:translate',
+    icon: 'read-anything:g-translate',
     title: 'translateLabel',
     itemType: SettingsItemType.ACTION,
   },
@@ -237,6 +243,11 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     this.keyDownCallback_ = this.onKeyDown_.bind(this);
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.close();
+  }
+
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
@@ -291,9 +302,13 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       SettingsOption.APPEARANCE,
       SettingsOption.MEDIA,
       SettingsOption.TEXT,
+      SettingsOption.AUDIO,
       SettingsOption.VOICE_SELECTION,
-      SettingsOption.VOICE_HIGHLIGHT,
     ];
+
+    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
+      optionIDs.push(SettingsOption.LINE_FOCUS);
+    }
 
     if (this.visualBrowserProxy_.isReadAnythingTranslateEntryPointEnabled()) {
       optionIDs.push(SettingsOption.TRANSLATION_REQUESTED);
@@ -308,8 +323,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
 
   private initializeMenuOptions_() {
     let optionIDs: SettingsOption[];
-    if (this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled() &&
-        this.visualBrowserProxy_.isImmersiveEnabled()) {
+    if (this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled()) {
       optionIDs = this.initializeMenuOptionsForImprovedUi_();
     } else {
       optionIDs = this.initializeMenuOptionsLegacy_();
@@ -317,10 +331,18 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
 
     this.options_ = optionIDs.map(id => {
       const original = MENU_ITEM_DATA[id];
-      const title = loadTimeData.getString(original.title);
+      let title = loadTimeData.getString(original.title);
       let ariaLabel = title;
       let checked = false;
       let disabled = false;
+      let icon = original.icon;
+
+      if (id === SettingsOption.LINE_FOCUS &&
+          this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled()) {
+        icon = 'read-anything:service_toolbox';
+        title = loadTimeData.getString('toolsLabel');
+        ariaLabel = title;
+      }
 
       if (id === SettingsOption.IMAGES) {
         checked = this.visualBrowserProxy_.isImagesEnabled();
@@ -347,6 +369,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
         ...original,
         id,
         title,
+        icon,
         ariaLabel,
         checked,
         disabled,
@@ -434,13 +457,14 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       return;
     }
 
-    this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
-      id: newMenuId,
-      previousId: this.currentOpenId_,
-      target: currentTarget,
-    });
+    const previousId = this.currentOpenId_;
     this.currentOpenId_ = newMenuId;
     this.lastMenuOpenTime_ = Date.now();
+    this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
+      id: newMenuId,
+      previousId,
+      target: currentTarget,
+    });
   }
 
   private onToggleMenuItemClick_(item: SettingsItem) {
@@ -510,13 +534,14 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
         MENU_SHOW_DELAY_MS;
 
     this.openTimer_ = window.setTimeout(() => {
-      this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
-        id: newMenuId,
-        previousId: this.currentOpenId_,
-        target: currentTarget,
-      });
+      const previousId = this.currentOpenId_;
       this.currentOpenId_ = newMenuId;
       this.lastMenuOpenTime_ = Date.now();
+      this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
+        id: newMenuId,
+        previousId,
+        target: currentTarget,
+      });
     }, delay);
   }
 

@@ -114,17 +114,16 @@ void ShowCustomizationBubble(std::optional<SkColor> new_profile_color,
     return;
   }
 
-  BrowserWindowFeatures& features = browser->GetFeatures();
   if (ProfileCustomizationBubbleSyncController::CanThemeSyncStart(
           browser->GetProfile())) {
     // For sync users, their profile color has not been applied yet. Call a
     // helper class that applies the color and shows the bubble only if there is
     // no conflict with a synced theme / color.
-    features.profile_customization_bubble_sync_controller()
+    ProfileCustomizationBubbleSyncController::From(browser)
         ->ShowOnSyncFailedOrDefaultTheme(new_profile_color.value());
   } else {
     // For non syncing users, simply show the bubble.
-    features.signin_view_controller()->ShowModalProfileCustomizationDialog();
+    SigninViewController::From(browser)->ShowModalProfileCustomizationDialog();
   }
 }
 
@@ -458,10 +457,8 @@ void ShowLocalProfileCustomization(
     BeginFirstWebContentsProfiling(browser, profile_picked_time_on_startup);
   }
 
-  browser->GetFeatures()
-      .signin_view_controller()
-      ->ShowModalProfileCustomizationDialog(
-          /*is_local_profile_creation=*/true);
+  SigninViewController::From(browser)->ShowModalProfileCustomizationDialog(
+      /*is_local_profile_creation=*/true);
 }
 
 void MaybeOpenPageInBrowser(BrowserWindowInterface* browser,

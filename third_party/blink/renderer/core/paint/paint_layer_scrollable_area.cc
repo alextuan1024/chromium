@@ -447,8 +447,8 @@ void PaintLayerScrollableArea::UpdateScrollOffset(
   // The ScrollOffsetTranslation paint property depends on the scroll offset.
   // (see: PaintPropertyTreeBuilder::UpdateScrollAndScrollTranslation).
   GetLayoutBox()->SetNeedsPaintPropertyUpdate();
-  frame_view->UpdateIntersectionObservationStateOnScroll(new_offset -
-                                                         scroll_offset_);
+  frame_view->SetIntersectionObservationState(
+      LocalFrameView::kScrollAndVisibilityOnly);
 
   scroll_offset_ = new_offset;
 
@@ -466,13 +466,15 @@ void PaintLayerScrollableArea::UpdateScrollOffset(
     // Update regions, scrolling may change the clip of a particular region.
     frame_view->UpdateDocumentDraggableRegions();
 
-    // As a performance optimization, the scroll offset of the root layer is
-    // not included in EmbeddedContentView's stored frame rect, so there is no
-    // reason to mark the FrameView as needing a geometry update here.
-    if (is_root_layer)
+    if (is_root_layer &&
+        !RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled()) {
+      // As a performance optimization, the scroll offset of the root layer is
+      // not included in EmbeddedContentView's stored frame rect, so there is no
+      // reason to mark the FrameView as needing a geometry update here.
       frame_view->SetRootLayerDidScroll();
-    else
+    } else {
       frame_view->SetNeedsUpdateGeometries();
+    }
   }
 
   if (auto* scrolling_coordinator = GetScrollingCoordinator()) {
@@ -617,7 +619,7 @@ bool PaintLayerScrollableArea::BackgroundNeedsRepaintOnScroll() const {
   return false;
 }
 
-gfx::Vector2d PaintLayerScrollableArea::ScrollOffsetInt() const {
+gfx::Vector2d PaintLayerScrollableArea::PixelSnappedScrollOffset() const {
   return SnapScrollOffsetToPhysicalPixels(scroll_offset_);
 }
 

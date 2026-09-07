@@ -17,8 +17,8 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/search/search.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
@@ -41,6 +41,7 @@
 #include "media/base/media_switches.h"
 #include "net/base/filename_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "content/public/browser/browser_child_process_host.h"
@@ -361,7 +362,10 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
 class ChromeRenderProcessHostBackgroundingTest
     : public ChromeRenderProcessHostTest {
  public:
-  ChromeRenderProcessHostBackgroundingTest() = default;
+  ChromeRenderProcessHostBackgroundingTest() {
+    feature_list_.InitAndDisableFeature(
+        performance_manager::features::kPMLoadingPageVoter);
+  }
 
   ChromeRenderProcessHostBackgroundingTest(
       const ChromeRenderProcessHostBackgroundingTest&) = delete;
@@ -405,6 +409,8 @@ class ChromeRenderProcessHostBackgroundingTest
       EXPECT_EQ(expected_is_backgrounded, IsProcessBackgrounded(p));
     }
   }
+
+  base::test::ScopedFeatureList feature_list_;
 };
 
 #define EXPECT_PROCESS_IS_BACKGROUNDED(process_or_tab)                       \
@@ -657,17 +663,8 @@ class ChromeRenderProcessHostBackgroundingTestWithAudio
     : public ChromeRenderProcessHostTest {
  public:
   ChromeRenderProcessHostBackgroundingTestWithAudio() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {
-          // Tests require that each tab has a different process.
-          features::kDisableProcessReuse,
-#if BUILDFLAG(IS_MAC)
-          // Tests require that backgrounding processes is possible.
-          features::kMacAllowBackgroundingRenderProcesses,
-#endif
-        },
-        /*disabled_features=*/{});
+    // Tests require that each tab has a different process.
+    feature_list_.InitAndEnableFeature(features::kDisableProcessReuse);
   }
 
   ChromeRenderProcessHostBackgroundingTestWithAudio(

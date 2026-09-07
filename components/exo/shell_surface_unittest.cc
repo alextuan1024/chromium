@@ -3377,7 +3377,7 @@ TEST_F(ShellSurfaceTest, ShadowRoundedCorners) {
   ASSERT_TRUE(shadow);
 
   // Window shadow radius needs to match the window radius.
-  EXPECT_EQ(shadow->rounded_corners_for_testing(), gfx::RoundedCornersF());
+  EXPECT_EQ(shadow->rounded_corners(), gfx::RoundedCornersF());
 
   // Have a window with radius of 12dp.
   shell_surface->SetWindowCornersRadii(
@@ -3386,7 +3386,7 @@ TEST_F(ShellSurfaceTest, ShadowRoundedCorners) {
 
   shadow = wm::ShadowController::GetShadowForWindow(window);
   ASSERT_TRUE(shadow);
-  EXPECT_EQ(shadow->rounded_corners_for_testing(),
+  EXPECT_EQ(shadow->rounded_corners(),
             gfx::RoundedCornersF(kWindowCornerRadius));
 
   // Have a window with radius of 0dp.
@@ -3395,7 +3395,7 @@ TEST_F(ShellSurfaceTest, ShadowRoundedCorners) {
 
   shadow = wm::ShadowController::GetShadowForWindow(window);
   ASSERT_TRUE(shadow);
-  EXPECT_EQ(shadow->rounded_corners_for_testing(), gfx::RoundedCornersF());
+  EXPECT_EQ(shadow->rounded_corners(), gfx::RoundedCornersF());
 }
 
 TEST_F(ShellSurfaceTest, RoundedWindows) {
@@ -4398,6 +4398,24 @@ TEST_F(ShellSurfaceTest, SetSystemModal) {
   EXPECT_FALSE(shell_surface->frame_enabled());
 }
 
+TEST_F(ShellSurfaceTest, SetSystemModalNotAllowed) {
+  exo::test::TestSecurityDelegate security_delegate;
+  security_delegate.SetCanSetSystemModal(false);
+
+  std::unique_ptr<ShellSurface> shell_surface =
+      test::ShellSurfaceBuilder({256, 256})
+          .SetUseSystemModalContainer()
+          .SetSecurityDelegate(&security_delegate)
+          .SetNoCommit()
+          .BuildShellSurface();
+
+  shell_surface->SetSystemModal(true);
+  shell_surface->root_surface()->Commit();
+
+  EXPECT_NE(ui::mojom::ModalType::kSystem, shell_surface->GetModalType());
+  EXPECT_FALSE(ash::Shell::IsSystemModalWindowOpen());
+}
+
 TEST_F(ShellSurfaceTest, PipInitialPosition) {
   std::unique_ptr<ShellSurface> shell_surface =
       test::ShellSurfaceBuilder({256, 256})
@@ -5052,9 +5070,9 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
 
   // xdg-shell without a frame type will use NOT_DRAWN layer type and
   // should control the opacity by themselves.
-  EXPECT_EQ(ui::LAYER_NOT_DRAWN, window1->layer()->type());
+  EXPECT_TRUE(window1->layer()->AsNotDrawn());
   EXPECT_FALSE(window1->GetProperty(chromeos::kWindowManagerManagesOpacityKey));
-  EXPECT_EQ(ui::LAYER_NOT_DRAWN, window2->layer()->type());
+  EXPECT_TRUE(window2->layer()->AsNotDrawn());
   EXPECT_FALSE(window2->GetProperty(chromeos::kWindowManagerManagesOpacityKey));
 
   const std::vector<gfx::Rect> kNormalOpaqueRegion{gfx::Rect(256, 256)};
@@ -5233,7 +5251,7 @@ TEST_F(ShellSurfaceTest, TinyOpaqueMaximizedSurfaceFalselyOccludesUnderlying) {
           .BuildShellSurface();
   aura::Window* attacker_widget = attacker->GetWidget()->GetNativeWindow();
 
-  ASSERT_EQ(ui::LAYER_NOT_DRAWN, attacker_widget->layer()->type());
+  ASSERT_TRUE(attacker_widget->layer()->AsNotDrawn());
   ASSERT_TRUE(attacker->root_surface()->FillsBoundsOpaquely());
 
   // The client maximizes the window but never resizes its buffer.

@@ -60,6 +60,10 @@
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "components/tracing/common/etw_stack_sampling_win.h"
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/renderer_host/compositor_impl_android.h"
 #endif
@@ -67,6 +71,8 @@
 namespace content::protocol {
 
 namespace {
+
+bool g_did_adopt_startup_session = false;
 
 const double kMinimumReportingInterval = 250.0;
 
@@ -552,11 +558,13 @@ class TracingHandler::PerfettoTracingSession {
 
 TracingHandler::TracingHandler(DevToolsAgentHostImpl* host,
                                DevToolsIOContext* io_context,
-                               DevToolsSession* root_session)
+                               DevToolsSession* root_session,
+                               bool is_trusted)
     : DevToolsDomainHandler(Tracing::Metainfo::domainName),
       io_context_(io_context),
       host_(host),
       session_for_process_filter_(root_session),
+      is_trusted_(is_trusted),
       did_initiate_recording_(false),
       return_as_stream_(false),
       gzip_compression_(false),
@@ -756,6 +764,13 @@ void TracingHandler::Start(
     }
 
     ConvertToTrackEventConfigIfNeeded(trace_config);
+#if BUILDFLAG(IS_WIN)
+    // TODO(jessemckenna): replace this with
+    // `tracing::AdaptPerfettoConfigForChrome()`, to make sure all
+    // Chrome-specific config adaptations are applied.
+    tracing::AddEtwStackSamplingDebugIds(trace_config);
+#endif
+
   } else {
     base::trace_event::TraceConfig browser_config =
         base::trace_event::TraceConfig();
@@ -779,6 +794,12 @@ void TracingHandler::Start(
   if (!backend) {
     callback->sendFailure(Response::InvalidParams(
         "Unsupported value for tracing_backend parameter."));
+    return;
+  }
+
+  if (*backend == perfetto::BackendType::kSystemBackend && !is_trusted_) {
+    callback->sendFailure(Response::ServerError(
+        "System backend is not allowed for the current client"));
     return;
   }
 
@@ -890,11 +911,15 @@ void TracingHandler::AttemptAdoptStartupSession(
   if (session_for_process_filter_) {
     return;
   }
-  auto& startup_config = tracing::TraceStartupConfig::GetInstance();
-  if (!startup_config.AttemptAdoptBySessionOwner(
+  if (g_did_adopt_startup_session) {
+    return;
+  }
+  const auto& startup_config = tracing::TraceStartupConfig::GetInstance();
+  if (!startup_config.ShouldAdoptBySessionOwner(
           tracing::TraceStartupConfig::SessionOwner::kDevToolsTracingHandler)) {
     return;
   }
+  g_did_adopt_startup_session = true;
 
   return_as_stream_ = return_as_stream;
   gzip_compression_ = gzip_compression;

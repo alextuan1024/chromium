@@ -51,6 +51,7 @@ CreateValidNavigationControlsState() {
       toolbar_ui_api::mojom::PerformanceInterventionControlState::New(),
       toolbar_ui_api::mojom::AppMenuControlState::New(),
       toolbar_ui_api::mojom::AvatarControlState::New(),
+      toolbar_ui_api::mojom::OverflowButtonControlState::New(),
       /*battery_saver_button_visible=*/false,
       toolbar_ui_api::mojom::LocationBarState::New(
           toolbar_ui_api::mojom::OmniboxViewState::New(),
@@ -64,6 +65,7 @@ CreateValidNavigationControlsState() {
                   /*text=*/std::u16string(),
                   /*tooltip=*/std::u16string(),
                   toolbar_ui_api::mojom::SecurityChipAccessibilityState::New(
+                      /*role=*/toolbar_ui_api::mojom::SecurityChipRole::kButton,
                       /*label=*/std::u16string(),
                       /*description=*/std::u16string()),
                   /*is_clickable=*/false,

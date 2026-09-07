@@ -91,6 +91,10 @@
   E(kActionUnfocusTabGroup, IDC_UNFOCUS_TAB_GROUP) \
   E(kActionAddNewTabToGroup, IDC_ADD_NEW_TAB_TO_GROUP) \
   E(kActionCreateNewTabGroup, IDC_CREATE_NEW_TAB_GROUP) \
+  E(kActionTabGroupOpenInBrowser) \
+  E(kActionTabGroupOpenInNewWindow) \
+  E(kActionTabGroupPin) \
+  E(kActionTabGroupDelete) \
   E(kActionFocusNextTabGroup, IDC_FOCUS_NEXT_TAB_GROUP) \
   E(kActionFocusPrevTabGroup, IDC_FOCUS_PREV_TAB_GROUP) \
   E(kActionCloseTabGroup, IDC_CLOSE_TAB_GROUP) \
@@ -562,7 +566,8 @@
   E(kActionHelpSubmenu, IDC_HELP_MENU)                                     \
   E(kActionSavedTabGroupsSubmenu, IDC_SAVED_TAB_GROUPS_MENU)               \
   E(kActionRecentTabsSubmenu, IDC_RECENT_TABS_MENU)                       \
-  E(kActionDeveloperSubmenu, IDC_DEVELOPER_MENU)
+  E(kActionDeveloperSubmenu, IDC_DEVELOPER_MENU)                               \
+  E(kActionExtensionsSubmenu, IDC_EXTENSIONS_SUBMENU)
 
 #define CHROME_ACTION_IDS \
     CHROME_COMMON_ACTION_IDS \

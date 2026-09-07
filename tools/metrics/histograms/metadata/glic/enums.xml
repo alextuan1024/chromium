@@ -154,6 +154,8 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="UserTriggeredColdStart"/>
   <int value="2" label="Refill"/>
   <int value="3" label="ReloadAfterExpiry"/>
+  <int value="4" label="Nudge"/>
+  <int value="5" label="Iph"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/glic/host/glic_web_contents_warming_pool.h:GlicContainerCreationReason) -->
@@ -210,25 +212,6 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/glic/service/metrics/glic_instance_helper_metrics.h:DaisyChainFirstAction) -->
-
-<!-- LINT.IfChange(GlicDetailedWebClientState) -->
-
-<enum name="GlicDetailedWebClientState">
-  <int value="0" label="Bootstrap pending"/>
-  <int value="1" label="Web client not created"/>
-  <int value="2" label="Web client initialize failed"/>
-  <int value="3" label="Web client created but not initialized"/>
-  <int value="4" label="(Obsolete) Temporary unresponsive"/>
-  <int value="5" label="(Obsolete) Permanent unresponsive"/>
-  <int value="6" label="Responsive"/>
-  <int value="7" label="(Obsolete) Responsive Inactive"/>
-  <int value="8" label="(Obsolete) Unresponsive Inactive"/>
-  <int value="9" label="(Obsolete) Mojo pipe closed unexpectedly"/>
-  <int value="10" label="Mojo pipe closed unexpectedly before initialize"/>
-  <int value="11" label="Mojo pipe closed unexpectedly after initialization"/>
-</enum>
-
-<!-- LINT.ThenChange(//chrome/browser/resources/glic/glic_api_impl/host/glic_api_host.ts:DetailedWebClientState) -->
 
 <!-- LINT.IfChange(GlicDragAndDropContentType) -->
 
@@ -482,9 +465,10 @@ chromium-metrics-reviews@google.com.
   <int value="102" label="ActivateTabWithUrl"/>
   <int value="103" label="UpdateActorTaskStepProgress"/>
   <int value="104" label="OpenPinnedTabPicker"/>
+  <int value="105" label="OpenContactInfoSettingsPage"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/resources/glic/glic_api_impl/request_types.ts:ApiRequestType) -->
+<!-- LINT.ThenChange(//chrome/browser/glic/public/glic_api_metrics.h:GlicHostApiRequestId) -->
 
 <!-- LINT.IfChange(GlicHotkeyUsage) -->
 
@@ -630,9 +614,10 @@ chromium-metrics-reviews@google.com.
   <int value="40" label="Reshow inactive"/>
   <int value="41" label="Tab context menu"/>
   <int value="42" label="Web Continuity"/>
+  <int value="43" label="History page chat linkout"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/glic/host/glic.mojom:InvocationSource) -->
+<!-- LINT.ThenChange(//chrome/common/glic_enums.mojom:InvocationSource) -->
 
 <!-- LINT.IfChange(GlicInvokeResult) -->
 
@@ -779,7 +764,7 @@ chromium-metrics-reviews@google.com.
   <int value="20" label="Device low memory"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/glic/glic_profile_manager.h:GlicPrewarmingChecksResult) -->
+<!-- LINT.ThenChange(//chrome/browser/glic/glic_warming_checks.h:GlicPrewarmingChecksResult) -->
 
 <!-- LINT.IfChange(GlicPrewarmingFreSource) -->
 
@@ -1101,6 +1086,10 @@ chromium-metrics-reviews@google.com.
   <int value="170" label="Web Continuity, attached, audio mode."/>
   <int value="171" label="Web Continuity, detached, text mode."/>
   <int value="172" label="Web Continuity, detached, audio mode."/>
+  <int value="173" label="History page chat linkout, attached, text mode."/>
+  <int value="174" label="History page chat linkout, attached, audio mode."/>
+  <int value="175" label="History page chat linkout, detached, text mode."/>
+  <int value="176" label="History page chat linkout, detached, audio mode."/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/glic/service/metrics/metrics_types.h:ResponseSegmentation) -->
@@ -1225,6 +1214,19 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/glic/host/glic_web_contents_warming_pool.h:GlicWarmingPoolStatus) -->
+
+<!-- LINT.IfChange(GlicWebClientLifecycleEvent) -->
+
+<enum name="GlicWebClientLifecycleEvent">
+  <int value="0" label="Created"/>
+  <int value="1" label="Initialized"/>
+  <int value="2" label="Disconnected before initialization"/>
+  <int value="3" label="Disconnected after initialization"/>
+  <int value="4" label="Disconnected on navigation"/>
+  <int value="5" label="Disconnected on process gone"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/glic/host/glic_web_client_manager.h:GlicWebClientLifecycleEvent) -->
 
 <!-- LINT.IfChange(GlicWebClientMode) -->
 
@@ -1429,24 +1431,25 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(WebClientUnresponsiveState) -->
 
 <enum name="WebClientUnresponsiveState">
-  <int value="0" label="Entered; webview event">
-    Entered unresponsive state, detected by a webview unresponsive event&quot;
+  <int value="0" label="(Obsolete) Entered; webview event">
+    (Obsolete) Entered unresponsive state, previously detected by JS webview
+    event.
   </int>
   <int value="1" label="Entered; heartbeat">
-    Entered unresponsive state, detected by Glic's custom heartbeat check&quot;
+    Entered unresponsive state, detected by Glic's C++ responsiveness monitor.
   </int>
-  <int value="2" label="Already unresponsive; webview event">
-    Already on unresponsive state, detected again by a webview unresponsive
-    event&quot;
+  <int value="2" label="(Obsolete) Already unresponsive; webview event">
+    (Obsolete) Already in unresponsive state, detected by JS webview event.
   </int>
-  <int value="3" label="Already unresponsive; heartbeat">
-    Already on unresponsive state, detected again by Glic's custom heartbeat
-    check&quot;
+  <int value="3" label="(Obsolete) Already unresponsive; heartbeat">
+    (Obsolete) Already in unresponsive state, detected by JS heartbeat.
   </int>
-  <int value="4" label="Exited">Exited unresponsive state&quot;</int>
+  <int value="4" label="Exited">
+    Exited unresponsive state, detected by Glic's C++ responsiveness monitor.
+  </int>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/resources/glic/glic_app_controller.ts:WebClientUnresponsiveState) -->
+<!-- LINT.ThenChange(//chrome/browser/glic/host/glic_web_client_responsiveness_monitor.h:WebClientUnresponsiveState) -->
 
 <!-- LINT.IfChange(WebUiState) -->
 
@@ -1481,7 +1484,7 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="AutoPlay granted for other RFH"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/glic/host/guest_util.cc:WebViewAutoPlayProgress) -->
+<!-- LINT.ThenChange(//chrome/browser/glic/host/glic_guest_observer.cc:WebViewAutoPlayProgress) -->
 
 </enums>
 

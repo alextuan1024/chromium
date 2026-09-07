@@ -6,6 +6,7 @@
 #define COMPONENTS_PRIVATE_VERIFICATION_TOKENS_COMMON_PRIVACY_PASS_ATHM_BATCH_REQUEST_H_
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "base/containers/span.h"
@@ -20,13 +21,10 @@ namespace private_verification_tokens {
 enum class PrivacyPassAthmBatchRequestError {
   kInvalidBatchSize,
   kInvalidBucketCount,
-  kParameterGenerationFailed,
   kClientRequestGenerationFailed,
-  kTokenRequestEncodingFailed,
   kAlreadyFinalized,
   kInvalidResponseBodyLength,
   kClientFinalizeFailed,
-  kTokenEncodingFailed,
 };
 
 // Encapsulates a batched Privacy Pass request using Anonymous Tokens with
@@ -63,7 +61,8 @@ class PrivacyPassAthmBatchRequest {
       delete;
 
   // The serialized HTTP request body containing the concatenated marshaled
-  // AthmTokenRequest structures (each 36 bytes) for all tokens in the batch.
+  // AthmTokenRequest structures (each 36 bytes) for all tokens in the batch
+  // followed by the 4-byte version number in big-endian order.
   const std::vector<uint8_t>& request_body() const { return request_body_; }
 
   // Unblinds and finalizes the batch response returned by the issuance server.
@@ -79,14 +78,9 @@ class PrivacyPassAthmBatchRequest {
   Finalize(base::span<const uint8_t> response_body);
 
  private:
-  PrivacyPassAthmBatchRequest(PrivateVerificationTokensPublicKey pvt_public_key,
-                              AthmParameters params,
-                              std::vector<AthmClientRequest> client_requests,
-                              std::vector<uint8_t> request_body);
+  explicit PrivacyPassAthmBatchRequest(PrivacyPassBatchClient batch_client);
 
-  PrivateVerificationTokensPublicKey pvt_public_key_;
-  AthmParameters params_;
-  std::vector<AthmClientRequest> client_requests_;
+  std::optional<PrivacyPassBatchClient> batch_client_;
   std::vector<uint8_t> request_body_;
 };
 

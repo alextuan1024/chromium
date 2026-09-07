@@ -187,10 +187,8 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     public static final int EXT_SEL_END_OFFSET_TYPE = 5;
 
     // Selection range as text offsets indices
-    private static final int SEL_START_NODE = 0;
-    private static final int SEL_START_OFFSET = 1;
-    private static final int SEL_END_NODE = 2;
-    private static final int SEL_END_OFFSET = 3;
+    private static final int SEL_START_OFFSET = 0;
+    private static final int SEL_END_OFFSET = 1;
 
     // Accessibility extras key for absolute drawing order (paint order among all
     // nodes in tree). Used to compute occlusion.
@@ -203,7 +201,6 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     protected Context mContext;
     private final @Nullable String mProductVersion;
     protected long mNativeObj;
-    protected long mNativeAssistDataObj;
     private boolean mIsHovering;
     private int mLastHoverId = View.NO_ID;
     private int mCurrentRootId;
@@ -642,6 +639,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
     public boolean isAccessibilityEnabled() {
         return isNativeInitialized()
+                && WebContentsAccessibilityImplJni.get().isAXModeChangeAllowed(mNativeObj)
                 && (mAccessibilityEnabledOverride
                         // The following two checks are both required. Due to previous experiences
                         // with possible races, either being true should be sufficient for us to
@@ -1479,7 +1477,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     private boolean shouldPreventNativeEngineUse() {
-        return mIsObscuredByAnotherView != null && mIsObscuredByAnotherView;
+        return (mIsObscuredByAnotherView != null && mIsObscuredByAnotherView)
+                || (isNativeInitialized()
+                        && !WebContentsAccessibilityImplJni.get()
+                                .isAXModeChangeAllowed(mNativeObj));
     }
 
     @Override
@@ -1518,34 +1519,12 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         }
 
         mHasFinishedLatestAccessibilitySnapshot = false;
-        if (ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS)) {
-            mNativeAssistDataObj =
-                    WebContentsAccessibilityImplJni.get()
-                            .initForAssistData(webContents, new AssistDataBuilder());
-
-            WebContentsAccessibilityImplJni.get()
-                    .requestAccessibilityTreeSnapshot(
-                            mNativeAssistDataObj,
-                            viewRoot,
-                            mDelegate.getAccessibilityCoordinates(),
-                            mView,
-                            () -> onSnapshotDoneCallback(viewRoot));
-        } else {
-            mDelegate.requestAccessibilitySnapshot(
-                    viewRoot, () -> onSnapshotDoneCallback(viewRoot));
-        }
+        mDelegate.requestAccessibilitySnapshot(viewRoot, () -> onSnapshotDoneCallback(viewRoot));
     }
 
     private void onSnapshotDoneCallback(ViewStructure viewRoot) {
         viewRoot.asyncCommit();
         mHasFinishedLatestAccessibilitySnapshot = true;
-        if (ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS)) {
-            // In some cases (e.g. testing) the full engine may also be running, so don't delete.
-            if (!isNativeInitialized()) {
-                WebContentsAccessibilityImplJni.get().deleteEarly(mNativeAssistDataObj);
-                mNativeAssistDataObj = 0;
-            }
-        }
     }
 
     @Override
@@ -1989,7 +1968,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             return;
         }
 
-        if (updateMovementAtGranularityFromSelection(mAccessibilityFocusId)) {
+        if (updateMovementAtGranularityFromSelection()) {
             return;
         }
 
@@ -2181,28 +2160,29 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
     /**
      * Synchronizes granularity movement indices and selection tracking from the current selection
-     * range for the given node.
+     * range for the accessibility focused node.
      *
-     * @param queryNodeId The node ID to query the selection range for.
      * @return true if granularity movement state was updated from an active selection ending on the
      *     focused node; false otherwise.
      */
-    private boolean updateMovementAtGranularityFromSelection(int queryNodeId) {
+    private boolean updateMovementAtGranularityFromSelection() {
+        if (mAccessibilityFocusId == View.NO_ID) {
+            return false;
+        }
+
         // Get selection flattened to text offsets. This function prioritizes the internal selection
         // properties for editable nodes, and converts selection range to text offsets for
         // non-editable nodes if they are selected by child offsets.
         int[] selection =
                 WebContentsAccessibilityImplJni.get()
-                        .getSelectionRangeAsTextOffsets(mNativeObj, queryNodeId);
+                        .getSelectionAsTextOffsetsForNode(mNativeObj, mAccessibilityFocusId);
         if (selection != null) {
-            int startNodeId = selection[SEL_START_NODE];
             int startOffset = selection[SEL_START_OFFSET];
-            int endNodeId = selection[SEL_END_NODE];
             int endOffset = selection[SEL_END_OFFSET];
 
-            if (endNodeId == mAccessibilityFocusId && endOffset != UNDEFINED_SELECTION_INDEX) {
+            if (endOffset != UNDEFINED_SELECTION_INDEX) {
                 mMovementAtGranularityIndex = endOffset;
-                if (startNodeId == mAccessibilityFocusId) {
+                if (startOffset != UNDEFINED_SELECTION_INDEX) {
                     mSelectionStartIndex = startOffset;
                     mIsCurrentlyExtendingSelection = (startOffset != endOffset);
                 } else {
@@ -2223,7 +2203,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             return;
         }
 
-        updateMovementAtGranularityFromSelection(mAccessibilityFocusId);
+        updateMovementAtGranularityFromSelection();
     }
 
     /** Gets the ID of the current accessibility focused node. */
@@ -2463,7 +2443,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     private void handleTextSelectionChanged(int id) {
         // Ignore selection changes on unrelated nodes.
         if (id == mCurrentRootId || id == mAccessibilityFocusId) {
-            if (!updateMovementAtGranularityFromSelection(id)) {
+            if (!updateMovementAtGranularityFromSelection()) {
                 // If selection was cleared or the focused node is not the selection end, reset
                 // granularity movement state.
                 resetMovementAtGranularityState();
@@ -2911,19 +2891,9 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         long initWithAXTree(long axTreePtr);
 
-        // These two methods are only used for one-off accessibility tree snapshots.
-        long initForAssistData(
-                @Nullable WebContents webContents,
-                AssistDataBuilder builder);
-
-        void requestAccessibilityTreeSnapshot(
-                long nativeWebContentsAccessibilityAndroid,
-                ViewStructure viewRoot,
-                AccessibilityDelegate.AccessibilityCoordinates accessibilityCoordinates,
-                View view,
-                Runnable onDoneCallback);
-
         void connectInstanceToRootManager(long nativeWebContentsAccessibilityAndroid);
+
+        boolean isAXModeChangeAllowed(long nativeWebContentsAccessibilityAndroid);
 
         void setBrowserAXMode(
                 long nativeWebContentsAccessibilityAndroid,
@@ -3068,7 +3038,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         int @Nullable [] getExtendedSelection(
                 long nativeWebContentsAccessibilityAndroid, int virtualViewId);
 
-        int @Nullable [] getSelectionRangeAsTextOffsets(
+        int @Nullable [] getSelectionAsTextOffsetsForNode(
                 long nativeWebContentsAccessibilityAndroid, int id);
 
         int[] getLabeledByNodeIdsForTesting( // IN-TEST

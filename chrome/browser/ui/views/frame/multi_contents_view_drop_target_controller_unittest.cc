@@ -8,12 +8,14 @@
 
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/multi_contents_drop_target_view.h"
@@ -23,6 +25,7 @@
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/common/drop_data.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -38,6 +41,7 @@
 namespace {
 
 using DropSide = MultiContentsDropTargetView::DropSide;
+using ::base::i18n::ScopedRTLForTesting;
 
 constexpr gfx::Size kMultiContentsViewSize(500, 500);
 constexpr gfx::Point kDragPointForLeftDropTargetShow(
@@ -85,12 +89,6 @@ content::DropData ValidUrlDropData() {
   return valid_url_data;
 }
 
-void SetRTL(bool rtl) {
-  // Override the current locale/direction.
-  base::i18n::SetICUDefaultLocale(rtl ? "he" : "en");
-  ASSERT_EQ(rtl, base::i18n::IsRTL());
-}
-
 class MockDropDelegate
     : public MultiContentsViewDropTargetController::DropDelegate {
  public:
@@ -135,7 +133,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
         gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
     feature_list_.InitWithFeaturesAndParameters(EnabledFeaturesAndParameters(),
                                                 {});
-    SetRTL(false);
+    scoped_rtl_.emplace(false);
     multi_contents_view_ = std::make_unique<views::View>();
     drop_target_view_ = multi_contents_view_->AddChildView(
         std::make_unique<MultiContentsDropTargetView>());
@@ -165,6 +163,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
     multi_contents_view_ = nullptr;
     animation_mode_reset_.reset();
     prefers_reduced_motion_reset_.reset();
+    scoped_rtl_.reset();
     ChromeViewsTestBase::TearDown();
   }
 
@@ -235,7 +234,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
   // the nudge on the correct side. Bottom side should still show a full drop
   // target.
   void TestMoveBetweenNudgeZones(bool rtl) {
-    SetRTL(rtl);
+    scoped_rtl_.emplace(rtl);
 
     // Drag to the start of the screen should show the nudge on the start side.
     DragURLTo(DragPointForDropTargetShow(DropSide::START, rtl));
@@ -264,7 +263,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
   // Tests that dragging a link between drop targets properly hides and reopens
   // the drop targets on the correct side.
   void TestMoveLinkBetweenDropTargets(bool rtl) {
-    SetRTL(rtl);
+    scoped_rtl_.emplace(rtl);
     prefs()->SetInteger(prefs::kSplitViewDragAndDropNudgeUsedCount,
                         MultiContentsViewDropTargetController::kNudgeUsedLimit);
 
@@ -300,7 +299,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
   // Tests that dragging a tab between drop targets properly hides and reopens
   // the drop targets on the correct side.
   void TestMoveTabBetweenDropTargets(bool rtl) {
-    SetRTL(rtl);
+    scoped_rtl_.emplace(rtl);
 
     // Drag to the start of the screen should show the drop target on the start
     // side.
@@ -364,6 +363,7 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
       prefers_reduced_motion_reset_;
   std::optional<gfx::AnimationTestApi::RenderModeResetter>
       animation_mode_reset_;
+  std::optional<base::i18n::ScopedRTLForTesting> scoped_rtl_;
 };
 
 struct DropSideRTL {
@@ -377,7 +377,7 @@ class MultiContentsViewDropTargetControllerParamTest
  public:
   void SetUp() override {
     MultiContentsViewDropTargetControllerTest::SetUp();
-    SetRTL(GetParam().rtl);
+    scoped_rtl_.emplace(GetParam().rtl);
   }
 
   void DropLink() {
@@ -477,6 +477,8 @@ class MultiContentsViewDropTargetControllerParamTest
     EXPECT_EQ(MultiContentsViewDropTargetController::kNudgeShownLimit,
               prefs()->GetInteger(prefs::kSplitViewDragAndDropNudgeShownCount));
   }
+
+  std::optional<ScopedRTLForTesting> scoped_rtl_;
 };
 
 INSTANTIATE_TEST_SUITE_P(DropSideRTL,

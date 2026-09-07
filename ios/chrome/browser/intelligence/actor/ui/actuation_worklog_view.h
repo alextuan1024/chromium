@@ -7,14 +7,20 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActuationWorklogAccessoryItem;
 @class ActuationWorklogChip;
 @class ActuationWorklogItem;
 @class ActuationWorklogView;
 
-// Delegate protocol for ActuationWorklogView collapse/expand events.
+// Delegate protocol for ActuationWorklogView interaction events.
 @protocol ActuationWorklogViewDelegate <NSObject>
+// Notifies the delegate when the worklog collapsed state changes.
 - (void)worklogView:(ActuationWorklogView*)worklogView
     didChangeCollapsed:(BOOL)collapsed;
+
+// Notifies delegate when an accessory card item inside the worklog is tapped.
+- (void)worklogView:(ActuationWorklogView*)worklogView
+    didTapAccessoryItem:(ActuationWorklogAccessoryItem*)accessoryItem;
 @end
 
 // View displaying the list of actuation steps using a timeline.
@@ -46,6 +52,9 @@
 // Sets or clears the current actor tool chip at the end of the timeline.
 // Passing nil hides the chip.
 - (void)setChip:(ActuationWorklogChip*)chip;
+
+// Resets all timeline items, chip, and collapse state.
+- (void)reset;
 
 @end
 

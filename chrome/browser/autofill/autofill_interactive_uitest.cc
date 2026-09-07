@@ -62,7 +62,7 @@
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_delegate.h"
 #include "components/autofill/core/browser/foundations/mock_autofill_manager_observer.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -85,6 +85,7 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/net_errors.h"
 #include "net/cert/mock_cert_verifier.h"
 #include "net/dns/mock_host_resolver.h"
@@ -3199,23 +3200,8 @@ INSTANTIATE_TEST_SUITE_P(AutofillInteractiveTest,
                          ::testing::Values(0, 1));
 
 // Tests that in a shadow-DOM-transcending form, Autofill detects labels
-// *outside* of the field's shadow DOM.
-IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestShadowDom,
-                       LabelInHostingDomOfField) {
-  CreateTestProfile();
-  GURL url =
-      embedded_test_server()->GetURL("a.com", "/autofill/shadowdom.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-  ASSERT_TRUE(AutofillFlow(JsElement("getNameElement($1)"), this));
-  EXPECT_EQ("Milton C. Waddams", Js("getName($1)"));
-  EXPECT_EQ("4120 Freidrich Lane", Js("getAddress($1)"));
-  EXPECT_EQ("Austin", Js("getCity($1)"));
-  EXPECT_EQ("TX", Js("getState($1)"));
-  EXPECT_EQ("78744", Js("getZip($1)"));
-}
-
-// Tests that in a shadow-DOM-transcending form, Autofill detects labels
-// *inside* of the field's shadow DOM.
+// *inside* of the field's shadow DOM. Labels *outside* of the field's
+// shadow DOM are not expected to be found (removed due to low utility).
 IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestShadowDom,
                        LabelInSameShadowDomAsField) {
   CreateTestProfile();

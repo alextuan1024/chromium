@@ -15,7 +15,6 @@
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 
-class Browser;
 class GURL;
 
 namespace blink {
@@ -39,15 +38,18 @@ content::WebContents* AddAndReturnTabAt(
     int index,
     bool foreground,
     std::optional<tab_groups::TabGroupId> group = std::nullopt,
-    bool pinned = false);
+    bool pinned = false,
+    std::optional<NavigateParams::WindowAction> window_action = std::nullopt);
 
 // Same as above, but eats the return value to make Bind*() easier.
-void AddTabAt(BrowserWindowInterface* browser,
-              const GURL& url,
-              int index,
-              bool foreground,
-              std::optional<tab_groups::TabGroupId> group = std::nullopt,
-              bool pinned = false);
+void AddTabAt(
+    BrowserWindowInterface* browser,
+    const GURL& url,
+    int index,
+    bool foreground,
+    std::optional<tab_groups::TabGroupId> group = std::nullopt,
+    bool pinned = false,
+    std::optional<NavigateParams::WindowAction> window_action = std::nullopt);
 
 // Adds a selected tab with the specified URL and transition, returns the
 // created WebContents.

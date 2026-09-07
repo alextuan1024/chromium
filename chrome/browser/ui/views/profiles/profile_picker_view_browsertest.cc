@@ -93,10 +93,12 @@
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/startup/first_run_service.h"
 #include "chrome/browser/ui/tab_dialogs.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_reauth_provider.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_test_base.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_view_test_utils.h"
 #include "chrome/browser/ui/webui/profile_helper.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
@@ -154,6 +156,7 @@
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/sync/test/test_sync_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -170,6 +173,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ozone_buildflags.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/event_constants.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -317,62 +321,6 @@ GURL GetSyncConfirmationURL() {
   return AppendSyncConfirmationQueryParams(GURL("chrome://sync-confirmation/"),
                                            SyncConfirmationStyle::kWindow,
                                            /*is_sync_promo=*/true);
-}
-
-std::string_view GetRejectHistoryOptinScript() {
-  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh)) {
-    static constexpr std::string_view kScript = R"(
-      (() => {
-        const appElement =
-            document.querySelector('history-sync-optin-app-refresh');
-        const rejectButton =
-            appElement.shadowRoot.querySelector('#rejectButton');
-        rejectButton.click();
-        return true;
-      })();
-    )";
-    return kScript;
-  } else {
-    static constexpr std::string_view kScript = R"(
-      (() => {
-        const appElement =
-            document.querySelector('history-sync-optin-app');
-        const rejectButton =
-            appElement.shadowRoot.querySelector('#rejectButton');
-        rejectButton.click();
-        return true;
-      })();
-    )";
-    return kScript;
-  }
-}
-
-std::string_view GetAcceptHistoryOptinScript() {
-  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh)) {
-    static constexpr std::string_view kScript = R"(
-      (() => {
-        const appElement =
-            document.querySelector('history-sync-optin-app-refresh');
-        const acceptButton =
-            appElement.shadowRoot.querySelector('#acceptButton');
-        acceptButton.click();
-        return true;
-      })();
-    )";
-    return kScript;
-  } else {
-    static constexpr std::string_view kScript = R"(
-      (() => {
-        const appElement =
-            document.querySelector('history-sync-optin-app');
-        const acceptButton =
-            appElement.shadowRoot.querySelector('#acceptButton');
-        acceptButton.click();
-        return true;
-      })();
-    )";
-    return kScript;
-  }
 }
 
 class BrowserAddedWaiter : public BrowserCollectionObserver {
@@ -903,7 +851,7 @@ class ProfilePickerCreationFlowBrowserTest
         profile_manager, new_profile_path);
 
     ProfileDestructionWaiter profile_destruction_waiter(new_profile);
-    Browser* new_browser = CreateBrowser(new_profile);
+    BrowserWindowInterface* new_browser = CreateBrowser(new_profile);
     CloseBrowserSynchronously(new_browser);
     profile_destruction_waiter.Wait();
 
@@ -976,14 +924,16 @@ class ProfilePickerCreationFlowBrowserTest
   // TODO(crbug.com/447584795): Add retry logic.
   void RejectHistoryOptin() {
     CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
-    CHECK_EQ(content::EvalJs(web_contents(), GetRejectHistoryOptinScript()),
+    CHECK_EQ(content::EvalJs(web_contents(),
+                             profiles::testing::GetRejectHistoryOptinScript()),
              true);
   }
 
   // TODO(crbug.com/447584795): Add retry logic.
   void AcceptHistoryOptin() {
     CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
-    CHECK_EQ(content::EvalJs(web_contents(), GetAcceptHistoryOptinScript()),
+    CHECK_EQ(content::EvalJs(web_contents(),
+                             profiles::testing::GetAcceptHistoryOptinScript()),
              true);
   }
 
@@ -2965,8 +2915,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerCreationFlowBrowserTest,
   BrowserWindowInterface* const new_browser = waiter.Wait();
   profile_customization_observer.Wait();
   content::WebContents* dialog_web_contents =
-      new_browser->GetFeatures()
-          .signin_view_controller()
+      SigninViewController::From(new_browser)
           ->GetModalDialogWebContentsForTesting();
   EXPECT_EQ(dialog_web_contents->GetLastCommittedURL(),
             kLocalProfileCreationUrl);
@@ -2977,8 +2926,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerCreationFlowBrowserTest,
           .GetProfileAttributesWithPath(new_browser->GetProfile()->GetPath());
   ASSERT_TRUE(entry->IsEphemeral());
   EXPECT_FALSE(ProfilePicker::IsOpen());
-  EXPECT_TRUE(
-      new_browser->GetFeatures().signin_view_controller()->ShowsModalDialog());
+  EXPECT_TRUE(SigninViewController::From(new_browser)->ShowsModalDialog());
 
   // Simulate clicking the "Done" button on the profile customization dialog.
   ConfirmLocalProfileCreation(dialog_web_contents);
@@ -2988,8 +2936,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerCreationFlowBrowserTest,
   ASSERT_EQ(2u, g_browser_process->profile_manager()
                     ->GetProfileAttributesStorage()
                     .GetNumberOfProfiles());
-  EXPECT_FALSE(
-      new_browser->GetFeatures().signin_view_controller()->ShowsModalDialog());
+  EXPECT_FALSE(SigninViewController::From(new_browser)->ShowsModalDialog());
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -3021,8 +2968,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerCreationFlowBrowserTest,
   BrowserWindowInterface* const new_browser = browser_added_waiter.Wait();
   profile_customization_observer.Wait();
   content::WebContents* dialog_web_contents =
-      new_browser->GetFeatures()
-          .signin_view_controller()
+      SigninViewController::From(new_browser)
           ->GetModalDialogWebContentsForTesting();
   EXPECT_EQ(dialog_web_contents->GetLastCommittedURL(),
             kLocalProfileCreationUrl);
@@ -3037,8 +2983,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerCreationFlowBrowserTest,
                     .GetNumberOfProfiles());
   ASSERT_TRUE(entry->IsEphemeral());
   EXPECT_FALSE(ProfilePicker::IsOpen());
-  EXPECT_TRUE(
-      new_browser->GetFeatures().signin_view_controller()->ShowsModalDialog());
+  EXPECT_TRUE(SigninViewController::From(new_browser)->ShowsModalDialog());
 
   // Simulate clicking the "Delete profile" button on the profile customization
   // dialog.
@@ -4168,7 +4113,7 @@ IN_PROC_BROWSER_TEST_P(ProfilePickerWithGlicParamBrowserTest,
   WaitForLoadStop(GURL("chrome://profile-picker/"));
 
   profile_picker_handler()->HandleOnLearnMoreClicked(base::ListValue());
-  Browser* new_browser = ui_test_utils::WaitForBrowserToOpen();
+  BrowserWindowInterface* new_browser = ui_test_utils::WaitForBrowserToOpen();
   EXPECT_TRUE(new_browser);
   EXPECT_EQ(new_browser->GetProfile()->GetPath(), initial_profile_path);
 
@@ -4616,7 +4561,8 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerDeviceSignalsDisclaimerBrowserTest,
 
   ASSERT_TRUE(ClickLearnMoreLink());
 
-  Browser* const popup_browser = browser_creation_observer.Wait();
+  BrowserWindowInterface* const popup_browser =
+      browser_creation_observer.Wait();
   ASSERT_TRUE(popup_browser);
   EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
@@ -4651,7 +4597,8 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerDeviceSignalsDisclaimerBrowserTest,
 
   ASSERT_TRUE(ClickLearnMoreLink());
 
-  Browser* const popup_browser = browser_creation_observer.Wait();
+  BrowserWindowInterface* const popup_browser =
+      browser_creation_observer.Wait();
   ASSERT_TRUE(popup_browser);
   EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
@@ -4688,7 +4635,7 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerDeviceSignalsDisclaimerBrowserTest,
 
   // Open a browser for the managed profile and navigate to chrome://policy so
   // there is a session to restore.
-  Browser* profile_browser = CreateBrowser(managed_profile);
+  BrowserWindowInterface* profile_browser = CreateBrowser(managed_profile);
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(profile_browser, GURL("chrome://policy")));
 
@@ -4713,7 +4660,8 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerDeviceSignalsDisclaimerBrowserTest,
 
   ASSERT_TRUE(ClickLearnMoreLink());
 
-  Browser* const popup_browser = browser_creation_observer.Wait();
+  BrowserWindowInterface* const popup_browser =
+      browser_creation_observer.Wait();
   ASSERT_TRUE(popup_browser);
 
   // Verify that the managed profile is not restoring a session.

@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
@@ -13,7 +14,6 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -28,7 +28,9 @@
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/glic/test_support/mock_glic_instance.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
+#include "chrome/browser/indigo/indigo_agent_host.h"
 #include "chrome/browser/indigo/indigo_image_replacement_manager.h"
+#include "chrome/browser/indigo/indigo_metrics.h"
 #include "chrome/browser/indigo/indigo_prefs.h"
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/indigo/indigo_service_factory.h"
@@ -209,8 +211,11 @@ class IndigoPageActionControllerTest : public testing::Test {
          {features::kIndigoMetadataKeywordHeuristic, {}},
          {contextual_cueing::kContextualCueingV2, {}}},
         {});
-    scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
-        "indigo-script", "/dummy/path");
+    // Command line changes are automatically reset between unit tests by
+    // base::TestSuite's ResetCommandLineBetweenTests listener after all
+    // tasks have finished running.
+    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII("indigo-script",
+                                                              "/dummy/path");
     // SetUpGlobalFeaturesForTesting is required to initialize
     // GlicGlobalEnabling which is checked by GlicEnabling.
     testing_profile_manager_ =
@@ -414,9 +419,14 @@ class IndigoPageActionControllerTest : public testing::Test {
     EXPECT_TRUE(prompts_loaded_future.Wait());
   }
 
+  // Must be declared before `task_environment_` so background tasks are
+  // stopped before scoped state is torn down.
+  base::test::ScopedFeatureList feature_list_;
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting
+      scoped_glic_bypass_;
+
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList feature_list_;
 #if BUILDFLAG(IS_CHROMEOS)
   // Needed because TestWebContents ends up creating BTM classes which depend
   // on this on ChromeOS.
@@ -440,9 +450,6 @@ class IndigoPageActionControllerTest : public testing::Test {
   std::unique_ptr<IndigoPageActionController> controller_;
   std::unique_ptr<FakeGlicSidePanelCoordinator>
       fake_glic_side_panel_coordinator_;
-  base::test::ScopedCommandLine scoped_command_line_;
-  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting
-      scoped_glic_bypass_;
 };
 
 TEST_F(IndigoPageActionControllerTest, ShowsWhenOptimizationGuideReturnsTrue) {
@@ -1017,10 +1024,14 @@ TEST_F(IndigoPageActionControllerTest,
   navigation->Commit();
 
   base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
   controller_->InvokeAction(EntryPoint::kAnchoredMessage);
 
   EXPECT_EQ(user_action_tester.GetActionCount("Indigo.Transformation.Trigger"),
             1);
+  histogram_tester.ExpectUniqueSample(
+      "Indigo.Transformation.TriggerSource",
+      IndigoTransformationTriggerSource::kPageAction, 1);
 }
 
 TEST_F(IndigoPageActionControllerTest,
@@ -1236,15 +1247,11 @@ TEST_F(IndigoPageActionControllerTest,
   base::UserActionTester user_action_tester;
   base::HistogramTester histogram_tester;
   controller_->InvokeAction(EntryPoint::kSuggestionChip);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.SuggestionChip.Click"),
-            1);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Click"),
-            0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kSuggestionChipClickAction), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kAnchoredMessageClickAction), 0);
   histogram_tester.ExpectUniqueSample(
-      "Indigo.PageAction.ClickedEntryPoint",
-      IndigoPageActionEntryPoint::kSuggestionChip, 1);
+      kClickedEntryPointHistogram, IndigoPageActionEntryPoint::kSuggestionChip,
+      1);
 }
 
 TEST_F(IndigoPageActionControllerTest,
@@ -1256,14 +1263,10 @@ TEST_F(IndigoPageActionControllerTest,
       .SetLastAnchoredMessagePriority(
           page_actions::PageActionPriorityCategory::kContextualCue);
   controller_->InvokeAction(EntryPoint::kAnchoredMessage);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.SuggestionChip.Click"),
-            0);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Click"),
-            1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kSuggestionChipClickAction), 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kAnchoredMessageClickAction), 1);
   histogram_tester.ExpectUniqueSample(
-      "Indigo.PageAction.ClickedEntryPoint",
+      kClickedEntryPointHistogram,
       IndigoPageActionEntryPoint::kProactiveAnchoredMessage, 1);
 }
 
@@ -1272,17 +1275,11 @@ TEST_F(IndigoPageActionControllerTest, InvokeActionErrorToastRecordsMetrics) {
   base::UserActionTester user_action_tester;
   base::HistogramTester histogram_tester;
   controller_->InvokeAction(EntryPoint::kErrorToast);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.SuggestionChip.Click"),
-            0);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Click"),
-            0);
-  EXPECT_EQ(user_action_tester.GetActionCount("Indigo.ErrorToast.Retry.Click"),
-            1);
-  histogram_tester.ExpectUniqueSample("Indigo.PageAction.ClickedEntryPoint",
-                                      IndigoPageActionEntryPoint::kErrorToast,
-                                      1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kSuggestionChipClickAction), 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kAnchoredMessageClickAction), 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kErrorToastRetryClickAction), 1);
+  histogram_tester.ExpectUniqueSample(
+      kClickedEntryPointHistogram, IndigoPageActionEntryPoint::kErrorToast, 1);
 }
 
 TEST_F(IndigoPageActionControllerTest, ShowsSuggestionChipWhenSidePanelIsOpen) {
@@ -1303,7 +1300,8 @@ TEST_F(IndigoPageActionControllerTest, ShowsSuggestionChipWhenSidePanelIsOpen) {
   navigation->Commit();
 }
 
-TEST_F(IndigoPageActionControllerTest, OnPageActionAnchoredMessageShown) {
+TEST_F(IndigoPageActionControllerTest,
+       OnPageActionAnchoredMessageShownProactive) {
   CreateController();
 
   auto* service = IndigoServiceFactory::GetForProfile(profile_.get());
@@ -1311,9 +1309,9 @@ TEST_F(IndigoPageActionControllerTest, OnPageActionAnchoredMessageShown) {
 
   base::UserActionTester user_action_tester;
   base::HistogramTester histogram_tester;
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Proactive.Show"),
-            0);
+  EXPECT_EQ(
+      user_action_tester.GetActionCount(kProactiveAnchoredMessageShowAction),
+      0);
 
   IndigoPageActionController::TestApi(controller_.get())
       .SetLastAnchoredMessagePriority(
@@ -1331,9 +1329,9 @@ TEST_F(IndigoPageActionControllerTest, OnPageActionAnchoredMessageShown) {
   // during navigation) should NOT be enough to record the user action or
   // update the service's state.
   EXPECT_TRUE(service->CanShowContextualCue());
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Proactive.Show"),
-            0);
+  EXPECT_EQ(
+      user_action_tester.GetActionCount(kProactiveAnchoredMessageShowAction),
+      0);
 
   // Trigger the observer event, simulating the anchored message actually
   // showing.
@@ -1344,12 +1342,56 @@ TEST_F(IndigoPageActionControllerTest, OnPageActionAnchoredMessageShown) {
 
   // Verify that the service was notified and the action was recorded.
   EXPECT_FALSE(service->CanShowContextualCue());
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "Indigo.PageAction.AnchoredMessage.Proactive.Show"),
-            1);
+  EXPECT_EQ(
+      user_action_tester.GetActionCount(kProactiveAnchoredMessageShowAction),
+      1);
   histogram_tester.ExpectUniqueSample(
-      "Indigo.PageAction.ShownEntryPoint",
+      kShownEntryPointHistogram,
       IndigoPageActionEntryPoint::kProactiveAnchoredMessage, 1);
+}
+
+TEST_F(IndigoPageActionControllerTest,
+       OnPageActionAnchoredMessageShownReactive) {
+  CreateController();
+
+  auto* service = IndigoServiceFactory::GetForProfile(profile_.get());
+  ASSERT_TRUE(service->CanShowContextualCue());
+
+  base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
+
+  IndigoPageActionController::TestApi(controller_.get())
+      .SetLastAnchoredMessagePriority(
+          page_actions::PageActionPriorityCategory::kUserInteraction);
+
+  page_actions::PageActionState state;
+  state.action_id = kActionIndigo;
+  state.anchored_message_showing = true;
+  controller_->OnPageActionAnchoredMessageShown(state);
+
+  EXPECT_FALSE(service->CanShowContextualCue());
+  EXPECT_EQ(
+      user_action_tester.GetActionCount(kReactiveAnchoredMessageShowAction), 1);
+  histogram_tester.ExpectUniqueSample(
+      kShownEntryPointHistogram,
+      IndigoPageActionEntryPoint::kReactiveAnchoredMessage, 1);
+}
+
+TEST_F(IndigoPageActionControllerTest, OnPageActionChipShown) {
+  CreateController();
+
+  base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
+
+  page_actions::PageActionState state;
+  state.action_id = kActionIndigo;
+  state.chip_showing = true;
+  controller_->OnPageActionChipShown(state);
+
+  EXPECT_EQ(user_action_tester.GetActionCount(kSuggestionChipShowAction), 1);
+  histogram_tester.ExpectUniqueSample(
+      kShownEntryPointHistogram, IndigoPageActionEntryPoint::kSuggestionChip,
+      1);
 }
 
 TEST_F(IndigoPageActionControllerTest,
@@ -1472,6 +1514,7 @@ TEST_F(IndigoPageActionControllerTest, DelayAgentInvokeUntilGlicPanelOpened) {
   navigation->Commit();
 
   base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
   controller_->InvokeAction(EntryPoint::kAnchoredMessage);
 
   // The agent should not be triggered yet because we haven't executed
@@ -1493,6 +1536,9 @@ TEST_F(IndigoPageActionControllerTest, DelayAgentInvokeUntilGlicPanelOpened) {
   // The agent should now be triggered.
   EXPECT_EQ(user_action_tester.GetActionCount("Indigo.Transformation.Trigger"),
             1);
+  histogram_tester.ExpectUniqueSample(
+      "Indigo.Transformation.TriggerSource",
+      IndigoTransformationTriggerSource::kPageAction, 1);
 }
 
 TEST_F(IndigoPageActionControllerTest,
@@ -1527,6 +1573,7 @@ TEST_F(IndigoPageActionControllerTest,
   navigation->Commit();
 
   base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
   controller_->InvokeAction(EntryPoint::kAnchoredMessage);
 
   // The agent should not be triggered yet because we haven't executed
@@ -1554,6 +1601,9 @@ TEST_F(IndigoPageActionControllerTest,
   // The agent should now be triggered.
   EXPECT_EQ(user_action_tester.GetActionCount("Indigo.Transformation.Trigger"),
             1);
+  histogram_tester.ExpectUniqueSample(
+      "Indigo.Transformation.TriggerSource",
+      IndigoTransformationTriggerSource::kPageAction, 1);
 }
 
 TEST_F(IndigoPageActionControllerTest, HeuristicShowsActionOnSuccess) {
@@ -1775,6 +1825,26 @@ TEST_F(IndigoPageActionControllerTest,
   navigation->Commit();
 }
 
+TEST_F(IndigoPageActionControllerTest,
+       EntryPointsStateDelegatedWhenIndigoContextualCueingV2Enabled) {
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeature(features::kIndigoContextualCueingV2);
+
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  EXPECT_CALL(*page_action_controller_, Show(kActionIndigo)).Times(0);
+  EXPECT_CALL(*page_action_controller_, ShowAnchoredMessage(_, _)).Times(0);
+  EXPECT_CALL(*page_action_controller_, ShowSuggestionChip(_, _)).Times(0);
+
+  GURL url("https://example.com");
+  ExpectOptimizationGuideDecision(url, OptimizationGuideDecision::kTrue);
+
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+}
+
 TEST_F(IndigoPageActionControllerTest, TriggerSource_OptimizationGuide) {
   CreateController();
   SetupEligibleAndOnboarded();
@@ -1932,6 +2002,230 @@ TEST_F(IndigoPageActionControllerTest, TriggerSource_Both_PriorityToOptGuide) {
   histogram_tester.ExpectUniqueSample("Indigo.PageAction.TriggerSource",
                                       IndigoTriggerSource::kOptimizationGuide,
                                       1);
+}
+
+TEST_F(IndigoPageActionControllerTest, CheckEligibilityForCueingForced) {
+  // Command line changes are automatically reset between unit tests by
+  // base::TestSuite's ResetCommandLineBetweenTests listener after all
+  // tasks have finished running.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(kForceIndigoSwitch);
+
+  CreateController();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+  EXPECT_TRUE(future.Get());
+}
+
+#if !BUILDFLAG(IS_CHROMEOS)
+// ChromeOS profiles in browser tests have multi profiles.
+TEST_F(IndigoPageActionControllerTest, CheckEligibilityForCueingNotLocallyEligible) {
+  CreateController();
+  // Ensure not locally eligible.
+  identity_test_env_adaptor_->identity_test_env()->ClearPrimaryAccount();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+  EXPECT_FALSE(future.Get());
+}
+#endif
+
+TEST_F(IndigoPageActionControllerTest, CheckEligibilityForCueingOptGuideTrue) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  GURL url("https://example.com");
+  ExpectOptimizationGuideDecision(url, OptimizationGuideDecision::kTrue);
+
+  // Navigate to set the state.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+  EXPECT_TRUE(future.Get());
+}
+
+TEST_F(IndigoPageActionControllerTest,
+       CheckEligibilityForCueingOptGuideFalseNoHeuristic) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kIndigoMetadataKeywordHeuristic);
+
+  GURL url("https://example.com");
+  ExpectOptimizationGuideDecision(url, OptimizationGuideDecision::kFalse);
+
+  // Navigate.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+  EXPECT_FALSE(future.Get());
+}
+
+TEST_F(IndigoPageActionControllerTest,
+       CheckEligibilityForCueingOptGuideFalseHeuristicTrue) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+  SetupHeuristicConfig();
+
+  // URL in allowlist for heuristic, but OptGuide will say False.
+  GURL url("https://allowed1.com/product1");
+  ExpectOptimizationGuideDecision(url, OptimizationGuideDecision::kFalse);
+
+  FakeDocumentMetadata fake_metadata;
+  auto result = blink::mojom::ProductClassificationResult::New();
+  result->allowed_keyword_found = true;
+  result->blocked_keyword_found = false;
+  fake_metadata.SetResult(std::move(result));
+
+  auto* rfh = tab_interface_->GetContents()->GetPrimaryMainFrame();
+  ASSERT_TRUE(rfh);
+  content::RenderFrameHostTester::For(rfh)->InitializeRenderFrameIfNeeded();
+  auto* remote_interfaces = rfh->GetRemoteInterfaces();
+  ASSERT_TRUE(remote_interfaces);
+
+  mojo::Receiver<blink::mojom::DocumentMetadata> receiver(&fake_metadata);
+  service_manager::InterfaceProvider::TestApi test_api(remote_interfaces);
+  test_api.SetBinderForName(
+      blink::mojom::DocumentMetadata::Name_,
+      base::BindRepeating(
+          [](mojo::Receiver<blink::mojom::DocumentMetadata>* receiver,
+             mojo::ScopedMessagePipeHandle pipe) {
+            receiver->Bind(
+                mojo::PendingReceiver<blink::mojom::DocumentMetadata>(
+                    std::move(pipe)));
+          },
+          base::Unretained(&receiver)));
+
+  // Navigate.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+
+  // Expect true because heuristic says true.
+  EXPECT_TRUE(future.Get());
+}
+
+TEST_F(IndigoPageActionControllerTest, CheckEligibilityForCueingPendingOptGuide) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  GURL url("https://example.com");
+
+  optimization_guide::OptimizationGuideDecisionCallback opt_guide_callback;
+  EXPECT_CALL(
+      *mock_optimization_guide_,
+      CanApplyOptimization(
+          url, optimization_guide::proto::OptimizationType::INDIGO,
+          testing::An<optimization_guide::OptimizationGuideDecisionCallback>()))
+      .WillOnce(
+          [&opt_guide_callback](
+              const GURL& url,
+              optimization_guide::proto::OptimizationType optimization_type,
+              optimization_guide::OptimizationGuideDecisionCallback callback) {
+            opt_guide_callback = std::move(callback);
+          });
+
+  // Navigate.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+
+  EXPECT_FALSE(future.IsReady());
+
+  std::move(opt_guide_callback)
+      .Run(OptimizationGuideDecision::kTrue,
+           optimization_guide::OptimizationMetadata());
+
+  EXPECT_TRUE(future.Get());
+}
+
+TEST_F(IndigoPageActionControllerTest, CheckEligibilityForCueingPendingTimeout) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  GURL url("https://example.com");
+
+  optimization_guide::OptimizationGuideDecisionCallback opt_guide_callback;
+  EXPECT_CALL(
+      *mock_optimization_guide_,
+      CanApplyOptimization(
+          url, optimization_guide::proto::OptimizationType::INDIGO,
+          testing::An<optimization_guide::OptimizationGuideDecisionCallback>()))
+      .WillOnce(
+          [&opt_guide_callback](
+              const GURL& url,
+              optimization_guide::proto::OptimizationType optimization_type,
+              optimization_guide::OptimizationGuideDecisionCallback callback) {
+            opt_guide_callback = std::move(callback);
+          });
+
+  // Navigate.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  base::test::TestFuture<bool> future;
+  controller_->CheckEligibilityForCueing(future.GetCallback());
+
+  EXPECT_FALSE(future.IsReady());
+
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_FALSE(future.Get());
+}
+
+TEST_F(IndigoPageActionControllerTest,
+       RecordsIsGlicOptedOutOnIndigoInvocation) {
+  CreateController();
+  SetupEligibleAndOnboarded();
+
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeatureWithParameters(
+      features::kIndigoOpenGlic, {{"indigo_glic_prompt", "test prompt"}});
+
+  EXPECT_CALL(*mock_glic_keyed_service_,
+              InvokeWithAutoSubmit(_, HasGlicPrompt("test prompt")))
+      .WillRepeatedly(::testing::Return(base::WeakPtr<glic::GlicInstance>()));
+
+  GURL url("https://example.com");
+  ExpectOptimizationGuideDecision(url, OptimizationGuideDecision::kTrue);
+  EXPECT_CALL(*page_action_controller_, ShowAnchoredMessage(_, _));
+
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url, tab_interface_->GetContents());
+  navigation->Commit();
+
+  // 1. Entry points disabled -> Opted out
+  glic::SetAnyEntryPointEnabledForTesting(profile_.get(), false);
+  {
+    base::HistogramTester histogram_tester;
+    controller_->InvokeAction(EntryPoint::kAnchoredMessage);
+    histogram_tester.ExpectUniqueSample(
+        "Indigo.PageAction.IsGlicOptedOutOnIndigoInvocation", true, 1);
+  }
+
+  // 2. Entry points enabled -> Not opted out
+  glic::SetAnyEntryPointEnabledForTesting(profile_.get(), true);
+  {
+    base::HistogramTester histogram_tester;
+    controller_->InvokeAction(EntryPoint::kAnchoredMessage);
+    histogram_tester.ExpectUniqueSample(
+        "Indigo.PageAction.IsGlicOptedOutOnIndigoInvocation", false, 1);
+  }
 }
 
 }  // namespace

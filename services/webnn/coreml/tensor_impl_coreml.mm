@@ -128,6 +128,11 @@ MLMultiArray* CreateMultiArrayBackedByIOSurface(OperandDescriptor descriptor) {
   IOSurfaceRef surface =
       IOSurfaceCreate(base::apple::NSToCFPtrCast(iosurface_properties));
 
+  if (!surface) {
+    LOG(ERROR) << "[WebNN] Failed to allocate IOSurface.";
+    return nil;
+  }
+
   // Zero-initialize the IOSurface. Calling IOSurfaceLock/IOSurfaceUnlock
   // appears to be sufficient. https://crbug.com/40455843#comment18
   CHECK_EQ(IOSurfaceLock(surface, 0, NULL), KERN_SUCCESS);
@@ -165,17 +170,17 @@ TensorImplCoreml::Create(
       tensor_info->descriptor.PackedByteLength()));
 
   MLMultiArray* multi_array = nil;
-  if (tensor_info->descriptor.data_type() == OperandDataType::kFloat16) {
-    // TODO(https://crbug.com/333392274): Consider not using IOSurface when
-    // WebGPU interop is not requested.
-    multi_array = CreateMultiArrayBackedByIOSurface(tensor_info->descriptor);
-  } else if (tensor_info->usage.Has(MLTensorUsageFlags::kWebGpuInterop)) {
-    // TODO(https://crbug.com/333392274): Support WebGPU interop with more
-    // than just float16 tensors.
-    return base::unexpected(
-        mojom::Error::New(mojom::Error::Code::kUnknownError,
-                          "Interoperability with WebGPU is only supported "
-                          "when using float16 tensors."));
+  if (tensor_info->usage.Has(MLTensorUsageFlags::kWebGpuInterop)) {
+    if (tensor_info->descriptor.data_type() == OperandDataType::kFloat16) {
+      multi_array = CreateMultiArrayBackedByIOSurface(tensor_info->descriptor);
+    } else {
+      // TODO(https://crbug.com/333392274): Support WebGPU interop with more
+      // than just float16 tensors.
+      return base::unexpected(
+          mojom::Error::New(mojom::Error::Code::kUnknownError,
+                            "Interoperability with WebGPU is only supported "
+                            "when using float16 tensors."));
+    }
   } else {
     multi_array = CreateMultiArrayFromDescriptor(tensor_info->descriptor);
   }
@@ -192,7 +197,7 @@ TensorImplCoreml::Create(
       std::move(receiver), context, std::move(tensor_info),
       std::move(buffer_state),
       /*representation=*/
-      RepresentationPtr{nullptr, OnTaskRunnerDeleter(nullptr)},
+      RepresentationPtr{nullptr, OnTaskRunnerDeleterWithWait(nullptr)},
       base::PassKey<TensorImplCoreml>());
 }
 
@@ -409,16 +414,14 @@ void TensorImplCoreml::ExportTensorSync(uint64_t flow_id,
   // Ensure the Mojo callback is posted back to the task runner. Running
   // it directly on the GPU sequence can violate Mojo's sequence checks,
   // even if executing on the same thread.
-  auto mojo_callback_wrapper = base::BindPostTask(
-      context_->mojo_task_runner(),
-      base::BindOnce(
-          [](ExportTensorSyncCallback callback, ScopedTrace scoped_trace,
-             uint64_t flow_id) {
-            TRACE_EVENT("webnn", "TensorImplCoreml::ExportTensorSync",
-                        perfetto::TerminatingFlow::Global(flow_id));
-            std::move(callback).Run();
-          },
-          std::move(callback), std::move(scoped_trace), flow_id));
+  auto mojo_callback_wrapper = WrapCallbackOnMojoSequence(base::BindOnce(
+      [](ExportTensorSyncCallback callback, ScopedTrace scoped_trace,
+         uint64_t flow_id) {
+        TRACE_EVENT("webnn", "TensorImplCoreml::ExportTensorSync",
+                    perfetto::TerminatingFlow::Global(flow_id));
+        std::move(callback).Run();
+      },
+      std::move(callback), std::move(scoped_trace), flow_id));
 
   context_->RunOrScheduleTask(base::BindOnce(
       [](TensorImplCoreml* self, base::OnceCallback<void()> callback,
@@ -461,7 +464,7 @@ void TensorImplCoreml::ExportTensorSync(uint64_t flow_id,
         task->Enqueue();
       },
       base::RetainedRef(this), std::move(mojo_callback_wrapper),
-      GetMojoReceiver().GetBadMessageCallback(), release));
+      GetBadMessageCallbackOnMojoSequence(), release));
 }
 
 }  // namespace webnn::coreml

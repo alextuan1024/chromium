@@ -51,6 +51,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -96,6 +97,7 @@
 #include "chrome/test/base/web_feature_histogram_tester.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
@@ -1456,8 +1458,8 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, MAYBE_UninstallMenuOption) {
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ShortcutMenuOptionsInIncognito) {
   BrowserWindowInterface* const incognito_browser =
       CreateIncognitoBrowser(profile());
-  EXPECT_EQ(webapps::AppBannerManagerDesktop::FromWebContents(
-                incognito_browser->GetTabStripModel()->GetActiveWebContents()),
+  EXPECT_EQ(webapps::AppBannerManagerDesktop::From(
+                incognito_browser->GetTabStripModel()->GetActiveTab()),
             nullptr);
   NavigateViaLinkClickToURLAndWait(incognito_browser, GetInstallableAppURL());
 
@@ -3139,8 +3141,8 @@ class WebAppBrowserTest_PageInfoManagementLink : public WebAppBrowserTest {
   bool ShowingAppManagementLink(BrowserWindowInterface* browser) {
     int unused_id, unused_id2;
     return GetLabelIdsForAppManagementLinkInPageInfo(
-        browser->GetFeatures().tab_strip_model()->GetActiveWebContents(),
-        &unused_id, &unused_id2);
+        browser->GetTabStripModel()->GetActiveWebContents(), &unused_id,
+        &unused_id2);
   }
 };
 

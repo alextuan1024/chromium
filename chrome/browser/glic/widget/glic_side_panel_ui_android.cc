@@ -12,6 +12,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/file_select_helper.h"
+#include "chrome/browser/glic/android/glic_helper_android.h"
 #include "chrome/browser/glic/common/panel_focus_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_visibility_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/public/features.h"
@@ -19,6 +20,7 @@
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/glic/widget/conversions.h"
 #include "chrome/browser/glic/widget/glic_inactive_side_panel_ui_android.h"
+#include "chrome/browser/glic/widget/web_contents_delegate_util.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -32,6 +34,8 @@
 #include "content/public/common/drop_data.h"
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/android/accelerator_manager_android.h"
 #include "ui/android/window_android.h"
 #include "ui/base/base_window.h"
@@ -43,6 +47,26 @@
 #endif
 
 namespace glic {
+
+namespace {
+
+void OnMediaAccessPermissionResult(
+    base::WeakPtr<content::WebContents> web_contents,
+    blink::mojom::MediaStreamType audio_type,
+    content::MediaResponseCallback callback,
+    const blink::mojom::StreamDevicesSet& stream_devices_set,
+    blink::mojom::MediaStreamRequestResult result,
+    std::unique_ptr<content::MediaStreamUI> ui) {
+  if (result != blink::mojom::MediaStreamRequestResult::OK &&
+      blink::IsAudioInputMediaType(audio_type)) {
+    if (web_contents) {
+      ShowMicDisabledSnackbar(web_contents->GetTopLevelNativeWindow());
+    }
+  }
+  std::move(callback).Run(stream_devices_set, result, std::move(ui));
+}
+
+}  // namespace
 
 GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
                                  base::WeakPtr<tabs::TabInterface> tab,
@@ -81,13 +105,17 @@ GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
         browser_window->GetWindow()->IsActive());
   }
 
+  // In NoWebview mode, PrivilegedWebContents owns the WebContentsDelegate.
+  // We attach as its EmbedderDelegate to receive non-security callbacks
+  // (such as zoom changes and keyboard events).
+  // TODO(crbug.com/534807813): Plumb remaining required delegate callbacks via
+  // PrivilegedWebContents APIs instead of setting the delegate directly.
   content::WebContents* web_contents = delegate_->host().webui_contents();
-  if (web_contents) {
-    web_contents->SetDelegate(this);
-  }
+  SetWebContentsDelegate(web_contents, /*delegate=*/this);
 
   glic_side_panel_coordinator->SetWebContents(web_contents);
 
+  host_observation_.Observe(&delegate_->host());
   panel_state_.kind = mojom::PanelStateKind::kAttached;
 }
 
@@ -98,9 +126,8 @@ GlicSidePanelUi::~GlicSidePanelUi() {
   panel_focus_dependent_hotkey_manager_.reset();
   panel_visibility_dependent_hotkey_manager_.reset();
   content::WebContents* web_contents = delegate_->host().webui_contents();
-  if (web_contents && web_contents->GetDelegate() == this) {
-    web_contents->SetDelegate(nullptr);
-  }
+  SetWebContentsDelegate(web_contents, /*delegate=*/nullptr,
+                         /*expected_delegate=*/this);
 }
 
 Host::EmbedderDelegate* GlicSidePanelUi::GetHostEmbedderDelegate() {
@@ -223,6 +250,19 @@ void GlicSidePanelUi::OnReload() {
   }
 }
 
+void GlicSidePanelUi::ActiveWebContentsChanged(
+    content::WebContents* new_contents) {
+  if (auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator()) {
+    content::WebContents* old_contents = delegate_->host().webui_contents();
+    if (old_contents && old_contents != new_contents) {
+      SetWebContentsDelegate(old_contents, /*delegate=*/nullptr,
+                             /*expected_delegate=*/this);
+    }
+    SetWebContentsDelegate(new_contents, /*delegate=*/this);
+    glic_side_panel_coordinator->SetWebContents(new_contents);
+  }
+}
+
 void GlicSidePanelUi::OnBrowserActivated(BrowserWindowInterface* browser) {
   if (tab_ && tab_->GetBrowserWindowInterface() == browser) {
     delegate_->OnEmbedderWindowActivationChanged(true);
@@ -300,7 +340,11 @@ void GlicSidePanelUi::RequestMediaAccessPermission(
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback) {
   MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
-      web_contents, request, std::move(callback), nullptr);
+      web_contents, request,
+      base::BindOnce(&OnMediaAccessPermissionResult,
+                     web_contents ? web_contents->GetWeakPtr() : nullptr,
+                     request.audio_type, std::move(callback)),
+      nullptr);
 }
 
 bool GlicSidePanelUi::CheckMediaAccessPermission(
@@ -346,8 +390,8 @@ bool GlicSidePanelUi::ActivateBrowser() {
   return true;
 }
 
-void GlicSidePanelUi::Zoom(mojom::ZoomAction zoom_action) {
-  delegate_->host().Zoom(zoom_action);
+void GlicSidePanelUi::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
+  delegate_->host().Zoom(zoom_action, source);
 }
 
 BrowserWindowInterface* GlicSidePanelUi::GetBrowserWindowInterface() {
@@ -398,6 +442,12 @@ bool GlicSidePanelUi::HandleKeyboardEvent(
   }
   return web_contents_delegate_android::WebContentsDelegateAndroid::
       HandleKeyboardEvent(source, event);
+}
+
+void GlicSidePanelUi::ContentsZoomChange(bool zoom_in) {
+  delegate_->host().Zoom(
+      zoom_in ? mojom::ZoomAction::kZoomIn : mojom::ZoomAction::kZoomOut,
+      ZoomSource::kScroll);
 }
 
 }  // namespace glic

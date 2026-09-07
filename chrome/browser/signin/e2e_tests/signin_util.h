@@ -17,7 +17,6 @@
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
-class Browser;
 class BrowserWindowInterface;
 
 namespace signin::test {
@@ -53,11 +52,6 @@ class SignInFunctions {
       const base::RepeatingCallback<bool(int, const GURL&, ui::PageTransition)>
           add_tab_function);
 
-  SignInFunctions(
-      const base::RepeatingCallback<Browser*()> browser,
-      const base::RepeatingCallback<bool(int, const GURL&, ui::PageTransition)>
-          add_tab_function);
-
   ~SignInFunctions();
 
   void SignInFromWeb(const TestAccountSigninCredentials& test_account,
@@ -76,12 +70,7 @@ class SignInFunctions {
                              const TestAccountSigninCredentials& test_account,
                              int previously_signed_in_accounts);
 
-  void TurnOnSync(const TestAccountSigninCredentials& test_account,
-                  int previously_signed_in_accounts);
-
   void SignOutFromWeb();
-
-  void TurnOffSync();
 
   void SignOut();
 

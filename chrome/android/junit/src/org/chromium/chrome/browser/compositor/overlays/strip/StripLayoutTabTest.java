@@ -38,10 +38,9 @@ import org.chromium.ui.util.ColorUtils;
 
 /** Tests for {@link StripLayoutTab}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw600dp")
+@Config(qualifiers = "sw600dp")
 public class StripLayoutTabTest {
 
-    private static final String TAG = "StripLayoutTabTest";
     private static final float DIVIDER_FOLIO_LIGHT_OPACITY = 0.2f;
     private static final float TAB_WIDTH = 150f;
 
@@ -290,8 +289,8 @@ public class StripLayoutTabTest {
                 Resources.ID_NULL,
                 tab.getAlertIndicatorOverlayRes());
         assertEquals(
-                "Should return recording media color for tint",
-                mContext.getColor(R.color.tab_recording_media_color),
+                "Should return recording alert color for tint",
+                mContext.getColor(R.color.tab_recording_alert_color),
                 tab.getAlertIndicatorTint());
         assertEquals(
                 "Should return default 16dp width for recording indicator",

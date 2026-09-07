@@ -403,7 +403,7 @@ suite('TopToolbarTest', () => {
       loadTimeData.overrideValues({
         enablePinButton: true,
         isAiPage: true,
-        isCobrowseEligible: true,
+        isAimEligible: true,
         pinTooltip: 'Pin side panel',
         unpinTooltip: 'Unpin side panel',
       });
@@ -448,8 +448,8 @@ suite('TopToolbarTest', () => {
       assertFalse(!!pinButton);
     });
 
-    test('hides pin button when not cobrowse eligible', async () => {
-      topToolbar.isCobrowseEligible = false;
+    test('hides pin button when pin button is not enabled', async () => {
+      topToolbar.isPinButtonEnabled = false;
       await microtasksFinished();
 
       const moreButton =

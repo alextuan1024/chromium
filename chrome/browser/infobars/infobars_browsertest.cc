@@ -48,6 +48,12 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
 #include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
+#include "extensions/buildflags/buildflags.h"
+#include "ui/base/window_open_disposition.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/ui/views/session_restore_infobar/session_restore_infobar_manager.h"
+#endif
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -56,6 +62,7 @@
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_delegate.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/crx_installer.h"
@@ -67,6 +74,11 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "sandbox/policy/switches.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/extensions/api/identity/web_auth_flow.h"
+#include "chrome/browser/extensions/api/identity/web_auth_flow_info_bar_delegate.h"
+#endif
 
 #if BUILDFLAG(ENABLE_PLUGINS)
 #include "chrome/browser/plugins/reload_plugin_infobar_delegate.h"
@@ -171,7 +183,10 @@ class InfoBarUiTest : public TestInfoBar,
            {"MigratedPageInfo", "true"},
            {"MigratedGoogleApiKeys", "true"},
            {"MigratedObsoleteSystem", "true"},
-           {"MigratedThemeInstalled", "true"}});
+           {"MigratedThemeInstalled", "true"},
+           {"MigratedExtensionDevTools", "true"},
+           {"MigratedAutomation", "true"},
+           {"MigratedBadFlags", "true"}});
     } else {
       feature_list_.InitAndDisableFeature(
           infobars::kCentralizedInfoBarFramework);
@@ -228,6 +243,13 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
           {"page_info", IBD::PAGE_INFO_INFOBAR_DELEGATE},
           {"automation", IBD::AUTOMATION_INFOBAR_DELEGATE},
           {"tab_sharing", IBD::TAB_SHARING_INFOBAR_DELEGATE},
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+          {"web_auth_flow", IBD::EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE},
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+          {"session_restore", IBD::SESSION_RESTORE_INFOBAR_DELEGATE},
+#endif
 
 #if BUILDFLAG(ENABLE_PLUGINS)
           {"reload_plugin", IBD::RELOAD_PLUGIN_INFOBAR_DELEGATE},
@@ -249,9 +271,19 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
       break;
 
     case IBD::EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE:
-      extension_dev_tools_subscription_ =
-          extensions::ExtensionDevToolsInfoBarDelegate::Create(
-              "id", "Extension", base::DoNothing());
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE)) {
+        if (auto* browser_infobar_manager =
+                infobars::BrowserInfoBarManager::From(g_browser_process)) {
+          browser_infobar_manager->ShowGlobally(
+              infobars::InfoBarDelegate::EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE);
+        }
+      } else {
+        extension_dev_tools_subscription_ =
+            extensions::ExtensionDevToolsInfoBarDelegate::Create(
+                "id", "Extension", base::DoNothing());
+      }
       break;
 
     case IBD::INCOGNITO_CONNECTABILITY_INFOBAR_DELEGATE: {
@@ -315,12 +347,24 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
     case IBD::INSTALLATION_ERROR_INFOBAR_DELEGATE: {
       const std::u16string msg =
           l10n_util::GetStringUTF16(IDS_EXTENSION_INSTALL_DISALLOWED_ON_SITE);
-      InstallationErrorInfoBarDelegate::Create(
-          GetInfoBarManager(),
-          extensions::CrxInstallError(
-              extensions::CrxInstallErrorType::OTHER,
-              extensions::CrxInstallErrorDetail::OFFSTORE_INSTALL_DISALLOWED,
-              msg));
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE)) {
+        infobars::InfoBarShowParams params;
+        params.message_text = msg;
+        params.link_text = l10n_util::GetStringUTF16(IDS_LEARN_MORE);
+        infobars::BrowserInfoBarManager::From(g_browser_process)
+            ->Show(
+                browser()->GetTabStripModel()->GetActiveTab(),
+                infobars::InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE,
+                std::move(params));
+      } else {
+        InstallationErrorInfoBarDelegate::Create(
+            GetInfoBarManager(),
+            extensions::CrxInstallError(
+                extensions::CrxInstallErrorType::OTHER,
+                extensions::CrxInstallErrorDetail::OFFSTORE_INSTALL_DISALLOWED,
+                msg));
+      }
       break;
     }
 
@@ -368,8 +412,16 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
       break;
 
     case IBD::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE:
-      OSCryptAsyncAvailabilityInfoBarDelegate::CreateForTest(
-          GetInfoBarManager());
+      if (infobars::IsInfoBarMigrated(
+              IBD::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE)) {
+        if (auto* browser_infobar_manager =
+                infobars::BrowserInfoBarManager::From(g_browser_process)) {
+          browser_infobar_manager->Show(
+              GetTab(), IBD::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE);
+        }
+      } else {
+        OSCryptAsyncAvailabilityInfoBarDelegate::Create(GetInfoBarManager());
+      }
       break;
 
     case IBD::PAGE_INFO_INFOBAR_DELEGATE:
@@ -387,7 +439,12 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
       break;
 
     case IBD::AUTOMATION_INFOBAR_DELEGATE:
-      AutomationInfoBarDelegate::Create();
+      if (infobars::IsInfoBarMigrated(IBD::AUTOMATION_INFOBAR_DELEGATE)) {
+        infobars::BrowserInfoBarManager::From(g_browser_process)
+            ->ShowGlobally(IBD::AUTOMATION_INFOBAR_DELEGATE);
+      } else {
+        AutomationInfoBarDelegate::Create();
+      }
       break;
 
     case IBD::TAB_SHARING_INFOBAR_DELEGATE:
@@ -406,6 +463,33 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
           /*ui=*/&mock_tab_sharing_ui_views_,
           TabSharingInfoBarDelegate::TabShareType::CAPTURE);
       break;
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+    case IBD::SESSION_RESTORE_INFOBAR_DELEGATE:
+      session_restore_infobar::SessionRestoreInfoBarManager::GetInstance()
+          ->ShowInfoBar(*browser()->GetProfile(),
+                        session_restore_infobar::InfobarMessageType::
+                            kTurnOffFromRestart);
+      break;
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    case IBD::EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE:
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE)) {
+        auto* browser_infobar_manager =
+            infobars::BrowserInfoBarManager::From(g_browser_process);
+        CHECK(browser_infobar_manager);
+        browser_infobar_manager->Show(
+            GetTab(), infobars::InfoBarDelegate::
+                          EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE);
+      } else {
+        extensions::WebAuthFlowInfoBarDelegate::Create(GetWebContents(),
+                                                       "Test Extension");
+      }
+      break;
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
     default:
       ADD_FAILURE() << "Unhandled infobar " << name;
@@ -501,6 +585,12 @@ IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_page_info) {
   ShowAndVerifyUi();
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_session_restore) {
+  ShowAndVerifyUi();
+}
+#endif
+
 #if BUILDFLAG(IS_WIN)
 // TODO(crbug.com/40261456): This test case has been frequently failing on
 // "Win10 Tests x64" since 2024-05-08.
@@ -531,6 +621,12 @@ IN_PROC_BROWSER_TEST_P(InfoBarUiTest, MAYBE_InvokeUi_tab_sharing) {
 IN_PROC_BROWSER_TEST_P(InfoBarUiTest, MAYBE_InvokeUi_multiple_infobars) {
   ShowAndVerifyUi();
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_web_auth_flow) {
+  ShowAndVerifyUi();
+}
+#endif
 
 INSTANTIATE_TEST_SUITE_P(All,
                          InfoBarUiTest,

@@ -6,11 +6,15 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/background/omnibox_everywhere/omnibox_everywhere_background_mode_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/status_icons/status_tray.h"
@@ -19,6 +23,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_ui_manager.h"
@@ -27,6 +32,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service_factory.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
@@ -38,7 +44,10 @@
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/ozone_buildflags.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/base/webui/web_ui_util.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -180,6 +189,45 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
                  MoveMouseInView(view, threshold_point),
                  MoveMouseInView(view, end_point),
                  ReleaseMouse(ui_controls::LEFT));
+  }
+
+  // Tests that OpenUrl creates a browser window when no other browsers are
+  // open, and updates widget visibility according to `ephemeral` mode.
+  void TestOpenUrlCreatesBrowserWhenNoBrowsers(bool ephemeral) {
+    Profile* profile = browser()->GetProfile();
+    set_exit_when_last_browser_closes(false);
+
+    GlobalFeatures* features = g_browser_process->GetFeatures();
+    ASSERT_TRUE(features);
+    auto* controller = features->omnibox_everywhere_controller();
+    ASSERT_TRUE(controller);
+
+    // Show the Omnibox Everywhere widget.
+    controller->OnInvoke(InvocationSource::kGlobalHotkey, profile);
+    EXPECT_TRUE(controller->IsVisible());
+
+    // Close the existing browser window so 0 browser windows exist.
+    CloseBrowserSynchronously(browser());
+    EXPECT_EQ(0u, GlobalBrowserCollection::GetInstance()->GetSize());
+    EXPECT_TRUE(controller->IsVisible());
+
+    // Trigger OpenUrl from the Omnibox Everywhere service.
+    auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile);
+    ASSERT_TRUE(service);
+    service->OpenUrl(GURL("chrome://version/"),
+                     WindowOpenDisposition::CURRENT_TAB,
+                     ui::PAGE_TRANSITION_TYPED);
+
+    // Verify that a new browser window was created.
+    EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+    if (ephemeral) {
+      // In ephemeral mode, the popup widget is closed.
+      EXPECT_FALSE(controller->IsVisible());
+    } else {
+      // In persistent mode, the popup widget remains visible and is demoted.
+      EXPECT_TRUE(controller->IsVisible());
+      EXPECT_FALSE(controller->ui_manager()->IsActive());
+    }
   }
 
  private:
@@ -581,6 +629,63 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
       WaitForWidgetActiveState(true));
 }
 
+IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
+                       DemoteOnQuerySubmitInPersistentMode) {
+  OmniboxEverywhereController* controller =
+      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  ASSERT_TRUE(controller);
+
+  EXPECT_FALSE(controller->IsVisible());
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+
+  RunTestSequence(
+      // Show widget and activate.
+      InvokeViaHotkey(), CheckWidgetVisible(true),
+      WaitForWidgetActiveState(true),
+      WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
+      // Submit query via OmniboxEverywhereService.
+      Do([this]() {
+        auto* service = OmniboxEverywhereServiceFactory::GetForProfile(
+            browser()->GetProfile());
+        ASSERT_TRUE(service);
+        service->OpenUrl(GURL("https://www.google.com/search?q=test"),
+                         WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                         ui::PAGE_TRANSITION_GENERATED);
+      }),
+      // In persistent mode, submitting a query should demote the widget
+      // (remains visible, but deactivated).
+      CheckWidgetVisible(true), WaitForWidgetActiveState(false));
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
+                       CloseOnQuerySubmitInEphemeralMode) {
+  OmniboxEverywhereController* controller =
+      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  ASSERT_TRUE(controller);
+
+  EXPECT_FALSE(controller->IsVisible());
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+
+  RunTestSequence(
+      // Show widget and activate.
+      InvokeViaHotkey(), CheckWidgetVisible(true),
+      WaitForWidgetActiveState(true),
+      WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
+      // Submit query via OmniboxEverywhereService.
+      Do([this]() {
+        auto* service = OmniboxEverywhereServiceFactory::GetForProfile(
+            browser()->GetProfile());
+        ASSERT_TRUE(service);
+        service->OpenUrl(GURL("https://www.google.com/search?q=test"),
+                         WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                         ui::PAGE_TRANSITION_GENERATED);
+      }),
+      // In ephemeral mode, submitting a query should close the widget.
+      CheckWidgetVisible(false));
+}
+
 #if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_StatusIconLifecycle DISABLED_StatusIconLifecycle_
 #else
@@ -642,6 +747,102 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest, BackgroundModeKeepAlive) {
     return !profile_manager->HasKeepAliveForTesting(
         profile, ProfileKeepAliveOrigin::kOmniboxEverywhere);
   }));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_StatusIconContextMenuOpensSearchSettings \
+  DISABLED_StatusIconContextMenuOpensSearchSettings
+#else
+#define MAYBE_StatusIconContextMenuOpensSearchSettings \
+  StatusIconContextMenuOpensSearchSettings
+#endif
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       MAYBE_StatusIconContextMenuOpensSearchSettings) {
+  StatusTray* status_tray = g_browser_process->status_tray();
+  if (!status_tray) {
+    GTEST_SKIP() << "StatusTray is not supported on this platform.";
+  }
+
+  PrefService* local_state = g_browser_process->local_state();
+  ASSERT_TRUE(local_state);
+
+  GlobalFeatures* features = g_browser_process->GetFeatures();
+  ASSERT_TRUE(features);
+  auto* controller = features->omnibox_everywhere_controller();
+  ASSERT_TRUE(controller);
+
+  // Enable background mode so background_mode_manager is active.
+  local_state->SetBoolean(prefs::kOmniboxEverywhereBackgroundMode, true);
+  ASSERT_TRUE(controller->background_mode_manager());
+
+  auto* delegate = static_cast<StatusIconMenuModel::Delegate*>(
+      controller->background_mode_manager());
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kInitialTab);
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSettingsTab);
+
+  RunTestSequence(
+      InstrumentTab(kInitialTab),
+      NavigateWebContents(kInitialTab, GURL(chrome::kChromeUIVersionURL)),
+      InstrumentNextTab(kSettingsTab, AnyBrowser()), Do([delegate]() {
+        delegate->ExecuteCommand(
+            IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_SETTINGS, 0);
+      }),
+      WaitForWebContentsReady(kSettingsTab,
+                              chrome::GetSettingsUrl(chrome::kSearchSubPage)),
+      CheckResult([this] { return browser()->tab_strip_model()->count(); }, 2,
+                  "CheckTabCount"));
+
+  local_state->SetBoolean(prefs::kOmniboxEverywhereBackgroundMode, false);
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_StatusIconContextMenuOpensCustomizeKeyboardShortcut \
+  DISABLED_StatusIconContextMenuOpensCustomizeKeyboardShortcut
+#else
+#define MAYBE_StatusIconContextMenuOpensCustomizeKeyboardShortcut \
+  StatusIconContextMenuOpensCustomizeKeyboardShortcut
+#endif
+IN_PROC_BROWSER_TEST_F(
+    OmniboxEverywhereBrowserTest,
+    MAYBE_StatusIconContextMenuOpensCustomizeKeyboardShortcut) {
+  StatusTray* status_tray = g_browser_process->status_tray();
+  if (!status_tray) {
+    GTEST_SKIP() << "StatusTray is not supported on this platform.";
+  }
+
+  PrefService* local_state = g_browser_process->local_state();
+  ASSERT_TRUE(local_state);
+
+  GlobalFeatures* features = g_browser_process->GetFeatures();
+  ASSERT_TRUE(features);
+  auto* controller = features->omnibox_everywhere_controller();
+  ASSERT_TRUE(controller);
+
+  // Enable background mode so background_mode_manager is active.
+  local_state->SetBoolean(prefs::kOmniboxEverywhereBackgroundMode, true);
+  ASSERT_TRUE(controller->background_mode_manager());
+
+  auto* delegate = static_cast<StatusIconMenuModel::Delegate*>(
+      controller->background_mode_manager());
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kInitialTab);
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSettingsTab);
+
+  RunTestSequence(
+      InstrumentTab(kInitialTab),
+      NavigateWebContents(kInitialTab, GURL(chrome::kChromeUIVersionURL)),
+      InstrumentNextTab(kSettingsTab, AnyBrowser()), Do([delegate]() {
+        delegate->ExecuteCommand(
+            IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_CUSTOMIZE_KEYBOARD_SHORTCUT,
+            0);
+      }),
+      WaitForWebContentsReady(kSettingsTab,
+                              chrome::GetSettingsUrl(chrome::kSearchSubPage)),
+      CheckResult([this] { return browser()->tab_strip_model()->count(); }, 2,
+                  "CheckTabCount"));
+
+  local_state->SetBoolean(prefs::kOmniboxEverywhereBackgroundMode, false);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -757,36 +958,22 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   OpenUrlCreatesBrowserBeforeClosingPopupWhenNoBrowsers
 #endif
 IN_PROC_BROWSER_TEST_F(
-    OmniboxEverywhereBrowserTest,
+    OmniboxEverywhereEphemeralBrowserTest,
     MAYBE_OpenUrlCreatesBrowserBeforeClosingPopupWhenNoBrowsers) {
-  Profile* profile = browser()->GetProfile();
-  set_exit_when_last_browser_closes(false);
+  TestOpenUrlCreatesBrowserWhenNoBrowsers(/*ephemeral=*/true);
+}
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
-  ASSERT_TRUE(controller);
-
-  // Show the Omnibox Everywhere widget.
-  controller->OnInvoke(InvocationSource::kGlobalHotkey, profile);
-  EXPECT_TRUE(controller->IsVisible());
-
-  // Close the existing browser window so 0 browser windows exist.
-  CloseBrowserSynchronously(browser());
-  EXPECT_EQ(0u, GlobalBrowserCollection::GetInstance()->GetSize());
-  EXPECT_TRUE(controller->IsVisible());
-
-  // Trigger OpenUrl from the Omnibox Everywhere service.
-  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile);
-  ASSERT_TRUE(service);
-  service->OpenUrl(GURL("chrome://version/"),
-                   WindowOpenDisposition::CURRENT_TAB,
-                   ui::PAGE_TRANSITION_TYPED);
-
-  // Verify that a new browser window was created and the popup widget was
-  // closed.
-  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
-  EXPECT_FALSE(controller->IsVisible());
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_OpenUrlCreatesBrowserBeforeDemotingPopupWhenNoBrowsers \
+  DISABLED_OpenUrlCreatesBrowserBeforeDemotingPopupWhenNoBrowsers
+#else
+#define MAYBE_OpenUrlCreatesBrowserBeforeDemotingPopupWhenNoBrowsers \
+  OpenUrlCreatesBrowserBeforeDemotingPopupWhenNoBrowsers
+#endif
+IN_PROC_BROWSER_TEST_F(
+    OmniboxEverywherePersistentBrowserTest,
+    MAYBE_OpenUrlCreatesBrowserBeforeDemotingPopupWhenNoBrowsers) {
+  TestOpenUrlCreatesBrowserWhenNoBrowsers(/*ephemeral=*/false);
 }
 
 class OmniboxEverywhereCommandLineBrowserTest
@@ -815,6 +1002,94 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereCommandLineBrowserTest,
   EXPECT_TRUE(controller->IsVisible());
   ASSERT_TRUE(controller->target_profile());
   EXPECT_FALSE(controller->target_profile()->IsOffTheRecord());
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       FreModalVisibilityAndDismissal) {
+  Profile* profile = browser()->GetProfile();
+  ASSERT_TRUE(profile);
+
+  PrefService* profile_prefs = profile->GetPrefs();
+  ASSERT_TRUE(profile_prefs);
+
+  // By default, FRE should not be dismissed initially.
+  EXPECT_FALSE(profile_prefs->GetBoolean(prefs::kFreDismissed));
+
+  // Dismissing the FRE persists the preference.
+  profile_prefs->SetBoolean(prefs::kFreDismissed, true);
+  EXPECT_TRUE(profile_prefs->GetBoolean(prefs::kFreDismissed));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_ProfileAvatarUpdatesWhenGAIAPictureLoads \
+  DISABLED_ProfileAvatarUpdatesWhenGAIAPictureLoads
+#else
+#define MAYBE_ProfileAvatarUpdatesWhenGAIAPictureLoads \
+  ProfileAvatarUpdatesWhenGAIAPictureLoads
+#endif
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       MAYBE_ProfileAvatarUpdatesWhenGAIAPictureLoads) {
+  Profile* profile = browser()->GetProfile();
+  ProfileAttributesStorage& storage =
+      g_browser_process->profile_manager()->GetProfileAttributesStorage();
+  ProfileAttributesEntry* entry =
+      storage.GetProfileAttributesWithPath(profile->GetPath());
+  ASSERT_TRUE(entry);
+
+  // 1. Configure the profile to use a GAIA picture, but simulate cold startup
+  // where the GAIA picture has not yet finished loading from cache/disk.
+  entry->SetIsUsingGAIAPicture(true);
+  entry->SetGAIAPicture(std::string(), gfx::Image());
+
+  GlobalFeatures* features = g_browser_process->GetFeatures();
+  ASSERT_TRUE(features);
+  auto* controller = features->omnibox_everywhere_controller();
+  ASSERT_TRUE(controller);
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kAvatarUpdatedEvent);
+
+  // 2. Compute the initial placeholder avatar data URL.
+  gfx::Image initial_icon =
+      profiles::GetSizedAvatarIcon(entry->GetAvatarIcon(), 48, 48);
+  const std::string initial_avatar_data_url =
+      webui::GetBitmapDataUrl(initial_icon.AsBitmap());
+
+  // 3. Create a unique 48x48 GAIA avatar image (solid red) that will be
+  // delivered when disk loading finishes.
+  SkBitmap gaia_bitmap;
+  gaia_bitmap.allocN32Pixels(48, 48);
+  gaia_bitmap.eraseColor(SK_ColorRED);
+  gfx::Image gaia_image = gfx::Image::CreateFrom1xBitmap(gaia_bitmap);
+  const std::string expected_gaia_avatar_data_url =
+      webui::GetBitmapDataUrl(gaia_bitmap);
+
+  StateChange avatar_updated_to_gaia;
+  avatar_updated_to_gaia.where = {
+      "omnibox-everywhere-app",
+      "omnibox-everywhere-omnibox",
+      "omnibox-everywhere-profile-icon",
+      "img#profileIcon",
+  };
+  avatar_updated_to_gaia.test_function =
+      base::StringPrintf(R"((el) => el && el.src === '%s')",
+                         expected_gaia_avatar_data_url.c_str());
+  avatar_updated_to_gaia.event = kAvatarUpdatedEvent;
+
+  RunTestSequence(
+      InvokeViaHotkey(), WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
+      CheckJsResult(
+          kOmniboxWebContentsId,
+          "() => {"
+          "  const iconEl = document.querySelector('omnibox-everywhere-app')"
+          "      .shadowRoot.querySelector('omnibox-everywhere-omnibox')"
+          "      .shadowRoot.querySelector('omnibox-everywhere-profile-icon')"
+          "      .shadowRoot.querySelector('img#profileIcon');"
+          "  return iconEl ? iconEl.src : '';"
+          "}",
+          initial_avatar_data_url),
+      Do([&]() { entry->SetGAIAPicture("gaia_picture_key", gaia_image); }),
+      WaitForStateChange(kOmniboxWebContentsId, avatar_updated_to_gaia));
 }
 
 }  // namespace omnibox_everywhere

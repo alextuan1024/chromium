@@ -366,6 +366,10 @@ id<GREYMatcher> NavigationBarDoneButton() {
   return [ChromeMatchersAppInterface navigationBarDoneButton];
 }
 
+id<GREYMatcher> NavigationBarEditButton() {
+  return [ChromeMatchersAppInterface navigationBarEditButton];
+}
+
 id<GREYMatcher> BookmarksNavigationBarDoneButton() {
   return [ChromeMatchersAppInterface bookmarksNavigationBarDoneButton];
 }
@@ -546,10 +550,6 @@ id<GREYMatcher> SettingsMenuSafetyCheckButton() {
 
 id<GREYMatcher> VoiceSearchButton() {
   return [ChromeMatchersAppInterface voiceSearchButton];
-}
-
-id<GREYMatcher> VoiceSearchInputAccessoryButton() {
-  return [ChromeMatchersAppInterface voiceSearchInputAccessoryButton];
 }
 
 id<GREYMatcher> SettingsCollectionView() {

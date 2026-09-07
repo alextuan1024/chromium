@@ -13,8 +13,7 @@ export function getHtml(this: SettingsOmniboxEverywhereSectionElement) {
       class="first"
       pref-key="omnibox_everywhere.enabled"
       label="$i18n{omniboxEverywhereToggleTitle}"
-      sub-label="$i18n{omniboxEverywhereToggleSublabel}"
-      learn-more-url="$i18n{omniboxEverywhereLearnMoreURL}">
+      sub-label="$i18n{omniboxEverywhereToggleSublabel}">
   </settings-toggle-button>
 
   <cr-collapse id="expandedContent" ?opened="${this.isEnabled_}">
@@ -45,7 +44,9 @@ export function getHtml(this: SettingsOmniboxEverywhereSectionElement) {
     </div>
 
     <settings-toggle-button id="showShortcutsToggle"
-        pref-key="omnibox_everywhere.show_shortcuts"
+        no-set-pref
+        .checked="${this.isShortcutsShowing_}"
+        @change="${this.onShowShortcutsToggleChange_}"
         label="$i18n{omniboxEverywhereShowShortcutsTitle}"
         sub-label="$i18n{omniboxEverywhereShowShortcutsSublabel}">
     </settings-toggle-button>

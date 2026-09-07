@@ -16,6 +16,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.ViewPropertyAnimator;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -88,6 +90,26 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     private boolean mIsSelected;
 
     /**
+     * Factory helper for building a visual improved bookmark row view.
+     *
+     * @param parent The parent ViewGroup used to obtain context.
+     * @return An instantiated visual ImprovedBookmarkRow.
+     */
+    public static ImprovedBookmarkRow buildVisualRow(ViewGroup parent) {
+        return buildView(parent.getContext(), true);
+    }
+
+    /**
+     * Factory helper for building a compact improved bookmark row view.
+     *
+     * @param parent The parent ViewGroup used to obtain context.
+     * @return An instantiated compact ImprovedBookmarkRow.
+     */
+    public static ImprovedBookmarkRow buildCompactRow(ViewGroup parent) {
+        return buildView(parent.getContext(), false);
+    }
+
+    /**
      * Factory constructor for building the view programmatically.
      *
      * @param context The calling context, usually the parent view.
@@ -116,6 +138,7 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         super(context, attrs);
         // The view from buildView should have a focus highlight, so avoid duplicate focus
         setDefaultFocusHighlightEnabled(false);
+        setFocusable(true);
     }
 
     public void setDragEnabled(boolean dragEnabled) {
@@ -157,7 +180,8 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
 
         Resources res = getContext().getResources();
         int dimenRes =
-                BookmarkUtils.isDesktopBookmarksLayoutEnabled()
+                (BookmarkUtils.isDesktopBookmarksLayoutEnabled()
+                                || BookmarkUtils.isDesktopBookmarksDialogEnabled())
                         ? R.dimen.improved_bookmark_start_image_corner_radius_desktop
                         : (isVisual
                                 ? R.dimen.improved_bookmark_row_outer_corner_radius
@@ -167,7 +191,9 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     }
 
     void setStartImageSize() {
-        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled() && mStartImageView != null) {
+        if ((BookmarkUtils.isDesktopBookmarksLayoutEnabled()
+                        || BookmarkUtils.isDesktopBookmarksDialogEnabled())
+                && mStartImageView != null) {
             Resources res = getContext().getResources();
             int size =
                     res.getDimensionPixelSize(R.dimen.improved_bookmark_start_image_size_desktop);
@@ -242,6 +268,7 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
 
     void setRowEnabled(boolean enabled) {
         setEnabled(enabled);
+        setFocusable(enabled);
         int alphaRes = enabled ? R.dimen.default_enabled_alpha : R.dimen.default_disabled_alpha;
         float alpha = ValueUtils.getFloat(getResources(), alphaRes);
         mContainer.setAlpha(alpha);
@@ -314,12 +341,24 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         mMoreButton.addPopupListener(listener);
     }
 
+    @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        info.setCheckable(mSelectionEnabled);
+        info.setChecked(mSelectionEnabled && mIsSelected);
+    }
+
     void setIsSelected(boolean selected) {
+        boolean changed = mIsSelected != selected;
         mIsSelected = selected;
         updateView();
+        if (changed && mSelectionEnabled) {
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        }
     }
 
     void setSelectionEnabled(boolean selectionEnabled) {
+        boolean changed = mSelectionEnabled != selectionEnabled;
         mSelectionEnabled = selectionEnabled;
         mMoreButton.setClickable(!selectionEnabled);
         mMoreButton.setEnabled(!selectionEnabled);
@@ -328,6 +367,9 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
                         ? IMPORTANT_FOR_ACCESSIBILITY_YES
                         : IMPORTANT_FOR_ACCESSIBILITY_NO);
         updateView();
+        if (changed) {
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        }
     }
 
     // TODO: Maybe this can be removed.
@@ -363,6 +405,7 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     }
 
     void updateView() {
+        setDefaultFocusHighlightEnabled(mIsSelected);
         mContainer.setBackgroundResource(
                 mIsSelected
                         ? R.drawable.rounded_rectangle_surface_container_low

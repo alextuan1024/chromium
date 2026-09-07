@@ -13,16 +13,24 @@ export function getHtml(this: PageActionIconElement) {
 <toolbar-chip-button outset-focus-ring id="button"
     style="${this.chipStyleOverride_ ?? nothing}"
     .buttonTabIndex="${0}"
+    ?is-menu-open="${this.state.isActive || this.isHighlighted}"
     ?animates-label="${this.shouldAnimate_()}"
     ?has-label="${this.shouldShowLabel_()}"
-    .tooltip="${this.state.tooltipText}"
+    .tooltip="${this.getTooltip_()}"
     .ariaLabel="${this.getAriaLabel_()}"
     @click="${this.onClick_}"
+    @pointerdown="${this.onPointerdown_}"
     @pointerenter="${this.onPointerenter_}"
     @pointerleave="${this.onPointerleave_}"
     @pointercancel="${this.onPointercancel_}">
-  <icon-from-table slot="prefix-icon" id="icon"
-      .iconHandle="${this.state.icon}"></icon-from-table>
+  ${this.isIconAnimating_() ? html`
+    <cr-icon slot="prefix-icon" id="animatedIcon"
+        style="${this.getAnimatedIconStyle_() ?? nothing}"
+        .icon="${this.getAnimatedIcon_()}"></cr-icon>
+  ` : html`
+    <icon-from-table slot="prefix-icon" id="icon"
+        .iconHandle="${this.state.icon}"></icon-from-table>
+  `}
   <span id="text" ?visible="${this.shouldShowLabel_()}">
     ${this.state.text || ''}
   </span>

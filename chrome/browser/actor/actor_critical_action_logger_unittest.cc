@@ -206,8 +206,8 @@ TEST_F(ActorCriticalActionLoggerTest, LogsFormFillActionWithMetadata) {
   AttemptFormFillingToolRequest::FormFillingRequest sub_req2;
   sub_req2.requested_data = autofill::ActorFormFillingRequestedData::kAddress;
 
-  AttemptFormFillingToolRequest request(CreateTabHandle(),
-                                        {sub_req1, sub_req2});
+  AttemptFormFillingToolRequest request(CreateTabHandle(), {sub_req1, sub_req2},
+                                        /*enqueued_click=*/true);
   mojom::ActionResultPtr result = MakeOkResult();
 
   ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
@@ -328,6 +328,30 @@ TEST_F(ActorCriticalActionLoggerTest, FormFillingLoggingPreClickGating) {
   ASSERT_EQ(logged_actions.size(), 1u);
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kFormFill);
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+TEST_F(ActorCriticalActionLoggerTest, SkipsLoggingWhenFeatureDisabled) {
+  base::test::ScopedFeatureList local_features;
+  local_features.InitAndDisableFeature(
+      critical_actions::features::kCriticalActionHistory);
+
+  TaskId task_id = actor_service().CreateTaskForTesting();
+  ActorTask* task = actor_service().GetTask(task_id);
+
+  PageTarget password_button;
+  AttemptLoginToolRequest request(CreateTabHandle(), password_button,
+                                  std::nullopt);
+  mojom::ActionResultPtr result = MakeOkResult();
+  result->attempt_login_status = mojom::AttemptLoginStatus::kPasswordManager;
+
+  ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
+                                             /*navigation_id=*/1001);
+
+  auto logged_actions = GetLoggedActions();
+  EXPECT_TRUE(logged_actions.empty());
 
   actor_service().StopTaskForTesting(
       task_id, actor::ActorTask::StoppedReason::kTaskComplete);

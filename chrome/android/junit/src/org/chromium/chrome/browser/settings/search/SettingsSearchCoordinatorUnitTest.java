@@ -7,19 +7,23 @@ package org.chromium.chrome.browser.settings.search;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import androidx.appcompat.widget.ActionMenuView;
 import androidx.appcompat.widget.Toolbar;
+import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 import androidx.slidingpanelayout.widget.SlidingPaneLayout;
@@ -47,6 +51,8 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.MultiColumnSettings;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
@@ -118,6 +124,7 @@ public class SettingsSearchCoordinatorUnitTest {
 
     @After
     public void tearDown() {
+        SettingsIndexData.reset();
         // Avoid runnable pollution between tests.
         ShadowLooper.idleMainLooper();
     }
@@ -128,13 +135,14 @@ public class SettingsSearchCoordinatorUnitTest {
      * and width calculations can execute properly.
      */
     private void setUpMultiColumnSettings() {
-        FragmentManager childFragmentManager = mock(FragmentManager.class);
+        FragmentManager childFragmentManager = mActivity.getSupportFragmentManager();
         when(mMultiColumnSettings.getChildFragmentManagerOrNull()).thenReturn(childFragmentManager);
 
         SlidingPaneLayout slidingPaneLayout = new SlidingPaneLayout(mActivity);
         when(mMultiColumnSettings.getView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.requireView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.getSlidingPaneLayout()).thenReturn(slidingPaneLayout);
+        when(mMultiColumnSettings.getSlidingPaneLayoutOrNull()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
 
         View rootView = mActivity.findViewById(R.id.settings_activity);
@@ -163,7 +171,16 @@ public class SettingsSearchCoordinatorUnitTest {
 
         var state =
                 new AccessibilityState.State(
-                        false, false, false, false, false, false, false, false, false);
+                        /* isComplexUserInteractionServiceEnabled= */ false,
+                        /* isTouchExplorationEnabled= */ false,
+                        /* isPerformGesturesEnabled= */ false,
+                        /* isAnyAccessibilityServiceEnabled= */ false,
+                        /* isAccessibilityToolPresent= */ false,
+                        /* isTextShowPasswordEnabled= */ false,
+                        /* isOnlyAutofillRunning= */ false,
+                        /* isOnlyPasswordManagersEnabled= */ false,
+                        /* isKnownScreenReaderEnabled= */ false,
+                        /* isSamsungTalkBackEnabled= */ false);
 
         // This call should not crash.
         mCoordinator.onAccessibilityStateChanged(state, state);
@@ -185,6 +202,7 @@ public class SettingsSearchCoordinatorUnitTest {
         when(mMultiColumnSettings.getView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.requireView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.getSlidingPaneLayout()).thenReturn(slidingPaneLayout);
+        when(mMultiColumnSettings.getSlidingPaneLayoutOrNull()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
 
         // Start in multi-column mode.
@@ -225,6 +243,7 @@ public class SettingsSearchCoordinatorUnitTest {
         when(mMultiColumnSettings.getView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.requireView()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.getSlidingPaneLayout()).thenReturn(slidingPaneLayout);
+        when(mMultiColumnSettings.getSlidingPaneLayoutOrNull()).thenReturn(slidingPaneLayout);
         when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
 
         // Start in single-column mode.
@@ -280,11 +299,63 @@ public class SettingsSearchCoordinatorUnitTest {
         // margins.
         int itemMargin =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.settings_item_margin);
-        int expectedMargin = (1000 - 600) / 2 + itemMargin;
+        int expectedMargin = (1000 - UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) / 2 + itemMargin;
         lp = (ViewGroup.MarginLayoutParams) searchBox.getLayoutParams();
         assertEquals(expectedMargin, lp.getMarginStart());
         assertEquals(expectedMargin, lp.getMarginEnd());
         assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, lp.width);
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.SETTINGS_IN_TAB})
+    @Config(qualifiers = "w800dp-h1280dp")
+    public void testSingleColumnSearchUiWidth_withSettingsInTab_accountsForToolbarPadding() {
+        setUpMultiColumnSettings();
+        mUseMultiColumn = false;
+
+        // Give toolbar padding, insets, and an initial non-zero end margin.
+        mToolbar.setPaddingRelative(16, 0, 16, 0);
+        mToolbar.setContentInsetsRelative(16, 16);
+        var toolbarLp = (ViewGroup.MarginLayoutParams) mToolbar.getLayoutParams();
+        toolbarLp.setMarginEnd(24);
+        mToolbar.setLayoutParams(toolbarLp);
+
+        mCoordinator.initializeSearchUi(null);
+
+        // Simulate tablet in portrait (800dp width < 840dp multi-column threshold).
+        int rootWidth = 800;
+        int rootHeight = 100;
+        View rootView = mActivity.findViewById(R.id.settings_activity);
+        assertNotNull(rootView);
+        int widthSpec = View.MeasureSpec.makeMeasureSpec(rootWidth, View.MeasureSpec.EXACTLY);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(rootHeight, View.MeasureSpec.EXACTLY);
+        rootView.measure(widthSpec, heightSpec);
+        rootView.layout(0, 0, rootWidth, rootHeight);
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        assertNotNull(searchBox);
+        View query = mActivity.findViewById(R.id.search_query_container);
+        assertNotNull(query);
+
+        // Toolbar margins should be reset to 0 in single-column mode.
+        toolbarLp = (ViewGroup.MarginLayoutParams) mToolbar.getLayoutParams();
+        assertEquals(0, toolbarLp.getMarginStart());
+        assertEquals(0, toolbarLp.getMarginEnd());
+
+        int itemMargin =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.settings_item_margin);
+        int expectedMargin =
+                (rootWidth - UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) / 2 + itemMargin;
+
+        var searchBoxLp = (ViewGroup.MarginLayoutParams) searchBox.getLayoutParams();
+        assertEquals(expectedMargin, searchBoxLp.getMarginStart());
+        assertEquals(expectedMargin, searchBoxLp.getMarginEnd());
+
+        int endPadding = Math.max(mToolbar.getPaddingEnd(), mToolbar.getContentInsetEnd());
+        var queryLp = (ViewGroup.MarginLayoutParams) query.getLayoutParams();
+        assertEquals(expectedMargin - mToolbar.getPaddingStart(), queryLp.getMarginStart());
+        assertEquals(expectedMargin - endPadding, queryLp.getMarginEnd());
     }
 
     /** Regression test for https://crbug.com/545872336. */
@@ -366,7 +437,7 @@ public class SettingsSearchCoordinatorUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     public void testInitializeSearchUi_withoutSettingsInTab_doesNotSetSearchBoxFocusable() {
         setUpMultiColumnSettings();
         mCoordinator.initializeSearchUi(null);
@@ -415,5 +486,240 @@ public class SettingsSearchCoordinatorUnitTest {
         when(mMultiColumnSettings.isLayoutOpen()).thenReturn(false);
         mCoordinator.onHeaderLayoutUpdated();
         assertEquals(View.VISIBLE, searchBox.getVisibility());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @Config(qualifiers = "sw600dp")
+    public void testExitSearchState_withSettingsInTab_multiColumn_focusesSearchBox() {
+        setUpMultiColumnSettings();
+        mUseMultiColumn = true;
+        mCoordinator.initializeSearchUi(null);
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        assertNotNull(searchBox);
+
+        mCoordinator.setFragmentState(SettingsSearchCoordinator.FS_SEARCH);
+        searchBox.setVisibility(View.GONE);
+
+        mCoordinator.exitSearchState();
+        assertEquals(View.VISIBLE, searchBox.getVisibility());
+        assertTrue(searchBox.isFocused());
+    }
+
+    /**
+     * Subclass of Fragment to represent the initial detail pane fragment (e.g. Google services).
+     */
+    public static class TestDetailFragment extends Fragment {
+        public TestDetailFragment() {}
+    }
+
+    @Test
+    public void testSearchInMultiColumnThenExitSearchRestoresDetailFragment() {
+        // Initialize an empty SettingsIndexData and mark it as indexed to prevent
+        // enterSearchState() from attempting to build the real search index across all
+        // registered settings fragments in SearchIndexProviderRegistry (which requires
+        // native/feature flag configuration in unit tests).
+        SettingsIndexData.createInstance().resetNeedsIndexing();
+
+        setUpMultiColumnSettings();
+        mUseMultiColumn = true;
+
+        // Add initial detail fragment representing Google services in the detail pane.
+        FragmentManager fragmentManager = mActivity.getSupportFragmentManager();
+        TestDetailFragment initialDetailFragment = new TestDetailFragment();
+        fragmentManager
+                .beginTransaction()
+                .add(R.id.preferences_detail, initialDetailFragment)
+                .commitNow();
+
+        mCoordinator.initializeSearchUi(null);
+        ShadowLooper.idleMainLooper();
+
+        // Verify initial UI state in multi-column mode.
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        View queryContainer = mActivity.findViewById(R.id.search_query_container);
+        assertNotNull(searchBox);
+        assertNotNull(queryContainer);
+        assertEquals(View.VISIBLE, searchBox.getVisibility());
+        assertEquals(View.GONE, queryContainer.getVisibility());
+        assertNotNull(SettingsIndexData.getInstance());
+        assertFalse(SettingsIndexData.getInstance().needsIndexing());
+
+        // 1. Click search box to enter search state in multi-column mode.
+        searchBox.performClick();
+        fragmentManager.executePendingTransactions();
+        ShadowLooper.idleMainLooper();
+
+        assertEquals(View.GONE, searchBox.getVisibility());
+        assertEquals(View.VISIBLE, queryContainer.getVisibility());
+
+        // 2. Enter search query and simulate search results appearing.
+        EditText queryEdit = mActivity.findViewById(R.id.search_query);
+        assertNotNull(queryEdit);
+        queryEdit.setText("Theme");
+
+        var entry =
+                new SettingsIndexData.Entry.Builder(
+                                "theme_id", "theme_key", "Theme", "MainSettings")
+                        .build();
+        var results = new SettingsIndexData.SearchResults();
+        results.addItem(entry, 100);
+        mCoordinator.displayResultsFragment(results);
+        fragmentManager.executePendingTransactions();
+        ShadowLooper.idleMainLooper();
+
+        // Verify search results fragment is displayed in the detail container.
+        Fragment resultFragment =
+                fragmentManager.findFragmentByTag(SettingsSearchCoordinator.RESULT_FRAGMENT);
+        assertNotNull(resultFragment);
+        assertTrue(resultFragment instanceof SearchResultsPreferenceFragment);
+        assertEquals(resultFragment, fragmentManager.findFragmentById(R.id.preferences_detail));
+
+        // 3. Click back arrow icon to exit search.
+        View backArrow = mActivity.findViewById(R.id.back_arrow_icon);
+        assertNotNull(backArrow);
+        backArrow.performClick();
+        fragmentManager.executePendingTransactions();
+        ShadowLooper.idleMainLooper();
+
+        // 4. Verify search box is restored and search query container is hidden.
+        assertEquals(View.VISIBLE, searchBox.getVisibility());
+        assertEquals(View.GONE, queryContainer.getVisibility());
+
+        // 5. Verify search results fragment is removed.
+        assertNull(fragmentManager.findFragmentByTag(SettingsSearchCoordinator.RESULT_FRAGMENT));
+
+        // 6. Verify initial detail fragment is restored in the detail pane.
+        Fragment currentDetail = fragmentManager.findFragmentById(R.id.preferences_detail);
+        assertNotNull(currentDetail);
+        assertEquals(initialDetailFragment, currentDetail);
+    }
+
+    @Test
+    public void testInitializeMultiColumnSearchUi_whenFragmentViewNull_doesNotCrash() {
+        when(mMultiColumnSettings.getView()).thenReturn(null);
+        when(mMultiColumnSettings.getSlidingPaneLayoutOrNull()).thenReturn(null);
+
+        // Call initializeSearchUi which posts initializeMultiColumnSearchUi to the handler.
+        mCoordinator.initializeSearchUi(null);
+
+        // Execute posted runnables on main looper. Should not throw IllegalStateException.
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        assertNotNull(searchBox);
+        assertEquals(View.GONE, searchBox.getVisibility());
+    }
+
+    @Test
+    public void testInitializeMultiColumnSearchUi_whenCoordinatorDestroyed_doesNotCrash() {
+        when(mMultiColumnSettings.getView()).thenReturn(null);
+        when(mMultiColumnSettings.getSlidingPaneLayoutOrNull()).thenReturn(null);
+
+        mCoordinator.initializeSearchUi(null);
+        mCoordinator.destroy();
+
+        // Flush any remaining tasks; should be a no-op or handled gracefully without crashing.
+        ShadowLooper.idleMainLooper();
+    }
+
+    @Test
+    public void testClickSearchIcon_entersSearchState() {
+        SettingsIndexData.createInstance().resetNeedsIndexing();
+        setUpMultiColumnSettings();
+        mUseMultiColumn = true;
+
+        mCoordinator.initializeSearchUi(null);
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        View searchIcon = searchBox.requireViewById(R.id.search_icon);
+        View queryContainer = mActivity.findViewById(R.id.search_query_container);
+        EditText queryEdit = mActivity.findViewById(R.id.search_query);
+
+        assertEquals(View.VISIBLE, searchBox.getVisibility());
+        assertEquals(View.GONE, queryContainer.getVisibility());
+
+        searchIcon.performClick();
+        ShadowLooper.idleMainLooper();
+
+        assertEquals(View.GONE, searchBox.getVisibility());
+        assertEquals(View.VISIBLE, queryContainer.getVisibility());
+        assertTrue(queryEdit.isFocused());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @Config(qualifiers = "sw600dp")
+    public void testTouchSearchBox_whenUnfocused_entersSearchState() {
+        SettingsIndexData.createInstance().resetNeedsIndexing();
+        setUpMultiColumnSettings();
+        mUseMultiColumn = true;
+
+        mCoordinator.initializeSearchUi(null);
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        View queryContainer = mActivity.findViewById(R.id.search_query_container);
+        EditText queryEdit = mActivity.findViewById(R.id.search_query);
+
+        // Focus another view so searchBox is unfocused.
+        View otherView = new View(mActivity);
+        otherView.setFocusable(true);
+        otherView.setFocusableInTouchMode(true);
+        ((ViewGroup) mActivity.findViewById(R.id.settings_activity)).addView(otherView);
+        otherView.requestFocus();
+        assertFalse(searchBox.isFocused());
+
+        MotionEvent downEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 10f, 10f, 0);
+        MotionEvent upEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, 10f, 10f, 0);
+        searchBox.dispatchTouchEvent(downEvent);
+        searchBox.dispatchTouchEvent(upEvent);
+        downEvent.recycle();
+        upEvent.recycle();
+
+        ShadowLooper.idleMainLooper();
+
+        assertEquals(View.GONE, searchBox.getVisibility());
+        assertEquals(View.VISIBLE, queryContainer.getVisibility());
+        assertTrue(queryEdit.isFocused());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @Config(qualifiers = "sw600dp")
+    public void testTouchSearchBox_whenUnfocused_dragDoesNotEnterSearchState() {
+        SettingsIndexData.createInstance().resetNeedsIndexing();
+        setUpMultiColumnSettings();
+        mUseMultiColumn = true;
+
+        mCoordinator.initializeSearchUi(null);
+        ShadowLooper.idleMainLooper();
+
+        View searchBox = mActivity.findViewById(R.id.search_box);
+        View queryContainer = mActivity.findViewById(R.id.search_query_container);
+
+        // Focus another view so searchBox is unfocused.
+        View otherView = new View(mActivity);
+        otherView.setFocusable(true);
+        otherView.setFocusableInTouchMode(true);
+        ((ViewGroup) mActivity.findViewById(R.id.settings_activity)).addView(otherView);
+        otherView.requestFocus();
+        assertFalse(searchBox.isFocused());
+
+        // Dispatch a drag motion exceeding touch slop.
+        MotionEvent downEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 10f, 10f, 0);
+        MotionEvent upEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, 10f, 100f, 0);
+        searchBox.dispatchTouchEvent(downEvent);
+        searchBox.dispatchTouchEvent(upEvent);
+        downEvent.recycle();
+        upEvent.recycle();
+
+        ShadowLooper.idleMainLooper();
+
+        assertEquals(View.VISIBLE, searchBox.getVisibility());
+        assertEquals(View.GONE, queryContainer.getVisibility());
     }
 }

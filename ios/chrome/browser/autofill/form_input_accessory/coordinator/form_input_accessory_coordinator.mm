@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_coordinator.h"
 
+#import <ranges>
+#import <variant>
 #import <vector>
 
 #import "base/apple/foundation_util.h"
@@ -19,6 +21,7 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
+#import "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #import "components/autofill/core/browser/payments/payments_service_url.h"
@@ -53,6 +56,7 @@
 #import "ios/chrome/browser/autofill/model/autofill_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/features.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_entity_suppression_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/ui_bundled/branding/branding_coordinator.h"
 #import "ios/chrome/browser/autofill/ui_bundled/util/autofill_credit_card_util.h"
@@ -88,6 +92,7 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "url/gurl.h"
 
 namespace {
 // Delay between the time the view is shown, and the time the suggestion label
@@ -575,6 +580,51 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   [_formInputAccessoryMediator openEditForSuggestion:suggestion];
 }
 
+- (void)openSourcesForSuggestion:(FormSuggestion*)suggestion {
+  // TODO(crbug.com/551864564): Implement opening sources for the suggestion.
+}
+
+- (void)suppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
+  [self showConfirmationDialogToSuppressPersonalContextSuggestion:suggestion];
+}
+
+- (BOOL)hasSourcesForSuggestion:(FormSuggestion*)suggestion {
+  if (!base::FeatureList::IsEnabled(
+          autofill::features::kAutofillAmbientAutofillSourceAttribution)) {
+    return NO;
+  }
+
+  web::WebState* activeWebState = [self activeWebState];
+  if (!activeWebState) {
+    return NO;
+  }
+  base::optional_ref<const autofill::EntityInstance> entity =
+      autofill::GetEntityInstance(
+          ProfileIOS::FromBrowserState(activeWebState->GetBrowserState()),
+          suggestion.payload);
+  if (!entity.has_value()) {
+    return NO;
+  }
+
+  const auto* payload =
+      std::get_if<autofill::EntityInstance::PersonalContextRecordTypePayload>(
+          &entity->record_type_data());
+  if (!payload) {
+    return NO;
+  }
+  return std::ranges::any_of(payload->sources, [](const auto& source) {
+    return GURL(source.url).is_valid();
+  });
+}
+
+- (BOOL)canSuppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
+  if (![self isPersonalContextSuggestion:suggestion]) {
+    return NO;
+  }
+  return base::FeatureList::IsEnabled(
+      autofill::features::kAutofillAmbientAutofillSuppressionUI);
+}
+
 - (BOOL)isPersonalContextSuggestion:(FormSuggestion*)suggestion {
   web::WebState* activeWebState = [self activeWebState];
   if (!activeWebState) {
@@ -764,17 +814,12 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 }
 
 - (void)openAutofillSettings {
-  [self dismissAtMemory];
+  __weak __typeof(self) weakSelf = self;
   id<SettingsCommands> settingsHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), SettingsCommands);
-  if (IsYourSavedInfoSettingsPageIosEnabled()) {
-    // TODO(crbug.com/540433768): Present the Autofill Settings page without a
-    // back button.
-    [settingsHandler showAutofillSettings];
-  } else {
-    [settingsHandler
-        showProfileSettingsFromViewController:self.baseViewController];
-  }
+  [settingsHandler showEnhancedAutofillSettingsWithCompletion:^{
+    [weakSelf onAutofillSettingsDismissed];
+  }];
 }
 
 - (void)openManageEnhancedAutofillDetails {
@@ -845,6 +890,7 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
 - (void)dismissAlertCoordinator {
   [_alertCoordinator stop];
+  [self.childCoordinators removeObject:_alertCoordinator];
   _alertCoordinator = nil;
 }
 
@@ -856,6 +902,67 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
       feature_engagement::TrackerFactory::GetForProfile(self.profile);
   CHECK(tracker);
   return tracker;
+}
+
+// Shows confirmation dialog before removing/suppressing a personal context
+// suggestion.
+- (void)showConfirmationDialogToSuppressPersonalContextSuggestion:
+    (FormSuggestion*)suggestion {
+  [self dismissAlertCoordinator];
+
+  NSString* title =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_CONFIRMATION_TITLE);
+  NSString* message =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_CONFIRMATION_MESSAGE);
+
+  _alertCoordinator = [[AlertCoordinator alloc]
+      initWithBaseViewController:self.baseViewController
+                         browser:self.browser
+                           title:title
+                         message:message];
+  [self.childCoordinators addObject:_alertCoordinator];
+
+  __weak __typeof__(self) weakSelf = self;
+
+  [_alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                               action:^{
+                                 [weakSelf dismissAlertCoordinator];
+                               }
+                                style:UIAlertActionStyleCancel];
+
+  NSString* removeActionTitle =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_ACTION);
+  [_alertCoordinator
+      addItemWithTitle:removeActionTitle
+                action:^{
+                  [weakSelf suppressEntityForSuggestion:suggestion];
+                  [weakSelf dismissAlertCoordinator];
+                }
+                 style:UIAlertActionStyleDestructive
+             preferred:NO
+               enabled:YES];
+
+  [_alertCoordinator start];
+}
+
+// Suppresses the entity for `suggestion` and refreshes keyboard suggestions.
+- (void)suppressEntityForSuggestion:(FormSuggestion*)suggestion {
+  if (!self.profile) {
+    return;
+  }
+  base::optional_ref<const autofill::EntityInstance> entity =
+      autofill::GetEntityInstance(self.profile, suggestion.payload);
+  if (!entity.has_value()) {
+    return;
+  }
+  autofill::EntitySuppressionManager* suppressionManager =
+      IOSAutofillEntitySuppressionManagerFactory::GetForProfile(self.profile);
+  if (!suppressionManager) {
+    return;
+  }
+  suppressionManager->SuppressEntity(*entity);
+  [_formInputAccessoryMediator resetSuggestions];
+  // TODO(crbug.com/551864564): Trigger undo snackbar.
 }
 
 // Shows confirmation dialog before opening Other passwords.
@@ -1071,6 +1178,16 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
   // Ensure the keyboard accessory knows we are now in manual filling mode.
   [self updateKeyboardAccessoryForManualFilling];
+}
+
+// Handles dismissal of the Autofill settings page opened from AtMemory notice.
+- (void)onAutofillSettingsDismissed {
+  if (!self.browser) {
+    return;
+  }
+  if (!autofill::IsEnhancedAutofillEnabled(self.browser->GetProfile())) {
+    [self dismissAtMemory];
+  }
 }
 
 @end

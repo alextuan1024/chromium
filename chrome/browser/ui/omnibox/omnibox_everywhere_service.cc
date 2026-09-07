@@ -27,6 +27,12 @@
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
+#include "components/feature_engagement/public/feature_constants.h"
+#include "components/user_education/common/feature_promo/feature_promo_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 OmniboxEverywhereService::OmniboxEverywhereService(Profile* profile)
     : profile_(profile) {
@@ -37,7 +43,7 @@ OmniboxEverywhereService::OmniboxEverywhereService(Profile* profile)
   if (tracker_service && user_education_service) {
     feature_promo_controller_ = std::make_unique<
         omnibox_everywhere::OmniboxEverywhereFeaturePromoController>(
-        tracker_service, user_education_service, this);
+        tracker_service, user_education_service, weak_factory_.GetWeakPtr());
     feature_promo_controller_->Init();
   }
 }
@@ -81,6 +87,11 @@ bool OmniboxEverywhereService::AcquireProfileKeepAlive() {
 
 void OmniboxEverywhereService::ReleaseProfileKeepAlive() {
   profile_keep_alive_.reset();
+  if (feature_promo_controller_) {
+    feature_promo_controller_->EndPromo(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
+        user_education::EndFeaturePromoReason::kAbortPromo);
+  }
 }
 
 void OmniboxEverywhereService::Shutdown() {
@@ -93,7 +104,7 @@ void OmniboxEverywhereService::Shutdown() {
 
 void OmniboxEverywhereService::HidePopup() {
   if (controller()) {
-    controller()->Close();
+    controller()->Hide();
   }
 }
 
@@ -105,6 +116,14 @@ bool OmniboxEverywhereService::IsPopupVisibleForProfile() const {
   return controller() && controller()->ui_manager() &&
          controller()->ui_manager()->IsVisible() &&
          controller()->ui_manager()->profile() == profile_;
+}
+
+void OmniboxEverywhereService::MaybeShowLensPromo() {
+  if (feature_promo_controller_) {
+    feature_promo_controller_->MaybeShowPromo(
+        user_education::FeaturePromoParams(
+            feature_engagement::kIPHOmniboxEverywhereLensPromoFeature));
+  }
 }
 
 void OmniboxEverywhereService::ShowProfilePicker() {
@@ -126,6 +145,13 @@ void OmniboxEverywhereService::OnDrivePickerClosed() {
 }
 
 void OmniboxEverywhereService::OnScreensharePickerOpened() {
+  if (feature_promo_controller_) {
+    feature_promo_controller_->NotifyFeatureUsedIfValid(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature);
+    feature_promo_controller_->EndPromo(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
+        user_education::EndFeaturePromoReason::kFeatureEngaged);
+  }
   if (ui_manager()) {
     ui_manager()->OnScreensharePickerOpened();
   }
@@ -137,9 +163,42 @@ void OmniboxEverywhereService::OnScreensharePickerClosed() {
   }
 }
 
+void OmniboxEverywhereService::ShowRegionSelectOverlay(
+    const SkBitmap& screenshot,
+    const RegionCaptureSource& source,
+    RegionSelectedCallback callback) {
+  if (ui_manager()) {
+    ui_manager()->ShowRegionSelectOverlay(screenshot, source,
+                                          std::move(callback));
+    return;
+  }
+  std::move(callback).Run(SkBitmap());
+}
+
+void OmniboxEverywhereService::OnFileChooserOpened() {
+  if (ui_manager()) {
+    ui_manager()->OnFileChooserOpened();
+  }
+}
+
+void OmniboxEverywhereService::OnFileChooserClosed() {
+  if (ui_manager()) {
+    ui_manager()->OnFileChooserClosed();
+  }
+}
+
 void OmniboxEverywhereService::OpenUrl(const GURL& url,
                                        WindowOpenDisposition disposition,
                                        ui::PageTransition transition) {
+  OpenUrl(url, disposition, transition, base::NullCallback());
+}
+
+void OmniboxEverywhereService::OpenUrl(
+    const GURL& url,
+    WindowOpenDisposition disposition,
+    ui::PageTransition transition,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
   auto* browser_collection = ProfileBrowserCollection::GetForProfile(profile_);
   CHECK(browser_collection);
   BrowserWindowInterface* bwi = browser_collection->GetLastActiveBrowser();
@@ -157,7 +216,10 @@ void OmniboxEverywhereService::OpenUrl(const GURL& url,
                              ? WindowOpenDisposition::NEW_FOREGROUND_TAB
                              : disposition);
     params.window_action = NavigateParams::WindowAction::kShowWindow;
-    Navigate(&params);
+    base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
+    if (handle && navigation_handle_callback) {
+      std::move(navigation_handle_callback).Run(*handle);
+    }
   }
 
   HidePopup();

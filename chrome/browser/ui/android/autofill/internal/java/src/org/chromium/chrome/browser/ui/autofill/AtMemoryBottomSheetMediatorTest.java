@@ -58,6 +58,7 @@ import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.Ill
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.ScreenId;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.components.autofill.Acceptability;
+import org.chromium.components.autofill.AtMemoryPayload;
 import org.chromium.components.autofill.AutofillSuggestion;
 import org.chromium.components.autofill.PopupNoticeInteractions;
 import org.chromium.components.autofill.SuggestionType;
@@ -126,7 +127,6 @@ public class AtMemoryBottomSheetMediatorTest {
 
         mMediator.show(suggestions);
 
-        assertTrue(mModel.get(VISIBLE));
         assertEquals(2, mModelList.size());
 
         assertEquals(suggestions.get(0).getLabel(), mModelList.get(0).model.get(TITLE));
@@ -136,6 +136,13 @@ public class AtMemoryBottomSheetMediatorTest {
         itemModel1.get(ON_SUGGESTION_CLICKED).run();
 
         verify(mDelegate).onSuggestionClicked(/* position= */ 0);
+    }
+
+    @Test
+    public void testOnSheetOpened() {
+        assertFalse(mModel.get(VISIBLE));
+        mMediator.onSheetOpened();
+        assertTrue(mModel.get(VISIBLE));
     }
 
     @Test
@@ -175,7 +182,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         new AutofillSuggestion.Builder()
                                 .setIconId(R.drawable.travel_trip)
                                 .setLabel("Hotel Booking")
-                                .setSecondaryLabel("Hotel Booking Type")
+                                .setPayload(new AtMemoryPayload("Hotel Booking Type"))
                                 .setSubLabel("Hilton ⋅ 16 May")
                                 .setChildren(List.of(childSuggestion))
                                 .build());

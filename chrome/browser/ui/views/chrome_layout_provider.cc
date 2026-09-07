@@ -88,16 +88,26 @@ gfx::Insets ChromeLayoutProvider::GetInsetsMetric(int metric) const {
       return gfx::Insets::TLBR(4, 20, 20, 20);
     case INSETS_PAGE_INFO_FOOTER_BUTTON:
       return gfx::Insets::VH(12, 20);
-    case INSETS_ACTION_APP_MENU_POPUP:
+    case INSETS_ACTION_APP_MENU_POPUP: {
+      if (base::FeatureList::IsEnabled(features::kChroMenuSearch)) {
+        return gfx::Insets::TLBR(4, 16, 16, 16);
+      }
       return gfx::Insets::VH(16, 16);
+    }
     case INSETS_ACTION_APP_MENU_ITEM:
       return gfx::Insets::TLBR(0, 16, 0, 12);
     case INSETS_ACTION_APP_MENU_FOOTER:
       return gfx::Insets::TLBR(8, 12, 8, 12);
+    case INSETS_ACTION_APP_MENU_FOOTER_BUTTON:
+      return gfx::Insets::VH(4, 8);
     case INSETS_PROFILE_SIGNIN_STATUS_CHIP:
       // Relies on the parent menu's margins for vertical alignment
       // with other items.
       return gfx::Insets::VH(0, 12);
+    case INSETS_ACTION_APP_MENU_BLOCK_ROW:
+      return gfx::Insets::VH(4, 4);
+    case INSETS_ACTION_APP_MENU_BLOCK_ENTRY_BUTTON:
+      return gfx::Insets::VH(8, 0);
     default:
       return LayoutProvider::GetInsetsMetric(metric);
   }
@@ -279,6 +289,14 @@ int ChromeLayoutProvider::GetDistanceMetric(int metric) const {
       return 20;
     case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_SPACING:
       return 12;
+    case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_BETWEEN_CHILD_SPACING:
+    case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_CORNER_RADIUS:
+    case DISTANCE_ACTION_APP_MENU_HEADER_VERTICAL_MARGIN:
+    case DISTANCE_ACTION_APP_MENU_BLOCK_ROW_SPACING:
+    case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_CORNER_RADIUS:
+      return 8;
+    case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_BETWEEN_CHILD_SPACING:
+      return 4;
   }
   NOTREACHED();
 }

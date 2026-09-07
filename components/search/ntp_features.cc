@@ -108,7 +108,7 @@ BASE_FEATURE(kNtpCustomizeWebUiAndroid, base::FEATURE_DISABLED_BY_DEFAULT);
 // longer treats NTP-sourced renderer-initiated link clicks as browser-
 // initiated.
 BASE_FEATURE(kNtpDisableBrowserInitiatedLinks,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if !defined(OFFICIAL_BUILD)
 // If enabled, dummy modules will be shown.
@@ -194,10 +194,6 @@ BASE_FEATURE(kNtpOutlookCalendarModule,
 #else
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
-
-// If enabled, richer suggestions (e.g. image grids) for tools such as Create
-// Image will be shown in the NTP Composebox.
-BASE_FEATURE(kNtpRichImageSuggestions, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, scaled merchandising action chips (e.g., dynamic tool
 // suggestions and resource pickers) will be shown on the NTP.

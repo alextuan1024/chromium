@@ -7,14 +7,18 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/containers/adapters.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "components/one_time_tokens/core/browser/email_one_time_token_fetcher.h"
 #include "components/one_time_tokens/core/browser/one_time_token_log_sink.h"
+#include "components/one_time_tokens/core/browser/one_time_token_service_constants.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_fetcher.h"
 #include "components/one_time_tokens/core/browser/util/expiring_cache.h"
+#include "components/one_time_tokens/core/common/one_time_token_features.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -80,19 +84,41 @@ ExpiringSubscription GmailOtpBackendImpl::Subscribe(base::Time expiration,
   return subscription;
 }
 
+ExpiringSubscription GmailOtpBackendImpl::SubscribeToTickles(
+    base::Time expiration,
+    TickleCallback callback) {
+  ExpiringSubscription subscription = tickle_subscription_manager_.Subscribe(
+      expiration, callback, /*expiration_callback=*/base::DoNothing());
+
+  // If there are unexpired notifications in the cache, notify the new
+  // subscriber immediately about the pre-arrival tickle.
+  if (!notification_cache_.PurgeExpiredAndGetItems().empty()) {
+    callback.Run();
+  }
+
+  return subscription;
+}
+
 void GmailOtpBackendImpl::OnIncomingOneTimeTokenBackendNotification(
     const OneTimeTokenBackendNotification& notification) {
   base::UmaHistogramBoolean(
       "Autofill.OneTimeTokens.Backend.Gmail.HasActiveSubscription",
-      subscription_manager_.GetNumberSubscribers() > 0);
+      subscription_manager_.GetNumberSubscribers() > 0 ||
+          tickle_subscription_manager_.GetNumberSubscribers() > 0);
 
   LOG_OTT(log_sink_) << "Tickle received";
 
   if (base::TimeTicks::Now() - notification.notification_received_timeticks >
       kNotificationExpirationDuration) {
     LOG_OTT(log_sink_) << "Incoming tickle ignored: expired";
+    if (base::FeatureList::IsEnabled(features::kGmailOtpRetrievalService)) {
+      base::UmaHistogramEnumeration(kTickleArrivalHistogram,
+                                    TickleArrival::kExpiredOnArrival);
+    }
     return;
   }
+
+  tickle_subscription_manager_.Notify();
 
   if (active_fetchers_.contains(notification.encrypted_message_reference) ||
       !notification_cache_.PurgeExpiredAndAdd(notification)) {
@@ -102,6 +128,11 @@ void GmailOtpBackendImpl::OnIncomingOneTimeTokenBackendNotification(
 
   LOG_OTT(log_sink_) << "Incoming tickle accepted into notification cache";
   ProcessCachedNotifications();
+}
+
+bool GmailOtpBackendImpl::HasPendingRequests() const {
+  return !notification_cache_.GetItems().empty() ||
+         (coordinator_ && coordinator_->HasPendingRequests());
 }
 
 void GmailOtpBackendImpl::FetchUserDataProcessingConsent(
@@ -128,7 +159,7 @@ void GmailOtpBackendImpl::ProcessCachedNotifications() {
   auto items = notification_cache_.TakeItems();
   LOG_OTT(log_sink_) << "Processing " << items.size()
                      << " cached notification(s) for active subscribers.";
-  for (const auto& notification : items) {
+  for (const auto& notification : base::Reversed(items)) {
     base::UmaHistogramMediumTimes(
         "Autofill.OneTimeTokens.Backend.Gmail.SubscriptionWaitLatency",
         base::TimeTicks::Now() - notification.notification_received_timeticks);
@@ -157,9 +188,12 @@ void GmailOtpBackendImpl::RetrieveGmailOtp(
   CHECK(inserted);
 
   LOG_OTT(log_sink_) << "Starting EmailOneTimeTokenFetcher for notification.";
+  // TODO(b/543374607): Consider using email_received_timestamp as the source of
+  // truth instead.
   it->second = std::make_unique<EmailOneTimeTokenFetcher>(
       url_loader_factory_, *identity_manager_,
-      notification.encrypted_message_reference.value(), log_sink_);
+      notification.encrypted_message_reference.value(),
+      notification.notification_received_timeticks, log_sink_);
 
   it->second->Start(base::BindOnce(
       &GmailOtpBackendImpl::OnResponseFromGmailOtpBackend,

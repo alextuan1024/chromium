@@ -8,6 +8,7 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_internals.mojom.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
@@ -76,8 +77,9 @@ class GlicUI : public ui::MojoWebUIController,
   // Associates the WebUI with a given Host. This must be called exactly once.
   void AttachToHost(Host* host);
 
-  GlicPageHandler* page_handler() { return page_handler_.get(); }
+  // Returns the host. This is null before the host is attached.
   Host* host() const { return host_; }
+
 
  private:
 #if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -98,7 +100,6 @@ class GlicUI : public ui::MojoWebUIController,
   void CreatePreloadHandler(
       mojo::PendingReceiver<glic::mojom::GlicPreloadHandler> receiver,
       mojo::PendingRemote<glic::mojom::PreloadPage> page) override;
-
 
   std::unique_ptr<GlicPreloadHandler> preload_handler_;
   std::unique_ptr<GlicPageHandler> page_handler_;

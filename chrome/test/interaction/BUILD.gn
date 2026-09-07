@@ -43,8 +43,10 @@ if (!is_android) {
       "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui/navigator",
       "//chrome/browser/ui/views/frame",
+      "//chrome/browser/ui/views/frame:contents_web_view",
       "//chrome/browser/ui/views/interaction",
       "//chrome/browser/ui/views/omnibox",
+      "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/browser/ui/views/tabs/common",
       "//chrome/test/base:devtools_coverage",
       "//chrome/test/base:interactive_test_utils",
@@ -57,6 +59,7 @@ if (!is_android) {
       "//ui/views:test_support",
       "//ui/views/controls/webview",
       "//ui/webui/tracked_element",
+      "//ui/webui/tracked_element:test_support",
     ]
   }
 
@@ -84,6 +87,7 @@ if (!is_android) {
     ]
     deps = [
       ":interaction",
+      "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/test/base:in_process_browser_test",
       "//chrome/test/base:test_switches",
       "//ui/base:test_support",
@@ -111,6 +115,7 @@ if (toolkit_views) {
       "//chrome/browser/ui/tabs:tab_menu",
       "//chrome/browser/ui/views/bubble",
       "//chrome/browser/ui/views/interaction",
+      "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/browser/ui/views/toolbar",
       "//chrome/test/base:in_process_browser_test",
       "//net:test_support",

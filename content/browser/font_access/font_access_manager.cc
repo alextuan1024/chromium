@@ -72,9 +72,10 @@ void FontAccessManager::BindReceiver(
 
 void FontAccessManager::EnumerateLocalFonts(
     EnumerateLocalFontsCallback callback) {
-  DCHECK(base::FeatureList::IsEnabled(blink::features::kFontAccess));
+  CHECK(base::FeatureList::IsEnabled(blink::features::kFontAccess),
+        base::NotFatalUntil::M159);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (skip_privacy_checks_for_testing_) {
     DidRequestPermission(
@@ -102,9 +103,26 @@ void FontAccessManager::EnumerateLocalFonts(
     return;
   }
 
+  // Documents with opaque origins (sandboxed frames/popups, data: URLs) have
+  // no persistable permission identity: the LOCAL_FONTS content setting can
+  // never be keyed to them. Without this gate, the permission lookup below
+  // falls back to WebContents::GetVisibleURL() for opaque-origin primary main
+  // frames (PermissionUtil::GetLastCommittedOriginAsURL), which a compromised
+  // renderer can steer to an arbitrary victim origin via a never-committing
+  // pending navigation and thereby borrow that origin's persisted grant.
+  // Reject instead of CHECKing because this state is reachable by
+  // legitimate-looking renderer traffic.
+  // See crbug.com/553150261.
+  if (rfh->GetLastCommittedOrigin().opaque()) {
+    std::move(callback).Run(
+        blink::mojom::FontEnumerationStatus::kPermissionDenied,
+        base::ReadOnlySharedMemoryRegion());
+    return;
+  }
+
   content::PermissionController* permission_controller =
       rfh->GetBrowserContext()->GetPermissionController();
-  DCHECK(permission_controller);
+  CHECK(permission_controller, base::NotFatalUntil::M159);
 
   auto status = permission_controller->GetPermissionStatusForCurrentDocument(
       content::PermissionDescriptorUtil::

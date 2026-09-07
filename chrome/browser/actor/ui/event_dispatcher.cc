@@ -21,6 +21,7 @@
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/actor/tool_request_variant.h"
+#include "chrome/browser/actor/tools/file_upload_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/ui/actor_ui_metrics.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
@@ -81,6 +82,8 @@ constexpr absl::Overload PreToolEventsFn{
 #endif
     NoUiEvents<AddBookmarkToolRequest>,
     NoUiEvents<DragAndReleaseToolRequest>,
+    NoUiEvents<FileUploadToolRequest>,
+    NoUiEvents<FindAndHighlightToolRequest>,
     NoUiEvents<HistoryToolRequest>,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     NoUiEvents<LoadAndExtractContentToolRequest>,
@@ -92,6 +95,7 @@ constexpr absl::Overload PreToolEventsFn{
           MouseMove(tr.GetTabHandle(), pt, source)};
     },
     NoUiEvents<NavigateToolRequest>,
+    NoUiEvents<PerformSearchToolRequest>,
     NoUiEvents<RemoveBookmarkToolRequest>,
     NoUiEvents<ScrollToolRequest>,
     NoUiEvents<SelectToolRequest>,
@@ -122,6 +126,8 @@ constexpr absl::Overload PostToolEventsFn{
 #endif
     NoUiEvents<AddBookmarkToolRequest>,
     NoUiEvents<DragAndReleaseToolRequest>,
+    NoUiEvents<FileUploadToolRequest>,
+    NoUiEvents<FindAndHighlightToolRequest>,
     NoUiEvents<HistoryToolRequest>,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     NoUiEvents<LoadAndExtractContentToolRequest>,
@@ -129,6 +135,7 @@ constexpr absl::Overload PostToolEventsFn{
     NoUiEvents<MediaControlToolRequest>,
     NoUiEvents<MoveMouseToolRequest>,
     NoUiEvents<NavigateToolRequest>,
+    NoUiEvents<PerformSearchToolRequest>,
     NoUiEvents<RemoveBookmarkToolRequest>,
     NoUiEvents<ScrollToolRequest>,
     NoUiEvents<SelectToolRequest>,

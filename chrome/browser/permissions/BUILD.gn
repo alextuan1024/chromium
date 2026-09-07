@@ -226,9 +226,17 @@ source_set("test_support") {
     "system/mock_platform_handle.h",
   ]
 
+  if (is_mac) {
+    sources += [
+      "system/system_media_permission_cache_mac_test_helper.h",
+      "system/system_media_permission_cache_mac_test_helper.mm",
+    ]
+  }
+
   deps = [
     ":permissions",
     "//base",
+    "//chrome/browser/permissions/system",
     "//components/passage_embeddings/core:test_support",
     "//components/permissions:test_support",
     "//components/safe_browsing/core/browser/db:database_manager",
@@ -292,9 +300,11 @@ source_set("unit_tests") {
   if (is_android) {
     sources += [
       "permission_blocked_message_delegate_android_unittest.cc",
+      "permission_prompt_android_unittest.cc",
       "permission_update_message_controller_android_unittest.cc",
     ]
     deps += [
+      "//components/infobars/content",
       "//components/messages/android:test_support",
       "//components/ukm:test_support",
     ]
@@ -363,6 +373,7 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/views/permissions",
       "//chrome/test:test_support",
+      "//chrome/test/base:web_feature_histogram_tester",
       "//components/back_forward_cache",
       "//components/contextual_tasks/public",
       "//components/optimization_guide/core:test_support",
@@ -402,6 +413,7 @@ if (!is_android && !is_chromeos_device) {
 
     deps = [
       ":permissions",
+      ":test_support",
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/permissions/system",
       "//chrome/browser/ui/browser_window",
@@ -414,12 +426,6 @@ if (!is_android && !is_chromeos_device) {
 
     if (is_mac || is_win) {
       sources += [ "system/system_permission_settings_interactive_uitest.cc" ]
-    }
-    if (is_mac) {
-      sources += [
-        "system/system_media_permission_cache_mac_test_helper.h",
-        "system/system_media_permission_cache_mac_test_helper.mm",
-      ]
     }
   }
 }

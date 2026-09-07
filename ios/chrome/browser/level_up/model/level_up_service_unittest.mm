@@ -11,6 +11,8 @@
 #import "components/tab_groups/tab_group_id.h"
 #import "components/tab_groups/tab_group_visual_data.h"
 #import "ios/chrome/browser/level_up/model/level_up_service_factory.h"
+#import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
+#import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
@@ -34,6 +36,7 @@ class LevelUpServiceTest : public PlatformTest {
 
     TestProfileIOS::Builder builder;
     profile_ = std::move(builder).Build();
+    profile_->GetPrefs()->SetBoolean(prefs::kLevelUpOptIn, true);
     service_ = LevelUpServiceFactory::GetForProfile(profile_.get());
   }
 
@@ -91,9 +94,9 @@ TEST_F(LevelUpServiceTest, TestMilestoneProgression) {
 
   // Complete remaining 4 tasks (total 12).
   service_->MarkTaskCompleted(TaskType::kPasswordCheckup);
-  service_->MarkTaskCompleted(TaskType::kLensSearch);
+  service_->MarkTaskCompleted(TaskType::kLensWebsiteSearch);
   service_->MarkTaskCompleted(TaskType::kAISearch);
-  service_->MarkTaskCompleted(TaskType::kCameraSearch);
+  service_->MarkTaskCompleted(TaskType::kLensCameraSearch);
   EXPECT_EQ(service_->GetCurrentLevel(), 4);
   EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 0);
 }
@@ -183,6 +186,98 @@ TEST_F(LevelUpServiceTest, TestTabGroupObserverDecluttering) {
 
   // Stat count should increment to 2.
   EXPECT_EQ(2, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
+}
+
+// Tests that LevelUpPasswordCheckObserver updates kPasswordsVerified stat when
+// a password check finishes (transitions from kRunning to kIdle).
+TEST_F(LevelUpServiceTest, TestPasswordCheckObserver) {
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
+
+  scoped_refptr<IOSChromePasswordCheckManager> check_manager =
+      IOSChromePasswordCheckManagerFactory::GetForProfile(profile_.get());
+  ASSERT_TRUE(check_manager);
+
+  auto service_with_manager = std::make_unique<LevelUpService>(
+      profile_->GetPrefs(), nullptr, nullptr, check_manager.get());
+
+  // Start and stop password check.
+  check_manager->StartPasswordCheck(
+      password_manager::LeakDetectionInitiator::kEditCheck);
+  check_manager->StopPasswordCheck();
+
+  // Verify kPasswordsVerified stat (0 if no saved passwords in test store).
+  EXPECT_EQ(0, service_with_manager->GetStatValue(
+                   LevelUpTaskStatType::kPasswordsVerified));
+}
+
+// Tests that ResetAllTasksStatus clears task completion, stats, level, and
+// segmentation impressions prefs.
+TEST_F(LevelUpServiceTest, TestResetAllTasksStatus) {
+  // Complete tasks and increment stats.
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  service_->MarkTaskCompleted(TaskType::kAutofill);
+  service_->MarkTaskCompleted(TaskType::kPinTabs);
+  EXPECT_EQ(2, service_->GetCurrentLevel());
+  EXPECT_TRUE(service_->IsTaskCompleted(TaskType::kTabGroups));
+
+  service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 5);
+  service_->IncrementStatValue(LevelUpTaskStatType::kTypingSaved, 20);
+  EXPECT_EQ(5, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
+  EXPECT_EQ(20, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+
+  PrefService* prefs = profile_->GetPrefs();
+  prefs->SetInteger(
+      prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 3);
+
+  // Reset task status.
+  service_->ResetAllTasksStatus();
+
+  // Verify level and completion state are reset.
+  EXPECT_EQ(1, service_->GetCurrentLevel());
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kTabGroups));
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kAutofill));
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kPinTabs));
+
+  // Verify all stats are reset.
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
+  EXPECT_EQ(
+      0, service_->GetStatValue(LevelUpTaskStatType::kPhotoSearchesPerformed));
+
+  // Verify segmentation impressions pref is reset.
+  EXPECT_EQ(
+      0,
+      prefs->GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness));
+}
+
+// Tests that changing the UI enabled preference updates IsUIEnabled().
+TEST_F(LevelUpServiceTest, TestUIEnabledPrefObservation) {
+  EXPECT_FALSE(service_->IsUIEnabled());
+
+  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpUIEnabled, true);
+  EXPECT_TRUE(service_->IsUIEnabled());
+
+  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpUIEnabled, false);
+  EXPECT_FALSE(service_->IsUIEnabled());
+}
+
+// Tests that tasks and stats are not tracked when the opt-in preference is
+// false.
+TEST_F(LevelUpServiceTest, TestOptedOutDoesNotTrack) {
+  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpOptIn, false);
+  EXPECT_FALSE(service_->IsOptedIn());
+
+  // Attempt to complete a task.
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kTabGroups));
+  EXPECT_EQ(service_->GetCurrentLevel(), 1);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 3);
+
+  // Attempt to increment a stat.
+  service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 5);
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
 }
 
 }  // namespace

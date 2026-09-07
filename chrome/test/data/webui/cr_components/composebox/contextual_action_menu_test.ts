@@ -6,10 +6,13 @@ import 'chrome://contextual-tasks/strings.m.js';
 import 'chrome://resources/cr_components/composebox/contextual_action_menu.js';
 import 'chrome://resources/cr_components/composebox/composebox_favicon_group.js';
 
+import {SmartTabSharingSurface} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxFaviconGroupElement} from 'chrome://resources/cr_components/composebox/composebox_favicon_group.js';
 import type {ContextualActionMenuElement} from 'chrome://resources/cr_components/composebox/contextual_action_menu.js';
 import {DEFAULT_FLYOUT_WIDTH_PX, DEFAULT_MAX_MENU_HEIGHT_PX, MIN_MENU_HEIGHT_PX, SHARE_TABS_FLYOUT_GAP_PX, SHARE_TABS_FLYOUT_MAX_HEIGHT_PX, VIEWPORT_BUFFER_PX} from 'chrome://resources/cr_components/composebox/contextual_action_menu.js';
 import {AnchorAlignment} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import type {CrIconsetElement} from 'chrome://resources/cr_elements/cr_icon/cr_iconset.js';
+import {IconsetMap} from 'chrome://resources/cr_elements/cr_icon/iconset_map.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import type {TabInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
@@ -78,6 +81,7 @@ suite('ContextualActionMenu', () => {
       contextManagementInComposeboxEnabled: false,
       keepMenuOpenOnTabSelectForRealbox: false,
       composeboxContextMenuEnableTabDeselection: false,
+      useSearchboxConfigIconIds: true,
     });
 
     const pluralStringProxy = new TestPluralStringProxy();
@@ -252,6 +256,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           tool: ToolMode.kImageGen,
@@ -261,6 +266,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       toolsSectionConfig: {header: ''},
@@ -272,6 +278,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           model: ModelMode.kGeminiPro,
@@ -279,6 +286,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       modelSectionConfig: {header: ''},
@@ -317,6 +325,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           tool: ToolMode.kImageGen,
@@ -326,6 +335,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       toolsSectionConfig: {header: ''},
@@ -337,6 +347,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           model: ModelMode.kGeminiPro,
@@ -344,6 +355,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       modelSectionConfig: {header: ''},
@@ -370,6 +382,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           tool: ToolMode.kImageGen,
@@ -379,6 +392,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       toolsSectionConfig: {header: ''},
@@ -391,6 +405,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           model: ModelMode.kGeminiPro,
@@ -398,6 +413,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       modelSectionConfig: {header: ''},
@@ -435,6 +451,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           model: ModelMode.kGeminiPro,
@@ -442,6 +459,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       modelSectionConfig: {header: ''},
@@ -462,6 +480,410 @@ suite('ContextualActionMenu', () => {
     assertEquals('true', thinkingModel.getAttribute('aria-checked'));
   });
 
+  test('Renders icon defined in modelConfig', async () => {
+    actionMenu.inputState = new MockInputState({
+      allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+      modelConfigs: [
+        {
+          model: ModelMode.kGeminiRegular,
+          menuLabel: 'Gemini Regular',
+          icon: 107,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+        {
+          model: ModelMode.kGeminiPro,
+          menuLabel: 'Gemini Pro',
+          icon: 97,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+      ],
+      modelSectionConfig: {header: ''},
+    });
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    const regularModelButton =
+        $$(actionMenu, `[data-model="${ModelMode.kGeminiRegular}"]`);
+    assertTrue(isVisible(regularModelButton));
+    const regularIcon = regularModelButton!.querySelector('cr-icon');
+    assertTrue(isVisible(regularIcon));
+    assertEquals('searchbox_config:107', regularIcon!.getAttribute('icon'));
+
+    const proModelButton =
+        $$(actionMenu, `[data-model="${ModelMode.kGeminiPro}"]`);
+    assertTrue(isVisible(proModelButton));
+    const proIcon = proModelButton!.querySelector('cr-icon');
+    assertTrue(isVisible(proIcon));
+    assertEquals('searchbox_config:97', proIcon!.getAttribute('icon'));
+  });
+
+  test(
+      'Falls back to legacy model icon if icon is 0 or unspecified',
+      async () => {
+        actionMenu.inputState = new MockInputState({
+          allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+          modelConfigs: [
+            {
+              model: ModelMode.kGeminiRegular,
+              menuLabel: 'Gemini Regular',
+              icon: 0,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              model: ModelMode.kGeminiPro,
+              menuLabel: 'Gemini Pro',
+              icon: 0,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+          ],
+          modelSectionConfig: {header: ''},
+        });
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const regularModelButton =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiRegular}"]`);
+        assertTrue(isVisible(regularModelButton));
+        const regularIcon = regularModelButton!.querySelector('cr-icon');
+        assertTrue(isVisible(regularIcon));
+        assertEquals('composebox:acute', regularIcon!.getAttribute('icon'));
+
+        const proModelButton =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiPro}"]`);
+        assertTrue(isVisible(proModelButton));
+        const proIcon = proModelButton!.querySelector('cr-icon');
+        assertTrue(isVisible(proIcon));
+        assertEquals('composebox:timer', proIcon!.getAttribute('icon'));
+      });
+
+  test(
+      'Uses legacy model icons when useSearchboxConfigIconIds is false',
+      async () => {
+        loadTimeData.overrideValues({
+          useSearchboxConfigIconIds: false,
+        });
+        actionMenu.inputState = new MockInputState({
+          allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+          modelConfigs: [
+            {
+              model: ModelMode.kGeminiRegular,
+              menuLabel: 'Gemini Regular',
+              icon: 107,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              model: ModelMode.kGeminiPro,
+              menuLabel: 'Gemini Pro',
+              icon: 97,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+          ],
+          modelSectionConfig: {header: ''},
+        });
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const regularModelButton =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiRegular}"]`);
+        assertTrue(isVisible(regularModelButton));
+        const regularIcon = regularModelButton!.querySelector('cr-icon');
+        assertTrue(isVisible(regularIcon));
+        assertEquals('composebox:acute', regularIcon!.getAttribute('icon'));
+
+        const proModelButton =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiPro}"]`);
+        assertTrue(isVisible(proModelButton));
+        const proIcon = proModelButton!.querySelector('cr-icon');
+        assertTrue(isVisible(proIcon));
+        assertEquals('composebox:timer', proIcon!.getAttribute('icon'));
+      });
+
+  test('Renders icon defined in toolConfig', async () => {
+    actionMenu.inputState = new MockInputState({
+      allowedTools:
+          [ToolMode.kDeepSearch, ToolMode.kImageGen, ToolMode.kCanvas],
+      toolConfigs: [
+        {
+          tool: ToolMode.kDeepSearch,
+          menuLabel: 'Deep Search',
+          disableActiveModelSelection: false,
+          chipLabel: '',
+          icon: 94,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+        {
+          tool: ToolMode.kImageGen,
+          menuLabel: 'Create Images',
+          disableActiveModelSelection: false,
+          chipLabel: '',
+          icon: 100,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+        {
+          tool: ToolMode.kCanvas,
+          menuLabel: 'Canvas',
+          disableActiveModelSelection: false,
+          chipLabel: '',
+          icon: 96,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+      ],
+    });
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    const deepSearchButton =
+        $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+    assertTrue(isVisible(deepSearchButton));
+    const deepSearchIcon = deepSearchButton!.querySelector('cr-icon');
+    assertTrue(isVisible(deepSearchIcon));
+    assertEquals('searchbox_config:94', deepSearchIcon!.getAttribute('icon'));
+
+    const imageGenButton =
+        $$(actionMenu, `[data-mode="${ToolMode.kImageGen}"]`);
+    assertTrue(isVisible(imageGenButton));
+    const imageGenIcon = imageGenButton!.querySelector('cr-icon');
+    assertTrue(isVisible(imageGenIcon));
+    assertEquals('searchbox_config:100', imageGenIcon!.getAttribute('icon'));
+
+    const canvasButton = $$(actionMenu, `[data-mode="${ToolMode.kCanvas}"]`);
+    assertTrue(isVisible(canvasButton));
+    const canvasIcon = canvasButton!.querySelector('cr-icon');
+    assertTrue(isVisible(canvasIcon));
+    assertEquals('searchbox_config:96', canvasIcon!.getAttribute('icon'));
+  });
+
+  test(
+      'Uses searchbox_config:0 when tool icon is 0 or unspecified in config',
+      async () => {
+        actionMenu.inputState = new MockInputState({
+          allowedTools:
+              [ToolMode.kDeepSearch, ToolMode.kImageGen, ToolMode.kCanvas],
+          toolConfigs: [
+            {
+              tool: ToolMode.kDeepSearch,
+              menuLabel: 'Deep Search',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 0,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              tool: ToolMode.kImageGen,
+              menuLabel: 'Create Images',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 0,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              tool: ToolMode.kCanvas,
+              menuLabel: 'Canvas',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 0,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+          ],
+        });
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const deepSearchButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+        assertTrue(isVisible(deepSearchButton));
+        const deepSearchIcon = deepSearchButton!.querySelector('cr-icon');
+        assertTrue(isVisible(deepSearchIcon));
+        assertEquals(
+            'searchbox_config:0', deepSearchIcon!.getAttribute('icon'));
+
+        const imageGenButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kImageGen}"]`);
+        assertTrue(isVisible(imageGenButton));
+        const imageGenIcon = imageGenButton!.querySelector('cr-icon');
+        assertTrue(isVisible(imageGenIcon));
+        assertEquals('searchbox_config:0', imageGenIcon!.getAttribute('icon'));
+
+        const canvasButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kCanvas}"]`);
+        assertTrue(isVisible(canvasButton));
+        const canvasIcon = canvasButton!.querySelector('cr-icon');
+        assertTrue(isVisible(canvasIcon));
+        assertEquals('searchbox_config:0', canvasIcon!.getAttribute('icon'));
+      });
+
+  test(
+      'Uses searchbox_config:0 when tool is not present in toolConfigs',
+      async () => {
+        actionMenu.inputState = new MockInputState({
+          allowedTools:
+              [ToolMode.kDeepSearch, ToolMode.kImageGen, ToolMode.kCanvas],
+          toolConfigs: [],
+        });
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const deepSearchButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+        assertTrue(isVisible(deepSearchButton));
+        const deepSearchIcon = deepSearchButton!.querySelector('cr-icon');
+        assertTrue(isVisible(deepSearchIcon));
+        assertEquals(
+            'searchbox_config:0', deepSearchIcon!.getAttribute('icon'));
+
+        const imageGenButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kImageGen}"]`);
+        assertTrue(isVisible(imageGenButton));
+        const imageGenIcon = imageGenButton!.querySelector('cr-icon');
+        assertTrue(isVisible(imageGenIcon));
+        assertEquals('searchbox_config:0', imageGenIcon!.getAttribute('icon'));
+
+        const canvasButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kCanvas}"]`);
+        assertTrue(isVisible(canvasButton));
+        const canvasIcon = canvasButton!.querySelector('cr-icon');
+        assertTrue(isVisible(canvasIcon));
+        assertEquals('searchbox_config:0', canvasIcon!.getAttribute('icon'));
+      });
+
+  test(
+      'Uses legacy tool icons when useSearchboxConfigIconIds is false',
+      async () => {
+        loadTimeData.overrideValues({
+          useSearchboxConfigIconIds: false,
+        });
+        actionMenu.inputState = new MockInputState({
+          allowedTools:
+              [ToolMode.kDeepSearch, ToolMode.kImageGen, ToolMode.kCanvas],
+          toolConfigs: [
+            {
+              tool: ToolMode.kDeepSearch,
+              menuLabel: 'Deep Search',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 94,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              tool: ToolMode.kImageGen,
+              menuLabel: 'Create Images',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 100,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+            {
+              tool: ToolMode.kCanvas,
+              menuLabel: 'Canvas',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              icon: 96,
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+            },
+          ],
+        });
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const deepSearchButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+        assertTrue(isVisible(deepSearchButton));
+        const deepSearchIcon = deepSearchButton!.querySelector('cr-icon');
+        assertTrue(isVisible(deepSearchIcon));
+        assertEquals(
+            'composebox:travel-explore', deepSearchIcon!.getAttribute('icon'));
+
+        const imageGenButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kImageGen}"]`);
+        assertTrue(isVisible(imageGenButton));
+        const imageGenIcon = imageGenButton!.querySelector('cr-icon');
+        assertTrue(isVisible(imageGenIcon));
+        assertEquals(
+            'composebox:nanoBanana-custom', imageGenIcon!.getAttribute('icon'));
+
+        const canvasButton =
+            $$(actionMenu, `[data-mode="${ToolMode.kCanvas}"]`);
+        assertTrue(isVisible(canvasButton));
+        const canvasIcon = canvasButton!.querySelector('cr-icon');
+        assertTrue(isVisible(canvasIcon));
+        assertEquals(
+            'composebox:draft-spark', canvasIcon!.getAttribute('icon'));
+      });
+
+  // LINT.IfChange(SearchboxConfigIcons)
+  test(
+      'searchbox_config icon definitions match composebox icon definitions',
+      () => {
+        const searchboxConfigIconset =
+            IconsetMap.getInstance().get('searchbox_config') as
+            CrIconsetElement;
+        const composeboxIconset =
+            IconsetMap.getInstance().get('composebox') as CrIconsetElement;
+        assertTrue(!!searchboxConfigIconset, 'searchbox_config iconset found');
+        assertTrue(!!composeboxIconset, 'composebox iconset found');
+
+        const iconMappings: Array<[number, string]> = [
+          [93, 'add-photo-alternate'],
+          [103, 'drive'],
+          [92, 'attach-file'],
+          [96, 'draft-spark'],
+          [94, 'travel-explore'],
+          [102, 'photo-prints'],
+          [90, 'autorenew'],
+          [91, 'bolt'],
+          [97, 'timer'],
+          [107, 'acute'],
+          [100, 'nanoBanana-custom'],
+        ];
+
+        for (const [intId, stringName] of iconMappings) {
+          const intIcon = searchboxConfigIconset.createIcon(`${intId}`);
+          const strIcon = composeboxIconset.createIcon(stringName);
+          assertTrue(
+              !!intIcon,
+              `Icon for integer ID ${
+                  intId} exists in searchbox_config iconset`);
+          assertTrue(
+              !!strIcon,
+              `Icon for string '${stringName}' exists in composebox iconset`);
+          assertEquals(
+              strIcon.innerHTML, intIcon.innerHTML,
+              `SVG content mismatch between searchbox_config:${
+                  intId} and composebox:${stringName}`);
+        }
+      });
+  // LINT.ThenChange(//ui/webui/resources/cr_components/composebox/searchbox_config_icons.html.ts:SearchboxConfigIcons)
+
   test('Shows active tool checkmark and does not disable it', async () => {
     actionMenu.inputState = new MockInputState({
       allowedTools: [ToolMode.kDeepSearch, ToolMode.kImageGen],
@@ -476,6 +898,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
         {
           tool: ToolMode.kImageGen,
@@ -485,6 +908,7 @@ suite('ContextualActionMenu', () => {
           hintText: '',
           aimUrlParams: [],
           menuTooltip: '',
+          icon: 0,
         },
       ],
       toolsSectionConfig: {header: ''},
@@ -587,6 +1011,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       modelSectionConfig: {header: 'Models'},
     });
@@ -609,6 +1034,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       toolsSectionConfig: {header: ''},
       allowedModels: [],
@@ -666,6 +1092,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       toolsSectionConfig: {header: ''},
       modelSectionConfig: {header: ''},
@@ -686,6 +1113,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       modelSectionConfig: {header: ''},
       toolsSectionConfig: {header: ''},
@@ -855,6 +1283,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       toolsSectionConfig: {header: toolsHeader},
       allowedModels: [ModelMode.kGeminiRegular],
@@ -864,6 +1293,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       modelSectionConfig: {header: ''},
       allowedInputTypes: [InputType.kLensImage],
@@ -1829,6 +2259,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       toolsSectionConfig: {header: ''},
       allowedModels: [ModelMode.kGeminiRegular],
@@ -1838,6 +2269,7 @@ suite('ContextualActionMenu', () => {
         hintText: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
       modelSectionConfig: {header: ''},
     });
@@ -3594,6 +4026,244 @@ suite('ContextualActionMenu', () => {
           await microtasksFinished();
 
           assertFalse(actionMenu.$.menu.open);
+        });
+  });
+
+  suite('SmartTabSharingMetrics', () => {
+    let originalRecordEnumerationValue: any;
+    let recordedMetrics:
+        Array<{metricName: string, value: number, enumSize: number}> = [];
+
+    suiteSetup(() => {
+      (window as any).chrome = (window as any).chrome || {};
+      (window as any).chrome.histograms =
+          (window as any).chrome.histograms || {};
+      originalRecordEnumerationValue =
+          (window as any).chrome.histograms.recordEnumerationValue;
+      (window as any).chrome.histograms.recordEnumerationValue =
+          (metricName: string, value: number, enumSize: number) => {
+            recordedMetrics.push({metricName, value, enumSize});
+            if (originalRecordEnumerationValue) {
+              originalRecordEnumerationValue(metricName, value, enumSize);
+            }
+          };
+    });
+
+    suiteTeardown(() => {
+      if ((window as any).chrome && (window as any).chrome.histograms) {
+        (window as any).chrome.histograms.recordEnumerationValue =
+            originalRecordEnumerationValue;
+      }
+    });
+
+    setup(() => {
+      recordedMetrics = [];
+    });
+
+    test(
+        'Logs OMNIBOX_COMPOSEBOX when shown directly from NewTabPage',
+        async () => {
+          asInternal(actionMenu).metricsSource_ = 'NewTabPage';
+          actionMenu.smartTabSharingVisible = true;
+          actionMenu.smartTabSharingActive = true;
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+
+          assertEquals(1, recordedMetrics.length);
+          assertEquals(
+              'ContextualSearch.SmartTabSharing.MenuOptionShown',
+              recordedMetrics[0]!.metricName);
+          assertEquals(
+              SmartTabSharingSurface.OMNIBOX_COMPOSEBOX,
+              recordedMetrics[0]!.value);
+        });
+
+    test(
+        'Logs OMNIBOX_COMPOSEBOX when shown directly from Omnibox',
+        async () => {
+          asInternal(actionMenu).metricsSource_ = 'Omnibox';
+          actionMenu.smartTabSharingVisible = true;
+          actionMenu.smartTabSharingActive = true;
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+
+          assertEquals(1, recordedMetrics.length);
+          assertEquals(
+              SmartTabSharingSurface.OMNIBOX_COMPOSEBOX,
+              recordedMetrics[0]!.value);
+        });
+
+    test(
+        'Logs CONTEXTUAL_SEARCHBOX when shown directly from ContextualTasks',
+        async () => {
+          asInternal(actionMenu).metricsSource_ = 'ContextualTasks';
+          actionMenu.smartTabSharingVisible = true;
+          actionMenu.smartTabSharingActive = true;
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+
+          assertEquals(1, recordedMetrics.length);
+          assertEquals(
+              SmartTabSharingSurface.CONTEXTUAL_SEARCHBOX,
+              recordedMetrics[0]!.value);
+        });
+
+    test(
+        'Does not log when smartTabSharingActive is false and flyout is closed',
+        async () => {
+          asInternal(actionMenu).metricsSource_ = 'NewTabPage';
+          actionMenu.smartTabSharingVisible = true;
+          actionMenu.smartTabSharingActive = false;
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+
+          assertEquals(0, recordedMetrics.length);
+        });
+
+    test(
+        'Logs when smartTabSharingActive is false but flyout is open',
+        async () => {
+          asInternal(actionMenu).metricsSource_ = 'NewTabPage';
+          actionMenu.smartTabSharingVisible = true;
+          actionMenu.smartTabSharingActive = false;
+          actionMenu.contextManagementInComposeboxEnabled = true;
+          actionMenu.tabSuggestions = [createTabSuggestion()];
+          actionMenu.inputState = new MockInputState({
+            allowedInputTypes: [InputType.kBrowserTab],
+          });
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+
+          // Open flyout
+          actionMenu.shareTabsFlyoutOpen = true;
+          await microtasksFinished();
+
+          assertEquals(1, recordedMetrics.length);
+          assertEquals(
+              SmartTabSharingSurface.OMNIBOX_COMPOSEBOX,
+              recordedMetrics[0]!.value);
+        });
+
+    test('Logs only once per show', async () => {
+      asInternal(actionMenu).metricsSource_ = 'NewTabPage';
+      actionMenu.smartTabSharingVisible = true;
+      actionMenu.smartTabSharingActive = true;
+
+      actionMenu.showAt(actionMenu);
+      await microtasksFinished();
+
+      assertEquals(1, recordedMetrics.length);
+
+      // Trigger update again without closing, should not log again
+      actionMenu.requestUpdate();
+      await microtasksFinished();
+      assertEquals(1, recordedMetrics.length);
+
+      // Close and re-show, should log again
+      const closePromise = eventToPromise('close', actionMenu);
+      actionMenu.close();
+      await closePromise;
+
+      actionMenu.showAt(actionMenu);
+      await microtasksFinished();
+      assertEquals(2, recordedMetrics.length);
+    });
+  });
+
+  suite('Accessibility', () => {
+    test(
+        'ensure accessibility of wrappers, dividers, headers, and flyout',
+        async () => {
+          loadTimeData.overrideValues({
+            ShowContextMenuHeaders: true,
+          });
+
+          actionMenu.remove();
+          actionMenu =
+              document.createElement('cr-composebox-contextual-action-menu');
+          actionMenu.contextManagementInComposeboxEnabled = true;
+          const tabs = [
+            createTabSuggestion(
+                {tabId: 1, title: 'Tab 1', url: 'about:blank/1'}),
+            createTabSuggestion(
+                {tabId: 2, title: 'Tab 2', url: 'about:blank/2'}),
+          ];
+          actionMenu.tabSuggestions = tabs;
+          actionMenu.inputState = new MockInputState({
+            allowedInputTypes: [
+              InputType.kBrowserTab,
+              InputType.kLensImage,
+              InputType.kLensFile,
+            ],
+            allowedTools: [
+              ToolMode.kImageGen,
+              ToolMode.kDeepSearch,
+              ToolMode.kCanvas,
+            ],
+            toolsSectionConfig: {header: 'Tools'},
+            allowedModels: [ModelMode.kGeminiRegular],
+            modelSectionConfig: {header: 'Models'},
+          });
+          document.body.appendChild(actionMenu);
+          await microtasksFinished();
+
+          actionMenu.showAt(actionMenu);
+          await microtasksFinished();
+          assertTrue(actionMenu.$.menu.open);
+
+          // Verify wrappers have role="presentation".
+          const outerWrapper =
+              actionMenu.shadowRoot.querySelector('.menu-outer-wrapper');
+          assertTrue(!!outerWrapper);
+          assertEquals('presentation', outerWrapper.getAttribute('role'));
+
+          const mainCard =
+              actionMenu.shadowRoot.querySelector('.main-menu-card');
+          assertTrue(!!mainCard);
+          assertEquals('presentation', mainCard.getAttribute('role'));
+
+          const shareTabsContainer =
+              actionMenu.shadowRoot.querySelector('.share-tabs-container');
+          assertTrue(!!shareTabsContainer);
+          assertEquals('presentation', shareTabsContainer.getAttribute('role'));
+
+          // Verify dividers have aria-hidden="true".
+          const dividers =
+              Array.from(actionMenu.shadowRoot.querySelectorAll('hr'));
+          assertTrue(dividers.length > 0);
+          dividers.forEach(hr => {
+            assertEquals('true', hr.getAttribute('aria-hidden'));
+          });
+
+          // Verify headers have aria-hidden="true".
+          const toolHeader = actionMenu.shadowRoot.querySelector('#toolHeader');
+          assertTrue(!!toolHeader);
+          assertEquals('true', toolHeader.getAttribute('aria-hidden'));
+
+          const modelHeader =
+              actionMenu.shadowRoot.querySelector('#modelHeader');
+          assertTrue(!!modelHeader);
+          assertEquals('true', modelHeader.getAttribute('aria-hidden'));
+
+          // Verify flyout is aria-hidden when closed.
+          const flyout = actionMenu.shadowRoot.querySelector<HTMLElement>(
+              '.share-tabs-flyout');
+          assertTrue(!!flyout);
+          assertEquals('true', flyout.getAttribute('aria-hidden'));
+
+          // Open flyout by hovering over Share Tabs trigger.
+          const trigger = $$(actionMenu, '#shareTabsTrigger') as HTMLElement;
+          assertTrue(!!trigger);
+          trigger.dispatchEvent(new PointerEvent('pointerenter'));
+          await microtasksFinished();
+
+          // Verify flyout is not aria-hidden when open.
+          assertEquals('false', flyout.getAttribute('aria-hidden'));
         });
   });
 });

@@ -12,7 +12,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -20,6 +19,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -28,6 +28,7 @@
 #include "ui/base/dragdrop/drop_target_event.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -183,19 +184,7 @@ IN_PROC_BROWSER_TEST_F(BrowserRootViewBrowserTest, WheelTabChange) {
   EXPECT_EQ(1, model->active_index());
 }
 
-class BrowserRootViewWithVerticalTabsBrowserTest
-    : public BrowserRootViewBrowserTest {
- public:
-  BrowserRootViewWithVerticalTabsBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(tabs::kVerticalTabs);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(BrowserRootViewWithVerticalTabsBrowserTest,
-                       WheelTabChange) {
+IN_PROC_BROWSER_TEST_F(BrowserRootViewBrowserTest, VerticalTabsWheelTabChange) {
   if (!browser_defaults::kScrollEventChangesTab) {
     GTEST_SKIP() << "Test does not apply to this platform.";
   }

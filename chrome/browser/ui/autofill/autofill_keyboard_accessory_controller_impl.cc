@@ -458,11 +458,7 @@ void AutofillKeyboardAccessoryControllerImpl::AcceptSuggestion(
                       .multi_index = {static_cast<size_t>(index)}});
 }
 
-bool AutofillKeyboardAccessoryControllerImpl::RemoveSuggestion(
-    int index,
-    AutofillMetrics::SingleEntryRemovalMethod removal_method) {
-  CHECK_EQ(removal_method,
-           AutofillMetrics::SingleEntryRemovalMethod::kKeyboardAccessory);
+bool AutofillKeyboardAccessoryControllerImpl::RemoveSuggestion(int index) {
   if (base::checked_cast<size_t>(index) >= suggestions_.size()) {
     return false;
   }
@@ -521,8 +517,8 @@ void AutofillKeyboardAccessoryControllerImpl::OnDeletionDialogClosed(
       // recorded even if user canceled the dialog.
       break;
     case FillingProduct::kAutocomplete:
-      AutofillMetrics::OnAutocompleteSuggestionDeleted(
-          AutofillMetrics::SingleEntryRemovalMethod::kKeyboardAccessory);
+      AutofillMetrics::LogAutocompleteEvent(
+          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED);
       break;
     case FillingProduct::kCreditCard:
       // TODO(crbug.com/41482065): Add metrics for credit cards.
@@ -678,7 +674,7 @@ void AutofillKeyboardAccessoryControllerImpl::Show(
         kIgnoreEarlyClicksOnSuggestionsDuration);
   }
   // TODO(crbug.com/364165357): Use actually shown suggestions.
-  delegate_->OnSuggestionsShown(suggestions_, std::nullopt);
+  delegate_->OnSuggestionsShown(suggestions_, /*metadata=*/{});
 }
 
 std::optional<AutofillSuggestionController::UiSessionId>
@@ -772,6 +768,47 @@ void AutofillKeyboardAccessoryControllerImpl::OpenSettingsForEntityType(
       break;
     default:
       break;
+  }
+}
+
+void AutofillKeyboardAccessoryControllerImpl::SelectSuggestion(int index) {
+  if (!base::FeatureList::IsEnabled(
+          autofill::features::kAutofillAndroidKeyboardAccessoryHoverPreview)) {
+    return;
+  }
+
+  if (!delegate_) {
+    return;
+  }
+
+  if (base::checked_cast<size_t>(index) >= suggestions_.size()) {
+    return;
+  }
+
+  // If the mouse pointer is locked by the webpage, hide the suggestions to
+  // prevent unexpected or untrusted interactions.
+  if (IsPointerLocked(web_contents_.get())) {
+    Hide(SuggestionHidingReason::kMouseLocked);
+    return;
+  }
+
+  const Suggestion& suggestion = GetSuggestionAt(index);
+
+  if (suggestion.IsSelectable()) {
+    delegate_->DidSelectSuggestion(suggestion);
+  } else {
+    delegate_->ClearPreviewedForm();
+  }
+}
+
+void AutofillKeyboardAccessoryControllerImpl::UnselectSuggestion() {
+  if (!base::FeatureList::IsEnabled(
+          autofill::features::kAutofillAndroidKeyboardAccessoryHoverPreview)) {
+    return;
+  }
+
+  if (delegate_) {
+    delegate_->ClearPreviewedForm();
   }
 }
 

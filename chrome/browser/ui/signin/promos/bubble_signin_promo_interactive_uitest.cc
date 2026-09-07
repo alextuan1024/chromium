@@ -21,6 +21,7 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
@@ -30,6 +31,7 @@
 #include "chrome/browser/ui/signin/promos/bubble_signin_promo_signin_button_view.h"
 #include "chrome/browser/ui/signin/promos/bubble_signin_promo_view.h"
 #include "chrome/browser/ui/signin/promos/signin_promo_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/autofill/address_sign_in_promo_view.h"
 #include "chrome/browser/ui/views/autofill/save_address_profile_view.h"
@@ -46,7 +48,7 @@
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -68,6 +70,7 @@
 #include "components/sync/service/local_data_description.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_bookmarks/switches.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension.h"
@@ -1433,8 +1436,8 @@ IN_PROC_BROWSER_TEST_F(BubbleSignInPromoInteractiveUITest,
   extensions::TriggerPostInstallDialog(
       browser()->GetProfile(), extension, SkBitmap(),
       base::BindOnce(
-          [](Browser* b) {
-            return b->tab_strip_model()->GetActiveWebContents();
+          [](BrowserWindowInterface* b) {
+            return b->GetTabStripModel()->GetActiveWebContents();
           },
           browser()));
 
@@ -1529,8 +1532,8 @@ IN_PROC_BROWSER_TEST_F(BubbleSignInPromoInteractiveUITest,
   extensions::TriggerPostInstallDialog(
       browser()->GetProfile(), extension, SkBitmap(),
       base::BindOnce(
-          [](Browser* b) {
-            return b->tab_strip_model()->GetActiveWebContents();
+          [](BrowserWindowInterface* b) {
+            return b->GetTabStripModel()->GetActiveWebContents();
           },
           browser()));
 
@@ -1554,7 +1557,7 @@ IN_PROC_BROWSER_TEST_F(BubbleSignInPromoInteractiveUITest,
   // Check that there is no helper attached to the sign in tab, because the
   // extension was already moved.
   EXPECT_FALSE(SigninPromoTabHelper::GetForWebContents(
-                   *browser()->tab_strip_model()->GetActiveWebContents())
+                   *browser()->GetTabStripModel()->GetActiveWebContents())
                    ->IsInitializedForTesting());
 
   // Check that the sign in was successful.
@@ -1627,8 +1630,8 @@ IN_PROC_BROWSER_TEST_F(BubbleSignInPromoInteractiveUITest,
   extensions::TriggerPostInstallDialog(
       browser()->GetProfile(), extension, SkBitmap(),
       base::BindOnce(
-          [](Browser* b) {
-            return b->tab_strip_model()->GetActiveWebContents();
+          [](BrowserWindowInterface* b) {
+            return b->GetTabStripModel()->GetActiveWebContents();
           },
           browser()));
   // Click the sign in button.
@@ -1652,7 +1655,7 @@ IN_PROC_BROWSER_TEST_F(BubbleSignInPromoInteractiveUITest,
 
   // Check that there is a helper attached to the sign in tab.
   EXPECT_TRUE(SigninPromoTabHelper::GetForWebContents(
-                  *browser()->tab_strip_model()->GetActiveWebContents())
+                  *browser()->GetTabStripModel()->GetActiveWebContents())
                   ->IsInitializedForTesting());
 
   // Set a new refresh token for the primary account, which verifies the
@@ -1714,8 +1717,8 @@ IN_PROC_BROWSER_TEST_F(
   extensions::TriggerPostInstallDialog(
       browser()->GetProfile(), extension, SkBitmap(),
       base::BindOnce(
-          [](Browser* b) {
-            return b->tab_strip_model()->GetActiveWebContents();
+          [](BrowserWindowInterface* b) {
+            return b->GetTabStripModel()->GetActiveWebContents();
           },
           browser()));
 

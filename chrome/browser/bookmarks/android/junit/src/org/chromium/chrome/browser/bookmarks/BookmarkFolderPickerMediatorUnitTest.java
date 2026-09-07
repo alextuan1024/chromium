@@ -23,6 +23,7 @@ import android.view.MenuItem;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -39,6 +40,7 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkListEntry.ViewType;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
@@ -63,7 +65,10 @@ import java.util.Arrays;
 
 /** Unit tests for {@link BookmarkFolderPickerMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
+})
 public class BookmarkFolderPickerMediatorUnitTest {
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.LENIENT);
@@ -322,6 +327,11 @@ public class BookmarkFolderPickerMediatorUnitTest {
         mFinishModelLoadCallback.run();
     }
 
+    @After
+    public void tearDown() {
+        DeviceInfo.resetIsDesktopForTesting();
+    }
+
     private void remakeMediator(BookmarkModel bookmarkModel, BookmarkId... bookmarkIds) {
         if (mMediator != null) {
             mMediator.destroy();
@@ -425,8 +435,14 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Test
     public void testOptionsItemSelected_AddNewFolder() {
+        var userActionTester = new UserActionTester();
         mMediator.optionsItemSelected(R.id.create_new_folder_menu_id);
         verify(mAddNewFolderCoordinator).show(any());
+        assertTrue(
+                userActionTester
+                        .getActions()
+                        .contains("BookmarkFolderPicker.CreateNewFolderOpened"));
+        userActionTester.tearDown();
     }
 
     @Test
@@ -437,8 +453,14 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Test
     public void testNewFolderButtonClicked() {
+        var userActionTester = new UserActionTester();
         mModel.get(BookmarkFolderPickerProperties.NEW_FOLDER_CLICK_LISTENER).run();
         verify(mAddNewFolderCoordinator).show(mMobileFolderId);
+        assertTrue(
+                userActionTester
+                        .getActions()
+                        .contains("BookmarkFolderPicker.CreateNewFolderOpened"));
+        userActionTester.tearDown();
     }
 
     @Test
@@ -466,8 +488,8 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
-    public void testDesktopBookmarksLayout_NavigationIconVisibility_NotFromBookmarkDialog() {
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testDesktopBookmarksDialog_NavigationIconVisibility_NotFromBookmarkDialog() {
         DeviceInfo.setIsDesktopForTesting(true);
         remakeMediator(mBookmarkModel, mUserBookmarkId);
 
@@ -489,8 +511,8 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
-    public void testDesktopBookmarksLayout_NavigationIconVisibility_FromBookmarkDialog() {
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testDesktopBookmarksDialog_NavigationIconVisibility_FromBookmarkDialog() {
         DeviceInfo.setIsDesktopForTesting(true);
         if (mMediator != null) {
             mMediator.destroy();

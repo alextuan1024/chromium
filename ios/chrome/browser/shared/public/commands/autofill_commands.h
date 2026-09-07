@@ -39,13 +39,15 @@ class WebState;
 // Shows the payments suggestion bottom sheet view controller.
 - (void)showPaymentsBottomSheet:(const autofill::FormActivityParams&)params;
 
+// Dismisses the payments suggestion bottom sheet.
+- (void)dismissPaymentsBottomSheet;
+
 // Shows the scan card save and fill suggestion bottom sheet view controller.
 - (void)showScanCardSaveAndFillBottomSheet:
     (const autofill::FormActivityParams&)params;
 
-// Dismisses the sheets shown through `showPaymentsBottomSheet` and
-// `showScanCardSaveAndFillBottomSheet`.
-- (void)dismissPaymentAndScanCardSheets;
+// Dismisses the scan card save and fill suggestion bottom sheet.
+- (void)dismissScanCardSaveAndFillBottomSheet;
 
 // Commands to manage save card bottomsheet.
 - (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState;
@@ -96,6 +98,10 @@ class WebState;
 // Commands to manage the Autofill notice bottom sheet.
 - (void)showAmbientAutofillNotice:(const autofill::FormActivityParams&)params;
 - (void)dismissAmbientAutofillNotice;
+
+// Commands to manage the Autofill AI Private Inference notice bottom sheet.
+- (void)showAutofillAIPrivateInferenceNotice;
+- (void)dismissAutofillAIPrivateInferenceNotice;
 
 @end
 

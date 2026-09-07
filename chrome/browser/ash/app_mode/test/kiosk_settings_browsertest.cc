@@ -15,20 +15,22 @@
 #include "chrome/browser/ash/app_mode/kiosk_system_session.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_settings_navigation_throttle.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/base_window.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 
@@ -69,11 +71,11 @@ bool OpenPopup(const GURL& url) {
 }
 
 // Navigates to `url` in the current tab, and returns the browser.
-Browser& NavigateInCurrentTab(const GURL& url) {
+BrowserWindowInterface& NavigateInCurrentTab(const GURL& url) {
   auto params =
       NavigateAndReturnParams(url, WindowOpenDisposition::CURRENT_TAB);
   CHECK(params.browser);
-  return CHECK_DEREF(params.browser->GetBrowserForMigrationOnly());
+  return *params.browser;
 }
 
 GURL NavigateInBrowser(BrowserDelegate& browser, const GURL& url) {
@@ -300,14 +302,14 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest,
 
   // Navigation in the current tab creates a new browser of app type, and closes
   // the non-app one.
-  Browser& browser = NavigateInCurrentTab(settings_url);
+  BrowserWindowInterface& browser = NavigateInCurrentTab(settings_url);
   EXPECT_FALSE(DidKioskCloseNewWindow());
   EXPECT_FALSE(DidKioskCloseNewWindow());
 
   BrowserDelegate* settings =
       GetKioskSystemSession().GetSettingsBrowserForTesting();
   ASSERT_NE(settings, nullptr);
-  EXPECT_NE(&browser, settings->GetBrowser().GetBrowserForMigrationOnly());
+  EXPECT_NE(&browser, &settings->GetBrowser());
 }
 
 IN_PROC_BROWSER_TEST_P(KioskSettingsTest,
@@ -328,8 +330,7 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest,
   ASSERT_NE(settings, nullptr);
 
   // Settings browser becomes null when the settings window closes.
-  CloseBrowserSynchronously(
-      settings->GetBrowser().GetBrowserForMigrationOnly());
+  CloseBrowserSynchronously(&settings->GetBrowser());
   ASSERT_EQ(session.GetSettingsBrowserForTesting(), nullptr);
 }
 

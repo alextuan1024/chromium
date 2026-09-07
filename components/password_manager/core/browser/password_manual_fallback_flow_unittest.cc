@@ -19,7 +19,7 @@
 #include "components/autofill/core/browser/suggestions/suggestion_test_helpers.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/aliases.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/device_reauth/mock_device_authenticator.h"
@@ -287,7 +287,8 @@ class PasswordManualFallbackFlowTest : public Test {
     // In production, suggestions cannot be accepted if not shown first.
     // Simulating showing them in tests is mandatory, otherwise a `CHECK` error
     // would occur while logging metrics.
-    flow().OnSuggestionsShown(base::span_from_ref(suggestion), std::nullopt);
+    flow().OnSuggestionsShown(base::span_from_ref(suggestion),
+                              /*metadata=*/{});
     flow().DidAcceptSuggestion(suggestion, metadata);
   }
 
@@ -1672,7 +1673,8 @@ TEST_P(PasswordManualFallbackFlowFillAfterSuggestionMetricsTest,
         "PasswordManager.ManualFallback.AcceptedSuggestion.FromRootPopup",
         SuggestionAcceptedOnRootPopup(), 1);
   } else {
-    flow().OnSuggestionsShown(base::span_from_ref(suggestion), std::nullopt);
+    flow().OnSuggestionsShown(base::span_from_ref(suggestion),
+                              /*metadata=*/{});
     // Root popup acceptance metrics are only logged when suggestions are
     // accepted.
     histograms.ExpectTotalCount(

@@ -340,10 +340,9 @@ std::map<std::string, std::string> ProposeSyntheticFinchTrials() {
     partition_alloc::TagViolationReportingMode reporting_mode =
         partition_alloc::TagViolationReportingMode::kUndefined;
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-    reporting_mode =
-        allocator_shim::internal::PartitionAllocMalloc::Allocator(
-            allocator_shim::AllocToken(allocator_shim::kDefaultPartitionIndex))
-            ->memory_tagging_reporting_mode();
+    reporting_mode = allocator_shim::internal::PartitionAllocMalloc::Allocator(
+                         allocator_shim::kDefaultPartitionIndex)
+                         ->memory_tagging_reporting_mode();
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
     switch (bootloader_override) {
       case BootloaderOverride::kDefault:
@@ -913,10 +912,9 @@ void ReconfigureSchedulerLoopQuarantineBranch(
   partition_alloc::internal::SchedulerLoopQuarantineConfig config =
       GetSchedulerLoopQuarantineConfiguration(process_type_identifier,
                                               branch_type);
-  for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
-       alloc_token++) {
-    allocator_shim::internal::PartitionAllocMalloc::Allocator(
-        allocator_shim::AllocToken(alloc_token))
+  for (size_t partition_index = 0;
+       partition_index < allocator_shim::kNumPartitions; partition_index++) {
+    allocator_shim::internal::PartitionAllocMalloc::Allocator(partition_index)
         ->ReconfigureSchedulerLoopQuarantineForCurrentThread(config);
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
@@ -1303,6 +1301,9 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
   }
 #endif  // PA_BUILDFLAG(HAS_MEMORY_TAGGING)
 
+  bool enable_tighter_aligned_alloc_bound = base::FeatureList::IsEnabled(
+      base::features::kPartitionAllocTighterAlignedAllocBound);
+
   allocator_shim::ConfigurePartitions(
       allocator_shim::EnableBrp(brp_config.enable_brp),
       brp_config.extra_extras_size,
@@ -1311,7 +1312,9 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
       scheduler_loop_quarantine_global_config,
       scheduler_loop_quarantine_thread_local_config,
       scheduler_loop_quarantine_for_advanced_memory_safety_checks_config,
-      allocator_shim::EventuallyZeroFreedMemory(eventually_zero_freed_memory));
+      allocator_shim::EventuallyZeroFreedMemory(eventually_zero_freed_memory),
+      allocator_shim::EnableTighterAlignedAllocBound(
+          enable_tighter_aligned_alloc_bound));
 
   const uint32_t extras_size = allocator_shim::GetMainPartitionRootExtrasSize();
   // As per description, extras are optional and are expected not to
@@ -1331,10 +1334,9 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
   }
 #endif
 
-  for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
-       alloc_token++) {
-    allocator_shim::internal::PartitionAllocMalloc::Allocator(
-        allocator_shim::AllocToken(alloc_token))
+  for (size_t partition_index = 0;
+       partition_index < allocator_shim::kNumPartitions; partition_index++) {
+    allocator_shim::internal::PartitionAllocMalloc::Allocator(partition_index)
         ->EnableThreadCacheIfSupported();
   }
 
@@ -1342,10 +1344,9 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
           base::features::kPartitionAllocLargeEmptySlotSpanRing)) {
     int16_t size = static_cast<int16_t>(
         features::kPartitionAllocLargeEmptySlotSpanRingSize.Get());
-    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
-         alloc_token++) {
-      allocator_shim::internal::PartitionAllocMalloc::Allocator(
-          allocator_shim::AllocToken(alloc_token))
+    for (size_t partition_index = 0;
+         partition_index < allocator_shim::kNumPartitions; partition_index++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(partition_index)
           ->AdjustSlotSpanRing(size, kDefaultMaxEmptySlotSpansDirtyBytesShift);
     }
   }
@@ -1499,10 +1500,9 @@ void PartitionAllocSupport::OnForegrounded(bool has_main_frame) {
           features::kPartitionAllocAdjustSizeWhenInForeground)) {
     int16_t size = static_cast<int16_t>(
         features::kPartitionAllocForegroundEmptySlotSpanRingSize.Get());
-    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
-         alloc_token++) {
-      allocator_shim::internal::PartitionAllocMalloc::Allocator(
-          allocator_shim::AllocToken(alloc_token))
+    for (size_t partition_index = 0;
+         partition_index < allocator_shim::kNumPartitions; partition_index++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(partition_index)
           ->AdjustSlotSpanRing(size,
                                kForegroundMaxEmptySlotSpansDirtyBytesShift);
     }
@@ -1546,10 +1546,9 @@ void PartitionAllocSupport::OnBackgrounded() {
           features::kPartitionAllocAdjustSizeWhenInForeground)) {
     int16_t size = static_cast<int16_t>(
         features::kPartitionAllocBackgroundEmptySlotSpanRingSize.Get());
-    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
-         alloc_token++) {
-      allocator_shim::internal::PartitionAllocMalloc::Allocator(
-          allocator_shim::AllocToken(alloc_token))
+    for (size_t partition_index = 0;
+         partition_index < allocator_shim::kNumPartitions; partition_index++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(partition_index)
           ->AdjustSlotSpanRing(size,
                                kBackgroundMaxEmptySlotSpansDirtyBytesShift);
     }
@@ -1563,12 +1562,6 @@ std::string PartitionAllocSupport::ExtractDanglingPtrSignatureForTests(
   return ExtractDanglingPtrSignature(stacktrace);
 }
 #endif
-
-void CheckHeapIntegrity(const void* ptr) {
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  partition_alloc::PartitionRoot::CheckMetadataIntegrity(ptr);
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-}
 
 // The function here is called right before crashing with
 // `DoubleFreeOrCorruptionDetected()`. We provide an address for the slot start

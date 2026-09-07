@@ -19,6 +19,7 @@
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/run_until.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
@@ -57,6 +58,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/aura/window.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_policy.h"
@@ -601,9 +604,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, MultipleOpenFile) {
   // No use-after-free when OpenFile is called multiple times.
-  auto* controller = browser_window_interface()
-                         ->GetFeatures()
-                         .browser_select_file_dialog_controller();
+  auto* controller =
+      BrowserSelectFileDialogController::From(browser_window_interface());
 
   controller->OpenFile();
   controller->OpenFile();
@@ -728,10 +730,12 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionDarkLightModeEnabledTest,
 
   // Active and inactive colors in the other mode should be different from the
   // initial mode.
-  EXPECT_NE(dialog_window->GetProperty(chromeos::kFrameActiveColorKey),
-            initial_active_color);
-  EXPECT_NE(dialog_window->GetProperty(chromeos::kFrameInactiveColorKey),
-            initial_inactive_color);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return dialog_window->GetProperty(chromeos::kFrameActiveColorKey) !=
+               initial_active_color &&
+           dialog_window->GetProperty(chromeos::kFrameInactiveColorKey) !=
+               initial_inactive_color;
+  }));
 
   CloseDialog(kDialogBtnCancel, owning_window);
 }

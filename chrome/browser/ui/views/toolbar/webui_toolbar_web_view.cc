@@ -52,6 +52,9 @@
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
+#include "chrome/browser/ui/views/toolbar/webui_home_control.h"
+#include "chrome/browser/ui/views/toolbar/webui_overflow_button.h"
+#include "chrome/browser/ui/views/toolbar/webui_performance_intervention_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_split_tabs_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_extensions_container_wrapper.h"
 #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
@@ -71,6 +74,8 @@
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_frame_host.h"
@@ -88,9 +93,11 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/events/blink/web_input_event.h"
 #include "ui/gfx/geometry/point.h"
@@ -99,8 +106,10 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+#include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
@@ -164,9 +173,11 @@ class WebUIToolbarEventForwarder : public ui::EventHandler {
       // We purposefully don't forward wheel events. They need special phase
       // handling and it doesn't seem like we actually do anything with them.
       return;
-    } else {
-      target->ForwardMouseEvent(ui::MakeWebMouseEvent(*event));
     }
+    if (event->type() == ui::EventType::kMousePressed) {
+      web_view_->RequestFocus();
+    }
+    target->ForwardMouseEvent(ui::MakeWebMouseEvent(*event));
   }
 
   bool HaveOpenOmniboxPopup() {
@@ -198,6 +209,7 @@ class WebUIToolbarInternalWebView : public views::WebView {
                               WebUIToolbarWebView* webui_toolbar_web_view)
       : views::WebView(browser_context),
         webui_toolbar_web_view_(webui_toolbar_web_view) {
+    SetBackground(nullptr);
 #if BUILDFLAG(IS_MAC)
     forwarder_ = std::make_unique<WebUIToolbarEventForwarder>(
         *webui_toolbar_web_view, *this);
@@ -355,6 +367,7 @@ WebUIToolbarWebView::WebUIToolbarWebView(
       back_control_(this, BackForwardButton::Direction::kBack),
       forward_control_(this, BackForwardButton::Direction::kForward),
       pinned_toolbar_actions_(this),
+      overflow_button_(this, &pinned_toolbar_actions_),
       clock_(base::DefaultTickClock::GetInstance()),
       touch_ui_subscription_(ui::TouchUiController::Get()->RegisterCallback(
           base::BindRepeating(&WebUIToolbarWebView::OnTouchUiChanged,
@@ -384,6 +397,7 @@ WebUIToolbarWebView::WebUIToolbarWebView(
               /*text=*/std::u16string(),
               /*tooltip=*/std::u16string(),
               toolbar_ui_api::mojom::SecurityChipAccessibilityState::New(
+                  /*role=*/toolbar_ui_api::mojom::SecurityChipRole::kButton,
                   /*label=*/std::u16string(),
                   /*description=*/std::u16string()),
               /*is_clickable=*/false, /*is_text_dangerous=*/false,
@@ -397,6 +411,8 @@ WebUIToolbarWebView::WebUIToolbarWebView(
   last_queued_state_.app_menu_control_state = app_menu_control_.GetState();
   last_queued_state_.avatar_control_state =
       toolbar_ui_api::mojom::AvatarControlState::New();
+  last_queued_state_.overflow_button_control_state =
+      toolbar_ui_api::mojom::OverflowButtonControlState::New();
 
   if (auto* manager = InitialWebUIWindowMetricsManager::From(browser_)) {
     manager->OnReloadButtonCreated();
@@ -445,6 +461,8 @@ WebUIToolbarWebView::WebUIToolbarWebView(
 
   content::WebContents* web_contents = web_view->GetWebContents();
   if (web_contents) {
+    views::WebContentsSetBackgroundColor::CreateForWebContentsWithColor(
+        web_contents, SK_ColorTRANSPARENT);
     WebUIToolbarUIDependencyProviderUserData::CreateForWebContents(web_contents,
                                                                    this);
     scoped_accessibility_mode_ =
@@ -583,21 +601,10 @@ void WebUIToolbarWebView::OnBlur() {
 void WebUIToolbarWebView::HandleContextMenu(
     toolbar_ui_api::mojom::ContextMenuType menu_type,
     const gfx::RectF& bounds_in_css_pixels,
-    ui::mojom::MenuSourceType source) {
-  CHECK(web_view_);
-  // The coordinates are in CSS pixels relative the viewport origin. We need
-  // to multiply by the page scaling factor to convert them to DIPs before we
-  // can use them as the bounding rectangle relative to the viewport origin to
-  // show the menu.
-  double page_zoom_scale = blink::ZoomLevelToZoomFactor(
-      zoom::ZoomController::GetZoomLevelForWebContents(
-          web_view_->web_contents()));
-  gfx::Rect screen_rect = gfx::ToEnclosingRect(
-      gfx::ScaleRect(bounds_in_css_pixels, page_zoom_scale));
-
-  // Add the offset of the WebView's top-left corner in screen coordinates to
-  // convert the relative rect to an absolute screen rect.
-  screen_rect.Offset(GetBoundsInScreen().origin().OffsetFromOrigin());
+    ui::mojom::MenuSourceType source,
+    std::optional<uint32_t> show_menu_token) {
+  gfx::Rect screen_rect =
+      ConvertBoundsFromCssPixelsToScreenCoords(bounds_in_css_pixels);
 
   switch (menu_type) {
     case toolbar_ui_api::mojom::ContextMenuType::kBack:
@@ -611,7 +618,8 @@ void WebUIToolbarWebView::HandleContextMenu(
       break;
     case toolbar_ui_api::mojom::ContextMenuType::kSplitTabsAction:
     case toolbar_ui_api::mojom::ContextMenuType::kSplitTabsContext:
-      split_tabs_control_.HandleContextMenu(menu_type, screen_rect, source);
+      split_tabs_control_.HandleContextMenu(menu_type, screen_rect, source,
+                                            show_menu_token);
       break;
     case toolbar_ui_api::mojom::ContextMenuType::kHome:
       home_control_.HandleContextMenu(screen_rect, source);
@@ -673,6 +681,17 @@ void WebUIToolbarWebView::HandleContextMenu(
   }
 }
 
+void WebUIToolbarWebView::ShowOverflowMenu(
+    std::vector<toolbar_ui_api::mojom::OverflowMenuItemPtr> controls,
+    const gfx::RectF& bounds_in_css_pixels,
+    ui::mojom::MenuSourceType source,
+    toolbar_ui_api::mojom::ToolbarUIService::ShowOverflowMenuCallback
+        callback) {
+  overflow_button_.ShowOverflowMenu(
+      controls, ConvertBoundsFromCssPixelsToScreenCoords(bounds_in_css_pixels),
+      source, std::move(callback));
+}
+
 void WebUIToolbarWebView::ShowContentSettingsBubble(
     ::toolbar_ui_api::mojom::ContentSettingImageType type,
     bool is_pointer_interaction,
@@ -703,6 +722,13 @@ void WebUIToolbarWebView::OnContentSettingImageAnimationEnded(
   if (location_bar_) {
     location_bar_->content_setting_image_control()
         .OnContentSettingImageAnimationEnded(type);
+  }
+}
+
+void WebUIToolbarWebView::OnPageActionPointerDown(
+    ::toolbar_ui_api::mojom::PageActionId action_id) {
+  if (location_bar_) {
+    location_bar_->page_action_control().OnPageActionPointerDown(action_id);
   }
 }
 
@@ -978,6 +1004,11 @@ WebUIToolbarWebView::GetIconTableFetcher() {
 }
 
 CommandUpdater* WebUIToolbarWebView::GetCommandUpdater() {
+  // TODO(crbug.com/428946261): Convert to BrowserCommandController::From().
+  // Doing so makes WebUIToolbarUI::Init() see a null command updater and bail
+  // out, which hangs the WebUIToolbarLifecycle* browser tests. Those only run
+  // with the WebUI toolbar feature enabled, so the divergence between this
+  // accessor and From() is not yet understood.
   return browser_->GetFeatures().browser_command_controller();
 }
 
@@ -1084,6 +1115,11 @@ void WebUIToolbarWebView::PrimaryMainFrameRenderProcessGone(
     return;
   }
 
+  if (auto* metrics_manager =
+          InitialWebUIWindowMetricsManager::From(browser_)) {
+    metrics_manager->OnReloadButtonRenderProcessGone();
+  }
+
   // Reset the crash count if when the reset interval is reached.
   if (clock_->NowTicks() - last_crash_time_ >=
       features::kWebUIReloadButtonCrashRecoverResetInterval.Get()) {
@@ -1182,6 +1218,9 @@ void WebUIToolbarWebView::OverflowButtonClicked(
     return;
   } else if (identifier == kToolbarHomeButtonElementId) {
     browser_controls_adapter_->NavigateHome(WindowOpenDisposition::CURRENT_TAB);
+    return;
+  } else if (identifier == kToolbarSplitTabsToolbarButtonElementId) {
+    split_tabs_control_.HandleContextMenuOverflowClick();
     return;
   }
   NOTREACHED();
@@ -1428,6 +1467,14 @@ void WebUIToolbarWebView::OnAppMenuControlStateChanged(
   }
 }
 
+void WebUIToolbarWebView::OnOverflowButtonControlStateChanged(
+    toolbar_ui_api::mojom::OverflowButtonControlStatePtr state) {
+  if (*state != *last_queued_state_.overflow_button_control_state) {
+    last_queued_state_.overflow_button_control_state = std::move(state);
+    PostPushNavigationState();
+  }
+}
+
 void WebUIToolbarWebView::OnBatterySaverControlStateChanged(bool is_showing) {
   if (is_showing != last_queued_state_.battery_saver_button_visible) {
     last_queued_state_.battery_saver_button_visible = is_showing;
@@ -1606,7 +1653,6 @@ void WebUIToolbarWebView::OnTouchUiChanged() {
   last_queued_state_.touch_ui = ui::TouchUiController::Get()->touch_ui();
   PostPushNavigationState();
 }
-
 
 void WebUIToolbarWebView::PostPushNavigationState() {
   // The toolbar is implemented by many individual elements that all update
@@ -1870,6 +1916,25 @@ bool WebUIToolbarWebView::RuleEnabledPredicate(
     return button_overflow_info.is_forward_button_overflowed ||
            button_overflow_info.is_home_button_overflowed;
   }
+}
+
+gfx::Rect WebUIToolbarWebView::ConvertBoundsFromCssPixelsToScreenCoords(
+    const gfx::RectF& bounds_in_css_pixels) const {
+  CHECK(web_view_);
+  // The coordinates are in CSS pixels relative the viewport origin. We need
+  // to multiply by the page scaling factor to convert them to DIPs before we
+  // can use them as the bounding rectangle relative to the viewport origin to
+  // show the menu.
+  double page_zoom_scale = blink::ZoomLevelToZoomFactor(
+      zoom::ZoomController::GetZoomLevelForWebContents(
+          web_view_->web_contents()));
+  gfx::Rect screen_rect = gfx::ToEnclosingRect(
+      gfx::ScaleRect(bounds_in_css_pixels, page_zoom_scale));
+
+  // Add the offset of the WebView's top-left corner in screen coordinates to
+  // convert the relative rect to an absolute screen rect.
+  screen_rect.Offset(GetBoundsInScreen().origin().OffsetFromOrigin());
+  return screen_rect;
 }
 
 BEGIN_METADATA(WebUIToolbarWebView)

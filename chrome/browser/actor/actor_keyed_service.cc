@@ -10,9 +10,12 @@
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/files/file_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
 #include "build/build_config.h"
@@ -23,6 +26,8 @@
 #include "chrome/browser/actor/actor_proto_conversion.h"
 #include "chrome/browser/actor/actor_tab_data.h"
 #include "chrome/browser/actor/actor_task.h"
+#include "components/sessions/core/session_id.h"
+#include "ui/base/page_transition_types.h"
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/application_status_listener.h"
 #include "chrome/browser/actor/android/actor_keyed_service_android.h"
@@ -48,7 +53,9 @@
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/actor/core/actor_features.h"
+#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/aggregated_journal.h"
+#include "components/actor/core/aggregated_journal_file_serializer.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/core/task_id.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
@@ -104,6 +111,21 @@ void OnCreateActorTabComplete(
   }
 }
 
+base::FilePath ResolveActorTraceFilePath(const base::FilePath& path) {
+  if (base::DirectoryExists(path) || path.EndsWithSeparator()) {
+    if (!base::CreateDirectory(path)) {
+      return base::FilePath();
+    }
+    base::FilePath file_path = path.AppendASCII("actor_trace.pb");
+    return base::GetUniquePathWithSuffixFormat(file_path,
+                                               base::cstring_view("_%d"));
+  }
+  if (!base::CreateDirectory(path.DirName())) {
+    return base::FilePath();
+  }
+  return base::GetUniquePathWithSuffixFormat(path, base::cstring_view("_%d"));
+}
+
 }  // namespace
 
 namespace actor {
@@ -132,6 +154,43 @@ ActorKeyedService::ActorKeyedService(Profile* profile) : profile_(profile) {
   actor_ui_state_manager_ = std::make_unique<ui::ActorUiStateManager>(*this);
   profile_observation_.Observe(profile_);
   actor::InitActionBlocklist(profile_);
+
+  base::FilePath trace_path =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+          switches::kActorTracePath);
+  if (!trace_path.empty()) {
+    InitializeTraceRecording(trace_path);
+  }
+}
+
+void ActorKeyedService::InitializeTraceRecording(
+    const base::FilePath& trace_path) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+      base::BindOnce(&ResolveActorTraceFilePath, trace_path),
+      base::BindOnce(&ActorKeyedService::OnTraceFilePathResolved,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ActorKeyedService::OnTraceFilePathResolved(
+    const base::FilePath& resolved_path) {
+  if (resolved_path.empty()) {
+    LOG(ERROR) << "Failed to resolve a path for actor trace recording.";
+    return;
+  }
+  VLOG(1) << "Actor trace recording to: " << resolved_path;
+  trace_file_serializer_ =
+      std::make_unique<AggregatedJournalFileSerializer>(journal_);
+  trace_file_serializer_->Init(
+      resolved_path, base::BindOnce(&ActorKeyedService::OnTraceFileInitDone,
+                                    weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ActorKeyedService::OnTraceFileInitDone(bool success) {
+  if (!success) {
+    LOG(ERROR) << "Failed to initialize actor trace file recording.";
+    trace_file_serializer_.reset();
+  }
 }
 
 void ActorKeyedService::OnProfileInitializationComplete(Profile* profile) {
@@ -155,6 +214,7 @@ void ActorKeyedService::Shutdown() {
   // Ensure tasks get deleted synchronously to avoid dangling refs.
   CHECK(active_tasks_.empty());
   pending_delete_tasks_.clear();
+  trace_file_serializer_.reset();
 }
 
 // static
@@ -206,6 +266,15 @@ void ActorKeyedService::CreateActorTab(TaskId task_id,
 
   BrowserWindowInterface* window_for_new_tab = nullptr;
   tabs::TabInterface* initiator_tab = initiator_tab_handle.Get();
+  if (initiator_tab && initiator_tab->GetProfile() != profile_.get()) {
+    GetJournal().Log(
+        GURL(), task_id, "CreateActorTab",
+        JournalDetailsBuilder()
+            .AddError("Initiator tab belongs to a different profile")
+            .Build());
+    std::move(callback).Run(nullptr);
+    return;
+  }
 
   // Special case: if the initiator tab is the NTP, no need to create a new
   // tab, reuse it.
@@ -279,18 +348,17 @@ void ActorKeyedService::CreateActorTab(TaskId task_id,
 #endif
 
   // If the initiating tab is still live, create the new tab in the same window.
-  if (initiator_tab) {
-    if (initiator_tab->IsInNormalWindow()) {
-      window_for_new_tab = initiator_tab->GetBrowserWindowInterface();
-      if (window_for_new_tab) {
-        GetJournal().Log(GURL(), task_id, "CreateActorTab",
-                         JournalDetailsBuilder()
-                             .Add("Using initiator_tab's window",
-                                  window_for_new_tab->GetSessionID().id())
-                             .Build());
-      }
+  // (Cross-profile initiator tabs were already rejected above.)
+  if (initiator_tab && initiator_tab->IsInNormalWindow()) {
+    window_for_new_tab = initiator_tab->GetBrowserWindowInterface();
+    if (window_for_new_tab) {
+      GetJournal().Log(GURL(), task_id, "CreateActorTab",
+                       JournalDetailsBuilder()
+                           .Add("Using initiator_tab's window",
+                                window_for_new_tab->GetSessionID().id())
+                           .Build());
     }
-  } else {
+  } else if (!initiator_tab) {
     // TODO(b/482430429): Figure out how to proceed from just a window ID on
     // Android.
 #if !BUILDFLAG(IS_ANDROID)
@@ -298,11 +366,17 @@ void ActorKeyedService::CreateActorTab(TaskId task_id,
     // task initiation).
     window_for_new_tab =
         BrowserWindowInterface::FromSessionID(initiator_window_id);
-    GetJournal().Log(
-        GURL(), task_id, "CreateActorTab",
-        JournalDetailsBuilder()
-            .Add("Using initiator_window", initiator_window_id.id())
-            .Build());
+    if (window_for_new_tab &&
+        window_for_new_tab->GetProfile() != profile_.get()) {
+      window_for_new_tab = nullptr;
+    }
+    if (window_for_new_tab) {
+      GetJournal().Log(
+          GURL(), task_id, "CreateActorTab",
+          JournalDetailsBuilder()
+              .Add("Using initiator_window", initiator_window_id.id())
+              .Build());
+    }
 #endif
   }
 
@@ -405,7 +479,8 @@ void ActorKeyedService::ResetForTesting() {
 TaskId ActorKeyedService::CreateTask(
     const TaskSourceInfo& source_info,
     const EnterprisePolicyChecker* policy_checker) {
-  return CreateTaskWithOptions(source_info, policy_checker, nullptr, nullptr);
+  return CreateTaskWithOptions(source_info, policy_checker, /*options=*/nullptr,
+                               /*delegate=*/nullptr, GetActorUiStateManager());
 }
 
 TaskId ActorKeyedService::CreateTaskWithOptions(
@@ -413,10 +488,12 @@ TaskId ActorKeyedService::CreateTaskWithOptions(
     const EnterprisePolicyChecker* policy_checker,
     webui::mojom::TaskOptionsPtr options,
     base::WeakPtr<ActorTaskDelegate> delegate,
+    actor::ui::ActorUiStateManagerInterface* ui_state_manager,
     std::optional<glic::mojom::InvocationSource> initial_invocation_source) {
-  return CreateTaskImpl(ui::NewUiEventDispatcher(GetActorUiStateManager()),
-                        source_info, policy_checker, std::move(options),
-                        std::move(delegate), initial_invocation_source);
+  CHECK(ui_state_manager);
+  return CreateTaskImpl(ui::NewUiEventDispatcher(ui_state_manager), source_info,
+                        policy_checker, std::move(options), std::move(delegate),
+                        ui_state_manager, initial_invocation_source);
 }
 
 TaskId ActorKeyedService::CreateTaskForTesting(
@@ -428,7 +505,7 @@ TaskId ActorKeyedService::CreateTaskForTesting(
     std::optional<glic::mojom::InvocationSource> initial_invocation_source) {
   return CreateTaskImpl(std::move(ui_event_dispatcher), source_info,
                         policy_checker, std::move(options), std::move(delegate),
-                        initial_invocation_source);
+                        GetActorUiStateManager(), initial_invocation_source);
 }
 
 TaskId ActorKeyedService::CreateTaskImpl(
@@ -437,6 +514,7 @@ TaskId ActorKeyedService::CreateTaskImpl(
     const EnterprisePolicyChecker* policy_checker,
     webui::mojom::TaskOptionsPtr options,
     base::WeakPtr<ActorTaskDelegate> delegate,
+    actor::ui::ActorUiStateManagerInterface* ui_state_manager,
     std::optional<glic::mojom::InvocationSource> initial_invocation_source) {
   TRACE_EVENT0("actor", "ActorKeyedService::CreateTask");
   GetJournal().Log(GURL(), TaskId(), "ActorKeyedService::CreateTask", {});
@@ -447,6 +525,7 @@ TaskId ActorKeyedService::CreateTaskImpl(
     initial_tab_handle = tabs::TabHandle(options->actuation_tab_id.value());
   }
 
+  CHECK(ui_state_manager);
   auto actor_task = std::make_unique<ActorTask>(
       base::PassKey<ActorKeyedService>(), *this, task_id,
       std::move(ui_event_dispatcher), std::move(options), source_info,
@@ -460,7 +539,7 @@ TaskId ActorKeyedService::CreateTaskImpl(
   active_tasks_[task_id] = std::move(actor_task);
 
 #if !BUILDFLAG(IS_ANDROID)
-  actor_ui_state_manager_->LazyInitTabTracker();
+  ui_state_manager->LazyInitTabTracker();
 #endif
 
   NotifyTaskStateChanged(*active_tasks_[task_id]);
@@ -529,6 +608,18 @@ void ActorKeyedService::RequestTabObservation(
         screenshot_collection_options,
     base::OnceCallback<void(TabObservationResult)> callback) {
   TRACE_EVENT0("actor", "ActorKeyedService::RequestTabObservation");
+  if (tab.GetProfile() != profile_.get()) {
+    journal_.Log(GURL(), task_id, "RequestTabObservation",
+                 JournalDetailsBuilder()
+                     .AddError("Cross-profile tab observation denied")
+                     .Build());
+    std::move(callback).Run(
+        base::unexpected(page_content_annotations::FetchPageContextErrorDetails{
+            .error_code = page_content_annotations::FetchPageContextError::
+                kPageContextNotEligible,
+            .message = "Cross-profile tab observation denied"}));
+    return;
+  }
   const GURL& last_committed_url = tab.GetContents()->GetLastCommittedURL();
   auto journal_entry = journal_.CreatePendingAsyncEntry(
       last_committed_url, task_id, MakeBrowserTrackUUID(task_id),

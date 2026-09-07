@@ -15,8 +15,6 @@
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "net/base/features.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
@@ -27,6 +25,7 @@
 #include "net/disk_cache/sql/sql_shared_cache_manager.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -63,11 +62,20 @@ net::HttpResponseInfo CreateTestHttpResponseInfo() {
 
 }  // namespace
 
-class SqlSharedCacheTest : public testing::TestWithParam<bool> {
+class SqlSharedCacheTest : public testing::TestWithParam<bool>,
+                           public net::WithTaskEnvironment {
  public:
   static std::string DescribeParams(
       const testing::TestParamInfo<ParamType>& info) {
     return info.param ? "WalEnabled" : "WalDisabled";
+  }
+
+  SqlSharedCacheTest() {
+    AddScopedFeatureList().InitWithFeaturesAndParameters(
+        {{net::features::kRendererAccessibleHttpCache,
+          {{net::features::kRendererAccessibleHttpCacheWalMode.name,
+            GetParam() ? "true" : "false"}}}},
+        {});
   }
 
   void SetUp() override {
@@ -75,19 +83,6 @@ class SqlSharedCacheTest : public testing::TestWithParam<bool> {
     cleanup_tracker_ = BackendCleanupTracker::TryCreate(temp_dir_.GetPath(),
                                                         base::DoNothing());
     CHECK(cleanup_tracker_);
-    if (GetParam()) {
-      feature_list_.InitWithFeaturesAndParameters(
-          {{net::features::kRendererAccessibleHttpCache,
-            {{net::features::kRendererAccessibleHttpCacheWalMode.name,
-              "true"}}}},
-          {});
-    } else {
-      feature_list_.InitWithFeaturesAndParameters(
-          {{net::features::kRendererAccessibleHttpCache,
-            {{net::features::kRendererAccessibleHttpCacheWalMode.name,
-              "false"}}}},
-          {});
-    }
     task_runners_.push_back(base::ThreadPool::CreateSequencedTaskRunner(
         {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
          base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
@@ -244,8 +239,6 @@ class SqlSharedCacheTest : public testing::TestWithParam<bool> {
     EXPECT_EQ(open_result->shared_cache_resource_id->row_id, expected_row_id);
   }
 
-  base::test::ScopedFeatureList feature_list_;
-  base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
   std::vector<scoped_refptr<base::SequencedTaskRunner>> task_runners_;
   SqlAsyncTaskManager async_task_manager_;
@@ -512,8 +505,7 @@ TEST_P(SqlSharedCacheTest,
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesExceedingMaxCopySizeSkipped) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheMaxSharedCacheCopyEntrySize.name, "100"}});
 
@@ -700,9 +692,76 @@ TEST_P(SqlSharedCacheTest, CopyEntriesResponseTruncatedSkipped) {
   VerifyIsolatedDatabaseEntryNotFound(*cache, kKey, SqlSharedCacheRowId(1));
 }
 
+TEST_P(SqlSharedCacheTest, CopyEntriesAlreadyInSharedCacheSkipped) {
+  auto handle = CreateAndInitStoreAndCache();
+  auto* cache = handle->get();
+
+  const CacheEntryKey kKey("credential_key/post_key/https://www.example.com/");
+  const std::string kData = "example data";
+  auto response_info = CreateTestHttpResponseInfo();
+
+  PopulateStoreEntry(kKey, response_info, kData);
+
+  // Initial copy: should succeed and populate the isolated database.
+  {
+    base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries;
+    entries.push(CreateEligibleEntry(kKey, GURL("https://www.example.com/"),
+                                     response_info));
+
+    auto abort_flag =
+        base::MakeRefCounted<base::RefCountedData<std::atomic_bool>>(
+            std::in_place, false);
+    base::test::TestFuture<
+        base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+        copy_future;
+    cache->CopyEntries(std::move(entries), abort_flag,
+                       copy_future.GetCallback());
+
+    async_task_manager_.RunUntilAllTasksCompleteForTest();
+    auto unprocessed = copy_future.Take();
+    EXPECT_TRUE(unprocessed.empty());
+
+    VerifyIsolatedDatabaseEntryData(*cache, kKey, SqlSharedCacheRowId(1),
+                                    kData);
+    VerifyStoreEntrySharedCacheResourceId(kKey, *cache->shared_cache_db_id(),
+                                          SqlSharedCacheRowId(1));
+  }
+
+  // Second copy: the entry is already in the shared cache
+  // (shared_cache_resource_id is set). It should be skipped and not re-inserted
+  // with a zero-filled body.
+  {
+    base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries;
+    entries.push(CreateEligibleEntry(kKey, GURL("https://www.example.com/"),
+                                     response_info));
+
+    auto abort_flag =
+        base::MakeRefCounted<base::RefCountedData<std::atomic_bool>>(
+            std::in_place, false);
+    base::test::TestFuture<
+        base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+        copy_future;
+    cache->CopyEntries(std::move(entries), abort_flag,
+                       copy_future.GetCallback());
+
+    async_task_manager_.RunUntilAllTasksCompleteForTest();
+    auto unprocessed = copy_future.Take();
+    EXPECT_TRUE(unprocessed.empty());
+
+    // A second entry must not have been created in the isolated database.
+    VerifyIsolatedDatabaseEntryNotFound(*cache, kKey, SqlSharedCacheRowId(2));
+
+    // The original entry data must remain intact and not overwritten with
+    // zeros.
+    VerifyIsolatedDatabaseEntryData(*cache, kKey, SqlSharedCacheRowId(1),
+                                    kData);
+    VerifyStoreEntrySharedCacheResourceId(kKey, *cache->shared_cache_db_id(),
+                                          SqlSharedCacheRowId(1));
+  }
+}
+
 TEST_P(SqlSharedCacheTest, CopyEntriesReadSuccessAndFailure) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheMaxSharedCacheCopyEntrySize.name, "100"}});
 
@@ -752,8 +811,7 @@ TEST_P(SqlSharedCacheTest, CopyEntriesReadSuccessAndFailure) {
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesExceedingReadBufferSize) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheSharedCacheReadBufferSize.name, "50"}});
 
@@ -815,8 +873,7 @@ TEST_P(SqlSharedCacheTest, CopyEntriesAborted) {
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesWriteBodyFailureCleansUpPartialEntry) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheSharedCacheReadBufferSize.name, "50"}});
 

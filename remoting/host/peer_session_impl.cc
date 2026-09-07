@@ -105,7 +105,6 @@ constexpr char kRtcLogTransferDataChannelPrefix[] = "rtc-log-transfer-";
 
 constexpr base::TimeDelta kDefaultBoostCaptureInterval = base::Milliseconds(5);
 constexpr base::TimeDelta kDefaultBoostDuration = base::Milliseconds(50);
-constexpr base::TimeDelta kMinMaximumSessionDuration = base::Minutes(30);
 
 std::string_view PixelTypeToString(
     remoting::protocol::VideoLayout::PixelType pixel_type) {
@@ -150,11 +149,12 @@ PeerSessionImpl::PeerSessionImpl(
       connection_(std::move(connection)) {
   connection_->SetEventHandler(this);
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-  // LocalMouseInputMonitorWin and LocalPointerInputMonitorChromeos filter out
-  // an echo of the injected input before it reaches `remote_input_filter_`.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
+  // LocalMouseInputMonitorWin, LocalPointerInputMonitorChromeos, and
+  // LocalMouseInputMonitorMac filter out an echo of the injected input before
+  // it reaches `remote_input_filter_`.
   input_pipeline_.remote_input_filter()->SetExpectLocalEcho(false);
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
 }
 
 void PeerSessionImpl::Start(
@@ -172,43 +172,14 @@ void PeerSessionImpl::Start(
   desktop_environment_options_ = desktop_environment_options;
   effective_policies_ = session_policies;
 
-  base::TimeDelta max_duration =
-      effective_policies_.maximum_session_duration.value_or(base::TimeDelta());
-  if (max_duration.is_positive()) {
-    max_duration = std::max(max_duration, kMinMaximumSessionDuration);
-    max_duration_timer_.Start(
-        FROM_HERE, max_duration,
-        base::BindOnce(&PeerSessionImpl::DisconnectSession,
-                       base::Unretained(this), ErrorCode::MAX_SESSION_LENGTH,
-                       "Maximum session duration has been reached.",
-                       FROM_HERE));
-  }
-
   connection_->ApplySessionOptions(session_options);
   connection_->ApplyNetworkSettings(
       protocol::NetworkSettings(effective_policies_));
   connection_->Start();
 
   DesktopEnvironmentOptions options = desktop_environment_options_;
-  if (effective_policies_.curtain_required.has_value()) {
-    options.set_enable_curtaining(*effective_policies_.curtain_required);
-  }
-  // `allow_webauthn_forwarding` should not override the existing value for
-  // `enable_remote_webauthn` if it was not enabled for this connection mode.
-  if (options.enable_remote_webauthn() &&
-      effective_policies_.allow_webauthn_forwarding.has_value()) {
-    options.set_enable_remote_webauthn(
-        *effective_policies_.allow_webauthn_forwarding);
-  }
-  if (options.enable_security_key() &&
-      effective_policies_.allow_gnubby_forwarding.has_value()) {
-    options.set_enable_security_key(
-        *effective_policies_.allow_gnubby_forwarding);
-  }
 
-  bool allow_gnubby =
-      desktop_environment_options_.enable_security_key() &&
-      effective_policies_.allow_gnubby_forwarding.value_or(true);
+  bool allow_gnubby = desktop_environment_options_.enable_security_key();
   if (allow_gnubby) {
     security_key_auth_handler_ = SecurityKeyAuthHandler::Create();
   }
@@ -411,7 +382,8 @@ void PeerSessionImpl::SetCapabilities(
             base::Unretained(this)));
   }
 
-  if (HasCapability(capabilities_, protocol::kTerminalModeCapability)) {
+  if (effective_policies_.allow_terminal_mode.value_or(true) &&
+      HasCapability(capabilities_, protocol::kTerminalModeCapability)) {
     terminal_session_manager_ = std::make_unique<TerminalSessionManager>();
     terminal_session_manager_->Start(
         base::BindRepeating(&PeerSessionImpl::SendTerminalOutput,
@@ -641,7 +613,7 @@ void PeerSessionImpl::SetVideoLayout(
 void PeerSessionImpl::ControlTerminal(
     const protocol::TerminalControl& terminal_control) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!HasCapability(capabilities_, protocol::kTerminalModeCapability)) {
+  if (!terminal_session_manager_) {
     return;
   }
 
@@ -960,8 +932,6 @@ void PeerSessionImpl::DisconnectSession(ErrorCode error,
                                         const SourceLocation& error_location) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  max_duration_timer_.Stop();
-
   if (connection_) {
     // Disconnect() notifies event_handler_->OnConnectionClosed(), which closes
     // session_ and executes session teardown.
@@ -1157,8 +1127,10 @@ void PeerSessionImpl::OnDesktopEnvironmentCreated(
     host_capabilities_.append(protocol::kSecurityKeyV2Capability);
   }
 
-  host_capabilities_.append(" ");
-  host_capabilities_.append(protocol::kTerminalModeCapability);
+  if (effective_policies_.allow_terminal_mode.value_or(true)) {
+    host_capabilities_.append(" ");
+    host_capabilities_.append(protocol::kTerminalModeCapability);
+  }
 
   // Create the object that controls the screen resolution.
   screen_controls_ = desktop_environment_->CreateScreenControls();
@@ -1389,9 +1361,7 @@ void PeerSessionImpl::OnSecurityKeyConnection(
     mojo::PendingReceiver<mojom::SecurityKeyForwarder> receiver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  bool allow_gnubby =
-      desktop_environment_options_.enable_security_key() &&
-      effective_policies_.allow_gnubby_forwarding.value_or(true);
+  bool allow_gnubby = desktop_environment_options_.enable_security_key();
 
   if (!security_key_auth_handler_) {
     LOG(WARNING) << "Security key forwarding is not supported. Binding request "
@@ -1427,7 +1397,7 @@ void PeerSessionImpl::CreateRtcLogTransferMessageHandler(
     std::unique_ptr<protocol::MessagePipe> pipe) {
   new FileTransferMessageHandler(
       channel_name, std::move(pipe),
-      std::make_unique<RtcLogFileOperations>(connection_.get()));
+      std::make_unique<RtcLogFileOperations>(connection_->GetWeakPtr()));
 }
 
 void PeerSessionImpl::CreateActionMessageHandler(

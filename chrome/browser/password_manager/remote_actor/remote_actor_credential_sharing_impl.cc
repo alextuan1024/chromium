@@ -31,8 +31,6 @@
 #include "components/password_manager/core/browser/sync/password_proto_utils.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/sync/base/client_tag_hash.h"
-#include "components/sync/base/data_type.h"
 #include "components/sync/protocol/password_specifics.pb.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -118,9 +116,9 @@ void RemoteActorCredentialSharingImpl::Bind(
 void RemoteActorCredentialSharingImpl::RequestAgentAuthentication(
     const std::string& gaia_id,
     const std::string& domain,
-    const std::string& remote_actor_id,
+    const std::string& task_id,
     RequestAgentAuthenticationCallback callback) {
-  if (!ValidateRequestPreconditions(gaia_id, domain, remote_actor_id)) {
+  if (!ValidateRequestPreconditions(gaia_id, domain, task_id)) {
     RespondWithError(std::move(callback));
     return;
   }
@@ -141,8 +139,7 @@ void RemoteActorCredentialSharingImpl::RequestAgentAuthentication(
     return;
   }
 
-  QueryPasswordStores(profile, gaia_id, domain, remote_actor_id,
-                      std::move(callback));
+  QueryPasswordStores(profile, gaia_id, domain, task_id, std::move(callback));
 }
 
 void RemoteActorCredentialSharingImpl::OnGetPasswordStoreResultsOrErrorFrom(
@@ -168,7 +165,8 @@ void RemoteActorCredentialSharingImpl::OnGetPasswordStoreResultsOrErrorFrom(
       password_manager_util::GetLoginMatchType match_type =
           password_manager_util::GetMatchType(login);
       if (match_type != password_manager_util::GetLoginMatchType::kExact &&
-          match_type != password_manager_util::GetLoginMatchType::kAffiliated) {
+          match_type != password_manager_util::GetLoginMatchType::kAffiliated &&
+          match_type != password_manager_util::GetLoginMatchType::kPSL) {
         continue;
       }
       PasswordForm form = ToPasswordForm(std::move(login));
@@ -254,10 +252,6 @@ void RemoteActorCredentialSharingImpl::ProceedWithCredential(
   StoredCredential credential = FromPasswordForm(std::move(selected_form));
   sync_pb::PasswordSpecificsData specifics_data =
       SpecificsDataFromStoredCredential(credential);
-  std::string client_tag = GetClientTag(specifics_data);
-  std::string client_tag_hash = syncer::ClientTagHash::FromUnhashed(
-                                    syncer::DataType::PASSWORDS, client_tag)
-                                    .value();
 
   RemoteActorCredentialSharingService::ShareParameters params;
   params.obfuscated_gaia_id = pending_request_->gaia_id;
@@ -265,10 +259,9 @@ void RemoteActorCredentialSharingImpl::ProceedWithCredential(
       url::Origin::Create(
           GURL(base::StrCat({"https://", pending_request_->domain})))
           .Serialize();
-  params.password_client_tag_hash = client_tag_hash;
   params.password_data = std::move(specifics_data);
   params.time_to_live = kShareTimeToLive;
-  params.agent_oauth_client_id = pending_request_->remote_actor_id;
+  params.task_id = pending_request_->task_id;
 
   service->SharePassword(
       params,
@@ -280,7 +273,7 @@ void RemoteActorCredentialSharingImpl::ProceedWithCredential(
 bool RemoteActorCredentialSharingImpl::ValidateRequestPreconditions(
     const std::string& gaia_id,
     const std::string& domain,
-    const std::string& remote_actor_id) {
+    const std::string& task_id) {
   content::RenderFrameHost& target_frame = render_frame_host();
 
   if (!target_frame.IsInPrimaryMainFrame()) {
@@ -306,7 +299,7 @@ bool RemoteActorCredentialSharingImpl::ValidateRequestPreconditions(
 
   if (gaia_id.length() >= kMaxArgumentLength ||
       domain.length() >= kMaxArgumentLength ||
-      remote_actor_id.length() >= kMaxArgumentLength) {
+      task_id.length() >= kMaxArgumentLength) {
     receiver_.ReportBadMessage(
         "RemoteActorCredentialSharing: Argument length limit exceeded");
     return false;
@@ -346,7 +339,7 @@ void RemoteActorCredentialSharingImpl::QueryPasswordStores(
     Profile* profile,
     const std::string& gaia_id,
     const std::string& domain,
-    const std::string& remote_actor_id,
+    const std::string& task_id,
     RequestAgentAuthenticationCallback callback) {
   CHECK(!pending_request_);
   dialog_controller_.reset();
@@ -385,7 +378,7 @@ void RemoteActorCredentialSharingImpl::QueryPasswordStores(
   pending_request_ = PendingRequest{
       .gaia_id = gaia_id,
       .domain = domain,
-      .remote_actor_id = remote_actor_id,
+      .task_id = task_id,
       .callback = std::move(callback),
       .expected_callbacks = static_cast<int>(stores.size()),
   };

@@ -2,12 +2,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//extensions/buildflags/buildflags.gni")
+
 source_set("organizer") {
   sources = [
     "layout_constants.h",
     "organizer_panel_controls_view.h",
     "organizer_panel_utils.h",
     "organizer_panel_view.h",
+    "organizer_tray_view.h",
   ]
 
   public_deps = [
@@ -17,6 +20,13 @@ source_set("organizer") {
     "//ui/base",
     "//ui/views",
   ]
+
+  if (enable_extensions) {
+    public_deps += [
+      "//extensions/buildflags",
+      "//extensions/common",
+    ]
+  }
 }
 
 source_set("impl") {
@@ -24,6 +34,7 @@ source_set("impl") {
     "organizer_panel_controls_view.cc",
     "organizer_panel_utils.cc",
     "organizer_panel_view.cc",
+    "organizer_tray_view.cc",
   ]
 
   public_deps = [ ":organizer" ]
@@ -32,6 +43,7 @@ source_set("impl") {
     "//chrome/app:generated_resources",
     "//chrome/app/vector_icons",
     "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:browser_element_identifiers",
     "//chrome/browser/ui:layout_constants",
     "//chrome/browser/ui:ui_features",
@@ -41,27 +53,44 @@ source_set("impl") {
     "//chrome/browser/ui/tabs:tab_group",
     "//chrome/browser/ui/tabs/organizer:impl",
     "//chrome/browser/ui/tabs/saved_tab_groups",
+    "//chrome/browser/ui/views/frame:custom_corners_background",
+    "//chrome/browser/ui/views/frame:shadow",
     "//chrome/browser/ui/views/tabs/shared",
     "//chrome/browser/ui/views/tabs/vertical",
     "//chrome/browser/ui/views/toolbar",
+    "//chrome/browser/ui/webui:webui_util",
     "//components/saved_tab_groups/public",
     "//ui/actions",
     "//ui/compositor_extra",
     "//ui/views/controls/webview",
     "//url",
   ]
+
+  if (enable_extensions) {
+    deps += [
+      "//chrome/browser/extensions",
+      "//chrome/common/extensions/api",
+      "//extensions/browser",
+      "//extensions/common",
+    ]
+  }
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "organizer_panel_view_unittest.cc" ]
+  sources = [
+    "organizer_panel_view_unittest.cc",
+    "organizer_tray_view_unittest.cc",
+  ]
   deps = [
     ":organizer",
     "//base/test:test_support",
     "//build:branding_buildflags",
     "//chrome/app/vector_icons",
+    "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:test_support",
     "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/views/interaction:impl",
     "//chrome/test:test_support",
     "//components/omnibox/browser:test_support",
     "//components/prefs:test_support",
@@ -70,6 +99,15 @@ source_set("unit_tests") {
     "//ui/views",
     "//ui/views:test_support",
   ]
+  if (enable_extensions) {
+    deps += [
+      "//chrome/browser/extensions",
+      "//chrome/common/extensions/api",
+      "//extensions:test_support",
+      "//extensions/browser",
+      "//extensions/common",
+    ]
+  }
 }
 
 source_set("interactive_ui_tests") {
@@ -88,9 +126,18 @@ source_set("interactive_ui_tests") {
     "//components/omnibox/browser:test_support",
     "//components/saved_tab_groups/public",
     "//components/saved_tab_groups/test_support",
-    "//content/test:test_support",
     "//ui/base",
     "//ui/compositor_extra",
     "//ui/views",
   ]
+  if (enable_extensions) {
+    deps += [
+      "//chrome/browser/extensions",
+      "//chrome/browser/extensions:test_support",
+      "//chrome/common/extensions/api",
+      "//extensions:test_support",
+      "//extensions/browser",
+      "//extensions/common",
+    ]
+  }
 }

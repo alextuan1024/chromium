@@ -141,6 +141,7 @@ bool ExtensionsBrowserClient::ShouldSchemeBypassNavigationChecks(
 
 bool ExtensionsBrowserClient::IsDefaultSearchEngineRedirect(
     content::BrowserContext* context,
+    const ExtensionId& extension_id,
     const GURL& request_url,
     const GURL& redirect_url) const {
   return false;
@@ -400,6 +401,19 @@ ExtensionsBrowserClient::CreateInstallPrompt(
     content::WebContents* web_contents,
     std::unique_ptr<InstallPromptData> prompt) {
   return nullptr;
+}
+
+std::unique_ptr<ExtensionInstallPromptClient>
+ExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+    gfx::NativeWindow native_window,
+    content::BrowserContext& browser_context,
+    std::unique_ptr<InstallPromptData> prompt) {
+  return nullptr;
+}
+
+gfx::NativeWindow ExtensionsBrowserClient::GetNativeWindowForFunction(
+    ExtensionFunction& function) {
+  return gfx::NativeWindow();
 }
 
 }  // namespace extensions

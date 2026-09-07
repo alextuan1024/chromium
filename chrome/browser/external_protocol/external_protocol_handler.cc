@@ -8,6 +8,7 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
@@ -50,10 +51,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"  // nogncheck
 #include "components/url_formatter/elide_url.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
-#endif
-
-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #endif
 
 namespace {
@@ -170,15 +167,9 @@ void LaunchUrlWithoutSecurityCheckWithDelegate(
     content::WeakDocumentPtr initiator_document,
     ExternalProtocolHandler::Delegate* delegate) {
   if (delegate) {
-    delegate->ReportExternalAppRedirectToSafeBrowsing(url, web_contents);
     delegate->LaunchUrlWithoutSecurityCheck(url, web_contents);
     return;
   }
-
-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-  g_browser_process->safe_browsing_service()->ReportExternalAppRedirect(
-      web_contents, url.GetScheme(), url.possibly_invalid_spec());
-#endif
 
   // |web_contents| is only passed in to find browser context. Do not assume
   // that the external protocol request came from the main frame.
@@ -259,20 +250,25 @@ void OnDefaultSchemeClientWorkerFinished(
 
     // Anchor to the outermost WebContents, for e.g. embedded <webview>s.
     web_contents = web_contents->GetOutermostWebContents();
+    CHECK(web_contents);
 
     // Skip if the WebContents instance is not prepared to show a dialog.
     if (!web_modal::WebContentsModalDialogManager::FromWebContents(
             web_contents)) {
-      LOG(ERROR) << "Skipping ExternalProtocolDialog"
-                 << ", escaped_url=" << escaped_url.possibly_invalid_spec()
-                 << ", initiating_origin="
-                 << url_formatter::FormatOriginForSecurityDisplay(
-                        initiating_origin.value_or(url::Origin()))
-                 << ", web_contents?" << !!web_contents << ", browser?"
-                 << (web_contents &&
-                     GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-                         web_contents));
-      base::debug::DumpWithoutCrashing();
+      // Only dump if this WebContents was expected to have a modal dialog
+      // manager (i.e. it is an active tab in a browser window). Background
+      // WebContents used for tasks like PWA installation do not have one.
+      if (GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+              web_contents)) {
+        LOG(ERROR) << "Skipping ExternalProtocolDialog"
+                   << ", escaped_url=" << escaped_url.possibly_invalid_spec()
+                   << ", initiating_origin="
+                   << url_formatter::FormatOriginForSecurityDisplay(
+                          initiating_origin.value_or(url::Origin()))
+                   << ", web_contents?" << !!web_contents << ", browser?"
+                   << true;
+        base::debug::DumpWithoutCrashing();
+      }
       return;
     }
 

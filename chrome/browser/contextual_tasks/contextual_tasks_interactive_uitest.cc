@@ -34,7 +34,6 @@
 #include "chrome/browser/contextual_tasks/mock_contextual_tasks_ui_service_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -51,6 +50,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
@@ -63,6 +63,7 @@
 #include "components/contextual_search/pref_names.h"
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/contextual_tasks/public/host_override.h"
 #include "components/lens/contextual_input.h"
 #include "components/lens/lens_features.h"
 #include "components/lens/lens_overlay_permission_utils.h"
@@ -73,6 +74,7 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -96,6 +98,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
 #include "ui/base/clipboard/clipboard_observer.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
@@ -312,7 +315,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
 
     ON_CALL(*mock, IsAimUrl(_, _))
         .WillByDefault(
-            [](const GURL& url, std::optional<std::string> host_override) {
+            [](const GURL& url,
+               std::optional<contextual_tasks::HostOverride> host_override) {
               return url.host().find(kMockAimPageHost) != std::string::npos;
             });
 
@@ -360,7 +364,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
         [&](content::URLLoaderInterceptor::RequestParams* params) {
           const GURL& url = params->url_request.url;
           if (url.host() == kMockAimPageHost &&
-              url.path() == "/complete/search") {
+              (url.path() == "/complete/s" ||
+               url.path() == "/complete/search")) {
             std::string q_param;
             net::GetValueForKeyInQuery(url, "q", &q_param);
             std::string query = base::UnescapeURLComponent(
@@ -421,7 +426,7 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
             contextual_search::SearchContentSharingSettingsValue::kEnabled));
 
     // Disable side panel animations to avoid WaitForShow/WaitForHide flakiness.
-    browser()->GetFeatures().side_panel_ui()->DisableAnimationsForTesting();
+    SidePanelUI::From(browser())->DisableAnimationsForTesting();
   }
 
   void TearDownOnMainThread() override {
@@ -449,6 +454,18 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
     return WaitForStateChange(contents_id, change);
   }
 
+  static auto WaitForElementVisible(const ui::ElementIdentifier& contents_id,
+                                    const DeepQuery& element) {
+    StateChange change;
+    change.type = StateChange::Type::kExistsAndConditionTrue;
+    change.where = element;
+    change.test_function =
+        "(el) => { const r = el.getBoundingClientRect(); return r.width > 0 && "
+        "r.height > 0; }";
+    change.event = kElementExistsEvent;
+    return WaitForStateChange(contents_id, change);
+  }
+
   static auto ClickButton(const ui::ElementIdentifier& contents_id,
                           const DeepQuery& element) {
     return ExecuteJsAt(contents_id, element, "el => el.click()");
@@ -465,15 +482,54 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
         "app?.shadowRoot?.querySelector('#composebox')?.shadowRoot?."
         "querySelector('#composebox');"
         "  if (!composebox) return false;"
-        "  if (composebox.contextMenuOpened) return true;"
-        "  const btn = "
+        "  if (composebox.contextMenuOpened) {"
+        "    app._entrypointClicked = false;"
+        "    return true;"
+        "  }"
+        "  if (!app._entrypointClicked) {"
+        "    const btn = "
         "composebox.shadowRoot?.querySelector('#contextEntrypoint')?."
         "shadowRoot?."
         "querySelector('#entrypointButton')?.shadowRoot?.querySelector('#"
         "entrypoint');"
-        "  if (btn) { btn.click(); }"
+        "    if (btn && !btn.disabled) {"
+        "      app._entrypointClicked = true;"
+        "      btn.click();"
+        "    }"
+        "  }"
         "  return false;"
         "}";
+    change.event = kElementExistsEvent;
+    return WaitForStateChange(contents_id, change);
+  }
+
+  // Helper to force click a button in the context menu matching the selector.
+  auto ForceClickMenuButtonBySelector(const ui::ElementIdentifier& contents_id,
+                                      const std::string& selector) {
+    StateChange change;
+    change.type = StateChange::Type::kExistsAndConditionTrue;
+    change.where = {"contextual-tasks-app"};
+    change.test_function = base::StringPrintf(
+        R"(
+        function(app) {
+          const btn = app?.shadowRoot
+              ?.querySelector('#composebox')
+              ?.shadowRoot
+              ?.querySelector('#composebox')
+              ?.shadowRoot
+              ?.querySelector('#contextEntrypoint')
+              ?.shadowRoot
+              ?.querySelector('#menu')
+              ?.shadowRoot
+              ?.querySelector('%s');
+          if (btn && !btn.disabled) {
+            btn.click();
+            return true;
+          }
+          return false;
+        }
+        )",
+        selector.c_str());
     change.event = kElementExistsEvent;
     return WaitForStateChange(contents_id, change);
   }
@@ -483,56 +539,16 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
   // identified by its position or index in the list.
   auto ForceClickMenuButton(const ui::ElementIdentifier& contents_id,
                             int target_index) {
-    StateChange change;
-    change.type = StateChange::Type::kExistsAndConditionTrue;
-    change.where = {"contextual-tasks-app"};
-    change.test_function = base::StringPrintf(
-        "function(app) {"
-        "  const composebox = "
-        "app?.shadowRoot?.querySelector('#composebox')?.shadowRoot?."
-        "querySelector('#composebox');"
-        "  if (!composebox) return false;"
-        "  const btn = "
-        "composebox.shadowRoot?.querySelector('#contextEntrypoint')?."
-        "shadowRoot?.querySelector('#menu')?.shadowRoot?.querySelector('button."
-        "dropdown-item[data-index=\"' + %d + '\"]');"
-        "  if (btn) {"
-        "    btn.click();"
-        "    return true;"
-        "  }"
-        "  return false;"
-        "}",
-        target_index);
-    change.event = kElementExistsEvent;
-    return WaitForStateChange(contents_id, change);
+    return ForceClickMenuButtonBySelector(
+        contents_id,
+        base::StringPrintf("button.dropdown-item[data-index=\"%d\"]",
+                           target_index));
   }
 
   // Forces a click on a context menu item identified by its ID string.
   auto ForceClickMenuButton(const ui::ElementIdentifier& contents_id,
                             const std::string& button_id) {
-    StateChange change;
-    change.type = StateChange::Type::kExistsAndConditionTrue;
-    change.where = {"contextual-tasks-app"};
-    change.test_function = base::StringPrintf(
-        "function(app) {"
-        "  const composebox = "
-        "app?.shadowRoot?.querySelector('#composebox')?.shadowRoot?."
-        "querySelector('#composebox');"
-        "  if (!composebox) return false;"
-        "  const menu = "
-        "composebox.shadowRoot?.querySelector('#contextEntrypoint')?."
-        "shadowRoot?.querySelector('#menu');"
-        "  if (!menu) return false;"
-        "  const btn = menu.shadowRoot?.querySelector('#%s');"
-        "  if (btn) {"
-        "    btn.click();"
-        "    return true;"
-        "  }"
-        "  return false;"
-        "}",
-        button_id.c_str());
-    change.event = kElementExistsEvent;
-    return WaitForStateChange(contents_id, change);
+    return ForceClickMenuButtonBySelector(contents_id, "#" + button_id);
   }
 
   auto WaitForComposeboxFilesCount(int expected_count) {
@@ -540,7 +556,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
     change.type = StateChange::Type::kExistsAndConditionTrue;
     change.where = {"contextual-tasks-app", "#composebox", "#composebox"};
     change.test_function = base::StringPrintf(
-        "el => el.files && el.files.size === %d", expected_count);
+        "el => el.attachedContext && el.attachedContext.size === %d",
+        expected_count);
     change.event = kElementExistsEvent;
     return WaitForStateChange(kPrimaryTab, change);
   }
@@ -641,12 +658,50 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
 
   // Verifies the structure and content of the SubmitQuery protobuf message sent
   // from the browser to the inner WebContents.
-  auto VerifySubmitQueryMessage(
+  MultiStep VerifySubmitQueryMessage(
       lens::LensOverlayRequestId::MediaType expected_media_type,
       std::optional<std::string> expected_added_input_name = std::nullopt,
       int expected_message_index = 0,
       std::optional<lens::LensOverlayContextualInputUploadType>
           expected_upload_type = std::nullopt) {
+    return VerifySubmitQueryMessageImpl(
+        expected_media_type, expected_added_input_name, expected_message_index,
+        expected_upload_type, nullptr, nullptr);
+  }
+
+  MultiStep VerifySubmitQueryMessageAndExtractUuid(
+      lens::LensOverlayRequestId::MediaType expected_media_type,
+      std::optional<std::string> expected_added_input_name,
+      int expected_message_index,
+      std::optional<lens::LensOverlayContextualInputUploadType>
+          expected_upload_type,
+      std::reference_wrapper<uint64_t> out_uuid) {
+    return VerifySubmitQueryMessageImpl(
+        expected_media_type, expected_added_input_name, expected_message_index,
+        expected_upload_type, nullptr, &out_uuid.get());
+  }
+
+  MultiStep VerifySubmitQueryMessageWithExpectedUuid(
+      lens::LensOverlayRequestId::MediaType expected_media_type,
+      std::optional<std::string> expected_added_input_name,
+      int expected_message_index,
+      std::optional<lens::LensOverlayContextualInputUploadType>
+          expected_upload_type,
+      std::reference_wrapper<uint64_t> expected_uuid) {
+    return VerifySubmitQueryMessageImpl(
+        expected_media_type, expected_added_input_name, expected_message_index,
+        expected_upload_type, &expected_uuid.get(), nullptr);
+  }
+
+ public:
+  MultiStep VerifySubmitQueryMessageImpl(
+      lens::LensOverlayRequestId::MediaType expected_media_type,
+      std::optional<std::string> expected_added_input_name,
+      int expected_message_index,
+      std::optional<lens::LensOverlayContextualInputUploadType>
+          expected_upload_type,
+      const uint64_t* expected_uuid,
+      uint64_t* out_uuid) {
     return Steps(
         // Wait until the inner WebContents receives the message at the expected
         // index.
@@ -658,8 +713,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
         WithElement(kInnerWebContentsId, [expected_media_type,
                                           expected_added_input_name,
                                           expected_message_index,
-                                          expected_upload_type](
-                                             ui::TrackedElement* el) {
+                                          expected_upload_type, expected_uuid,
+                                          out_uuid](ui::TrackedElement* el) {
           auto* web_contents = AsInstrumentedWebContents(el)->web_contents();
           // Extract the binary protobuf message from JavaScript by converting
           // the matching ArrayBuffer into a base64 encoded string.
@@ -688,6 +743,18 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
                         .request_id()
                         .media_type(),
                     expected_media_type);
+
+          uint64_t current_uuid = message.submit_query()
+                                      .payload()
+                                      .lens_image_query_data(0)
+                                      .request_id()
+                                      .uuid();
+          if (expected_uuid) {
+            EXPECT_EQ(current_uuid, *expected_uuid);
+          }
+          if (out_uuid) {
+            *out_uuid = current_uuid;
+          }
 
           // Verify additional context inputs if expected by the test case.
           if (expected_added_input_name.has_value()) {
@@ -741,13 +808,60 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
         }));
   }
 
-  auto VerifyMultipleSubmitQueryMessage(
+ public:
+  MultiStep VerifyMultipleSubmitQueryMessage(
       const std::string& expected_query_text,
       int expected_viewport_image_count,
       int expected_upload_image_count,
       int expected_upload_file_count,
       std::vector<std::string> expected_added_input_names,
       int expected_message_index = 0) {
+    return VerifyMultipleSubmitQueryMessageImpl(
+        expected_query_text, expected_viewport_image_count,
+        expected_upload_image_count, expected_upload_file_count,
+        expected_added_input_names, expected_message_index, nullptr, nullptr);
+  }
+
+  MultiStep VerifyMultipleSubmitQueryMessageAndExtractUuid(
+      const std::string& expected_query_text,
+      int expected_viewport_image_count,
+      int expected_upload_image_count,
+      int expected_upload_file_count,
+      std::vector<std::string> expected_added_input_names,
+      int expected_message_index,
+      std::reference_wrapper<uint64_t> out_uuid) {
+    return VerifyMultipleSubmitQueryMessageImpl(
+        expected_query_text, expected_viewport_image_count,
+        expected_upload_image_count, expected_upload_file_count,
+        expected_added_input_names, expected_message_index, nullptr,
+        &out_uuid.get());
+  }
+
+  MultiStep VerifyMultipleSubmitQueryMessageWithExpectedUuid(
+      const std::string& expected_query_text,
+      int expected_viewport_image_count,
+      int expected_upload_image_count,
+      int expected_upload_file_count,
+      std::vector<std::string> expected_added_input_names,
+      int expected_message_index,
+      std::reference_wrapper<uint64_t> expected_uuid) {
+    return VerifyMultipleSubmitQueryMessageImpl(
+        expected_query_text, expected_viewport_image_count,
+        expected_upload_image_count, expected_upload_file_count,
+        expected_added_input_names, expected_message_index,
+        &expected_uuid.get(), nullptr);
+  }
+
+ public:
+  MultiStep VerifyMultipleSubmitQueryMessageImpl(
+      const std::string& expected_query_text,
+      int expected_viewport_image_count,
+      int expected_upload_image_count,
+      int expected_upload_file_count,
+      std::vector<std::string> expected_added_input_names,
+      int expected_message_index,
+      const uint64_t* expected_uuid,
+      uint64_t* out_uuid) {
     return Steps(
         // Wait until the inner WebContents receives the message at the expected
         // index.
@@ -761,8 +875,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
                                           expected_upload_image_count,
                                           expected_upload_file_count,
                                           expected_added_input_names,
-                                          expected_message_index](
-                                             ui::TrackedElement* el) {
+                                          expected_message_index, expected_uuid,
+                                          out_uuid](ui::TrackedElement* el) {
           auto* web_contents = AsInstrumentedWebContents(el)->web_contents();
           // Extract the binary protobuf message from JavaScript by converting
           // the matching ArrayBuffer into a base64 encoded string.
@@ -789,6 +903,21 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
               message.submit_query().payload().lens_image_query_data_size(),
               expected_viewport_image_count + expected_upload_image_count +
                   expected_upload_file_count);
+
+          if (message.submit_query().payload().lens_image_query_data_size() >
+              0) {
+            uint64_t current_uuid = message.submit_query()
+                                        .payload()
+                                        .lens_image_query_data(0)
+                                        .request_id()
+                                        .uuid();
+            if (expected_uuid) {
+              EXPECT_EQ(current_uuid, *expected_uuid);
+            }
+            if (out_uuid) {
+              *out_uuid = current_uuid;
+            }
+          }
 
           // Verify additional context inputs.
           if (!expected_added_input_names.empty()) {
@@ -988,8 +1117,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
 };
 
 // TODO(crbug.com/500717050): Parameterize this test suite on the feature flag.
-// TODO(crbug.com/524797987): Re-enable this test.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
+// TODO(crbug.com/524797987): Re-enable this test on ChromeOS.
+#if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_AddAndRemovePdfChipFromComposebox \
   DISABLED_AddAndRemovePdfChipFromComposebox
 #else
@@ -1037,15 +1166,17 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
                   ForceClickMenuButton(kPrimaryTab, "fileUpload"),
 
                   WaitForDocumentChipWithTitle(kPrimaryTab, "download.pdf"),
+                  WaitForElementVisible(kPrimaryTab, kDocumentChip),
                   WaitForComposeboxFilesCount(1),
 
+                  WaitForElementVisible(kPrimaryTab, kRemoveDocumentButton),
                   ClickButton(kPrimaryTab, kRemoveDocumentButton),
                   WaitForElementDoesNotExist(kPrimaryTab, kDocumentChip),
                   WaitForComposeboxFilesCount(0));
 }
 
-// TODO(crbug.com/524797987): Re-enable this test.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
+// TODO(crbug.com/524797987): Re-enable this test on ChromeOS.
+#if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_AddAndRemoveImageChipFromComposebox \
   DISABLED_AddAndRemoveImageChipFromComposebox
 #else
@@ -1082,7 +1213,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
                   ForceClickAddContextEntrypoint(kPrimaryTab),
                   ForceClickMenuButton(kPrimaryTab, "imageUpload"),
 
-                  WaitForElementExists(kPrimaryTab, kImgChip),
+                  WaitForElementVisible(kPrimaryTab, kImgChip),
                   WaitForComposeboxFilesCount(1),
 
                   ClickButton(kPrimaryTab, kRemoveImgButton),
@@ -1228,18 +1359,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
           lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE));
 }
 
-// TODO(crbug.com/516333831): Re-enable this test on Windows.
-// TODO(crbug.com/543925663): Re-enable this test on Linux TSAN.
-#if BUILDFLAG(IS_WIN) || (BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER))
-#define MAYBE_AddAndSubmitMultipleContextsFromComposebox \
-  DISABLED_AddAndSubmitMultipleContextsFromComposebox
-#else
-#define MAYBE_AddAndSubmitMultipleContextsFromComposebox \
-  AddAndSubmitMultipleContextsFromComposebox
-#endif
-
 IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
-                       MAYBE_AddAndSubmitMultipleContextsFromComposebox) {
+                       AddAndSubmitMultipleContextsFromComposebox) {
   const GURL kInterceptionUrl("https://www.google.com/search?udm=50");
   const GURL kGenericPageUrl1 = embedded_test_server()->GetURL("/title1.html");
   const GURL kGenericPageUrl2 = embedded_test_server()->GetURL("/title2.html");
@@ -1308,6 +1429,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       WaitForComposeboxFilesCount(5),
 
       // 6. Submit
+      WaitForSubmitButtonEnabled(kPrimaryTab),
       ClickButton(kPrimaryTab, kSubmitButton),
 
       // 7. Verify multiple inputs in the final message
@@ -1587,9 +1709,9 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
           "querySelector('#composebox');"
           "const triggerTabId = cb?.tabSuggestions?.[0]?.tabId; "
           "const tokenFromMap = cb?.addedTabsIds?.get(triggerTabId); "
-          "const hasTokenInFiles = cb?.files?.has(tokenFromMap); "
-          "return `hasToken: ${hasTokenInFiles}, size: ${cb?.files?.size}, "
-          "filesKeys: ${Array.from(cb?.files?.keys()).map(k => k.high + '_' + "
+          "const hasTokenInFiles = cb?.attachedContext?.has(tokenFromMap); "
+          "return `hasToken: ${hasTokenInFiles}, size: ${cb?.attachedContext?.size}, "
+          "filesKeys: ${Array.from(cb?.attachedContext?.keys()).map(k => k.high + '_' + "
           "k.low)}, mapVal: ${tokenFromMap ? tokenFromMap.high + '_' + "
           "tokenFromMap.low : 'null'}`; }",
           "hasToken: false, size: 0, filesKeys: , mapVal: null"),
@@ -1652,7 +1774,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTestWithChips,
   StateChange files_ready;
   files_ready.type = StateChange::Type::kExistsAndConditionTrue;
   files_ready.where = {"contextual-tasks-app", "#composebox", "#composebox"};
-  files_ready.test_function = "el => el.files && el.files.size === 1";
+  files_ready.test_function =
+      "el => el.attachedContext && el.attachedContext.size === 1";
   files_ready.event = kElementExistsEvent;
 
   RunTestSequence(
@@ -1723,7 +1846,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTestWithChips,
   StateChange files_ready;
   files_ready.type = StateChange::Type::kExistsAndConditionTrue;
   files_ready.where = {"contextual-tasks-app", "#composebox", "#composebox"};
-  files_ready.test_function = "el => el.files && el.files.size === 1";
+  files_ready.test_function =
+      "el => el.attachedContext && el.attachedContext.size === 1";
   files_ready.event = kElementExistsEvent;
 
   StateChange chip_disappeared;
@@ -2437,6 +2561,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       ContextualTasksPanelController::From(browser());
 
   const int expected_turn2_viewport_image_count = 0;
+  uint64_t session_uuid = 0;
 
   RunTestSequence(
       InstrumentTab(kPrimaryTab, 0), Do([&]() {
@@ -2466,9 +2591,10 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       ClickButton(kSidePanelWebContentsId, kSubmitButton),
 
       // Verify Turn 1 query has the webpage and image context.
-      VerifySubmitQueryMessage(
+      VerifySubmitQueryMessageAndExtractUuid(
           lens::LensOverlayRequestId::MEDIA_TYPE_WEBPAGE_AND_IMAGE,
-          std::nullopt, /*expected_message_index=*/0),
+          std::nullopt, /*expected_message_index=*/0, std::nullopt,
+          std::ref(session_uuid)),
 
       // Turn 2: Submit a second query without changing the viewport screenshot.
       InputText(kSidePanelWebContentsId, "second query"),
@@ -2496,9 +2622,10 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       // Verify Turn 3 query is sent, and because the screenshot changed,
       // a new context upload was triggered, producing a webpage and image
       // context.
-      VerifySubmitQueryMessage(
+      VerifySubmitQueryMessageWithExpectedUuid(
           lens::LensOverlayRequestId::MEDIA_TYPE_WEBPAGE_AND_IMAGE,
-          std::nullopt, /*expected_message_index=*/2));
+          std::nullopt, /*expected_message_index=*/2, std::nullopt,
+          std::ref(session_uuid)));
 }
 
 class ContextualTasksRecontextUiTest
@@ -2550,6 +2677,8 @@ IN_PROC_BROWSER_TEST_P(ContextualTasksRecontextUiTest,
   const DeepQuery kSubmitButton = {"contextual-tasks-app", "#composebox",
                                    "#composebox", "cr-composebox-submit",
                                    "#submitContainer"};
+
+  uint64_t session_uuid = 0;
 
   RunTestSequence(
       InstrumentTab(kPrimaryTab, 0),
@@ -2639,9 +2768,42 @@ IN_PROC_BROWSER_TEST_P(ContextualTasksRecontextUiTest,
 
       // Verify Turn 2 query correctly triggers an image upload due to the
       // viewport change.
-      VerifySubmitQueryMessage(
+      VerifySubmitQueryMessageAndExtractUuid(
           lens::LensOverlayRequestId::MEDIA_TYPE_WEBPAGE_AND_IMAGE,
-          std::nullopt, /*expected_message_index=*/0));
+          std::nullopt, /*expected_message_index=*/0, std::nullopt,
+          std::ref(session_uuid)),
+
+      // Turn 3: Change the viewport again.
+      Do([&]() {
+        TestTabContextualizationController::screenshot_color_ = SK_ColorRED;
+      }),
+
+      // Emulate focus into the searchbox. Turn 3: submit a third query.
+      FocusWebContents(kSidePanelWebContentsId),
+      ExecuteJsAt(kSidePanelWebContentsId,
+                  DeepQuery{"contextual-tasks-app", "#composebox",
+                            "#composebox", "#composeboxInput", "#input"},
+                  R"(el => {
+                      if (el.tagName === 'TEXTAREA') {
+                          el.value = 'third query';
+                      } else {
+                          el.innerText = 'third query';
+                      }
+                      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                  })"),
+      ExecuteJsAt(
+          kSidePanelWebContentsId,
+          DeepQuery{"contextual-tasks-app", "#composebox", "#composebox",
+                    "cr-composebox-submit", "#submitContainer"},
+          R"(el => { el.click(); })", ExecuteJsMode::kFireAndForget),
+
+      // Verify Turn 3 query correctly triggers an image upload and maintains
+      // the UUID.
+      VerifySubmitQueryMessageWithExpectedUuid(
+          lens::LensOverlayRequestId::MEDIA_TYPE_WEBPAGE_AND_IMAGE,
+          std::nullopt, /*expected_message_index=*/1, std::nullopt,
+          std::ref(session_uuid)));
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

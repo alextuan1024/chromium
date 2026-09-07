@@ -18,7 +18,6 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
@@ -29,6 +28,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
@@ -130,10 +130,7 @@ public class TabListEditorAddToGroupAction extends TabListEditorAction {
             }
         }
         List<Tab> tabs = TabModelUtils.getTabsById(tabIds, tabModel, false);
-        int numTabs =
-                editorSupportsActionOnRelatedTabs()
-                        ? getTabCountIncludingRelatedTabs(tabModel, itemIds)
-                        : itemIds.size();
+        int numTabs = getSelectedTabCount(itemIds);
 
         setEnabledAndItemCount(
                 !areAnyTabsPartOfSharedGroup(tabModel, tabs, null) && !itemIds.isEmpty(), numTabs);
@@ -171,12 +168,8 @@ public class TabListEditorAddToGroupAction extends TabListEditorAction {
             Supplier<@Nullable TabModel> currentTabModelSupplier,
             SelectionDelegate<TabListEditorItemSelectionId> selectionDelegate,
             ActionDelegate actionDelegate,
-            boolean editorSupportsActionOnRelatedTabs) {
-        super.configure(
-                currentTabModelSupplier,
-                selectionDelegate,
-                actionDelegate,
-                editorSupportsActionOnRelatedTabs);
+            @TabListLayoutType int layoutType) {
+        super.configure(currentTabModelSupplier, selectionDelegate, actionDelegate, layoutType);
         TabModel tabModel = getTabModel();
         assumeNonNull(tabModel);
         tabModel.addTabGroupObserver(mFilterObserver);
@@ -225,7 +218,7 @@ public class TabListEditorAddToGroupAction extends TabListEditorAction {
 
     private boolean hasTabGroups() {
         Collection<TabModelSelector> selectors =
-                ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled()
+                TabGroupUiUtils.isCrossWindowTabGroupOperationsEnabled()
                         ? TabWindowManagerSingleton.getInstance().getAllTabModelSelectors()
                         : null;
         return TabGroupUtils.hasTabGroups(getTabModel(), selectors);

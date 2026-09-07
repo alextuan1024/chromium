@@ -67,7 +67,7 @@ mojom::blink::FrameReplicationStatePtr ToBlinkFrameReplicationState(
   result->has_active_user_gesture = to_convert->has_active_user_gesture;
   result->has_received_user_gesture_before_nav =
       to_convert->has_received_user_gesture_before_nav;
-  result->is_ad_frame = to_convert->is_ad_frame;
+  result->ad_frame_status = to_convert->ad_frame_status;
   result->is_secure_context_root = to_convert->is_secure_context_root;
   return result;
 }
@@ -223,6 +223,7 @@ WebLocalFrame* WebRemoteFrameImpl::CreateLocalChild(
     const LocalFrameToken& frame_token,
     WebFrame* opener,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>
         interface_broker,
     std::unique_ptr<WebPolicyContainer> policy_container) {
@@ -249,8 +250,8 @@ WebLocalFrame* WebRemoteFrameImpl::CreateLocalChild(
   child->InitializeCoreFrame(
       *GetFrame()->GetPage(), owner, this, previous_sibling,
       FrameInsertType::kInsertInConstructor, name, window_agent_factory, opener,
-      document_token, std::move(interface_broker), std::move(policy_container),
-      storage_key,
+      document_token, initiator_state_token, std::move(interface_broker),
+      std::move(policy_container), storage_key,
       /*creator_base_url=*/NullUrl());
   DCHECK(child->GetFrame());
   return child;
@@ -463,7 +464,7 @@ void WebRemoteFrameImpl::SetReplicatedState(
   remote_frame->SetReplicatedName(state->name, state->unique_name);
   remote_frame->SetInsecureRequestPolicy(state->insecure_request_policy);
   remote_frame->EnforceInsecureNavigationsSet(state->insecure_navigations_set);
-  remote_frame->SetReplicatedIsAdFrame(state->is_ad_frame);
+  remote_frame->SetReplicatedAdFrameStatus(state->ad_frame_status);
   remote_frame->SetReplicatedIsSecureContextRoot(state->is_secure_context_root);
 
   if (state->has_active_user_gesture) {

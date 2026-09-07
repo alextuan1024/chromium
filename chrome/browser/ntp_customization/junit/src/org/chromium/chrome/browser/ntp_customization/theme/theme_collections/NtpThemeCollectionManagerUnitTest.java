@@ -19,6 +19,7 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 import android.graphics.Bitmap;
 
+import androidx.annotation.ColorInt;
 import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.After;
@@ -31,14 +32,12 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
-import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
 import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataThemeCollection;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.image_fetcher.ImageFetcher;
@@ -49,7 +48,6 @@ import java.util.List;
 
 /** Unit tests for {@link NtpThemeCollectionManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NtpThemeCollectionManagerUnitTest {
     public static final long NATIVE_NTP_THEME_COLLECTION_BRIDGE = 1L;
 
@@ -127,10 +125,17 @@ public class NtpThemeCollectionManagerUnitTest {
                 info.collectionId,
                 NtpCustomizationUtils.getCustomBackgroundInfoFromSharedPreference().collectionId);
         assertNotNull(NtpCustomizationUtils.readNtpBackgroundImageInfo());
-        // Color picking is postponed.
+        // Verifies primary color is picked and saved immediately.
+        @ColorInt Integer primaryColor = captor.getValue().getPrimaryColor();
+        assertNotNull(primaryColor);
         assertEquals(
-                NtpThemeColorInfo.COLOR_NOT_SET,
+                primaryColor.intValue(),
                 NtpCustomizationUtils.getCustomizedPrimaryColorFromSharedPreference());
+        verify(mNatives)
+                .updateThemeCollectionBackgroundColor(
+                        eq(NATIVE_NTP_THEME_COLLECTION_BRIDGE),
+                        eq(info.backgroundUrl),
+                        eq(primaryColor.intValue()));
     }
 
     @Test

@@ -284,11 +284,10 @@ void CreateAndShowNewWindowWithContents(
   BrowserWindowInterface* new_browser = nullptr;
   DCHECK(original_browser->GetType() != BrowserWindowInterface::TYPE_APP_POPUP);
   if (original_browser->GetType() == BrowserWindowInterface::TYPE_APP) {
-    const Browser* browser = original_browser->GetBrowserForMigrationOnly();
     const bool is_trusted_source =
         WindowFeatureController::From(original_browser)->IsTrustedSource();
     new_browser = CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
-        BrowserInitState::From(browser)->create_params().app_name,
+        BrowserInitState::From(original_browser)->create_params().app_name,
         is_trusted_source, gfx::Rect(), original_browser->GetProfile(), true));
   } else {
     new_browser = CreateBrowserWindow(BrowserWindowCreateParams(
@@ -884,19 +883,17 @@ std::vector<int> GetUngroupedTabIndices(BrowserWindowInterface* browser) {
 }  // namespace
 
 bool IsCommandEnabled(BrowserWindowInterface* browser, int command) {
-  return browser->GetFeatures().browser_command_controller()->IsCommandEnabled(
-      command);
+  return BrowserCommandController::From(browser)->IsCommandEnabled(command);
 }
 
 bool SupportsCommand(BrowserWindowInterface* browser, int command) {
-  return browser->GetFeatures().browser_command_controller()->SupportsCommand(
-      command);
+  return BrowserCommandController::From(browser)->SupportsCommand(command);
 }
 
 bool ExecuteCommand(BrowserWindowInterface* browser,
                     int command,
                     base::TimeTicks time_stamp) {
-  return browser->GetFeatures().browser_command_controller()->ExecuteCommand(
+  return BrowserCommandController::From(browser)->ExecuteCommand(
       command, std::nullopt, time_stamp);
 }
 
@@ -904,7 +901,7 @@ bool ExecuteCommandWithContext(BrowserWindowInterface* browser,
                                int command,
                                actions::ActionInvocationContext context,
                                base::TimeTicks time_stamp) {
-  return browser->GetFeatures().browser_command_controller()->ExecuteCommand(
+  return BrowserCommandController::From(browser)->ExecuteCommand(
       command, std::move(context), time_stamp);
 }
 
@@ -912,10 +909,8 @@ bool ExecuteCommandWithDisposition(BrowserWindowInterface* browser,
                                    int command,
                                    WindowOpenDisposition disposition,
                                    base::TimeTicks time_stamp) {
-  return browser->GetFeatures()
-      .browser_command_controller()
-      ->ExecuteCommandWithDisposition(command, disposition, std::nullopt,
-                                      time_stamp);
+  return BrowserCommandController::From(browser)->ExecuteCommandWithDisposition(
+      command, disposition, std::nullopt, time_stamp);
 }
 
 bool ExecuteCommandWithDispositionAndContext(
@@ -924,31 +919,29 @@ bool ExecuteCommandWithDispositionAndContext(
     WindowOpenDisposition disposition,
     actions::ActionInvocationContext context,
     base::TimeTicks time_stamp) {
-  return browser->GetFeatures()
-      .browser_command_controller()
-      ->ExecuteCommandWithDisposition(command, disposition, std::move(context),
-                                      time_stamp);
+  return BrowserCommandController::From(browser)->ExecuteCommandWithDisposition(
+      command, disposition, std::move(context), time_stamp);
 }
 
 void UpdateCommandEnabled(BrowserWindowInterface* browser,
                           int command,
                           bool enabled) {
-  browser->GetFeatures().browser_command_controller()->UpdateCommandEnabled(
-      command, enabled);
+  BrowserCommandController::From(browser)->UpdateCommandEnabled(command,
+                                                                enabled);
 }
 
 void AddCommandObserver(BrowserWindowInterface* browser,
                         int command,
                         CommandObserver* observer) {
-  browser->GetFeatures().browser_command_controller()->AddCommandObserver(
-      command, observer);
+  BrowserCommandController::From(browser)->AddCommandObserver(command,
+                                                              observer);
 }
 
 void RemoveCommandObserver(BrowserWindowInterface* browser,
                            int command,
                            CommandObserver* observer) {
-  browser->GetFeatures().browser_command_controller()->RemoveCommandObserver(
-      command, observer);
+  BrowserCommandController::From(browser)->RemoveCommandObserver(command,
+                                                                 observer);
 }
 
 int GetContentRestrictions(const BrowserWindowInterface* browser) {
@@ -973,7 +966,8 @@ void NewEmptyWindow(Profile* profile, bool should_trigger_session_restore) {
   PrefService* prefs = profile->GetPrefs();
   if (off_the_record) {
     if (IncognitoModePrefs::GetAvailability(prefs) ==
-        policy::IncognitoModeAvailability::kDisabled) {
+            policy::IncognitoModeAvailability::kDisabled &&
+        !profile->IsEnterpriseIsolatedModeProfile()) {
       off_the_record = false;
     }
   } else if (profile->IsGuestSession() ||
@@ -983,16 +977,19 @@ void NewEmptyWindow(Profile* profile, bool should_trigger_session_restore) {
   }
 
   if (off_the_record) {
-    // This metric counts the Incognito and Off-The-Record Guest profiles
-    // together.
+    Profile* otr_profile =
+        profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+    // This metric counts the Incognito, Off-The-Record Guest, and Enterprise
+    // Isolated profiles together.
     base::RecordAction(UserMetricsAction("NewIncognitoWindow"));
     if (profile->IsGuestSession()) {
       base::RecordAction(UserMetricsAction("NewGuestWindow"));
+    } else if (otr_profile->IsEnterpriseIsolatedModeProfile()) {
+      base::RecordAction(UserMetricsAction("NewIsolatedWindow"));
     } else {
       base::RecordAction(UserMetricsAction("NewIncognitoWindow2"));
     }
-    OpenEmptyWindow(profile->GetPrimaryOTRProfile(/*create_if_needed=*/true),
-                    should_trigger_session_restore);
+    OpenEmptyWindow(otr_profile, should_trigger_session_restore);
   } else if (!should_trigger_session_restore) {
     base::RecordAction(UserMetricsAction("NewWindow"));
     OpenEmptyWindow(profile->GetOriginalProfile(),
@@ -1013,7 +1010,7 @@ void NewEmptyWindow(Profile* profile, bool should_trigger_session_restore) {
 BrowserWindowInterface* OpenEmptyWindow(Profile* profile,
                                         bool should_trigger_session_restore) {
   if (GetBrowserWindowCreationStatusForProfile(*profile) !=
-      Browser::CreationStatus::kOk) {
+      BrowserWindowInterface::CreationStatus::kOk) {
     return nullptr;
   }
 
@@ -1397,8 +1394,7 @@ void CloseWindow(BrowserWindowInterface* browser) {
 
 #if BUILDFLAG(IS_WIN)
 void OpenMoveWindow(BrowserWindowInterface* browser) {
-  HWND hwnd = BrowserView::GetBrowserViewForBrowser(
-                  browser->GetBrowserForMigrationOnly())
+  HWND hwnd = BrowserView::GetBrowserViewForBrowser(browser)
                   ->GetWidget()
                   ->GetNativeWindow()
                   ->GetHost()
@@ -1407,8 +1403,7 @@ void OpenMoveWindow(BrowserWindowInterface* browser) {
 }
 
 void OpenSizeWindow(BrowserWindowInterface* browser) {
-  HWND hwnd = BrowserView::GetBrowserViewForBrowser(
-                  browser->GetBrowserForMigrationOnly())
+  HWND hwnd = BrowserView::GetBrowserViewForBrowser(browser)
                   ->GetWidget()
                   ->GetNativeWindow()
                   ->GetHost()
@@ -1435,15 +1430,23 @@ content::WebContents& NewTab(BrowserWindowInterface* browser,
       NewTabGroupingUserData::kNewTabGroupingUserDataKey,
       std::make_unique<NewTabGroupingUserData>(active_tab_group_id));
 
+  const NavigateParams::WindowAction window_action =
+      context == NewTabTypes::kNoUserAction
+          ? NavigateParams::WindowAction::kNoAction
+          : NavigateParams::WindowAction::kShowWindow;
+
   if (WindowFeatureController::From(browser)->SupportsWindowFeature(
           WindowFeatureController::WindowFeature::kFeatureTabStrip)) {
-    return *AddAndReturnTabAt(browser, GURL(), -1, true, std::nullopt);
+    return *AddAndReturnTabAt(browser, GURL(), -1, /*foreground=*/true,
+                              std::nullopt, /*pinned=*/false, window_action);
   }
 
   ScopedTabbedBrowserDisplayer displayer(browser->GetProfile());
   BrowserWindowInterface* displayer_browser =
       displayer.browser_window_interface();
-  auto* contents = AddAndReturnTabAt(displayer_browser, GURL(), -1, true);
+  auto* contents = AddAndReturnTabAt(displayer_browser, GURL(), -1,
+                                     /*foreground=*/true, std::nullopt,
+                                     /*pinned=*/false, window_action);
   displayer_browser->GetWindow()->Show();
   // The call to AddBlankTabAt above did not set the focus to the tab as its
   // window was not active, so we have to do it explicitly.
@@ -1530,7 +1533,7 @@ void CloseTab(BrowserWindowInterface* browser) {
   }
 #endif
 
-  ToastController* toast_controller = browser->GetFeatures().toast_controller();
+  ToastController* toast_controller = ToastController::From(browser);
   if (!toast_controller) {
     CloseSelectedTabAndRecordTabCountMetric(browser);
     return;
@@ -1729,17 +1732,15 @@ bool CanMoveTabsToNewWindow(BrowserWindowInterface* browser,
 
 void MoveGroupToNewWindow(BrowserWindowInterface* browser,
                           tab_groups::TabGroupId group) {
-  Browser* current_browser = browser->GetBrowserForMigrationOnly();
   BrowserWindowInterface* new_browser;
-  if (current_browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
-      web_app::AppBrowserController::From(current_browser)->has_tab_strip()) {
-    auto* app_controller = web_app::AppBrowserController::From(current_browser);
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
+      web_app::AppBrowserController::From(browser)->has_tab_strip()) {
+    auto* app_controller = web_app::AppBrowserController::From(browser);
     new_browser = CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
-        BrowserInitState::From(current_browser)->create_params().app_name,
-        app_controller->IsTrustedSource(), gfx::Rect(),
-        current_browser->GetProfile(), true));
-    web_app::MaybeAddPinnedHomeTab(new_browser->GetBrowserForMigrationOnly(),
-                                   app_controller->app_id());
+        BrowserInitState::From(browser)->create_params().app_name,
+        app_controller->IsTrustedSource(), gfx::Rect(), browser->GetProfile(),
+        true));
+    web_app::MaybeAddPinnedHomeTab(new_browser, app_controller->app_id());
   } else {
     new_browser = CreateNewBrowser(browser, true);
   }
@@ -1753,18 +1754,16 @@ void MoveTabsToNewWindow(BrowserWindowInterface* browser,
     return;
   }
 
-  Browser* current_browser = browser->GetBrowserForMigrationOnly();
   BrowserWindowInterface* new_browser;
   base::TimeTicks now = base::TimeTicks::Now();
-  if (current_browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
-      web_app::AppBrowserController::From(current_browser)->has_tab_strip()) {
-    auto* app_controller = web_app::AppBrowserController::From(current_browser);
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
+      web_app::AppBrowserController::From(browser)->has_tab_strip()) {
+    auto* app_controller = web_app::AppBrowserController::From(browser);
     new_browser = CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
-        BrowserInitState::From(current_browser)->create_params().app_name,
-        app_controller->IsTrustedSource(), gfx::Rect(),
-        current_browser->GetProfile(), true));
-    web_app::MaybeAddPinnedHomeTab(new_browser->GetBrowserForMigrationOnly(),
-                                   app_controller->app_id());
+        BrowserInitState::From(browser)->create_params().app_name,
+        app_controller->IsTrustedSource(), gfx::Rect(), browser->GetProfile(),
+        true));
+    web_app::MaybeAddPinnedHomeTab(new_browser, app_controller->app_id());
   } else {
     new_browser = CreateNewBrowser(browser, true);
   }
@@ -2224,13 +2223,12 @@ void MoveTabsToReadLater(BrowserWindowInterface* browser,
 #if !BUILDFLAG(IS_ANDROID)
   if (toast_features::IsEnabled(toast_features::kReadingListToast)) {
     // Don't show the reading list toast if the side panel is visible.
-    if (browser->GetFeatures().side_panel_ui()->IsSidePanelEntryShowing(
+    if (SidePanelUI::From(browser)->IsSidePanelEntryShowing(
             SidePanelEntryKey(SidePanelEntryId::kReadingList))) {
       return;
     }
 
-    ToastController* const toast_controller =
-        browser->GetFeatures().toast_controller();
+    ToastController* const toast_controller = ToastController::From(browser);
     if (toast_controller) {
       ToastParams params = ToastParams(ToastId::kAddedToReadingList);
       params.body_string_cardinality_param = added_to_read_later;
@@ -2748,8 +2746,7 @@ void OpenTaskManager(BrowserWindowInterface* browser,
                      task_manager::StartAction start_action) {
 #if !BUILDFLAG(IS_ANDROID)
   base::RecordAction(UserMetricsAction("TaskManager"));
-  chrome::ShowTaskManager(
-      browser ? browser->GetBrowserForMigrationOnly() : nullptr, start_action);
+  chrome::ShowTaskManager(browser, start_action);
 #else
   NOTREACHED();
 #endif
@@ -2768,7 +2765,7 @@ void OpenFeedbackDialog(BrowserWindowInterface* browser,
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 void OpenReportUnsafeSiteDialog(BrowserWindowInterface* browser) {
   base::RecordAction(UserMetricsAction("ReportUnsafeSite"));
-  feedback::ReportUnsafeSiteDialog::Show(browser->GetBrowserForMigrationOnly());
+  feedback::ReportUnsafeSiteDialog::Show(browser);
 }
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
@@ -2907,8 +2904,7 @@ void SetAndroidOsForTabletSite(content::WebContents* current_tab) {
 void ToggleFullscreenMode(BrowserWindowInterface* browser,
                           bool user_initiated) {
   DCHECK(browser);
-  browser->GetFeatures()
-      .exclusive_access_manager()
+  ExclusiveAccessManager::From(browser)
       ->fullscreen_controller()
       ->ToggleBrowserFullscreenMode(user_initiated);
 }
@@ -2935,8 +2931,7 @@ void CopyURL(BrowserWindowInterface* browser,
 
 #if !BUILDFLAG(IS_ANDROID)
   if (toast_features::IsEnabled(toast_features::kLinkCopiedToast)) {
-    ToastController* const toast_controller =
-        browser->GetFeatures().toast_controller();
+    ToastController* const toast_controller = ToastController::From(browser);
     if (toast_controller) {
       toast_controller->MaybeShowToast(ToastParams(ToastId::kLinkCopied));
     }
@@ -3035,7 +3030,7 @@ void ToggleCaretBrowsing(BrowserWindowInterface* browser) {
 }
 
 void PromptToNameWindow(BrowserWindowInterface* browser) {
-  chrome::ShowWindowNamePrompt(browser->GetBrowserForMigrationOnly());
+  chrome::ShowWindowNamePrompt(browser);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -3117,7 +3112,7 @@ void ExecLensRegionSearch(BrowserWindowInterface* browser) {
                             CONTEXT_MENU_SEARCH_REGION_WITH_GOOGLE_LENS
                       : lens::AmbientSearchEntryPoint::
                             CONTEXT_MENU_SEARCH_REGION_WITH_WEB;
-    browser->GetFeatures().lens_region_search_controller()->Start(
+    lens::LensRegionSearchController::From(browser)->Start(
         contents,
         /*use_fullscreen_capture=*/false, is_google_dsp, entry_point);
   }

@@ -490,8 +490,8 @@ BUILDERS = {
           },
       }],
       'dimension': {
-          'cpu': 'arm64',
-          'os': 'Ubuntu-24.04',
+          'cpu': 'x86-64',
+          'os': 'Ubuntu-22.04',
           'pool': 'chrome.tests',
       },
       'perf_trigger':

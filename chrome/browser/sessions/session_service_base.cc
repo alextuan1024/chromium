@@ -35,8 +35,10 @@
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
@@ -49,11 +51,13 @@
 #include "components/sessions/core/session_types.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -282,13 +286,13 @@ void SessionServiceBase::TabInserted(WebContents* contents) {
                          session_tab_helper->session_id(), app_id);
   }
 
-  // Record the association between the SessionStorageNamespace and the
+  // Record the association between the SessionStorageNamespaceHandle and the
   // tab.
   //
   // TODO(ajwong): This should be processing the whole map rather than
   // just the default. This in particular will not work for tabs with only
   // isolated apps which won't have a default partition.
-  content::SessionStorageNamespace* session_storage_namespace =
+  content::SessionStorageNamespaceHandle* session_storage_namespace =
       contents->GetController().GetDefaultSessionStorageNamespace();
   ScheduleCommand(sessions::CreateSessionStorageAssociatedCommand(
       session_tab_helper->session_id(), session_storage_namespace->id()));
@@ -304,7 +308,7 @@ void SessionServiceBase::TabInserted(WebContents* contents) {
 void SessionServiceBase::TabClosing(WebContents* contents) {
   // Allow the associated sessionStorage to get deleted; it won't be needed
   // in the session restore.
-  content::SessionStorageNamespace* session_storage_namespace =
+  content::SessionStorageNamespaceHandle* session_storage_namespace =
       contents->GetController().GetDefaultSessionStorageNamespace();
   session_storage_namespace->SetShouldPersist(false);
   sessions::SessionTabHelper* session_tab_helper =
@@ -669,7 +673,7 @@ void SessionServiceBase::BuildCommandsForTab(
   }
 
   // Record the association between the sessionStorage namespace and the tab.
-  content::SessionStorageNamespace* session_storage_namespace =
+  content::SessionStorageNamespaceHandle* session_storage_namespace =
       tab->GetController().GetDefaultSessionStorageNamespace();
   ScheduleCommand(sessions::CreateSessionStorageAssociatedCommand(
       session_tab_helper->session_id(), session_storage_namespace->id()));

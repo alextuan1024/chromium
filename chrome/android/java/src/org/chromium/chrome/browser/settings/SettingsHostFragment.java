@@ -415,11 +415,28 @@ public class SettingsHostFragment extends Fragment
         for (Fragment f : fragmentActivity.getSupportFragmentManager().getFragments()) {
             if (f instanceof SettingsHostFragment settingsHostFragment
                     && settingsHostFragment.isAttachedToActivity()) {
-                if (settingsHostFragment.getView() != null
-                        && settingsHostFragment.getView().isShown()) {
+                if (activity instanceof SettingsActivityInterface
+                        || (settingsHostFragment.getView() != null
+                                && settingsHostFragment.getView().isShown())) {
                     return settingsHostFragment;
                 }
             }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the enclosing {@link SettingsHostFragment} containing the given fragment, or null if
+     * the fragment is not hosted by a SettingsHostFragment. Works even if the fragment is not shown
+     * (e.g. Chrome is in the background).
+     */
+    public static @Nullable SettingsHostFragment get(@Nullable Fragment fragment) {
+        Fragment current = fragment;
+        while (current != null) {
+            if (current instanceof SettingsHostFragment settingsHostFragment) {
+                return settingsHostFragment;
+            }
+            current = current.getParentFragment();
         }
         return null;
     }
@@ -439,8 +456,9 @@ public class SettingsHostFragment extends Fragment
         Fragment activeFragment = getActiveFragment();
         if (activeFragment instanceof MultiColumnSettings multiColumnSettings) {
             if (fragment == null || fragment instanceof MainSettings) {
-                if (multiColumnSettings.getSlidingPaneLayout().isSlideable()) {
-                    multiColumnSettings.getSlidingPaneLayout().closePane();
+                var slidingPane = multiColumnSettings.getSlidingPaneLayoutOrNull();
+                if (slidingPane != null && slidingPane.isSlideable()) {
+                    slidingPane.closePane();
                 }
                 // Show the default detail fragment.
                 Fragment initialFragment = multiColumnSettings.onCreateInitialDetailFragment();
@@ -509,15 +527,17 @@ public class SettingsHostFragment extends Fragment
                 activeFragment instanceof MultiColumnSettings multiColumnSettings
                         ? multiColumnSettings.getChildFragmentManager()
                         : getChildFragmentManager();
-        if (fragmentManager.getBackStackEntryCount() == 0) {
+        // Defer popping or navigating back until onStart() if fragment state has already been
+        // saved,
+        // preventing IllegalStateException from performing transactions while stopped or
+        // backgrounded.
+        if (fragmentManager.isStateSaved()) {
+            ++mPendingPopBackCount;
+        } else if (fragmentManager.getBackStackEntryCount() == 0) {
             // Show the main settings UI (which is represented by null).
             showFragment(null, /* addToBackStack= */ false, /* tag= */ null);
         } else {
-            if (fragmentManager.isStateSaved()) {
-                ++mPendingPopBackCount;
-            } else {
-                fragmentManager.popBackStack();
-            }
+            fragmentManager.popBackStack();
         }
     }
 

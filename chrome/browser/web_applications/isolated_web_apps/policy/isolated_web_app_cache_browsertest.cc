@@ -272,8 +272,7 @@ class IwaCacheBaseTest : public ash::LoginManagerTest {
         iwa_test_update_server_(/*reuse_port_across_restarts=*/true),
         session_mixin_(CreateSessionMixin(session_type_)) {
     scoped_feature_list_.InitWithFeatures(
-        {features::kIsolatedWebAppBundleCache,
-         features::kIsolatedWebAppManagedGuestSessionInstall},
+        {features::kIsolatedWebAppBundleCache},
         /*disabled_features=*/{});
   }
 
@@ -1552,7 +1551,7 @@ IN_PROC_BROWSER_TEST_P(IwaCacheVersionManagementTest, PRE_InstallBetaChannel) {
   AddNewIwaToServer(IwaServerConfig{kWebBundleId1, GetBaseVersion(), kKeyPair1},
                     std::vector{kBetaChannel});
 
-  LaunchSession(kWebBundleId1, /*should_wait_for_initial_update=*/false);
+  LaunchSession(kWebBundleId1);
   AssertAppInstalledAtVersion(kWebBundleId1, GetBaseVersion());
   WaitUntilPathExists(GetCachedBundlePath(kWebBundleId1, GetBaseVersion()));
 }
@@ -1566,7 +1565,7 @@ IN_PROC_BROWSER_TEST_P(IwaCacheVersionManagementTest, InstallBetaChannel) {
   AddNewIwaToServer(
       IwaServerConfig{kWebBundleId1, GetUpdateVersion(), kKeyPair1});
 
-  LaunchSession(kWebBundleId1, /*should_wait_for_initial_update=*/false);
+  LaunchSession(kWebBundleId1);
 
   AssertAppInstalledAtVersion(kWebBundleId1, GetBaseVersion());
 }

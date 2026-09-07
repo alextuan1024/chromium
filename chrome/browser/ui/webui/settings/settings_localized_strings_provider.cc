@@ -75,7 +75,7 @@
 #include "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #include "components/autofill/core/browser/payments/payments_service_url.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -134,6 +134,7 @@
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/webui/web_ui_util.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/webui/webui_util.h"
 
@@ -506,7 +507,7 @@ void AddAiStrings(content::WebUIDataSource* html_source) {
       {"aiSuggestionsConsider2Link",
        IDS_CONTEXTUAL_CUEING_SETTINGS_CONSIDER_2_LINK},
 
-      // Dictation (Voice typing) strings.
+      // Dictation (Talk to type) strings.
       {"dictationSettingLabel", IDS_SETTINGS_DICTATION_SETTING_LABEL},
       {"dictationSettingSublabel", IDS_SETTINGS_DICTATION_SETTING_SUBLABEL},
       {"dictationPreferencesHeader", IDS_SETTINGS_DICTATION_PREFERENCES_HEADER},
@@ -607,6 +608,8 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_VERTICAL_TABS_EXPAND_ON_HOVER},
       {"allowSplitViewDragAndDrop",
        IDS_SETTINGS_ALLOW_SPLIT_VIEW_DRAG_AND_DROP},
+      {"allowSplitViewDragAndDropHorizontal",
+       IDS_SETTINGS_ALLOW_SPLIT_VIEW_DRAG_AND_DROP_HORIZONTAL},
       {"showTabGroupsInBookmarksBar",
        IDS_SETTINGS_SHOW_TAB_GROUPS_IN_BOOKMARKS_BAR},
       {"autoPinNewTabGroups", IDS_SETTINGS_AUTO_PIN_NEW_TAB_GROUPS},
@@ -672,8 +675,6 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
   html_source->AddBoolean(
       "showHoverCardImagesOption",
       base::FeatureList::IsEnabled(features::kTabHoverCardImages));
-  html_source->AddBoolean("showVerticalTabsEnabled",
-                          tabs::IsVerticalTabsFeatureEnabled());
   html_source->AddBoolean("showGlassEffectEnabled",
                           features::IsGlassFrameEnabled());
   html_source->AddBoolean("showVerticalTabsExpandOnHoverEnabled",
@@ -689,6 +690,9 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
   html_source->AddBoolean(
       "tabStripUnificationEnabled",
       base::FeatureList::IsEnabled(tabs::kTabStripUnification));
+  html_source->AddBoolean(
+      "splitViewHorizontalEnabled",
+      base::FeatureList::IsEnabled(tabs::kSplitViewHorizontal));
 
   std::string configurable_alignments_json;
   base::JSONWriter::Write(
@@ -3327,10 +3331,19 @@ void AddSiteSettingsStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_SITE_SETTINGS_RECENT_ACTIVITY},
       {"siteSettingsCategoryCamera", IDS_SITE_SETTINGS_TYPE_CAMERA},
       {"siteSettingsCameraLabel", IDS_SITE_SETTINGS_TYPE_CAMERA},
+      {"siteRequestsSubHeader", IDS_SETTINGS_SITE_REQUESTS_SUB_HEADER},
+      {"thirdPartyCookiesSubHeader",
+       IDS_SETTINGS_THIRD_PARTY_COOKIES_SUB_HEADER},
       {"thirdPartyCookiesPageTitle",
        IDS_SETTINGS_THIRD_PARTY_COOKIES_PAGE_TITLE},
       {"thirdPartyCookiesLinkRowLabel",
        IDS_SETTINGS_THIRD_PARTY_COOKIES_LINK_ROW_LABEL},
+      {"thirdPartyCookiesAndSiteDataPageTitle",
+       IDS_SETTINGS_THIRD_PARTY_COOKIES_AND_SITE_DATA_PAGE_TITLE},
+      {"thirdPartyCookiesAndSiteDataLinkRowLabel",
+       IDS_SETTINGS_THIRD_PARTY_COOKIES_AND_SITE_DATA_LINK_ROW_LABEL},
+      {"thirdPartyCookiesAndSiteDataLinkRowSublabel",
+       IDS_SETTINGS_THIRD_PARTY_COOKIES_AND_SITE_DATA_LINK_ROW_SUB_LABEL},
       {"thirdPartyCookiesLinkRowSublabelEnabled",
        IDS_SETTINGS_THIRD_PARTY_COOKIES_LINK_ROW_SUB_LABEL_ENABLED},
       {"thirdPartyCookiesLinkRowSublabelDisabled",
@@ -3350,6 +3363,10 @@ void AddSiteSettingsStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_TRACKING_PROTECTION_ADVANCED_LABEL},
       {"trackingProtectionDoNotTrackToggleSubLabel",
        IDS_SETTINGS_TRACKING_PROTECTION_DO_NOT_TRACK_TOGGLE_SUB_LABEL},
+      {"trackingProtectionDoNotTrackDisclaimerToggleSubLabel",
+       IDS_SETTINGS_TRACKING_PROTECTION_DO_NOT_TRACK_DISCLAIMER_TOGGLE_SUB_LABEL},
+      {"universalOptOutLabel", IDS_SETTINGS_UNIVERSAL_OPT_OUT_LABEL},
+      {"universalOptOutSubLabel", IDS_SETTINGS_UNIVERSAL_OPT_OUT_SUB_LABEL},
       {"trackingProtectionSitesAllowedCookiesTitle",
        IDS_SETTINGS_TRACKING_PROTECTION_SITES_ALLOWED_COOKIES_TITLE},
       {"trackingProtectionSitesAllowedCookiesDescription",

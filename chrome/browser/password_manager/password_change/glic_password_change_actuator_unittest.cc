@@ -38,7 +38,7 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/password_manager/core/browser/actor_login/password_change_from_checkup_actor_login_service.h"
 #include "components/password_manager/core/browser/fake_form_fetcher.h"
 #include "components/password_manager/core/browser/mock_password_form_cache.h"
@@ -160,7 +160,7 @@ password_manager::StoredCredential CreateTestCredential() {
   form.url = url;
   form.signon_realm = url::Origin::Create(url).GetURL().spec();
   form.username_value = kTestUsername;
-  form.password_value = kTestPassword;
+  form.password_value = password_manager::PasswordString(kTestPassword);
   form.in_store = password_manager::PasswordForm::Store::kProfileStore;
   form.match_type = password_manager::PasswordForm::MatchType::kExact;
   return password_manager::FromPasswordForm(std::move(form));
@@ -223,7 +223,6 @@ class GlicPasswordChangeActuatorTest : public ChromeRenderViewHostTestHarness {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     TestingBrowserProcess::GetGlobal()->SetProfileManager(
         std::make_unique<FakeProfileManager>(temp_dir_.GetPath()));
-    glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
     ChromeRenderViewHostTestHarness::SetUp();
 
     tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
@@ -284,7 +283,6 @@ class GlicPasswordChangeActuatorTest : public ChromeRenderViewHostTestHarness {
     web_contents()->SetDelegate(nullptr);
     ChromeRenderViewHostTestHarness::TearDown();
     TestingBrowserProcess::GetGlobal()->SetProfileManager(nullptr);
-    glic::GlicEnabling::SetBypassEnablementChecksForTesting(false);
   }
 
   std::unique_ptr<KeyedService> CreateMockGlicService(
@@ -316,7 +314,7 @@ class GlicPasswordChangeActuatorTest : public ChromeRenderViewHostTestHarness {
     form.url = GURL(kTestUrl);
     form.signon_realm = url::Origin::Create(form.url).GetURL().spec();
     form.username_value = kTestUsername;
-    form.password_value = kTestPassword;
+    form.password_value = password_manager::PasswordString(kTestPassword);
     form.in_store = password_manager::PasswordForm::Store::kProfileStore;
     form.match_type = password_manager::PasswordForm::MatchType::kExact;
     seed_credentials.push_back(form);
@@ -347,6 +345,8 @@ class GlicPasswordChangeActuatorTest : public ChromeRenderViewHostTestHarness {
   }
 
  private:
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting
+      scoped_glic_bypass_;
   base::ScopedTempDir temp_dir_;
   autofill::test::AutofillUnitTestEnvironment autofill_environment_{
       {.disable_server_communication = true}};

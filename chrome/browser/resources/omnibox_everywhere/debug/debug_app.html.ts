@@ -19,6 +19,15 @@ export function getHtml(this: OmniboxEverywhereDebugAppElement) {
 </div>
 <div class="toggle-container">
   <label class="switch">
+    <input id="launchOnStartupToggle" type="checkbox"
+        .checked="${this.launchOnStartupEnabled}"
+        @change="${this.onLaunchOnStartupToggleChange}">
+    <span class="slider"></span>
+  </label>
+  <span class="toggle-label">Enable Launch On Startup</span>
+</div>
+<div class="toggle-container">
+  <label class="switch">
     <input id="hotkeyToggle" type="checkbox" .checked="${this.hotkeyEnabled}"
         @change="${this.onHotkeyToggleChange}">
     <span class="slider"></span>
@@ -49,6 +58,15 @@ export function getHtml(this: OmniboxEverywhereDebugAppElement) {
   <button class="invoke-button" @click="${this.onInvokeClick}">
     Invoke Omnibox Everywhere
   </button>
+</div>
+<div class="iph-container">
+  <h2>IPH / User Education</h2>
+  <div class="button-row">
+    <button id="invokeWithIphBtn" class="action-button"
+        @click="${this.onLaunchWithIphClick}">
+      Invoke Omnibox Everywhere & Show IPH
+    </button>
+  </div>
 </div>
 <div class="shortcut-container">
   <h2>Shortcut & Pinning Setup</h2>

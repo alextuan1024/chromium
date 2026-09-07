@@ -24,10 +24,12 @@
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/utils.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace tab_groups {
@@ -137,9 +139,8 @@ void LocalTabGroupListener::AddTabFromLocal(
                    relative_index_of_tab_in_group);
 
   MostRecentSharedTabUpdateStore* most_recent_shared_tab_update_store =
-      local_tab->GetBrowserWindowInterface()
-          ->GetFeatures()
-          .most_recent_shared_tab_update_store();
+      MostRecentSharedTabUpdateStore::From(
+          local_tab->GetBrowserWindowInterface());
   if (most_recent_shared_tab_update_store) {
     most_recent_shared_tab_update_store->SetLastUpdatedTab(local_id_,
                                                            local_tab_id);
@@ -199,10 +200,9 @@ void LocalTabGroupListener::MoveWebContentsFromLocal(
   service_->MoveTab(local_id_, local_tab_id, index_in_group);
 
   MostRecentSharedTabUpdateStore* most_recent_shared_tab_update_store =
-      tab_strip_model->GetTabForWebContents(web_contents)
-          ->GetBrowserWindowInterface()
-          ->GetFeatures()
-          .most_recent_shared_tab_update_store();
+      MostRecentSharedTabUpdateStore::From(
+          tab_strip_model->GetTabForWebContents(web_contents)
+              ->GetBrowserWindowInterface());
   if (most_recent_shared_tab_update_store) {
     most_recent_shared_tab_update_store->SetLastUpdatedTab(local_id_,
                                                            local_tab_id);
@@ -241,9 +241,8 @@ LocalTabGroupListener::MaybeRemoveWebContentsFromLocal(
 
   // Get controller before tab is removed.
   MostRecentSharedTabUpdateStore* most_recent_shared_tab_update_store =
-      local_tab->GetBrowserWindowInterface()
-          ->GetFeatures()
-          .most_recent_shared_tab_update_store();
+      MostRecentSharedTabUpdateStore::From(
+          local_tab->GetBrowserWindowInterface());
 
   // This object is deleted by the time we have reached here. This means
   // saved_guid_ gives us a garbage value and cannot be used anymore to query.

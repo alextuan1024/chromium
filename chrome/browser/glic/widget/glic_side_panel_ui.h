@@ -14,6 +14,7 @@
 #include "chrome/browser/glic/common/panel_visibility_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/host/context/glic_screenshot_capturer.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/service/glic_ui_embedder.h"
@@ -39,6 +40,7 @@ class GlicInstanceMetrics;
 class GlicSidePanelUi
     : public GlicUiEmbedder,
       public Host::EmbedderDelegate,
+      public Host::Observer,
       public LocalHotkeyManager::Panel,
       public web_modal::WebContentsModalDialogManagerDelegate {
  public:
@@ -75,13 +77,16 @@ class GlicSidePanelUi
   void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override {}
 
+  // Host::Observer:
+  void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+
   void SidePanelStateChanged(GlicSidePanelCoordinator::State state);
 
   // LocalHotkeyManager::Panel:
   void FocusIfOpen() override;
   bool HasFocus() override;
   bool ActivateBrowser() override;
-  void Zoom(mojom::ZoomAction zoom_action) override;
+  void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) override;
   bool HasSelectionOverlay() override;
   void CloseSelectionOverlay() override;
   base::WeakPtr<views::View> GetView() override;
@@ -116,6 +121,8 @@ class GlicSidePanelUi
   base::CallbackListSubscription deactivation_subscription_;
 
   std::unique_ptr<GlicScreenshotCapturer> screenshot_capturer_;
+
+  base::ScopedObservation<Host, Host::Observer> host_observation_{this};
 
   base::WeakPtrFactory<GlicSidePanelUi> weak_ptr_factory_{this};
 };

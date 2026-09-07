@@ -79,6 +79,8 @@ source_set("impl") {
         "//chromeos/components/kiosk",
         "//chromeos/components/mgs",
       ]
+    } else {
+      deps += [ "//chrome/browser/ui/views/profiles:profile_customization_bubble_sync_controller" ]
     }
 
     if (is_chrome_for_testing) {
@@ -155,6 +157,7 @@ if (!is_android) {
           "//base",
           "//base/test:test_support",
           "//chrome/app:command_ids",
+          "//chrome/browser/preloading",
           "//chrome/browser/profiles:profile",
           "//chrome/browser/search_engines",
           "//chrome/browser/ui",

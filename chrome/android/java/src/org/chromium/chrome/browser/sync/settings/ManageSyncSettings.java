@@ -129,6 +129,9 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     public static final String PREF_BATCH_UPLOAD_CARD_PREFERENCE = "batch_upload_card";
 
     @VisibleForTesting
+    public static final String PREF_ACCOUNT_SECTION_HEADER = "account_section_header";
+
+    @VisibleForTesting
     public static final String PREF_ACCOUNT_SECTION_HISTORY_TOGGLE =
             "account_section_history_toggle";
 
@@ -162,6 +165,9 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
 
     @VisibleForTesting
     public static final String PREF_ACCOUNT_SECTION_THEMES_TOGGLE = "account_section_themes_toggle";
+
+    @VisibleForTesting
+    public static final String PREF_ACCOUNT_ADVANCED_HEADER = "account_advanced_header";
 
     @VisibleForTesting
     public static final String PREF_GOOGLE_ACTIVITY_CONTROLS = "google_activity_controls";
@@ -407,7 +413,6 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         mSyncTypeSwitchPreferencesMap.put(UserSelectableType.PASSWORDS, passwordsToggle);
         ChromeSwitchPreference paymentsToggle =
                 findPreference(PREF_ACCOUNT_SECTION_PAYMENTS_TOGGLE);
-        paymentsToggle.setTitle(R.string.account_section_payments_and_info_toggle);
         mSyncTypeSwitchPreferencesMap.put(UserSelectableType.PAYMENTS, paymentsToggle);
         mSyncTypeSwitchPreferencesMap.put(
                 UserSelectableType.PREFERENCES,
@@ -920,10 +925,14 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         notifyPreferencesUpdated();
     }
 
-    private boolean isEeaChoiceCountry() {
+    private static boolean isEeaChoiceCountry(Profile profile) {
         RegionalCapabilitiesService regionalCapabilities =
-                RegionalCapabilitiesServiceFactory.getForProfile(getProfile());
+                RegionalCapabilitiesServiceFactory.getForProfile(profile);
         return regionalCapabilities.isInEeaCountry();
+    }
+
+    private boolean isEeaChoiceCountry() {
+        return isEeaChoiceCountry(getProfile());
     }
 
     /**
@@ -990,6 +999,23 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
                     }
                     if (!shouldShowSwitchToIncognitoPref(profile)) {
                         indexData.removeEntryForKey(frag, PREF_SWITCH_TO_INCOGNITO);
+                    }
+                    if (isEeaChoiceCountry(profile)) {
+                        String activityControlsId = getUniqueId(PREF_GOOGLE_ACTIVITY_CONTROLS);
+                        SettingsIndexData.Entry entry = indexData.getEntry(activityControlsId);
+                        if (entry != null) {
+                            indexData.updateEntry(
+                                    activityControlsId,
+                                    new SettingsIndexData.Entry.Builder(entry)
+                                            .setTitle(
+                                                    context.getString(
+                                                            R.string
+                                                                    .sign_in_personalize_google_services_title_eea))
+                                            .setFragment(
+                                                    PersonalizeGoogleServicesSettings.class
+                                                            .getName())
+                                            .build());
+                        }
                     }
                 }
             };

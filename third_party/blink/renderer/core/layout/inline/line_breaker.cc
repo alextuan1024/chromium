@@ -960,9 +960,20 @@ void LineBreaker::NextLine(LineInfo* line_info) {
   if (line_clamp_ellipsis_width_ && !CanFitOnLine()) {
     Rewind(0, line_info);
     line_info->SetIsLastLine(false);
-    // Overflow disables score and bisect line breaking, but since we
-    // replaced the whole line, we enable bisect.
-    disable_bisect_line_break_ = false;
+
+    // We only mark the line as overflowing (which matters for determining if
+    // it gets pushed down by floats) if the ellipsis itself wouldn't fit.
+    // We can't rely on AvailableWidth() here, since it gets clamped to be
+    // non-negative after the ellipsis width gets subtracted, so we need to
+    // check the line opportunity as well.
+    bool has_overflow = !AvailableWidth() &&
+                        line_opportunity_.AvailableInlineSize().AddEpsilon() <
+                            line_clamp_ellipsis_width_;
+    line_info->SetHasOverflow(has_overflow);
+
+    // Overflow disables score and bisect line breaking, but if we fixed the
+    // overflow by replacing the whole line, then we can reenable bisect.
+    disable_bisect_line_break_ = has_overflow;
   }
 
   if (!should_create_line_box) {
@@ -2320,20 +2331,14 @@ void LineBreaker::AppendCandidates(const InlineItemResult& item_result,
 
 bool LineBreaker::CanBreakInside(const LineInfo& line_info) {
   const InlineItemResults& item_results = line_info.Results();
-  if (RuntimeEnabledFeatures::SkipOofItemForBreakCandidateEnabled()) {
-    for (wtf_size_t i = 0; i < item_results.size() - 1; ++i) {
-      if (item_results[i].can_break_after) {
-        for (++i; i < item_results.size(); ++i) {
-          if (!item_results[i].item->IsFloatingOrOutOfFlowPositioned()) {
-            return true;
-          }
+  for (wtf_size_t i = 0; i < item_results.size() - 1; ++i) {
+    if (item_results[i].can_break_after) {
+      for (++i; i < item_results.size(); ++i) {
+        if (!item_results[i].item->IsFloatingOrOutOfFlowPositioned()) {
+          return true;
         }
       }
     }
-  } else if (std::ranges::any_of(
-                 base::span(item_results).first(item_results.size() - 1),
-                 std::identity(), &InlineItemResult::can_break_after)) {
-    return true;
   }
   for (const InlineItemResult& item_result : item_results) {
     DCHECK(item_result.item);
@@ -2960,12 +2965,9 @@ void LineBreaker::HandleControlItem(const InlineItem& item,
         HandleEmptyText(item, line_info);
         return;
       }
-      const Font* font = RuntimeEnabledFeatures::TabSizeAncestorEnabled()
-                             ? &node_.FontForTab()
-                             : style.GetFont();
       const ShapeResult* shape_result =
           ShapeResult::CreateForTabulationCharacters(
-              font, item.Direction(), style.GetTabSize(),
+              &node_.FontForTab(), item.Direction(), style.GetTabSize(),
               (RuntimeEnabledFeatures::TabAlignmentWithFloatsEnabled()
                    ? position_ + ComputeFloatOffset()
                    : position_) +
@@ -3034,8 +3036,13 @@ void LineBreaker::HandleBidiControlItem(const InlineItem& item,
       state_ = LineBreakState::kDone;
       return;
     }
-    InlineItemResult* item_result = AddItem(item, line_info);
-    DCHECK(!item_result->can_break_after);
+    if (!item_results->empty() &&
+        RuntimeEnabledFeatures::LineBreakBidiControlEnterEnabled()) {
+      InlineItemResult* item_result = AddItem(item, line_info);
+      ComputeCanBreakAfter(item_result, auto_wrap_, break_iterator_);
+    } else {
+      AddItem(item, line_info);
+    }
   }
   MoveToNextOf(item);
 }
@@ -4746,7 +4753,6 @@ const InlineBreakToken* LineBreaker::CreateBreakToken(
   InlineItemTextIndex next_start = current_;
   if (line_info.UseFirstLineStyle()) [[unlikely]] {
     if (const auto& offset_map = node_.FirstLineOffsetMap()) [[unlikely]] {
-      DCHECK(RuntimeEnabledFeatures::FirstLineTextTransformEnabled());
       // The `::first-line` style has changed the text length.
       // Adjust `next_start` to the offset for the text without `::first-line`.
       next_start.text_offset =

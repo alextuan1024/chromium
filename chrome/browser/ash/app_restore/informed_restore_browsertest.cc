@@ -5,6 +5,7 @@
 #include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/shell.h"
 #include "ash/style/system_dialog_delegate_view.h"
 #include "ash/test/ash_test_util.h"
@@ -25,24 +26,24 @@
 #include "chrome/browser/ash/app_restore/app_restore_test_util.h"
 #include "chrome/browser/ash/app_restore/full_restore_app_launch_handler.h"
 #include "chrome/browser/ash/app_restore/full_restore_service.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ash/settings/pref_names.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "ui/base/base_window.h"
 #include "ui/views/test/widget_test.h"
 
 namespace ash::full_restore {
@@ -239,9 +240,9 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_LaunchBrowsersToDesks) {
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  Browser* browser1 = CreateBrowser(profile);
-  Browser* browser2 = CreateBrowser(profile);
-  Browser* browser3 = CreateBrowser(profile);
+  BrowserWindowInterface* browser1 = CreateBrowser(profile);
+  BrowserWindowInterface* browser2 = CreateBrowser(profile);
+  BrowserWindowInterface* browser3 = CreateBrowser(profile);
   EXPECT_EQ(3u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Add two desks for a total of three. The browsers were all created on the
@@ -250,7 +251,7 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_LaunchBrowsersToDesks) {
   desks_controller->NewDesk(DesksCreationRemovalSource::kKeyboard);
   desks_controller->NewDesk(DesksCreationRemovalSource::kKeyboard);
   ASSERT_EQ(3u, desks_controller->desks().size());
-  for (Browser* browser : {browser1, browser2, browser3}) {
+  for (BrowserWindowInterface* browser : {browser1, browser2, browser3}) {
     ASSERT_TRUE(desks_controller->BelongsToActiveDesk(
         browser->GetWindow()->GetNativeWindow()));
   }
@@ -308,11 +309,11 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_DISABLED_WindowStates) {
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  Browser* browser_maximized = CreateBrowser(profile);
-  Browser* browser_minimized = CreateBrowser(profile);
-  Browser* browser_fullscreened = CreateBrowser(profile);
-  Browser* browser_floated = CreateBrowser(profile);
-  Browser* browser_snapped = CreateBrowser(profile);
+  BrowserWindowInterface* browser_maximized = CreateBrowser(profile);
+  BrowserWindowInterface* browser_minimized = CreateBrowser(profile);
+  BrowserWindowInterface* browser_fullscreened = CreateBrowser(profile);
+  BrowserWindowInterface* browser_floated = CreateBrowser(profile);
+  BrowserWindowInterface* browser_snapped = CreateBrowser(profile);
   EXPECT_EQ(5u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   WindowState::Get(browser_maximized->GetWindow()->GetNativeWindow())
@@ -433,7 +434,8 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, ClickCancelButton) {
 IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_TabInfoWithinLimit) {
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 
-  Browser* browser = CreateBrowser(ProfileManager::GetActiveUserProfile());
+  BrowserWindowInterface* browser =
+      CreateBrowser(ProfileManager::GetActiveUserProfile());
   EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Create four more urls in addition to the default "about:blank" tab. That
@@ -450,7 +452,7 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_TabInfoWithinLimit) {
   }
 
   // Activate the third tab (waymo.com) so it becomes the most recent tab.
-  browser->tab_strip_model()->ActivateTabAt(2);
+  browser->GetTabStripModel()->ActivateTabAt(2);
 
   // Immediate save to full restore file to bypass the 2.5 second throttle.
   AppLaunchInfoSaveWaiter::Wait();
@@ -484,7 +486,8 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, TabInfoWithinLimit) {
 IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_TabInfoOutsideLimit) {
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 
-  Browser* browser = CreateBrowser(ProfileManager::GetActiveUserProfile());
+  BrowserWindowInterface* browser =
+      CreateBrowser(ProfileManager::GetActiveUserProfile());
   EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Create six more urls in addition to the default "about:blank" tab. That tab
@@ -502,7 +505,7 @@ IN_PROC_BROWSER_TEST_F(InformedRestoreTest, PRE_TabInfoOutsideLimit) {
   }
 
   // Activate the sixth tab (chromium.org) so it becomes the most recent tab.
-  browser->tab_strip_model()->ActivateTabAt(5);
+  browser->GetTabStripModel()->ActivateTabAt(5);
 
   // Immediate save to full restore file to bypass the 2.5 second throttle.
   AppLaunchInfoSaveWaiter::Wait();
@@ -677,7 +680,7 @@ class InformedRestoreOnboardingTest : public InformedRestoreTest {
 
     // Onboarding dialog is gated by this switch so it doesn't affect other
     // browser tests.
-    command_line->RemoveSwitch(::switches::kNoFirstRun);
+    command_line->RemoveSwitch(ash::chrome_switches::kNoFirstRun);
   }
 };
 

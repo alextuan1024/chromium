@@ -312,7 +312,7 @@ void SetCookieAccounts(IdentityManager* identity_manager,
 void TriggerListAccount(IdentityManager* identity_manager,
                         network::TestURLLoaderFactory* test_url_loader_factory);
 
-// Updates the info for |account_info.account_id|, which must be a known
+// Updates the info for |account_info.GetAccountId()|, which must be a known
 // account.
 void UpdateAccountInfoForAccount(IdentityManager* identity_manager,
                                  AccountInfo account_info);
@@ -370,11 +370,11 @@ void SimulateSuccessfulFetchOfAccountInfo(IdentityManager* identity_manager,
                                           const CoreAccountId& account_id,
                                           std::string_view email,
                                           const GaiaId& gaia,
-                                          const std::string& hosted_domain,
-                                          const std::string& full_name,
-                                          const std::string& given_name,
-                                          const std::string& locale,
-                                          const std::string& picture_url);
+                                          std::string_view hosted_domain,
+                                          std::string_view full_name,
+                                          std::string_view given_name,
+                                          std::string_view locale,
+                                          std::string_view picture_url);
 
 #if BUILDFLAG(IS_CHROMEOS)
 account_manager::AccountManagerFacade* GetAccountManagerFacade(

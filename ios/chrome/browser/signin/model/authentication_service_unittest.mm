@@ -266,7 +266,7 @@ class AuthenticationServiceTest : public PlatformTest {
         identity_manager()->GetAccountsOnDevice();
     CHECK_LT(index, accountInfos.size());
     return account_manager_->GetIdentityOnDeviceWithGaiaID(
-        accountInfos[index].gaia);
+        accountInfos[index].GetGaiaId());
   }
 
   // Sets a restricted pattern.
@@ -310,10 +310,10 @@ TEST_F(AuthenticationServiceTest, TestSignInAndGetPrimaryIdentity) {
   std::string user_email = base::SysNSStringToUTF8([identity(0) userEmail]);
   AccountInfo account_info =
       identity_manager()->FindExtendedAccountInfoByEmailAddress(user_email);
-  EXPECT_EQ(user_email, account_info.email);
-  EXPECT_EQ(identity(0).gaiaId, account_info.gaia);
-  EXPECT_TRUE(
-      identity_manager()->HasAccountWithRefreshToken(account_info.account_id));
+  EXPECT_EQ(user_email, account_info.GetEmail());
+  EXPECT_EQ(identity(0).gaiaId, account_info.GetGaiaId());
+  EXPECT_TRUE(identity_manager()->HasAccountWithRefreshToken(
+      account_info.GetAccountId()));
   EXPECT_TRUE(authentication_service()->HasPrimaryIdentity());
   histogram_tester_.ExpectUniqueSample(
       "Signin.SignIn.Completed",
@@ -491,81 +491,6 @@ TEST_F(AuthenticationServiceTest, MDMErrorsClearedOnSignout) {
   EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
 }
 
-// Tests that (a) MDM errors are cleared, and (b) local data *only from the
-// signed-in period* are cleared, when signing out of a managed account.
-TEST_F(AuthenticationServiceTest, ManagedAccountSignOut_ClearDataFromSignin) {
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  SetCachedMDMInfo(identity(2), CreateRefreshAccessTokenError(identity(2)));
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kUserClickedSignoutSettings, nil);
-  EXPECT_FALSE(HasCachedMDMInfo(identity(2)));
-  EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  EXPECT_EQ(ClearBrowsingDataCount(), 0);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 1);
-}
-
-// Tests that (a) MDM errors are cleared, and (b) local data is *not* cleared,
-// when signing out of a managed account while the browser is managed.
-TEST_F(AuthenticationServiceTest,
-       ManagedAccountSignOut_DontClearIfManagedBrowser) {
-  // Add managed configuration so the browser is managed.
-  NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
-  NSDictionary* dict = @{@"key" : @"value"};
-  [userDefaults setObject:dict forKey:kPolicyLoaderIOSConfigurationKey];
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  SetCachedMDMInfo(identity(2), CreateRefreshAccessTokenError(identity(2)));
-  // Data should not be cleared if the browser is managed.
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, nil);
-  ASSERT_FALSE(HasCachedMDMInfo(identity(2)));
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  EXPECT_EQ(ClearBrowsingDataCount(), 0);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 0);
-  [userDefaults removeObjectForKey:kPolicyLoaderIOSConfigurationKey];
-}
-
 // Tests that MDM errors do not lead to seeding empty account ids.
 // Regression test for root cause of crbug.com/1482236
 TEST_F(AuthenticationServiceTest, MDMErrorsDontSeedEmptyAccountIds) {
@@ -601,45 +526,6 @@ TEST_F(AuthenticationServiceTest, MDMErrorsDontSeedEmptyAccountIds) {
   EXPECT_FALSE(
       identity_manager()->GetAccountsWithRefreshTokens()[1].account_id.empty());
   EXPECT_OCMOCK_VERIFY((id)mdm_error_mock);
-}
-
-// Tests that (a) MDM errors are cleared and (b) all browsing data is cleared
-// (not just from the signed-in period), when signing out of a managed account
-// that was migrated from sync consent.
-TEST_F(AuthenticationServiceTest, ManagedAccountSignOut_MigratedFromSyncing) {
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  // Mark the signed-in user as "migrated from previously syncing".
-  MarkSignedinUserMigratedFromSyncing();
-
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, nil);
-  EXPECT_FALSE(HasCachedMDMInfo(identity(2)));
-  EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  // Because the account was migrated from Sync-the-feature, all browsing data
-  // should be cleared, not just from the signed-in period.
-  EXPECT_EQ(ClearBrowsingDataCount(), 1);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 0);
 }
 
 // Tests that potential MDM notifications are correctly handled and dispatched

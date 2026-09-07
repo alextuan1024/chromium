@@ -28,13 +28,20 @@ class ContextualTasksExtensionBinderProvider;
 namespace extensions {
 
 class ExtensionMojoBinderRegistryTest;
+class RendererStartupHelperTest;
+class ServiceWorkerTest;
 
-bool ExtensionMojoBinderProvider::IsJsErrorReportingEnabled() const {
+ExtensionMojoBinderProvider::ExtensionMojoBinderProvider(
+    ExtensionId extension_id)
+    : extension_id_(std::move(extension_id)) {}
+
+ExtensionMojoBinderProvider::~ExtensionMojoBinderProvider() = default;
+
+bool ExtensionMojoBinderProvider::IsMojoJsEnabledForFrame() const {
   return false;
 }
 
-bool ExtensionMojoBinderProvider::ShouldCrashOnJsErrorInDevelopmentBuild()
-    const {
+bool ExtensionMojoBinderProvider::IsMojoJsEnabledForServiceWorker() const {
   return false;
 }
 
@@ -67,13 +74,27 @@ void ExtensionMojoBinderRegistry::RegisterProvider(
   RegisterProviderImpl(std::move(provider));
 }
 
+template <>
+void ExtensionMojoBinderRegistry::RegisterProvider(
+    base::PassKey<RendererStartupHelperTest>,
+    std::unique_ptr<ExtensionMojoBinderProvider> provider) {
+  RegisterProviderImpl(std::move(provider));
+}
+
+template <>
+void ExtensionMojoBinderRegistry::RegisterProvider(
+    base::PassKey<ServiceWorkerTest>,
+    std::unique_ptr<ExtensionMojoBinderProvider> provider) {
+  RegisterProviderImpl(std::move(provider));
+}
+
 void ExtensionMojoBinderRegistry::RegisterProviderImpl(
     std::unique_ptr<ExtensionMojoBinderProvider> provider) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(provider);
-  ExtensionId extension_id = provider->GetExtensionId();
+  ExtensionId extension_id = provider->extension_id();
   auto [it, inserted] =
-      providers_.emplace(std::move(extension_id), std::move(provider));
+      providers_.insert({std::move(extension_id), std::move(provider)});
   CHECK(inserted) << "A provider for component extension '" << it->first
                   << "' is already registered.";
 }
@@ -81,7 +102,7 @@ void ExtensionMojoBinderRegistry::RegisterProviderImpl(
 void ExtensionMojoBinderRegistry::PopulateFrameBinders(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
     content::RenderFrameHost* render_frame_host,
-    const Extension* extension) {
+    const Extension& extension) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(binder_map);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
@@ -90,7 +111,7 @@ void ExtensionMojoBinderRegistry::PopulateFrameBinders(
   }
   if (render_frame_host &&
       util::GetExtensionIdForSiteInstance(
-          *render_frame_host->GetSiteInstance()) != extension->id()) {
+          *render_frame_host->GetSiteInstance()) != extension.id()) {
     return;
   }
   provider->PopulateFrameBinders(*binder_map, render_frame_host, extension);
@@ -100,7 +121,7 @@ void ExtensionMojoBinderRegistry::PopulateServiceWorkerBinders(
     mojo::BinderMapWithContext<const content::ServiceWorkerVersionBaseInfo&>*
         binder_map,
     content::BrowserContext* browser_context,
-    const Extension* extension) {
+    const Extension& extension) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(binder_map);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
@@ -111,31 +132,18 @@ void ExtensionMojoBinderRegistry::PopulateServiceWorkerBinders(
                                          extension);
 }
 
-bool ExtensionMojoBinderRegistry::IsMojoJsEnabled(
-    const Extension* extension) const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return GetProviderIfAllowed(extension) != nullptr;
-}
-
-bool ExtensionMojoBinderRegistry::IsJsErrorReportingEnabled(
-    const Extension* extension) const {
+bool ExtensionMojoBinderRegistry::IsMojoJsEnabledForFrame(
+    const Extension& extension) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
-  return provider && provider->IsJsErrorReportingEnabled();
+  return provider && provider->IsMojoJsEnabledForFrame();
 }
 
-bool ExtensionMojoBinderRegistry::ShouldCrashOnJsErrorInDevelopmentBuild(
-    const Extension* extension) const {
+bool ExtensionMojoBinderRegistry::IsMojoJsEnabledForServiceWorker(
+    const Extension& extension) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (version_info::IsOfficialBuild()) {
-    return false;
-  }
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableCrashOnComponentExtensionJsError)) {
-    return false;
-  }
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
-  return provider && provider->ShouldCrashOnJsErrorInDevelopmentBuild();
+  return provider && provider->IsMojoJsEnabledForServiceWorker();
 }
 
 void ExtensionMojoBinderRegistry::ClearProvidersForTesting() {
@@ -144,11 +152,12 @@ void ExtensionMojoBinderRegistry::ClearProvidersForTesting() {
 }
 
 ExtensionMojoBinderProvider* ExtensionMojoBinderRegistry::GetProviderIfAllowed(
-    const Extension* extension) const {
-  if (!extension || !Manifest::IsComponentLocation(extension->location())) {
+    const Extension& extension) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!Manifest::IsComponentLocation(extension.location())) {
     return nullptr;
   }
-  return base::FindPtrOrNull(providers_, extension->id());
+  return base::FindPtrOrNull(providers_, extension.id());
 }
 
 }  // namespace extensions

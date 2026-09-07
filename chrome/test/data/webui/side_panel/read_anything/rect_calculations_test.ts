@@ -13,6 +13,8 @@ suite('RectCalculations', () => {
   let visualBrowserProxy: TestVisualBrowserProxy;
 
   setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    window.scrollTo(0, 0);
     visualBrowserProxy = new TestVisualBrowserProxy();
     VisualBrowserProxyImpl.setInstance(visualBrowserProxy);
     ContentBrowserProxyImpl.setInstance(new TestContentBrowserProxy());
@@ -23,10 +25,9 @@ suite('RectCalculations', () => {
     let halfHeight: number;
 
     setup(() => {
-      windowHeight = document.documentElement.clientHeight || 600;
+      windowHeight = 600;
       halfHeight = windowHeight / 2;
-      setWindowSize(
-          windowHeight, document.documentElement.clientWidth || 1000);
+      setWindowSize(windowHeight, 1000);
     });
 
     test('fully inside window returns true', () => {
@@ -75,11 +76,10 @@ suite('RectCalculations', () => {
     let minorityHeight: number;
 
     setup(() => {
-      windowHeight = document.documentElement.clientHeight || 600;
+      windowHeight = 600;
       majorityHeight = windowHeight * MOSTLY_VISIBLE_PERCENT;
       minorityHeight = windowHeight - majorityHeight;
-      setWindowSize(
-          windowHeight, document.documentElement.clientWidth || 1000);
+      setWindowSize(windowHeight, 1000);
     });
 
     test('fully inside window returns true', () => {
@@ -145,12 +145,83 @@ suite('RectCalculations', () => {
   suite('calculateTextBounds', () => {
     let container: HTMLDivElement;
 
+    // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
+    // gone.
+    function getVisualLines(container: HTMLElement): string[] {
+      const walker = document.createTreeWalker(
+          container,
+          NodeFilter.SHOW_TEXT,
+          null,
+      );
+      const range = document.createRange();
+      const lines: string[] = [];
+      let currentLine = '';
+      let lastTop: number|null = null;
+
+      let node = walker.nextNode();
+      while (node) {
+        const text = node.textContent || '';
+        for (let i = 0; i < text.length; i++) {
+          range.setStart(node, i);
+          range.setEnd(node, i + 1);
+          const rect = range.getBoundingClientRect();
+          if (rect.width === 0 && rect.height === 0) {
+            continue;
+          }
+          if (lastTop === null) {
+            lastTop = rect.top;
+          } else if (Math.abs(rect.top - lastTop) > 2) {
+            lines.push(currentLine);
+            currentLine = '';
+            lastTop = rect.top;
+          }
+          currentLine += text[i];
+        }
+        node = walker.nextNode();
+      }
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+      return lines;
+    }
+
+    // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
+    // gone.
+    function logBoundsFailure(
+        testName: string, container: HTMLElement, expectedLength: number,
+        bounds: DOMRect[]) {
+      const rect = container.getBoundingClientRect();
+      const visualLines = getVisualLines(container);
+      console.error(
+          `[${testName}] text bounds length is ${bounds.length}, expected ${
+              expectedLength}.\n` +
+          `Container: width=${container.offsetWidth}px, height=${
+              container.offsetHeight}px, ` +
+          `rect=[left:${rect.left}, top:${rect.top}, width:${
+              rect.width}, height:${rect.height}], ` +
+          `computedStyle.whiteSpace="${
+              window.getComputedStyle(container).whiteSpace}"\n` +
+          `Window: innerWidth=${window.innerWidth}px, body.clientWidth=${
+              document.body.clientWidth}px\n` +
+          `Visual lines (${visualLines.length}):\n` +
+          visualLines.map((line, i) => `  [${i}]: "${line}"`).join('\n') +
+          '\n' +
+          `HTML: ${container.outerHTML}\n` +
+          `Bounds: ${JSON.stringify(bounds.map(b => ({
+                                                 top: b.top,
+                                                 bottom: b.bottom,
+                                                 left: b.left,
+                                                 right: b.right,
+                                               })))}`);
+    }
+
     setup(() => {
-      document.body.innerHTML = window.trustedTypes!.emptyHTML;
       container = document.createElement('div');
-      container.style.lineHeight = '1';
+      container.style.whiteSpace = 'pre';
+      container.style.width = 'max-content';
       container.style.margin = '0';
-      container.style.padding = '0';
+      container.style.fontSize = '20px';
+      container.style.lineHeight = '2';
       document.body.appendChild(container);
     });
 
@@ -193,6 +264,13 @@ suite('RectCalculations', () => {
 
       const result = calculateTextBounds(container, 500);
 
+      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
+      // be gone.
+      if (result.bounds.length !== 2) {
+        logBoundsFailure(
+            'moderate overlap does not merge with large font size', container,
+            2, result.bounds);
+      }
       assertEquals(2, result.bounds.length);
     });
 
@@ -244,6 +322,13 @@ suite('RectCalculations', () => {
 
       const result = calculateTextBounds(container, 500);
 
+      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
+      // be gone.
+      if (result.bounds.length !== 2) {
+        logBoundsFailure(
+            'small line height prevents merging for moderate overlap',
+            container, 2, result.bounds);
+      }
       assertEquals(2, result.bounds.length);
     });
 

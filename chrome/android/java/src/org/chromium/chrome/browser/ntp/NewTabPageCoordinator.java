@@ -43,6 +43,7 @@ import org.chromium.chrome.browser.composeplate.ComposeplateCoordinator;
 import org.chromium.chrome.browser.composeplate.ComposeplateMetricsUtils;
 import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
+import org.chromium.chrome.browser.feed.FeedStreamViewResizerUtils;
 import org.chromium.chrome.browser.feed.FeedSurfaceScrollDelegate;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
@@ -130,7 +131,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private final NewTabPageManager mManager;
     private final Activity mActivity;
     private final NewTabPageLayout mNewTabPageLayout;
-    private final NewTabPageLayout.Delegate mLayoutDelegate;
     private final PropertyModel mModel;
     private final Tab mTab;
     private final TabModelSelector mTabModelSelector;
@@ -146,10 +146,10 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private final SnackbarManager mSnackbarManager;
     private final boolean mIsLff;
     private final Supplier<Integer> mTabStripHeightSupplier;
-    private final OneshotSupplier<SideUiStateProvider> mSideUiStateProviderSupplier;
     private final SideUiObserver mSideUiObserver;
     private final SearchEngineService mSearchEngineService;
     private final BackPressManager mBackPressManager;
+
     /**
      * The predefined baseline vertical scroll distance before the fake search box reaches the top
      * toolbar at which the transition animation into the omnibox begins.
@@ -161,6 +161,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * #mCurrentNtpFakeSearchBoxTransitionStartOffset}.
      */
     private final int mNtpSearchBoxTransitionStartOffset;
+
     private final int mNtpSearchBoxTopMarginWithoutLogo;
     private final boolean mEnableLogs;
     private final int mSearchBoxMaxWidth;
@@ -264,7 +265,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param isLff {@code true} if the NTP surface is on a large form factor (LFF) device.
      * @param tabStripHeightSupplier Supplier of the tab strip height.
      * @param sideUiStateProviderSupplier Supplier for the {@link SideUiStateProvider}.
-     * @param homeSurfaceTracker Used to decide whether we are the home surface.
+     * @param homeSurfaceTracker Tracker recording whether this NTP acts as the home surface.
      * @param backPressManager Manages back press dispatching.
      */
     public NewTabPageCoordinator(
@@ -301,7 +302,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         mSnackbarManager = snackbarManager;
         mIsLff = isLff;
         mTabStripHeightSupplier = tabStripHeightSupplier;
-        mSideUiStateProviderSupplier = sideUiStateProviderSupplier;
         mSearchEngineService = SearchEngineService.getForProfile(mProfile);
 
         Resources resources = mActivity.getResources();
@@ -316,7 +316,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         mModel = new PropertyModel(NewTabPageLayoutProperties.ALL_KEYS);
         PropertyModelChangeProcessor.create(
                 mModel, mNewTabPageLayout, NewTabPageLayoutViewBinder::bind);
-        mLayoutDelegate =
+        NewTabPageLayout.Delegate layoutDelegate =
                 new NewTabPageLayout.Delegate() {
                     @Override
                     public void onMeasure(int width) {
@@ -333,7 +333,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         NewTabPageCoordinator.this.updateActionButtonVisibility();
                     }
                 };
-        mModel.set(NewTabPageLayoutProperties.DELEGATE, mLayoutDelegate);
+        mModel.set(NewTabPageLayoutProperties.DELEGATE, layoutDelegate);
         sCount++;
 
         // TODO(crbug.com/517393491): Refactor to a reusable component to apply to other UiConfigs.
@@ -343,7 +343,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         mUiConfig.setHorizontalInset(getSideUiWidthDp(sideUiSpecs));
                     }
                 };
-        mSideUiStateProviderSupplier.onAvailable(
+        sideUiStateProviderSupplier.onAvailable(
                 mCallbackController.makeCancelable(
                         provider -> {
                             mSideUiStateProvider = provider;
@@ -368,6 +368,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param uiConfig UiConfig that will provide the preferred display style for NTP based on the
      *     available space.
      * @param lifecycleDispatcher Activity lifecycle dispatcher.
+     * @param composeplateUrlSupplier Supplier providing the composeplate URL.
      */
     @Initializer
     public void initialize(
@@ -503,23 +504,20 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         // @TODO(crbug.com/41492572): Add test case for search box OnDragListener.
         mNtpSearchBox.setSearchBoxDragListener(
-                new View.OnDragListener() {
-                    @Override
-                    public boolean onDrag(View view, DragEvent dragEvent) {
-                        // Disable search box EditText when browser content is dropped, its
-                        // re-enabled in {@link ChromeTabbedOnDragListener}, since a disabled view
-                        // will stop receiving further drag events. Given the child-first drag event
-                        // dispatch, disabling the TextView at ACTION_DRAG_STARTED is necessary to
-                        // prevent it from registering as a drop target and consuming the
-                        // ACTION_DROP event, thereby ensuring {@link ChromeTabbedOnDragListener}
-                        // receives it.
-                        if (MimeTypeUtils.clipDescriptionHasBrowserContent(
-                                        dragEvent.getClipDescription())
-                                && dragEvent.getAction() == DragEvent.ACTION_DRAG_STARTED) {
-                            enableSearchBoxEditText(false);
-                        }
-                        return false;
+                (View _, DragEvent dragEvent) -> {
+                    // Disable search box EditText when browser content is dropped, its
+                    // re-enabled in {@link ChromeTabbedOnDragListener}, since a disabled view
+                    // will stop receiving further drag events. Given the child-first drag event
+                    // dispatch, disabling the TextView at ACTION_DRAG_STARTED is necessary to
+                    // prevent it from registering as a drop target and consuming the
+                    // ACTION_DROP event, thereby ensuring {@link ChromeTabbedOnDragListener}
+                    // receives it.
+                    if (MimeTypeUtils.clipDescriptionHasBrowserContent(
+                                    dragEvent.getClipDescription())
+                            && dragEvent.getAction() == DragEvent.ACTION_DRAG_STARTED) {
+                        enableSearchBoxEditText(false);
                     }
+                    return false;
                 });
 
         mNtpSearchBox.setSearchBoxTextWatcher(
@@ -529,7 +527,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         if (s.length() == 0 || mNtpSearchBox == null) return;
                         mManager.focusSearchBox(
                                 false, AutocompleteRequestType.SEARCH, false, s.toString());
-                        mNtpSearchBox.setSearchText("");
                     }
                 });
         TraceEvent.end(TAG + ".initializeSearchBoxTextView()");
@@ -686,6 +683,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         mActivity,
                         activityLifecycleDispatcher,
                         mvTilesContainerLayout,
+                        assertNonNull(mUiConfig),
                         () -> mSnapshotTileGridChanged = true,
                         () -> {
                             if (mUrlFocusChangePercent == 1f) mTileCountChanged = true;
@@ -1463,26 +1461,54 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     }
 
     /**
-     * Unifies the widths of the elements on the New Tab Page. The Search Box, Composeplate, and
-     * Most Visited Tiles are capped at a maximum width, while the Logo always receives the full
-     * width.
+     * Calculates the lateral margin to apply to the MVT container to match the Feed card bounds.
+     *
+     * <p>NewTabPageLayout (inside the Discover Feed scroll container) may be assigned negative
+     * lateral margins so that other container Views can keep their margin / padding settings.
+     *
+     * <p>Meanwhile, Feeds exists outside of NewTabPageLayout. So for a View inside NewTabPageLayout
+     * to align with Feeds, we'd need to compensate for the negative margin by subtracing it. This
+     * approach should work for all phone orientations, wide screens, and tablet configurations.
+     *
+     * @return The lateral margin, in pixels.
      */
-    private void unifyElementWidths(int width) {
-        int boundedSearchBoxWidth = Math.min(width - mSearchBoxTwoSideMargin, mSearchBoxMaxWidth);
-        if (mNtpSearchBox != null) {
-            mNtpSearchBox.setLayoutWidth(boundedSearchBoxWidth);
-        }
+    @VisibleForTesting
+    int getLateralMarginToMatchFeeds() {
+        // Value is non-negative, since the compensation margin is non-positive.
+        return -FeedStreamViewResizerUtils.getFeedNtpCompensationMargin(
+                mActivity.getResources(), assertNonNull(mUiConfig));
+    }
 
+    /** Unifies the layout widths of the New Tab Page elements. */
+    private void unifyElementWidths(int width) {
+        // Search Provider Logo spans the full available width to properly support wide doodles.
         if (mLogoCoordinator != null) {
             mLogoCoordinator.setLayoutWidth(width);
         }
 
-        if (mComposeplateCoordinator != null) {
-            mComposeplateCoordinator.setLayoutWidth(boundedSearchBoxWidth);
+        int searchBoxWidth = Math.min(width - mSearchBoxTwoSideMargin, mSearchBoxMaxWidth);
+
+        // Search Box always receives a capped layout width to maintain central focus.
+        if (mNtpSearchBox != null) {
+            mNtpSearchBox.setLayoutWidth(searchBoxWidth);
         }
 
+        // Composeplate is capped to align perfectly with the Search Box.
+        if (mComposeplateCoordinator != null) {
+            mComposeplateCoordinator.setLayoutWidth(searchBoxWidth);
+        }
+
+        // Most Visited Tiles: Match Search Box on Desktop, and Feeds width on Mobile.
         if (mMostVisitedTilesCoordinator != null) {
-            mMostVisitedTilesCoordinator.updateMvtWidth(boundedSearchBoxWidth);
+            int mvtWidth =
+                    OmniboxCapabilities.isDesktopPlatform()
+                            ? searchBoxWidth
+                            : (width - getLateralMarginToMatchFeeds() * 2);
+            mMostVisitedTilesCoordinator.updateMvtWidth(width, mvtWidth);
+        }
+
+        if (mSigninPromoCoordinator != null) {
+            mSigninPromoCoordinator.setLateralMargins(getStartMargin());
         }
 
         mContextMenuStartPosition = null;

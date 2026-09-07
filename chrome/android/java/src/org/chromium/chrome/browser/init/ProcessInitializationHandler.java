@@ -72,6 +72,7 @@ import org.chromium.chrome.browser.history.HistoryDeletionBridge;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.incognito.IncognitoTabLauncher;
 import org.chromium.chrome.browser.language.GlobalAppLocaleController;
+import org.chromium.chrome.browser.lifetime.ApplicationLifetime;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.media.MediaCaptureNotificationServiceImpl;
 import org.chromium.chrome.browser.media.MediaViewerUtils;
@@ -85,6 +86,7 @@ import org.chromium.chrome.browser.offlinepages.measurements.OfflineMeasurements
 import org.chromium.chrome.browser.optimization_guide.OptimizationGuideBridge;
 import org.chromium.chrome.browser.optimization_guide.OptimizationGuideBridgeFactory;
 import org.chromium.chrome.browser.partnercustomizations.PartnerBrowserCustomizations;
+import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.photo_picker.DecoderService;
 import org.chromium.chrome.browser.preferences.AllPreferenceKeyRegistries;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
@@ -123,7 +125,7 @@ import org.chromium.components.content_capture.PlatformContentCaptureController;
 import org.chromium.components.crash.browser.ChildProcessCrashObserver;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.minidump_uploader.CrashFileManager;
-import org.chromium.components.optimization_guide.proto.HintsProto;
+import org.chromium.components.optimization_guide.proto.HintsProto.OptimizationType;
 import org.chromium.components.policy.CombinedPolicyProvider;
 import org.chromium.components.policy.EnterpriseInfo;
 import org.chromium.components.safe_browsing.SafeBrowsingApiBridge;
@@ -135,6 +137,7 @@ import org.chromium.content_public.browser.SpeechRecognition;
 import org.chromium.net.NetworkChangeNotifier;
 import org.chromium.net.RegistrationPolicyApplicationStatus;
 import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.accessibility.ApplicationStatusAccessibilityStateVisibilityManager;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.SelectFileDialog;
 import org.chromium.ui.base.WindowAndroid;
@@ -146,7 +149,6 @@ import org.chromium.url.GURL;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -214,7 +216,7 @@ public class ProcessInitializationHandler {
      * startup.
      */
     public final void initializePreNative() {
-        try (TraceEvent e =
+        try (TraceEvent _ =
                 TraceEvent.scoped("ProcessInitializationHandler.initializePreNative()")) {
             ThreadUtils.checkUiThread();
             if (mInitializedPreNative) return;
@@ -244,7 +246,7 @@ public class ProcessInitializationHandler {
      * startup.
      */
     public final void initializePreNativeLibraryLoad() {
-        try (TraceEvent e =
+        try (TraceEvent _ =
                 TraceEvent.scoped(
                         "ProcessInitializationHandler.initializePreNativeLibraryLoad()")) {
             ThreadUtils.checkUiThread();
@@ -279,8 +281,12 @@ public class ProcessInitializationHandler {
         warmUpSharedPrefs();
 
         DeviceUtils.updateDeviceSpecificUserAgentSwitch(ContextUtils.getApplicationContext());
+        // ChromeLifetimeController is pure Java and safe to initialize pre-native. It is
+        // initialized early so that ApplicationLifetime.terminate() can restart the process
+        // if a locale change occurs before post-native initialization.
+        ChromeLifetimeController.initialize();
         ApplicationStatus.registerStateListenerForAllActivities(
-                (activity, newState) -> {
+                (_, newState) -> {
                     if (newState == ActivityState.CREATED || newState == ActivityState.DESTROYED) {
                         // When the app locale is overridden a change in system locale will not
                         // effect Chrome's UI language. There is race condition where the initial
@@ -292,8 +298,15 @@ public class ProcessInitializationHandler {
                         // RTL, where stale natively-loaded resources are not reloaded
                         // (http://crbug.com/41215786).
                         if (!mInitialLocale.equals(Locale.getDefault())) {
-                            Log.e(TAG, "Killing process because of locale change.");
-                            Process.killProcess(Process.myPid());
+                            // See http://crbug.com/545907093 for why we restart when the user
+                            // changes the locale within Chrome.
+                            if (ApplicationLifetime.shouldRestartForLocaleSwitch()) {
+                                Log.e(TAG, "Restarting process because of settings locale change.");
+                                ApplicationLifetime.terminate(/* restart= */ true);
+                            } else {
+                                Log.e(TAG, "Killing process because of OS locale change.");
+                                Process.killProcess(Process.myPid());
+                            }
                         }
                     }
                 });
@@ -305,10 +318,7 @@ public class ProcessInitializationHandler {
      */
     private void warmUpSharedPrefs() {
         PostTask.postTask(
-                TaskTraits.BEST_EFFORT_MAY_BLOCK,
-                () -> {
-                    DownloadManagerService.warmUpSharedPrefs();
-                });
+                TaskTraits.BEST_EFFORT_MAY_BLOCK, DownloadManagerService::warmUpSharedPrefs);
     }
 
     /**
@@ -394,13 +404,10 @@ public class ProcessInitializationHandler {
         ProfileManagerUtils.removeSessionCookiesForAllProfiles();
         AppBannerManager.setAppDetailsDelegate(
                 assumeNonNull(ServiceLoaderUtil.maybeCreate(AppDetailsDelegate.class)));
-        ChromeLifetimeController.initialize();
         Clipboard.getInstance().setImageFileProvider(new ClipboardImageFileProvider());
 
         DecoderServiceHost.setIntentSupplier(
-                () -> {
-                    return new Intent(ContextUtils.getApplicationContext(), DecoderService.class);
-                });
+                () -> new Intent(ContextUtils.getApplicationContext(), DecoderService.class));
 
         SelectFileDialog.setPhotoPickerDelegate(
                 (windowAndroid, listener, allowMultiple, mimeTypes) -> {
@@ -501,7 +508,7 @@ public class ProcessInitializationHandler {
                         AsyncTask.THREAD_POOL_EXECUTOR.execute(
                                 new LogcatExtractionRunnable(minidump));
                     } else {
-                        Log.e(TAG, "Missing dump for child " + pid);
+                        Log.e(TAG, "Missing dump for child %d", pid);
                     }
                 });
 
@@ -690,6 +697,7 @@ public class ProcessInitializationHandler {
 
         tasks.add(() -> BackgroundTaskSchedulerFactory.getScheduler().doMaintenance());
 
+        tasks.add(PdfUtils::updatePdfLauncherActivityEnabled);
         tasks.add(MediaViewerUtils::updateMediaLauncherActivityEnabled);
 
         tasks.add(WebApkUninstallTracker::runDeferredTasks);
@@ -706,7 +714,11 @@ public class ProcessInitializationHandler {
         tasks.add(PersistedTabData::onDeferredStartup);
 
         // Asynchronously query system accessibility state so it is ready for clients.
-        tasks.add(AccessibilityState::initializeOnStartup);
+        tasks.add(
+                () -> {
+                    AccessibilityState.initializeOnStartup(
+                            new ApplicationStatusAccessibilityStateVisibilityManager());
+                });
         tasks.add(TabPersistentStoreImpl::onDeferredStartup);
         tasks.add(
                 () -> {
@@ -743,7 +755,7 @@ public class ProcessInitializationHandler {
                         // OptimizationTypes which we give a guarantee will be registered when we
                         // pass the onDeferredStartup() signal to OptimizationGuide.
                         optimizationGuideBridge.registerOptimizationTypes(
-                                Arrays.asList(HintsProto.OptimizationType.PRICE_TRACKING));
+                                List.of(OptimizationType.PRICE_TRACKING));
                         optimizationGuideBridge.onDeferredStartup();
                     }
                     // TODO(crbug.com/40236066) Move to PersistedTabData.onDeferredStartup

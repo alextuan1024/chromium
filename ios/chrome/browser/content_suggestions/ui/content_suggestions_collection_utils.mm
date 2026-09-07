@@ -11,6 +11,7 @@
 #import "ios/chrome/browser/content_suggestions/public/ntp_home_constants.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_constants.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/ui/search_engine_logo_state.h"
+#import "ios/chrome/browser/ntp/ui_bundled/discover_feed_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_constants.h"
@@ -79,7 +80,7 @@ constexpr CGFloat kDoodleBottomMarginAdjustment = 10;
 constexpr CGFloat kLogoTopMarginAdjustment = kDoodleLogoDelta -
                                              kDoodleTopMarginAdjustment -
                                              kDoodleBottomMarginAdjustment;
-constexpr CGFloat kCleanupDoodleTopMarginAdjustment = 4;
+constexpr CGFloat kCleanupDoodleTopMarginAdjustment = 15;
 constexpr CGFloat kCleanupDoodleBottomMarginAdjustment = 4;
 
 // The size of the symbol image.
@@ -169,22 +170,22 @@ const CGFloat kHintTextScaleUICleanup = 0.0;
 const CGFloat kReturnToRecentTabSectionBottomMargin = 25;
 
 // Tight Padding Arm.
-const CGFloat kLogoTopPaddingTight = 24.0;
-const CGFloat kLogoToFakeboxPaddingTight = 32.0;
+const CGFloat kLogoTopPaddingTight = 9.0;
+const CGFloat kLogoToFakeboxPaddingTight = 36.0;
 const CGFloat kDoodleTopPaddingTight = 16.0;
 const CGFloat kDoodleToFakeboxPaddingTight = 16.0;
 const CGFloat kMostVisitedTopPaddingTight = 32.0;
 
 // Medium Padding Arm.
-const CGFloat kLogoTopPaddingMedium = 36.0;
-const CGFloat kLogoToFakeboxPaddingMedium = 36.0;
+const CGFloat kLogoTopPaddingMedium = 21.0;
+const CGFloat kLogoToFakeboxPaddingMedium = 40.0;
 const CGFloat kDoodleTopPaddingMedium = 24.0;
 const CGFloat kDoodleToFakeboxPaddingMedium = 24.0;
 const CGFloat kMostVisitedTopPaddingMedium = 36.0;
 
 // Preferred Padding Arm.
-const CGFloat kLogoTopPaddingPreferred = 48.0;
-const CGFloat kLogoToFakeboxPaddingPreferred = 36.0;
+const CGFloat kLogoTopPaddingPreferred = 33.0;
+const CGFloat kLogoToFakeboxPaddingPreferred = 40.0;
 const CGFloat kDoodleTopPaddingPreferred = 36.0;
 const CGFloat kDoodleToFakeboxPaddingPreferred = 24.0;
 const CGFloat kMostVisitedTopPaddingPreferred = 36.0;
@@ -263,7 +264,9 @@ CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state) {
 
 CGFloat SearchFieldWidth(CGFloat width, UITraitCollection* trait_collection) {
   if (IsRegularXRegularSizeClass(trait_collection)) {
-    return kSearchFieldLarge;
+    return IsNewTabPageUICleanupEnabled()
+               ? kDiscoverFeedContentMaxWidthUICleanup
+               : kSearchFieldLarge;
   }
 
   if (IsNewTabPageUICleanupEnabled()) {
@@ -344,7 +347,7 @@ CGFloat HeightForLogoHeader(SearchEngineLogoState logo_state,
 }
 
 CGFloat HeaderBottomPadding(UITraitCollection* trait_collection) {
-  return IsSplitToolbarMode(trait_collection)
+  return IsSplitToolbarMode(trait_collection) || IsNewTabPageUICleanupEnabled()
              ? 0
              : kNTPShrunkLogoSearchFieldBottomPadding;
 }
@@ -553,19 +556,15 @@ void ConfigureLensButtonWithNewBadgeAlpha(UIButton* lens_button,
   }
 }
 
-UIView* NearestAncestor(UIView* view, Class of_class) {
-  if (!view) {
-    return nil;
-  }
-  if ([view isKindOfClass:of_class]) {
-    return view;
-  }
-  return NearestAncestor([view superview], of_class);
-}
-
 UIColor* SearchHintLabelColor() {
   if (IsNewTabPageUICleanupEnabled()) {
-    return [UIColor colorNamed:kTextTertiaryColor];
+    return [UIColor colorWithDynamicProvider:^UIColor*(
+                        UITraitCollection* trait_collection) {
+      if (trait_collection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+        return [UIColor colorNamed:kTextSecondaryColor];
+      }
+      return [UIColor colorNamed:kTextTertiaryColor];
+    }];
   }
   return [UIColor colorNamed:kGrey800Color];
 }

@@ -473,8 +473,9 @@ TEST_F(MemoryCoordinatorPolicyManagerTest, UpdateConsumers_Filter) {
 
   policy.manager().UpdateConsumers(
       &policy,
-      [](uint32_t consumer_id, base::MemoryConsumerTraits traits,
-         ProcessType process_type, ChildProcessId child_process_id) {
+      [](uint32_t consumer_id, std::string_view consumer_name,
+         base::MemoryConsumerTraits traits, ProcessType process_type,
+         ChildProcessId child_process_id) {
         return traits.supports_memory_limit ==
                base::MemoryConsumerTraits::SupportsMemoryLimit::kYes;
       },
@@ -521,7 +522,7 @@ class MockDiagnosticObserver
               OnMemoryLimitChanged,
               (uint32_t consumer_id,
                ChildProcessId child_process_id,
-               int memory_limit),
+               base::MemoryLimit memory_limit),
               (override));
 };
 #endif
@@ -771,7 +772,9 @@ TEST_F(MemoryCoordinatorPolicyManagerTest,
 
   // Adding a diagnostic observer should immediately notify the current limit.
   MockDiagnosticObserver observer;
-  EXPECT_CALL(observer, OnMemoryLimitChanged(kConsumerId, kChildId, 50));
+  EXPECT_CALL(observer, OnMemoryLimitChanged(
+                            kConsumerId, kChildId,
+                            base::MemoryLimit::ModeratePressureThreshold()));
   policy_manager().AddDiagnosticObserver(&observer);
   Mock::VerifyAndClearExpectations(&observer);
 

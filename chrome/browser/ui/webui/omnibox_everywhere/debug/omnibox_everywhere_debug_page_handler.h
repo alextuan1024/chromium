@@ -11,13 +11,19 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
+namespace content {
+class WebUI;
+}
+
 class Profile;
+class UserEducationInternalsPageHandlerImpl;
 
 namespace omnibox_everywhere_debug {
 
 class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
  public:
   OmniboxEverywhereDebugPageHandler(
+      content::WebUI* web_ui,
       Profile* profile,
       mojo::PendingRemote<mojom::Page> page,
       mojo::PendingReceiver<mojom::PageHandler> receiver);
@@ -29,10 +35,13 @@ class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
 
   ~OmniboxEverywhereDebugPageHandler() override;
 
-  // mojom::PageHandler:
   void SetBackgroundModeEnabled(bool enabled) override;
   void GetBackgroundModeEnabled(
       GetBackgroundModeEnabledCallback callback) override;
+
+  void SetLaunchOnStartupEnabled(bool enabled) override;
+  void GetLaunchOnStartupEnabled(
+      GetLaunchOnStartupEnabledCallback callback) override;
 
   void SetHotkeyEnabled(bool enabled) override;
   void GetHotkeyEnabled(GetHotkeyEnabledCallback callback) override;
@@ -42,6 +51,8 @@ class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
       GetEphemeralModelEnabledCallback callback) override;
 
   void InvokeOmniboxEverywhere(mojom::InvocationSource source) override;
+
+  void ShowLensIph() override;
 
   void CreateStartMenuShortcut(
       CreateStartMenuShortcutCallback callback) override;
@@ -54,6 +65,9 @@ class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
   raw_ptr<Profile> profile_;
   mojo::Remote<mojom::Page> page_;
   mojo::Receiver<mojom::PageHandler> receiver_;
+
+  std::unique_ptr<UserEducationInternalsPageHandlerImpl>
+      user_education_internals_page_handler_;
 
   PrefChangeRegistrar pref_change_registrar_;
 };

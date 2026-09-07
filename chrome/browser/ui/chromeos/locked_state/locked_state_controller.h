@@ -45,6 +45,9 @@ struct LockedStateCapabilities {
       true;  // Allow navigation (blocked at navigator level if false)
   bool allow_tab_modification =
       true;  // Allow modifying tabs (closing, dragging, detaching, reordering)
+  // TODO(crbug.com/438540029): Move capabilities only used in
+  // LockedStateController (e.g., use_immersive_mode, focus_toolbar_on_lock) to
+  // internal state.
   bool use_immersive_mode = false;  // Enable immersive mode to show frame/tabs
   bool focus_toolbar_on_lock =
       false;  // Focus the toolbar immediately after locking
@@ -65,6 +68,7 @@ class LockedStateController {
 
   enum class CommandType {
     kUnknown,
+    kClipboard,              // IDC_CUT, IDC_COPY, IDC_PASTE
     kPageNavigation,         // IDC_BACK, IDC_FORWARD, IDC_RELOAD
     kAllowedContentContext,  // IDC_CONTENT_CONTEXT_COPYIMAGE, COPYIMAGELOCATION
     kExtensionsCustom,       // Extensions Custom commands
@@ -93,6 +97,9 @@ class LockedStateController {
   // OnTaskLocked, OnTaskLockedPaused).
   bool IsLocked() const;
 
+  // Returns true if the browser is in extension locked fullscreen.
+  bool IsLockedFullscreen() const;
+
   LockedState GetState() const;
   const LockedStateCapabilities& GetCapabilities() const;
 
@@ -108,7 +115,7 @@ class LockedStateController {
 
   // Returns true if the browser is in any OnTask state (Prepared, Locked,
   // LockedPaused).
-  bool IsLockedForOnTaskForTesting() const;
+  bool IsLockedForOnTask() const;
 
  private:
   void UpdateCapabilities();

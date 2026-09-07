@@ -23,6 +23,7 @@
 #include "content/browser/renderer_host/code_cache_host_impl.h"
 #include "content/browser/renderer_host/local_network_access_util.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/renderer_preferences_util.h"
 #include "content/browser/security/dip/document_isolation_policy_reporter.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -48,6 +49,7 @@
 #include "content/public/common/content_client.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/site_for_cookies.h"
+#include "net/storage_access_api/status.h"
 #include "services/metrics/public/cpp/delegating_ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -91,6 +93,20 @@ enum class SharedWorkerHostDestructionSource {
 void RecordDestructionSource(SharedWorkerHostDestructionSource source) {
   base::UmaHistogramEnumeration("Content.SharedWorker.Host.DestructionSource",
                                 source);
+}
+
+net::IsolationInfo ComputeIsolationInfoWithPartition(
+    const blink::StorageKey& storage_key,
+    net::NetworkIsolationPartition partition) {
+  net::IsolationInfo isolation_info = storage_key.ToPartialNetIsolationInfo();
+  if (partition != net::NetworkIsolationPartition::kGeneral &&
+      !isolation_info.IsEmpty()) {
+    return net::IsolationInfo::Create(
+        isolation_info.request_type(), *isolation_info.top_frame_origin(),
+        *isolation_info.frame_origin(), isolation_info.site_for_cookies(),
+        isolation_info.nonce(), partition);
+  }
+  return isolation_info;
 }
 
 }  // namespace
@@ -385,7 +401,7 @@ void SharedWorkerHost::Start(
       instance_.same_site_cookies(), instance_.extended_lifetime()));
 
   auto renderer_preferences = blink::RendererPreferences();
-  GetContentClient()->browser()->UpdateRendererPreferencesForWorker(
+  UpdateRendererPreferencesForWorkerHelper(
       GetProcessHost()->GetBrowserContext(), &renderer_preferences);
 
   // Create a RendererPreferenceWatcher to observe updates in the preferences.
@@ -703,7 +719,8 @@ void SharedWorkerHost::CreateWebSocketConnector(
                                   IPC::mojom::kRoutingIdNone),
           WeakDocumentPtr(), storage_key.origin(),
           ComputeIsolationInfoForWebSocket(),
-          worker_client_security_state_->Clone(), network_restrictions_id_,
+          worker_client_security_state_->Clone(),
+          net::StorageAccessApiStatus::kNone, network_restrictions_id_,
           GetDevToolsToken()),
       std::move(receiver));
 }
@@ -970,6 +987,14 @@ base::WeakPtr<SharedWorkerHost> SharedWorkerHost::AsWeakPtr() {
   return weak_factory_.GetWeakPtr();
 }
 
+net::NetworkIsolationPartition SharedWorkerHost::GetNetworkIsolationPartition()
+    const {
+  return instance_.same_site_cookies() ==
+                 blink::mojom::SharedWorkerSameSiteCookies::kNone
+             ? net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone
+             : net::NetworkIsolationPartition::kGeneral;
+}
+
 net::NetworkIsolationKey SharedWorkerHost::GetNetworkIsolationKey() const {
   // Note: Since shared workers are partitioned by the storage key, we'll use
   // the storage key to create a NIK that matches the current partitioning
@@ -977,15 +1002,15 @@ net::NetworkIsolationKey SharedWorkerHost::GetNetworkIsolationKey() const {
   // different top-level sites will be able to share the same shared worker, so
   // it doesn't make sense to incorporate the top-level site into the NIK in
   // that case either.
-  return GetWorkerStorageKey()
-      .ToPartialNetIsolationInfo()
+  return ComputeIsolationInfoWithPartition(GetWorkerStorageKey(),
+                                           GetNetworkIsolationPartition())
       .network_isolation_key();
 }
 
 net::NetworkAnonymizationKey SharedWorkerHost::GetNetworkAnonymizationKey()
     const {
-  return GetWorkerStorageKey()
-      .ToPartialNetIsolationInfo()
+  return ComputeIsolationInfoWithPartition(GetWorkerStorageKey(),
+                                           GetNetworkIsolationPartition())
       .network_anonymization_key();
 }
 

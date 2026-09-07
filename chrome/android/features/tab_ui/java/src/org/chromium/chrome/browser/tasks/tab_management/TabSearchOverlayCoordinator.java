@@ -59,6 +59,8 @@ import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.omnibox.BackKeyBehaviorDelegate;
 import org.chromium.chrome.browser.omnibox.LocationBarEmbedder;
 import org.chromium.chrome.browser.omnibox.UrlBar;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxControls;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -66,6 +68,7 @@ import org.chromium.chrome.browser.searchwidget.SearchActivityUtils;
 import org.chromium.chrome.browser.searchwidget.SearchBoxDataProvider;
 import org.chromium.chrome.browser.searchwidget.SearchUiCoordinator;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
@@ -84,6 +87,7 @@ import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
 import org.chromium.ui.AsyncViewStub;
+import org.chromium.ui.base.KeyNavigationUtil;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -177,6 +181,12 @@ public class TabSearchOverlayCoordinator
             mChangeProcessor;
     private @Nullable LinearLayout mPanelContainer;
     private @Nullable PopupWindow mPopupWindow;
+    // On desktop / tablet devices with a hardware keyboard connected, loading the NTP causes the
+    // Omnibox to enter a STANDBY input session. When Tab Search is opened, this interface
+    // terminates
+    // any active Omnibox/Fusebox session so background suggestions are not triggered while Tab
+    // Search is active.
+    private final @Nullable FuseboxControls mFuseboxControls;
     private @Nullable SearchUiCoordinator mSearchUiCoordinator;
     private ViewTreeObserver.@Nullable OnWindowFocusChangeListener mWindowFocusListener;
     private TabObscuringHandler.@Nullable Token mTabObscuringToken;
@@ -198,6 +208,8 @@ public class TabSearchOverlayCoordinator
      * @param tabGroupUiActionHandlerSupplier Supplier for the tab group UI action handler.
      * @param desktopWindowStateManager Manager for monitoring desktop windowing state changes.
      * @param tabObscuringHandler Delegate object handling obscuring views.
+     * @param fuseboxControls Optional interface to control Omnibox fusebox input sessions before
+     *     showing the overlay.
      */
     public TabSearchOverlayCoordinator(
             Activity activity,
@@ -212,7 +224,8 @@ public class TabSearchOverlayCoordinator
             MonotonicObservableSupplier<CompositorViewHolder> compositorViewHolderSupplier,
             OneshotSupplier<TabGroupUiActionHandler> tabGroupUiActionHandlerSupplier,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
-            TabObscuringHandler tabObscuringHandler) {
+            TabObscuringHandler tabObscuringHandler,
+            @Nullable FuseboxControls fuseboxControls) {
         mActivity = activity;
         mWindowAndroid = windowAndroid;
         mProfileSupplier = profileSupplier;
@@ -226,6 +239,7 @@ public class TabSearchOverlayCoordinator
         mTabGroupUiActionHandlerSupplier = tabGroupUiActionHandlerSupplier;
         mDesktopWindowStateManager = desktopWindowStateManager;
         mTabObscuringHandler = tabObscuringHandler;
+        mFuseboxControls = fuseboxControls;
         mBackPressManager.addHandler(this, BackPressHandler.Type.TAB_SEARCH_OVERLAY);
         mLifecycleDispatcher.register(this);
 
@@ -401,6 +415,7 @@ public class TabSearchOverlayCoordinator
         mChangeProcessor =
                 PropertyModelChangeProcessor.create(
                         mModel, viewHolder, TabSearchOverlayViewBinder::bind);
+        updatePanelTopMargin();
     }
 
     /**
@@ -492,6 +507,65 @@ public class TabSearchOverlayCoordinator
         var urlBar = (UrlBar) locationBarCoordinator.getContainerView().findViewById(R.id.url_bar);
         if (urlBar != null) {
             urlBar.setTextAppearance(R.style.TextAppearance_TextMedium);
+            urlBar.setAccessibilityTraversalAfter(R.id.tab_search_close_button);
+
+            LinearLayout panelContainer = assumeNonNull(mPanelContainer);
+            View closeButton =
+                    assumeNonNull(panelContainer.findViewById(R.id.tab_search_close_button));
+
+            var suggestionsVisualState = locationBarCoordinator.getOmniboxSuggestionsVisualState();
+            AutocompleteCoordinator autocompleteCoordinator =
+                    suggestionsVisualState instanceof AutocompleteCoordinator coordinator
+                            ? coordinator
+                            : null;
+            View.OnKeyListener omniboxKeyDownListener =
+                    locationBarCoordinator.getOmniboxStub() instanceof View.OnKeyListener listener
+                            ? listener
+                            : null;
+
+            View.OnKeyListener keyListener =
+                    (v, keyCode, event) -> {
+                        boolean isTabBack = KeyNavigationUtil.isTabBackward(event);
+                        boolean isUp = KeyNavigationUtil.isGoUp(event) && event.hasNoModifiers();
+                        Integer selectedIndex =
+                                autocompleteCoordinator != null
+                                        ? autocompleteCoordinator.getSelectedIndex()
+                                        : null;
+
+                        if (isTabBack || isUp) {
+                            if (selectedIndex == null) {
+                                closeButton.setFocusableInTouchMode(true);
+                                closeButton.requestFocus();
+                                return true;
+                            } else if (selectedIndex <= 0) {
+                                if (autocompleteCoordinator != null) {
+                                    autocompleteCoordinator.resetSelection();
+                                }
+                                return true;
+                            }
+                        }
+
+                        return omniboxKeyDownListener != null
+                                && omniboxKeyDownListener.onKey(v, keyCode, event);
+                    };
+            urlBar.setKeyDownListener(keyListener);
+            urlBar.setOnKeyListener(keyListener);
+
+            closeButton.setOnFocusChangeListener(
+                    (v, hasFocus) -> {
+                        if (!hasFocus) {
+                            closeButton.setFocusableInTouchMode(false);
+                        }
+                    });
+            closeButton.setOnKeyListener(
+                    (v, keyCode, event) -> {
+                        if (KeyNavigationUtil.isTabForward(event)
+                                || KeyNavigationUtil.isGoDown(event)) {
+                            urlBar.requestFocus();
+                            return true;
+                        }
+                        return false;
+                    });
         }
 
         // If the profile supplier is null (rare), default to the non-incognito state as it is the
@@ -547,6 +621,19 @@ public class TabSearchOverlayCoordinator
         if (isIncognito) {
             intent.putExtra(Browser.EXTRA_APPLICATION_ID, mActivity.getPackageName());
         }
+
+        // Ensure new tabs opened from search suggestions are appended to the end of the tab
+        // strip rather than inserted adjacent to the active tab. If an existing tab matches the
+        // URL, REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB causes Chrome to switch to it in place, so this
+        // insertion index only applies when a new tab must be created.
+        TabModelSelector selector = mTabModelSelectorSupplier.get();
+        if (selector != null) {
+            TabModel tabModel = selector.getModel(isIncognito);
+            if (tabModel != null) {
+                intent.putExtra(IntentHandler.EXTRA_TAB_INDEX, tabModel.getCount());
+            }
+        }
+        IntentHandler.setTabLaunchType(intent, TabLaunchType.FROM_OMNIBOX);
 
         // Add trusted intent extras so Chrome trusts the incognito launch request
         IntentUtils.addTrustedIntentExtras(intent);
@@ -617,6 +704,10 @@ public class TabSearchOverlayCoordinator
         ensureInitialized();
         if (mModel.get(TabSearchOverlayProperties.VISIBLE)) return;
 
+        if (mFuseboxControls != null) {
+            mFuseboxControls.endFuseboxInput();
+        }
+
         // Obscure underlying tabs and toolbar to suppress accessibility focus and screen reader
         // interactions.
         if (mTabObscuringToken == null) {
@@ -633,8 +724,7 @@ public class TabSearchOverlayCoordinator
             mPopupWindow.showAtLocation(decorView, Gravity.START | Gravity.TOP, 0, 0);
         }
 
-        // Ensure that transient properties (like empty state visibility) are reset to their
-        // default states before showing the search UI.
+        updatePanelTopMargin();
         mModel.set(TabSearchOverlayProperties.EMPTY_STATE_VISIBLE, false);
         mModel.set(TabSearchOverlayProperties.VISIBLE, true);
         mBackPressStateSupplier.set(true);
@@ -680,6 +770,67 @@ public class TabSearchOverlayCoordinator
     /** Returns whether the tab search overlay is currently visible. */
     public boolean isVisible() {
         return mModel.get(TabSearchOverlayProperties.VISIBLE);
+    }
+
+    /**
+     * Updates the top margin of the panel view.
+     *
+     * <p>In desktop windowing, OS caption controls overlapping the window are unavoidable. We use
+     * {@link AppHeaderState#getCaptionControlsTopOffset()} to ensure the panel header aligns with
+     * the caption controls (or is offset below any status bar sitting above the caption).
+     *
+     * <p>When not in desktop windowing (conventional app state, e.g. fullscreen), the top margin is
+     * calculated via {@link #getTopMarginForConventionalState()} so the panel aligns below the
+     * system status bar.
+     */
+    private void updatePanelTopMargin() {
+        if (mPanelContainer == null) {
+            return;
+        }
+        View panelView = mPanelContainer.findViewById(R.id.tab_search_overlay_panel);
+        if (panelView == null
+                || !(panelView.getLayoutParams() instanceof LinearLayout.LayoutParams params)) {
+            return;
+        }
+
+        AppHeaderState appHeaderState =
+                mDesktopWindowStateManager != null
+                        ? mDesktopWindowStateManager.getAppHeaderState()
+                        : null;
+
+        int topMargin =
+                appHeaderState != null && appHeaderState.isInDesktopWindow()
+                        ? appHeaderState.getCaptionControlsTopOffset()
+                        : getTopMarginForConventionalState();
+
+        if (params.topMargin != topMargin) {
+            params.topMargin = topMargin;
+            panelView.setLayoutParams(params);
+        }
+    }
+
+    /**
+     * Calculates the top margin for the panel when in a conventional app state (not in desktop
+     * windowing).
+     *
+     * <p>The top margin is calculated from the control container and toolbar positions ({@code
+     * toolbarTop - tabStripHeight}) so the panel aligns below the system status bar.
+     */
+    private int getTopMarginForConventionalState() {
+        View controlContainer = mActivity.findViewById(R.id.control_container);
+        View toolbarContainer =
+                controlContainer != null
+                        ? controlContainer.findViewById(R.id.toolbar_container)
+                        : null;
+        int tabStripHeight =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.tab_strip_height);
+        int toolbarTop = 0;
+        if (toolbarContainer != null) {
+            int[] location = new int[2];
+            toolbarContainer.getLocationInWindow(location);
+            toolbarTop = location[1] > 0 ? location[1] : toolbarContainer.getTop();
+        }
+        return Math.max(0, toolbarTop - tabStripHeight);
     }
 
     /**

@@ -156,7 +156,6 @@ source_set("browser") {
     "//components/embedder_support:user_agent",
     "//components/file_access",
     "//components/filename_generation",
-    "//components/history/core/browser:features",
     "//components/input",
     "//components/language/core/common",
     "//components/language_detection/content/common",
@@ -932,8 +931,8 @@ source_set("browser") {
     "display_cutout/safe_area_insets_host_impl.h",
     "dom_storage/dom_storage_context_wrapper.cc",
     "dom_storage/dom_storage_context_wrapper.h",
-    "dom_storage/session_storage_namespace_impl.cc",
-    "dom_storage/session_storage_namespace_impl.h",
+    "dom_storage/session_storage_namespace_handle_impl.cc",
+    "dom_storage/session_storage_namespace_handle_impl.h",
     "download/data_url_blob_reader.cc",
     "download/data_url_blob_reader.h",
     "download/download_item_utils.cc",
@@ -1214,6 +1213,8 @@ source_set("browser") {
     "media/capture/desktop_streams_registry_impl.cc",
     "media/capture/desktop_streams_registry_impl.h",
     "permissions/permission_descriptor_util.cc",
+    "renderer_preferences_util.cc",
+    "renderer_preferences_util.h",
     "web_contents_based_canceller.cc",
     "web_contents_based_canceller.h",
 
@@ -1305,8 +1306,6 @@ source_set("browser") {
     "media/session/media_session_uma_helper.h",
     "media/system_media_controls/system_media_controls_notifier.cc",
     "media/system_media_controls/system_media_controls_notifier.h",
-    "media/url_provision_fetcher.cc",
-    "media/url_provision_fetcher.h",
     "media/webaudio/audio_context_manager_impl.cc",
     "media/webaudio/audio_context_manager_impl.h",
     "media_session/media_session_service.cc",
@@ -1959,6 +1958,8 @@ source_set("browser") {
     "security/coop/cross_origin_opener_policy_status.h",
     "security/cpsp/child_process_security_policy_impl.cc",
     "security/cpsp/child_process_security_policy_impl.h",
+    "security/cpsp/child_process_security_policy_shim.cc",
+    "security/cpsp/child_process_security_policy_shim.h",
     "security/dip/document_isolation_policy_reporter.cc",
     "security/dip/document_isolation_policy_reporter.h",
     "serial/serial_service.cc",
@@ -2296,10 +2297,19 @@ source_set("browser") {
     "webid/user_info_request.h",
     "webid/webid_utils.cc",
     "webid/webid_utils.h",
+    "webnn/webnn_browser_host_impl.cc",
+    "webnn/webnn_browser_host_impl.h",
     "webnn/webnn_introspection_manager_impl.cc",
     "webnn/webnn_introspection_manager_impl.h",
+    "webrtc/mock_camera_device.cc",
+    "webrtc/mock_camera_device.h",
+    "webrtc/mock_capture_device_controller.cc",
+    "webrtc/mock_capture_device_controller.h",
     "webrtc/webrtc_connections_observer.cc",
     "webrtc/webrtc_connections_observer.h",
+    "webrtc/webrtc_diagnostics.cc",
+    "webrtc/webrtc_diagnostics_impl.cc",
+    "webrtc/webrtc_diagnostics_impl.h",
     "webrtc/webrtc_internals.cc",
     "webrtc/webrtc_internals.h",
     "webrtc/webrtc_internals_connections_observer.h",
@@ -2629,6 +2639,13 @@ source_set("browser") {
     sources += [
       "file_system_access/file_system_access_local_path_watcher.cc",
       "file_system_access/file_system_access_local_path_watcher.h",
+    ]
+  }
+
+  if (enable_cdm_provision_fetcher) {
+    sources += [
+      "media/url_provision_fetcher.cc",
+      "media/url_provision_fetcher.h",
     ]
   }
 
@@ -2993,8 +3010,6 @@ source_set("browser") {
       "speech/tts_win.cc",
       "speech/tts_win_utils.cc",
       "speech/tts_win_utils.h",
-      "webnn/webnn_compiler_process_host.cc",
-      "webnn/webnn_compiler_process_host.h",
     ]
     deps += [
       "//components/app_launch_prefetch",
@@ -3102,8 +3117,6 @@ source_set("browser") {
       "accessibility/accessibility_tree_formatter_android.h",
       "accessibility/accessibility_tree_formatter_android_external.cc",
       "accessibility/accessibility_tree_formatter_android_external.h",
-      "accessibility/accessibility_tree_snapshot_combiner.cc",
-      "accessibility/accessibility_tree_snapshot_combiner.h",
       "accessibility/ax_style_data.cc",
       "accessibility/ax_style_data.h",
       "accessibility/browser_accessibility_android.cc",
@@ -3465,7 +3478,10 @@ source_set("browser") {
   }
 
   if (is_win) {
-    deps += [ "//ui/base/ime/win" ]
+    deps += [
+      "//components/tracing:tracing_etw",
+      "//ui/base/ime/win",
+    ]
   }
 
   if (use_aura) {

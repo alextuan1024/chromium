@@ -217,7 +217,7 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
 
   // Create a browser and "show" it.
   BrowserWindowCreateParams profile2_params(profile2, true);
-  std::unique_ptr<Browser> p2_browser(
+  std::unique_ptr<BrowserWindowInterface> p2_browser(
       CreateBrowserWithTestWindowForParams(std::move(profile2_params)));
   [controller() activeBrowserChangedTo:p2_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 2", __LINE__);
@@ -230,7 +230,7 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
 
   // Open a new browser and make sure it takes effect.
   BrowserWindowCreateParams profile3_params(profile3, true);
-  std::unique_ptr<Browser> p3_browser(
+  std::unique_ptr<BrowserWindowInterface> p3_browser(
       CreateBrowserWithTestWindowForParams(std::move(profile3_params)));
   [controller() activeBrowserChangedTo:p3_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 3", __LINE__);
@@ -242,7 +242,7 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
                              __LINE__);
 
   // Close the browser.
-  std::unique_ptr<Browser> browser = release_browser();
+  std::unique_ptr<BrowserWindowInterface> browser = release_browser();
   browser->tab_strip_model()->CloseAllTabs();
   browser.reset();
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());

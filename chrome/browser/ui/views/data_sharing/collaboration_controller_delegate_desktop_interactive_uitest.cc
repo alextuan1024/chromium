@@ -16,7 +16,9 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/signin/promos/signin_promo_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_bubble_controller.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -34,12 +36,14 @@
 #include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/test_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/abseil-cpp/absl/status/status.h"
 #include "ui/base/interaction/interactive_test.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/test/dialog_test.h"
 #include "ui/views/widget/widget.h"
@@ -50,7 +54,7 @@ class TestCollaborationControllerDelegateDesktop
     : public CollaborationControllerDelegateDesktop {
  public:
   explicit TestCollaborationControllerDelegateDesktop(
-      Browser* browser,
+      BrowserWindowInterface* browser,
       std::optional<data_sharing::FlowType> flow = std::nullopt)
       : CollaborationControllerDelegateDesktop(browser, flow) {}
   MOCK_METHOD(collaboration::ServiceStatus, GetServiceStatus, (), (override));
@@ -343,7 +347,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationControllerDelegateDesktopInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(CollaborationControllerDelegateDesktopInteractiveUITest,
                        OnBrowserClose) {
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   TestCollaborationControllerDelegateDesktop delegate(browser2);
   base::MockCallback<base::OnceCallback<void()>> exit_callback;
   base::MockCallback<
@@ -360,7 +364,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationControllerDelegateDesktopInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(CollaborationControllerDelegateDesktopInteractiveUITest,
                        OnBrowserCloseWithOpenDialog) {
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
 
   // Show a prompt dialog.
   collaboration::ServiceStatus status;

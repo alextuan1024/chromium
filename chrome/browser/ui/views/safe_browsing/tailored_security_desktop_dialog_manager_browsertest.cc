@@ -22,6 +22,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
@@ -102,7 +103,8 @@ class TailoredSecurityDesktopDialogManagerTest
     }
   }
 
-  views::Widget* ShowTailoredSecurityEnabledDialog(Browser* browser) {
+  views::Widget* ShowTailoredSecurityEnabledDialog(
+      BrowserWindowInterface* browser) {
     views::NamedWidgetShownWaiter waiter(
         views::test::AnyWidgetTestPasskey{},
         safe_browsing::kTailoredSecurityNoticeDialog);
@@ -113,7 +115,8 @@ class TailoredSecurityDesktopDialogManagerTest
     return widget;
   }
 
-  views::Widget* ShowTailoredSecurityDisabledDialog(Browser* browser) {
+  views::Widget* ShowTailoredSecurityDisabledDialog(
+      BrowserWindowInterface* browser) {
     views::NamedWidgetShownWaiter waiter(
         views::test::AnyWidgetTestPasskey{},
         safe_browsing::kTailoredSecurityNoticeDialog);

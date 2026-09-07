@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -15,7 +17,6 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
@@ -28,6 +29,7 @@
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "content/public/test/browser_test.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/interaction_sequence.h"
 #include "ui/base/interaction/interactive_test.h"
@@ -38,6 +40,11 @@ namespace {
 
 constexpr char kTestPageUrl[] = "https://foo.bar";
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabId);
+
+ui::ElementIdentifier GetTargetElementId() {
+  return features::IsWebUILocationBarEnabled() ? kBrowserViewElementId
+                                               : kOmniboxElementId;
+}
 
 std::unique_ptr<KeyedService> BuildMockAimServiceEligibilityServiceInstance(
     content::BrowserContext* context) {
@@ -102,32 +109,31 @@ class AiModePageActionControllerInteractiveUiTest
   }
 
   ui::InteractionSequence::StepBuilder OpenOmniboxPopupByTypingASingleZero() {
-    return ui::test::InteractiveTestApi::SendKeyPress(kOmniboxElementId,
+    return ui::test::InteractiveTestApi::SendKeyPress(GetTargetElementId(),
                                                       ui::VKEY_0);
   }
 
   ui::InteractionSequence::StepBuilder ClosePopupOrBlurOmnibox() {
-    return ui::test::InteractiveTestApi::SendKeyPress(kOmniboxElementId,
+    return ui::test::InteractiveTestApi::SendKeyPress(GetTargetElementId(),
                                                       ui::VKEY_ESCAPE);
   }
 
   InteractiveTestApi::MultiStep CheckChipVisible(bool visible) {
     BrowserWindowInterface* bwi = browser();
-    return visible
-               ? ui::test::InteractiveTestApi::Steps(
-                     PageActionInteractiveTestMixin::
-                         WaitForPageActionChipVisible(kActionAiMode),
-                     Do([bwi]() {
-                       EXPECT_TRUE(
-                           AiModePageActionController::From(bwi)->IsVisible());
-                     }))
-               : ui::test::InteractiveTestApi::Steps(
-                     ui::test::InteractiveTestApi::WaitForHide(
-                         kAiModePageActionIconElementId),
-                     Do([bwi]() {
-                       EXPECT_FALSE(
-                           AiModePageActionController::From(bwi)->IsVisible());
-                     }));
+    if (visible) {
+      return ui::test::InteractiveTestApi::Steps(
+          PageActionInteractiveTestMixin::WaitForPageActionChipVisible(
+              kActionAiMode),
+          Do([bwi]() {
+            EXPECT_TRUE(AiModePageActionController::From(bwi)->IsVisible());
+          }));
+    }
+    return ui::test::InteractiveTestApi::Steps(
+        PageActionInteractiveTestMixin::WaitForPageActionChipNotVisible(
+            kActionAiMode),
+        Do([bwi]() {
+          EXPECT_FALSE(AiModePageActionController::From(bwi)->IsVisible());
+        }));
   }
 
   ui::InteractionSequence::StepBuilder WaitForAimPopup() {
@@ -176,11 +182,10 @@ IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
 IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
                        MAYBE_PressingChipWithMouseOpensAiMode) {
   base::HistogramTester histogram_tester;
-  RunTestSequence(
-      OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
-      CheckChipVisible(/*visible=*/true),
-      PressButton(kAiModePageActionIconElementId, InputType::kMouse),
-      WaitForAimPopup());
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+                  CheckChipVisible(/*visible=*/true),
+                  InvokePageAction(kActionAiMode, InputType::kMouse),
+                  WaitForAimPopup());
 
   histogram_tester.ExpectUniqueSample(
       "Omnibox.AimEntrypoint.Activated.ViaKeyboard", false, 1);
@@ -189,11 +194,10 @@ IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
 IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
                        PressingChipWithKeyboardOpensAiMode) {
   base::HistogramTester histogram_tester;
-  RunTestSequence(
-      OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
-      CheckChipVisible(/*visible=*/true),
-      PressButton(kAiModePageActionIconElementId, InputType::kKeyboard),
-      WaitForAimPopup());
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+                  CheckChipVisible(/*visible=*/true),
+                  InvokePageAction(kActionAiMode, InputType::kKeyboard),
+                  WaitForAimPopup());
 
   histogram_tester.ExpectUniqueSample(
       "Omnibox.AimEntrypoint.Activated.ViaKeyboard", true, 1);
@@ -235,7 +239,7 @@ IN_PROC_BROWSER_TEST_F(
     VisibleWhileNotEditingOmnibox) {
   RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(),
                   OpenOmniboxPopupByTypingASingleZero(),
-                  SendKeyPress(kOmniboxElementId, ui::VKEY_BACK),
+                  SendKeyPress(GetTargetElementId(), ui::VKEY_BACK),
                   CheckChipVisible(/*visible=*/true));
 }
 
@@ -257,7 +261,7 @@ IN_PROC_BROWSER_TEST_F(
   RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
                   CheckChipVisible(true),
                   // Type a URL.
-                  EnterText(kOmniboxElementId, u"https://google.com"),
+                  EnterText(GetTargetElementId(), u"https://google.com"),
                   CheckChipVisible(false));
 }
 
@@ -281,7 +285,7 @@ IN_PROC_BROWSER_TEST_F(
   RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
                   CheckChipVisible(true),
                   // Type a URL.
-                  EnterText(kOmniboxElementId, u"https://google.com"),
+                  EnterText(GetTargetElementId(), u"https://google.com"),
                   CheckChipVisible(false));
 }
 
@@ -307,6 +311,27 @@ IN_PROC_BROWSER_TEST_F(
         SkColor expected_bg_color = view->GetColorProvider()->GetColor(
             kColorOmniboxResultsBackgroundHovered);
         EXPECT_EQ(actual_bg_color, expected_bg_color);
+      }));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest,
+    ShowsLeadingIconWhenNoUserInputInProgress) {
+  RunTestSequence(
+      OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+      CheckChipVisible(true),
+      Do([this]() {
+        if (features::IsWebUILocationBarEnabled()) {
+          return;
+        }
+        auto* provider = BrowserView::GetBrowserViewForBrowser(browser())
+                             ->toolbar_button_provider();
+        auto* view = static_cast<page_actions::PageActionView*>(
+            page_actions::GetIconLabelBubbleViewForTesting(
+                provider->GetPageActionViewInterface(kActionAiMode),
+                kActionAiMode));
+        ASSERT_NE(view, nullptr);
+        EXPECT_EQ(view->slide_animation_for_testing().GetCurrentValue(), 0.0);
       }));
 }
 

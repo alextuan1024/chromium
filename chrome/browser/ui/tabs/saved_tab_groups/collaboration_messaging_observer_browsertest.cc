@@ -18,6 +18,8 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_observer_factory.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -33,11 +35,14 @@
 #include "components/data_sharing/public/features.h"
 #include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/views/controls/button/button_controller.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view.h"
 #include "url/gurl.h"
@@ -209,16 +214,16 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
 
   // Add 4 more tabs, for a total of 5.
   AddTabs(browser(), 4);
-  EXPECT_EQ(5, browser()->tab_strip_model()->count());
+  EXPECT_EQ(5, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
   // Group 2 tabs in the middle of the tab strip to test group offsets.
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({2, 3});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({2, 3});
   // CHIP messages set the message in TabFeatures
   auto tab2_id =
-      browser()->tab_strip_model()->GetTabAtIndex(2)->GetHandle().raw_value();
+      browser()->GetTabStripModel()->GetTabAtIndex(2)->GetHandle().raw_value();
 
   // Prevent network request.
   GetTabDataAtIndex(browser(), 2)->set_mocked_avatar_for_testing(gfx::Image());
@@ -234,7 +239,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
 
   // DIRTY_TAB messages set attention on the tab icon
   auto tab3_id =
-      browser()->tab_strip_model()->GetTabAtIndex(3)->GetHandle().raw_value();
+      browser()->GetTabStripModel()->GetTabAtIndex(3)->GetHandle().raw_value();
   auto dirty_tab_message =
       CreateMessage("User", "URL", CollaborationEvent::TAB_UPDATED,
                     PersistentNotificationType::DIRTY_TAB, tab3_id, group_id);
@@ -280,13 +285,13 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
 
   // Add 2 more tabs, for a total of 3.
   AddTabs(browser(), 2);
-  EXPECT_EQ(3, browser()->tab_strip_model()->count());
+  EXPECT_EQ(3, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
   // Group 2 tabs and collapse group.
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({1, 2});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({1, 2});
 
   // Collapse the TabGroupHeader.
   views::View* tab_group_header =
@@ -303,7 +308,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
 
   // CHIP messages set the message in TabFeatures
   auto tab2_id =
-      browser()->tab_strip_model()->GetTabAtIndex(2)->GetHandle().raw_value();
+      browser()->GetTabStripModel()->GetTabAtIndex(2)->GetHandle().raw_value();
 
   // Prevent network request.
   GetTabDataAtIndex(browser(), 2)->set_mocked_avatar_for_testing(gfx::Image());
@@ -334,17 +339,17 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
 
   // Add 1 more tab, for a total of 2.
   AddTabs(browser(), 1);
-  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
   // Group 2 tabs in the middle of the tab strip to test group offsets.
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0, 1});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0, 1});
 
   // CHIP messages set the message in TabFeatures
   auto tab0_id =
-      browser()->tab_strip_model()->GetTabAtIndex(0)->GetHandle().raw_value();
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle().raw_value();
 
   // Prevent network request.
   GetTabDataAtIndex(browser(), 0)->set_mocked_avatar_for_testing(gfx::Image());
@@ -402,8 +407,8 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                       PersistentNotificationType::DIRTY_TAB, tab0_id, group_id);
 
     // Close the tab group so no message can be delivered.
-    browser()->tab_strip_model()->CloseWebContentsAt(0, 0);
-    EXPECT_EQ(1, browser()->tab_strip_model()->count());
+    browser()->GetTabStripModel()->CloseWebContentsAt(0, 0);
+    EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
     EXPECT_FALSE(GetTabIcon(browser(), 0)->GetShowingAttentionIndicator());
     observer()->DisplayPersistentMessage(message);
@@ -415,16 +420,16 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                        IgnoresUnsupportedTabMessages) {
   WaitForTabGroupSyncServiceInitialized();
 
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0});
 
   // CHIP messages set the message in TabFeatures
   auto tab0_id =
-      browser()->tab_strip_model()->GetTabAtIndex(0)->GetHandle().raw_value();
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle().raw_value();
 
   // Prevent network request.
   GetTabDataAtIndex(browser(), 0)->set_mocked_avatar_for_testing(gfx::Image());
@@ -443,12 +448,12 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                        InstantMessageReopensTab) {
   WaitForTabGroupSyncServiceInitialized();
 
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0});
   base::MockCallback<SuccessCallback> cb;
   std::string test_url = chrome::kChromeUISettingsURL;
   auto message =
@@ -458,7 +463,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
   EXPECT_CALL(cb, Run(true));
   observer()->DisplayInstantaneousMessage(message, cb.Get());
 
-  auto* toast_controller = browser()->GetFeatures().toast_controller();
+  auto* toast_controller = ToastController::From(browser());
   EXPECT_TRUE(toast_controller->IsShowingToast());
 
   toast_controller->GetToastViewForTesting()
@@ -466,7 +471,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
       ->button_controller()
       ->NotifyClick();
 
-  EXPECT_EQ(browser()->tab_strip_model()->GetWebContentsAt(1)->GetURL(),
+  EXPECT_EQ(browser()->GetTabStripModel()->GetWebContentsAt(1)->GetURL(),
             test_url);
 }
 
@@ -474,12 +479,12 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                        InstantMessageManagesSharing) {
   WaitForTabGroupSyncServiceInitialized();
 
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0});
   tab_groups::TabGroupSyncService* tab_group_service =
       TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
   tab_group_service->MakeTabGroupSharedForTesting(
@@ -493,7 +498,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
   EXPECT_CALL(cb, Run(true));
   observer()->DisplayInstantaneousMessage(message, cb.Get());
 
-  auto* toast_controller = browser()->GetFeatures().toast_controller();
+  auto* toast_controller = ToastController::From(browser());
   EXPECT_TRUE(toast_controller->IsShowingToast());
 }
 
@@ -501,20 +506,20 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                        InstantMessageManagesSharingWithClosedGroup) {
   WaitForTabGroupSyncServiceInitialized();
 
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
   // Create a new group, get the sync tab group id, close it.
   AddTab(browser());
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0});
   tab_groups::TabGroupSyncService* tab_group_service =
       TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
   auto sync_tab_group_id = tab_group_service->GetGroup(group_id)->saved_guid();
   tab_group_service->MakeTabGroupSharedForTesting(
       group_id, syncer::CollaborationId("fake_collaboration_id"));
-  browser()->tab_strip_model()->CloseAllTabsInGroup(group_id);
+  browser()->GetTabStripModel()->CloseAllTabsInGroup(group_id);
 
   // Create an instant message with sync tab group id.
   base::MockCallback<SuccessCallback> cb;
@@ -528,7 +533,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
   EXPECT_CALL(cb, Run(true));
   observer()->DisplayInstantaneousMessage(message, cb.Get());
 
-  auto* toast_controller = browser()->GetFeatures().toast_controller();
+  auto* toast_controller = ToastController::From(browser());
   EXPECT_TRUE(toast_controller->IsShowingToast());
 
   // Ensure tab group is closed.
@@ -551,12 +556,12 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
                        InstantMessageForTabGroupRemoved) {
   WaitForTabGroupSyncServiceInitialized();
 
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   // Observer is initialized
   EXPECT_NE(observer(), nullptr);
 
-  auto group_id = browser()->tab_strip_model()->AddToNewGroup({0});
+  auto group_id = browser()->GetTabStripModel()->AddToNewGroup({0});
   base::MockCallback<SuccessCallback> cb;
   std::string test_url = chrome::kChromeUISettingsURL;
   auto message =
@@ -566,7 +571,7 @@ IN_PROC_BROWSER_TEST_F(CollaborationMessagingObserverBrowserTest,
   EXPECT_CALL(cb, Run(true));
   observer()->DisplayInstantaneousMessage(message, cb.Get());
 
-  auto* toast_controller = browser()->GetFeatures().toast_controller();
+  auto* toast_controller = ToastController::From(browser());
   EXPECT_TRUE(toast_controller->IsShowingToast());
 }
 

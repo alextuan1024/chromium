@@ -58,7 +58,6 @@
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_spacing.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/clear_collection_scope.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/bidi_paragraph.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
@@ -558,21 +557,6 @@ bool FirstLineNeedsReshape(const ComputedStyle& first_line_style,
   return base_font != first_line_font && *base_font != *first_line_font;
 }
 
-// Make a string to the specified length, either by truncating if longer, or
-// appending space characters if shorter.
-void TruncateOrPadText(String* text, unsigned length) {
-  if (text->length() > length) {
-    *text = text->substr(0, length);
-  } else if (text->length() < length) {
-    StringBuilder builder;
-    builder.ReserveCapacity(length);
-    builder.Append(*text);
-    while (builder.length() < length)
-      builder.Append(uchar::kSpace);
-    *text = builder.ToString();
-  }
-}
-
 // True if the `style` has a positive `letter-spacing` and a negative
 // `margin-right`.
 bool ShouldReportLetterSpacing(const ComputedStyle& style) {
@@ -672,6 +656,10 @@ void InlineNode::PrepareLayout(InlineNodeData* previous_data) const {
 
   AssociateItemsWithInlines(data);
   DCHECK_EQ(data, MutableData());
+
+  // `EstimateInlineItemsCount` may have over-reserved. It's now safe to shrink.
+  data->items.shrink_to_fit();
+  data->LogCapacity();
 
   LayoutBlockFlow* block_flow = GetLayoutBlockFlow();
   block_flow->ClearNeedsCollectInlines();
@@ -1558,11 +1546,9 @@ void InlineNode::ShapeText(InlineItemsData* data,
   InlineItem::CheckIndex(items);
 #endif  // EXPENSIVE_DCHECKS_ARE_ON()
 
-  ShapeResultSpacing spacing(
-      text_content,
-      /*allow_word_spacing_anywhere=*/IsSvgText() ||
-          (RuntimeEnabledFeatures::WordSpacingWhiteSpacePreEnabled() &&
-           Style().ShouldPreserveWhiteSpaces()));
+  ShapeResultSpacing spacing(text_content,
+                             /*allow_word_spacing_anywhere=*/IsSvgText() ||
+                                 Style().ShouldPreserveWhiteSpaces());
   TextAutoSpace auto_space(*data);
 
   const bool allow_shape_cache =
@@ -1816,24 +1802,10 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
     // TODO(kojii): This logic assumes that text-transform is applied only to
     // ::first-line, and does not work when the base style has text-transform
     // and ::first-line has different text-transform.
-    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
-      text_content =
-          first_line_style.ApplyTextTransform(text_content, ' ', &offset_map);
-      if (text_content != data->text_content) {
-        needs_reshape = true;
-      }
-    } else {
-      text_content = first_line_style.ApplyTextTransform(text_content);
-      if (text_content != data->text_content) {
-        // TODO(kojii): When text-transform changes the length, we need to
-        // adjust offset in InlineItem, or re-collect inlines. Other classes
-        // such as line breaker need to support the scenario too. For now, we
-        // force the string to be the same length to prevent them from crashing.
-        // This may result in a missing or a duplicate character if the length
-        // changes.
-        TruncateOrPadText(&text_content, data->text_content.length());
-        needs_reshape = true;
-      }
+    text_content =
+        first_line_style.ApplyTextTransform(text_content, ' ', &offset_map);
+    if (text_content != data->text_content) {
+      needs_reshape = true;
     }
   }
   auto* first_line_items =
@@ -1847,22 +1819,17 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
   for (const Member<InlineItem>& item : data->items) {
     InlineItem* first_line_item = MakeGarbageCollected<InlineItem>(*item);
     first_line_item->SetStyleVariant(StyleVariant::kFirstLine);
-    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
-      if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
-        unsigned new_start =
-            offset_map.MapOffset(first_line_item->StartOffset());
-        unsigned new_end = offset_map.MapOffset(first_line_item->EndOffset());
-        first_line_item->SetOffset(new_start, new_end);
-      }
+    if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
+      unsigned new_start = offset_map.MapOffset(first_line_item->StartOffset());
+      unsigned new_end = offset_map.MapOffset(first_line_item->EndOffset());
+      first_line_item->SetOffset(new_start, new_end);
     }
     first_line_items->items.push_back(first_line_item);
   }
   if (data->segments) {
     first_line_items->segments = data->segments->Clone();
-    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
-      if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
-        first_line_items->segments->AdjustOffsets(offset_map);
-      }
+    if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
+      first_line_items->segments->AdjustOffsets(offset_map);
     }
   }
 
@@ -2144,18 +2111,16 @@ static LayoutUnit ComputeContentSize(InlineNode node,
       DCHECK(item.Style());
       const ComputedStyle& style = *item.Style();
       const TabSize& tab_size = style.GetTabSize();
-      const Font* font = RuntimeEnabledFeatures::TabSizeAncestorEnabled()
-                             ? &node.FontForTab()
-                             : style.GetFont();
-      const SimpleFontData* font_data = font->PrimaryFontForTabSize();
+      const Font& font = node.FontForTab();
+      const SimpleFontData* font_data = font.PrimaryFontForTabSize();
       // Sync with `ShapeResult::CreateForTabulationCharacters()`.
       TextRunLayoutUnit glyph_advance = TextRunLayoutUnit::FromFloatRound(
-          font->TabWidth(font_data, tab_size, position));
+          font.TabWidth(font_data, tab_size, position));
       InlineLayoutUnit run_advance = glyph_advance;
       DCHECK_GE(length, 1u);
       if (length > 1u) {
         glyph_advance = TextRunLayoutUnit::FromFloatRound(
-            font->TabWidth(font_data, tab_size));
+            font.TabWidth(font_data, tab_size));
         run_advance += glyph_advance.To<InlineLayoutUnit>() * (length - 1);
       }
       position += run_advance.ToCeil<LayoutUnit>().ClampNegativeToZero();

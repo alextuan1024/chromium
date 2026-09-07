@@ -361,7 +361,7 @@ bool TryVacuum(sql::Database& db,
     LogVacuumEvent(VacuumEvent::kCheckpointFailed);
     return false;
   }
-  bool success = db.Execute("VACUUM");
+  bool success = db.Vacuum();
   LogVacuumEvent(success ? VacuumEvent::kSucceeded : VacuumEvent::kFailed);
   return success;
 }
@@ -998,8 +998,7 @@ class IndexCursorImpl : public BackingStoreCursorImpl {
 StatusOr<std::unique_ptr<DatabaseConnection>> DatabaseConnection::Open(
     std::optional<std::u16string_view> name,
     base::FilePath path,
-    BackingStoreImpl& backing_store,
-    bool erase_if_zygotic) {
+    BackingStoreImpl& backing_store) {
   auto connection =
       base::WrapUnique(new DatabaseConnection(path, backing_store));
   Status s = connection->Init(name);
@@ -1025,11 +1024,6 @@ StatusOr<std::unique_ptr<DatabaseConnection>> DatabaseConnection::Open(
       connection->data_loss_info_ = std::move(loss);
       s.Log("IndexedDB.SQLite.OpenRetryResult");
     }
-  }
-  if (s.ok() && erase_if_zygotic && connection->IsZygotic()) {
-    s = Status::Corruption(
-        "Database was zygotic on open, indicating prior unclean shutdown");
-    connection->marked_for_permanent_deletion_ = true;
   }
   if (!s.ok()) {
     std::move(*connection).GetCleanupTask().Run(/*force_closing=*/false);
@@ -1088,7 +1082,12 @@ void DatabaseConnection::CloseDatabase(
     std::optional<std::set<int64_t>> known_legacy_blob_ids,
     bool force_closing) {
   if (should_delete) {
-    db->CloseAndDelete();
+    if (!(db->is_open() ? db->CloseAndDelete()
+                        : sql::Database::Delete(db_path))) {
+      base::UmaHistogramEnumeration(
+          "IndexedDB.SQLite.SpecificEvent.OnDisk",
+          DatabaseConnection::SpecificEvent::kDatabaseDeletionFailed);
+    }
     if (!base::DeletePathRecursively(legacy_blob_directory)) {
       base::UmaHistogramEnumeration(
           "IndexedDB.SQLite.SpecificEvent.OnDisk",
@@ -1179,7 +1178,11 @@ base::OnceCallback<void(bool)> DatabaseConnection::GetCleanupTask() && {
   if (!in_memory()) {
     // When the database never finished initializing, it will be zygotic. This
     // could happen if version change transaction was aborted/rolled back. In
-    // this case the newly created database should be deleted.
+    // this case the newly created database should be deleted. On the other
+    // hand, if `Init` fails to read the metadata due to an error, `IsZygotic()`
+    // will be true, but we don't want to immediately delete the database,
+    // instead attempting recovery or just re-opening if the error was
+    // transient.
     should_delete_db =
         marked_for_permanent_deletion_ || (IsZygotic() && !had_sql_error);
 
@@ -1189,16 +1192,13 @@ base::OnceCallback<void(bool)> DatabaseConnection::GetCleanupTask() && {
     // `Transaction`s, `Connection`s and `Database`s. When the last
     // `BackingStore::Database` is deleted, `this` is deleted, at which point
     // recovery is attempted if `sql_error_` warrants it.
-#if BUILDFLAG(IS_FUCHSIA)
-    // Recovery is not supported with WAL mode DBs in Fuchsia.
-    if (had_sql_error && sql::IsErrorCatastrophic(*sql_error_)) {
-      should_delete_db = true;
-    }
-#else
     should_attempt_recovery =
         had_sql_error &&
         sql::Recovery::ShouldAttemptRecovery(db_.get(), *sql_error_);
-#endif
+    if (!should_attempt_recovery && had_sql_error &&
+        sql::IsErrorCatastrophic(*sql_error_)) {
+      should_delete_db = true;
+    }
 
     // Determine whether to vacuum.
     if (!had_sql_error && !should_delete_db) {
@@ -1352,6 +1352,13 @@ Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
   if (name && (metadata_.name != *name)) {
     return Fatal(Status::Corruption("Database name mismatch"),
                  SpecificEvent::kDatabaseNameMismatch);
+  }
+
+  if ((!is_new_db &&
+       metadata_.version == blink::IndexedDBDatabaseMetadata::NO_VERSION) ||
+      metadata_.version < blink::IndexedDBDatabaseMetadata::NO_VERSION) {
+    return Fatal(Status::Corruption("Database IDB version is invalid"),
+                 SpecificEvent::kDatabaseIdbVersionInvalid);
   }
 
   // There should be no active blobs in this database at this point, so we can
@@ -2144,15 +2151,10 @@ StatusOr<BackingStore::RecordIdentifier> DatabaseConnection::PutRecord(
 
     static constexpr base::ByteSize kMinimumCompressionSize(64);
     static constexpr float kMinimumCompressionRatio = 0.8f;
-    if (value.bits.storage_type() ==
-        mojo_base::BigBuffer::StorageType::kSharedMemory) {
-      // Make a copy of the bits if they are in shared memory before attempting
-      // to compress. See BigBuffer docs re: TOCTOU bugs.
-      bits_copy = base::ToVector(std::move(value.bits));
-      bits_span = base::span(bits_copy);
-    } else {
-      bits_span = base::span(value.bits);
-    }
+    // Should have already been copied to private memory in `Transaction`.
+    CHECK_EQ(value.bits.storage_type(),
+             mojo_base::BigBuffer::StorageType::kBytes);
+    bits_span = base::span(value.bits);
 
     // Maybe compress, updating `bits_span` and `bits_copy` as appropriate.
     if (bits_span.size() >= kMinimumCompressionSize.InBytes()) {
@@ -2885,7 +2887,8 @@ base::FilePath DatabaseConnection::GetLegacyBlobDirectory() const {
 base::FilePath DatabaseConnection::GetBlobFilePath(int64_t blob_id) const {
   base::FilePath path = GetLegacyBlobDirectory().AppendASCII(
       absl::StrFormat("%" PRIx64, blob_id));
-  DCHECK_EQ(blob_id, GetBlobIdFromLegacyFilePath(path).value_or(-1));
+  CHECK_EQ(blob_id, GetBlobIdFromLegacyFilePath(path).value_or(-1),
+           base::NotFatalUntil::M158);
   return path;
 }
 

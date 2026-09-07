@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
@@ -100,6 +101,11 @@ void SetTabIdIfMissing(optimization_guide::proto::Action& action,
         action.mutable_attempt_otp_filling()->set_tab_id(tab_id);
       }
       break;
+    case optimization_guide::proto::Action::kTranslatePage:
+      if (!action.translate_page().has_tab_id()) {
+        action.mutable_translate_page()->set_tab_id(tab_id);
+      }
+      break;
     case optimization_guide::proto::Action::kScriptTool:
       if (!action.script_tool().has_tab_id()) {
         action.mutable_script_tool()->set_tab_id(tab_id);
@@ -123,6 +129,9 @@ void SetTabIdIfMissing(optimization_guide::proto::Action& action,
     case optimization_guide::proto::Action::kActivateWindow:
     case optimization_guide::proto::Action::kYieldToUser:
     case optimization_guide::proto::Action::ACTION_NOT_SET:
+      break;
+    default:
+      NOTIMPLEMENTED();
       break;
   }
 }
@@ -184,7 +193,7 @@ void ActorActionsRunner::Start() {
   // blocking or content validation at the actor task level.
   task_id_ = actor_service->CreateTaskWithOptions(
       source_info_, GetNullEnterprisePolicyChecker(), std::move(options),
-      nullptr);
+      nullptr, actor_service->GetActorUiStateManager());
   if (!task_id_) {
     LOG(ERROR) << "Failed to create Actor task.";
     Finish(std::make_unique<optimization_guide::proto::ActionsResult>(

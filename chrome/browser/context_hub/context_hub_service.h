@@ -18,6 +18,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/power_monitor/power_observer.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "base/types/id_type.h"
@@ -30,6 +31,7 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/personal_context/core/personal_context_types.h"
+#include "components/personal_context/proto/features/smart_search.pb.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "url/gurl.h"
@@ -78,7 +80,8 @@ class ContextHubBackend;
 
 class ContextHubService : public KeyedService,
                           public AutoTodosStore::Observer,
-                          public signin::IdentityManager::Observer
+                          public signin::IdentityManager::Observer,
+                          public base::PowerSuspendObserver
 #if !BUILDFLAG(IS_ANDROID)
     ,
                           public BrowserTabStripTrackerDelegate,
@@ -129,6 +132,9 @@ class ContextHubService : public KeyedService,
       signin_metrics::SourceForRefreshTokenOperation token_operation_source)
       override;
 
+  // base::PowerSuspendObserver:
+  void OnResume() override;
+
 #if !BUILDFLAG(IS_ANDROID)
   // BrowserTabStripTrackerDelegate:
   bool ShouldTrackBrowser(BrowserWindowInterface* browser) override;
@@ -174,6 +180,12 @@ class ContextHubService : public KeyedService,
   void DeleteAutoTodoByTabId(int64_t tab_id,
                              AutoTodosStore::OperationCallback callback);
 
+  // Clears all 1P Auto Todos from the AutoTodos store.
+  void ClearFirstPartyAutoTodos(AutoTodosStore::OperationCallback callback);
+
+  // Clears all 3P Auto Todos from the AutoTodos store.
+  void ClearThirdPartyAutoTodos(AutoTodosStore::OperationCallback callback);
+
   // Stores or updates a todo feedback item in the in-memory cache.
   void SetTodoFeedback(
       browser::context_hub::mojom::AutoTodoItemFeedbackPtr feedback);
@@ -205,6 +217,17 @@ class ContextHubService : public KeyedService,
   // Clears all tab group chat history turns from the LRU cache.
   void ClearTabGroupChatHistory();
 
+  // Adds a memory bank chat history turn to the cache.
+  void AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::Role role,
+      std::string_view message_content);
+  // Returns all memory bank chat history turns stored in the LRU cache in
+  // chronological order (oldest to newest).
+  std::vector<optimization_guide::proto::ChatHistoryTurn>
+  GetMemoryBankChatHistory() const;
+  // Clears all memory bank chat history turns from the LRU cache.
+  void ClearMemoryBankChatHistory();
+
   // Sets the pending memory bank entry waiting to be saved by the user.
   void SetPendingMemoryBankEntry(MemoryBankEntry entry);
 
@@ -223,6 +246,13 @@ class ContextHubService : public KeyedService,
   // Saves an entry in the memory bank.
   void SaveMemoryBankEntry(MemoryBankEntry entry,
                            MemoryBank::OperationCompleteCallback callback);
+  // Updates an entry in the memory bank with new tags, note, and collection.
+  void UpdateMemoryBankEntryAnnotations(
+      int64_t id,
+      std::vector<std::string> tags,
+      std::optional<std::string> note,
+      std::optional<std::string> collection,
+      MemoryBank::OperationCompleteCallback callback);
   // Deletes an entry from the memory bank.
   void DeleteEntries(base::span<const int64_t> ids,
                      MemoryBank::OperationCompleteCallback callback);
@@ -231,6 +261,11 @@ class ContextHubService : public KeyedService,
   // Returns entries for the given IDs from the memory bank.
   void GetEntriesByIds(base::span<const int64_t> ids,
                        MemoryBank::GetEntriesCallback callback) const;
+  // Returns all unique tags from the memory bank.
+  void GetAllMemoryBankTags(MemoryBank::GetStringsCallback callback) const;
+  // Returns all unique collections from the memory bank.
+  void GetAllMemoryBankCollections(
+      MemoryBank::GetStringsCallback callback) const;
 
   using GetTabGroupsCallback =
       base::OnceCallback<void(std::vector<TabGroupEntry>)>;
@@ -247,11 +282,18 @@ class ContextHubService : public KeyedService,
                              const std::string& user_command,
                              MemoryBankChatCallback callback);
 
+  using SmartSearchCallback = base::OnceCallback<void(
+      const std::vector<personal_context::proto::SmartSearchItem>& results)>;
+  // Executes the provided natural language query to search across Drive
+  // artifacts.
+  void ExecuteSmartSearch(const std::string& query,
+                          SmartSearchCallback callback);
+
   using ConfirmAllTabGroupsCallback =
       base::OnceCallback<void(bool success,
                               std::vector<base::Uuid> added_group_guids)>;
-  // Commits all unconfirmed tab groups to Chrome's native TabGroupSyncService as
-  // confirmed groups and clears in-memory storage.
+  // Commits all unconfirmed tab groups to Chrome's native TabGroupSyncService
+  // as confirmed groups and clears in-memory storage.
   void ConfirmAllTabGroups(ConfirmAllTabGroupsCallback callback);
   // Returns all confirmed tab groups for the current profile.
   std::vector<TabGroupEntry> GetConfirmedTabGroups() const;
@@ -318,6 +360,10 @@ class ContextHubService : public KeyedService,
   // Handles the async response from the AutoTodos fetch.
   void OnFirstPartyAutoTodosFetched(
       personal_context::FetchContextResult result);
+
+  // Handles the async response from the SmartSearch fetch.
+  void OnSmartSearchFetched(SmartSearchCallback callback,
+                            personal_context::FetchContextResult result);
 
   // Cleans up First Party Auto Todos generation state, notifies observers, and
   // invokes any pending completion callbacks.
@@ -411,9 +457,19 @@ class ContextHubService : public KeyedService,
 
   using TabGroupChatHistoryTurnId =
       base::IdType64<class TabGroupChatHistoryTurnIdTag>;
+  TabGroupChatHistoryTurnId::Generator
+      tab_group_chat_history_turn_id_generator_;
   base::LRUCache<TabGroupChatHistoryTurnId,
                  optimization_guide::proto::ChatHistoryTurn>
       tab_group_chat_history_cache_;
+
+  using MemoryBankChatHistoryTurnId =
+      base::IdType64<class MemoryBankChatHistoryTurnIdTag>;
+  MemoryBankChatHistoryTurnId::Generator
+      memory_bank_chat_history_turn_id_generator_;
+  base::LRUCache<MemoryBankChatHistoryTurnId,
+                 optimization_guide::proto::ChatHistoryTurn>
+      memory_bank_chat_history_cache_;
 
   // In-memory storage for feedback on Auto Todo items. The key is the ID of the
   // Auto Todo item in question and the value is whether the item was liked or

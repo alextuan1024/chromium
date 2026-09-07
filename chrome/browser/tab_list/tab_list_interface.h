@@ -113,7 +113,7 @@ class TabListInterface {
   virtual tabs::TabInterface* GetTab(int index) = 0;
 
   // Returns the index of the given `tab`, if it exists in the tab strip.
-  // Otherwise, returns -1.
+  // Otherwise, returns tab_list::kNoTabIndex (-1).
   virtual int GetIndexOfTab(tabs::TabHandle tab) = 0;
 
   // Highlights a set of tabs. This will clear any initially-selected tabs and
@@ -151,6 +151,9 @@ class TabListInterface {
   // Returns a list of tab groups in this tab strip. If the tab strip does not
   // support tab groups (e.g. legacy apps) returns an empty vector.
   virtual std::vector<tab_groups::TabGroupId> ListTabGroups() = 0;
+
+  // Returns a list of tab splits in this tab strip.
+  virtual std::set<split_tabs::SplitTabId> ListSplits() = 0;
 
   // Returns the visual data for a tab group, or nullopt on error.
   virtual std::optional<tab_groups::TabGroupVisualData> GetTabGroupVisualData(

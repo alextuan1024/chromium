@@ -5,7 +5,11 @@
 package org.chromium.chrome.browser.customtabs;
 
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -23,6 +27,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.DefaultBrowserMenuUtils;
+import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
@@ -41,6 +46,8 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
+import org.chromium.chrome.browser.ui.web_app_header.WebAppHeaderLayoutCoordinator;
+import org.chromium.chrome.browser.util.DefaultBrowserInfo;
 import org.chromium.components.browser_ui.accessibility.PageZoomManager;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -57,6 +64,8 @@ import java.util.function.Supplier;
 /** App menu properties delegate for {@link CustomTabActivity}. */
 @NullMarked
 public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateImpl {
+    private static final String HELP_URL =
+            "https://support.google.com/googlebook?p=web_powered_apps";
     private static final String CUSTOM_MENU_ITEM_ID_KEY = "CustomMenuItemId";
     private static final String SHOW_OPEN_IN_BROWSER_MENU_TOP_PARAM =
             "show_open_in_browser_menu_top";
@@ -77,6 +86,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
     private final List<String> mMenuEntries;
     private final Map<Integer, Integer> mItemIdToIndexMap = new HashMap<>();
     private final Supplier<ContextualPageActionController> mContextualPageActionControllerSupplier;
+
+    private final Supplier<@Nullable WebAppHeaderLayoutCoordinator>
+            mWebAppHeaderLayoutCoordinatorSupplier;
 
     private boolean mHasClientPackage;
 
@@ -103,7 +115,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             Supplier<ContextualPageActionController> contextualPageActionControllerSupplier,
             boolean hasClientPackage,
             @Nullable PageZoomManager pageZoomManager,
-            @Nullable OpenInAppMenuItemProvider openInAppMenuItemProvider) {
+            @Nullable OpenInAppMenuItemProvider openInAppMenuItemProvider,
+            Supplier<@Nullable WebAppHeaderLayoutCoordinator>
+                    webAppHeaderLayoutCoordinatorSupplier) {
         super(
                 context,
                 activityTabProvider,
@@ -128,6 +142,7 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
         mIsStartIconMenu = isStartIconMenu;
         mContextualPageActionControllerSupplier = contextualPageActionControllerSupplier;
         mHasClientPackage = hasClientPackage;
+        mWebAppHeaderLayoutCoordinatorSupplier = webAppHeaderLayoutCoordinatorSupplier;
     }
 
     @Override
@@ -432,6 +447,11 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             modelList.add(buildPageInfoItem(currentTab, shouldShowIconBeforeItem));
         }
 
+        // --- Extensions ---
+        if (shouldShowExtensionsItem()) {
+            modelList.add(buildExtensionsParentItem());
+        }
+
         // --- Open with ---
         if (shouldShowOpenWithItem(currentTab)) {
             modelList.add(buildOpenWithItem(currentTab, false));
@@ -528,12 +548,47 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             footerTextView.setText(footerText);
         }
 
+        if (ChromeFeatureList.sDesktopAndroidTWADisclosuresHelpLink.isEnabled() && mIsTablet) {
+            footer.setFocusable(true);
+            footer.setOnClickListener(
+                    v -> {
+                        openHelpArticle();
+                        appMenuHandler.hideAppMenu();
+                    });
+        }
+
         return footer;
+    }
+
+    private void openHelpArticle() {
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(HELP_URL));
+        intent.addCategory(Intent.CATEGORY_BROWSABLE);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(IntentHandler.EXTRA_FROM_OPEN_IN_BROWSER, true);
+        ResolveInfo resolveInfo = DefaultBrowserInfo.getDefaultWebBrowserInfo();
+        if (resolveInfo != null && resolveInfo.match != 0 && resolveInfo.activityInfo != null) {
+            intent.setPackage(resolveInfo.activityInfo.packageName);
+        }
+        mContext.startActivity(intent);
     }
 
     @Override
     public boolean isMenuIconAtStart() {
         return mIsStartIconMenu;
+    }
+
+    @Override
+    protected boolean shouldShowExtensionsItem() {
+        if (mUiType != CustomTabsUiType.TRUSTED_WEB_ACTIVITY || !super.shouldShowExtensionsItem()) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            return false;
+        }
+        WebAppHeaderLayoutCoordinator headerCoordinator =
+                mWebAppHeaderLayoutCoordinatorSupplier.get();
+        return headerCoordinator != null
+                && headerCoordinator.getExtensionsToolbarCoordinator() != null;
     }
 
     void setHasClientPackageForTesting(boolean hasClientPackage) {

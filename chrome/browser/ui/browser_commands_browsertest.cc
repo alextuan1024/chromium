@@ -7,9 +7,11 @@
 #include "base/path_service.h"
 #include "base/task/current_thread.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
+#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -19,6 +21,7 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -32,6 +35,8 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/commerce/core/pref_names.h"
 #include "components/content_settings/core/common/pref_names.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
@@ -73,7 +78,7 @@ class BrowserCommandsTest : public InProcessBrowserTest {
 
   static constexpr char kUrl[] = "chrome://version/";
 
-  void AddTabs(Browser* browser, int num_tabs) {
+  void AddTabs(BrowserWindowInterface* browser, int num_tabs) {
     for (int i = 0; i < num_tabs; ++i) {
       chrome::NewTab(browser, NewTabTypes::kNoUserAction);
     }
@@ -354,6 +359,64 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveTabsToNewWindow_WithGroup) {
   CheckBrowserContainsTabGroupWithSize(second_browser, group_id, 2u);
 }
 
+IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
+                       MoveTabsToNewWindow_FromContextMenuWithGroup) {
+  // Two tabs with second tab in a group.
+  AddTabs(1);
+  tab_groups::TabGroupId group_id =
+      browser()->tab_strip_model()->AddToNewGroup({1});
+  browser()->tab_strip_model()->ChangeTabGroupVisuals(
+      group_id, tab_groups::TabGroupVisualData(
+                    u"Test Group", tab_groups::TabGroupColorId::kGrey));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  EXPECT_TRUE(browser()->tab_strip_model()->IsContextMenuCommandEnabled(
+      1, TabStripModel::CommandMoveTabsToNewWindow));
+  browser()->tab_strip_model()->ExecuteContextMenuCommand(
+      1, TabStripModel::CommandMoveTabsToNewWindow);
+  const BrowserWindowInterface* const second_browser =
+      browser_created_observer.Wait();
+
+  // Original browser has one tab and no group.
+  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
+  EXPECT_FALSE(
+      browser()->GetTabStripModel()->group_model()->ContainsTabGroup(group_id));
+
+  // New browser has one tab with the tab group.
+  EXPECT_EQ(1, second_browser->GetTabStripModel()->count());
+  CheckBrowserContainsTabGroupWithSize(second_browser, group_id, 1u);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
+                       MoveSingleTabFromMultiTabGroupToNewWindow) {
+  // Three tabs with first two in a group.
+  AddTabs(2);
+  tab_groups::TabGroupId group_id =
+      browser()->tab_strip_model()->AddToNewGroup({0, 1});
+  browser()->tab_strip_model()->ChangeTabGroupVisuals(
+      group_id, tab_groups::TabGroupVisualData(
+                    u"Test Group", tab_groups::TabGroupColorId::kGrey));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  EXPECT_TRUE(browser()->tab_strip_model()->IsContextMenuCommandEnabled(
+      0, TabStripModel::CommandMoveTabsToNewWindow));
+  browser()->tab_strip_model()->ExecuteContextMenuCommand(
+      0, TabStripModel::CommandMoveTabsToNewWindow);
+  const BrowserWindowInterface* const second_browser =
+      browser_created_observer.Wait();
+
+  // Original browser has two tabs with the tab group having 1 tab.
+  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
+  EXPECT_TRUE(
+      browser()->GetTabStripModel()->group_model()->ContainsTabGroup(group_id));
+  CheckBrowserContainsTabGroupWithSize(browser(), group_id, 1u);
+
+  // New browser has one ungrouped tab.
+  EXPECT_EQ(1, second_browser->GetTabStripModel()->count());
+  EXPECT_EQ(std::nullopt,
+            second_browser->GetTabStripModel()->GetTabAtIndex(0)->GetGroup());
+}
+
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveTabsToNewWindow_WithSplitView) {
   // Three tabs with last two in a group
   AddTabs(2);
@@ -428,7 +491,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveGroupToNewWindow) {
   chrome::MoveGroupToNewWindow(browser(), group_id);
   ASSERT_EQ(1, browser()->tab_strip_model()->count());
 
-  Browser* active_browser = browser_created_observer->Wait();
+  BrowserWindowInterface* active_browser = browser_created_observer->Wait();
 
   CheckBrowserContainsTabGroupWithSize(active_browser, group_id, 2u);
   EXPECT_EQ(tab_groups::TabGroupVisualData(u"Test Group",
@@ -451,10 +514,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveGroupToExistingWindow) {
                                      tab_groups::TabGroupColorId::kBlue));
 
   // Prepare the target browser (existing window).
-  Browser* target_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(browser()->GetProfile(),
-                                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* target_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   ASSERT_TRUE(target_browser);
   AddTabs(target_browser, 1);
 
@@ -478,7 +540,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveGroupToExistingWindow) {
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, MoveTabsToExistingWindow) {
   // Create another window, and add tabs.
-  Browser* second_window =
+  BrowserWindowInterface* second_window =
       ui_test_utils::OpenNewEmptyWindowAndWaitUntilActivated(
           browser()->GetProfile());
   AddTabs(browser(), 2);
@@ -507,10 +569,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
   ASSERT_EQ(4, browser()->tab_strip_model()->count());
 
   // Target browser: 0(active)
-  Browser* target_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(browser()->GetProfile(),
-                                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* target_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   AddTabs(target_browser, 1);
   ASSERT_EQ(1, target_browser->tab_strip_model()->count());
 
@@ -536,10 +597,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
   ASSERT_EQ(4, browser()->tab_strip_model()->count());
 
   // Target browser: 0(active)
-  Browser* target_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(browser()->GetProfile(),
-                                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* target_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   AddTabs(target_browser, 1);
   ASSERT_EQ(1, target_browser->tab_strip_model()->count());
 
@@ -571,10 +631,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
                     u"Test Group", tab_groups::TabGroupColorId::kGrey));
 
   // Target browser: 0(active)
-  Browser* target_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(browser()->GetProfile(),
-                                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* target_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   AddTabs(target_browser, 1);
   ASSERT_EQ(1, target_browser->tab_strip_model()->count());
 
@@ -604,10 +663,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
           split_tabs::SplitTabCreatedSource::kToolbarButton);
 
   // Target browser: 0(active)
-  Browser* target_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(browser()->GetProfile(),
-                                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* target_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   AddTabs(target_browser, 1);
   ASSERT_EQ(1, target_browser->tab_strip_model()->count());
 
@@ -704,12 +762,10 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
                        ConvertPopupToTabbedBrowserShutdownRace) {
   // Confirm we do not incorrectly start shutdown when converting a popup into a
   // tab, in the case where the popup is the only active Browser object
-  Browser* popup_browser =
-      CreateBrowserWindow(
-          BrowserWindowCreateParams(BrowserWindowInterface::TYPE_POPUP,
-                                    browser()->GetProfile(),
-                                    /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* popup_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          BrowserWindowInterface::TYPE_POPUP, browser()->GetProfile(),
+          /*from_user_gesture=*/true));
   chrome::AddTabAt(popup_browser, GURL(url::kAboutBlankURL), -1, true);
   popup_browser->tab_strip_model()->SelectTabAt(0);
   browser()->tab_strip_model()->CloseAllTabs();
@@ -721,28 +777,28 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, AddingToReadingListOpensToast) {
   GURL main_url(https_server_.GetURL("a.test", "/iframe.html"));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
   chrome::ExecuteCommand(browser(), IDC_READING_LIST_MENU_ADD_TAB);
-  EXPECT_TRUE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
                        AddingToReadingListWithSidePanelShowsNoToast) {
   GURL main_url(https_server_.GetURL("a.test", "/iframe.html"));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-  auto* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  auto* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(SidePanelEntryId::kReadingList);
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return side_panel_ui->IsSidePanelEntryShowing(
         SidePanelEntryKey(SidePanelEntryId::kReadingList));
   }));
   chrome::ExecuteCommand(browser(), IDC_READING_LIST_MENU_ADD_TAB);
-  EXPECT_FALSE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_FALSE(ToastController::From(browser())->IsShowingToast());
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, CopyingUrlOpensToast) {
   GURL main_url(https_server_.GetURL("a.test", "/iframe.html"));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
   chrome::ExecuteCommand(browser(), IDC_COPY_URL);
-  EXPECT_TRUE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
@@ -764,8 +820,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
   EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(1));
   EXPECT_FALSE(browser()->tab_strip_model()->IsTabSelected(2));
 
-  ToastController* const toast_controller =
-      browser()->GetFeatures().toast_controller();
+  ToastController* const toast_controller = ToastController::From(browser());
   ASSERT_TRUE(toast_controller);
 
   // Attempting to close selected tabs when ALL are pinned triggers the toast
@@ -798,8 +853,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(1));
   EXPECT_FALSE(browser()->tab_strip_model()->IsTabSelected(2));
 
-  ToastController* const toast_controller =
-      browser()->GetFeatures().toast_controller();
+  ToastController* const toast_controller = ToastController::From(browser());
   ASSERT_TRUE(toast_controller);
 
   // Attempting to close selected tabs when NOT ALL selected tabs are pinned
@@ -864,5 +918,77 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
             tab_strip_model->GetActiveWebContents()->GetLastCommittedURL());
 }
 #endif
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, NewIncognitoWindowMetrics) {
+  base::UserActionTester action_tester;
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIncognitoWindow"));
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIncognitoWindow2"));
+  EXPECT_EQ(0, action_tester.GetActionCount("NewIsolatedWindow"));
+  EXPECT_EQ(0, action_tester.GetActionCount("NewGuestWindow"));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
+                       CommerceUiTabHelperDisabledInIncognito) {
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
+
+  tabs::TabInterface* incognito_tab =
+      incognito_browser->GetTabStripModel()->GetActiveTab();
+  ASSERT_NE(incognito_tab, nullptr);
+  EXPECT_EQ(incognito_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+}
+
+class BrowserCommandsIsolatedModeTest : public InProcessBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
+                       NewIsolatedWindowMetrics) {
+  base::UserActionTester action_tester;
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIncognitoWindow"));
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIsolatedWindow"));
+  EXPECT_EQ(0, action_tester.GetActionCount("NewIncognitoWindow2"));
+  EXPECT_EQ(0, action_tester.GetActionCount("NewGuestWindow"));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
+                       NewEmptyWindowAllowedWhenIncognitoDisabled) {
+  IncognitoModePrefs::SetAvailability(
+      browser()->GetProfile()->GetPrefs(),
+      policy::IncognitoModeAvailability::kDisabled);
+
+  base::UserActionTester action_tester;
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIncognitoWindow"));
+  EXPECT_EQ(1, action_tester.GetActionCount("NewIsolatedWindow"));
+  EXPECT_EQ(0, action_tester.GetActionCount("NewIncognitoWindow2"));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
+                       CommerceUiTabHelperDisabledInIsolatedMode) {
+  tabs::TabInterface* regular_tab =
+      browser()->tab_strip_model()->GetActiveTab();
+  ASSERT_NE(regular_tab, nullptr);
+  EXPECT_NE(regular_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+
+  tabs::TabInterface* isolated_tab =
+      isolated_browser->GetTabStripModel()->GetActiveTab();
+  ASSERT_NE(isolated_tab, nullptr);
+  EXPECT_EQ(isolated_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+}
 
 }  // namespace chrome

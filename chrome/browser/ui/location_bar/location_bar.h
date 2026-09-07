@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
@@ -42,6 +43,10 @@ class WebContents;
 namespace ui {
 class MouseEvent;
 class TrackedElement;
+}
+
+namespace views {
+class Widget;
 }
 
 // The LocationBar class is a virtual interface, defining access to the
@@ -227,6 +232,13 @@ class LocationBar {
   void AddLocationBarObserver(Observer* observer);
   void RemoveLocationBarObserver(Observer* observer);
 
+  base::WeakPtr<LocationBar> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+  base::WeakPtr<const LocationBar> GetWeakPtr() const {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  protected:
   virtual ~LocationBar();
 
@@ -237,6 +249,7 @@ class LocationBar {
   NavigationParams navigation_params_;
   const raw_ptr<CommandUpdater, DanglingUntriaged> command_updater_;
   base::ObserverList<Observer> observers_;
+  base::WeakPtrFactory<LocationBar> weak_ptr_factory_{this};
 };
 
 class LocationBarTesting {
@@ -247,6 +260,13 @@ class LocationBarTesting {
 
   // Returns if the content setting image at |index| is displaying a bubble.
   virtual bool IsContentSettingBubbleShowing(size_t index) = 0;
+
+  // Returns the bubble widget for the content setting image at |index|, if
+  // showing.
+  virtual views::Widget* GetContentSettingBubbleWidget(size_t index) = 0;
+
+  // Returns if the content setting image at |index| is currently visible.
+  virtual bool IsContentSettingImageVisible(size_t index) = 0;
 
  protected:
   virtual ~LocationBarTesting() = default;

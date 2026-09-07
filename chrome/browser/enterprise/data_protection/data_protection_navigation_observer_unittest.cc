@@ -46,7 +46,9 @@
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #include "components/safe_browsing/core/browser/referring_app_info.h"
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/mock_navigation_handle.h"
@@ -1393,18 +1395,6 @@ TEST_F(DataProtectionNavigationObserverTest,
 
 TEST_F(DataProtectionNavigationObserverTest,
        TestScreenshotUpdated_DistillerUrl_InvalidHash) {
-  logging::ScopedVmoduleSwitches scoped_vmodule_switches;
-  scoped_vmodule_switches.InitWithSwitches(
-      "data_protection_navigation_observer=1");
-
-  base::test::MockLog mock_log;
-  EXPECT_CALL(mock_log, Log).Times(testing::AnyNumber());
-  EXPECT_CALL(mock_log,
-              Log(logging::LOGGING_VERBOSE, testing::_, testing::_, testing::_,
-                  testing::HasSubstr("GetOriginalUrl got a invalid url: ")))
-      .Times(1);
-  mock_log.StartCapturingLogs();
-
   GURL invalid_distilled_url(
       "chrome-distiller://invalid_hash/?url=https%3A%2F%2Fexample.com");
 

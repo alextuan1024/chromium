@@ -12,6 +12,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/ash/login/screens/base_screen.h"
@@ -78,7 +79,11 @@ class LocaleSwitchScreen : public BaseScreen,
     exit_callback_ = callback;
   }
 
+  void set_timeout_for_testing(base::TimeDelta timeout) { timeout_ = timeout; }
+
  private:
+  static constexpr base::TimeDelta kWaitTimeout = base::Seconds(5);
+
   // BaseScreen:
   void ShowImpl() override;
   void HideImpl() override;
@@ -119,8 +124,15 @@ class LocaleSwitchScreen : public BaseScreen,
   std::unique_ptr<ScopedSessionRefresher> session_refresher_;
 
   base::OneShotTimer timeout_waiter_;
+  base::TimeDelta timeout_ = kWaitTimeout;
 
   bool refresh_token_loaded_ = false;
+
+  // Whether the required Account Capabilities have been loaded from the server.
+  //
+  // The only relevant downstream consumer of account capabilities is
+  // SyncConsentScreen, which provides AreCapabilitiesLoaded() to check if the
+  // required capabilities are available.
   bool account_capabilities_loaded_ = false;
 
   base::WeakPtrFactory<LocaleSwitchScreen> weak_factory_{this};

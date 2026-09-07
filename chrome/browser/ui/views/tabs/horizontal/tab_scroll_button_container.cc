@@ -5,23 +5,32 @@
 #include "chrome/browser/ui/views/tabs/horizontal/tab_scroll_button_container.h"
 
 #include <algorithm>
+#include <cmath>
 
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
+#include "base/scoped_observation.h"
+#include "base/timer/timer.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/horizontal_tab_strip_metrics.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/scrollbar/scroll_bar.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_observer.h"
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabScrollButtonContainer,
                                       kTabScrollButtonContainer);
@@ -36,7 +45,89 @@ namespace {
 constexpr base::TimeDelta kScrollAnimationTime = base::Milliseconds(300);
 constexpr int kScrollButtonSpacing = 1;
 constexpr int kScrollButtonHorizontalPadding = 4;
+constexpr base::TimeDelta kIPHDisplayDelay = base::Seconds(3);
 }  // namespace
+
+class TabScrollButtonContainer::TabScrollButtonIPHController
+    : public views::ViewObserver {
+ public:
+  TabScrollButtonIPHController(
+      BrowserWindowInterface* browser_window_interface,
+      TabScrollButtonContainer* tab_scroll_button_container);
+  TabScrollButtonIPHController(const TabScrollButtonIPHController&) = delete;
+  TabScrollButtonIPHController& operator=(const TabScrollButtonIPHController&) =
+      delete;
+  ~TabScrollButtonIPHController() override;
+
+  // views::ViewObserver:
+  void OnViewVisibilityChanged(views::View* observed_view,
+                               views::View* starting_view,
+                               bool visible) override;
+
+ private:
+  void MaybeShowIPH();
+
+  raw_ptr<BrowserWindowInterface> browser_window_interface_ = nullptr;
+  raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
+  base::ScopedObservation<views::View, views::ViewObserver> observation_{this};
+  base::OneShotTimer show_iph_timer_;
+};
+
+TabScrollButtonContainer::TabScrollButtonIPHController::
+    TabScrollButtonIPHController(
+        BrowserWindowInterface* browser_window_interface,
+        TabScrollButtonContainer* tab_scroll_button_container)
+    : browser_window_interface_(browser_window_interface),
+      tab_scroll_button_container_(tab_scroll_button_container) {
+  CHECK(tab_scroll_button_container_);
+  observation_.Observe(tab_scroll_button_container_);
+  if (tab_scroll_button_container_->GetVisible()) {
+    show_iph_timer_.Start(
+        FROM_HERE, kIPHDisplayDelay,
+        base::BindOnce(&TabScrollButtonContainer::TabScrollButtonIPHController::
+                           MaybeShowIPH,
+                       base::Unretained(this)));
+  }
+}
+
+TabScrollButtonContainer::TabScrollButtonIPHController::
+    ~TabScrollButtonIPHController() = default;
+
+void TabScrollButtonContainer::TabScrollButtonIPHController::
+    OnViewVisibilityChanged(views::View* observed_view,
+                            views::View* starting_view,
+                            bool visible) {
+  if (!visible) {
+    show_iph_timer_.Stop();
+    return;
+  }
+
+  if (auto* user_education =
+          BrowserUserEducationInterface::From(browser_window_interface_)) {
+    if (user_education->HasFeaturePromoBeenDismissed(
+            feature_engagement::kIPHTabScrollButtonFeature)) {
+      show_iph_timer_.Stop();
+      observation_.Reset();
+      return;
+    }
+  }
+
+  if (!show_iph_timer_.IsRunning()) {
+    show_iph_timer_.Start(
+        FROM_HERE, kIPHDisplayDelay,
+        base::BindOnce(&TabScrollButtonContainer::TabScrollButtonIPHController::
+                           MaybeShowIPH,
+                       base::Unretained(this)));
+  }
+}
+
+void TabScrollButtonContainer::TabScrollButtonIPHController::MaybeShowIPH() {
+  if (auto* user_education =
+          BrowserUserEducationInterface::From(browser_window_interface_)) {
+    user_education->MaybeShowFeaturePromo(
+        feature_engagement::kIPHTabScrollButtonFeature);
+  }
+}
 
 TabScrollButtonContainer::TabScrollButtonContainer(
     BrowserWindowInterface* browser_window_interface)
@@ -84,6 +175,15 @@ TabScrollButtonContainer::TabScrollButtonContainer(
   start_scroll_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   end_scroll_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   animation_.SetDuration(kScrollAnimationTime);
+
+  if (auto* user_education =
+          BrowserUserEducationInterface::From(browser_window_interface_)) {
+    if (!user_education->HasFeaturePromoBeenDismissed(
+            feature_engagement::kIPHTabScrollButtonFeature)) {
+      iph_controller_ = std::make_unique<TabScrollButtonIPHController>(
+          browser_window_interface_, this);
+    }
+  }
 }
 
 TabScrollButtonContainer::~TabScrollButtonContainer() = default;
@@ -114,11 +214,27 @@ void TabScrollButtonContainer::ShowContextMenuForViewImpl(
       views::MenuAnchorPosition::kTopLeft, source_type);
 }
 
+void TabScrollButtonContainer::VisibilityChanged(views::View* starting_from,
+                                                 bool is_visible) {
+  if (starting_from != this) {
+    return;
+  }
+
+  if (is_visible) {
+    base::RecordAction(
+        base::UserMetricsAction("HorizontalTabStrip.ScrollButtons.Visible"));
+  } else {
+    base::RecordAction(
+        base::UserMetricsAction("HorizontalTabStrip.ScrollButtons.Hidden"));
+  }
+}
+
 void TabScrollButtonContainer::ExecuteCommand(int command_id, int event_flags) {
   if (command_id == IDC_TAB_SCROLL_BUTTONS_TOGGLE_PIN) {
     if (actions::ActionItem* toggle_scroll_pin_action =
             GetToggleScrollPinAction()) {
-      CHECK(toggle_scroll_pin_action);
+      base::RecordAction(
+          base::UserMetricsAction("TabScrollButton.ContextMenu.Unpinned"));
       toggle_scroll_pin_action->InvokeAction();
     }
   }
@@ -156,38 +272,34 @@ void TabScrollButtonContainer::BeginScrollAnimation(bool scroll_to_start) {
     animation_.Stop();
   }
 
-  int full_scroll_amount =
+  const float page_scroll_amount =
       scroll_view_->GetScrollIncrement(scroll_bar, /*is_page=*/true,
                                        /*is_positive=*/true);
-  int current_offset = static_cast<int>(scroll_view_->CurrentOffset().x());
+  const float min_inactive_tab_width =
+      TabStyle::Get()->GetMinimumInactiveWidth();
 
-  // We may not scroll the entire `full_scroll_amount`, if the current offset
-  // is less than `full_scroll_amount` from the start and we are scrolling left,
-  // or the current offset is less than `full_scroll_amount` away from the
-  // end and we are scrolling right.
-  int actual_scroll_amount = full_scroll_amount;
+  // When pagination scrolling, decrease the scroll distance by the minimum
+  // tab width so that at least one of the tabs from before the scroll
+  // remains visible.
+  const float full_scroll_amount =
+      std::max(0.0f, page_scroll_amount - min_inactive_tab_width);
+  const float current_offset = scroll_view_->CurrentOffset().x();
+  float target_offset = current_offset + (base::i18n::IsRTL() ? -1 : 1) *
+                                             (scroll_to_start ? -1 : 1) *
+                                             full_scroll_amount;
+  target_offset = std::clamp<float>(target_offset, scroll_bar->GetMinPosition(),
+                                    scroll_bar->GetMaxPosition());
 
-  if (scroll_to_start) {
-    actual_scroll_amount = std::max(
-        0, base::i18n::IsRTL() ? scroll_bar->GetMaxPosition() - current_offset
-                               : current_offset - scroll_bar->GetMinPosition());
-  } else {
-    actual_scroll_amount = std::max(
-        0, base::i18n::IsRTL() ? current_offset - scroll_bar->GetMinPosition()
-                               : scroll_bar->GetMaxPosition() - current_offset);
-  }
-  actual_scroll_amount = std::min(full_scroll_amount, actual_scroll_amount);
-
-  if (actual_scroll_amount <= 0) {
+  if (current_offset == target_offset) {
     animation_params_ = std::nullopt;
     return;
   }
 
-  animation_params_ = AnimationParams{
-      .scroll_to_start = scroll_to_start,
-      .amount_to_scroll = actual_scroll_amount,
-      .last_progress = 0,
-  };
+  tabs::RecordHorizontalTabStripScrollSource(
+      tabs::HorizontalTabStripScrollSource::kButtons);
+
+  animation_params_ = AnimationParams{.start_offset = current_offset,
+                                      .target_offset = target_offset};
 
   animation_.Start();
 }
@@ -199,18 +311,17 @@ void TabScrollButtonContainer::AnimationProgressed(
 
   float progress = gfx::Tween::CalculateValue(gfx::Tween::Type::EASE_OUT,
                                               animation_.GetCurrentValue());
-  float progress_since_last_scroll =
-      std::max(0.0f, progress - animation_params_->last_progress);
-  float need_to_scroll =
-      animation_params_->amount_to_scroll * progress_since_last_scroll;
-  int sign = animation_params_->scroll_to_start ? -1 : 1;
-  sign *= base::i18n::IsRTL() ? -1 : 1;
-
-  scroll_view_->ScrollByOffset({sign * need_to_scroll, 0});
-  animation_params_->last_progress = progress;
+  const float current_x =
+      gfx::Tween::FloatValueBetween(progress, animation_params_->start_offset,
+                                    animation_params_->target_offset);
+  scroll_view_->ScrollToOffset({current_x, 0.0f});
 }
 
 void TabScrollButtonContainer::AnimationEnded(const gfx::Animation* animation) {
+  if (scroll_view_) {
+    CHECK(animation_params_);
+    scroll_view_->ScrollToOffset({animation_params_->target_offset, 0.0f});
+  }
   animation_params_ = std::nullopt;
 }
 

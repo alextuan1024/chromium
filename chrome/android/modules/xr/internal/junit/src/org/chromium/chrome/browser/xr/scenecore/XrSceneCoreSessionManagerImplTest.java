@@ -110,6 +110,20 @@ public class XrSceneCoreSessionManagerImplTest {
     }
 
     @Test
+    public void testRequestSpaceModeChange_RequestInProgress() {
+        when(mActivity.hasWindowFocus()).thenReturn(true);
+
+        boolean result = mManager.requestSpaceModeChange(true, mCallback);
+        assertTrue(result);
+
+        boolean secondResult = mManager.requestSpaceModeChange(false, mCallback);
+        assertFalse(secondResult);
+
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.isXrFullSpaceMode());
+    }
+
+    @Test
     public void testRequestSpaceModeChange_NoFocus() {
         when(mActivity.hasWindowFocus()).thenReturn(false);
 
@@ -183,6 +197,19 @@ public class XrSceneCoreSessionManagerImplTest {
         SurfaceEntity surfaceEntity = (SurfaceEntity) holder.getEntity();
         assertEquals(StereoMode.MONO, surfaceEntity.getStereoMode());
         assertTrue(surfaceEntity.getShape() instanceof Shape.Hemisphere);
+    }
+
+    @Test
+    public void testCreateSurfaceEntity_SeamlessSphere() {
+        XrSurfaceEntityHolder holder =
+                mManager.createSurfaceEntity(XrSurfaceEntityShape.SEAMLESS_SPHERE);
+        assertNotNull(holder);
+        assertTrue(holder instanceof XrCurvedSurfaceEntityHolder);
+
+        SurfaceEntity surfaceEntity = (SurfaceEntity) holder.getEntity();
+        assertEquals(StereoMode.MONO, surfaceEntity.getStereoMode());
+        assertTrue(surfaceEntity.getShape() instanceof Shape.CustomMesh);
+        assertEquals(XrSurfaceEntityShape.SEAMLESS_SPHERE, holder.getSurfaceShape());
     }
 
     @Test

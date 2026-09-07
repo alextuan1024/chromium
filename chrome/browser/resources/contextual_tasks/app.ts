@@ -242,10 +242,6 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
         type: Boolean,
         reflect: true,
       },
-      useStratusDarkModeColors_: {
-        type: Boolean,
-        reflect: true,
-      },
       isInputLocked_: {
         type: Boolean,
       },
@@ -371,8 +367,6 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
   protected accessor inNlm_: boolean = false;
   protected accessor isGhostLoaderVisible_: boolean =
       loadTimeData.getBoolean('isGhostLoaderVisible');
-  protected accessor useStratusDarkModeColors_: boolean =
-      loadTimeData.getBoolean('useStratusDarkModeColors');
   protected accessor isInputLocked_: boolean = false;
   protected accessor isLoadingZeroStateFromResults_: boolean = false;
   // The bounds of the composebox that are forced by the embedded page. These
@@ -421,6 +415,9 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
   // A callback to allow tests to wait until the loadstart handler in this class
   // has finished running.
   private onLoadStartFinishedCallbackForTesting_: (() => void)|null = null;
+  // Tracks whether at least one top-level navigation handler has finished
+  // running. Used to support waiting for the initial navigation in tests.
+  private hasFinishedTopLevelNavigationForTesting_: boolean = false;
   private forceBasicModeIfOpeningThreadHistory_: boolean =
       loadTimeData.getBoolean('forceBasicModeIfOpeningThreadHistory');
   // This is needed to keep navigations between non-AIM pages from triggering
@@ -850,9 +847,13 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
     const changedPrivateProperties =
         changedProperties as Map<PropertyKey, unknown>;
 
+    if (changedPrivateProperties.has('darkMode_')) {
+      this.updateBackgroundColor_();
+    }
+
     // Fetch the common search params before setting up the request overrides.
-    // TODO(crbug.com/463729504): Add checking to see if dark mode changed.
-    if (changedPrivateProperties.has('isShownInTab_')) {
+    if (changedPrivateProperties.has('isShownInTab_') ||
+        changedPrivateProperties.has('darkMode_')) {
       this.updateCommonSearchParams();
     }
 
@@ -890,7 +891,8 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
     }
     return this.entryPoint_ === 'omnibox_tab_search' ||
         this.entryPoint_ === 'omnibox_action' ||
-        this.entryPoint_ === 'omnibox_contextual_suggestion';
+        this.entryPoint_ === 'omnibox_contextual_suggestion' ||
+        this.entryPoint_ === 'omnibox_popup_button';
   }
 
   // <if expr="not is_android">
@@ -1186,6 +1188,7 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
     // If the frame is no longer loading after waiting for isAiPage,
     // then exit early to prevent racind.
     if (!this.isFrameLoading) {
+      this.hasFinishedTopLevelNavigationForTesting_ = true;
       if (this.onLoadStartFinishedCallbackForTesting_) {
         this.onLoadStartFinishedCallbackForTesting_();
       }
@@ -1236,6 +1239,7 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
 
     this.isInitialFrameLoad_ = false;
 
+    this.hasFinishedTopLevelNavigationForTesting_ = true;
     if (this.onLoadStartFinishedCallbackForTesting_) {
       this.onLoadStartFinishedCallbackForTesting_();
     }
@@ -1826,6 +1830,10 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
     this.onLoadStartFinishedCallbackForTesting_ = callback;
   }
 
+  getHasFinishedTopLevelNavigationForTesting(): boolean {
+    return this.hasFinishedTopLevelNavigationForTesting_;
+  }
+
   setMockPostMessageHandlerForTesting(
       mockPostMessageHandler: PostMessageHandler) {
     this.postMessageHandler_ = mockPostMessageHandler;
@@ -1934,9 +1942,7 @@ export class ContextualTasksAppElement extends ContextualTasksAppElementBase {
 
   private updateBackgroundColor_() {
     if (this.darkMode_) {
-      document.body.style.backgroundColor = this.useStratusDarkModeColors_ ?
-          'rgba(34, 36, 43, 1)' :
-          'rgba(16, 18, 23, 1)';
+      document.body.style.backgroundColor = 'rgba(34, 36, 43, 1)';
     } else {
       document.body.style.backgroundColor = 'rgba(255, 255, 255, 1)';
     }

@@ -500,8 +500,7 @@ void ShowSettingsSubPageInTabbedBrowser(BrowserWindowInterface* browser,
 void ShowPageWithPromoForProfile(Profile* profile,
                                  ShowPromoInPage::Params promo_params) {
   BrowserWindowInterface* browser = GetOrCreateBrowserForProfile(profile);
-  ShowPromoInPage::Start(browser->GetBrowserForMigrationOnly(),
-                         std::move(promo_params));
+  ShowPromoInPage::Start(browser, std::move(promo_params));
 }
 
 void ShowContentSettingsExceptions(BrowserWindowInterface* browser,
@@ -556,7 +555,7 @@ void ShowPasswordManager(BrowserWindowInterface* bwi) {
   auto* service =
       UserEducationServiceFactory::GetForBrowserContext(bwi->GetProfile());
   if (service) {
-    auto* tutorial_service = &service->tutorial_service();
+    auto* tutorial_service = service->tutorial_service();
     if (tutorial_service &&
         tutorial_service->IsRunningTutorial(kPasswordManagerTutorialId)) {
       ShowSingletonTab(bwi, GURL(kChromeUIPasswordManagerSettingsURL));
@@ -609,8 +608,7 @@ void ShowSafeBrowsingEnhancedProtectionWithIph(
   base::UmaHistogramEnumeration("SafeBrowsing.EsbPromotionFlow.IphShown",
                                 referral_method);
   safe_browsing::LogShowEnhancedProtectionAction();
-  ShowPromoInPage::Start(browser->GetBrowserForMigrationOnly(),
-                         std::move(params));
+  ShowPromoInPage::Start(browser, std::move(params));
 #endif
 }
 

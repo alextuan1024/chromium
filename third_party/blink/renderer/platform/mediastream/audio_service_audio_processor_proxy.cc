@@ -31,6 +31,10 @@ void AudioServiceAudioProcessorProxy::SetControls(
   DCHECK(controls);
   processor_controls_ = controls;
 
+  if (voice_isolation_enabled_.has_value()) {
+    processor_controls_->SetVoiceIsolation(*voice_isolation_enabled_);
+  }
+
   stats_update_timer_.Start(
       FROM_HERE, kStatsUpdateInterval,
       blink::BindRepeating(&AudioServiceAudioProcessorProxy::RequestStats,
@@ -70,9 +74,19 @@ void AudioServiceAudioProcessorProxy::MaybeUpdateNumPreferredCaptureChannels(
 
 void AudioServiceAudioProcessorProxy::SetVoiceIsolation(bool enabled) {
   DCHECK_CALLED_ON_VALID_THREAD(main_thread_checker_);
+  if (voice_isolation_enabled_.has_value() &&
+      *voice_isolation_enabled_ == enabled) {
+    return;
+  }
+  voice_isolation_enabled_ = enabled;
   if (processor_controls_) {
     processor_controls_->SetVoiceIsolation(enabled);
   }
+}
+
+std::optional<bool> AudioServiceAudioProcessorProxy::VoiceIsolation() const {
+  DCHECK_CALLED_ON_VALID_THREAD(main_thread_checker_);
+  return voice_isolation_enabled_;
 }
 
 void AudioServiceAudioProcessorProxy::RequestStats() {

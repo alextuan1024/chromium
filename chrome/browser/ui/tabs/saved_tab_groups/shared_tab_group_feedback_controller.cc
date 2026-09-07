@@ -14,20 +14,31 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_ids.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/views/view_class_properties.h"
 
 namespace tab_groups {
 
+DEFINE_USER_DATA(SharedTabGroupFeedbackController);
+
+// static
+SharedTabGroupFeedbackController* SharedTabGroupFeedbackController::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
 SharedTabGroupFeedbackController::SharedTabGroupFeedbackController(
     BrowserWindowInterface* browser)
-    : browser_(browser),
+    : scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
+      browser_(browser),
       tab_group_sync_service_(
           TabGroupSyncServiceFactory::GetForProfile(browser_->GetProfile())) {
   CHECK(tab_group_sync_service_);

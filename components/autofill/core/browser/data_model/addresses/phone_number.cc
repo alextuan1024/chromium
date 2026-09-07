@@ -20,7 +20,7 @@
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
-#include "components/autofill/core/browser/data_model/data_model_utils.h"
+#include "components/autofill/core/browser/data_model/data_model_util.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
@@ -52,6 +52,8 @@ PhoneNumber::PhoneNumber(const PhoneNumber& number) : profile_(nullptr) {
   *this = number;
 }
 
+PhoneNumber::PhoneNumber(PhoneNumber&& number) noexcept = default;
+
 PhoneNumber::~PhoneNumber() = default;
 
 PhoneNumber& PhoneNumber::operator=(const PhoneNumber& number) {
@@ -63,6 +65,8 @@ PhoneNumber& PhoneNumber::operator=(const PhoneNumber& number) {
   cached_parsed_phone_ = number.cached_parsed_phone_;
   return *this;
 }
+
+PhoneNumber& PhoneNumber::operator=(PhoneNumber&& number) noexcept = default;
 
 bool PhoneNumber::operator==(const PhoneNumber& other) const {
   if (this == &other)

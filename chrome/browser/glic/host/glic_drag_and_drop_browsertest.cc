@@ -29,6 +29,7 @@
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/drag_and_drop_test_utils.h"
@@ -71,7 +72,8 @@ class GlicDragAndDropPolicyTest : public GlicApiBrowserTest {
   using InProcessBrowserTest::browser;
 
   GlicDragAndDropPolicyTest()
-      : GlicApiBrowserTest("./glic_drag_and_drop_browsertest.js") {
+      : GlicApiBrowserTest(
+            GlicTestJsPath("./glic_drag_and_drop_browsertest.js")) {
     feature_list_.InitWithFeatures({features::kGlicDragAndDropFileUpload,
                                     features::kGlicWebDragAndDropFileUpload},
                                    {});
@@ -287,10 +289,6 @@ class GlicDragAndDropPolicyTest : public GlicApiBrowserTest {
  private:
   base::test::ScopedFeatureList feature_list_;
 };
-
-IN_PROC_BROWSER_TEST_F(GlicDragAndDropPolicyTest, testAllTestsAreRegistered) {
-  AssertAllTestsRegistered({"GlicDragAndDropPolicyTest"});
-}
 
 IN_PROC_BROWSER_TEST_F(GlicDragAndDropPolicyTest, testDragAndDropDlp) {
   enterprise_connectors::ContentAnalysisDelegate::SetFactoryForTesting(

@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_attention_indicator.h"
 #include "chrome/browser/ui/tabs/tab_group_features.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -40,6 +41,8 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -68,8 +71,7 @@ class TabStripBrowsertest : public InProcessBrowserTest {
     // The TabStrip is not used in Vertical Tabs. Ensure this suite is not run
     // which would end up testing behavior that is not part of the browser.
     feature_list_.InitWithFeatures(
-        {}, {tabs::kVerticalTabs, tabs::kTabStripUnification,
-             features::kTabGroupHoverCards});
+        {}, {tabs::kTabStripUnification, features::kTabGroupHoverCards});
   }
 
   TabStripModel* tab_strip_model() { return browser()->GetTabStripModel(); }

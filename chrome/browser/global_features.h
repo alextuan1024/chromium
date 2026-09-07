@@ -11,6 +11,7 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/buildflags.h"
+#include "chrome/common/request_header_integrity/buildflags.h"
 #include "net/net_buildflags.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
@@ -88,6 +89,7 @@ class OnDeviceTranslationInstaller;
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 namespace scheduled_restart {
+class ScheduledRestartBubbleController;
 class ScheduledRestartManager;
 }  // namespace scheduled_restart
 #endif
@@ -100,6 +102,12 @@ class SmartRestartMetricsObserver;
 namespace tabs_api {
 class TabDragSessionManager;
 }
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+namespace request_header_integrity {
+class ChromeCompaneroHost;
+}
+#endif
 
 // This class owns the core controllers for features that are globally
 // scoped on desktop and Android. It can be subclassed by tests to perform
@@ -226,6 +234,11 @@ class GlobalFeatures {
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  scheduled_restart::ScheduledRestartBubbleController*
+  scheduled_restart_bubble_controller() {
+    return scheduled_restart_bubble_controller_.get();
+  }
+
   scheduled_restart::ScheduledRestartManager* scheduled_restart_manager() {
     return scheduled_restart_manager_.get();
   }
@@ -234,6 +247,12 @@ class GlobalFeatures {
   tabs_api::TabDragSessionManager* tab_drag_session_manager() {
     return tab_drag_session_manager_.get();
   }
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  request_header_integrity::ChromeCompaneroHost* chrome_companero_host() {
+    return chrome_companero_host_.get();
+  }
+#endif
 
  protected:
   GlobalFeatures();
@@ -252,6 +271,10 @@ class GlobalFeatures {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   virtual std::unique_ptr<scheduled_restart::ScheduledRestartManager>
   CreateScheduledRestartManager();
+#endif
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  virtual std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
+  CreateChromeCompaneroHost();
 #endif
 
  private:
@@ -328,6 +351,8 @@ class GlobalFeatures {
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  std::unique_ptr<scheduled_restart::ScheduledRestartBubbleController>
+      scheduled_restart_bubble_controller_;
   std::unique_ptr<scheduled_restart::ScheduledRestartManager>
       scheduled_restart_manager_;
 #endif
@@ -335,6 +360,11 @@ class GlobalFeatures {
   std::unique_ptr<tabs_api::TabDragSessionManager> tab_drag_session_manager_;
 
   std::unique_ptr<GlassFrameService> glass_frame_service_;
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
+      chrome_companero_host_;
+#endif
 };
 
 #endif  // CHROME_BROWSER_GLOBAL_FEATURES_H_

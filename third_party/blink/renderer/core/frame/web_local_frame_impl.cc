@@ -473,7 +473,8 @@ class ChromePrintContext : public PrintContext {
     gfx::Rect page_rect = PageRect(page_index);
 
     // Cancel out the scroll offset used in screen mode.
-    gfx::Vector2d offset = frame_view->LayoutViewport()->ScrollOffsetInt();
+    gfx::Vector2d offset =
+        frame_view->LayoutViewport()->PixelSnappedScrollOffset();
     context.Save();
     context.Translate(static_cast<float>(offset.x()),
                       static_cast<float>(offset.y()));
@@ -949,10 +950,9 @@ WebDocument WebLocalFrameImpl::GetDocument() const {
   return WebDocument(GetFrame()->GetDocument());
 }
 
-base::UnguessableToken WebLocalFrameImpl::GetInitiatorStateToken() const {
-  if (!GetFrame() || !GetFrame()->DomWindow()) {
-    return base::UnguessableToken();
-  }
+InitiatorStateToken WebLocalFrameImpl::GetInitiatorStateToken() const {
+  CHECK(GetFrame());
+  CHECK(GetFrame()->DomWindow());
   return GetFrame()->DomWindow()->GetInitiatorStateToken();
 }
 
@@ -980,12 +980,6 @@ bool WebLocalFrameImpl::IsAdFrame() const {
 bool WebLocalFrameImpl::IsAdScriptInStack() const {
   DCHECK(GetFrame());
   return GetFrame()->IsAdScriptInStack();
-}
-
-bool WebLocalFrameImpl::IsExtensionScriptInStack() const {
-  DCHECK(GetFrame());
-  return GetFrame()->GetExtensionScriptTracker() &&
-         GetFrame()->GetExtensionScriptTracker()->IsExtensionScriptInStack();
 }
 
 void WebLocalFrameImpl::SetAdEvidence(
@@ -1150,12 +1144,12 @@ void WebLocalFrameImpl::RequestExecuteScript(
     BackForwardCacheAware back_forward_cache_aware,
     mojom::blink::WantResultOption want_result_option,
     mojom::blink::PromiseResultOption promise_behavior,
-    bool is_injected_extension_script) {
+    const WebString& script_injector_id) {
   DCHECK(GetFrame());
   GetFrame()->RequestExecuteScript(
       world_id, sources, user_gesture, evaluation_timing, blocking_option,
       std::move(callback), back_forward_cache_aware, want_result_option,
-      promise_behavior, is_injected_extension_script);
+      promise_behavior, script_injector_id);
 }
 
 bool WebLocalFrameImpl::IsInspectorConnected() {
@@ -2138,6 +2132,7 @@ WebLocalFrame* WebLocalFrame::CreateMainFrame(
         interface_broker,
     const LocalFrameToken& frame_token,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     std::unique_ptr<WebPolicyContainer> policy_container,
     WebFrame* opener,
     const WebString& name,
@@ -2147,7 +2142,7 @@ WebLocalFrame* WebLocalFrame::CreateMainFrame(
   return WebLocalFrameImpl::CreateMainFrame(
       web_view, client, interface_registry, std::move(interface_broker),
       frame_token, opener, name, sandbox_flags, document_token,
-      std::move(policy_container), creator_base_url,
+      initiator_state_token, std::move(policy_container), creator_base_url,
       std::move(sandbox_origin_token));
 }
 
@@ -2176,6 +2171,7 @@ WebLocalFrameImpl* WebLocalFrameImpl::CreateMainFrame(
     const WebString& name,
     network::mojom::blink::WebSandboxFlags sandbox_flags,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     std::unique_ptr<WebPolicyContainer> policy_container,
     const WebURL& creator_base_url,
     std::unique_ptr<base::UnguessableToken> sandbox_origin_token) {
@@ -2195,9 +2191,9 @@ WebLocalFrameImpl* WebLocalFrameImpl::CreateMainFrame(
   frame->InitializeCoreFrame(
       page, nullptr, nullptr, nullptr, FrameInsertType::kInsertInConstructor,
       name, opener ? &ToCoreFrame(*opener)->window_agent_factory() : nullptr,
-      opener, document_token, std::move(interface_broker),
-      std::move(policy_container), storage_key, creator_base_url, sandbox_flags,
-      std::move(sandbox_origin_token));
+      opener, document_token, initiator_state_token,
+      std::move(interface_broker), std::move(policy_container), storage_key,
+      creator_base_url, sandbox_flags, std::move(sandbox_origin_token));
   return frame;
 }
 
@@ -2251,6 +2247,7 @@ WebLocalFrameImpl* WebLocalFrameImpl::CreateProvisional(
       previous_web_frame->Parent(), nullptr, FrameInsertType::kInsertLater,
       name, &ToCoreFrame(*previous_web_frame)->window_agent_factory(),
       previous_web_frame->Opener(), DocumentToken(),
+      /*initiator_state_token=*/InitiatorStateToken(),
       std::move(interface_broker),
       /*policy_container=*/nullptr, StorageKey(),
       /*creator_base_url=*/NullUrl(), sandbox_flags,
@@ -2373,6 +2370,7 @@ void WebLocalFrameImpl::InitializeCoreFrame(
     WindowAgentFactory* window_agent_factory,
     WebFrame* opener,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker> interface_broker,
     std::unique_ptr<blink::WebPolicyContainer> policy_container,
     const StorageKey& storage_key,
@@ -2381,7 +2379,8 @@ void WebLocalFrameImpl::InitializeCoreFrame(
     std::unique_ptr<base::UnguessableToken> sandbox_origin_token) {
   InitializeCoreFrameInternal(
       page, owner, parent, previous_sibling, insert_type, name,
-      window_agent_factory, opener, document_token, std::move(interface_broker),
+      window_agent_factory, opener, document_token, initiator_state_token,
+      std::move(interface_broker),
       PolicyContainer::CreateFromWebPolicyContainer(
           std::move(policy_container)),
       storage_key, ukm::kInvalidSourceId, creator_base_url, sandbox_flags,
@@ -2398,6 +2397,7 @@ void WebLocalFrameImpl::InitializeCoreFrameInternal(
     WindowAgentFactory* window_agent_factory,
     WebFrame* opener,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker> interface_broker,
     std::unique_ptr<PolicyContainer> policy_container,
     const StorageKey& storage_key,
@@ -2440,9 +2440,9 @@ void WebLocalFrameImpl::InitializeCoreFrameInternal(
 
   // We must call init() after frame_ is assigned because it is referenced
   // during init().
-  frame_->Init(opener_frame, document_token, std::move(policy_container),
-               storage_key, document_ukm_source_id, creator_base_url,
-               std::move(sandbox_origin_token));
+  frame_->Init(opener_frame, document_token, initiator_state_token,
+               std::move(policy_container), storage_key, document_ukm_source_id,
+               creator_base_url, std::move(sandbox_origin_token));
 
   if (!owner) {
     // This trace event is needed to detect the main frame of the
@@ -2500,6 +2500,7 @@ LocalFrame* WebLocalFrameImpl::CreateChildFrame(
       [this, owner_element, &policy_container_remote, &policy_container_data,
        &name, document_ukm_source_id](
           WebLocalFrame* new_child_frame, const DocumentToken& document_token,
+          const InitiatorStateToken& initiator_state_token,
           CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>
               interface_broker,
           std::unique_ptr<base::UnguessableToken> sandbox_origin_token) {
@@ -2520,7 +2521,8 @@ LocalFrame* WebLocalFrameImpl::CreateChildFrame(
                 *GetFrame()->GetPage(), owner_element, this, LastChild(),
                 FrameInsertType::kInsertInConstructor, name,
                 &GetFrame()->window_agent_factory(), nullptr, document_token,
-                std::move(interface_broker), std::move(policy_container),
+                initiator_state_token, std::move(interface_broker),
+                std::move(policy_container),
                 GetFrame()->DomWindow()->GetStorageKey(),
                 document_ukm_source_id, creator_base_url,
                 network::mojom::blink::WebSandboxFlags::kNone,
@@ -3463,11 +3465,10 @@ void WebLocalFrameImpl::AddHitTestOnTouchStartCallback(
     base::RepeatingCallback<void(const blink::WebHitTestResult&)> callback) {
   TouchStartEventListener* touch_start_event_listener =
       MakeGarbageCollected<TouchStartEventListener>(std::move(callback));
-  AddEventListenerOptionsResolved* options =
-      MakeGarbageCollected<AddEventListenerOptionsResolved>();
-  options->setPassive(true);
-  options->SetPassiveSpecified(true);
-  options->setCapture(true);
+  AddEventListenerOptionsResolved options;
+  options.SetPassive(true);
+  options.SetPassiveSpecified(true);
+  options.SetCapture(true);
   GetFrame()->DomWindow()->addEventListener(
       event_type_names::kTouchstart, touch_start_event_listener, options);
 }

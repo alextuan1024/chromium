@@ -20,6 +20,7 @@
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/favicon_cache.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace app_list {
@@ -242,8 +243,7 @@ std::unique_ptr<OmniboxResultData> CreateAnswerResult(
 
   // Special case: calculator results (are the only answer results to) have no
   // explicit answer data.
-  if (match.answer_type == omnibox::ANSWER_TYPE_UNSPECIFIED) {
-    DCHECK_EQ(match.type, AutocompleteMatchType::CALCULATOR);
+  if (match.type == AutocompleteMatchType::CALCULATOR) {
     result->answer_type = OmniboxResultAnswerType::kCalculator;
 
     // Calculator results come in two forms:

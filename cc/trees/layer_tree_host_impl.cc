@@ -224,12 +224,16 @@ void DidVisibilityChange(LayerTreeHostImpl* id, bool visible) {
                   /*"LayerTreeHostImpl::SetVisible"*/ visibility_track);
 }
 
-void PopulateMetadataContentColorUsage(const FrameData* frame,
+void PopulateMetadataContentColorUsage(const LayerTreeImpl* active_tree,
+                                       const FrameData* frame,
                                        viz::CompositorFrameMetadata* metadata) {
   metadata->content_color_usage = gfx::ContentColorUsage::kSRGB;
-  for (const LayerImpl* layer : frame->will_draw_layers) {
-    metadata->content_color_usage =
-        std::max(metadata->content_color_usage, layer->GetContentColorUsage());
+  for (int layer_id : frame->will_draw_layers) {
+    const LayerImpl* layer = active_tree->LayerById(layer_id);
+    if (layer) {
+      metadata->content_color_usage = std::max(metadata->content_color_usage,
+                                               layer->GetContentColorUsage());
+    }
   }
 }
 
@@ -649,7 +653,9 @@ LayerTreeHostImpl::LayerTreeHostImpl(
         std::make_unique<CompositorFrameReportingController>(
             /*should_report_histograms=*/!settings
                 .single_thread_proxy_scheduler,
-            id,
+            /*should_report_scroll_timing=*/
+            settings.enable_scroll_performance_timing,
+            /*layer_tree_host_id=*/id,
             /*is_trees_in_viz_client=*/
             settings_.TreesInVizInClientProcess());
 #if BUILDFLAG(IS_ANDROID)
@@ -659,6 +665,7 @@ LayerTreeHostImpl::LayerTreeHostImpl(
     }
 #endif
   }
+  compositor_frame_reporting_controller_->SetVisible(visible_);
 
   if (base::FeatureList::IsEnabled(features::kTreesInViz) ||
       base::FeatureList::IsEnabled(features::kTreeAnimationsInViz)) {
@@ -1078,7 +1085,9 @@ bool LayerTreeHostImpl::HasDamage() const {
   // Unbounded elements can be positioned outside the root viewport, so check if
   // any unbounded render surface has damage even if the root surface has none.
   if (settings_.enable_unbounded_element) {
-    for (const auto* surface : active_tree->GetRenderSurfaceList()) {
+    for (int effect_id : active_tree->GetRenderSurfaceList()) {
+      const RenderSurfaceImpl* surface =
+          active_tree->GetRenderSurface(effect_id);
       if (surface->IsUnbounded() &&
           surface->GetDamageRect().Intersects(surface->content_rect())) {
         return true;
@@ -1227,8 +1236,9 @@ DrawResult LayerTreeHostImpl::CalculateRenderPasses(FrameData* frame,
   size_t render_surface_list_size = frame->render_surface_list->size();
   for (size_t i = 0; i < render_surface_list_size; ++i) {
     const size_t surface_index = render_surface_list_size - 1 - i;
+    int effect_id = (*frame->render_surface_list)[surface_index];
     RenderSurfaceImpl* render_surface =
-        (*frame->render_surface_list)[surface_index];
+        active_tree_->GetRenderSurface(effect_id);
 
     const bool is_root_surface =
         render_surface->EffectTreeIndex() == kContentsRootPropertyNodeId;
@@ -1396,7 +1406,7 @@ DrawResult LayerTreeHostImpl::CalculateRenderPasses(FrameData* frame,
 
         // This is necessary in TreesInViz mode to trigger DidDraw() through
         // LayerTreeHostImpl::DidDrawAllLayers().
-        frame->will_draw_layers.push_back(layer);
+        frame->will_draw_layers.push_back(layer->id());
 
         layer->NotifyKnownResourceIdsBeforeAppendQuads(known_resource_ids);
         if (output_frame_data) {
@@ -1872,7 +1882,7 @@ void LayerTreeHostImpl::DidModifyTilePriorities(bool pending_update_tiles) {
 void LayerTreeHostImpl::SetTargetLocalSurfaceId(
     const viz::LocalSurfaceId& target_local_surface_id) {
   target_local_surface_id_ = target_local_surface_id;
-  if (layer_context_) {
+  if (layer_context_ && target_local_surface_id.is_valid()) {
     layer_context_->SetTargetLocalSurfaceId(target_local_surface_id);
   }
 }
@@ -2670,19 +2680,9 @@ RenderFrameMetadata LayerTreeHostImpl::MakeRenderFrameMetadata(
   metadata.external_page_scale_factor =
       active_tree_->external_page_scale_factor();
 
-  metadata.top_controls_height =
-      browser_controls_offset_manager_->TopControlsHeight();
-  metadata.top_controls_shown_ratio =
-      browser_controls_offset_manager_->TopControlsShownRatio();
+  metadata.browser_controls_metadata =
+      browser_controls_offset_manager_->GetMetadata();
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  metadata.bottom_controls_height =
-      browser_controls_offset_manager_->BottomControlsHeight();
-  metadata.bottom_controls_shown_ratio =
-      browser_controls_offset_manager_->BottomControlsShownRatio();
-  metadata.top_controls_min_height_offset =
-      browser_controls_offset_manager_->TopControlsMinHeightOffset();
-  metadata.bottom_controls_min_height_offset =
-      browser_controls_offset_manager_->BottomControlsMinHeightOffset();
   metadata.scrollable_viewport_size = active_tree_->ScrollableViewportSize();
   metadata.min_page_scale_factor = active_tree_->min_page_scale_factor();
   metadata.max_page_scale_factor = active_tree_->max_page_scale_factor();
@@ -2695,7 +2695,6 @@ RenderFrameMetadata LayerTreeHostImpl::MakeRenderFrameMetadata(
   }
   metadata.has_transparent_background =
       frame.render_passes.back()->has_transparent_background;
-  metadata.has_offset_tag = browser_controls_offset_manager_->HasOffsetTag();
 #endif
 
   bool allocate_new_local_surface_id = false;
@@ -2735,53 +2734,12 @@ RenderFrameMetadata LayerTreeHostImpl::MakeRenderFrameMetadata(
     }
 
     allocate_new_local_surface_id =
+        metadata.browser_controls_metadata.RequiresNewLocalSurfaceId(
+            last_draw_render_frame_metadata_->browser_controls_metadata) ||
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-        last_draw_render_frame_metadata_->top_controls_height !=
-            metadata.top_controls_height ||
-        last_draw_render_frame_metadata_->top_controls_shown_ratio !=
-            metadata.top_controls_shown_ratio ||
         last_draw_render_frame_metadata_->tracked_element_rects !=
             metadata.tracked_element_rects;
-#elif BUILDFLAG(IS_ANDROID)
-        last_draw_render_frame_metadata_->top_controls_height !=
-            metadata.top_controls_height ||
-        last_draw_render_frame_metadata_->bottom_controls_height !=
-            metadata.bottom_controls_height ||
-        last_draw_render_frame_metadata_->selection != metadata.selection ||
-        last_draw_render_frame_metadata_->has_transparent_background !=
-            metadata.has_transparent_background;
-
-    // When the browser controls become locked, the browser will update the
-    // offset tags, and also update the controls' offsets if they don't match
-    // the current renderer scroll position. These updates result in a new
-    // renderer frame, but sometimes it gets drawn before the browser frame
-    // with the updated offsets arrives, which causes the controls to jump, so
-    // we need a new surface id here to sync the updates.
-    allocate_new_local_surface_id |=
-        (last_draw_render_frame_metadata_->has_offset_tag &&
-         !metadata.has_offset_tag);
-
-    // If BCIV is enabled but there's no offset tags, it means the controls
-    // aren't scrollable, and any movement of the controls is the result of
-    // the browser updating their offsets and submitting a new browser frame.
-    // We need a new surface id in this case, as this is identical to the
-    // situation without BCIV.
-    if (!browser_controls_offset_manager_->HasOffsetTag()) {
-      allocate_new_local_surface_id |=
-          last_draw_render_frame_metadata_->top_controls_shown_ratio !=
-              metadata.top_controls_shown_ratio ||
-          last_draw_render_frame_metadata_->bottom_controls_shown_ratio !=
-              metadata.bottom_controls_shown_ratio;
-    }
 #else
-        last_draw_render_frame_metadata_->top_controls_height !=
-            metadata.top_controls_height ||
-        last_draw_render_frame_metadata_->top_controls_shown_ratio !=
-            metadata.top_controls_shown_ratio ||
-        last_draw_render_frame_metadata_->bottom_controls_height !=
-            metadata.bottom_controls_height ||
-        last_draw_render_frame_metadata_->bottom_controls_shown_ratio !=
-            metadata.bottom_controls_shown_ratio ||
         last_draw_render_frame_metadata_->selection != metadata.selection ||
         last_draw_render_frame_metadata_->has_transparent_background !=
             metadata.has_transparent_background;
@@ -3004,7 +2962,8 @@ std::optional<SubmitInfo> LayerTreeHostImpl::DrawLayers(FrameData* frame) {
   // The next frame should start by assuming nothing has changed, and changes
   // are noted as they occur.
   for (size_t i = 0; i < frame->render_surface_list->size(); i++) {
-    auto* surface = (*frame->render_surface_list)[i];
+    int effect_id = (*frame->render_surface_list)[i];
+    auto* surface = active_tree_->GetRenderSurface(effect_id);
     surface->damage_tracker()->DidDrawDamagedArea();
   }
   if (active_tree_->RootRenderSurface()) {
@@ -3126,7 +3085,9 @@ viz::CompositorFrame LayerTreeHostImpl::GenerateCompositorFrame(
     ViewTransitionRequest::ViewTransitionElementMap view_transition_element_map;
     const auto& capture_view_transition_tokens =
         active_tree_->GetCaptureViewTransitionTokens();
-    for (RenderSurfaceImpl* render_surface : *frame->render_surface_list) {
+    for (int effect_id : *frame->render_surface_list) {
+      RenderSurfaceImpl* render_surface =
+          active_tree_->GetRenderSurface(effect_id);
       const auto& view_transition_element_resource_id =
           render_surface->OwningEffectNode()
               ->view_transition_element_resource_id;
@@ -3195,7 +3156,7 @@ viz::CompositorFrame LayerTreeHostImpl::GenerateCompositorFrame(
     }
   }
 
-  PopulateMetadataContentColorUsage(frame, &metadata);
+  PopulateMetadataContentColorUsage(active_tree_.get(), frame, &metadata);
   metadata.has_shared_element_resources = frame->has_shared_element_resources;
   uint32_t frame_deadline = frame->deadline_in_frames.value_or(0u);
   // Set a higher frame deadline for ViewTransitions with `kAnimateRenderer` to
@@ -3233,16 +3194,6 @@ viz::CompositorFrame LayerTreeHostImpl::GenerateCompositorFrame(
         {viz::ContentFrameIntervalType::kCompositorScroll, base::TimeDelta(),
          1u});
     frame->damage_reasons.Remove(DamageReason::kCompositorScroll);
-  }
-
-  if (!frame->video_layer_preferred_intervals.empty() &&
-      frame->damage_reasons.Has(DamageReason::kVideoLayer)) {
-    for (auto& [video_interval, count] :
-         frame->video_layer_preferred_intervals) {
-      metadata.frame_interval_inputs.content_interval_info.push_back(
-          {viz::ContentFrameIntervalType::kVideo, video_interval, count - 1u});
-    }
-    frame->damage_reasons.Remove(DamageReason::kVideoLayer);
   }
 
   if (frame->damage_reasons.Has(DamageReason::kAnimatedImage)) {
@@ -3411,8 +3362,10 @@ viz::CompositorFrame LayerTreeHostImpl::GenerateCompositorFrame(
 void LayerTreeHostImpl::DidDrawAllLayers(const FrameData& frame) {
   // TODO(lethalantidote): LayerImpl::DidDraw can be removed when
   // VideoLayerImpl is removed.
-  for (LayerImpl* layer : frame.will_draw_layers) {
-    layer->DidDraw(resource_provider_.get());
+  for (int layer_id : frame.will_draw_layers) {
+    if (LayerImpl* layer = active_tree_->LayerById(layer_id)) {
+      layer->DidDraw(resource_provider_.get());
+    }
   }
 
   for (VideoFrameController* it : video_frame_controllers_) {

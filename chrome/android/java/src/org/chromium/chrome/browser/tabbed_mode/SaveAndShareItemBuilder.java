@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.tabbed_mode;
 import android.content.Context;
 import android.content.res.Resources;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -96,12 +97,17 @@ public class SaveAndShareItemBuilder {
      * @return A {@link ListItem} representing the Download page menu item.
      */
     public ListItem buildDownloadPageItem(boolean showIcon) {
+        int titleId =
+                (ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+                                && DeviceInfo.isDesktop())
+                        ? R.string.menu_save_page_as
+                        : R.string.menu_download_page;
         return AppMenuItemUtils.createStandardListItem(
                 AppMenuItemUtils.buildModelForStandardMenuItem(
                         mContext,
                         mAppMenuItemTheme,
                         R.id.download_page_id,
-                        R.string.menu_download_page,
+                        titleId,
                         showIcon ? R.drawable.ic_file_download_white_24dp : Resources.ID_NULL,
                         mIsMenuIconAtStart),
                 showIcon);

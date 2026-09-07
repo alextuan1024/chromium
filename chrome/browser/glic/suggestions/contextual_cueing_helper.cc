@@ -37,7 +37,6 @@
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/history/core/browser/features.h"
 #include "components/optimization_guide/core/hints/hints_processing_util.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/core/hints/optimization_metadata.h"
@@ -51,6 +50,7 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -209,17 +209,13 @@ void ContextualCueingHelper::DidFinishNavigation(
     return;
   }
 
-  // If `history::kVisitedLinksOn404` is enabled, then
-  // `navigation_handle->ShouldUpdateHistory()` will return true for reachable
-  // 404 pages. In that case, we need to ignore such pages.
-  if (base::FeatureList::IsEnabled(history::kVisitedLinksOn404)) {
-    const int status_code =
-        navigation_handle->GetResponseHeaders()
-            ? navigation_handle->GetResponseHeaders()->response_code()
-            : 0;
-    if (status_code == 404) {
-      return;
-    }
+  // Ignore 404 pages.
+  const int status_code =
+      navigation_handle->GetResponseHeaders()
+          ? navigation_handle->GetResponseHeaders()->response_code()
+          : 0;
+  if (status_code == 404) {
+    return;
   }
 
   // We have already initiated nudging sequence for the page. Do not report page

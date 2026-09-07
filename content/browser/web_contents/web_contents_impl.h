@@ -691,7 +691,8 @@ class CONTENT_EXPORT WebContentsImpl
   void SetV8CompileHints(base::ReadOnlySharedMemoryRegion data) override;
   void SetTabSwitchStartTime(base::TimeTicks start_time,
                              bool destination_is_loaded,
-                             bool had_saved_frame_at_start) override;
+                             bool had_saved_frame_at_start,
+                             bool destination_is_frozen) override;
   WindowOpenDisposition GetOriginalWindowOpenDisposition() const override;
 
   // Implementation of PageNavigator.
@@ -832,7 +833,7 @@ class CONTENT_EXPORT WebContentsImpl
       const mojom::CreateNewWindowParams& params,
       bool is_new_browsing_instance,
       bool has_user_gesture,
-      SessionStorageNamespace* session_storage_namespace) override;
+      SessionStorageNamespaceHandle* session_storage_namespace) override;
   WebContents* ShowCreatedWindow(
       RenderFrameHostImpl* opener,
       int main_frame_widget_route_id,
@@ -1530,7 +1531,7 @@ class CONTENT_EXPORT WebContentsImpl
   // Called when a file selection is to be done.
   void RunFileChooser(
       base::WeakPtr<FileChooserImpl> file_chooser,
-      RenderFrameHost* render_frame_host,
+      RenderFrameHostImpl* render_frame_host,
       scoped_refptr<FileChooserImpl::FileSelectListenerImpl> listener,
       const blink::mojom::FileChooserParams& params);
 
@@ -1720,6 +1721,8 @@ class CONTENT_EXPORT WebContentsImpl
   FRIEND_TEST_ALL_PREFIXES(WebContentsImplTest, CaptureHoldsWakeLock);
   FRIEND_TEST_ALL_PREFIXES(WebContentsImplTest,
                            OnColorProviderChangedNoOpDuringDestruction);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsImplTest,
+                           ColorRelatedStateChangesCoalesced);
   FRIEND_TEST_ALL_PREFIXES(WebContentsImplTest,
                            OnNativeThemeUpdatedNoOpDuringDestruction);
   FRIEND_TEST_ALL_PREFIXES(WebContentsImplTest, NoJSMessageOnInterstitials);
@@ -2180,6 +2183,7 @@ class CONTENT_EXPORT WebContentsImpl
   // `NativeTheme` or `ColorProviderSource` are updated. Updates color maps
   // and/or calls `NotifyPreferencesChanged()` as needed.
   void HandleColorRelatedStateChanges();
+  void ScheduleColorRelatedStateChanges();
 
   // implements SlowWebPreferenceCacheObserver
   void OnSlowWebPreferenceChanged() override;
@@ -2921,6 +2925,8 @@ class CONTENT_EXPORT WebContentsImpl
   void EmitTracingSlice(const std::string& name);
 
   bool opt_out_frame_eviction_ = false;
+
+  bool color_related_state_change_scheduled_ = false;
 
   base::WeakPtrFactory<WebContentsImpl> loading_weak_factory_{this};
   base::WeakPtrFactory<WebContentsImpl> weak_factory_{this};

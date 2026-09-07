@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.tasks.tab_management;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -21,7 +23,10 @@ import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.Card
 import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType.TAB;
 import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType.TAB_GROUP;
 
+import android.util.Pair;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
 import android.widget.FrameLayout;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -38,7 +43,6 @@ import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
@@ -47,6 +51,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -67,6 +72,7 @@ public class NestedLayoutDelegateUnitTest {
     @Mock private Tab mTab2;
     @Mock private Tab mTab3;
     @Mock private TabModel mTabModel;
+    @Mock private View mView;
 
     private TabListModel mModelList;
     private NestedLayoutDelegate mDelegate;
@@ -76,6 +82,8 @@ public class NestedLayoutDelegateUnitTest {
         mModelList = new TabListModel();
         mDelegate = new NestedLayoutDelegate(mMediator, mModelList);
         when(mMediator.getCurrentTabModelChecked()).thenReturn(mTabModel);
+        when(mMediator.isShowingTabs()).thenReturn(true);
+        when(mMediator.supportsTabLoadingState()).thenReturn(true);
         when(mTabModel.getTabGroupColorWithFallback(any(Token.class)))
                 .thenReturn(TabGroupColorId.BLUE);
         when(mTab1.getId()).thenReturn(TAB1_ID);
@@ -123,22 +131,22 @@ public class NestedLayoutDelegateUnitTest {
     }
 
     @Test
-    public void testGetMediaIndicatorState_Tab() {
+    public void testGetAlertState_Tab() {
         PropertyModel tabModel = new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID).build();
-        when(mTab1.getMediaState()).thenReturn(MediaState.AUDIBLE);
-        int state = mDelegate.getMediaIndicatorState(mTab1, tabModel);
-        assertEquals(MediaState.AUDIBLE, state);
+        when(mTab1.getAlertState()).thenReturn(TabAlert.AUDIO_PLAYING);
+        @TabAlert int state = mDelegate.getAlertState(mTab1, tabModel);
+        assertEquals(TabAlert.AUDIO_PLAYING, state);
     }
 
     @Test
-    public void testGetMediaIndicatorState_GroupHeader() {
+    public void testGetAlertState_GroupHeader() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, new Token(1, 2))
                         .build();
-        when(mTab1.getMediaState()).thenReturn(MediaState.AUDIBLE);
-        int state = mDelegate.getMediaIndicatorState(mTab1, headerModel);
-        assertEquals(MediaState.NONE, state);
+        when(mTab1.getAlertState()).thenReturn(TabAlert.AUDIO_PLAYING);
+        @TabAlert int state = mDelegate.getAlertState(mTab1, headerModel);
+        assertEquals(TabAlert.NONE, state);
     }
 
     @Test
@@ -240,6 +248,35 @@ public class NestedLayoutDelegateUnitTest {
     }
 
     @Test
+    public void testGetIndexAndTabForTabGroupId_NullGroupId() {
+        assertNull(mDelegate.getIndexAndTabForTabGroupId(null));
+    }
+
+    @Test
+    public void testGetIndexAndTabForTabGroupId_HeaderNotFound() {
+        assertNull(mDelegate.getIndexAndTabForTabGroupId(TAB_GROUP_ID));
+    }
+
+    @Test
+    public void testGetIndexAndTabForTabGroupId_EmptyTabsInGroup() {
+        addGroupHeaderToModelList(TAB1_ID);
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of());
+
+        assertNull(mDelegate.getIndexAndTabForTabGroupId(TAB_GROUP_ID));
+    }
+
+    @Test
+    public void testGetIndexAndTabForTabGroupId_Success() {
+        addGroupHeaderToModelList(TAB1_ID);
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(mTab1));
+
+        Pair<Integer, Tab> result = mDelegate.getIndexAndTabForTabGroupId(TAB_GROUP_ID);
+        assertNotNull(result);
+        assertEquals(0, result.first.intValue());
+        assertEquals(mTab1, result.second);
+    }
+
+    @Test
     public void testOnFaviconUpdated() {
         PropertyModel model = addTabToModelList(TAB1_ID, null);
 
@@ -277,30 +314,30 @@ public class NestedLayoutDelegateUnitTest {
     }
 
     @Test
-    public void testOnMediaStateChanged() {
+    public void testOnAlertStateChanged() {
         PropertyModel model = addTabToModelList(TAB1_ID, null);
-        when(mMediator.getTabListMediaIndicator(mTab1, model)).thenReturn(MediaState.AUDIBLE);
+        when(mTab1.getAlertState()).thenReturn(TabAlert.AUDIO_PLAYING);
 
-        mDelegate.onMediaStateChanged(mTab1, MediaState.AUDIBLE);
+        mDelegate.onAlertStateChanged(mTab1, TabAlert.AUDIO_PLAYING);
 
-        assertEquals(MediaState.AUDIBLE, model.get(TabProperties.MEDIA_INDICATOR));
+        assertEquals(TabAlert.AUDIO_PLAYING, model.get(TabProperties.ALERT_STATE));
     }
 
     @Test
-    public void testOnMediaStateChanged_UseShrinkCloseAnimation() {
+    public void testOnAlertStateChanged_UseShrinkCloseAnimation() {
         PropertyModel model = addTabToModelList(TAB1_ID, null);
+        model.set(TabProperties.ALERT_STATE, TabAlert.NONE);
         model.set(TabProperties.USE_SHRINK_CLOSE_ANIMATION, true);
 
-        mDelegate.onMediaStateChanged(mTab1, MediaState.AUDIBLE);
+        mDelegate.onAlertStateChanged(mTab1, TabAlert.AUDIO_PLAYING);
 
-        verify(mMediator, never()).getTabListMediaIndicator(any(), any());
+        assertEquals(TabAlert.NONE, model.get(TabProperties.ALERT_STATE));
     }
 
     @Test
-    public void testOnMediaStateChanged_NotFound() {
-        mDelegate.onMediaStateChanged(mTab1, MediaState.AUDIBLE);
-
-        verify(mMediator, never()).getTabListMediaIndicator(any(), any());
+    public void testOnAlertStateChanged_NotFound() {
+        // Verify no exception is thrown when the tab ID is not found in the model list.
+        mDelegate.onAlertStateChanged(mTab1, TabAlert.AUDIO_PLAYING);
     }
 
     @Test
@@ -839,6 +876,255 @@ public class NestedLayoutDelegateUnitTest {
         assertFalse(mDelegate.areTabsInSameGroup(TAB1_ID, mTab2));
     }
 
+    @Test
+    public void testPopulateAccessibilityNodeInfo_FirstTab_OnlyHasMoveDown() {
+        PropertyModel firstModel = addTabToModelList(TAB1_ID, null);
+        addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, firstModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertTrue(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_MiddleTab_HasMoveUpAndDown() {
+        addTabToModelList(TAB1_ID, null);
+        PropertyModel middleModel = addTabToModelList(TAB2_ID, null);
+        addTabToModelList(TAB3_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, middleModel);
+
+        assertTrue(hasAction(info, R.id.move_tab_up));
+        assertTrue(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_LastTab_OnlyHasMoveUp() {
+        addTabToModelList(TAB1_ID, null);
+        PropertyModel lastModel = addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, lastModel);
+
+        assertTrue(hasAction(info, R.id.move_tab_up));
+        assertFalse(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_SingleTab_HasNoMoveActions() {
+        PropertyModel singleModel = addTabToModelList(TAB1_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, singleModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertFalse(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_GroupHeader_HasExpandCollapseAndMove() {
+        PropertyModel groupHeaderModel = addGroupHeaderToModelList(TAB1_ID);
+        addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, groupHeaderModel);
+
+        assertTrue(hasAction(info, AccessibilityAction.ACTION_COLLAPSE.getId()));
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertTrue(
+                hasActionWithLabel(
+                        info,
+                        R.id.move_tab_down,
+                        view.getContext().getString(R.string.move_tab_group_down)));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_TopmostUnpinnedTabWithPinnedAbove_CannotMoveUp() {
+        addPinnedTabToModelList(TAB1_ID);
+        PropertyModel firstUnpinnedModel = addTabToModelList(TAB2_ID, null);
+        addTabToModelList(TAB3_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, firstUnpinnedModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertTrue(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_SinglePinnedTab_HasNoMoveActions() {
+        PropertyModel pinnedModel = addPinnedTabToModelList(TAB1_ID);
+        addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, pinnedModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertFalse(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_FirstPinnedTab_OnlyHasMoveDown() {
+        PropertyModel firstPinnedModel = addPinnedTabToModelList(TAB1_ID);
+        addPinnedTabToModelList(TAB2_ID);
+        addTabToModelList(TAB3_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, firstPinnedModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertTrue(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_MiddlePinnedTab_HasMoveUpAndDown() {
+        addPinnedTabToModelList(TAB1_ID);
+        PropertyModel middlePinnedModel = addPinnedTabToModelList(TAB2_ID);
+        addPinnedTabToModelList(TAB3_ID);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, middlePinnedModel);
+
+        assertTrue(hasAction(info, R.id.move_tab_up));
+        assertTrue(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void
+            testPopulateAccessibilityNodeInfo_LastPinnedTabWithUnpinnedTabsBelow_OnlyHasMoveUp() {
+        addPinnedTabToModelList(TAB1_ID);
+        PropertyModel lastPinnedModel = addPinnedTabToModelList(TAB2_ID);
+        addTabToModelList(TAB3_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, lastPinnedModel);
+
+        assertTrue(hasAction(info, R.id.move_tab_up));
+        assertFalse(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPerformAccessibilityAction_ReorderTab() {
+        setupTabsInModel(mTab1, mTab2);
+        addTabToModelList(TAB1_ID, null);
+        PropertyModel tab2Model = addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        var userActionTester = new UserActionTester();
+        assertTrue(
+                mDelegate.performAccessibilityAction(
+                        view, R.id.move_tab_up, /* args= */ null, tab2Model));
+        verify(mTabModel).moveTab(TAB2_ID, 0);
+        assertTrue(
+                userActionTester.getActions().contains("TabGrid.AccessibilityDelegate.Reordered"));
+    }
+
+    @Test
+    public void testPerformAccessibilityAction_ReorderPinnedTab() {
+        when(mTab1.getIsPinned()).thenReturn(true);
+        when(mTab2.getIsPinned()).thenReturn(true);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
+        setupTabsInModel(mTab1, mTab2);
+        addPinnedTabToModelList(TAB1_ID);
+        PropertyModel pinned2Model = addPinnedTabToModelList(TAB2_ID);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        var userActionTester = new UserActionTester();
+        assertTrue(
+                mDelegate.performAccessibilityAction(
+                        view, R.id.move_tab_up, /* args= */ null, pinned2Model));
+        verify(mTabModel).moveTab(TAB2_ID, 0);
+        assertTrue(
+                userActionTester.getActions().contains("TabGrid.AccessibilityDelegate.Reordered"));
+    }
+
+    @Test
+    public void testPerformAccessibilityAction_ReorderTabGroup() {
+        setupTabsInModel(mTab1, mTab2);
+        when(mTab1.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        PropertyModel groupHeaderModel = addGroupHeaderToModelList(TAB1_ID);
+        addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        var userActionTester = new UserActionTester();
+        assertTrue(
+                mDelegate.performAccessibilityAction(
+                        view, R.id.move_tab_down, /* args= */ null, groupHeaderModel));
+        verify(mTabModel).moveRelatedTabs(TAB1_ID, 1);
+        assertTrue(
+                userActionTester.getActions().contains("TabGrid.AccessibilityDelegate.Reordered"));
+    }
+
+    @Test
+    public void testPopulateAccessibilityNodeInfo_NonTabItem_HasNoMoveActions() {
+        addTabToModelList(TAB1_ID, null);
+        PropertyModel messageModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(CARD_TYPE, TabListModel.CardProperties.ModelType.MESSAGE)
+                        .build();
+        mModelList.add(new ListItem(UiType.ARCHIVED_TABS_MESSAGE, messageModel));
+        addTabToModelList(TAB2_ID, null);
+
+        View view = new View(ApplicationProvider.getApplicationContext());
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
+
+        mDelegate.populateAccessibilityNodeInfo(view, info, messageModel);
+
+        assertFalse(hasAction(info, R.id.move_tab_up));
+        assertFalse(hasAction(info, R.id.move_tab_down));
+    }
+
+    @Test
+    public void testPerformAccessibilityAction_ExpandCollapse() {
+        PropertyModel model = addGroupHeaderToModelList(TAB1_ID);
+
+        assertTrue(
+                mDelegate.performAccessibilityAction(
+                        mView, AccessibilityAction.ACTION_EXPAND.getId(), /* args= */ null, model));
+        verify(mView).performClick();
+
+        assertTrue(
+                mDelegate.performAccessibilityAction(
+                        mView,
+                        AccessibilityAction.ACTION_COLLAPSE.getId(),
+                        /* args= */ null,
+                        model));
+        verify(mView, times(2)).performClick();
+    }
+
+    @Test
+    public void testPerformAccessibilityAction_UnhandledAction_ReturnsFalse() {
+        View view = new View(ApplicationProvider.getApplicationContext());
+        PropertyModel model = addTabToModelList(TAB1_ID, null);
+
+        assertFalse(
+                mDelegate.performAccessibilityAction(
+                        view, AccessibilityAction.ACTION_CLICK.getId(), /* args= */ null, model));
+    }
+
     private PropertyModel addTabToModelList(int tabId, @Nullable Token tabGroupId) {
         PropertyModel model =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
@@ -861,11 +1147,24 @@ public class NestedLayoutDelegateUnitTest {
         return model;
     }
 
+    private PropertyModel addPinnedTabToModelList(int tabId) {
+        PropertyModel model =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(CARD_TYPE, TAB)
+                        .with(TabProperties.TAB_ID, tabId)
+                        .with(TabProperties.IS_PINNED, true)
+                        .build();
+        mModelList.add(new ListItem(UiType.PINNED_TAB, model));
+        return model;
+    }
+
     private void setupTabsInModel(Tab... tabs) {
         when(mTabModel.getCount()).thenReturn(tabs.length);
         for (int i = 0; i < tabs.length; i++) {
             when(mTabModel.getTabAt(i)).thenReturn(tabs[i]);
             when(mTabModel.getTabById(tabs[i].getId())).thenReturn(tabs[i]);
+            when(mTabModel.indexOf(tabs[i])).thenReturn(i);
+            when(mTabModel.getRelatedTabList(tabs[i].getId())).thenReturn(List.of(tabs[i]));
         }
     }
 
@@ -879,5 +1178,22 @@ public class NestedLayoutDelegateUnitTest {
     private void setupRepresentativeTab(Tab tab, Tab representativeTab, int index) {
         when(mTabModel.representativeIndexOf(tab)).thenReturn(index);
         when(mTabModel.getRepresentativeTabAt(index)).thenReturn(representativeTab);
+    }
+
+    private static boolean hasAction(AccessibilityNodeInfo info, int actionId) {
+        for (AccessibilityAction action : info.getActionList()) {
+            if (action.getId() == actionId) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasActionWithLabel(
+            AccessibilityNodeInfo info, int actionId, String label) {
+        for (AccessibilityAction action : info.getActionList()) {
+            if (action.getId() == actionId && label.contentEquals(action.getLabel())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

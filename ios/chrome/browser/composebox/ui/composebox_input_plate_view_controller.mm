@@ -516,6 +516,10 @@ UIImage* SendButtonImage(BOOL highlighted,
   [_plusButton performPrimaryAction];
 }
 
+- (void)dismissContextMenu {
+  [_plusButton.contextMenuInteraction dismissMenu];
+}
+
 #pragma mark - ComposeboxInputItemCellDelegate
 
 - (void)composeboxInputItemCellDidTapCloseButton:
@@ -909,12 +913,7 @@ UIImage* SendButtonImage(BOOL highlighted,
   ComposeboxInputItem* item =
       [_dataSource itemIdentifierForIndexPath:indexPath];
 
-  if (!item ||
-      item.type == ComposeboxInputItemType::kComposeboxInputItemTypeImage) {
-    return composeboxAttachments::kImageInputItemSize;
-  }
-
-  return composeboxAttachments::kTabFileInputItemSize;
+  return [ComposeboxInputItemView sizeWithItem:item];
 }
 
 #pragma mark - UICollectionViewDelegate
@@ -1391,6 +1390,8 @@ UIImage* SendButtonImage(BOOL highlighted,
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
     [self performTabAttachmentAnimationIfNeeded];
+  } else if (isLoading) {
+    _pendingTabAttachmentAnimation = YES;
   }
 }
 

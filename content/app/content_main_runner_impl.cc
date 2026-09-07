@@ -10,6 +10,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -28,6 +29,7 @@
 #include "base/debug/stack_trace.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/icu_util.h"
 #include "base/lazy_instance.h"
@@ -46,6 +48,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/task/execution_fence.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/environment_config.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -78,6 +81,7 @@
 #include "content/child/field_trial.h"
 #include "content/child/memory_coordinator/child_memory_coordinator.h"
 #include "content/common/content_constants_internal.h"
+#include "content/common/features.h"
 #include "content/common/process_priority_tracker.h"
 #include "content/common/pseudonymization_salt.h"
 #include "content/common/url_schemes.h"
@@ -120,6 +124,8 @@
 #include "services/tracing/public/cpp/perfetto/perfetto_traced_process.h"
 #include "services/tracing/public/cpp/trace_startup.h"
 #include "services/tracing/public/cpp/tracing_features.h"
+#include "services/webnn/public/cpp/webnn_sandbox_init.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "third_party/tflite/buildflags.h"
@@ -307,8 +313,8 @@ void AsanProcessInfoCB(const char* reason,
 #endif  // defined(ADDRESS_SANITIZER)
 
 #if BUILDFLAG(USE_ZYGOTE)
-pid_t LaunchZygoteHelper(base::CommandLine* cmd_line,
-                         base::ScopedFD* control_fd) {
+ZygoteLaunchCompletionCallback LaunchZygoteHelper(base::CommandLine* cmd_line,
+                                                  base::ScopedFD* control_fd) {
   // Append any switches from the browser process that need to be forwarded on
   // to the zygote/renderers.
   static const char* const kForwardSwitches[] = {
@@ -364,13 +370,7 @@ void InitializeZygoteSandboxForBrowserProcess(
   if (!parsed_command_line.HasSwitch(switches::kNoUnsandboxedZygote)) {
     CreateUnsandboxedZygote(base::BindOnce(LaunchZygoteHelper));
   }
-  ZygoteCommunication* generic_zygote =
-      CreateGenericZygote(base::BindOnce(LaunchZygoteHelper));
-
-  // This operation is done through the ZygoteHostImpl as a proxy because of
-  // race condition concerns.
-  ZygoteHostImpl::GetInstance()->SetRendererSandboxStatus(
-      generic_zygote->GetSandboxStatus());
+  CreateGenericZygote(base::BindOnce(LaunchZygoteHelper));
 }
 #endif  // BUILDFLAG(USE_ZYGOTE)
 
@@ -443,6 +443,7 @@ void PreSandboxInit() {
   PreloadLibraryCdms();
 #endif
   InitializeWebRtcModuleBeforeSandbox();
+  webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/false);
 
 #if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
   // cpuinfo needs to parse /proc/cpuinfo, or its equivalent.
@@ -542,6 +543,12 @@ void CreateChildThreadPool(const std::string& process_type) {
     thread_pool_name = "ContentChild";
   }
   base::ThreadPoolInstance::Create(thread_pool_name, record_lock_contention);
+}
+
+// Indicates whether BEST_EFFORT tasks are disabled by a command line switch.
+bool HasDisableBestEffortTasksSwitch() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisableBestEffortTasks);
 }
 
 }  // namespace
@@ -659,6 +666,13 @@ NO_STACK_PROTECTOR int RunZygote(ContentMainDelegate* delegate) {
     InitializeMojoCore();
   }
   delegate->PostEarlyInitialization(invoked_in_child);
+
+  // The Zygote must use a local scoped fence, otherwise the scoped object
+  // would live across the fork.
+  std::optional<base::ScopedBestEffortExecutionFence> best_effort_fence;
+  if (HasDisableBestEffortTasksSwitch()) {
+    best_effort_fence.emplace();
+  }
 
   base::allocator::PartitionAllocSupport::Get()
       ->ReconfigureAfterFeatureListInit(process_type);
@@ -1143,6 +1157,13 @@ NO_STACK_PROTECTOR int ContentMainRunnerImpl::Run() {
   base::debug::AsanService::GetInstance()->AddErrorCallback(AsanProcessInfoCB);
 #endif
 
+  // Returning from this function begins the shutdown phase which should start
+  // best-effort tasks running, no matter where `best_effort_fence_` is
+  // initialized.
+  absl::Cleanup remove_best_effort_fence = [this] {
+    best_effort_fence_.reset();
+  };
+
   // Run this logic on all child processes.
   bool needs_startup_tracing_after_sandbox_init = false;
   if (!process_type.empty()) {
@@ -1183,6 +1204,10 @@ NO_STACK_PROTECTOR int ContentMainRunnerImpl::Run() {
       delegate_->PostEarlyInitialization(
           ContentMainDelegate::InvokedInChildProcess());
 
+      if (HasDisableBestEffortTasksSwitch()) {
+        best_effort_fence_.emplace();
+      }
+
       if (delegate_->ShouldReconfigurePartitionAlloc()) {
         base::allocator::PartitionAllocSupport::Get()
             ->ReconfigureAfterFeatureListInit(process_type);
@@ -1213,8 +1238,9 @@ NO_STACK_PROTECTOR int ContentMainRunnerImpl::Run() {
 
   RegisterMainThreadFactories();
 
-  if (process_type.empty())
+  if (process_type.empty()) {
     return RunBrowser(std::move(main_params), start_minimal_browser);
+  }
 
   return RunOtherNamedProcessTypeMain(process_type, std::move(main_params),
                                       delegate_);
@@ -1285,12 +1311,31 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
     if (post_early_initialization_exit_code.has_value())
       return post_early_initialization_exit_code.value();
 
+    if (HasDisableBestEffortTasksSwitch()) {
+      best_effort_fence_.emplace();
+    }
+
     if (!delegate_->IsInitFeatureListEarly()) {
       // Re-evaluate feature state now that FeatureList has been initialized, as
       // the task executor was created before FeatureList and could not access
       // Finch configurations.
       BrowserTaskExecutor::PostFeatureListInit();
     }
+
+#if BUILDFLAG(USE_ZYGOTE)
+    // The zygotes, if any, were forked in Initialize(), before the
+    // FeatureList existed. Unless deferring is enabled, finish their handshake
+    // now that it does, which keeps the wait on the main thread ahead of
+    // BrowserMain.
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kNoZygote) &&
+        !base::FeatureList::IsEnabled(features::kDeferZygoteHandshake)) {
+      if (GetUnsandboxedZygote()) {
+        GetUnsandboxedZygote()->EnsureLaunchFinished();
+      }
+      GetGenericZygote()->EnsureLaunchFinished();
+    }
+#endif
 
     // The hang watcher needs to be started once the feature list is available
     // but before the IO thread is started.

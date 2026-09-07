@@ -209,7 +209,9 @@ QuotaDatabase::~QuotaDatabase() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (db_) {
     db_->reset_error_callback();
-    db_->CommitTransactionDeprecated();
+    if (transaction_) {
+      transaction_->Commit();
+    }
   }
 }
 
@@ -863,6 +865,8 @@ QuotaError QuotaDatabase::SetIsMediaLicenseDatabaseRemoved(bool removed_flag) {
 bool QuotaDatabase::RecoverOrRaze(int error_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  transaction_.reset();
+
   std::ignore = sql::Recovery::RecoverIfPossible(
       db_.get(), error_code,
       sql::Recovery::Strategy::kRecoverWithMetaVersionOrRaze);
@@ -878,7 +882,10 @@ QuotaError QuotaDatabase::CorruptForTesting(
 
   if (db_) {
     // Commit the long-running transaction.
-    db_->CommitTransactionDeprecated();
+    if (transaction_) {
+      transaction_->Commit();
+      transaction_.reset();
+    }
     db_->Close();
   }
 
@@ -892,7 +899,9 @@ QuotaError QuotaDatabase::CorruptForTesting(
   }
 
   // Begin a long-running transaction. This matches EnsureOpen().
-  if (!db_->BeginTransactionDeprecated()) {
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    transaction_.reset();
     return QuotaError::kDatabaseError;
   }
   return QuotaError::kNone;
@@ -932,11 +941,16 @@ void QuotaDatabase::Commit() {
     timer_.Stop();
   }
 
-  CHECK_EQ(1, db_->transaction_nesting(), base::NotFatalUntil::M148);
-  db_->CommitTransactionDeprecated();
-  CHECK_EQ(0, db_->transaction_nesting(), base::NotFatalUntil::M148);
-  db_->BeginTransactionDeprecated();
-  CHECK_EQ(1, db_->transaction_nesting(), base::NotFatalUntil::M148);
+  if (transaction_) {
+    transaction_->Commit();
+  }
+  CHECK(!db_->HasActiveTransactions());
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    // TODO(crbug.com/40831207): Handle failing to begin the transaction
+    // instead of running the following statements outside of one.
+    transaction_.reset();
+  }
 }
 
 void QuotaDatabase::ScheduleCommit() {
@@ -998,8 +1012,15 @@ QuotaError QuotaDatabase::EnsureOpened() {
   }
 
   // Start a long-running transaction.
-  CHECK_EQ(0, db_->transaction_nesting(), base::NotFatalUntil::M148);
-  db_->BeginTransactionDeprecated();
+  CHECK(!db_->HasActiveTransactions());
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    transaction_.reset();
+    is_disabled_ = true;
+    db_.reset();
+    meta_table_.reset();
+    return QuotaError::kDatabaseError;
+  }
 
   return QuotaError::kNone;
 }
@@ -1174,7 +1195,7 @@ bool QuotaDatabase::ResetStorage() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!db_file_path_.empty(), base::NotFatalUntil::M148);
   CHECK(storage_directory_, base::NotFatalUntil::M148);
-  CHECK(!db_ || !db_->transaction_nesting(), base::NotFatalUntil::M148);
+  CHECK(!db_ || !db_->HasActiveTransactions(), base::NotFatalUntil::M148);
   VLOG(1) << "Deleting existing quota data and starting over.";
 
   meta_table_.reset();

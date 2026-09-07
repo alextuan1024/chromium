@@ -21,7 +21,7 @@ StartNextPendingRequestTask::StartNextPendingRequestTask(
     : DatabaseTask(host),
       registration_id_(registration_id),
       callback_(std::move(callback)) {
-  DCHECK(!registration_id_.is_null());
+  CHECK(!registration_id_.is_null(), base::NotFatalUntil::M158);
 }
 
 StartNextPendingRequestTask::~StartNextPendingRequestTask() = default;
@@ -64,8 +64,6 @@ void StartNextPendingRequestTask::DidGetPendingRequests(
   }
 
   // Create an active request.
-  proto::BackgroundFetchActiveRequest active_request;
-
   active_request_.set_download_guid(
       base::Uuid::GenerateRandomV4().AsLowercaseString());
   active_request_.set_unique_id(pending_request_.unique_id());

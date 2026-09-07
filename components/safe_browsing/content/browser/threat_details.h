@@ -236,9 +236,8 @@ class ThreatDetails {
   // Called when the report is complete. Runs |done_callback_|.
   void AllDone();
 
-  // `this` is owned by TriggerManager which prevents this from outliving
-  // the WebContents.
-  raw_ptr<content::WebContents> web_contents_ = nullptr;
+  base::WeakPtr<content::WebContents> web_contents_;
+  const WebContentsKey web_contents_key_;
 
   scoped_refptr<BaseUIManager> ui_manager_;
 

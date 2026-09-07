@@ -16,7 +16,6 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/prefetch/pref_names.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
@@ -50,7 +49,6 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/load_flags.h"
 #include "net/base/url_util.h"
-#include "services/network/public/cpp/network_quality_tracker.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "ui/base/page_transition_types.h"
 #include "url/origin.h"
@@ -180,18 +178,6 @@ content::PreloadingFailureReason ToPreloadingFailureReason(
       static_cast<int>(content::PreloadingFailureReason::
                            kPreloadingFailureReasonContentEnd));
 }
-
-bool IsSlowNetwork() {
-  static const base::TimeDelta kSlowNetworkThreshold =
-      kSuppressesSearchPrefetchOnSlowNetworkThreshold.Get();
-  if (g_browser_process->network_quality_tracker() &&
-      g_browser_process->network_quality_tracker()->GetHttpRTT() >
-          kSlowNetworkThreshold) {
-    return true;
-  }
-  return false;
-}
-
 
 }  // namespace
 
@@ -372,14 +358,6 @@ bool SearchPrefetchService::MaybePrefetchURL(
     recorder.reason_ = SearchPrefetchEligibilityReason::kJavascriptDisabled;
     SetEligibility(attempt,
                    content::PreloadingEligibility::kJavascriptDisabled);
-    return false;
-  }
-
-  static const bool kSuppressesSearchPrefetchOnSlowNetworkIsEnabled =
-      base::FeatureList::IsEnabled(kSuppressesSearchPrefetchOnSlowNetwork);
-  if (kSuppressesSearchPrefetchOnSlowNetworkIsEnabled && IsSlowNetwork()) {
-    recorder.reason_ = SearchPrefetchEligibilityReason::kSlowNetwork;
-    SetEligibility(attempt, content::PreloadingEligibility::kSlowNetwork);
     return false;
   }
 
@@ -613,6 +591,7 @@ void SearchPrefetchService::ClearPrefetches() {
   prefetches_.clear();
   prefetch_expiry_timers_.clear();
   prefetch_cache_.clear();
+  serving_navigation_ids_.clear();
   SaveToPrefs();
 }
 
@@ -1248,3 +1227,14 @@ void SearchPrefetchService::SetLoaderDestructionCallbackForTesting(
           std::move(streaming_url_loader_destruction_callback));
 }
 
+void SearchPrefetchService::AddServingNavigationId(int64_t navigation_id) {
+  serving_navigation_ids_.insert(navigation_id);
+}
+
+bool SearchPrefetchService::IsServingNavigation(int64_t navigation_id) const {
+  return serving_navigation_ids_.contains(navigation_id);
+}
+
+void SearchPrefetchService::RemoveServingNavigationId(int64_t navigation_id) {
+  serving_navigation_ids_.erase(navigation_id);
+}

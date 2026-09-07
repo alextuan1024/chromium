@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.touch_to_fill.payments;
 
+import static android.content.res.Resources.ID_NULL;
+
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 
 import static org.hamcrest.Matchers.is;
@@ -23,6 +25,14 @@ import static org.mockito.Mockito.when;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.createCreditCard;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.createCreditCardSuggestion;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.createVirtualCreditCard;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.ButtonProperties.ON_CLICK_ACTION;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.ButtonProperties.TEXT_ID;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.IMAGE_DRAWABLE_ID;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.SUBTITLE_BOTTOM_MARGIN;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.SUBTITLE_ID;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.TITLE_BOTTOM_MARGIN;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.TITLE_ID;
+import static org.chromium.chrome.browser.touch_to_fill.common.TouchToFillCommonProperties.HeaderProperties.TITLE_STRING;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodMediator.AFFIRM_TOS_SCREEN;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodMediator.ERROR_SCREEN_DISMISSED;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodMediator.ERROR_SCREEN_SHOWN;
@@ -83,8 +93,6 @@ import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaym
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.BnplTosHeaderProperties.ICON_CONTENT_DESCRIPTION_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.BnplTosHeaderProperties.ISSUER_IMAGE_DRAWABLE_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.BnplTosHeaderProperties.ISSUER_TITLE_STRING;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ButtonProperties.ON_CLICK_ACTION;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ButtonProperties.TEXT_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.CURRENT_SCREEN;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.CreditCardSuggestionProperties.APPLY_DEACTIVATED_STYLE;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.CreditCardSuggestionProperties.CARD_IMAGE;
@@ -100,10 +108,6 @@ import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaym
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.FooterProperties.OPEN_MANAGEMENT_UI_CALLBACK;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.FooterProperties.OPEN_MANAGEMENT_UI_TITLE_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.FooterProperties.SCAN_CREDIT_CARD_CALLBACK;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.HeaderProperties.IMAGE_DRAWABLE_ID;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.HeaderProperties.SUBTITLE_ID;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.HeaderProperties.TITLE_ID;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.HeaderProperties.TITLE_STRING;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.IbanProperties.IBAN_NICKNAME;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.IbanProperties.IBAN_VALUE;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.IbanProperties.ON_IBAN_CLICK_ACTION;
@@ -192,6 +196,7 @@ import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.touch_to_fill.R;
 import org.chromium.chrome.browser.touch_to_fill.common.BottomSheetFocusHelper;
 import org.chromium.chrome.browser.touch_to_fill.common.TouchToFillResourceProvider;
 import org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodMediator.TouchToFillBnplSuggestionInteraction;
@@ -615,14 +620,14 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         PersonalDataManagerFactory.setInstanceForTesting(mPersonalDataManager);
         PrefChangeRegistrarJni.setInstanceForTesting(mPrefChangeRegistrarJni);
         UserPrefsJni.setInstanceForTesting(mUserPrefsJni);
-        mCoordinator = new TouchToFillPaymentMethodCoordinator();
-        mCoordinator.initialize(
-                mActivity,
-                mProfile,
-                mImageFetcher,
-                mBottomSheetController,
-                mDelegateMock,
-                mBottomSheetFocusHelper);
+        mCoordinator =
+                new TouchToFillPaymentMethodCoordinator(
+                        mActivity,
+                        mProfile,
+                        mImageFetcher,
+                        mBottomSheetController,
+                        mDelegateMock,
+                        mBottomSheetFocusHelper);
         mTouchToFillPaymentMethodModel = mCoordinator.getModelForTesting();
         mCoordinator
                 .getMediatorForTesting()
@@ -678,6 +683,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.fre_product_logo));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> cardSuggestionModel =
                 getCardSuggestionModel(itemList, VISA_SUGGESTION);
@@ -707,6 +714,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.fre_product_logo));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> cardSuggestionModel =
                 getCardSuggestionModel(itemList, VISA_SUGGESTION);
@@ -744,6 +753,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.google_pay));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> cardSuggestionModel =
                 getCardSuggestionModel(itemList, NON_ACCEPTABLE_VIRTUAL_CARD_SUGGESTION);
@@ -770,6 +781,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.google_pay));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> cardSuggestionModel =
                 getCardSuggestionModel(itemList, MASTERCARD_SUGGESTION);
@@ -2388,6 +2401,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerItem.type, is(HEADER));
         assertThat(headerItem.model.get(IMAGE_DRAWABLE_ID), is(R.drawable.error_icon));
         assertThat(headerItem.model.get(TITLE_STRING), is(ERROR_SCREEN_TITLE));
+        assertThat(headerItem.model.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerItem.model.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         ListItem descriptionItem = sheetItems.get(1);
         assertThat(descriptionItem.type, is(ERROR_DESCRIPTION));
@@ -2881,6 +2896,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.fre_product_logo));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> ibanModel = getIbanModelByAutofillName(itemList, LOCAL_IBAN);
         assertTrue(ibanModel.isPresent());
@@ -2905,6 +2922,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.fre_product_logo));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_payment_method_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         Optional<PropertyModel> ibanModel = getIbanModelByAutofillName(itemList, LOCAL_IBAN);
         assertTrue(ibanModel.isPresent());
@@ -3011,6 +3030,12 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(
                 headerModel.get(SUBTITLE_ID),
                 is(R.string.autofill_loyalty_card_first_time_usage_bottom_sheet_subtitle));
+        assertThat(
+                headerModel.get(TITLE_BOTTOM_MARGIN),
+                is(R.dimen.ttf_loyalty_card_first_time_use_title_bottom_margin));
+        assertThat(
+                headerModel.get(SUBTITLE_BOTTOM_MARGIN),
+                is(R.dimen.ttf_loyalty_card_first_time_use_subtitle_bottom_margin));
 
         assertThat(getModelsOfType(itemList, ItemType.LOYALTY_CARD).size(), is(1));
         PropertyModel loyaltyCardModel = itemList.get(1).model;
@@ -3077,6 +3102,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.ic_globe_24dp));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_loyalty_card_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         assertThat(getModelsOfType(itemList, ItemType.LOYALTY_CARD).size(), is(1));
         PropertyModel loyaltyCardModel = itemList.get(1).model;
@@ -3114,6 +3141,8 @@ public class TouchToFillPaymentMethodControllerRobolectricTest {
         assertThat(headerModel.get(IMAGE_DRAWABLE_ID), is(R.drawable.ic_globe_24dp));
         assertThat(
                 headerModel.get(TITLE_ID), is(R.string.autofill_loyalty_card_bottom_sheet_title));
+        assertThat(headerModel.get(TITLE_BOTTOM_MARGIN), is(ID_NULL));
+        assertThat(headerModel.get(SUBTITLE_BOTTOM_MARGIN), is(ID_NULL));
 
         assertThat(getModelsOfType(itemList, ItemType.LOYALTY_CARD).size(), is(2));
         PropertyModel loyaltyCardModel1 = itemList.get(1).model;

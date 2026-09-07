@@ -14,6 +14,8 @@
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -91,4 +93,15 @@ void ComposeboxEverywhereHandler::CleanupDrivePicker() {
   // cancel, or error) so that the widget can regain focus and restore standard
   // auto-dismissal.
   service_->OnDrivePickerClosed();
+}
+
+void ComposeboxEverywhereHandler::OpenUrl(
+    GURL url,
+    const WindowOpenDisposition disposition,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
+  if (service_) {
+    service_->OpenUrl(url, disposition, ui::PAGE_TRANSITION_LINK,
+                      std::move(navigation_handle_callback));
+  }
 }

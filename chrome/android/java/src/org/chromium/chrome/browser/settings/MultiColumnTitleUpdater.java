@@ -14,17 +14,20 @@ import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.widget.AppCompatTextView;
 import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.TooltipCompat;
 import androidx.core.view.ViewCompat;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 
 import org.chromium.base.Callback;
@@ -113,6 +116,12 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
 
     private boolean mMainMenuShown;
     private boolean mHasBackButton;
+    private boolean mHasSearchButton;
+
+    private @Nullable View mActiveTitleView;
+    private @Nullable ChromeImageButton mActiveSearchButton;
+    private @Nullable SearchView mActiveSearchView;
+    private @Nullable OnBackPressedCallback mBackPressedCallback;
 
     /**
      * The index of the first title to show. Used to skip displaying the titles preceding {@code
@@ -133,21 +142,23 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
 
     private final @Nullable List<SettingsIndexData.Entry> mInitialBreadcrumbPath;
     private @Nullable List<SettingsIndexData.Entry> mCachedDeepLinkPath;
+    private final @Nullable Runnable mOnSearchVisibilityChanged;
 
     MultiColumnTitleUpdater(
             @Nullable Bundle savedInstanceState,
             MultiColumnSettings multiColumnSettings,
-            Context context,
             LinearLayout container,
             Callback<String> mainTitleSetter,
             Callback<@Nullable String> titleTapCallback,
-            @Nullable List<SettingsIndexData.Entry> initialBreadcrumbPath) {
+            @Nullable List<SettingsIndexData.Entry> initialBreadcrumbPath,
+            @Nullable Runnable onSearchVisibilityChanged) {
         mMultiColumnSettings = multiColumnSettings;
-        mContext = context;
+        mContext = container.getContext();
         mContainer = container;
         mMainTitleSetter = mainTitleSetter;
         mTitleTapCallback = titleTapCallback;
         mInitialBreadcrumbPath = initialBreadcrumbPath;
+        mOnSearchVisibilityChanged = onSearchVisibilityChanged;
 
         restoreInstanceState(savedInstanceState);
 
@@ -187,8 +198,11 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                                 title.setLayoutParams(params);
                             }
                         }
-                    } else {
-                        // note: we cannot traverse in the reverse order here unlike above,
+                    } else if (!mHasSearchButton) {
+                        // When mHasSearchButton is true, the title view must keep weight=1f to
+                        // keep the search button right-justified. Otherwise, reset weight to 0f
+                        // and width to WRAP_CONTENT when not overflowing.
+                        // Note: we cannot traverse in the reverse order here unlike above,
                         // because a new view may be just added and so even if weight=0 view
                         // is found, there may be weight!=0 views in leading components.
                         for (int i = 0; i < mContainer.getChildCount(); ++i) {
@@ -271,6 +285,14 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
     private List<MultiColumnSettings.Title> initTitlesList() {
         List<MultiColumnSettings.Title> navigatedTitles = mMultiColumnSettings.getTitles();
 
+        // If the user was in search mode (which sets mFirstVisibleTitleIndex > 0 to hide pre-search
+        // ancestor breadcrumbs) and selects a new category from MainSettings, the detail fragment
+        // stack is replaced and mFirstVisibleTitleIndex becomes out-of-bounds. Reset it to 0 so the
+        // new section's title is displayed. http://crbug.com/541086963
+        if (mFirstVisibleTitleIndex >= navigatedTitles.size()) {
+            mFirstVisibleTitleIndex = 0;
+        }
+
         if (mFirstVisibleTitleIndex == 0) {
             if (navigatedTitles.isEmpty()) {
                 mCachedDeepLinkPath = null;
@@ -320,6 +342,10 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
     }
 
     private void updateDetailedPageTitle() {
+        if (SettingsInTab.isEnabled()) {
+            closeSearch();
+        }
+
         // Reset the current title items if exists.
         for (int i = 0; i < mContainer.getChildCount(); ++i) {
             View view = mContainer.getChildAt(i);
@@ -328,6 +354,15 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
             }
         }
         mContainer.removeAllViews();
+        mActiveTitleView = null;
+        mActiveSearchButton = null;
+        mActiveSearchView = null;
+        if (mBackPressedCallback != null) {
+            mBackPressedCallback.setEnabled(false);
+        }
+        if (mOnSearchVisibilityChanged != null) {
+            mOnSearchVisibilityChanged.run();
+        }
 
         List<MultiColumnSettings.Title> titles = initTitlesList();
 
@@ -361,9 +396,17 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
             backButton.setMinimumHeight(minTouchTargetPx);
             var layoutParams = new LinearLayout.LayoutParams(LAYOUT_CENTER_VERTICAL);
             backButton.setLayoutParams(layoutParams);
-            backButton.setOnClickListener(v -> navigateToTitle(prevTitle, prevIndex));
-            // Set both accessibility content description and tooltip.
+            backButton.setOnClickListener(
+                    (View v) -> {
+                        if (isSearchOpen()) {
+                            closeSearch();
+                        } else {
+                            navigateToTitle(prevTitle, prevIndex);
+                        }
+                    });
+            // Set both tooltip and accessibility content description.
             TooltipCompat.setTooltipText(backButton, mContext.getString(R.string.back));
+            backButton.setContentDescription(mContext.getString(R.string.back));
             mContainer.addView(backButton);
         }
 
@@ -401,13 +444,19 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
             lastTitleView = view;
         }
 
+        mHasSearchButton = false;
         if (SettingsInTab.isEnabled() && lastTitleView != null) {
             Fragment detailFragment =
                     mMultiColumnSettings
                             .getChildFragmentManager()
                             .findFragmentById(R.id.preferences_detail);
             if (detailFragment instanceof SearchViewProvider searchViewProvider) {
+                mHasSearchButton = true;
                 final DetailedTitle titleView = lastTitleView;
+                var titleParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                titleParams.gravity = Gravity.CENTER_VERTICAL;
+                titleView.setLayoutParams(titleParams);
+
                 var searchButton = new ChromeImageButton(mContext);
                 searchButton.setImageResource(R.drawable.ic_search_24dp);
                 searchButton.setScaleType(ImageView.ScaleType.CENTER);
@@ -420,38 +469,160 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                 searchButton.setLayoutParams(new LinearLayout.LayoutParams(LAYOUT_CENTER_VERTICAL));
 
                 var searchView = new SearchView(mContext);
-                searchView.setLayoutParams(new LinearLayout.LayoutParams(LAYOUT_CENTER_VERTICAL));
+                var searchViewParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                searchViewParams.gravity = Gravity.CENTER_VERTICAL;
+                searchView.setLayoutParams(searchViewParams);
+                searchView.setMaxWidth(Integer.MAX_VALUE);
                 searchView.setVisibility(View.GONE);
-                searchViewProvider.initSearchView(searchView);
+                if (TextUtils.isEmpty(searchView.getQueryHint())) {
+                    searchView.setQueryHint(mContext.getString(R.string.search));
+                }
+                View searchPlate = searchView.findViewById(R.id.search_plate);
+                if (searchPlate != null) {
+                    // The small search plate intentionally has no background on tablet/desktop,
+                    // similar to its appearance on mobile.
+                    searchPlate.setBackground(null);
+                }
 
-                searchButton.setOnClickListener(
-                        v -> {
-                            titleView.setVisibility(View.GONE);
-                            searchButton.setVisibility(View.GONE);
-                            searchView.setVisibility(View.VISIBLE);
-                            searchView.setIconified(false);
-                            searchView.requestFocus();
-                        });
+                mActiveTitleView = titleView;
+                mActiveSearchButton = searchButton;
+                mActiveSearchView = searchView;
+
+                searchButton.setOnClickListener(v -> openSearch());
 
                 searchView.setOnCloseListener(
                         () -> {
-                            searchView.setVisibility(View.GONE);
-                            titleView.setVisibility(View.VISIBLE);
-                            searchButton.setVisibility(View.VISIBLE);
+                            closeSearch();
                             return false;
                         });
+                searchViewProvider.setSearchViewObserver(
+                        (visible) -> {
+                            if (!visible) {
+                                closeSearch();
+                            }
+                        });
+                // Must be called after configuring listeners and setting the observer,
+                // so that initSearchView (via SearchUtils) receives the observer and does
+                // not have its close listener overwritten.
+                searchViewProvider.initSearchView(searchView);
+
+                // TODO(crbug.com/557197237): Move search view visibility handling and key
+                // processing to a separate class.
+                View.OnKeyListener escKeyListener =
+                        (v, keyCode, event) -> {
+                            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.hasNoModifiers()) {
+                                if (event.getAction() == KeyEvent.ACTION_DOWN
+                                        && event.getRepeatCount() == 0) {
+                                    handleBackAction();
+                                }
+                                return true;
+                            }
+                            return false;
+                        };
+                searchView.setOnKeyListener(escKeyListener);
+                View searchSrcTextView = searchView.requireViewById(R.id.search_src_text);
+                searchSrcTextView.setOnKeyListener(escKeyListener);
 
                 mContainer.addView(searchButton);
                 mContainer.addView(searchView);
             }
         }
 
-        maybeUpdateStartMargin();
+        maybeUpdateMargins();
 
         // Make the last-added/tapped one visible after adding titles.
         if (mContainer.getParent() instanceof HorizontalScrollView scrollView) {
             scrollView.post(() -> scrollView.fullScroll(HorizontalScrollView.FOCUS_RIGHT));
         }
+    }
+
+    private void openSearch() {
+        assert SettingsInTab.isEnabled();
+
+        if (mActiveTitleView != null) {
+            mActiveTitleView.setVisibility(View.GONE);
+        }
+        if (mActiveSearchButton != null) {
+            mActiveSearchButton.setVisibility(View.GONE);
+        }
+        if (mActiveSearchView != null) {
+            mActiveSearchView.setVisibility(View.VISIBLE);
+            mActiveSearchView.setIconified(false);
+            mActiveSearchView.requestFocus();
+            View searchSrcTextView = mActiveSearchView.requireViewById(R.id.search_src_text);
+            SettingsMenuHelper.requestAccessibilityFocus(searchSrcTextView);
+        }
+        ensureBackPressedCallback();
+        if (mBackPressedCallback != null) {
+            mBackPressedCallback.setEnabled(true);
+        }
+        if (mOnSearchVisibilityChanged != null) {
+            mOnSearchVisibilityChanged.run();
+        }
+    }
+
+    void closeSearch() {
+        assert SettingsInTab.isEnabled();
+
+        if (!isSearchOpen()) return;
+
+        if (mActiveSearchView != null) {
+            mActiveSearchView.clearFocus();
+            mActiveSearchView.setVisibility(View.GONE);
+            mActiveSearchView.setQuery("", false);
+            mActiveSearchView.setIconified(true);
+        }
+        if (mActiveTitleView != null) {
+            mActiveTitleView.setVisibility(View.VISIBLE);
+        }
+        if (mActiveSearchButton != null) {
+            mActiveSearchButton.setVisibility(View.VISIBLE);
+        }
+        if (mBackPressedCallback != null) {
+            mBackPressedCallback.setEnabled(false);
+        }
+        if (mOnSearchVisibilityChanged != null) {
+            mOnSearchVisibilityChanged.run();
+        }
+    }
+
+    /** Returns whether the search view in the detailed pane title is open. */
+    public boolean isSearchOpen() {
+        return mActiveSearchView != null && mActiveSearchView.getVisibility() == View.VISIBLE;
+    }
+
+    /**
+     * Handles back action (e.g. back press or Escape key). Closes search if open.
+     *
+     * @return True if back was consumed by closing search, false otherwise.
+     */
+    public boolean handleBackAction() {
+        if (isSearchOpen()) {
+            closeSearch();
+            return true;
+        }
+        return false;
+    }
+
+    private void ensureBackPressedCallback() {
+        assert SettingsInTab.isEnabled();
+
+        // Nothing to do if callback is already set.
+        if (mBackPressedCallback != null) return;
+
+        // This method can be called asynchronously from posted tasks.
+        FragmentActivity activity = mMultiColumnSettings.getActivity();
+        if (activity == null) return;
+
+        mBackPressedCallback =
+                new OnBackPressedCallback(/* enabled= */ false) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        closeSearch();
+                    }
+                };
+        activity.getOnBackPressedDispatcher()
+                .addCallback(mMultiColumnSettings, mBackPressedCallback);
     }
 
     private void navigateToTitle(MultiColumnSettings.Title title, int index) {
@@ -527,19 +698,19 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
         // Enable detailed page title.
         mContainer.setVisibility(View.VISIBLE);
 
-        maybeUpdateStartMargin();
+        maybeUpdateMargins();
     }
 
     @Override
     public void onDetailLayoutUpdated() {
-        maybeUpdateStartMargin();
+        maybeUpdateMargins();
     }
 
     /**
-     * Updates the start margin of the title scroll view. This method has extra null checks so it
-     * can be calling before the layout is fully inflated and in unit tests.
+     * Updates the start and end margins of the title scroll view. This method has extra null checks
+     * so it can be called before the layout is fully inflated and in unit tests.
      */
-    private void maybeUpdateStartMargin() {
+    private void maybeUpdateMargins() {
         View detailView = mMultiColumnSettings.getDetailView();
         if (detailView == null) return;
         // Check detailView width because recyclerView might not have completed layout during
@@ -567,11 +738,32 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
             backButtonOffsetPx = (minTouchTargetPx - iconWidthPx) / 2;
         }
 
+        // Shift titleScrollView right when the search button is shown so that the extra space
+        // for the button's material design ripple background fits inside titleScrollView without
+        // being clipped on the right edge.
+        int searchButtonOffsetPx = 0;
+        if (mHasSearchButton) {
+            int minTouchTargetPx = getDimenPx(R.dimen.min_touch_target_size);
+            int iconWidthPx = minTouchTargetPx / 2;
+            for (int i = 0; i < mContainer.getChildCount(); ++i) {
+                View child = mContainer.getChildAt(i);
+                if (child instanceof ChromeImageButton button
+                        && button.getId() != R.id.back_button) {
+                    if (button.getDrawable() != null) {
+                        iconWidthPx = button.getDrawable().getIntrinsicWidth();
+                    }
+                    break;
+                }
+            }
+            searchButtonOffsetPx = (minTouchTargetPx - iconWidthPx) / 2;
+        }
+
         View titleScrollView = (View) mContainer.getParent();
         if (titleScrollView == null) return;
         var params = (RelativeLayout.LayoutParams) titleScrollView.getLayoutParams();
         if (params == null) return;
         params.setMarginStart(startMargin + offsetX - backButtonOffsetPx);
+        params.setMarginEnd(startMargin + offsetX - searchButtonOffsetPx);
         titleScrollView.setLayoutParams(params);
     }
 

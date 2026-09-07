@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/debug/dump_without_crashing.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/values.h"
@@ -25,6 +26,7 @@
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
@@ -122,12 +124,6 @@ class FakeExternalProtocolHandlerDelegate
       std::move(on_complete_).Run();
   }
 
-  void ReportExternalAppRedirectToSafeBrowsing(
-      const GURL& url,
-      content::WebContents* web_contents) override {
-    reported_to_safe_browsing_ = true;
-  }
-
   void set_os_state(shell_integration::DefaultWebClientState value) {
     os_state_ = value;
   }
@@ -146,7 +142,7 @@ class FakeExternalProtocolHandlerDelegate
   bool has_launched() { return has_launched_; }
   bool has_prompted() { return has_prompted_; }
   bool has_blocked() { return has_blocked_; }
-  bool has_reported_to_safe_browsing() { return reported_to_safe_browsing_; }
+
   const std::optional<url::Origin>& initiating_origin() {
     return initiating_origin_;
   }
@@ -162,7 +158,6 @@ class FakeExternalProtocolHandlerDelegate
   bool has_launched_ = false;
   bool has_prompted_ = false;
   bool has_blocked_ = false;
-  bool reported_to_safe_browsing_ = false;
   GURL launch_or_prompt_url_;
   std::optional<url::Origin> initiating_origin_;
   base::OnceClosure on_complete_;
@@ -242,8 +237,6 @@ class ExternalProtocolHandlerTest : public testing::Test {
 
     EXPECT_EQ(expected_action == Action::PROMPT, delegate_.has_prompted());
     EXPECT_EQ(expected_action == Action::LAUNCH, delegate_.has_launched());
-    EXPECT_EQ(expected_action == Action::LAUNCH,
-              delegate_.has_reported_to_safe_browsing());
     EXPECT_EQ(expected_action == Action::BLOCK, delegate_.has_blocked());
     if (expected_action == Action::PROMPT) {
       ASSERT_TRUE(delegate_.initiating_origin().has_value());
@@ -345,14 +338,41 @@ TEST_F(ExternalProtocolHandlerTest, TestUrlEscape) {
             delegate_.launch_or_prompt_url());
 }
 
+namespace {
+
+bool g_dump_without_crashing_called = false;
+void RecordDumpWithoutCrashing() {
+  g_dump_without_crashing_called = true;
+}
+
+class ScopedDumpWithoutCrashingObserver {
+ public:
+  ScopedDumpWithoutCrashingObserver() {
+    g_dump_without_crashing_called = false;
+    base::debug::SetDumpWithoutCrashingFunction(&RecordDumpWithoutCrashing);
+  }
+  ~ScopedDumpWithoutCrashingObserver() {
+    base::debug::SetDumpWithoutCrashingFunction(nullptr);
+  }
+  bool called() const { return g_dump_without_crashing_called; }
+};
+
+}  // namespace
+
 TEST_F(ExternalProtocolHandlerTest, TestNoDialogWithoutManager) {
   // WebContents without a dialog manager should not prompt crbug.com/40064553.
+  ScopedDumpWithoutCrashingObserver dump_observer;
+
   GetWebContents()->SetUserData(
       web_modal::WebContentsModalDialogManager::UserDataKey(), nullptr);
   EXPECT_EQ(nullptr, web_modal::WebContentsModalDialogManager::FromWebContents(
                          GetWebContents()));
   DoTest(ExternalProtocolHandler::UNKNOWN, shell_integration::UNKNOWN_DEFAULT,
          Action::NONE);
+
+  // Background WebContents (not associated with a browser window) should not
+  // trigger a dump (b/328163932).
+  EXPECT_FALSE(dump_observer.called());
 }
 
 #else  // if !BUILDFLAG(IS_ANDROID)

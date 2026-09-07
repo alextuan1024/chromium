@@ -20,9 +20,14 @@
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/base_window.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
 #include "chrome/browser/apps/platform_apps/audio_focus_web_contents_observer.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_android.h"
 #endif
 
 // This file contains code shared between Android and non-Android platforms.
@@ -57,6 +62,17 @@ void ChromeExtensionHostDelegate::CreateTab(
   }
 
   CHECK(web_contents);
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, tab creation is asynchronous, but `CreateNewWindow()`
+  // immediately starts navigation. Attach `TabHelpers` synchronously so
+  // observers like `RequestDesktopSiteWebContentsObserverAndroid` are present
+  // for the initial load. This matches
+  // `TabWebContentsDelegateAndroid::AddNewContents()`. It is safe to
+  // attach `TabHelpers` multiple times since `AttachTabHelpers()` is
+  // idempotent.
+  // TODO(crbug.com/499200457): Add instrumentation test.
+  TabAndroid::AttachTabHelpers(web_contents.get());
+#endif
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   CHECK(profile);

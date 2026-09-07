@@ -10,8 +10,11 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -75,16 +78,22 @@ import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
+import org.chromium.chrome.browser.hub.HubExitNavigationHelper;
+import org.chromium.chrome.browser.hub.HubManager;
 import org.chromium.chrome.browser.keyboard_accessory.ManualFillingComponent;
 import org.chromium.chrome.browser.keyboard_accessory.ManualFillingComponentSupplier;
 import org.chromium.chrome.browser.layouts.CompositorModelChangeProcessor;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
+import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayerJni;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+import org.chromium.chrome.browser.media.PictureInPictureWindowManagerBridge;
+import org.chromium.chrome.browser.media.PictureInPictureWindowManagerBridgeJni;
 import org.chromium.chrome.browser.merchant_viewer.MerchantTrustSignalsCoordinator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
+import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.ntp.IncognitoNewTabPage;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifier;
@@ -110,6 +119,7 @@ import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibil
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabViewManager;
 import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetManager;
@@ -117,6 +127,7 @@ import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabModelDotInfo;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
+import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -166,6 +177,8 @@ import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.net.NetError;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.TestActivity;
@@ -213,6 +226,7 @@ public class ToolbarManagerUnitTest {
     @Mock private LargeIconBridge.Natives mLargeIconBridgeNatives;
     @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
     @Mock private PaintPreviewTabServiceFactory.Natives mPaintPreviewTabServiceFactoryNatives;
+    @Mock private PictureInPictureWindowManagerBridge.Natives mPictureInPictureBridgeNatives;
     @Mock private Runnable mOpenGridTabSwitcherHandler;
     @Mock private Tracker mTracker;
     @Mock private TopToolbarSceneLayer.Natives mTopToolbarSceneLayerNatives;
@@ -237,6 +251,7 @@ public class ToolbarManagerUnitTest {
     @Mock private StatusBarColorController mStatusBarColorController;
     @Mock private AppMenuDelegate mAppMenuDelegate;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
+    @Mock private MultiWindowModeStateDispatcher mMultiWindowModeStateDispatcher;
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private DataSharingTabManager mDataSharingTabManager;
     @Mock private TabContentManager mTabContentManager;
@@ -275,6 +290,8 @@ public class ToolbarManagerUnitTest {
     @Mock private SubscriptionEligibilityService mSubscriptionEligibilityService;
     @Mock private ButtonDataProvider mIdentityDiscProvider;
     @Mock private ButtonDataProvider mAdaptiveButtonProvider;
+    @Mock private HubManager mHubManager;
+    @Mock private TabCreator mTabCreator;
 
     @Captor private ArgumentCaptor<ButtonDataObserver> mIdentityDiscObserverCaptor;
     @Captor private ArgumentCaptor<ButtonDataObserver> mAdaptiveButtonObserverCaptor;
@@ -285,6 +302,8 @@ public class ToolbarManagerUnitTest {
     private TopToolbarSceneLayer mTopToolbarSceneLayerInstance;
     private ActivityTabProvider mActivityTabProvider;
     private SettableMonotonicObservableSupplier<TabModel> mCurrentTabModelSupplier;
+    private OneshotSupplierImpl<LayoutStateProvider> mLayoutStateProviderSupplier;
+    private OneshotSupplierImpl<HubManager> mHubManagerSupplier;
 
     @Before
     @SuppressWarnings("unchecked") // Raw CompositorModelChangeProcessor mock.
@@ -301,6 +320,8 @@ public class ToolbarManagerUnitTest {
         when(mFaviconHelperNatives.init()).thenReturn(1L);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeNatives);
         when(mLargeIconBridgeNatives.init()).thenReturn(1L);
+        PictureInPictureWindowManagerBridgeJni.setInstanceForTesting(
+                mPictureInPictureBridgeNatives);
         PaintPreviewTabServiceFactoryJni.setInstanceForTesting(
                 mPaintPreviewTabServiceFactoryNatives);
         when(mPaintPreviewTabServiceFactoryNatives.getServiceInstanceForCurrentProfile())
@@ -380,6 +401,8 @@ public class ToolbarManagerUnitTest {
         when(mLayoutManager.getOverlayPanelManager()).thenReturn(mOverlayPanelManager);
         when(mLayoutManager.createCompositorMCP(any(), any(), any()))
                 .thenReturn(mCompositorModelChangeProcessor);
+        when(mLayoutManager.createCompositorMCPWithExclusions(any(), any(), any(), any()))
+                .thenReturn(mCompositorModelChangeProcessor);
 
         UnownedUserDataHost unownedUserDataHost = new UnownedUserDataHost();
         when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(unownedUserDataHost);
@@ -403,10 +426,12 @@ public class ToolbarManagerUnitTest {
                 ObservableSuppliers.createNonNull(mProfile);
         SettableMonotonicObservableSupplier<BookmarkModel> bookmarkModelSupplier =
                 ObservableSuppliers.createMonotonic();
-        OneshotSupplierImpl<LayoutStateProvider> layoutStateProviderSupplier =
-                new OneshotSupplierImpl<>();
+        mLayoutStateProviderSupplier = new OneshotSupplierImpl<>();
         OneshotSupplierImpl<AppMenuCoordinator> appMenuCoordinatorSupplier =
                 new OneshotSupplierImpl<>();
+        mHubManagerSupplier = new OneshotSupplierImpl<>();
+        mHubManagerSupplier.set(mHubManager);
+        when(mTabCreatorManager.getTabCreator(anyBoolean())).thenReturn(mTabCreator);
         SettableMonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier =
                 ObservableSuppliers.createMonotonic();
         tabModelSelectorSupplier.set(mTabModelSelector);
@@ -457,7 +482,7 @@ public class ToolbarManagerUnitTest {
                         mFindToolbarManager,
                         profileSupplier,
                         bookmarkModelSupplier,
-                        layoutStateProviderSupplier,
+                        mLayoutStateProviderSupplier,
                         appMenuCoordinatorSupplier,
                         /* canShowUpdateBadge= */ false,
                         tabModelSelectorSupplier,
@@ -472,6 +497,7 @@ public class ToolbarManagerUnitTest {
                         mStatusBarColorController,
                         mAppMenuDelegate,
                         mActivityLifecycleDispatcher,
+                        mMultiWindowModeStateDispatcher,
                         mBottomSheetController,
                         mDataSharingTabManager,
                         mTabContentManager,
@@ -496,7 +522,8 @@ public class ToolbarManagerUnitTest {
                         mActionRegistry,
                         /* countrySupplier= */ null,
                         /* toggleGlicCallback= */ (preventClose, invocationSource) -> {},
-                        /* suppressTabStripAtStart= */ false);
+                        /* suppressTabStripAtStart= */ false,
+                        mHubManagerSupplier);
 
         verify(mIdentityDiscProvider).addObserver(mIdentityDiscObserverCaptor.capture());
         verify(mAdaptiveButtonProvider).addObserver(mAdaptiveButtonObserverCaptor.capture());
@@ -1246,5 +1273,183 @@ public class ToolbarManagerUnitTest {
         method.setAccessible(true);
         Object listener = method.invoke(mToolbarManager, mProfile, mOpenGridTabSwitcherHandler);
         assertNull(listener);
+    }
+
+    @Test
+    public void testHomeButtonPressInHub() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+        assertNotNull("Home button should be present", homeButton);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getId()).thenReturn(123);
+        when(mTab.isClosing()).thenReturn(false);
+        when(mTab.isDestroyed()).thenReturn(false);
+        when(mTab.getProfile()).thenReturn(mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+
+        verify(mHubManager).selectTabAndHideHub(123);
+        verify(mTab, never()).loadUrl(any());
+
+        HubExitNavigationHelper helper = mToolbarManager.getHubExitNavigationHelperForTesting();
+        assertNotNull(helper);
+        verify(layoutStateProvider).addObserver(helper);
+
+        helper.onFinishedHiding(LayoutType.HUB);
+        verify(mTab).loadUrl(any());
+    }
+
+    @Test
+    public void testHomeButtonPressInHub_NullTab() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+        assertNotNull("Home button should be present", homeButton);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
+        mToolbarManager.getLocationBarModelForTesting().setTab(null, mProfile);
+        when(mIncognitoStateProvider.isIncognitoSelected()).thenReturn(false);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+
+        verify(mHubManager, never()).selectTabAndHideHub(anyInt());
+        verify(mTabCreator).createNewTab(any(), eq(TabLaunchType.FROM_CHROME_UI), isNull());
+    }
+
+    @Test
+    public void testHomeButtonPressInHub_TabClosing() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+        assertNotNull("Home button should be present", homeButton);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getId()).thenReturn(123);
+        when(mTab.isClosing()).thenReturn(true);
+        when(mIncognitoStateProvider.isIncognitoSelected()).thenReturn(false);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+
+        verify(mHubManager, never()).selectTabAndHideHub(anyInt());
+        verify(mTabCreator).createNewTab(any(), eq(TabLaunchType.FROM_CHROME_UI), isNull());
+    }
+
+    @Test
+    public void testHomeButtonPressInHub_TabDestroyed() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+        assertNotNull("Home button should be present", homeButton);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getId()).thenReturn(123);
+        when(mTab.isClosing()).thenReturn(false);
+        when(mTab.isDestroyed()).thenReturn(true);
+        when(mIncognitoStateProvider.isIncognitoSelected()).thenReturn(false);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+
+        verify(mHubManager, never()).selectTabAndHideHub(anyInt());
+        verify(mTabCreator).createNewTab(any(), eq(TabLaunchType.FROM_CHROME_UI), isNull());
+    }
+
+    @Test
+    public void testHomeButtonPress_NotInHub_HelperNotCreated() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+        assertNotNull("Home button should be present", homeButton);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getId()).thenReturn(123);
+        when(mTab.isClosing()).thenReturn(false);
+        when(mTab.isDestroyed()).thenReturn(false);
+        when(mTab.getProfile()).thenReturn(mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+
+        verify(mTab).loadUrl(any());
+        assertNull(
+                "HubExitNavigationHelper should not be created",
+                mToolbarManager.getHubExitNavigationHelperForTesting());
+    }
+
+    @Test
+    public void testToolbarManagerDestroy_CleansUpHubExitNavigationHelper() {
+        AppCompatActivity activity = mActivityController.get();
+        View homeButton = activity.findViewById(R.id.home_button);
+
+        LayoutStateProvider layoutStateProvider = mock(LayoutStateProvider.class);
+        mLayoutStateProviderSupplier.set(layoutStateProvider);
+        when(layoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getId()).thenReturn(123);
+        when(mTab.isClosing()).thenReturn(false);
+        when(mTab.isDestroyed()).thenReturn(false);
+        when(mTab.getProfile()).thenReturn(mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        homeButton.performClick();
+        HubExitNavigationHelper helper = mToolbarManager.getHubExitNavigationHelperForTesting();
+        assertNotNull(helper);
+
+        mToolbarManager.destroy();
+        assertNull(mToolbarManager.getHubExitNavigationHelperForTesting());
+        verify(layoutStateProvider).removeObserver(helper);
+    }
+
+    @Test
+    public void
+            testOnDidFinishNavigationInPrimaryMainFrame_resetsNtpAnimationsWhenNavigatingBackToNtp() {
+        testOnDidFinishNavigationInPrimaryMainFrameImpl(
+                JUnitTestGURLs.NTP_URL, /* shouldReset= */ true);
+    }
+
+    @Test
+    public void testOnDidFinishNavigationInPrimaryMainFrame_doesNotResetNtpAnimationsForWebpage() {
+        testOnDidFinishNavigationInPrimaryMainFrameImpl(
+                JUnitTestGURLs.EXAMPLE_URL, /* shouldReset= */ false);
+    }
+
+    private void testOnDidFinishNavigationInPrimaryMainFrameImpl(GURL url, boolean shouldReset) {
+        Tab tab = mockTab(/* isNtp= */ true, /* isIncognito= */ false);
+        NewTabPage ntp = (NewTabPage) tab.getNativePage();
+
+        mActivityTabProvider.setForTesting(tab);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        ActivityTabProvider.ActivityTabTabObserver observer =
+                mToolbarManager.getActivityTabTabObserverForTesting();
+        assertNotNull(observer);
+
+        NavigationHandle navigation = mock(NavigationHandle.class);
+        when(navigation.hasCommitted()).thenReturn(true);
+        when(navigation.isSameDocument()).thenReturn(false);
+        when(navigation.getUrl()).thenReturn(url);
+        when(navigation.errorCode()).thenReturn(NetError.OK);
+
+        observer.onDidFinishNavigationInPrimaryMainFrame(tab, navigation);
+
+        if (shouldReset) {
+            verify(ntp).setUrlFocusAnimationsDisabled(false);
+        } else {
+            verify(ntp, never()).setUrlFocusAnimationsDisabled(anyBoolean());
+        }
     }
 }

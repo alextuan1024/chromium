@@ -8749,7 +8749,7 @@ TEST_P(LayerTreeHostImplTest,
                      resourceless_software_draw, false);
 
   EXPECT_EQ(1u, last_on_draw_frame_->will_draw_layers.size());
-  EXPECT_EQ(host_impl_->active_tree()->root_layer(),
+  EXPECT_EQ(host_impl_->active_tree()->root_layer()->id(),
             last_on_draw_frame_->will_draw_layers[0]);
 }
 
@@ -15881,6 +15881,25 @@ TEST_P(UnboundedElementTest, UnboundedCompositorFrameExtraction) {
   EXPECT_TRUE(effect_tree.Node(effect_node_id).HasRenderSurface());
   EXPECT_EQ(RenderSurfaceReason::kUnboundedElement,
             effect_tree.Node(effect_node_id).render_surface_reason);
+}
+
+TEST_P(UnboundedElementTest, IsUnboundedMember) {
+  auto* root = SetupDefaultRootLayer(gfx::Size(100, 100));
+  auto* unbounded_layer = AddLayerInActiveTree();
+  CopyProperties(root, unbounded_layer);
+
+  EXPECT_FALSE(root->IsUnboundedMember());
+  EXPECT_FALSE(unbounded_layer->IsUnboundedMember());
+
+  EffectNode& effect_node = CreateEffectNode(unbounded_layer);
+  effect_node.render_surface_reason = RenderSurfaceReason::kUnboundedElement;
+
+  EXPECT_FALSE(root->IsUnboundedMember());
+  EXPECT_TRUE(unbounded_layer->IsUnboundedMember());
+
+  auto* child_layer = AddLayerInActiveTree();
+  CopyProperties(unbounded_layer, child_layer);
+  EXPECT_TRUE(child_layer->IsUnboundedMember());
 }
 
 TEST_P(UnboundedElementTest, HasDamageWithUnboundedElementOutsideViewport) {

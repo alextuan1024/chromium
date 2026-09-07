@@ -7,6 +7,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -37,7 +38,8 @@
 namespace {
 
 // Returns the DSE reset bubble if it is currently showing, otherwise nullptr.
-views::BubbleDialogDelegate* GetDseResetBubble(Browser* browser) {
+views::BubbleDialogDelegate* GetDseResetBubble(
+    BrowserWindowInterface* browser) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   if (!browser_view || !browser_view->toolbar_button_provider()) {
     return nullptr;
@@ -60,7 +62,6 @@ views::BubbleDialogDelegate* GetDseResetBubble(Browser* browser) {
   }
   return nullptr;
 }
-
 
 }  // namespace
 

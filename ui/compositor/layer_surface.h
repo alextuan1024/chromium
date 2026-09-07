@@ -39,7 +39,6 @@ class COMPOSITOR_EXPORT LayerSurface : public Layer {
   ~LayerSurface() override;
 
   // Layer:
-  bool HasExternalContent() const override;
   std::unique_ptr<Layer> Clone() const override;
   bool ShouldSchedulePaint() const override;
 
@@ -92,6 +91,7 @@ class COMPOSITOR_EXPORT LayerSurface : public Layer {
   // Layer:
   void RecomputeDrawsContentAndUVRect() override;
   void Reset() override;
+  void OnPaintScheduled() override;
 
  private:
   gfx::Size frame_size_in_dip_;

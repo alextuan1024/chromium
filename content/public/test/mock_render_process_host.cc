@@ -99,6 +99,7 @@ MockRenderProcessHost::~MockRenderProcessHost() {
       observer.RenderProcessHostDestroyed(this);
     RenderProcessHostImpl::UnregisterHost(GetID());
   }
+  ClearAllUserData();
 }
 
 void MockRenderProcessHost::SimulateCrash() {
@@ -643,6 +644,24 @@ void MockRenderProcessHost::GetSandboxedFileSystemForBucket(
 std::string
 MockRenderProcessHost::GetInfoForBrowserContextDestructionCrashReporting() {
   return std::string();
+}
+
+const std::string&
+MockRenderProcessHost::GetUnresponsiveDocumentJavascriptCallStack() const {
+  return unresponsive_document_javascript_call_stack_;
+}
+
+const blink::LocalFrameToken&
+MockRenderProcessHost::GetUnresponsiveDocumentToken() const {
+  return unresponsive_document_token_;
+}
+
+void MockRenderProcessHost::SetUnresponsiveDocumentJSCallStackAndToken(
+    std::string javascript_call_stack,
+    blink::LocalFrameToken token) {
+  unresponsive_document_javascript_call_stack_ =
+      std::move(javascript_call_stack);
+  unresponsive_document_token_ = token;
 }
 
 void MockRenderProcessHost::WriteIntoTrace(

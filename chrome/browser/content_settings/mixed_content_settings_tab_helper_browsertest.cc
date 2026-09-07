@@ -8,6 +8,7 @@
 #include "chrome/browser/ui/browser_content_setting_bubble_model_delegate.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
@@ -74,7 +75,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperBrowserTest,
   {
     std::unique_ptr<ContentSettingBubbleModel> model(
         ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            BrowserContentSettingBubbleModelDelegate::From(browser()),
             web_contents()->GetPrimaryPage(),
             ContentSettingsType::MIXEDSCRIPT));
     model->OnCustomLinkClicked();
@@ -151,7 +152,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperPrerenderBrowserTest,
   {
     std::unique_ptr<ContentSettingBubbleModel> model(
         ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            BrowserContentSettingBubbleModelDelegate::From(browser()),
             web_contents()->GetPrimaryPage(),
             ContentSettingsType::MIXEDSCRIPT));
     model->OnCustomLinkClicked();
@@ -322,7 +323,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperFencedFrameBrowserTest,
   {
     std::unique_ptr<ContentSettingBubbleModel> model(
         ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            BrowserContentSettingBubbleModelDelegate::From(browser()),
             web_contents()->GetPrimaryPage(),
             ContentSettingsType::MIXEDSCRIPT));
     model->OnCustomLinkClicked();

@@ -178,7 +178,11 @@ AwBrowserContext::AwBrowserContext(std::string name,
   }
 
   EnsureResourceContextInitialized();
-  prefetch_manager_ = std::make_unique<AwPrefetchManager>(this);
+  {
+    SCOPED_UMA_HISTOGRAM_TIMER(
+        "Android.WebView.AwBrowserContext.CreateAwPrefetchManager.Duration");
+    prefetch_manager_ = std::make_unique<AwPrefetchManager>(this);
+  }
   preconnector_ = std::make_unique<AwPreconnector>(this);
 
   // This should be initialized as soon as possible when creating the profile,
@@ -196,7 +200,7 @@ AwBrowserContext::AwBrowserContext(std::string name,
   }
 
   content_restriction_manager_client_ =
-      std::make_unique<AwContentRestrictionManagerClient>();
+      AwContentRestrictionManagerClient::Create();
   content_restriction_blocked_navigation_tracker_ =
       std::make_unique<AwContentRestrictionBlockedNavigationTracker>();
   cross_origin_allow_list_matcher_ =

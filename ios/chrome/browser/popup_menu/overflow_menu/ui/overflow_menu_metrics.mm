@@ -38,6 +38,8 @@ IOSOverflowMenuDestination HistogramDestinationFromDestination(
       return IOSOverflowMenuDestination::kCobalt;
     case overflow_menu::Destination::LevelUp:
       return IOSOverflowMenuDestination::kLevelUp;
+    case overflow_menu::Destination::DefaultBrowser:
+      return IOSOverflowMenuDestination::kDefaultBrowser;
   }
 }
 
@@ -84,8 +86,8 @@ IOSOverflowMenuAction HistogramActionFromActionType(
       return IOSOverflowMenuAction::kReaderMode;
     case overflow_menu::ActionType::AskBWG:
       return IOSOverflowMenuAction::kAskBWG;
-    case overflow_menu::ActionType::HideToolbars:
-      return IOSOverflowMenuAction::kHideToolbars;
+    case overflow_menu::ActionType::HideToolbarsDeprecated:
+      NOTREACHED();
     case overflow_menu::ActionType::TabGroupDeprecated:
       NOTREACHED();
     case overflow_menu::ActionType::ShareThisPage:
@@ -96,6 +98,8 @@ IOSOverflowMenuAction HistogramActionFromActionType(
       return IOSOverflowMenuAction::kIdentity;
     case overflow_menu::ActionType::CustomizeHomePage:
       return IOSOverflowMenuAction::kCustomizeHomePage;
+    case overflow_menu::ActionType::DefaultBrowser:
+      return IOSOverflowMenuAction::kDefaultBrowser;
   }
 }
 

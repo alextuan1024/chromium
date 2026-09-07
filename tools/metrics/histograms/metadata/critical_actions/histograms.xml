@@ -26,6 +26,7 @@ chromium-metrics-reviews@google.com.
 
 <variants name="ActionSource">
   <variant name="Actor" summary="Actor agent events"/>
+  <variant name="Autofill" summary="autofill events"/>
   <variant name="PasswordManager" summary="password manager fill events"/>
 </variants>
 
@@ -55,6 +56,18 @@ chromium-metrics-reviews@google.com.
     added to the service to be persisted to the database by {ActionSource}.
   </summary>
   <token key="ActionSource" variants="ActionSource"/>
+</histogram>
+
+<histogram name="CriticalActions.OpenConversationResult"
+    enum="OpenConversationResult" expires_after="2026-11-01">
+  <owner>heychirag@google.com</owner>
+  <owner>polonium@google.com</owner>
+  <summary>
+    Records the outcome of attempting to open a Gemini conversation session
+    associated with a critical action visit from the Chrome History page.
+    Recorded in BrowsingHistoryHandler whenever the user clicks 'Go to Gemini
+    chat' in the history entry menu.
+  </summary>
 </histogram>
 
 <histogram name="CriticalActions.VisitIdResolutionOutcome.{ActionSource}"

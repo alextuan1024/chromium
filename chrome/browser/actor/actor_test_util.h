@@ -194,6 +194,10 @@ optimization_guide::proto::Actions MakeMediaControl(
     tabs::TabHandle tab_handle,
     MediaControl media_control,
     std::optional<actor::TaskId> task_id = std::nullopt);
+optimization_guide::proto::Actions MakeTranslatePage(
+    tabs::TabHandle tab_handle,
+    std::string target_language = "",
+    std::optional<actor::TaskId> task_id = std::nullopt);
 
 /////////////////////////
 // ToolRequest action makers
@@ -213,12 +217,17 @@ std::unique_ptr<ToolRequest> MakeClickRequest(
     mojom::ClickCount count = mojom::ClickCount::kSingle);
 std::unique_ptr<ToolRequest> MakeHistoryBackRequest(tabs::TabInterface& tab);
 std::unique_ptr<ToolRequest> MakeHistoryForwardRequest(tabs::TabInterface& tab);
+std::unique_ptr<ToolRequest> MakeHistoryReloadRequest(
+    tabs::TabInterface& tab,
+    bool bypass_cache = false);
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(content::RenderFrameHost& rfh,
                                                   int content_node_id);
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(tabs::TabInterface& tab,
                                                   const gfx::Point& move_point);
 std::unique_ptr<ToolRequest> MakeNavigateRequest(tabs::TabInterface& tab,
                                                  std::string_view target_url);
+std::unique_ptr<ToolRequest> MakePerformSearchRequest(tabs::TabInterface& tab,
+                                                      std::string_view query);
 std::unique_ptr<ToolRequest> MakeTypeRequest(content::RenderFrameHost& rfh,
                                              int content_node_id,
                                              std::string_view text,
@@ -266,6 +275,9 @@ std::unique_ptr<ToolRequest> MakeTranslatePageRequest(tabs::TabInterface& tab);
 std::unique_ptr<ToolRequest> MakeTranslatePageRequest(
     tabs::TabInterface& tab,
     std::string_view target_language);
+std::unique_ptr<ToolRequest> MakeFindAndHighlightRequest(
+    tabs::TabInterface& tab,
+    const std::string& query);
 
 // A helper to create a vector of ToolRequests suitable for passing to
 // ExecutionEngine::Act. Note that this will necessarily move the ToolRequest

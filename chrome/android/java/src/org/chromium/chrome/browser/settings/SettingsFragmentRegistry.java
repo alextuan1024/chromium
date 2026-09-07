@@ -18,16 +18,26 @@ import org.chromium.chrome.browser.about_settings.LegalInformationSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
 import org.chromium.chrome.browser.autofill.settings.AndroidPaymentAppsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillBuyNowPayLaterFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillCardBenefitsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillIdentityDocsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillPaymentMethodsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillProfilesFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillShoppingFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillTravelFragment;
+import org.chromium.chrome.browser.autofill.settings.FinancialAccountsManagementFragment;
+import org.chromium.chrome.browser.autofill.settings.NonCardPaymentMethodsManagementFragment;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
+import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
 import org.chromium.chrome.browser.glic.GlicSettings;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsSettings;
+import org.chromium.chrome.browser.language.settings.AlwaysTranslateListFragment;
 import org.chromium.chrome.browser.language.settings.LanguageSettings;
+import org.chromium.chrome.browser.language.settings.NeverTranslateListFragment;
+import org.chromium.chrome.browser.language.settings.SelectLanguageFragment;
 import org.chromium.chrome.browser.night_mode.NightModeMetrics;
 import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
 import org.chromium.chrome.browser.prefetch.settings.ExtendedPreloadingSettingsFragment;
@@ -36,6 +46,7 @@ import org.chromium.chrome.browser.prefetch.settings.StandardPreloadingSettingsF
 import org.chromium.chrome.browser.privacy.secure_dns.SecureDnsSettings;
 import org.chromium.chrome.browser.privacy.settings.DoNotTrackSettings;
 import org.chromium.chrome.browser.privacy.settings.PrivacySettings;
+import org.chromium.chrome.browser.privacy_guide.PrivacyGuideFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.EnhancedProtectionSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.SafeBrowsingSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.StandardProtectionSettingsFragment;
@@ -54,9 +65,17 @@ import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
 import org.chromium.chrome.browser.tracing.settings.TracingSettings;
 import org.chromium.components.browser_ui.accessibility.AccessibilitySettings;
 import org.chromium.components.browser_ui.site_settings.AllSiteSettings;
+import org.chromium.components.browser_ui.site_settings.ChosenObjectSettings;
 import org.chromium.components.browser_ui.site_settings.CookieSettings;
+import org.chromium.components.browser_ui.site_settings.GroupedWebsitesSettings;
+import org.chromium.components.browser_ui.site_settings.LocationPermissionSubpageSettings;
+import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettings;
+import org.chromium.components.browser_ui.site_settings.StorageAccessSubpageSettings;
+import org.chromium.components.browser_ui.site_settings.Website;
+import org.chromium.components.browser_ui.site_settings.WebsiteAddress;
+import org.chromium.components.browser_ui.site_settings.WebsiteGroup;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 
@@ -109,8 +128,9 @@ public class SettingsFragmentRegistry {
         registerMapping("/search", SearchEngineSettings.class);
         registerMapping("/search/siteSearch", SiteSearchSettings.class);
 
-        // Privacy
+        // Privacy & Security
         registerMapping("/privacy", PrivacySettings.class);
+        registerMapping("/privacyGuide", PrivacyGuideFragment.class);
         registerMapping("/clearBrowsingData", ClearBrowsingDataFragment.class);
         registerMapping("/cookies", CookieSettings.class);
         registerMapping("/doNotTrack", DoNotTrackSettings.class);
@@ -130,13 +150,19 @@ public class SettingsFragmentRegistry {
         registerMapping("/notifications", SafetyCheckSettingsFragment.class);
 
         // Autofill & Passwords
-        // TODO(mwoj): There are some missing here, but it's not obvious which.
         registerMapping("/autofill", AutofillAndPasswordsFragment.class);
         registerMapping("/payments", AutofillPaymentMethodsFragment.class);
+        registerMapping("/payments/nonCardMethods", NonCardPaymentMethodsManagementFragment.class);
+        registerMapping("/payments/financialAccounts", FinancialAccountsManagementFragment.class);
         registerMapping("/cardBenefits", AutofillCardBenefitsFragment.class);
+        registerMapping("/cardBenefits/bnpl", AutofillBuyNowPayLaterFragment.class);
         registerMapping("/paymentApps", AndroidPaymentAppsFragment.class);
         registerMapping("/addresses", AutofillProfilesFragment.class);
-        registerMapping("/autofillSettings", AutofillOptionsFragment.class);
+        registerMapping("/autofill/identityDocs", AutofillIdentityDocsFragment.class);
+        registerMapping("/autofill/travel", AutofillTravelFragment.class);
+        registerMapping("/autofill/shopping", AutofillShoppingFragment.class);
+        registerMapping("/autofill/personalContext", AutofillPersonalContextFragment.class);
+        registerMapping("/autofill/settings", AutofillOptionsFragment.class);
 
         // Tabs and tab groups
         registerMapping("/tabs", TabsSettings.class);
@@ -156,11 +182,19 @@ public class SettingsFragmentRegistry {
 
         // Content / Site Settings
         registerMapping("/siteSettings", SiteSettings.class);
+        registerMapping("/siteSettings/category", SingleCategorySettings.class);
         registerMapping("/allSites", AllSiteSettings.class);
+        registerMapping("/allSites/group", GroupedWebsitesSettings.class);
         registerMapping("/siteDetails", SingleWebsiteSettings.class);
+        registerMapping("/storageAccess", StorageAccessSubpageSettings.class);
+        registerMapping("/locationPermission", LocationPermissionSubpageSettings.class);
+        registerMapping("/chosenObject", ChosenObjectSettings.class);
 
         // Languages, Downloads, Tabs, Homepage
         registerMapping("/languages", LanguageSettings.class);
+        registerMapping("/languages/select", SelectLanguageFragment.class);
+        registerMapping("/languages/alwaysTranslate", AlwaysTranslateListFragment.class);
+        registerMapping("/languages/neverTranslate", NeverTranslateListFragment.class);
         registerMapping("/downloads", DownloadSettings.class);
 
         // About & Developer
@@ -175,6 +209,12 @@ public class SettingsFragmentRegistry {
         // Parameter translations mapping URL query string keys to Fragment
         // argument extra keys.
         registerParameterMapping("site", SingleWebsiteSettings.EXTRA_SITE_ADDRESS);
+        registerParameterMapping("category", SingleCategorySettings.EXTRA_CATEGORY);
+        registerParameterMapping("title", SingleCategorySettings.EXTRA_TITLE);
+        registerParameterMapping("group", GroupedWebsitesSettings.EXTRA_GROUP);
+        registerParameterMapping(
+                "potentialLanguages", SelectLanguageFragment.KEY_POTENTIAL_LANGUAGES);
+        registerParameterMapping("referrer", AutofillAndPasswordsFragment.EXTRA_REFERRER);
 
         // Register default argument providers cleanly without hardcoding in URL parsing logic
         sDefaultArgsProviders.put(
@@ -349,15 +389,42 @@ public class SettingsFragmentRegistry {
             Object val = args.get(key);
             if (val == null) continue;
 
-            if (!(val instanceof String || val instanceof Number || val instanceof Boolean)) {
-                continue;
+            UrlParam result = extractQueryParam(key, val);
+            if (result != null) {
+                String queryParam = sArgKeyToQueryParamMap.getOrDefault(result.mKey, result.mKey);
+                builder.appendQueryParameter(queryParam, result.mValue);
             }
-
-            // Map argument extra key back to canonical URL query param key.
-            String queryParam = sArgKeyToQueryParamMap.getOrDefault(key, key);
-            builder.appendQueryParameter(queryParam, String.valueOf(val));
         }
         return builder.build().toString();
+    }
+
+    private static @Nullable UrlParam extractQueryParam(String key, Object val) {
+        if (val instanceof Website website) {
+            return new UrlParam(
+                    SingleWebsiteSettings.EXTRA_SITE_ADDRESS, website.getAddress().getOrigin());
+        }
+        if (val instanceof WebsiteAddress websiteAddress) {
+            return new UrlParam(
+                    SingleWebsiteSettings.EXTRA_SITE_ADDRESS, websiteAddress.getOrigin());
+        }
+        if (val instanceof WebsiteGroup websiteGroup) {
+            return new UrlParam(
+                    GroupedWebsitesSettings.EXTRA_GROUP, websiteGroup.getDomainAndRegistry());
+        }
+        if (val instanceof CharSequence || val instanceof Number || val instanceof Boolean) {
+            return new UrlParam(key, String.valueOf(val));
+        }
+        return null;
+    }
+
+    private static class UrlParam {
+        final String mKey;
+        final String mValue;
+
+        UrlParam(String key, String value) {
+            this.mKey = key;
+            this.mValue = value;
+        }
     }
 
     /**

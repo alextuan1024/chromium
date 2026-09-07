@@ -4,10 +4,12 @@
 
 #include "components/page_load_metrics/browser/soft_navigation_tracker.h"
 
+#include <set>
 #include <utility>
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
+#include "base/containers/adapters.h"
 #include "base/containers/span.h"
 #include "content/public/browser/global_routing_id.h"
 
@@ -21,79 +23,99 @@ SoftNavigationTracker::~SoftNavigationTracker() = default;
 
 bool SoftNavigationTracker::UpdateMainFrameMetrics(
     content::GlobalRenderFrameHostToken frame_token,
-    std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
+    base::span<const mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
     base::span<const mojom::EventTimingPtr> event_timings,
     base::span<const mojom::LayoutShiftPtr> layout_shifts,
     base::span<const mojom::LargestContentfulPaintTimingPtr> soft_lcps) {
-  // Add all new performance entries first. These entries are keyed by
-  // performance timeline navigation ID and accumulate directly into the
-  // corresponding navigation bucket in `navigations_`.
+  // Step 1: Validate incoming soft navigation metrics.
+  if (!soft_navigation_metrics.empty() &&
+      !ValidateMetrics(soft_navigation_metrics)) {
+    return false;
+  }
+
+  // Step 2: Register soft navigation commits and FCP updates. Commits must be
+  // recorded first so that timestamp slicing and navigation state are
+  // established before performance entries are attributed.
+  for (const auto& soft_navigation : soft_navigation_metrics) {
+    if (soft_navigation->commit) {
+      AddMainFrameSoftNavigationCommit(*soft_navigation);
+    }
+    if (soft_navigation->first_contentful_paint.has_value()) {
+      AddMainFrameFirstContentfulPaint(
+          soft_navigation->performance_timeline_navigation_id,
+          *soft_navigation->first_contentful_paint);
+    }
+  }
+
+  // Step 3: Attribute Main Frame Events, Layout Shifts, and LCP.
+  // Look up existing committed navigations via GetSoftNavigationData(id).
+  // If nav is not found, this value is just dropped because, either:
+  // - We've already flushed this nav (i.e. bfcache) to observers, or
+  // - We haven't seen a Commit for it yet (unexpected, invalid input).
   AddMainFrameEventTimings(frame_token, event_timings);
   AddMainFrameLayoutShifts(layout_shifts);
   AddMainFrameLargestContentfulPaints(soft_lcps);
 
-  if (soft_navigation_metrics.empty()) {
-    return true;
-  }
-
-  // Validate soft navigation commit data specifically for consistency (e.g.
-  // non-empty tokens, strictly increasing navigation IDs and slicing times).
-  // If validation fails, we discard this part of the update only.
-  if (!ValidateMetrics(soft_navigation_metrics)) {
-    return false;
-  }
-
-  // Process incoming soft navigation updates. Commits arrive in strictly
-  // increasing chronological order, while standalone data updates (such as FCP)
-  // can arrive out of order for any tracked navigation.
-  for (auto& soft_navigation : soft_navigation_metrics) {
-    uint64_t nav_id = soft_navigation->performance_timeline_navigation_id;
-
-    if (!soft_navigation->commit) {
-      if (soft_navigation->first_contentful_paint.has_value()) {
-        AddMainFrameFirstContentfulPaint(
-            nav_id, *soft_navigation->first_contentful_paint);
-      } else {
-        // TODO(crbug.com/490096674): Report bad renderer if a message arrives
-        // with neither commit nor FCP.
-      }
-      continue;
-    }
-
-    // Retrieves an uncommitted bucket created by earlier event timings or
-    // layout shifts, or creates a new one for this soft navigation. This should
-    // always succeed for valid commits unless the tracker has reached its
-    // maximum capacity (`kMaxSoftNavigations`). Duplicate or out-of-order
-    // commits are rejected by `ValidateMetrics`.
-    SoftNavigationData* nav = GetOrCreateNavigationData(nav_id);
-    if (!nav) {
-      continue;
-    }
-    nav->metrics = std::move(soft_navigation);
-    active_navigation_id_ = nav_id;
-    ++soft_navigation_count_;
-    client_->OnSoftNavigationCommit(*nav->metrics);
-  }
-
-  ProcessCompletedNavigationsAwaitingReportingCriteria();
+  // Step 4: Advance soft navigation state and dispatch events.
+  // This is evaluated at the end of the update after all main frame commits,
+  // event timings, layout shifts, and FCP updates in the current IPC batch have
+  // been attributed. Subframe metrics arrive via separate per-frame IPCs in
+  // UpdateSubFrameMetrics and are continuously ingested into open navigation
+  // slices throughout their lifetime (as well as during the buffer window while
+  // waiting for the subsequent navigation's FCP).
+  TryAdvanceAndDispatchSoftNavigationEvents();
   return true;
 }
 
-void SoftNavigationTracker::
-    ProcessCompletedNavigationsAwaitingReportingCriteria() {
-  PruneUncommittedNavigationsUpTo(active_navigation_id_);
+void SoftNavigationTracker::OnHidden(base::TimeDelta background_time) {
+  last_hidden_time_ = background_time;
+  for (auto& [id, nav] : navigations_) {
+    nav->RecordFirstBackgroundTime(background_time);
+  }
+}
 
+void SoftNavigationTracker::OnShown(base::TimeDelta shown_time) {
+  last_shown_time_ = shown_time;
+}
+
+void SoftNavigationTracker::UpdateSubFrameMetrics(
+    content::GlobalRenderFrameHostToken frame_token,
+    base::span<const mojom::EventTimingPtr> event_timings,
+    base::span<const mojom::LayoutShiftPtr> layout_shifts) {
+  // Subframe metrics arrive in independent per-frame IPCs and are attributed
+  // to open soft navigation slices based on their timestamps (processing_start
+  // and layout_shift_time). Because completed navigations are retained in
+  // `navigations_` until the subsequent navigation presents FCP, late-arriving
+  // subframe metrics have some buffertime to be captured while the navigation
+  // remains open, but this isn't perfect. Ideally we would find add some extra
+  // delay to collect remaining data into CWV calculators before writing to UKM.
+  AddSubFrameEventTimings(frame_token, event_timings);
+  AddSubFrameLayoutShifts(layout_shifts);
+}
+void SoftNavigationTracker::TryAdvanceAndDispatchSoftNavigationEvents() {
   while (!navigations_.empty()) {
     auto it = navigations_.begin();
     uint64_t current_id = it->first;
-    auto next_it = std::next(it);
+    SoftNavigationData* current_nav = it->second.get();
 
-    // Navigations only complete once they are no longer active, have their own
-    // requisite commit and FCP data, and the subsequent navigation has also
-    // committed and presented its FCP (which acts as a proxy ensuring
-    // sufficient time has elapsed to capture late INP, CLS, and LCP data).
-    if (current_id == active_navigation_id_ ||
-        !HasCommitAndFirstContentfulPaint(it->second.get()) ||
+    // In FIFO order, the earliest navigation must have received its commit and
+    // presented its own FCP before it can proceed.
+    if (!HasCommitAndFirstContentfulPaint(current_nav)) {
+      break;
+    }
+
+    // Dispatch FCP if this navigation has not yet had its FCP reported.
+    if (current_id > last_reported_fcp_navigation_id_) {
+      last_reported_fcp_navigation_id_ = current_id;
+      client_->OnSoftNavigationFirstContentfulPaint(*current_nav->metrics);
+    }
+
+    // Navigations only complete once superseded: the subsequent navigation
+    // must have committed and presented its FCP. Awaiting the next soft
+    // navigation's FCP acts as a proxy ensuring sufficient time has elapsed
+    // to capture late INP, CLS, and LCP data for the current navigation.
+    auto next_it = std::next(it);
+    if (current_id == last_committed_navigation_id_ ||
         next_it == navigations_.end() ||
         !HasCommitAndFirstContentfulPaint(next_it->second.get())) {
       break;
@@ -106,48 +128,31 @@ void SoftNavigationTracker::
 }
 
 void SoftNavigationTracker::CompleteActiveNavigationAndFlush() {
-  // Drain and report all committed navigations in ascending navigation ID
-  // order.
-  // TODO(crbug.com/494593459): Investigate whether abandoned/in-flight commits
-  // that were unloaded before presenting FCP should be reported to observers
-  // with an optional FCP.
-  for (const auto& [id, nav] : navigations_) {
-    if (HasCommitAndFirstContentfulPaint(nav.get())) {
-      client_->OnSoftNavigationCompleted(*nav);
-    }
+  if (navigations_.empty()) {
+    return;
   }
+
+  // Drain and report the active open navigation that has already reported FCP.
+  // Incomplete navigations that never reported FCP are dropped.
+  auto it = navigations_.begin();
+  if (it->first == last_reported_fcp_navigation_id_) {
+    CHECK(HasCommitAndFirstContentfulPaint(it->second.get()));
+    client_->OnSoftNavigationCompleted(*it->second);
+  }
+
+  // TODO(crbug.com/490096674): It is theoretically possible that we clear more
+  // than a single pending navigation here, without flushing it. Consider
+  // adding histograms to track how often that actually happens.
   navigations_.clear();
 }
 
-SoftNavigationData* SoftNavigationTracker::GetOrCreateNavigationData(
-    uint64_t navigation_id) {
-  if (navigation_id < kFirstSoftNavigationPerformanceTimelineNavigationId) {
-    return nullptr;
-  }
-  if (SoftNavigationData* nav = GetSoftNavigationData(navigation_id)) {
-    return nav;
-  }
-  // If `navigation_id` is less than or equal to `active_navigation_id_` and not
-  // found in `navigations_`, it belongs to a past soft navigation that has
-  // already completed and been pruned.
-  if (navigation_id <= active_navigation_id_) {
-    return nullptr;
-  }
-  if (navigations_.size() >= kMaxSoftNavigations) {
-    return nullptr;
-  }
-  return navigations_
-      .emplace(navigation_id, std::make_unique<SoftNavigationData>())
-      .first->second.get();
-}
-
 SoftNavigationData* SoftNavigationTracker::GetSoftNavigationDataForTest(
-    uint64_t performance_timeline_navigation_id) {
+    uint64_t performance_timeline_navigation_id) {  // IN-TEST
   return GetSoftNavigationData(performance_timeline_navigation_id);
 }
 
 const SoftNavigationData* SoftNavigationTracker::GetSoftNavigationDataForTest(
-    uint64_t performance_timeline_navigation_id) const {
+    uint64_t performance_timeline_navigation_id) const {  // IN-TEST
   return GetSoftNavigationData(performance_timeline_navigation_id);
 }
 
@@ -164,17 +169,18 @@ const SoftNavigationData* SoftNavigationTracker::GetSoftNavigationData(
 }
 
 bool SoftNavigationTracker::ValidateMetrics(
-    const std::vector<mojom::SoftNavigationMetricsPtr>& soft_navigation_metrics)
+    base::span<const mojom::SoftNavigationMetricsPtr> soft_navigation_metrics)
     const {
   base::TimeTicks last_validated_slicing_time;
   base::UnguessableToken last_validated_token;
   uint64_t last_validated_id =
-      std::max(active_navigation_id_,
+      std::max(last_committed_navigation_id_,
                kFirstSoftNavigationPerformanceTimelineNavigationId - 1);
+  std::set<uint64_t> seen_fcp_ids;
 
-  if (active_navigation_id_ != 0) {
+  if (last_committed_navigation_id_ != 0) {
     const SoftNavigationData* nav =
-        GetSoftNavigationData(active_navigation_id_);
+        GetSoftNavigationData(last_committed_navigation_id_);
     if (nav && nav->metrics && nav->metrics->commit) {
       last_validated_slicing_time =
           nav->metrics->commit->soft_navigation_slicing_time;
@@ -190,10 +196,27 @@ bool SoftNavigationTracker::ValidateMetrics(
       return false;
     }
 
+    // Must contain either a commit or an FCP update (or both).
+    if (!soft_navigation->commit &&
+        !soft_navigation->first_contentful_paint.has_value()) {
+      return false;
+    }
+
+    if (soft_navigation->first_contentful_paint.has_value()) {
+      if (!seen_fcp_ids
+               .insert(soft_navigation->performance_timeline_navigation_id)
+               .second) {
+        return false;
+      }
+    }
+
     // Standalone metric updates (such as FCP updates) can arrive out of order
-    // for any tracked navigation, but must contain valid metric data.
+    // for any tracked navigation, but cannot duplicate an existing FCP.
     if (!soft_navigation->commit) {
-      if (!soft_navigation->first_contentful_paint.has_value()) {
+      const SoftNavigationData* nav = GetSoftNavigationData(
+          soft_navigation->performance_timeline_navigation_id);
+      if (nav && nav->metrics &&
+          nav->metrics->first_contentful_paint.has_value()) {
         return false;
       }
       continue;
@@ -228,8 +251,8 @@ void SoftNavigationTracker::AddMainFrameEventTimings(
     content::GlobalRenderFrameHostToken frame_token,
     base::span<const mojom::EventTimingPtr> event_timings) {
   for (const auto& event : event_timings) {
-    if (SoftNavigationData* nav = GetOrCreateNavigationData(
-            event->performance_timeline_navigation_id)) {
+    if (SoftNavigationData* nav =
+            GetSoftNavigationData(event->performance_timeline_navigation_id)) {
       nav->inp_calculator.AddNewEventTimings(frame_token,
                                              base::span_from_ref(event));
     }
@@ -240,8 +263,8 @@ void SoftNavigationTracker::AddMainFrameLayoutShifts(
     base::span<const mojom::LayoutShiftPtr> layout_shifts) {
   base::TimeTicks now = base::TimeTicks::Now();
   for (const auto& shift : layout_shifts) {
-    if (SoftNavigationData* nav = GetOrCreateNavigationData(
-            shift->performance_timeline_navigation_id)) {
+    if (SoftNavigationData* nav =
+            GetSoftNavigationData(shift->performance_timeline_navigation_id)) {
       nav->cls_calculator.AddNewLayoutShifts(base::span_from_ref(shift), now);
     }
   }
@@ -250,41 +273,49 @@ void SoftNavigationTracker::AddMainFrameLayoutShifts(
 void SoftNavigationTracker::AddMainFrameLargestContentfulPaints(
     base::span<const mojom::LargestContentfulPaintTimingPtr> soft_lcps) {
   for (const auto& lcp : soft_lcps) {
-    if (SoftNavigationData* nav = GetOrCreateNavigationData(
-            lcp->performance_timeline_navigation_id)) {
+    if (SoftNavigationData* nav =
+            GetSoftNavigationData(lcp->performance_timeline_navigation_id)) {
       nav->lcp_handler.RecordMainFrameTiming(
           *lcp, /*first_input_or_scroll_notified_timestamp=*/std::nullopt);
     }
   }
 }
 
+void SoftNavigationTracker::AddMainFrameSoftNavigationCommit(
+    const mojom::SoftNavigationMetrics& soft_navigation) {
+  uint64_t nav_id = soft_navigation.performance_timeline_navigation_id;
+  if (navigations_.size() >= kMaxSoftNavigations) {
+    return;
+  }
+  auto [it, inserted] =
+      navigations_.emplace(nav_id, std::make_unique<SoftNavigationData>());
+  SoftNavigationData* nav = it->second.get();
+  nav->metrics = soft_navigation.Clone();
+  if (last_hidden_time_.has_value()) {
+    if (!last_shown_time_.has_value() ||
+        soft_navigation.commit->start_time < last_shown_time_.value()) {
+      // In theory, earlier visibility transitions could have occurred prior to
+      // `last_hidden_time_`, but soft navigations only commit from a
+      // foregrounded renderer. Storing `last_hidden_time_` is sufficient since
+      // it is only used to determine whether subsequent LCP events occurred in
+      // the foreground.
+      nav->RecordFirstBackgroundTime(last_hidden_time_.value());
+    }
+  }
+  last_committed_navigation_id_ = nav_id;
+  ++soft_navigation_count_;
+}
+
 void SoftNavigationTracker::AddMainFrameFirstContentfulPaint(
     uint64_t navigation_id,
     base::TimeDelta first_contentful_paint) {
-  // Standalone metric update (e.g. FCP) for an existing tracked soft
-  // navigation. Commits are always sent before FCP; if no committed navigation
-  // entry exists (e.g. flushed due to bfcache or invalid renderer state),
-  // ignore this late update rather than creating an uncommitted bucket.
+  // Metric update (e.g. FCP) for a tracked soft navigation. Commits are always
+  // sent before or bundled with FCP; if no committed navigation entry exists
+  // (e.g. flushed due to bfcache or invalid renderer state), ignore this late
+  // update rather than creating an uncommitted bucket.
   SoftNavigationData* nav = GetSoftNavigationData(navigation_id);
   if (nav && nav->metrics && nav->metrics->commit) {
     nav->metrics->first_contentful_paint = first_contentful_paint;
-  }
-}
-
-void SoftNavigationTracker::PruneUncommittedNavigationsUpTo(
-    uint64_t navigation_id) {
-  // In a well-behaved renderer, commits arrive in strictly increasing
-  // chronological order, so there should never be uncommitted navigation
-  // buckets with a lower ID than `navigation_id`. However, this cleans up any
-  // orphaned navigation IDs from performance entries where the soft navigation
-  // commit was canceled, aborted, or arrived after a bfcache restore.
-  for (auto it = navigations_.begin();
-       it != navigations_.end() && it->first < navigation_id;) {
-    if (!it->second->metrics || !it->second->metrics->commit) {
-      it = navigations_.erase(it);
-    } else {
-      ++it;
-    }
   }
 }
 
@@ -292,6 +323,46 @@ bool SoftNavigationTracker::HasCommitAndFirstContentfulPaint(
     const SoftNavigationData* data) const {
   return data && data->metrics && data->metrics->commit &&
          data->metrics->first_contentful_paint.has_value();
+}
+
+SoftNavigationData* SoftNavigationTracker::FindCommittedNavigationForTimestamp(
+    base::TimeTicks timestamp) {
+  if (navigations_.empty() || timestamp.is_null()) {
+    return nullptr;
+  }
+  // Iterate in reverse from the latest navigation backwards to find the latest
+  // committed soft navigation whose slicing time is <= `timestamp`.
+  for (const auto& [id, nav] : base::Reversed(navigations_)) {
+    if (nav->metrics && nav->metrics->commit) {
+      if (timestamp >= nav->metrics->commit->soft_navigation_slicing_time) {
+        return nav.get();
+      }
+    }
+  }
+  return nullptr;
+}
+
+void SoftNavigationTracker::AddSubFrameEventTimings(
+    content::GlobalRenderFrameHostToken frame_token,
+    base::span<const mojom::EventTimingPtr> event_timings) {
+  for (const auto& event : event_timings) {
+    if (SoftNavigationData* nav =
+            FindCommittedNavigationForTimestamp(event->processing_start)) {
+      nav->inp_calculator.AddNewEventTimings(frame_token,
+                                             base::span_from_ref(event));
+    }
+  }
+}
+
+void SoftNavigationTracker::AddSubFrameLayoutShifts(
+    base::span<const mojom::LayoutShiftPtr> layout_shifts) {
+  base::TimeTicks now = base::TimeTicks::Now();
+  for (const auto& shift : layout_shifts) {
+    if (SoftNavigationData* nav =
+            FindCommittedNavigationForTimestamp(shift->layout_shift_time)) {
+      nav->cls_calculator.AddNewLayoutShifts(base::span_from_ref(shift), now);
+    }
+  }
 }
 
 }  // namespace page_load_metrics

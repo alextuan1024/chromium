@@ -83,6 +83,7 @@ source_set("signin_utils_impl") {
     deps += [ ":signin_ui_error" ]
   }
 }
+
 source_set("signin") {
   sources = [
     "signin_web_dialog_ui.h",
@@ -535,7 +536,6 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//build:buildflag_header_h",
-    "//chrome/browser",
     "//chrome/browser:browser_features",
     "//chrome/browser:browser_process",
     "//chrome/browser/consent_auditor",
@@ -546,7 +546,6 @@ source_set("unit_tests") {
     "//chrome/browser/profiles:profile_util",
     "//chrome/browser/signin",
     "//chrome/browser/sync",
-    "//chrome/browser/ui",
     "//chrome/common",
     "//chrome/test:test_support",
     "//components/consent_auditor:test_support",
@@ -615,10 +614,8 @@ source_set("test_support_ui") {
     ":login_ui_service",
     ":signin_utils",
     "//base/test:test_support",
-    "//chrome/browser",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin:signin_promo",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/signin",
     "//chrome/test:test_support_ui",

@@ -23,6 +23,7 @@ import android.widget.ImageView;
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 import androidx.annotation.VisibleForTesting;
+import androidx.appcompat.widget.TooltipCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.widget.ImageViewCompat;
 
@@ -87,30 +88,30 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         bindContent(model, view.contentView, propertyKey);
         ActionChipsBinder.bind(model, view.actionChipsView, propertyKey);
 
-        if (BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING == propertyKey) {
+        if (BaseSuggestionViewProperties.ACTION_BUTTONS == propertyKey) {
+            bindActionButtons(model, view, model.get(BaseSuggestionViewProperties.ACTION_BUTTONS));
+        } else if (BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING == propertyKey) {
             view.setActionChipLeadInSpacing(
                     model.get(BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING));
         } else if (SuggestionCommonProperties.APPLY_SIDE_SPACING == propertyKey) {
             view.applySideSpacing(
                     model.get(SuggestionCommonProperties.APPLY_SIDE_SPACING),
                     getResourceProvider(model).getSideSpacing());
+        } else if (SuggestionCommonProperties.BG_POSITIONAL_MODE == propertyKey
+                || SuggestionCommonProperties.BG_ROUND_SIDES == propertyKey) {
+            updateRounding(model, view);
+        } else if (SuggestionCommonProperties.COLOR_SCHEME == propertyKey) {
+            updateColorScheme(model, view);
         } else if (BaseSuggestionViewProperties.ICON == propertyKey) {
             updateSuggestionIcon(model, view);
         } else if (SuggestionCommonProperties.LAYOUT_DIRECTION == propertyKey) {
             ViewCompat.setLayoutDirection(
                     view, model.get(SuggestionCommonProperties.LAYOUT_DIRECTION));
-        } else if (SuggestionCommonProperties.COLOR_SCHEME == propertyKey) {
-            updateColorScheme(model, view);
-        } else if (SuggestionCommonProperties.BG_POSITIONAL_MODE == propertyKey
-                || SuggestionCommonProperties.BG_ROUND_SIDES == propertyKey) {
-            updateRounding(model, view);
-        } else if (BaseSuggestionViewProperties.ACTION_BUTTONS == propertyKey) {
-            bindActionButtons(model, view, model.get(BaseSuggestionViewProperties.ACTION_BUTTONS));
+        } else if (BaseSuggestionViewProperties.ON_ACTIVATE == propertyKey) {
+            view.setOnActivateListener(model.get(BaseSuggestionViewProperties.ON_ACTIVATE));
         } else if (BaseSuggestionViewProperties.ON_FOCUS_VIA_SELECTION == propertyKey) {
             view.setOnFocusViaSelectionListener(
                     model.get(BaseSuggestionViewProperties.ON_FOCUS_VIA_SELECTION));
-        } else if (BaseSuggestionViewProperties.ON_ACTIVATE == propertyKey) {
-            view.setOnActivateListener(model.get(BaseSuggestionViewProperties.ON_ACTIVATE));
         } else if (BaseSuggestionViewProperties.ON_LONG_CLICK == propertyKey) {
             Runnable listener = model.get(BaseSuggestionViewProperties.ON_LONG_CLICK);
             if (listener == null) {
@@ -149,7 +150,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
     }
 
-    /** Bind Action Icons for the suggestion view. */
+    /** Binds action icons for the suggestion view. */
     private static <T extends View> void bindActionButtons(
             PropertyModel model, BaseSuggestionView<T> view, List<Action> actions) {
         final int actionCount = actions != null ? actions.size() : 0;
@@ -163,6 +164,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
             actionView.setOnClickListener(v -> action.callback.run());
             actionView.setContentDescription(action.accessibilityDescription);
             actionView.enableShowOnlyOnFocus(action.showOnlyOnFocus);
+            TooltipCompat.setTooltipText(actionView, action.accessibilityDescription);
             updateIcon(
                     actionView,
                     action.icon,
@@ -222,7 +224,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         return model.get(SuggestionCommonProperties.COLOR_SCHEME) == BrandedColorScheme.INCOGNITO;
     }
 
-    /** Update attributes of decorated suggestion icon. */
+    /** Updates attributes of decorated suggestion icon. */
     private static <T extends View> void updateSuggestionIcon(
             PropertyModel model, BaseSuggestionView<T> baseView) {
         final ImageView rciv = baseView.decorationIcon;
@@ -331,7 +333,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
     }
 
-    /** Update image view using supplied drawable state object. */
+    /** Updates image view using supplied drawable state object. */
     private static void updateIcon(
             ImageView view, OmniboxDrawableState sds, @ColorRes int tintRes) {
         if (sds == null) {
@@ -369,9 +371,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         sFocusableDrawableState = null;
     }
 
-    /**
-     * @return Cached ConstantState for testing.
-     */
+    /** Returns the cached ConstantState for testing. */
     public static @Nullable ConstantState getFocusableDrawableStateForTesting() {
         return sFocusableDrawableState;
     }

@@ -34,6 +34,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
     {
       tool: ToolMode.kImageGen,
@@ -43,6 +44,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
   ],
   toolsSectionConfig: {header: ''},
@@ -54,6 +56,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
     {
       model: ModelMode.kGeminiPro,
@@ -61,6 +64,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
   ],
   modelSectionConfig: {header: ''},

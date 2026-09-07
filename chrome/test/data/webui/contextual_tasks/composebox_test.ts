@@ -84,6 +84,7 @@ suite('ContextualTasksComposeboxTest', () => {
         hintText: 'Canvas hint',
         aimUrlParams: [{paramKey: 'rc', paramValue: '1'}],
         menuTooltip: '',
+        icon: 0,
       }] :
                                                [],
     });
@@ -184,6 +185,7 @@ suite('ContextualTasksComposeboxTest', () => {
           hintText: 'Canvas hint',
           aimUrlParams: [{paramKey: 'rc', paramValue: '1'}],
           menuTooltip: '',
+          icon: 0,
         }],
       },
     }));
@@ -747,9 +749,9 @@ suite('ContextualTasksComposeboxTest', () => {
     const [toolMode] =
         await mockSearchboxPageHandler.whenCalled('setActiveToolMode');
     assertEquals(1, toolMode);
-    const [, isSetByServer] =
+    const [, isSetByAim] =
         mockSearchboxPageHandler.getArgs('setActiveToolMode')[0];
-    assertTrue(isSetByServer);
+    assertTrue(isSetByAim);
 
     const [modelMode] =
         await mockSearchboxPageHandler.whenCalled('setActiveModelMode');
@@ -1009,7 +1011,8 @@ suite('ContextualTasksComposeboxTest', () => {
 
     // Wait for files to populate
     await innerComposebox.updateComplete;
-    let files: ComposeboxFile[] = Array.from(innerComposebox.files.values());
+    let files: ComposeboxFile[] =
+        Array.from(innerComposebox.attachedContext.values());
     assertEquals(1, files.length);
     const initialFile = files[0]!;
     assertEquals('Initial Title', initialFile.name);
@@ -1027,7 +1030,7 @@ suite('ContextualTasksComposeboxTest', () => {
     await microtasksFinished();
     await innerComposebox.updateComplete;
 
-    files = Array.from(innerComposebox.files.values());
+    files = Array.from(innerComposebox.attachedContext.values());
     assertEquals(1, files.length);
     const updatedFile = files[0]!;
     assertEquals('Updated Title', updatedFile.name);
@@ -1050,7 +1053,7 @@ suite('ContextualTasksComposeboxTest', () => {
     await microtasksFinished();
     await innerComposebox.updateComplete;
 
-    files = Array.from(innerComposebox.files.values());
+    files = Array.from(innerComposebox.attachedContext.values());
     assertEquals(1, files.length);
     // Reference should be exactly the same (no re-allocation or modification)
     assertEquals(updatedFile, files[0]);
@@ -1061,7 +1064,53 @@ suite('ContextualTasksComposeboxTest', () => {
     await searchboxCallbackRouterRemote.$.flushForTesting();
     await microtasksFinished();
     await innerComposebox.updateComplete;
+    assertEquals(0, innerComposebox.attachedContext.size);
+  });
+
+  test('OpeningMultipleNewThreadsPreservesAutoSuggestedTab', async () => {
+    const innerComposebox = contextualTasksApp.$.composebox.$.composebox;
+
+    const tabInfo = {
+      tabId: 1,
+      title: 'Auto Tab',
+      url: 'https://example.com',
+      lastActive: {internalValue: BigInt(100)},
+      showInCurrentTabChip: true,
+      showInPreviousTabChip: false,
+    };
+    searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(tabInfo, null);
+    await searchboxCallbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+    await innerComposebox.updateComplete;
+
+    assertEquals(1, innerComposebox.files.size);
+    assertTrue(innerComposebox.getHasAutomaticActiveTabChipToken());
+
+    // Calling `clearInputAndFocus()` (what `onNewThreadClick_()` calls)
+    // multiple times should preserve the auto-suggested tab.
+    contextualTasksApp.$.composebox.clearInputAndFocus();
+    await microtasksFinished();
+    await innerComposebox.updateComplete;
+
+    assertEquals(1, innerComposebox.files.size);
+    assertTrue(innerComposebox.getHasAutomaticActiveTabChipToken());
+
+    contextualTasksApp.$.composebox.clearInputAndFocus();
+    await microtasksFinished();
+    await innerComposebox.updateComplete;
+
+    assertEquals(1, innerComposebox.files.size);
+    assertTrue(innerComposebox.getHasAutomaticActiveTabChipToken());
+
+    // Explicitly clearing all inputs removes the auto-suggested tab.
+    innerComposebox.clearAllInputs(
+        /* querySubmitted= */ false,
+        /* shouldBlockAutoSuggestedTabs= */ true);
+    await microtasksFinished();
+    await innerComposebox.updateComplete;
+
     assertEquals(0, innerComposebox.files.size);
+    assertFalse(innerComposebox.getHasAutomaticActiveTabChipToken());
   });
 
   test('SingleAutoTabFileDoesNotUpdatePlaceholder', async () => {
@@ -1118,7 +1167,7 @@ suite('ContextualTasksComposeboxTest', () => {
 
       const innerComposebox = contextualTasksApp.$.composebox.$.composebox;
       await innerComposebox.updateComplete;
-      assertEquals(1, innerComposebox.files.size);
+      assertEquals(1, innerComposebox.attachedContext.size);
 
       // Passing null deletes when feature flag is disabled.
       searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(
@@ -1126,7 +1175,7 @@ suite('ContextualTasksComposeboxTest', () => {
       await searchboxCallbackRouterRemote.$.flushForTesting();
       await microtasksFinished();
       await innerComposebox.updateComplete;
-      assertEquals(0, innerComposebox.files.size);
+      assertEquals(0, innerComposebox.attachedContext.size);
     });
 
     test('ImmediateUploadWhenConditionsMet', async () => {
@@ -1147,7 +1196,7 @@ suite('ContextualTasksComposeboxTest', () => {
 
       const innerComposebox = contextualTasksApp.$.composebox.$.composebox;
       await innerComposebox.updateComplete;
-      assertEquals(1, innerComposebox.files.size);
+      assertEquals(1, innerComposebox.attachedContext.size);
 
       // Null should not delete when conditions are met.
       searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(
@@ -1155,7 +1204,7 @@ suite('ContextualTasksComposeboxTest', () => {
       await searchboxCallbackRouterRemote.$.flushForTesting();
       await microtasksFinished();
       await innerComposebox.updateComplete;
-      assertEquals(1, innerComposebox.files.size);
+      assertEquals(1, innerComposebox.attachedContext.size);
 
       // Mismatched tab deletes it.
       const differentTab = {
@@ -1169,7 +1218,7 @@ suite('ContextualTasksComposeboxTest', () => {
       await searchboxCallbackRouterRemote.$.flushForTesting();
       await microtasksFinished();
       await innerComposebox.updateComplete;
-      assertEquals(0, innerComposebox.files.size);
+      assertEquals(0, innerComposebox.attachedContext.size);
     });
 
     test('DelayedUploadWhenNotPageAction', async () => {
@@ -1471,6 +1520,25 @@ suite('ContextualTasksComposeboxTest', () => {
           assertEquals('', innerComposebox.inputPlaceholderOverride);
           assertEquals(
               initialPlaceholder, inputElement.getAttribute('placeholder'));
+        });
+
+        test('lens search tooltip showing reflects attribute', async () => {
+          const {wrapper} = parts;
+
+          assertFalse(wrapper.isLensSearchTooltipShowing);
+          assertFalse(wrapper.hasAttribute('is-lens-search-tooltip-showing'));
+
+          wrapper.isLensSearchTooltipShowing = true;
+          await wrapper.updateComplete;
+
+          assertTrue(wrapper.isLensSearchTooltipShowing);
+          assertTrue(wrapper.hasAttribute('is-lens-search-tooltip-showing'));
+
+          wrapper.isLensSearchTooltipShowing = false;
+          await wrapper.updateComplete;
+
+          assertFalse(wrapper.isLensSearchTooltipShowing);
+          assertFalse(wrapper.hasAttribute('is-lens-search-tooltip-showing'));
         });
 
         test('ClearInputAndFocusClearsMatchesOnSubmit', () => {
@@ -2249,7 +2317,7 @@ suite('ContextualTasksComposeboxTest', () => {
                   }));
               await mockSearchboxPageHandler.whenCalled('addTabContext');
               await microtasksFinished();
-              assertEquals(1, innerComposebox.files.size);
+              assertEquals(1, innerComposebox.attachedContext.size);
 
               entrypointAndMenu.dispatchEvent(
                   new CustomEvent('smart-tab-sharing-active-changed', {
@@ -2261,7 +2329,7 @@ suite('ContextualTasksComposeboxTest', () => {
                   'setSmartTabSharingActive');
               assertEquals(true, activeArg);
               await microtasksFinished();
-              assertEquals(0, innerComposebox.files.size);
+              assertEquals(0, innerComposebox.attachedContext.size);
             });
         // </if>
       });
@@ -3626,7 +3694,7 @@ function createVoiceResults(transcripts: string[]): SpeechRecognitionEvent {
 
                     // Remove image:
                     await removeImageFromVoiceCarousel(voiceCarousel);
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
 
                     // Remove toolchip:
                     inner.inToolMode = false;
@@ -3655,13 +3723,13 @@ function createVoiceResults(transcripts: string[]): SpeechRecognitionEvent {
 
                     // Remove image from voice carousel:
                     await removeImageFromVoiceCarousel(voiceCarousel);
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
 
                     // Submit:
                     await submitVoiceSearchViaSubmitButton(['test', 'query']);
 
                     assertTrue(inner.inToolMode);
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
                   });
 
               test(
@@ -3698,14 +3766,14 @@ function createVoiceResults(transcripts: string[]): SpeechRecognitionEvent {
                     await microtasksFinished();
                     await inner.updateComplete;
                     assertFalse(inner.inToolMode);
-                    assertEquals(1, inner.files.size);
+                    assertEquals(1, inner.attachedContext.size);
 
                     // Submit:
                     await submitVoiceSearchViaSubmitButton(['test', 'query']);
 
                     assertFalse(inner.inToolMode);
                     // Submitting resets file count to 0:
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
                   });
 
               test(
@@ -3733,7 +3801,7 @@ function createVoiceResults(transcripts: string[]): SpeechRecognitionEvent {
 
                     // Remove image from voice carousel:
                     await removeImageFromVoiceCarousel(voiceCarousel);
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
 
                     // Remove tool chip from voice tool chips container:
                     const toolChip =
@@ -3764,7 +3832,7 @@ function createVoiceResults(transcripts: string[]): SpeechRecognitionEvent {
                     await inner.updateComplete;
 
                     assertFalse(inner.inToolMode);
-                    assertEquals(0, inner.files.size);
+                    assertEquals(0, inner.attachedContext.size);
                   });
             });
           }

@@ -35,6 +35,9 @@ class TestToolbarUiHandler extends TestBrowserProxy implements
     return new Promise<never>(() => {});
   }
   showContextMenu() {}
+  showOverflowMenu() {
+    return Promise.resolve({result: {}});
+  }
   onOmniboxAction() {
     return new Promise<never>(() => {});
   }
@@ -45,6 +48,7 @@ class TestToolbarUiHandler extends TestBrowserProxy implements
     return new Promise<never>(() => {});
   }
   onContentSettingImageAnimationEnded() {}
+  onPageActionPointerDown() {}
   onPageActionClick() {
     return new Promise<never>(() => {});
   }
@@ -172,8 +176,12 @@ class TestToolbarBrowserProxy extends TestBrowserProxy implements BrowserProxy {
   addFocusRequestListener() {
     return INVALID_FOCUS_REQUEST_HANDLE;
   }
+  addShowSplitTabsContextMenuListener() {
+    return 0;
+  }
   removeNavigationStateListener() {}
   removeFocusRequestListener() {}
+  removeShowSplitTabsContextMenuListener() {}
 
   onChipClicked(chip: LhsChipIdentifier, isPointerClick: boolean) {
     this.toolbarUIHandler.onLhsChipClicked(chip, isPointerClick);

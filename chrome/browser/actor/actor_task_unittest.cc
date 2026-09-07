@@ -67,33 +67,22 @@ class ActorTaskTest : public testing::Test {
                 }))
             .Build();
 
-    // Setup ExecutionEngine mock dispatcher.
-    auto ee_mock_ui_event_dispatcher =
-        std::make_unique<testing::NiceMock<ui::MockUiEventDispatcher>>();
-    mock_ee_ui_event_dispatcher_ = ee_mock_ui_event_dispatcher.get();
-
-    ON_CALL(*mock_ee_ui_event_dispatcher_, OnPreTool)
-        .WillByDefault([](const ToolRequest&,
-                          ui::UiEventDispatcher::UiCompleteCallback callback) {
-          std::move(callback).Run(MakeOkResult());
-        });
-
-    ON_CALL(*mock_ee_ui_event_dispatcher_, OnPostTool)
-        .WillByDefault([](const ToolRequest&,
-                          ui::UiEventDispatcher::UiCompleteCallback callback) {
-          std::move(callback).Run(MakeOkResult());
-        });
-
-    scoped_ee_factory_ = std::make_unique<ScopedExecutionEngineFactory>(
-        base::BindLambdaForTesting([&](actor::ActorTask& task) {
-          return actor::ExecutionEngine::CreateForTesting(
-              task, std::move(ee_mock_ui_event_dispatcher));
-        }));
-
-    // Setup ActorTask mock dispatcher.
+    // Setup mock dispatcher for ActorTask and ExecutionEngine.
     auto mock_ui_event_dispatcher =
         std::make_unique<testing::NiceMock<ui::MockUiEventDispatcher>>();
     mock_ui_event_dispatcher_ = mock_ui_event_dispatcher.get();
+
+    ON_CALL(*mock_ui_event_dispatcher_, OnPreTool)
+        .WillByDefault([](const ToolRequest&,
+                          ui::UiEventDispatcher::UiCompleteCallback callback) {
+          std::move(callback).Run(MakeOkResult());
+        });
+
+    ON_CALL(*mock_ui_event_dispatcher_, OnPostTool)
+        .WillByDefault([](const ToolRequest&,
+                          ui::UiEventDispatcher::UiCompleteCallback callback) {
+          std::move(callback).Run(MakeOkResult());
+        });
 
     ON_CALL(*mock_ui_event_dispatcher_, OnActorTaskAsyncChange)
         .WillByDefault([](const ui::UiEventDispatcher::ActorTaskAsyncChange&,
@@ -143,7 +132,10 @@ class ActorTaskTest : public testing::Test {
         .Times(1);
   }
 
-  void AddTabAndVerify(tabs::TabInterface& tab) {
+  void AddTabAndVerify(tabs::MockTabInterface& tab) {
+    if (!tab.GetProfile()) {
+      ON_CALL(tab, GetProfile).WillByDefault(::testing::Return(profile_.get()));
+    }
     ExpectTabAddedNotification(tab.GetHandle());
     AddTabToTask(tab, *task_);
     EXPECT_TRUE(task_->HasTab(tab.GetHandle()));
@@ -194,15 +186,28 @@ class ActorTaskTest : public testing::Test {
     service->ResetForTesting();
   }
 
+  std::unique_ptr<tabs::MockTabInterface> CreateCrossProfileMockTab(
+      Profile* other_profile = nullptr) {
+    if (!other_profile) {
+      if (!other_profile_) {
+        other_profile_ = TestingProfile::Builder().Build();
+      }
+      other_profile = other_profile_.get();
+    }
+    auto mock_tab = std::make_unique<tabs::MockTabInterface>();
+    ON_CALL(*mock_tab, GetProfile)
+        .WillByDefault(::testing::Return(other_profile));
+    return mock_tab;
+  }
+
  protected:
   content::BrowserTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<TestingProfile> profile_;
+  std::unique_ptr<TestingProfile> other_profile_;
   MockActorTaskDelegate mock_delegate_;
-  std::unique_ptr<ScopedExecutionEngineFactory> scoped_ee_factory_;
   raw_ptr<ActorTask> task_;
   raw_ptr<ui::MockUiEventDispatcher> mock_ui_event_dispatcher_;
-  raw_ptr<ui::MockUiEventDispatcher> mock_ee_ui_event_dispatcher_;
 };
 
 TEST_F(ActorTaskTest, CustomToolInterruptsWithUserControl) {
@@ -363,6 +368,134 @@ TEST_F(ActorTaskTest, ObserveTabOnceAndActing) {
   // Transitively verify ObserveTabOnce does not double add if already present.
   task_->ObserveTabOnce(mock_tab.GetHandle());
   EXPECT_TRUE(task_->GetLastActedTabs().contains(mock_tab.GetHandle()));
+}
+
+TEST_F(ActorTaskTest, GetLastActuatedTabPreservedAfterTaskCompleted) {
+  tabs::MockTabInterface mock_tab;
+
+  AddTabAndVerify(mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Stop task. controlled_tabs_ should be cleared, but GetLastActuatedTab()
+  // should still return mock_tab.
+  ExpectStopNotification(ActorTask::State::kFinished);
+  ExpectTabRemovedNotification(mock_tab.GetHandle());
+  task_->Stop(ActorTask::StoppedReason::kTaskComplete);
+
+  EXPECT_TRUE(task_->GetTabs().empty());
+  EXPECT_TRUE(task_->GetLastActedTabs().empty());
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+}
+
+TEST_F(ActorTaskTest, GetLastActuatedTabFiltersDestroyedTabsAfterStop) {
+  auto mock_tab = std::make_unique<tabs::MockTabInterface>();
+  tabs::TabHandle handle = mock_tab->GetHandle();
+
+  AddTabAndVerify(*mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTab(), mock_tab.get());
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(), handle.raw_value());
+
+  ExpectStopNotification(ActorTask::State::kFinished);
+  ExpectTabRemovedNotification(handle);
+  task_->Stop(ActorTask::StoppedReason::kTaskComplete);
+
+  EXPECT_EQ(task_->GetLastActuatedTab(), mock_tab.get());
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(), handle.raw_value());
+
+  // Destroy the tab.
+  mock_tab.reset();
+
+  // After tab destruction, handle.Get() is null, so it shouldn't be returned.
+  EXPECT_EQ(task_->GetLastActuatedTab(), nullptr);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().Get(), nullptr);
+}
+
+TEST_F(ActorTaskTest, GetLastActuatedTabWhileActingAndPaused) {
+  tabs::MockTabInterface mock_tab;
+
+  // Add tab to task.
+  AddTabAndVerify(mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Transition to Acting state.
+  ExpectStateChangeNotification(ActorTask::State::kActing);
+  task_->SetState(ActorTask::State::kActing);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Pause task from actor.
+  ExpectStateChangeNotification(ActorTask::State::kPausedByActor);
+  task_->Pause(/*from_actor=*/true);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Resume task.
+  ExpectStateChangeNotification(ActorTask::State::kReflecting);
+  task_->Resume();
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Transition back to Acting state.
+  ExpectStateChangeNotification(ActorTask::State::kActing);
+  task_->SetState(ActorTask::State::kActing);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Pause task from user.
+  ExpectStateChangeNotification(ActorTask::State::kPausedByUser);
+  task_->Pause(/*from_actor=*/false);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &mock_tab);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            mock_tab.GetHandle().raw_value());
+
+  // Stop task to clean up controlled tabs before mock_tab is destroyed.
+  ExpectStopNotification(ActorTask::State::kFinished);
+  ExpectTabRemovedNotification(mock_tab.GetHandle());
+  task_->Stop(ActorTask::StoppedReason::kTaskComplete);
+}
+
+TEST_F(ActorTaskTest, GetLastActuatedTabSwitchesBetweenTabs) {
+  tabs::MockTabInterface tab_a;
+  tabs::MockTabInterface tab_b;
+
+  // 1. Actuate on Tab A.
+  AddTabAndVerify(tab_a);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &tab_a);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            tab_a.GetHandle().raw_value());
+
+  // 2. Actuate on Tab B.
+  AddTabAndVerify(tab_b);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &tab_b);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            tab_b.GetHandle().raw_value());
+
+  // 3. Actuate on Tab A again (which is already controlled).
+  AddTabToTask(tab_a, *task_);
+  EXPECT_EQ(task_->GetLastActuatedTab(), &tab_a);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            tab_a.GetHandle().raw_value());
+
+  // 4. Stop task; the last actuated tab (Tab A) is preserved.
+  ExpectStopNotification(ActorTask::State::kFinished);
+  ExpectTabRemovedNotification(tab_a.GetHandle());
+  ExpectTabRemovedNotification(tab_b.GetHandle());
+  task_->Stop(ActorTask::StoppedReason::kTaskComplete);
+
+  EXPECT_TRUE(task_->GetTabs().empty());
+  EXPECT_EQ(task_->GetLastActuatedTab(), &tab_a);
+  EXPECT_EQ(task_->GetLastActuatedTabHandle().raw_value(),
+            tab_a.GetHandle().raw_value());
 }
 
 TEST_F(ActorTaskTest, AdditionalTabObservations) {
@@ -657,6 +790,61 @@ TEST_F(ActorTaskCompletionMetricsTest,
                               0);
   histograms.ExpectTotalCount("Actor.Task.Duration.Completed.Other", 0);
   histograms.ExpectTotalCount("Actor.Task.Count.Completed.Other", 0);
+}
+
+TEST_F(ActorTaskTest, AddTab_RejectsNonExistentTab) {
+  tabs::TabHandle non_existent_handle(99999);
+  base::test::TestFuture<mojom::ActionResultPtr> add_tab_future;
+  task_->AddTab(non_existent_handle, /*stop_task_on_detach=*/true,
+                add_tab_future.GetCallback());
+  auto result = add_tab_future.Take();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->code, mojom::ActionResultCode::kTabWentAway);
+  EXPECT_FALSE(task_->HasTab(non_existent_handle));
+  EXPECT_FALSE(task_->GetTabs().contains(non_existent_handle));
+}
+
+TEST_F(ActorTaskTest, AddTab_RejectsCrossProfileTab) {
+  std::unique_ptr<tabs::MockTabInterface> cross_profile_tab =
+      CreateCrossProfileMockTab();
+
+  base::test::TestFuture<mojom::ActionResultPtr> add_tab_future;
+  task_->AddTab(cross_profile_tab->GetHandle(), /*stop_task_on_detach=*/true,
+                add_tab_future.GetCallback());
+  auto result = add_tab_future.Take();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->code, mojom::ActionResultCode::kActionTargetCrossProfile);
+  EXPECT_FALSE(task_->HasTab(cross_profile_tab->GetHandle()));
+  EXPECT_FALSE(task_->GetTabs().contains(cross_profile_tab->GetHandle()));
+}
+
+TEST_F(ActorTaskTest, AddTab_RejectsCrossProfileTabEvenWithNullContents) {
+  std::unique_ptr<tabs::MockTabInterface> cross_profile_tab =
+      CreateCrossProfileMockTab();
+  ON_CALL(*cross_profile_tab, GetContents)
+      .WillByDefault(::testing::Return(nullptr));
+
+  base::test::TestFuture<mojom::ActionResultPtr> add_tab_future;
+  task_->AddTab(cross_profile_tab->GetHandle(), /*stop_task_on_detach=*/true,
+                add_tab_future.GetCallback());
+  auto result = add_tab_future.Take();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->code, mojom::ActionResultCode::kActionTargetCrossProfile);
+  EXPECT_FALSE(task_->HasTab(cross_profile_tab->GetHandle()));
+  EXPECT_FALSE(task_->GetTabs().contains(cross_profile_tab->GetHandle()));
+}
+
+TEST_F(ActorTaskTest, ObserveTabOnce_RejectsNonExistentAndCrossProfileTab) {
+  tabs::TabHandle non_existent_handle(99999);
+  task_->ObserveTabOnce(non_existent_handle);
+  EXPECT_FALSE(task_->GetLastActedTabs().contains(non_existent_handle));
+
+  std::unique_ptr<tabs::MockTabInterface> cross_profile_tab =
+      CreateCrossProfileMockTab();
+
+  task_->ObserveTabOnce(cross_profile_tab->GetHandle());
+  EXPECT_FALSE(
+      task_->GetLastActedTabs().contains(cross_profile_tab->GetHandle()));
 }
 
 }  // namespace

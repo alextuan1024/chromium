@@ -4,17 +4,16 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
+import android.util.Pair;
 
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabGridDialogHandler;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.List;
@@ -25,14 +24,8 @@ import java.util.Objects;
  */
 @NullMarked
 class FlatLayoutDelegate extends TabListLayoutDelegate {
-    private final @Nullable TabGridDialogHandler mTabGridDialogHandler;
-
-    FlatLayoutDelegate(
-            TabListMediator mediator,
-            TabListModel modelList,
-            @Nullable TabGridDialogHandler dialogHandler) {
+    FlatLayoutDelegate(TabListMediator mediator, TabListModel modelList) {
         super(mediator, modelList);
-        mTabGridDialogHandler = dialogHandler;
     }
 
     @Override
@@ -56,9 +49,9 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    @MediaState
-    int getMediaIndicatorState(Tab representativeTab, PropertyModel model) {
-        return representativeTab.getMediaState();
+    @TabAlert
+    int getAlertState(Tab representativeTab, PropertyModel model) {
+        return representativeTab.getAlertState();
     }
 
     @Override
@@ -77,10 +70,17 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
+    @Nullable Pair<Integer, Tab> getIndexAndTabForTabGroupId(@Nullable Token tabGroupId) {
+        return null;
+    }
+
+    @Override
     void didMoveTab(Tab tab, int newIndex, int curIndex) {
         // Flat layout does not need to explicitly sync standalone tab moves triggered from
         // external sources to the ModelList.
     }
+
+    // TabGroupObserver implementation.
 
     @Override
     public void didChangeTabGroupTitle(Token tabGroupId, String newTitle) {
@@ -94,32 +94,10 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
 
     @Override
     public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
-        TabModel tabModel = mMediator.getCurrentTabModelChecked();
-        Tab previousGroupTab = tabModel.getRepresentativeTabAt(prevFilterIndex);
-        assumeNonNull(previousGroupTab);
-
-        int previousGroupTabId = previousGroupTab.getId();
-        int movedTabId = movedTab.getId();
-        int previousTabListModelIndex = mModelList.indexFromTabId(previousGroupTabId);
-        // Invalid means the previous group tab isn't visible. Either:
-        // 1. The moved tab isn't in this model list.
-        // 2. The moved tab is meant to stay in the model list as this is the
-        //    destination group.
-        // In either case no-op.
-        if (previousTabListModelIndex == TabList.INVALID_TAB_INDEX) {
-            return;
-        }
-
-        // The moved tab isn't here, or it is out-of-bounds no-op.
-        int curTabListModelIndex = mModelList.indexFromTabId(movedTabId);
+        int curTabListModelIndex = mModelList.indexFromTabId(movedTab.getId());
         if (!mModelList.isValidIndex(curTabListModelIndex)) return;
 
         mModelList.removeAt(curTabListModelIndex);
-        if (mTabGridDialogHandler != null) {
-            boolean isUngroupingLastTabInGroup = previousGroupTabId == movedTabId;
-            mTabGridDialogHandler.updateDialogContent(
-                    isUngroupingLastTabInGroup ? Tab.INVALID_TAB_ID : previousGroupTabId);
-        }
     }
 
     @Override
@@ -141,9 +119,5 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
 
         mMediator.addObserversForTab(movedTab);
         onTabAdded(movedTab);
-        if (mTabGridDialogHandler != null) {
-            mTabGridDialogHandler.updateDialogContent(
-                    tabModel.getGroupLastShownTabId(firstTab.getTabGroupId()));
-        }
     }
 }

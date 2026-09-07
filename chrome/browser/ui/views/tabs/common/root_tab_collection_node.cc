@@ -11,11 +11,13 @@
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 
 namespace {
 
@@ -80,6 +82,12 @@ RootTabCollectionNode::RegisterOnChildMovedCallback(
 }
 
 base::CallbackListSubscription
+RootTabCollectionNode::RegisterOnChildWillBeRemovedCallback(
+    RootTabCollectionNode::ChildWillBeRemovedCallback callback) {
+  return on_child_will_be_removed_callback_list_.Add(std::move(callback));
+}
+
+base::CallbackListSubscription
 RootTabCollectionNode::RegisterOnActiveTabChangedCallback(
     RootTabCollectionNode::ActiveTabChangedCallback callback) {
   return on_active_tab_changed_callback_list_.Add(std::move(callback));
@@ -107,6 +115,10 @@ void RootTabCollectionNode::OnChildrenRemoved(
   }
 
   for (auto& handle : handles) {
+    TabCollectionNode* child_node = parent_node->GetNodeForHandle(handle);
+    if (child_node) {
+      on_child_will_be_removed_callback_list_.Notify(child_node);
+    }
     parent_node->RemoveChild(GetPassKey(), handle,
                              /*perform_deinitialization=*/false);
   }

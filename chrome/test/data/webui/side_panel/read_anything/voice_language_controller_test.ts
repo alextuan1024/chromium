@@ -4,21 +4,23 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {AudioBrowserProxyImpl, AVAILABLE_GOOGLE_TTS_LOCALES, BrowserProxy, EXTENSION_RESPONSE_TIMEOUT_MS, mojoVoicePackStatusToVoicePackStatusEnum, NotificationType, PACK_MANAGER_SUPPORTED_LANGS_AND_LOCALES, SpeechBrowserProxyImpl, VoiceClientSideStatusCode, VoiceLanguageController, VoiceNotificationManager, VoicePackServerStatusErrorCode, VoicePackServerStatusSuccessCode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import type {VoiceLanguageListener, VoiceNotificationListener} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {AVAILABLE_GOOGLE_TTS_LOCALES, EXTENSION_RESPONSE_TIMEOUT_MS, mojoVoicePackStatusToVoicePackStatusEnum, NotificationType, PACK_MANAGER_SUPPORTED_LANGS_AND_LOCALES, VoiceClientSideStatusCode, VoicePackServerStatusErrorCode, VoicePackServerStatusSuccessCode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {VoiceLanguageController, VoiceLanguageListener, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertArrayEquals, assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 
-import {createAndSetVoices, createSpeechSynthesisVoice, mockMetrics, setupBasicSpeech, setVoices} from './common.js';
-import {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
-import {TestColorUpdaterBrowserProxy} from './test_color_updater_browser_proxy.js';
+import {createAndSetVoices, createSpeechSynthesisVoice, setupBasicSpeech, setupTestEnvironment, setVoices} from './common.js';
+import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
-import {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
+import type {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
+import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('VoiceLanguageController', () => {
   let audioBrowserProxy: TestAudioBrowserProxy;
+  let visualBrowserProxy: TestVisualBrowserProxy;
   let speech: TestSpeechBrowserProxy;
   let voiceLanguageController: VoiceLanguageController;
+  let voiceNotificationManager: VoiceNotificationManager;
   let listener: VoiceLanguageListener;
   let onEnabledLangsChange: boolean;
   let onAvailableVoicesChange: boolean;
@@ -63,15 +65,13 @@ suite('VoiceLanguageController', () => {
   ];
 
   setup(() => {
-    // Clearing the DOM should always be done first.
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    BrowserProxy.setInstance(new TestColorUpdaterBrowserProxy());
-    audioBrowserProxy = new TestAudioBrowserProxy();
-    AudioBrowserProxyImpl.setInstance(audioBrowserProxy);
-    speech = new TestSpeechBrowserProxy();
-    SpeechBrowserProxyImpl.setInstance(speech);
-    metrics = mockMetrics();
-    voiceLanguageController = new VoiceLanguageController();
+    const result = setupTestEnvironment();
+    audioBrowserProxy = result.audioBrowserProxy;
+    visualBrowserProxy = result.visualBrowserProxy;
+    speech = result.speech;
+    metrics = result.metrics;
+    voiceLanguageController = result.voiceLanguageController;
+    voiceNotificationManager = result.notificationManager;
     onEnabledLangsChange = false;
     onAvailableVoicesChange = false;
     onCurrentVoiceChange = false;
@@ -93,62 +93,48 @@ suite('VoiceLanguageController', () => {
         notificationType = type;
       },
     };
-    VoiceNotificationManager.getInstance().addListener(notificationListener);
+    voiceNotificationManager.addListener(notificationListener);
   });
 
   suite('setLocalStatus', () => {
-    let listener: VoiceNotificationListener;
-    let listenerNotified: boolean;
-
-    setup(() => {
-      listenerNotified = false;
-      listener = {
-        notify(_type: NotificationType, _language: string): void {
-          listenerNotified = true;
-        },
-      };
-      VoiceNotificationManager.setInstance(new VoiceNotificationManager());
-      VoiceNotificationManager.getInstance().addListener(listener);
-    });
-
     test('no notification for non-Google language', () => {
       voiceLanguageController.setLocalStatus(
           'zh', VoiceClientSideStatusCode.ERROR_INSTALLING);
-      assertFalse(listenerNotified);
+      assertEquals(null, notificationType);
     });
 
     test('no notification for invalid language', () => {
       voiceLanguageController.setLocalStatus(
           'klingon', VoiceClientSideStatusCode.ERROR_INSTALLING);
-      assertFalse(listenerNotified);
+      assertEquals(null, notificationType);
     });
 
     test('no notification for same status', () => {
       voiceLanguageController.setLocalStatus(
           'pt-br', VoiceClientSideStatusCode.ERROR_INSTALLING);
-      assertTrue(listenerNotified);
-      listenerNotified = false;
+      assertEquals(NotificationType.GENERIC_ERROR, notificationType);
 
+      notificationType = null;
       voiceLanguageController.setLocalStatus(
           'pt-br', VoiceClientSideStatusCode.ERROR_INSTALLING);
 
-      assertFalse(listenerNotified);
+      assertEquals(null, notificationType);
     });
 
     test('notifies for new status with Google-supported language', () => {
       voiceLanguageController.setLocalStatus(
           'it-it', VoiceClientSideStatusCode.ERROR_INSTALLING);
-      assertTrue(listenerNotified);
+      assertEquals(NotificationType.GENERIC_ERROR, notificationType);
 
-      listenerNotified = false;
+      notificationType = null;
       voiceLanguageController.setLocalStatus(
           'it-it', VoiceClientSideStatusCode.AVAILABLE);
-      assertTrue(listenerNotified);
+      assertEquals(NotificationType.DOWNLOADED, notificationType);
 
-      listenerNotified = false;
+      notificationType = null;
       voiceLanguageController.setLocalStatus(
           'hi', VoiceClientSideStatusCode.ERROR_INSTALLING);
-      assertTrue(listenerNotified);
+      assertEquals(NotificationType.GENERIC_ERROR, notificationType);
     });
   });
 
@@ -200,11 +186,26 @@ suite('VoiceLanguageController', () => {
     assertArrayEquals([], audioBrowserProxy.getLanguagesEnabledInPref());
     const previouslyAvailableLang = 'pt-pt';
     audioBrowserProxy.onLanguagePrefChange(previouslyAvailableLang, true);
-    setupBasicSpeech(speech);
+    createAndSetVoices(speech, [
+      {lang: 'pt-br', name: 'Google Galinda'},
+    ]);
 
     voiceLanguageController.restoreFromPrefs();
 
+    assertFalse(audioBrowserProxy.getLanguagesEnabledInPref().includes(
+        previouslyAvailableLang));
+  });
+
+  test('restoreSettingsFromPrefs event triggers restoreFromPrefs', () => {
     assertArrayEquals([], audioBrowserProxy.getLanguagesEnabledInPref());
+    const previouslyAvailableLang = 'pt-pt';
+    audioBrowserProxy.onLanguagePrefChange(previouslyAvailableLang, true);
+    setupBasicSpeech(speech);
+
+    visualBrowserProxy.restoreSettingsFromPrefs.callListeners();
+
+    assertFalse(audioBrowserProxy.getLanguagesEnabledInPref().includes(
+        previouslyAvailableLang));
   });
 
   test('restoreFromPrefs adds initially populated languages to prefs', () => {
@@ -367,7 +368,7 @@ suite('VoiceLanguageController', () => {
   test('onLanguageToggle with voice pack lang uninstalls it', () => {
     const lang = 'km';
     voiceLanguageController.onLanguageToggle(lang);
-    VoiceNotificationManager.getInstance().onVoiceStatusChange(
+    voiceNotificationManager.onVoiceStatusChange(
         lang, VoiceClientSideStatusCode.SENT_INSTALL_REQUEST, []);
 
     voiceLanguageController.onLanguageToggle(lang);
@@ -705,13 +706,6 @@ suite('VoiceLanguageController', () => {
     const lang = 'fi';
     voiceLanguageController.setServerStatus(
         lang, mojoVoicePackStatusToVoicePackStatusEnum('kInstalled'));
-    let notificationType = null;
-    const notificationListener = {
-      notify(type: NotificationType, _lang?: string): void {
-        notificationType = type;
-      },
-    };
-    VoiceNotificationManager.getInstance().addListener(notificationListener);
     const mockTimer = new MockTimer();
     mockTimer.install();
 
@@ -721,7 +715,7 @@ suite('VoiceLanguageController', () => {
     mockTimer.uninstall();
 
     // Now download the voice since the speech engine responded.
-    assertEquals(NotificationType.DOWNLOADING, notificationType);
+    assertEquals(null, notificationType);
   });
 
   test('onPageLanguageChanged updates current language', () => {
@@ -729,6 +723,15 @@ suite('VoiceLanguageController', () => {
     audioBrowserProxy.baseLanguageForSpeech = lang;
 
     voiceLanguageController.onPageLanguageChanged();
+
+    assertEquals(lang, voiceLanguageController.getCurrentLanguage());
+  });
+
+  test('languageChanged event triggers onPageLanguageChanged', () => {
+    const lang = 'el';
+    audioBrowserProxy.baseLanguageForSpeech = lang;
+
+    audioBrowserProxy.languageChanged.callListeners();
 
     assertEquals(lang, voiceLanguageController.getCurrentLanguage());
   });
@@ -1453,5 +1456,196 @@ suite('VoiceLanguageController', () => {
     voiceLanguageController.enableLang(bn);
     audioBrowserProxy.onTtsEngineInstalled.callListeners();
     assertArrayEquals(['bn'], audioBrowserProxy.installedLangs);
+  });
+
+  suite('onLanguageSelected', () => {
+    function assertLowerCaseEquals(
+        expected: string, actual?: string|null): void {
+      assertEquals(expected.toLowerCase(), actual?.toLowerCase());
+    }
+
+    setup(() => {
+      visualBrowserProxy.readAnythingImprovedUiEnabled = true;
+      createAndSetVoices(speech, [
+        {lang: 'en-us', name: 'Voice US'},
+        {lang: 'en-gb', name: 'Voice GB'},
+      ]);
+      voiceLanguageController.onLanguageSelected('en-us');
+    });
+
+    test('with local voice activates and anchors state', () => {
+      voiceLanguageController.onLanguageSelected('en-gb');
+
+      assertTrue(voiceLanguageController.isLangEnabled('en-gb'));
+      assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+      assertLowerCaseEquals(
+          'en-gb', voiceLanguageController.getCurrentVoice()?.lang);
+      assertLowerCaseEquals(
+          'en-gb', voiceLanguageController.getCurrentLanguage());
+      assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
+      assertArrayEquals(
+          ['en-gb'], audioBrowserProxy.getLanguagesEnabledInPref());
+    });
+
+    test('with uninstalled voice defers prefs modification', () => {
+      voiceLanguageController.onLanguageSelected('es-es');
+
+      assertEquals('es-es', voiceLanguageController.getPendingTargetLanguage());
+      assertTrue(audioBrowserProxy.installedLangs.includes('es-es'));
+
+      // Deferred transactionality: preferences must NOT be modified while
+      // download is in-flight.
+      assertFalse(
+          audioBrowserProxy.getLanguagesEnabledInPref().includes('es-es'));
+      assertLowerCaseEquals(
+          'en-us', voiceLanguageController.getCurrentVoice()?.lang);
+      assertTrue(voiceLanguageController.isLangEnabled('en-us'));
+      assertFalse(voiceLanguageController.isLangEnabled('es-es'));
+    });
+
+    test('with active voice is strict no-op', () => {
+      audioBrowserProxy.reset();
+      audioBrowserProxy.installedLangs = [];
+
+      voiceLanguageController.onLanguageSelected('en-us');
+
+      assertEquals(0, audioBrowserProxy.installedLangs.length);
+      assertEquals(0, audioBrowserProxy.getCallCount('onLanguagePrefChange'));
+      assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
+    });
+
+    test('with already pending voice is strict no-op', () => {
+      voiceLanguageController.onLanguageSelected('es-es');
+
+      assertEquals(1, audioBrowserProxy.installedLangs.length);
+      assertEquals('es-es', voiceLanguageController.getPendingTargetLanguage());
+
+      // Re-selecting the already pending language is a no-op.
+      voiceLanguageController.onLanguageSelected('es-es');
+
+      assertEquals(1, audioBrowserProxy.installedLangs.length);
+      assertEquals('es-es', voiceLanguageController.getPendingTargetLanguage());
+    });
+
+    test(
+        'kInstalled when voices are available activates and anchors voice',
+        () => {
+          voiceLanguageController.onLanguageSelected('es-es');
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          speech.setVoices([
+            createSpeechSynthesisVoice({lang: 'en-us', name: 'Voice US'}),
+            createSpeechSynthesisVoice({lang: 'en-gb', name: 'Voice GB'}),
+            createSpeechSynthesisVoice({lang: 'es-es', name: 'Voice ES'}),
+          ]);
+
+          voiceLanguageController.updateLanguageStatus('es-es', 'kInstalled');
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertLowerCaseEquals(
+              'es-es', voiceLanguageController.getCurrentVoice()?.lang);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'kInstalled defers activation until onVoicesChanged while voice loads',
+        () => {
+          // Target es-es requires download
+          voiceLanguageController.onLanguageSelected('es-es');
+
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          // Server reports kInstalled.
+          voiceLanguageController.updateLanguageStatus('es-es', 'kInstalled');
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+          assertLowerCaseEquals(
+              'en-us', voiceLanguageController.getCurrentVoice()?.lang);
+
+          // Blink voices are loaded and onVoicesChanged fires.
+          speech.setVoices([
+            createSpeechSynthesisVoice({lang: 'en-us', name: 'Voice US'}),
+            createSpeechSynthesisVoice({lang: 'en-gb', name: 'Voice GB'}),
+            createSpeechSynthesisVoice({lang: 'es-es', name: 'Voice ES'}),
+          ]);
+          voiceLanguageController.onVoicesChanged();
+
+          // Deferred activation should now complete.
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertLowerCaseEquals(
+              'es-es', voiceLanguageController.getCurrentVoice()?.lang);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'stale kInstalled for superseded request does not activate voice',
+        () => {
+          // User requests es-es then pt-br
+          voiceLanguageController.onLanguageSelected('es-es');
+
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          voiceLanguageController.onLanguageSelected('pt-br');
+
+          assertEquals(
+              'pt-br', voiceLanguageController.getPendingTargetLanguage());
+
+          // Stale kInstalled comes in for superseded es-es
+          voiceLanguageController.updateLanguageStatus('es-es', 'kInstalled');
+          assertEquals(
+              'pt-br', voiceLanguageController.getPendingTargetLanguage());
+          assertFalse(voiceLanguageController.isLangEnabled('es-es'));
+          assertLowerCaseEquals(
+              'en-us', voiceLanguageController.getCurrentVoice()?.lang);
+        });
+
+    test(
+        'kOther error clears pending target and sets state to fallback voice',
+        () => {
+          voiceLanguageController.onLanguageSelected('es-es');
+
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          voiceLanguageController.updateLanguageStatus('es-es', 'kOther');
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('en-us'));
+          assertFalse(voiceLanguageController.isLangEnabled('es-es'));
+          assertLowerCaseEquals(
+              'en-us', voiceLanguageController.getCurrentVoice()?.lang);
+          assertArrayEquals(
+              ['en-us'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test('empty lang disconnect clears pending target', () => {
+      voiceLanguageController.onLanguageSelected('es-es');
+
+      assertEquals('es-es', voiceLanguageController.getPendingTargetLanguage());
+
+      voiceLanguageController.updateLanguageStatus('', 'kNotReached');
+      assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
+    });
+
+    test('is no-op when isReadAnythingImprovedUiEnabled is false', () => {
+      visualBrowserProxy.readAnythingImprovedUiEnabled = false;
+
+      voiceLanguageController.onLanguageSelected('en-gb');
+
+      assertTrue(voiceLanguageController.isLangEnabled('en-us'));
+      assertFalse(voiceLanguageController.isLangEnabled('en-gb'));
+      assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
+      assertEquals(0, audioBrowserProxy.installedLangs.length);
+    });
   });
 });

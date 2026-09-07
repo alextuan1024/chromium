@@ -22,7 +22,7 @@ import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE} from './browser_proxy.js
 import type {BrowserProxy, FocusRequestHandle} from './browser_proxy.js';
 import {getCss} from './readonly_omnibox.css.js';
 import {getHtml} from './readonly_omnibox.html.js';
-import {getEventDispositionFlags} from './toolbar_button.js';
+import {BUTTON_LEFT, BUTTON_RIGHT, getEventDispositionFlags} from './toolbar_button.js';
 
 export interface ReadonlyOmniboxElement {
   $: {
@@ -185,7 +185,12 @@ enum UnelisionGesture {
 function isOnlyLeftButton(event: MouseEvent): boolean {
   // Left button has button # 0, and mask 1. We allow it to be both on
   // and off in buttons to handle both mousedown and mouseup.
-  return event.button === 0 && (event.buttons === 0 || event.buttons === 1);
+  return event.button === BUTTON_LEFT &&
+      (event.buttons === 0 || event.buttons === 1);
+}
+
+function isRightButton(event: MouseEvent): boolean {
+  return event.button === BUTTON_RIGHT;
 }
 
 function copyMaybeSelection(selection: MojomRange|null): MojomRange|null {
@@ -560,22 +565,6 @@ export class ReadonlyOmniboxElement extends CrLitElement {
   }
 
   private onInputBlur(): void {
-    // Blink has somewhat strange behavior when it comes to mouse interaction
-    // w/elements that lost focus, particularly due to their document losing
-    // focus: the selection isn't visible, but on click it acts as if it's
-    // there, so for example trying to drag-select in an element with a
-    // "secret" select all state (quite common for the location bar!) results
-    // in a text drag instead.
-    //
-    // So, if we lose focus due to document losing focus, clear both focus
-    // and selection, so mouse interactions are more predictable. Unfortunately
-    // this does result in location bar losing selection on window switch.
-    //
-    // TODO(crbug.com/503784990): Perhaps there is a better way.
-    if (!document.hasFocus()) {
-      document.getSelection()!.removeAllRanges();
-      this.$.textInput.blur();
-    }
     this.switchView_(/*hasFocus=*/ false);
     this.lastFocusAcquisition_ = null;
 
@@ -634,6 +623,17 @@ export class ReadonlyOmniboxElement extends CrLitElement {
       this.clientYAtMouseDown_ = event.clientY;
     }
 
+    // Blink has somewhat strange behavior when it comes to mouse interaction
+    // w/unfocused input elements: the selection isn't visible, but on mouse
+    // down it acts as if it's there, so for example trying to drag-select in an
+    // element with a "secret" select all state (quite common for the location
+    // bar!) results in a text drag instead, so clear the selection to extent we
+    // can on first focus-in mouse down.
+    if (event.detail === 1 && !wasAlreadyFocused) {
+      input.setSelectionRange(0, 0);
+      document.getSelection()!.removeAllRanges();
+    }
+
     if (event.detail === 2 && isOnlyLeftButton(event)) {
       this.selectAllOnMouseRelease_ = false;
       if (this.didSelectAllOnClickOne_) {
@@ -651,11 +651,13 @@ export class ReadonlyOmniboxElement extends CrLitElement {
       }
     }
 
-    this.inputDelegate_.handlePointer(this, {
-      isPointerDown: true,
-      startZeroSuggest: false,
-      selection: this.getMojoSelection(),
-    });
+    if (!isRightButton(event)) {
+      this.inputDelegate_.handlePointer(this, {
+        isPointerDown: true,
+        startZeroSuggest: false,
+        selection: this.getMojoSelection(),
+      });
+    }
   }
 
   private onInputMouseUp(event: MouseEvent): void {
@@ -695,11 +697,13 @@ export class ReadonlyOmniboxElement extends CrLitElement {
 
     const zeroSuggest = isOnlyLeftButton(event) &&
         (this.selectAllOnMouseRelease_ || this.userText.length === 0);
-    this.inputDelegate_.handlePointer(this, {
-      isPointerDown: false,
-      startZeroSuggest: zeroSuggest,
-      selection: this.getMojoSelection(),
-    });
+    if (!isRightButton(event)) {
+      this.inputDelegate_.handlePointer(this, {
+        isPointerDown: false,
+        startZeroSuggest: zeroSuggest,
+        selection: this.getMojoSelection(),
+      });
+    }
 
     this.selectAllOnMouseRelease_ = false;
     this.updateAdjustedCopyResult_();
@@ -987,7 +991,8 @@ export class ReadonlyOmniboxElement extends CrLitElement {
     return this.adjustedCopyResult?.pageTitle || '';
   }
 
-  private populateDataTransfer_(dataTransfer: DataTransfer): boolean {
+  private populateDataTransfer_(
+      dataTransfer: DataTransfer, forClipboard: boolean): boolean {
     const input = this.$.textInput.inputElement;
     const selectionStart = input.selectionStart!;
     const selectionEnd = input.selectionEnd!;
@@ -995,7 +1000,7 @@ export class ReadonlyOmniboxElement extends CrLitElement {
     if (selectionStart !== selectionEnd && this.adjustedCopyResult) {
       dataTransfer.setData('text/plain', this.adjustedCopyResult.adjustedText);
 
-      if (this.adjustedCopyResult.adjustedUrl) {
+      if (this.adjustedCopyResult.adjustedUrl && !forClipboard) {
         dataTransfer.setData(
             'text/uri-list', this.adjustedCopyResult.adjustedUrl);
       }
@@ -1007,7 +1012,8 @@ export class ReadonlyOmniboxElement extends CrLitElement {
   private onDragStart_(e: DragEvent): void {
     this.isDraggingFromSelf_ = true;
 
-    if (e.dataTransfer && this.populateDataTransfer_(e.dataTransfer)) {
+    if (e.dataTransfer &&
+        this.populateDataTransfer_(e.dataTransfer, /*forClipboard=*/ false)) {
       e.dataTransfer.effectAllowed = 'copy';
 
       if (this.adjustedCopyResult?.adjustedUrl) {
@@ -1021,13 +1027,15 @@ export class ReadonlyOmniboxElement extends CrLitElement {
   }
 
   private onInputCopy_(e: ClipboardEvent): void {
-    if (e.clipboardData && this.populateDataTransfer_(e.clipboardData)) {
+    if (e.clipboardData &&
+        this.populateDataTransfer_(e.clipboardData, /*forClipboard=*/ true)) {
       e.preventDefault();
     }
   }
 
   private onInputCut_(e: ClipboardEvent): void {
-    if (e.clipboardData && this.populateDataTransfer_(e.clipboardData)) {
+    if (e.clipboardData &&
+        this.populateDataTransfer_(e.clipboardData, /*forClipboard=*/ true)) {
       e.preventDefault();
       // Go via execCommand to keep Ctrl-Z happy.
       document.execCommand('delete');

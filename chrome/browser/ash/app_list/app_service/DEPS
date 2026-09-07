@@ -30,7 +30,6 @@ include_rules = [
   "+chrome/browser/extensions/menu_manager.h",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/shelf",
-  "+chrome/browser/ui/browser.h",
   "+chrome/browser/ui/web_applications",
   "+chrome/browser/web_applications/mojom",
   "+chrome/browser/web_applications/test",
@@ -39,7 +38,6 @@ include_rules = [
   "+chrome/browser/web_applications/web_app_install_info.h",
   "+chrome/browser/web_applications/web_app_provider.h",
   "+chrome/common/chrome_constants.h",
-  "+chrome/common/chrome_switches.h",
   "+chrome/common/extensions",
   "+chrome/test/base",
 ]

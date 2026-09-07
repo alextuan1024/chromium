@@ -417,11 +417,28 @@ _CONFIG = [
     },
     {
         'paths': [
+            'third_party/blink/common/web_preferences/',
+            'third_party/blink/public/common/web_preferences/',
+        ],
+        'allowed': [
+            'GURL',
+        ],
+    },
+    {
+        'paths': [
             'third_party/blink/common/context_menu_data/',
             'third_party/blink/common/input/',
         ],
         'allowed': [
             'ui::mojom::MenuSourceType',
+        ],
+    },
+    {
+        'paths': [
+            'third_party/blink/public/common/input/',
+        ],
+        'allowed': [
+            'ui::GestureScrollRailsMode',
         ],
     },
     {
@@ -1311,6 +1328,13 @@ _CONFIG = [
         'paths': ['third_party/blink/renderer/core/css/color_function.h'],
         'allowed': [
             'base::MakeFixedFlatMap',
+        ],
+    },
+    {
+        'paths':
+        ['third_party/blink/renderer/core/css/css_numeric_literal_value.cc'],
+        'allowed': [
+            'absl::StrFormat',
         ],
     },
     {
@@ -2988,13 +3012,16 @@ _CONFIG = [
         'paths': [
             'third_party/blink/renderer/modules/ml/webnn/',
             'third_party/blink/renderer/modules/ml/ml.cc',
+            'third_party/blink/renderer/modules/ml/ml.h',
             'third_party/blink/renderer/modules/ml/ml_context.cc',
             'third_party/blink/renderer/modules/ml/ml_context.h',
             'third_party/blink/renderer/modules/ml/ml_model_loader_test_util.cc',
         ],
         'allowed': [
             'blink_mojom::.+',
+            'dawn::.+',
             'webnn::.+',
+            'wgpu::.+',
             'gpu::SharedImageInterface',
             'gpu::SHARED_IMAGE_USAGE_WEBGPU_READ',
             'gpu::SHARED_IMAGE_USAGE_WEBGPU_SHARED_BUFFER',

@@ -10,6 +10,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -71,7 +72,7 @@ enum class SearchPrefetchEligibilityReason {
   // A URLLoaderThrottle decided this request should not be issued.
   kThrottled = 8,
   // The prefetch was suppressed because the network is too slow.
-  kSlowNetwork = 9,
+  // kSlowNetwork = 9,  // No longer used.
   // The prefetch was suppressed because Data Saver is enabled.
   kDataSaverEnabled = 10,
   // The prefetch was suppressed because Battery Saver is enabled.
@@ -172,6 +173,11 @@ class SearchPrefetchService : public KeyedService,
   // callback if the response is not found.
   SearchPrefetchURLLoader::RequestHandler MaybeCreateResponseReaderForPrerender(
       const network::ResourceRequest& tentative_resource_request);
+
+  // Tracks navigation IDs currently being served by a search prefetch.
+  void AddServingNavigationId(int64_t navigation_id);
+  bool IsServingNavigation(int64_t navigation_id) const;
+  void RemoveServingNavigationId(int64_t navigation_id);
 
   // Reports the status of a prefetch for a given search suggestion URL.
   std::optional<SearchPrefetchStatus> GetSearchPrefetchStatusForTesting(
@@ -296,6 +302,8 @@ class SearchPrefetchService : public KeyedService,
   // serving time of the response.
   std::map<GURL, std::pair<GURL, base::Time>> prefetch_cache_;
 
+  // Navigation IDs currently being served by a search prefetch.
+  base::flat_set<int64_t> serving_navigation_ids_;
 
   base::WeakPtrFactory<SearchPrefetchService> weak_factory_{this};
 };

@@ -165,6 +165,13 @@ enum class GeminiViewMode {
   kLive,
 };
 
+// Enum representing the feature mode for Gemini quota checks.
+// This needs to stay in sync with GCRGeminiFeatureMode internally
+enum class GeminiFeatureMode {
+  // Image generation feature (aka Nano Banana).
+  kNanoBanana,
+};
+
 // Configures Gemini with the given startup configuration.
 void ConfigureWithStartupConfiguration(
     GeminiStartupConfiguration* startup_configuration);
@@ -193,7 +200,8 @@ void UpdatePageAttachmentState(
 
 // Updates the prompt action of the floaty if it's invoked.
 void UpdatePromptAction(gemini::EntryPoint entry_point,
-                        NSString* prepopulated_prompt);
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit = false);
 
 // Returns true if a URL is protected.
 bool IsProtectedUrl(std::string url);
@@ -280,6 +288,13 @@ void ShowAccountSnackbar();
 // Returns the view controller for the Gemini floaty.
 UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration);
+
+// Returns whether the given feature mode is disabled due to quota exhaustion.
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode);
+
+// Returns the date when the quota will be refilled for the given feature mode,
+// or nil if it is not disabled or does not have a refill date.
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode);
 
 }  // namespace ios::provider
 

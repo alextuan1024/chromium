@@ -629,7 +629,7 @@ TEST_F(DrawingBufferTest, packedDepthStencilSupported) {
         premultiplied_alpha, want_alpha_channel, want_depth_buffer,
         want_stencil_buffer, want_antialiasing, desynchronized, preserve,
         Platform::kWebGL1ContextType, PredefinedColorSpace::kSRGB,
-        gl::GpuPreference::kHighPerformance);
+        gfx::HDRMetadata(), gl::GpuPreference::kHighPerformance);
 
     // When we request a depth or a stencil buffer, we will get both.
     EXPECT_EQ(cases[i].request_depth || cases[i].request_stencil,
@@ -712,7 +712,7 @@ TEST_F(DrawingBufferTest,
       false,
       /*desynchronized=*/false, DrawingBuffer::kDiscard,
       Platform::kWebGL1ContextType, PredefinedColorSpace::kSRGB,
-      gl::GpuPreference::kHighPerformance);
+      gfx::HDRMetadata(), gl::GpuPreference::kHighPerformance);
   EXPECT_EQ(too_big_drawing_buffer, nullptr);
   drawing_buffer_->BeginDestruction();
 }
@@ -897,6 +897,85 @@ TEST_F(DrawingBufferDiscardBackBufferTest, BackgroundBindReallocation) {
 
   // The back buffer should be successfully recreated to support BindFramebuffer
   // fallbacks.
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+}
+
+TEST_F(DrawingBufferDiscardBackBufferTest, BackgroundResizeReallocation) {
+  SetupDrawingBuffer(/*enable_feature=*/true, DrawingBuffer::kDiscard);
+
+  drawing_buffer_->SetIsInHiddenPage(false);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->SetIsInHiddenPage(true);
+  EXPECT_FALSE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  // Resizing the drawing buffer while in background should reallocate
+  // the back color buffer and reset the discarded state so that
+  // MarkContentsChanged does not crash.
+  drawing_buffer_->Resize(gfx::Size(kInitialWidth + 10, kInitialHeight + 10));
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->MarkContentsChanged();
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+}
+
+TEST_F(DrawingBufferDiscardBackBufferTest, BackgroundNoopResizeReallocation) {
+  SetupDrawingBuffer(/*enable_feature=*/true, DrawingBuffer::kDiscard);
+
+  drawing_buffer_->SetIsInHiddenPage(false);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->SetIsInHiddenPage(true);
+  EXPECT_FALSE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  // Resizing with identical dimensions reallocates the back buffer if it
+  // was discarded, allowing MarkContentsChanged() to proceed without asserting.
+  drawing_buffer_->Resize(gfx::Size(kInitialWidth, kInitialHeight));
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->MarkContentsChanged();
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+}
+
+TEST_F(DrawingBufferDiscardBackBufferTest,
+       BackgroundSetColorSpaceReallocation) {
+  SetupDrawingBuffer(/*enable_feature=*/true, DrawingBuffer::kDiscard);
+
+  drawing_buffer_->SetIsInHiddenPage(false);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->SetIsInHiddenPage(true);
+  EXPECT_FALSE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  // Changing color space while in background should reallocate the back color
+  // buffer and reset the discarded state so that MarkContentsChanged does not
+  // crash.
+  drawing_buffer_->SetColorSpace(PredefinedColorSpace::kP3);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->MarkContentsChanged();
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+}
+
+TEST_F(DrawingBufferDiscardBackBufferTest,
+       BackgroundSetHdrMetadataReallocation) {
+  SetupDrawingBuffer(/*enable_feature=*/true, DrawingBuffer::kDiscard);
+
+  drawing_buffer_->SetIsInHiddenPage(false);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->SetIsInHiddenPage(true);
+  EXPECT_FALSE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  // Changing HDR metadata while in background should reallocate the back color
+  // buffer and reset the discarded state so that MarkContentsChanged does not
+  // crash.
+  gfx::HDRMetadata hdr_metadata;
+  hdr_metadata.extended_range.emplace(2.f, 4.f);
+  drawing_buffer_->SetHdrMetadata(hdr_metadata);
+  EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
+
+  drawing_buffer_->MarkContentsChanged();
   EXPECT_TRUE(drawing_buffer_->HasBackColorBufferForTesting());
 }
 }  // namespace blink

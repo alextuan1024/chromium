@@ -97,6 +97,7 @@
 #include "third_party/blink/renderer/modules/canvas/canvas2d/path_2d.h"
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/canvas_context_creation_attributes_helpers.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
+#include "third_party/blink/renderer/platform/fonts/font_orientation.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
 #include "third_party/blink/renderer/platform/geometry/path.h"
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
@@ -120,6 +121,7 @@
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table.h"
@@ -302,9 +304,7 @@ void CanvasRenderingContext2D::LoseContext(LostContextMode lost_mode) {
   ResetInternal();
   HTMLCanvasElement* const element = canvas();
   if (element != nullptr) [[likely]] {
-    shared_image_provider_ = nullptr;
-    bitmap_provider_ = nullptr;
-    last_recording_ = std::nullopt;
+    ResetResourceProvider();
     element->DiscardResources();
     element->DiscardResourceDispatcher();
 
@@ -693,6 +693,9 @@ bool CanvasRenderingContext2D::ResolveFont(const String& new_font) {
           element_font_description.SpecifiedSize());
       element_font_description.SetAdjustedSize(
           element_font_description.SpecifiedSize());
+      // Reset the orientation to avoid inheriting the vertical
+      // writing-mode/text-orientation from the <canvas> element.
+      element_font_description.SetOrientation(FontOrientation::kHorizontal);
 
       font_style_builder.SetFontDescription(element_font_description);
       const ComputedStyle* font_style = font_style_builder.TakeStyle();
@@ -766,9 +769,7 @@ void CanvasRenderingContext2D::PruneLocalFontCache(size_t target_size) {
 void CanvasRenderingContext2D::StyleDidChange(const ComputedStyle* old_style,
                                               const ComputedStyle& new_style) {
   if (old_style &&
-      (base::FeatureList::IsEnabled(blink::features::kCSSFontComparisonFix)
-           ? base::ValuesEquivalent(old_style->GetFont(), new_style.GetFont())
-           : old_style->GetFont() == new_style.GetFont())) {
+      base::ValuesEquivalent(old_style->GetFont(), new_style.GetFont())) {
     return;
   }
   PruneLocalFontCache(0);
@@ -909,7 +910,12 @@ void CanvasRenderingContext2D::FinalizeFrame(FlushReason reason) {
   HTMLCanvasElement* host = canvas();
   CHECK(host);
 
-  FlushCanvas(reason);
+  if (RuntimeEnabledFeatures::Canvas2dDeferredFlushEnabled() &&
+      IsComposited() && reason == FlushReason::kCanvasPushFrame) {
+    // Flush is deferred to PrepareTransferableResource when composited.
+  } else {
+    FlushCanvas(reason);
+  }
   if (reason == FlushReason::kCanvasPushFrame) {
     if (host->IsDisplayed()) {
       // Make sure the GPU is never more than two animation frames behind.
@@ -1163,9 +1169,7 @@ UniqueFontSelector* CanvasRenderingContext2D::GetFontSelector() const {
 }
 
 void CanvasRenderingContext2D::SizeChanged() {
-  shared_image_provider_ = nullptr;
-  bitmap_provider_ = nullptr;
-  last_recording_ = std::nullopt;
+  ResetResourceProvider();
   did_fail_to_create_resource_provider_ = false;
 }
 
@@ -1177,9 +1181,7 @@ CanvasHibernationHandler* CanvasRenderingContext2D::GetHibernationHandler()
 void CanvasRenderingContext2D::Dispose() {
   FlushForImageListener::Get()->RemoveObserver(this);
   hibernation_handler_ = nullptr;
-  shared_image_provider_ = nullptr;
-  bitmap_provider_ = nullptr;
-  last_recording_ = std::nullopt;
+  ResetResourceProvider();
   CanvasRenderingContext::Dispose();
 }
 

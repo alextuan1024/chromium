@@ -9,7 +9,6 @@
 #include <memory>
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/contextual_search/searchbox_context_data.h"
 #include "chrome/browser/ui/omnibox/chrome_omnibox_client.h"
@@ -20,6 +19,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -61,8 +61,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEditModelBrowserTest,
             OmniboxPopupState::kAim);
 
   // Verify context was populated correctly with TabHandle (not SessionID).
-  SearchboxContextData* context_data =
-      browser()->GetFeatures().searchbox_context_data();
+  SearchboxContextData* context_data = SearchboxContextData::From(browser());
   ASSERT_TRUE(context_data);
 
   std::unique_ptr<SearchboxContextData::Context> context =

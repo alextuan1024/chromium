@@ -41,6 +41,8 @@ constexpr char kDefaultClassroomApiBaseUrl[] =
 constexpr char kDefaultTasksApiBaseUrl[] = "https://tasks.googleapis.com";
 constexpr std::string_view kDefaultPeopleApiBaseUrl =
     "https://people.googleapis.com";
+constexpr std::string_view kDefaultKidsManagementApiBaseUrl =
+    "https://kidsmanagement-pa.googleapis.com";
 
 // API calls from accounts.google.com
 const char kEmbeddedSetupChromeOsUrlSuffix[] = "embedded/setup/v2/chromeos";
@@ -123,8 +125,6 @@ const char kOAuth2UpgradeTokenUrlSuffix[] = "v1/upgradetoken";
 // API calls from accountcapabilities-pa.googleapis.com
 const char kAccountCapabilitiesBatchGetUrlSuffix[] =
     "v1/accountcapabilities:batchGet";
-const char kAccountCapabilitiesGetAllVisibleUrlSuffix[] =
-    "v1/accountcapabilities:getAllVisible";
 
 const char kRotateBoundCookiesUrlSuffix[] = "RotateBoundCookies";
 
@@ -341,10 +341,6 @@ const GURL& GaiaUrls::account_capabilities_batch_get_url() const {
   return account_capabilities_batch_get_url_;
 }
 
-const GURL& GaiaUrls::account_capabilities_get_all_visible_url() const {
-  return account_capabilities_get_all_visible_url_;
-}
-
 const std::string& GaiaUrls::oauth2_chrome_client_id() const {
   return google_apis::GetOAuth2ClientID(google_apis::CLIENT_MAIN);
 }
@@ -399,6 +395,10 @@ const GURL& GaiaUrls::tasks_api_origin_url() const {
 
 const GURL& GaiaUrls::people_api_origin_url() const {
   return people_api_origin_url_;
+}
+
+const GURL& GaiaUrls::kids_management_api_origin_url() const {
+  return kids_management_api_origin_url_;
 }
 
 const GURL& GaiaUrls::blank_page_url() const {
@@ -479,6 +479,9 @@ void GaiaUrls::InitializeDefault() {
   }
   if (!people_api_origin_url_.is_valid()) {
     people_api_origin_url_ = GURL(kDefaultPeopleApiBaseUrl);
+  }
+  if (!kids_management_api_origin_url_.is_valid()) {
+    kids_management_api_origin_url_ = GURL(kDefaultKidsManagementApiBaseUrl);
   }
 
   CHECK(!gaia_origin_.opaque());
@@ -561,9 +564,6 @@ void GaiaUrls::InitializeDefault() {
   ResolveURLIfInvalid(&account_capabilities_batch_get_url_,
                       account_capabilities_origin_url_,
                       kAccountCapabilitiesBatchGetUrlSuffix);
-  ResolveURLIfInvalid(&account_capabilities_get_all_visible_url_,
-                      account_capabilities_origin_url_,
-                      kAccountCapabilitiesGetAllVisibleUrlSuffix);
 }
 
 void GaiaUrls::InitializeFromConfig() {
@@ -589,6 +589,7 @@ void GaiaUrls::InitializeFromConfig() {
   config->GetURLIfExists(URL_KEY_AND_PTR(classroom_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(tasks_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(people_api_origin_url));
+  config->GetURLIfExists(URL_KEY_AND_PTR(kids_management_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(embedded_setup_chromeos_url));
   config->GetURLIfExists(
       URL_KEY_AND_PTR(embedded_setup_chromeos_kid_signup_url));
@@ -615,8 +616,6 @@ void GaiaUrls::InitializeFromConfig() {
   config->GetURLIfExists(URL_KEY_AND_PTR(add_account_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(reauth_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(account_capabilities_batch_get_url));
-  config->GetURLIfExists(
-      URL_KEY_AND_PTR(account_capabilities_get_all_visible_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(get_check_connection_info_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(oauth2_token_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(mtls_oauth2_token_url));

@@ -73,6 +73,10 @@ constexpr float kMaxContentsHeightSidePanelFraction = 2.f / 3.f;
 // meaning the outline disappears completely.
 constexpr double kVerticalTabStripOutlineFadeOnHover = 0.5;
 
+// The opacity of the vertical tab strip background when the glass frame is
+// enabled and expand-on-hover is active.
+constexpr double kGlassExpandOnHoverOpacity = 0.95;
+
 // Increases the leading or trailing exclusion padding to `minimum`.
 void IncreasePaddingToMinimum(BrowserLayoutParams& params, int minimum) {
   // Default to increasing the trailing exclusion padding. On ChromeOS, the
@@ -332,7 +336,7 @@ int BrowserViewTabbedLayoutImpl::GetVerticalTabStripContentOverlap() const {
 std::pair<gfx::Size, gfx::Size>
 BrowserViewTabbedLayoutImpl::GetMinimumTabStripSize(
     const BrowserLayoutParams& params) const {
-  switch (GetTabStripType()) {
+  switch (delegate().GetTabStripType()) {
     case TabStripType::kHorizontal: {
       auto result = views().horizontal_tab_strip_region_view->GetMinimumSize();
       result.Enlarge(GetExclusionWidth(params), 0);
@@ -442,8 +446,16 @@ BrowserViewTabbedLayoutImpl::CalculateHorizontalLayout(
     min_side_panel_width = panel->GetMinimumSize().width();
     preferred_side_panel_width = panel->GetPreferredSize().width();
 
-    if (panel->GetCurrentEntryType() == SidePanelType::kContent &&
-        panel->ShouldRestrictMaxWidth()) {
+    // Previously the reading mode side panel had an exception to extend to 90%
+    // of the screen width, unlike other side panels. After a full-screen
+    // reading mode experience was added with Immersive reading mode, the
+    // exception was removed to allow reading mode to be capped at 66% of the
+    // page like other side panels. However, if the maximum for other side
+    // panels is reduced further in the future, special care should be taken to
+    // ensure that reading mode side panel users aren't negatively impacted.
+    // Another exception for reading mode may be needed, if this ever happens.
+    // See crbug.com/394339052 for more details.
+    if (panel->GetCurrentEntryType() == SidePanelType::kContent) {
       preferred_side_panel_width =
           std::min(preferred_side_panel_width,
                    base::ClampFloor(params.visual_client_area.width() *
@@ -588,13 +600,6 @@ BrowserViewTabbedLayoutImpl::CalculateVerticalTabStripAnimation() {
   animation.bottom_corner = *controller->GetCurrentValue(
       TabStripAnimations::kVerticalTabStrip, TabStripAnimations::kBottomCorner);
 
-  // If the bottom corner is being suppressed for performance reasons, prevent
-  // an exterior corner.
-  if (in_glass_mode() && !is_fullscreen(layout_data_->window_state) &&
-      !features::kGlassRoundContentCorner.Get()) {
-    animation.bottom_corner = std::min(0.0, animation.bottom_corner);
-  }
-
   return animation;
 }
 
@@ -605,7 +610,7 @@ int BrowserViewTabbedLayoutImpl::GetMinimumGrabHandlePadding() const {
 gfx::Size BrowserViewTabbedLayoutImpl::GetMinimumMainAreaSize(
     const BrowserLayoutParams& params) const {
   gfx::Size toolbar_size = views().toolbar->GetMinimumSize();
-  const auto tab_strip_type = GetTabStripType();
+  const auto tab_strip_type = delegate().GetTabStripType();
   if (tab_strip_type == TabStripType::kVertical) {
     toolbar_size.Enlarge(GetExclusionWidth(params), 0);
   }
@@ -624,15 +629,6 @@ gfx::Size BrowserViewTabbedLayoutImpl::GetMinimumMainAreaSize(
                      infobar_container_size.height() + contents_size.height();
 
   return gfx::Size(width, height);
-}
-
-BrowserViewTabbedLayoutImpl::TabStripType
-BrowserViewTabbedLayoutImpl::GetTabStripType() const {
-  if (delegate().ShouldDrawVerticalTabStrip()) {
-    return TabStripType::kVertical;
-  }
-  return delegate().ShouldDrawTabStrip() ? TabStripType::kHorizontal
-                                         : TabStripType::kNone;
 }
 
 BrowserViewTabbedLayoutImpl::VerticalTabStripCollapsedState
@@ -845,7 +841,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     layout.AddChild(
         views().vertical_tab_strip_background_blur_backdrop,
         vertical_tab_strip_bounds,
-        in_glass_mode() && features::kGlassExpandOnHoverOpacity.Get() < 1.0 &&
+        in_glass_mode() && features::kGlassExpandOnHoverEnabled.Get() &&
             layout_data_->vertical_tab_strip_animation.expand_on_hover_width >
                 0.0f);
   }
@@ -1213,8 +1209,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   if (in_glass_mode()) {
     gfx::RoundedCornersF content_corners;
     if (layout_data_->tab_strip_type == TabStripType::kVertical &&
-        !is_fullscreen(layout_data_->window_state) &&
-        features::kGlassRoundContentCorner.Get()) {
+        !is_fullscreen(layout_data_->window_state)) {
       // Note that this will set a lower leading corner on the multi contents
       // view even if there's a shadow box, but since the curve is effectively
       // the same this will not produce a visual bug.
@@ -1412,7 +1407,7 @@ void BrowserViewTabbedLayoutImpl::ConfigureTopContainerBackground(
   // parented to the `top_container()` and the frame header is not visible.
   // In these cases, the top container's background color should match the
   // frame color to ensure visual consistency.
-  if (GetTabStripType() == TabStripType::kHorizontal &&
+  if (layout_data_->tab_strip_type == TabStripType::kHorizontal &&
       IsParentedTo(views().horizontal_tab_strip_region_view,
                    views().top_container)) {
     background->SetPrimaryColor(ui::kColorFrameActive);
@@ -1468,7 +1463,7 @@ void BrowserViewTabbedLayoutImpl::DoPreLayoutComputations(
     const BrowserLayoutParams& params) {
   layout_data_ = std::make_unique<TransientLayoutData>(params);
   layout_data_->window_state = delegate().GetBrowserWindowState();
-  layout_data_->tab_strip_type = GetTabStripType();
+  layout_data_->tab_strip_type = delegate().GetTabStripType();
   layout_data_->horizontal_layout =
       CalculateHorizontalLayout(layout_data_->revised_params);
   layout_data_->vertical_tab_strip_animation =
@@ -1512,8 +1507,10 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
       // visible fade. This isn't perfect, but hopefully with glass
       // expand-on-hover it will improve.
       auto vertical_tabs_background_color = frame_color;
-      static const double expand_on_hover_opacity =
-          features::kGlassExpandOnHoverOpacity.Get();
+      const double expand_on_hover_opacity =
+          features::kGlassExpandOnHoverEnabled.Get()
+              ? kGlassExpandOnHoverOpacity
+              : 1.0;
       vertical_tabs_background_color.opacity = static_cast<float>(
           (1.0 - animation.expand_on_hover_opacity) * frame_color.opacity +
           animation.expand_on_hover_opacity * expand_on_hover_opacity);

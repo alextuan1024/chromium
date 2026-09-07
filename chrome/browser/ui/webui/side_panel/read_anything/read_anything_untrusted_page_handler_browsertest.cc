@@ -21,6 +21,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_web_view.h"
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
@@ -30,7 +31,9 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/translate/translate_bubble_controller.h"
 #include "chrome/browser/user_education/user_education_service.h"
@@ -39,14 +42,19 @@
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chrome/test/user_education/mock_browser_user_education_interface.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/language_detection/core/constants.h"
 #include "components/prefs/pref_value_map.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/translate/core/browser/translate_manager.h"
 #include "components/user_education/common/new_badge/new_badge_specification.h"
 #include "components/user_education/common/user_education_features.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -66,6 +74,10 @@
 #include "ui/accessibility/mojom/ax_tree_update.mojom.h"
 #include "ui/accessibility/platform/browser_accessibility.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/clipboard_sequence_number_token.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/size.h"
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/test/bind.h"
@@ -192,23 +204,25 @@ class TestReadAnythingUntrustedPageHandler
 #if BUILDFLAG(IS_CHROMEOS)
   explicit TestReadAnythingUntrustedPageHandler(
       mojo::PendingRemote<read_anything::mojom::UntrustedPage> page,
+      mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>
+          receiver,
       content::WebUI* test_web_ui,
       std::unique_ptr<ChromeOsExtensionWrapper> extension_wrapper)
-      : ReadAnythingUntrustedPageHandler(
-            std::move(page),
-            mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>(),
-            test_web_ui,
-            /*use_screen_ai_service=*/false,
-            std::move(extension_wrapper)) {}
+      : ReadAnythingUntrustedPageHandler(std::move(page),
+                                         std::move(receiver),
+                                         test_web_ui,
+                                         /*use_screen_ai_service=*/false,
+                                         std::move(extension_wrapper)) {}
 #else
   explicit TestReadAnythingUntrustedPageHandler(
       mojo::PendingRemote<read_anything::mojom::UntrustedPage> page,
+      mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>
+          receiver,
       content::WebUI* test_web_ui)
-      : ReadAnythingUntrustedPageHandler(
-            std::move(page),
-            mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>(),
-            test_web_ui,
-            /*use_screen_ai_service=*/false) {}
+      : ReadAnythingUntrustedPageHandler(std::move(page),
+                                         std::move(receiver),
+                                         test_web_ui,
+                                         /*use_screen_ai_service=*/false) {}
 #endif
 };
 
@@ -301,6 +315,7 @@ class ReadAnythingUntrustedPageHandlerTest : public InProcessBrowserTest {
 #if BUILDFLAG(IS_CHROMEOS)
     extension_wrapper_ptr_ = nullptr;
 #endif
+    handler_remote_.reset();
     handler_.reset();
     test_web_ui_.reset();
     web_contents_.reset();
@@ -308,25 +323,20 @@ class ReadAnythingUntrustedPageHandlerTest : public InProcessBrowserTest {
   }
 
   std::unique_ptr<TestReadAnythingUntrustedPageHandler> CreateHandler() {
+    handler_remote_.reset();
 #if BUILDFLAG(IS_CHROMEOS)
     std::unique_ptr<ChromeOsExtensionWrapper> extension_wrapper_mock =
         std::make_unique<testing::NiceMock<MockChromeOsExtensionWrapper>>();
     extension_wrapper_ptr_ = static_cast<MockChromeOsExtensionWrapper*>(
         extension_wrapper_mock.get());
     return std::make_unique<TestReadAnythingUntrustedPageHandler>(
-        page_.BindAndGetRemote(), test_web_ui_.get(),
-        std::move(extension_wrapper_mock));
+        page_.BindAndGetRemote(), handler_remote_.BindNewPipeAndPassReceiver(),
+        test_web_ui_.get(), std::move(extension_wrapper_mock));
 #else
     return std::make_unique<TestReadAnythingUntrustedPageHandler>(
-        page_.BindAndGetRemote(), test_web_ui_.get());
+        page_.BindAndGetRemote(), handler_remote_.BindNewPipeAndPassReceiver(),
+        test_web_ui_.get());
 #endif
-  }
-
-  ReadAnythingSidePanelController* side_panel_controller() {
-    return browser()
-        ->GetActiveTabInterface()
-        ->GetTabFeatures()
-        ->read_anything_side_panel_controller();
   }
 
   SidePanelEntry* read_anything_entry() {
@@ -485,12 +495,43 @@ class ReadAnythingUntrustedPageHandlerTest : public InProcessBrowserTest {
     handler_->OnTranslateDriverDestroyed(driver);
   }
 
+  void SetUpHandler() {
+    ASSERT_TRUE(
+        content::NavigateToURL(web_contents_.get(), GURL(url::kAboutBlankURL)));
+    test_web_ui_->set_render_frame_host(web_contents_->GetPrimaryMainFrame());
+    handler_ = CreateHandler();
+  }
+
+  void GrantUserActivation(content::RenderFrameHost* rfh) {
+    handler_remote_.FlushForTesting();
+    page_.receiver_.FlushForTesting();
+    content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents_.get());
+    content::SimulateMouseClick(web_contents_.get(), 0,
+                                blink::WebMouseEvent::Button::kLeft);
+    ASSERT_TRUE(base::test::RunUntil(
+        [&]() { return rfh->HasTransientUserActivation(); }));
+    EXPECT_TRUE(rfh->HasTransientUserActivation());
+  }
+
+  content::RenderFrameHost* LoadPdf(const GURL& url) {
+    content::WebContents* web_contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    if (!ui_test_utils::NavigateToURL(browser(), url)) {
+      return nullptr;
+    }
+    if (!pdf_extension_test_util::EnsurePDFHasLoaded(web_contents)) {
+      return nullptr;
+    }
+    return pdf_extension_test_util::GetOnlyPdfExtensionHost(web_contents);
+  }
+
  protected:
 #if BUILDFLAG(IS_CHROMEOS)
   raw_ptr<MockChromeOsExtensionWrapper> extension_wrapper_ptr_ = nullptr;
 #endif
   testing::NiceMock<MockPage> page_;
   FakeTtsEngineDelegate engine_delegate_;
+  mojo::Remote<read_anything::mojom::UntrustedPageHandler> handler_remote_;
   std::unique_ptr<ReadAnythingUntrustedPageHandler> handler_;
   std::unique_ptr<content::WebContents> web_contents_;
   std::unique_ptr<content::TestWebUI> test_web_ui_;
@@ -1035,6 +1076,14 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
 IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
                        OnImageDataRequested_IgnoresBadTreeId) {
   base::HistogramTester histogram_tester;
+
+  // In order to test the bad tree id, first ensure that reading mode is not
+  // on a privileged page.
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_test_server()->GetURL("/downloads/large_image.html")));
+
   handler_ = CreateHandler();
   auto tree_id = ui::AXTreeID::CreateNewAXTreeID();
   ui::AXNodeID node_id = 1;
@@ -1042,9 +1091,8 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
   OnImageDataRequested(tree_id, node_id);
 
   histogram_tester.ExpectUniqueSample(
-      "Accessibility.ReadAnything.RendererRequestForImageDataDownload."
-      "IsFromObservedTree",
-      false, 1);
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result",
+      ReadAnythingRendererRequestResult::kNotObservedTree, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
@@ -1062,9 +1110,8 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
   OnImageDataRequested(tree_id, 1);
 
   histogram_tester.ExpectUniqueSample(
-      "Accessibility.ReadAnything.RendererRequestForImageDataDownload."
-      "IsFromObservedTree",
-      true, 1);
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result",
+      ReadAnythingRendererRequestResult::kAllowed, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
@@ -1441,8 +1488,8 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
   EXPECT_CALL(*extension_wrapper_ptr_, ActivateSpeechEngine).Times(1);
 
   handler_ = std::make_unique<TestReadAnythingUntrustedPageHandler>(
-      page_.BindAndGetRemote(), test_web_ui_.get(),
-      std::move(extension_wrapper_mock));
+      page_.BindAndGetRemote(), handler_remote_.BindNewPipeAndPassReceiver(),
+      test_web_ui_.get(), std::move(extension_wrapper_mock));
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
@@ -2447,4 +2494,360 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerAutomationTest,
   EXPECT_FALSE(handler_->dom_distiller_content().has_value());
 }
 
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       OnLinkClicked_RequiresTransientUserActivation) {
+  const std::string histogram_name =
+      "Accessibility.ReadAnything.RendererRequestForLinkClick.Result";
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/simple.html")));
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  content::RenderFrameHost* main_rfh =
+      browser()->GetActiveTabInterface()->GetContents()->GetPrimaryMainFrame();
+  ui::AXTreeID tree_id = main_rfh->GetAXTreeID();
+  ui::AXNodeID node_id = 1;
+
+  // Initial state with no transient user activation
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  handler_remote_->OnLinkClicked(tree_id, node_id);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectTotalCount(histogram_name, 0);
+
+  // Grant User Activation via simulated mouse click.
+  GrantUserActivation(rfh);
+  handler_remote_->OnLinkClicked(tree_id, node_id);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      histogram_name, ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       OnSelectionChange_RequiresTransientUserActivation) {
+  const std::string histogram_name =
+      "Accessibility.ReadAnything.RendererRequestForSelection.Result";
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/simple.html")));
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  content::RenderFrameHost* main_rfh =
+      browser()->GetActiveTabInterface()->GetContents()->GetPrimaryMainFrame();
+  ui::AXTreeID tree_id = main_rfh->GetAXTreeID();
+
+  // Initial state with no transient user activation
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  handler_remote_->OnSelectionChange(tree_id, /*anchor_node_id=*/1, 0,
+                                     /*focus_node_id=*/2, 5);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectTotalCount(histogram_name, 0);
+
+  // Grant User Activation via simulated mouse click.
+  GrantUserActivation(rfh);
+  handler_remote_->OnSelectionChange(tree_id, /*anchor_node_id=*/1, 0,
+                                     /*focus_node_id=*/2, 5);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      histogram_name, ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       NullRenderFrameHost_ReturnsSafely) {
+  test_web_ui_->set_render_frame_host(nullptr);
+  handler_ = CreateHandler();
+
+  content::RenderFrameHost* main_rfh =
+      browser()->GetActiveTabInterface()->GetContents()->GetPrimaryMainFrame();
+  ui::AXTreeID tree_id = main_rfh->GetAXTreeID();
+
+  handler_remote_->OnCopy();
+  handler_remote_->OnLinkClicked(tree_id, 1);
+  handler_remote_->OnSelectionChange(tree_id, 1, 0, 1, 1);
+  handler_remote_->OnCollapseSelection();
+  handler_remote_.FlushForTesting();
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       OnCopy_RequiresTransientUserActivation) {
+  content::WebContents* main_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      main_contents, GURL("data:text/html,<div>Hello World</div>")));
+  main_contents->Focus();
+  main_contents->SelectAll();
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    content::RenderWidgetHostView* view =
+        main_contents->GetRenderWidgetHostView();
+    return view && !view->GetSelectedText().empty();
+  }));
+
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
+  const ui::ClipboardSequenceNumberToken initial_seq =
+      clipboard->GetSequenceNumber(ui::ClipboardBuffer::kCopyPaste);
+
+  // Initial state with no transient user activation
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  handler_remote_->OnCopy();
+  handler_remote_.FlushForTesting();
+  EXPECT_EQ(clipboard->GetSequenceNumber(ui::ClipboardBuffer::kCopyPaste),
+            initial_seq);
+
+  // Grant User Activation via simulated mouse click.
+  GrantUserActivation(rfh);
+
+  handler_remote_->OnCopy();
+  handler_remote_.FlushForTesting();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return clipboard->GetSequenceNumber(ui::ClipboardBuffer::kCopyPaste) !=
+           initial_seq;
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       OnCollapseSelection_RequiresTransientUserActivation) {
+  content::WebContents* main_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      main_contents, GURL("data:text/html,<div>Selected Text</div>")));
+  main_contents->Focus();
+  main_contents->SelectAll();
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    content::RenderWidgetHostView* view =
+        main_contents->GetRenderWidgetHostView();
+    return view && !view->GetSelectedText().empty();
+  }));
+
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+
+  // Initial state with no transient user activation
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  handler_remote_->OnCollapseSelection();
+  handler_remote_.FlushForTesting();
+  EXPECT_FALSE(
+      main_contents->GetRenderWidgetHostView()->GetSelectedText().empty());
+
+  // Grant User Activation via simulated mouse click.
+  GrantUserActivation(rfh);
+
+  handler_remote_->OnCollapseSelection();
+  handler_remote_.FlushForTesting();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    content::RenderWidgetHostView* view =
+        main_contents->GetRenderWidgetHostView();
+    return view && view->GetSelectedText().empty();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       PrivilegedScheme_DisallowsActions) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("chrome://version/")));
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  content::RenderFrameHost* main_rfh =
+      browser()->GetActiveTabInterface()->GetContents()->GetPrimaryMainFrame();
+  ui::AXTreeID tree_id = main_rfh->GetAXTreeID();
+
+  GrantUserActivation(rfh);
+
+  // Link clicks are dropped without error.
+  handler_remote_->OnLinkClicked(tree_id, /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForLinkClick.Result",
+      ReadAnythingRendererRequestResult::kDisallowedActionOnPageType,
+      /*expected_bucket_count=*/1);
+
+  // Image data requests are dropped without error.
+  handler_remote_->OnImageDataRequested(tree_id, /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result",
+      ReadAnythingRendererRequestResult::kDisallowedActionOnPageType,
+      /*expected_bucket_count=*/1);
+
+  // Scroll requests succeed on privileged schemes.
+  handler_remote_->ScrollToTargetNode(tree_id, /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForScrollToTargetNode.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Selection change requests are dropped without error.
+  handler_remote_->OnSelectionChange(tree_id, /*anchor_node_id=*/1, 0,
+                                     /*focus_node_id=*/2, 5);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForSelection.Result",
+      ReadAnythingRendererRequestResult::kDisallowedActionOnPageType,
+      /*expected_bucket_count=*/1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       Pdf_AllowsActions) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  content::RenderFrameHost* pdf_rfh =
+      LoadPdf(embedded_test_server()->GetURL("/pdf/test.pdf"));
+  ASSERT_TRUE(pdf_rfh);
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  GrantUserActivation(rfh);
+
+  // Link clicks succeed for PDF tree.
+  handler_remote_->OnLinkClicked(pdf_rfh->GetAXTreeID(), /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForLinkClick.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Image data requests succeed for PDF tree.
+  handler_remote_->OnImageDataRequested(pdf_rfh->GetAXTreeID(),
+                                        /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Scroll requests succeed for PDF tree.
+  handler_remote_->ScrollToTargetNode(pdf_rfh->GetAXTreeID(),
+                                      /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForScrollToTargetNode.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Selection change requests succeed for PDF tree.
+  handler_remote_->OnSelectionChange(pdf_rfh->GetAXTreeID(),
+                                     /*anchor_node_id=*/1, 0,
+                                     /*focus_node_id=*/2, 5);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForSelection.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerTest,
+                       LocalPdf_AllowsActions) {
+  base::HistogramTester histogram_tester;
+
+  content::RenderFrameHost* pdf_rfh = LoadPdf(chrome_test_utils::GetTestUrl(
+      base::FilePath(FILE_PATH_LITERAL("pdf")),
+      base::FilePath(FILE_PATH_LITERAL("test.pdf"))));
+  ASSERT_TRUE(pdf_rfh);
+  SetUpHandler();
+
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  GrantUserActivation(rfh);
+
+  // Link clicks succeed for local PDF tree.
+  handler_remote_->OnLinkClicked(pdf_rfh->GetAXTreeID(), /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForLinkClick.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Image data requests succeed for local PDF tree.
+  handler_remote_->OnImageDataRequested(pdf_rfh->GetAXTreeID(),
+                                        /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Scroll requests succeed for local PDF tree.
+  handler_remote_->ScrollToTargetNode(pdf_rfh->GetAXTreeID(),
+                                      /*target_node_id=*/1);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForScrollToTargetNode.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+
+  // Selection change requests succeed for local PDF tree.
+  handler_remote_->OnSelectionChange(pdf_rfh->GetAXTreeID(),
+                                     /*anchor_node_id=*/1, 0,
+                                     /*focus_node_id=*/2, 5);
+  handler_remote_.FlushForTesting();
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForSelection.Result",
+      ReadAnythingRendererRequestResult::kAllowed,
+      /*expected_bucket_count=*/1);
+}
+
+class ReadAnythingUntrustedPageHandlerUserEducationTest
+    : public ReadAnythingUntrustedPageHandlerTest {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    ReadAnythingUntrustedPageHandlerTest::SetUpInProcessBrowserTestFixture();
+    user_ed_override_ =
+        BrowserWindowFeatures::GetUserDataFactoryForTesting()
+            .AddOverrideForTesting(
+                base::BindRepeating([](BrowserWindowInterface& window) {
+                  return std::make_unique<
+                      testing::NiceMock<MockBrowserUserEducationInterface>>(
+                      &window);
+                }));
+  }
+
+  MockBrowserUserEducationInterface* mock_user_education_interface() {
+    return static_cast<MockBrowserUserEducationInterface*>(
+        BrowserUserEducationInterface::From(browser()));
+  }
+
+ protected:
+  ui::UserDataFactory::ScopedOverride user_ed_override_;
+};
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingUntrustedPageHandlerUserEducationTest,
+                       OnLineFocusChanged_NotifiesFeatureUsed) {
+  handler_ = CreateHandler();
+
+  // Setting line focus to kOff should not mark the feature as used.
+  EXPECT_CALL(
+      *mock_user_education_interface(),
+      NotifyFeaturePromoFeatureUsed(
+          testing::Ref(feature_engagement::kIPHReadingModeLineFocusFeature),
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent))
+      .Times(0);
+  handler_->OnLineFocusChanged(read_anything::mojom::LineFocus::kOff,
+                               read_anything::mojom::LineFocus::kLineStatic);
+
+  // Setting line focus to an active mode marks the feature as used.
+  EXPECT_CALL(
+      *mock_user_education_interface(),
+      NotifyFeaturePromoFeatureUsed(
+          testing::Ref(feature_engagement::kIPHReadingModeLineFocusFeature),
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent))
+      .Times(1);
+  handler_->OnLineFocusChanged(read_anything::mojom::LineFocus::kLineStatic,
+                               read_anything::mojom::LineFocus::kLineStatic);
+}
 }  // namespace

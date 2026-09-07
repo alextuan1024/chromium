@@ -17,12 +17,12 @@
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component_store.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_util.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/alternative_state_name_map.h"
@@ -47,6 +47,8 @@ Address::Address(const Address& address) {
   *this = address;
 }
 
+Address::Address(Address&& other) noexcept = default;
+
 Address& Address::operator=(const Address& address) {
   if (this == &address) {
     return *this;
@@ -59,6 +61,8 @@ Address& Address::operator=(const Address& address) {
   is_legacy_address_ = address.IsLegacyAddress();
   return *this;
 }
+
+Address& Address::operator=(Address&& other) noexcept = default;
 
 bool Address::operator==(const Address& other) const {
   if (this == &other)

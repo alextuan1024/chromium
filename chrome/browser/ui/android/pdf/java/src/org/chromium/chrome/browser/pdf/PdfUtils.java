@@ -4,8 +4,10 @@
 
 package org.chromium.chrome.browser.pdf;
 
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
@@ -20,9 +22,13 @@ import androidx.fragment.app.FragmentActivity;
 import org.jni_zero.CalledByNative;
 
 import org.chromium.base.ContentUriUtils;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -90,6 +96,7 @@ public class PdfUtils {
         PdfToolbarAction.TWO_PAGE_VIEW,
         PdfToolbarAction.SINGLE_PAGE_VIEW,
         PdfToolbarAction.DOCUMENT_PROPERTIES,
+        PdfToolbarAction.ANNOTATION,
         PdfToolbarAction.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -104,8 +111,9 @@ public class PdfUtils {
         int TWO_PAGE_VIEW = 7;
         int SINGLE_PAGE_VIEW = 8;
         int DOCUMENT_PROPERTIES = 9;
+        int ANNOTATION = 10;
 
-        int NUM_ENTRIES = 10;
+        int NUM_ENTRIES = 11;
     }
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfToolbarAction)
 
@@ -147,9 +155,12 @@ public class PdfUtils {
 
         int NUM_ENTRIES = 3;
     }
+
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfHyperlinkClickResult)
 
     private static final String TAG = "PdfUtils";
+    private static final String PDF_LAUNCHER_ACTIVITY_ALIAS =
+            "org.chromium.chrome.browser.document.PdfLauncherActivityAlias";
     private static final Set<String> TRANSIENT_PDF_SCHEMES =
             Set.of(
                     UrlConstants.HTTP_SCHEME,
@@ -228,6 +239,36 @@ public class PdfUtils {
         }
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 13;
+    }
+
+    /** Selectively updates whether Chrome is registered as a handler for PDF intents. */
+    public static void updatePdfLauncherActivityEnabled() {
+        PostTask.postTask(
+                TaskTraits.BEST_EFFORT_MAY_BLOCK,
+                () -> {
+                    Context context = ContextUtils.getApplicationContext();
+                    PackageManager packageManager = context.getPackageManager();
+                    ComponentName pdfComponentName =
+                            new ComponentName(context, PDF_LAUNCHER_ACTIVITY_ALIAS);
+
+                    boolean isEnabled =
+                            isPlatformSupportedForEdit()
+                                    && ChromeFeatureList.sPdfLauncherActivity.isEnabled();
+                    int newState =
+                            isEnabled
+                                    ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                                    : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+
+                    try {
+                        if (packageManager.getComponentEnabledSetting(pdfComponentName)
+                                != newState) {
+                            packageManager.setComponentEnabledSetting(
+                                    pdfComponentName, newState, PackageManager.DONT_KILL_APP);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        // The component might not be present in some test APKs.
+                    }
+                });
     }
 
     /**
@@ -601,6 +642,14 @@ public class PdfUtils {
     public static void recordToolbarAction(@PdfToolbarAction int action) {
         RecordHistogram.recordEnumeratedHistogram(
                 "Android.Pdf.ToolbarAction", action, PdfToolbarAction.NUM_ENTRIES);
+    }
+
+    public static void recordDiscardAnnotations() {
+        RecordUserAction.record("Android.Pdf.DiscardAnnotations");
+    }
+
+    public static void recordEditFabAction() {
+        RecordUserAction.record("Android.Pdf.EditFab");
     }
 
     public static void recordSelectionMenuItem(@PdfSelectionMenuItem int menuItem) {

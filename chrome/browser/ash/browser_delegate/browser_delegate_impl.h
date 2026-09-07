@@ -6,16 +6,15 @@
 #define CHROME_BROWSER_ASH_BROWSER_DELEGATE_BROWSER_DELEGATE_IMPL_H_
 
 #include "base/memory/raw_ref.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 
-class Browser;
 class BrowserWindowInterface;
 
 namespace ash {
 
 class BrowserDelegateImpl : public BrowserDelegate {
  public:
-  explicit BrowserDelegateImpl(Browser* browser);
+  explicit BrowserDelegateImpl(BrowserWindowInterface* browser);
   virtual ~BrowserDelegateImpl();
 
   // BrowserDelegate:
@@ -66,16 +65,21 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void MoveTab(size_t tab_index, BrowserDelegate& target_browser) override;
   bool CreateWebAppFromActiveWebContents() override;
   void ResetLocationBar() override;
-  void EnterLockedFullscreen(bool focus_toolbar) override;
-  void LeaveLockedFullscreen() override;
-  bool IsLockedFullscreen() const override;
-  void SetDevToolsCommandsEnabled(bool enabled) override;
-  void SetTabSwitchCommandsEnabled(bool enabled) override;
+  void SetOnTaskState(OnTaskState state) override;
+  bool IsOnTaskState(OnTaskState state) const override;
   void ActivateWebContentsAt(size_t index) override;
   void SetContentsBackgroundVisible(bool visible) override;
+  void EnterLockedFullscreen() override;
+  void LeaveLockedFullscreen() override;
+  bool IsLockedFullscreen() const override;
 
  private:
-  const raw_ref<Browser> browser_;
+  // TODO(crbug.com/365146870): The following utility functions will be removed
+  // once the LockedStateController migration is complete.
+  void SetDevToolsCommandsEnabled(bool enabled);
+  void SetTabSwitchCommandsEnabled(bool enabled);
+
+  const raw_ref<BrowserWindowInterface> browser_;
 };
 
 }  // namespace ash

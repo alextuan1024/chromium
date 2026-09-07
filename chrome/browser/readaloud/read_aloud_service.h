@@ -139,12 +139,18 @@ class ReadAloudService
 
     // Called immediately before the native service is destroyed.
     virtual void OnNativeDestroyed() = 0;
+
+    // Called when the text content is chunked into sentences by the utility
+    // process.
+    virtual void OnTextChunked(const std::vector<std::u16string>& chunks) = 0;
   };
 
   // Callback type used to inject a fake or mock ReadAloudPlaybackController receiver
   // during unit testing without friending test classes or exposing ForTesting methods.
-  using PlaybackControllerBinder = base::RepeatingCallback<
-      void(mojo::PendingReceiver<read_aloud::mojom::ReadAloudPlaybackController>)>;
+  using PlaybackControllerBinder = base::RepeatingCallback<void(
+      mojo::PendingReceiver<read_aloud::mojom::ReadAloudPlaybackController>,
+      mojo::PendingRemote<
+          read_aloud::mojom::ReadAloudPlaybackControllerClient>)>;
 
   explicit ReadAloudService(
       Profile* profile,
@@ -235,6 +241,7 @@ class ReadAloudService
   // utility process is connected.
   void Initialize(content::WebContents* web_contents);
 
+  // TODO(b/553612030): Refactor out GetViewerHandleForTesting().
   dom_distiller::ViewerHandle* GetViewerHandleForTesting() const {
     return viewer_handle_.get();
   }
@@ -245,6 +252,7 @@ class ReadAloudService
   void OnWordBoundaryReached(uint32_t segment_index,
                              uint32_t character_offset,
                              base::TimeDelta audio_timestamp) override;
+  void OnTextChunked(const std::vector<std::u16string>& chunks) override;
   void RequestSpeechSynthesis(
       const std::u16string& text_chunk,
       uint64_t sequence_id,
@@ -270,6 +278,9 @@ class ReadAloudService
   std::unique_ptr<dom_distiller::ViewerHandle> viewer_handle_;
   std::unique_ptr<Delegate> delegate_;
   base::TimeTicks distillation_start_time_;
+  std::string current_title_;
+  std::string current_publisher_;
+  base::TimeDelta current_duration_;
 
   // Connection to the Utility process Factory.
   mojo::Remote<read_aloud::mojom::ReadAloudPlaybackControllerFactory>

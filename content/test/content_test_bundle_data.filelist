@@ -2765,6 +2765,10 @@ data/accessibility/aria/graphics-roles-expected-mac.txt
 data/accessibility/aria/graphics-roles-expected-uia-win.txt
 data/accessibility/aria/graphics-roles-expected-win.txt
 data/accessibility/aria/graphics-roles.html
+data/accessibility/aria/heading-with-aria-label-expected-android-external.txt
+data/accessibility/aria/heading-with-aria-label-expected-android.txt
+data/accessibility/aria/heading-with-aria-label-expected-blink.txt
+data/accessibility/aria/heading-with-aria-label.html
 data/accessibility/aria/hidden-described-by-expected-android-assist-data.txt
 data/accessibility/aria/hidden-described-by-expected-android-external.txt
 data/accessibility/aria/hidden-described-by-expected-android.txt
@@ -4246,6 +4250,9 @@ data/accessibility/html/area-serialization-crash-expected-blink.txt
 data/accessibility/html/area-with-aria-owns-expected-blink.txt
 data/accessibility/html/area-with-aria-owns.html
 data/accessibility/html/area.html
+data/accessibility/html/aria-menu-items-expected-android.txt
+data/accessibility/html/aria-menu-items-expected-blink.txt
+data/accessibility/html/aria-menu-items.html
 data/accessibility/html/article-expected-android-assist-data.txt
 data/accessibility/html/article-expected-android-external.txt
 data/accessibility/html/article-expected-android.txt
@@ -4377,6 +4384,8 @@ data/accessibility/html/br.html
 data/accessibility/html/bullet.png
 data/accessibility/html/button-alt-changed-expected-blink.txt
 data/accessibility/html/button-alt-changed.html
+data/accessibility/html/button-children-presentational-expected-mac.txt
+data/accessibility/html/button-children-presentational.html
 data/accessibility/html/button-content-changed-expected-blink.txt
 data/accessibility/html/button-content-changed.html
 data/accessibility/html/button-expected-android-assist-data.txt
@@ -4524,6 +4533,9 @@ data/accessibility/html/colgroup-expected-mac.txt
 data/accessibility/html/colgroup-expected-uia-win.txt
 data/accessibility/html/colgroup-expected-win.txt
 data/accessibility/html/colgroup.html
+data/accessibility/html/combobox-detached-listbox-portal-expected-android.txt
+data/accessibility/html/combobox-detached-listbox-portal-expected-blink.txt
+data/accessibility/html/combobox-detached-listbox-portal.html
 data/accessibility/html/combobox-item-visibility-expected-android-assist-data.txt
 data/accessibility/html/combobox-item-visibility-expected-android-external.txt
 data/accessibility/html/combobox-item-visibility-expected-android.txt
@@ -5950,6 +5962,9 @@ data/accessibility/html/menulist-aria-labelledby-overrides-label-expected-aurali
 data/accessibility/html/menulist-aria-labelledby-overrides-label-expected-blink.txt
 data/accessibility/html/menulist-aria-labelledby-overrides-label-expected-mac.txt
 data/accessibility/html/menulist-aria-labelledby-overrides-label.html
+data/accessibility/html/menulist-dialog-mode-setsize-expected-auralinux.txt
+data/accessibility/html/menulist-dialog-mode-setsize-expected-blink.txt
+data/accessibility/html/menulist-dialog-mode-setsize.html
 data/accessibility/html/menulist-invoked-by-button-expected-auralinux.txt
 data/accessibility/html/menulist-invoked-by-button-expected-blink.txt
 data/accessibility/html/menulist-invoked-by-button-expected-mac.txt
@@ -7053,6 +7068,8 @@ data/accessibility/mac/attributes/ax-help-expected.txt
 data/accessibility/mac/attributes/ax-help.html
 data/accessibility/mac/attributes/ax-highest-editable-ancestor-expected.txt
 data/accessibility/mac/attributes/ax-highest-editable-ancestor.html
+data/accessibility/mac/attributes/ax-insertion-point-line-number-contenteditable-expected.txt
+data/accessibility/mac/attributes/ax-insertion-point-line-number-contenteditable.html
 data/accessibility/mac/attributes/ax-insertion-point-line-number-expected.txt
 data/accessibility/mac/attributes/ax-insertion-point-line-number.html
 data/accessibility/mac/attributes/ax-invalid-expected.txt
@@ -7229,6 +7246,8 @@ data/accessibility/mac/text-operation/ax-text-operation-select-expected.txt
 data/accessibility/mac/text-operation/ax-text-operation-select.html
 data/accessibility/mac/text-operation/ax-text-operation-uppercase-expected.txt
 data/accessibility/mac/text-operation/ax-text-operation-uppercase.html
+data/accessibility/mac/textmarker/ax-line-text-marker-range-for-text-marker-expected.txt
+data/accessibility/mac/textmarker/ax-line-text-marker-range-for-text-marker.html
 data/accessibility/mac/textmarker/ax-next-word-end-text-marker-for-text-marker-expected.txt
 data/accessibility/mac/textmarker/ax-next-word-end-text-marker-for-text-marker.html
 data/accessibility/mac/textmarker/ax-previous-word-start-text-marker-for-text-marker-expected.txt
@@ -9008,6 +9027,8 @@ data/origin_trials/worker.js
 data/overlapping_cross_site_iframe.html
 data/overscroll_navigation.html
 data/page-executing-trust-token-signing-from-204-subframe.html
+data/page-with-haptics-permissions-policy-disabled.html
+data/page-with-haptics-permissions-policy-disabled.html.mock-http-headers
 data/page-with-trust-token-permissions-policy-disabled.html
 data/page-with-trust-token-permissions-policy-disabled.html.mock-http-headers
 data/page204.html

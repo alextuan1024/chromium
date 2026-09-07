@@ -71,9 +71,6 @@ BASE_DECLARE_FEATURE(kFeedSwipeInProductHelp);
 // eligibility service instead of the new tab page mediator.
 BASE_DECLARE_FEATURE(kUseFeedEligibilityService);
 
-// Feature flag to enable the NTP background image cache.
-BASE_DECLARE_FEATURE(kEnableNTPBackgroundImageCache);
-
 // Feature flag to make the height of the NTP Logo and Doodle consistent.
 BASE_DECLARE_FEATURE(kConsistentLogoDoodleHeight);
 
@@ -117,10 +114,6 @@ extern const char kNewTabPageUICleanupArmParam[];
 // Parameter to indicate which arm of the feature kAimButtonRefactor is enabled.
 extern const char kAimButtonRefactorArmParam[];
 
-// Feature parameter for kNewTabPageRedesign to enable static fakebox on expand
-// and revealing the toolbar view controller.
-extern const char kNewTabPageRedesignStaticFakeboxParam[];
-
 #pragma mark - Helpers
 
 // Whether the sync promo should be shown on top of the feed.
@@ -139,9 +132,6 @@ bool UseFeedEligibilityService();
 // Whether the AIM button is allowed in NTP.
 bool IsAimEnabledInNtp();
 
-// Whether the NTP background image cache is enabled.
-bool IsNTPBackgroundImageCacheEnabled();
-
 // Whether the NTP Logo and Doodle should have a consistent height.
 bool IsConsistentLogoDoodleHeightEnabled();
 
@@ -151,16 +141,13 @@ BASE_DECLARE_FEATURE(kNewTabPageRedesign);
 // Whether the New Tab Page Redesign is enabled.
 bool IsNTPRedesignEnabled();
 
-// Returns whether the static fakebox / reveal toolbar behavior is enabled for
-// NTP redesign.
-bool IsNTPRedesignStaticFakeboxEnabled();
-
 // Whether the full New Tab Page UI cleanup is enabled. This cleanup includes
 // all color, sizing, and padding updates.
 bool IsNewTabPageUICleanupEnabled();
 
-// Whether only the fakebox background color and shadow updates are enabled.
-bool IsNewTabPageUICleanupFakeboxOnlyEnabled();
+// Returns whether the updated fakebox background color and shadow should be
+// applied.
+bool ShouldApplyFakeboxBackgroundAndShadow();
 
 // Returns the enabled variation of feature kNewTabPageUICleanup.
 NTPUICleanupVariation GetNewTabPageUICleanupVariation();

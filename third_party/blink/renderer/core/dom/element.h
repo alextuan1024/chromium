@@ -113,8 +113,6 @@ class CustomElementRegistry;
 class DisplayLockContext;
 class DisplayStyle;
 class Document;
-class DOMMatrix;
-class DOMMatrixInit;
 class DOMPoint;
 class DOMPointInit;
 class DOMQuad;
@@ -234,6 +232,11 @@ enum class SelectionBehaviorOnFocus {
   kNone,
 };
 
+enum class BlurEventBehavior {
+  kFire,
+  kDropWhenRemoving,
+};
+
 enum class FocusableState {
   kNotFocusable,
   kFocusable,
@@ -292,6 +295,8 @@ enum class CommandEventType {
   kPageInlineEnd,
   // Overscroll,
   kToggleOverscroll,
+  kShowOverscroll,
+  kHideOverscroll,
 };
 
 // Defaults for the `interestfor` API's `normal` value.
@@ -914,7 +919,7 @@ class CORE_EXPORT Element : public ContainerNode {
   using TinyBloomFilter = uint32_t;
   static TinyBloomFilter FilterForAttribute(
       const QualifiedName& attribute_name) {
-    return FilterForString(attribute_name.LocalNameUpper());
+    return attribute_name.BloomFilter();
   }
   static TinyBloomFilter FilterForString(const AtomicString& str) {
     unsigned hash = str.Hash();
@@ -1186,9 +1191,6 @@ class CORE_EXPORT Element : public ContainerNode {
   // the 'drawable' attribute). Returns nullptr otherwise.
   HTMLCanvasElement* CanvasForDrawing() const;
 
-  DOMMatrix* getCanvasTransform();
-  void setCanvasTransform(DOMMatrixInit* matrix,
-                          ExceptionState& exception_state);
   bool HasCanvasTransform() const;
   // Returns the transform that should be used for mapping the border-box,
   // before CSS transforms, to the canvas coordinate space. When the element
@@ -1197,8 +1199,9 @@ class CORE_EXPORT Element : public ContainerNode {
   // element's geometry match its drawn position in a canvas. Returns nullptr
   // if the element does not have a CanvasForDrawing.
   const gfx::Transform* GetUsedCanvasTransform() const;
-  const gfx::Transform* GetCanvasTransformInternal() const;
-  void SetCanvasTransformInternal(const gfx::Transform& transform);
+  const gfx::Transform* GetCanvasTransform() const;
+  void SetCanvasTransform(const gfx::Transform& transform);
+  void ClearCanvasTransform();
 
   bool IsDefined() const {
     // An element whose custom element state is "uncustomized" or "custom"
@@ -1253,7 +1256,12 @@ class CORE_EXPORT Element : public ContainerNode {
   void Focus();
   void Focus(const FocusOptions*);
 
-  virtual void SetFocused(bool received, mojom::blink::FocusType);
+  void SetFocused(bool received, mojom::blink::FocusType focus_type) {
+    SetFocused(received, focus_type, BlurEventBehavior::kFire);
+  }
+  virtual void SetFocused(bool received,
+                          mojom::blink::FocusType,
+                          BlurEventBehavior);
   virtual void SetHasFocusWithinUpToAncestor(bool has_focus_within,
                                              Element* ancestor,
                                              bool need_snap_container_search);
@@ -1372,7 +1380,9 @@ class CORE_EXPORT Element : public ContainerNode {
   }
 
   static bool IsOverscrollCommand(CommandEventType command) {
-    return command == CommandEventType::kToggleOverscroll;
+    return command == CommandEventType::kToggleOverscroll ||
+           command == CommandEventType::kShowOverscroll ||
+           command == CommandEventType::kHideOverscroll;
   }
 
   // This allows customization of how Invoker Commands are handled, per element.
@@ -2035,6 +2045,9 @@ class CORE_EXPORT Element : public ContainerNode {
   void HandleFocusEventsForInterestFor(FocusEvent* focus_event);
 
   void DefaultEventHandler(Event&) override;
+
+  virtual String FilterBeforeTextInserted(const String& text);
+  virtual void NotifyEditableContentChanged();
 
   // Set on elements with scroll-target-group property to
   // collect HTMLAnchorElement scroll markers.

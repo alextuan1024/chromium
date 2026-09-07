@@ -34,6 +34,7 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       'deleteAutocompleteMatch',
       'deleteContext',
       'deleteTabContext',
+      'dismissFre',
       'executeAction',
       'getCyclingPlaceholderConfig',
       'getDriveDisclaimerStatus',
@@ -49,6 +50,7 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       'onNavigationLikely',
       'onThumbnailRemoved',
       'openAutocompleteMatch',
+      'openHotkeySettings',
       'openLensSearch',
       'openPopupSelection',
       'openProfilePicker',
@@ -62,7 +64,9 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       'setSmartComposeStats',
       'setSmartTabSharingActive',
       'showContextMenu',
+      'showScreenshotMenu',
       'startScreenshare',
+      'captureRegionScreenshot',
       'stopAutocomplete',
       'submitQuery',
       'toggleSuggestionGroupIdVisibility',
@@ -97,6 +101,10 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     this.methodCalled('showContextMenu', {point});
   }
 
+  showScreenshotMenu(
+      anchorRect: {x: number, y: number, width: number, height: number}) {
+    this.methodCalled('showScreenshotMenu', {anchorRect});
+  }
   executeAction(
       line: number, actionIndex: number, url: Url,
       matchSelectionTimestamp: TimeTicks, mouseButton: number, altKey: boolean,
@@ -248,8 +256,8 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     this.methodCalled('openProfilePicker');
   }
 
-  setActiveToolMode(tool: ToolMode, isSetByServer: boolean) {
-    this.methodCalled('setActiveToolMode', tool, isSetByServer);
+  setActiveToolMode(tool: ToolMode, isSetByAim: boolean = false) {
+    this.methodCalled('setActiveToolMode', tool, isSetByAim);
   }
 
   recordToolSelectionAction(tool: ToolMode) {
@@ -303,6 +311,19 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
   startScreenshare(preferEntireScreen: boolean) {
     this.methodCalled('startScreenshare', {preferEntireScreen});
     return Promise.resolve({token: null});
+  }
+
+  captureRegionScreenshot() {
+    this.methodCalled('captureRegionScreenshot');
+    return Promise.resolve({token: null});
+  }
+
+  dismissFre() {
+    this.methodCalled('dismissFre');
+  }
+
+  openHotkeySettings() {
+    this.methodCalled('openHotkeySettings');
   }
 }
 

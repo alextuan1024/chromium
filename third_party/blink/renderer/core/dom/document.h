@@ -156,6 +156,7 @@ class AnchorElementInteractionTracker;
 class AnimationClock;
 class AriaNotificationOptions;
 class Attr;
+class BeforeUnloadEvent;
 class BeforeUnloadEventListener;
 class BoxQuadOptions;
 class ViewTransitionSupplement;
@@ -746,7 +747,8 @@ class CORE_EXPORT Document : public ContainerNode,
 
   void EvaluateMediaQueryList();
 
-  FormController& GetFormController();
+  FormController& EnsureFormController();
+  FormController* GetFormController() const { return form_controller_.Get(); }
   DocumentState* GetDocumentState() const;
   void SetStateForNewControls(const Vector<String>&);
 
@@ -945,10 +947,12 @@ class CORE_EXPORT Document : public ContainerNode,
       bool& did_allow_navigation,
       base::TimeTicks& out_before_unload_dialog_opened_time,
       base::TimeTicks& out_before_unload_dialog_closed_time);
+  void DefaultBeforeUnloadEventHandler(BeforeUnloadEvent&);
 
   // Dispatches "pagehide", "visibilitychange" and "unload" events, if not
   // dispatched already. Fills `unload_timing_info` if present.
-  void DispatchUnloadEvents(UnloadEventTimingInfo* unload_timing_info);
+  void DispatchUnloadEvents(UnloadEventTimingInfo* unload_timing_info,
+                            bool will_commit_new_document_in_this_frame = true);
 
   void DispatchFreezeEvent();
 
@@ -1156,7 +1160,8 @@ class CORE_EXPORT Document : public ContainerNode,
   void SetLastFocusType(mojom::blink::FocusType last_focus_type);
   mojom::blink::FocusType LastFocusType() const { return last_focus_type_; }
   bool SetFocusedElement(Element*, const FocusParams&);
-  void ClearFocusedElement(bool omit_blur_events = false);
+  void ClearFocusedElement(
+      BlurEventBehavior blur_event_behavior = BlurEventBehavior::kFire);
   Element* FocusedElement() const { return focused_element_.Get(); }
   const FocusOptions* GetFocusOptions() const { return focus_options_.Get(); }
   void ClearFocusedElementIfNeeded();
@@ -1575,7 +1580,7 @@ class CORE_EXPORT Document : public ContainerNode,
   bool AllowInlineEventHandler(Node*,
                                EventListener*,
                                const String& context_url,
-                               const OrdinalNumber& context_line);
+                               const TextPosition& context_position);
 
   void StatePopped(scoped_refptr<SerializedScriptValue>);
 
@@ -1990,10 +1995,7 @@ class CORE_EXPORT Document : public ContainerNode,
     return slot_assignment_recalc_depth_;
   }
   bool IsInSlotAssignmentRecalc() const {
-    // Since we forbid recursive slot assignement recalc, the depth should be
-    // <= 1.
-    DCHECK_LE(slot_assignment_recalc_depth_, 1u);
-    return slot_assignment_recalc_depth_ == 1;
+    return slot_assignment_recalc_depth_ > 0;
   }
 
   bool IsVerticalScrollEnforced() const { return is_vertical_scroll_enforced_; }

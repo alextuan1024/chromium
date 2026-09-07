@@ -32,7 +32,7 @@ public class SearchEngineChoiceMetrics {
         int SNACKBAR_SHOWN = 0;
         int PROMPT_FOLLOWED = 1;
         int SEARCH_ENGINE_CHANGED = 2;
-        int MAX = 3;
+        int COUNT = 3;
     }
 
     /**
@@ -40,6 +40,7 @@ public class SearchEngineChoiceMetrics {
      * are persisted to logs. Entries should not be renumbered and numeric values should never be
      * reused.
      */
+    // LINT.IfChange(AndroidSearchEngineChoiceEventsV2)
     @IntDef({
         EventsV2.CHOICE_REQUEST_RECEIVED,
         EventsV2.CHOICE_SKIPPED,
@@ -64,8 +65,9 @@ public class SearchEngineChoiceMetrics {
         int CHOICE_REQUEST_SUCCESS = 7;
         int CHOICE_ALREADY_APPLIED = 8;
         int CHOICE_RENEWAL_SKIPPED = 9;
-        int MAX = 10;
+        int COUNT = 10;
     }
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidSearchEngineChoiceEventsV2)
 
     /**
      * Records an event to the search choice histogram. See {@link Events} and histograms.xml for
@@ -75,7 +77,7 @@ public class SearchEngineChoiceMetrics {
      */
     public static void recordEvent(@Events int event) {
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.SearchEngineChoice.Events", event, Events.MAX);
+                "Android.SearchEngineChoice.Events", event, Events.COUNT);
     }
 
     /**
@@ -85,7 +87,7 @@ public class SearchEngineChoiceMetrics {
      */
     public static void recordEventV2(@EventsV2 int event) {
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.SearchEngineChoice.EventsV2", event, EventsV2.MAX);
+                "Android.SearchEngineChoice.EventsV2", event, EventsV2.COUNT);
     }
 
     /** Records the search engine type before the user made a choice about which engine to use. */

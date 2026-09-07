@@ -80,6 +80,7 @@ source_set("impl") {
     "//chrome/browser:buildflags",
     "//chrome/browser/autocomplete:aim_eligibility_service",
     "//chrome/browser/contextual_search",
+    "//chrome/browser/contextual_tasks",
     "//chrome/browser/desktop_to_mobile_promos:utils",
     "//chrome/browser/enterprise",
     "//chrome/browser/new_tab_page",
@@ -196,6 +197,9 @@ source_set("impl") {
       "//components/user_education/webui",
       "//ui/webui/tracked_element",
     ]
+    if (is_win || is_mac || is_linux) {
+      deps += [ "//chrome/browser/ui/views/scheduled_restart" ]
+    }
   }
 
   if (!is_official_build) {

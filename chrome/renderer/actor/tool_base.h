@@ -11,6 +11,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "chrome/common/actor.mojom-forward.h"
@@ -89,12 +90,6 @@ class ToolBase {
   // Returns a human readable string representing this tool and its parameters.
   // Used primarily for logging and debugging.
   virtual std::string DebugString() const = 0;
-
-  // The amount of time to wait when observing tool execution before starting to
-  // wait for page stability. 0 by default, meaning no delay, but tools can
-  // override this on a case-by-case basis when the expected effects of tool use
-  // may happen asynchronously outside of the injected events.
-  virtual base::TimeDelta ExecutionObservationDelay() const;
 
   // Scrolls the target element into view if it's not already. If the target is
   // a coordinate, the coordinate is updated to reflect the new location after
@@ -179,6 +174,11 @@ class ToolBase {
                                  bool check_aria) const;
 
   bool is_revalidation_ = false;
+
+  // Used to verify this object is still alive across synchronous DOM event
+  // dispatches (such as `beforematch`) that might detach the frame and destroy
+  // this tool while executing on the stack.
+  base::WeakPtrFactory<ToolBase> weak_ptr_factory_{this};
 };
 }  // namespace actor
 

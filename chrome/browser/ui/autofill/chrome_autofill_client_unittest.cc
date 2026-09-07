@@ -31,7 +31,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/user_education/mock_browser_user_education_interface.h"
-#include "components/autofill/content/browser/autofill_test_utils.h"
+#include "components/autofill/content/browser/autofill_test_util.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_autofill_driver_injector.h"
 #include "components/autofill/content/browser/test_autofill_manager_injector.h"
@@ -49,12 +49,12 @@
 #include "components/autofill/core/browser/integrators/password_form_classification.h"
 #include "components/autofill/core/browser/metrics/cross_tab_copy_paste_tracker.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/mock_autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/personal_context/core/personal_context_eligibility_service.h"
@@ -408,9 +408,6 @@ TEST_F(ChromeAutofillClientTest, ClassifiesLoginFormOnChildFrame) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-// Test the scenario when the plus address survey delay is not configured. The
-// random delay of the survey should be between the 10s and 60s.
-
 // Test that the hats service is called with the expected params for different
 // surveys. Note that Surveys are only launched on Desktop.
 TEST_F(ChromeAutofillClientTest, TriggerUserPerceptionOfAutofillAddressSurvey) {
@@ -578,7 +575,7 @@ TEST_F(ChromeAutofillClientTest,
 }
 
 TEST_F(ChromeAutofillClientTest, AutofillFieldIPH_NotShownByPromoController) {
-  SetUpIphForTesting(feature_engagement::kIPHAutofillAiOptInFeature);
+  SetUpIphForTesting(feature_engagement::kIPHAutofillAiValuablesFeature);
 
   EXPECT_CALL(*autofill_field_promo_controller(), IsMaybeShowing)
       .WillRepeatedly(Return(false));
@@ -588,7 +585,7 @@ TEST_F(ChromeAutofillClientTest, AutofillFieldIPH_NotShownByPromoController) {
 }
 
 TEST_F(ChromeAutofillClientTest, AutofillFieldIPH_IsShown) {
-  SetUpIphForTesting(feature_engagement::kIPHAutofillAiOptInFeature);
+  SetUpIphForTesting(feature_engagement::kIPHAutofillAiValuablesFeature);
 
   InSequence sequence;
   EXPECT_CALL(*autofill_field_promo_controller(), IsMaybeShowing)
@@ -602,7 +599,7 @@ TEST_F(ChromeAutofillClientTest, AutofillFieldIPH_IsShown) {
 }
 
 TEST_F(ChromeAutofillClientTest, AutofillImprovedPredictionsIPH_IsShown) {
-  SetUpIphForTesting(feature_engagement::kIPHAutofillAiOptInFeature);
+  SetUpIphForTesting(feature_engagement::kIPHAutofillAiValuablesFeature);
 
   InSequence sequence;
   EXPECT_CALL(*autofill_field_promo_controller(), IsMaybeShowing)
@@ -615,9 +612,23 @@ TEST_F(ChromeAutofillClientTest, AutofillImprovedPredictionsIPH_IsShown) {
       FormFieldData{}, AutofillClient::IphFeature::kAutofillAi));
 }
 
+TEST_F(ChromeAutofillClientTest, AutofillWalletDirectOffersFieldIPH_IsShown) {
+  SetUpIphForTesting(feature_engagement::kIPHAutofillWalletDirectOffersFeature);
+
+  InSequence sequence;
+  EXPECT_CALL(*autofill_field_promo_controller(), IsMaybeShowing)
+      .WillOnce(Return(false));
+  EXPECT_CALL(*autofill_field_promo_controller(), Show);
+  EXPECT_CALL(*autofill_field_promo_controller(), IsMaybeShowing)
+      .WillOnce(Return(true));
+
+  EXPECT_TRUE(client()->ShowAutofillFieldIphForFeature(
+      FormFieldData{}, AutofillClient::IphFeature::kWalletDirectOffers));
+}
+
 TEST_F(ChromeAutofillClientTest,
        AutofillFieldIPH_HideOnShowAutofillSuggestions) {
-  SetUpIphForTesting(feature_engagement::kIPHAutofillAiOptInFeature);
+  SetUpIphForTesting(feature_engagement::kIPHAutofillAiValuablesFeature);
   auto delegate = std::make_unique<MockAutofillSuggestionDelegate>();
 
   EXPECT_CALL(*autofill_field_promo_controller(), Hide);
@@ -823,9 +834,23 @@ TEST_F(ChromeAutofillClientTestWithMockWindow,
 
   EXPECT_CALL(mock_user_education,
               NotifyFeaturePromoFeatureUsed(
-                  Ref(feature_engagement::kIPHAutofillAiOptInFeature),
+                  Ref(feature_engagement::kIPHAutofillAiValuablesFeature),
                   FeaturePromoFeatureUsedAction::kClosePromoIfPresent));
   client()->NotifyIphFeatureUsed(AutofillClient::IphFeature::kAutofillAi);
+}
+
+TEST_F(ChromeAutofillClientTestWithMockWindow,
+       AutofillWalletDirectOffersFieldIPH_NotifyFeatureUsed) {
+  MockBrowserUserEducationInterface mock_user_education(
+      &mock_browser_window_interface());
+
+  EXPECT_CALL(
+      mock_user_education,
+      NotifyFeaturePromoFeatureUsed(
+          Ref(feature_engagement::kIPHAutofillWalletDirectOffersFeature),
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent));
+  client()->NotifyIphFeatureUsed(
+      AutofillClient::IphFeature::kWalletDirectOffers);
 }
 
 // Tests that `OpenGeminiInSidebar` invokes Glic with the correct options and

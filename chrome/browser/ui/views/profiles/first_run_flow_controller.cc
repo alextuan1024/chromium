@@ -54,7 +54,6 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_post_sign_in_adapter.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_toolbar.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_utils.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/webui/feature_showcase/feature_showcase_ui.h"
 #include "chrome/browser/ui/webui/intro/intro_ui.h"
@@ -74,6 +73,7 @@
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/signin/public/identity_manager/tribool.h"
 #include "content/public/browser/audio_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_ui.h"
 #include "media/base/audio_codecs.h"
 #include "net/base/url_util.h"
@@ -945,7 +945,7 @@ FirstRunFlowController::~FirstRunFlowController() {
   } else {
     // TODO(crbug.com/40276516): Revisit the enum value name for kQuitAtEnd.
     std::move(first_run_exited_callback_)
-        .Run(ProfilePicker::FirstRunExitStatus::kQuitAtEnd);
+        .Run(ProfilePicker::FirstRunExitStatus::kQuitAtEnd, finish_reason_);
   }
 }
 
@@ -1089,7 +1089,7 @@ void FirstRunFlowController::PickProfile(
 bool FirstRunFlowController::PreFinishWithBrowser() {
   DCHECK(first_run_exited_callback_);
   std::move(first_run_exited_callback_)
-      .Run(ProfilePicker::FirstRunExitStatus::kCompleted);
+      .Run(ProfilePicker::FirstRunExitStatus::kCompleted, finish_reason_);
 
   MaybeTriggerHatsSurvey();
 
@@ -1102,10 +1102,10 @@ bool FirstRunFlowController::is_feature_showcase_eligible() const {
 }
 
 void FirstRunFlowController::OnWelcomeCompleted() {
-  if (ComputeFirstRunDevicePolicyEffect(*profile_) !=
-      FirstRunDevicePolicyEffect::kNone) {
-    // TODO(crbug.com/469391064): Ensure metrics parity between old and new
-    // flows by propagating the skip reason to `FirstRunService`.
+  if (const std::optional<ProfilePicker::FirstRunFinishReason> skip_reason =
+          ProfilePicker::ComputeFirstRunSkipReason(*profile_);
+      skip_reason.has_value()) {
+    finish_reason_ = *skip_reason;
     FinishFlowAndRunInBrowser(profile_, PostHostClearedCallback());
     return;
   }
@@ -1155,6 +1155,12 @@ void FirstRunFlowController::RunFinishFlowCallback() {
 }
 
 std::string FirstRunFlowController::GetHatsSurveyTrigger() const {
+  if (switches::IsPreFirstRunDesktopRefreshEnabled()) {
+    return is_feature_showcase_eligible()
+               ? kHatsSurveyTriggerPreFirstRunDesktopRefreshCompleted
+               : kHatsSurveyTriggerPreFirstRunDesktopRefreshNoFeatureShowcaseCompleted;
+  }
+
   const bool is_in_search_engine_choice_region =
       IsProfileInSearchEngineChoiceRegion(profile_);
 

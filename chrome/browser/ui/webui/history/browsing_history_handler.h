@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/clock.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "chrome/browser/history/profile_based_browsing_history_driver.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
@@ -98,6 +100,9 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   // history::mojom::PageHandler:
   void RequestAccountInfo(RequestAccountInfoCallback callback) override;
   void TurnOnHistorySync() override;
+  void OpenCriticalActionConversation(
+      const std::string& critical_action_id,
+      OpenCriticalActionConversationCallback callback) override;
 #if !BUILDFLAG(IS_CHROMEOS)
   void ShouldShowHistoryPageHistorySyncPromo(
       ShouldShowHistoryPageHistorySyncPromoCallback callback) override;
@@ -153,11 +158,22 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   // signin::IdentityManager::Observer:
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
 
+  void CriticalActionsFetched(
+      const std::vector<history::BrowsingHistoryService::HistoryEntry>& results,
+      const history::BrowsingHistoryService::QueryResultsInfo&
+          query_results_info,
+      base::ElapsedTimer critical_actions_timer,
+      std::vector<critical_actions::CriticalActionEntry> critical_actions);
+
   void HandleQueryResults(
       const std::vector<history::BrowsingHistoryService::HistoryEntry>& results,
       const history::BrowsingHistoryService::QueryResultsInfo&
           query_results_info,
       std::vector<critical_actions::CriticalActionEntry> critical_actions);
+
+  void OnCriticalActionRetrievedForLinkout(
+      OpenCriticalActionConversationCallback callback,
+      std::optional<critical_actions::CriticalActionEntry> entry);
 
   raw_ptr<Profile> profile_;
   raw_ptr<content::WebContents> web_contents_;
@@ -180,6 +196,10 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   QueryHistoryCallback query_history_callback_;
 
   base::OnceClosure query_history_continuation_;
+
+  // Timer tracking elapsed time from when a history query is sent until
+  // results are processed.
+  std::optional<base::ElapsedTimer> query_timer_;
 
   std::queue<RemoveVisitsCallback> remove_visits_callbacks_;
 

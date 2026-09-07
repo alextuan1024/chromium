@@ -47,6 +47,11 @@
       },
     },
   },
+  'android_extra_verbosity': {
+    'android_args': [
+      '-v',
+    ],
+  },
   'blink_tests_write_run_histories': {
     'args': [
       '--write-run-histories-to=${ISOLATED_OUTDIR}/run_histories.json',
@@ -453,6 +458,17 @@
       ],
     },
   },
+  'legacy_gpu_webgl_conformance_shards': {
+    'swarming': {
+      'shards': 2,
+    },
+    'android_swarming': {
+      'shards': 6,
+    },
+    'chromeos_swarming': {
+      'shards': 6,
+    },
+  },
   'limited_capacity_bot': {
     'fail_if_unused': False,
     'swarming': {
@@ -578,8 +594,8 @@
     'swarming': {
       'dimensions': {
         'display_server': 'x11',
-        'gpu': '10de:2184-535.183.01',
-        'os': 'Ubuntu-22.04',
+        'gpu': '10de:2184-595.91.07',
+        'os': 'Ubuntu-24.04',
         'pool': 'chromium.tests.gpu',
       },
     },
@@ -801,6 +817,11 @@
       '--do-not-store-tombstones',
     ],
   },
+  'no_xvfb_for_real_hardware': {
+    'linux_args': [
+      '$$MAGIC_SUBSTITUTION_GPUNoXvfbForRealHardware',
+    ],
+  },
   'non-gce': {
     'swarming': {
       'dimensions': {
@@ -899,6 +920,9 @@
     'args': [
       '--use-simulator-cache',
     ],
+  },
+  'use_isolated_scripts_api': {
+    'use_isolated_scripts_api': True,
   },
   'vaapi_unittest_args': {
     'args': [
@@ -1123,15 +1147,15 @@
       },
     },
   },
-  'xcode_26_main': {
+  'xcode_27_main': {
     'args': [
       '--xcode-build-version',
-      '17f42',
+      '27a5252f',
     ],
     'swarming': {
       'named_caches': [
         {
-          'name': 'xcode_ios_17f42',
+          'name': 'xcode_ios_27a5252f',
           'path': 'Xcode.app',
         },
       ],

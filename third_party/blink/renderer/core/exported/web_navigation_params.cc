@@ -18,7 +18,6 @@ namespace blink {
 WebNavigationParams::WebNavigationParams()
     : http_method(http_names::kGET),
       devtools_navigation_token(base::UnguessableToken::Create()),
-      initiator_state_token(base::UnguessableToken::Create()),
       base_auction_nonce(base::Uuid::GenerateRandomV4()),
       content_settings(CreateDefaultRendererContentSettings()) {}
 
@@ -27,7 +26,7 @@ WebNavigationParams::~WebNavigationParams() = default;
 WebNavigationParams::WebNavigationParams(
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token,
-    const base::UnguessableToken& initiator_state_token,
+    const InitiatorStateToken& initiator_state_token,
     const base::Uuid& base_auction_nonce)
     : http_method(http_names::kGET),
       document_token(document_token),
@@ -56,6 +55,7 @@ std::unique_ptr<WebNavigationParams> WebNavigationParams::CreateFromInfo(
       info.initiator_origin_trial_features;
   result->frame_policy = info.frame_policy;
   result->had_transient_user_activation = info.url_request.HasUserGesture();
+  result->initiator_state_token = info.initiator_state_token;
   return result;
 }
 

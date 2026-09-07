@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/omnibox_popup_resources.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
@@ -118,7 +119,7 @@ void SetOmniboxToolModeAndOpenAi(
       omnibox_popup_ui ? omnibox_popup_ui->composebox_handler() : nullptr;
   if (composebox_handler) {
     composebox_handler->SetActiveToolMode(tool_mode,
-                                          /*is_set_by_server=*/false);
+                                          /*is_set_by_aim=*/false);
     composebox_handler->RecordToolSelectionAction(tool_mode);
   }
   edit_model->OpenAiMode(OmniboxEditModel::AimActivation::kContextMenu);
@@ -183,7 +184,7 @@ void RegisterOmniboxActions(
     return;
   }
 
-  auto* browser_actions = browser->GetFeatures().browser_actions();
+  auto* browser_actions = BrowserActions::From(browser);
   if (!browser_actions) {
     return;
   }

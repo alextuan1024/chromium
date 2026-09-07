@@ -14,6 +14,7 @@
 #include "chrome/browser/contextual_cueing/cueing_log.h"
 #include "chrome/browser/contextual_cueing/features.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/glic_pref_names_internal.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
@@ -46,6 +47,21 @@
 #endif
 
 namespace glic {
+namespace {
+
+base::TimeDelta GetTimeSinceLastInvocation(Profile* profile) {
+  if (!profile || !profile->GetPrefs()) {
+    return base::TimeDelta::Max();
+  }
+  base::Time last_invoke_time =
+      profile->GetPrefs()->GetTime(prefs::kGlicLastInvokedTime);
+  if (last_invoke_time.is_null()) {
+    return base::TimeDelta::Max();
+  }
+  return std::max(base::TimeDelta(), base::Time::Now() - last_invoke_time);
+}
+
+}  // namespace
 
 // static
 void GlicCueTarget::Register(tabs::TabInterface& tab) {
@@ -83,11 +99,16 @@ contextual_cueing::CueTargetType GlicCueTarget::GetType() const {
   return contextual_cueing::CueTargetType::kGlic;
 }
 
+bool GlicCueTarget::RequiresModelExecution() const {
+  return true;
+}
+
 void GlicCueTarget::CheckEligibility(
     base::WeakPtr<content::WebContents> web_contents,
     contextual_cueing::CueIntrusiveness intrusiveness,
     EligibilityCallback callback) {
   if (!web_contents) {
+    CUEING_LOG("GlicCueTarget::CheckEligibility failed: WebContents gone.");
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback), false, ContentGenerator()));
@@ -96,6 +117,7 @@ void GlicCueTarget::CheckEligibility(
 
   GlicCueTabState* cue_tab_state = GlicCueTabState::From(&tab_.get());
   if (!cue_tab_state) {
+    CUEING_LOG("GlicCueTarget::CheckEligibility failed: No GlicCueTabState");
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback), false, ContentGenerator()));
@@ -108,11 +130,15 @@ bool GlicCueTarget::IsPageEligible(
     const page_content_annotations::PageContentAnnotationsResult& result,
     content::WebContents* active_web_contents) const {
   if (!active_web_contents) {
+    CUEING_LOG("GlicCueTarget::IsPageEligible failed: No active WebContents.");
     return false;
   }
 
   if (result.GetType() !=
       page_content_annotations::AnnotationType::kCategoryClassifier) {
+    CUEING_LOG(
+        "GlicCueTarget::IsPageEligible failed: invalid "
+        "PageContentAnnotationsResult");
     return false;
   }
 
@@ -133,8 +159,13 @@ bool GlicCueTarget::IsPageEligible(
     }
   }
 
+  CUEING_LOG(base::StringPrintf(
+      "GlicCueTarget::IsPageEligible passes_edu=%d passes_shopping=%d",
+      passes_edu, passes_shopping));
+
   if (contextual_cueing::kDiscardShoppingPdfs.Get() &&
       active_web_contents->GetContentsMimeType() == pdf::kPDFMimeType) {
+    CUEING_LOG("GlicCueTarget::IsPageEligible discard shopping pdf");
     return passes_edu && !passes_shopping;
   }
   return passes_edu || passes_shopping;
@@ -143,13 +174,27 @@ bool GlicCueTarget::IsPageEligible(
 bool GlicCueTarget::IsEligible() const {
   auto* window = tab_->GetBrowserWindowInterface();
   if (!window) {
+    CUEING_LOG("GlicCueTarget::IsEligible failed: No window.");
     return false;
   }
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(tab_->GetProfile());
   if (!sync_service || !sync_service->GetUserSettings()->GetSelectedTypes().Has(
                            syncer::UserSelectableType::kHistory)) {
+    CUEING_LOG(
+        "GlicCueTarget::IsEligible failed: No sync service or no history "
+        "sync.");
     return false;
+  }
+  if (base::FeatureList::IsEnabled(
+          features::kGlicContextualCueV2ActiveUserBackoff)) {
+    if (GetTimeSinceLastInvocation(tab_->GetProfile()) <
+        base::Days(features::kMinDaysSinceLastInvocation.Get())) {
+      CUEING_LOG(
+          "GlicCueTarget::IsEligible failed: Time since last invocation is too "
+          "short.");
+      return false;
+    }
   }
   return GlicEnabling::IsEnabledForProfile(tab_->GetProfile()) &&
          tab_->GetProfile()->GetPrefs()->GetBoolean(
@@ -157,7 +202,8 @@ bool GlicCueTarget::IsEligible() const {
          !glic_keyed_service_->IsPanelShowingForBrowser(*window);
 }
 
-void GlicCueTarget::OnClick(contextual_cueing::CueActionData data) {
+void GlicCueTarget::OnAnchoredMessageClicked(
+    contextual_cueing::CueActionData data) {
   InvokeGlic(std::move(data), base::FeatureList::IsEnabled(
                                   features::kGlicContextualCueingV2AutoSubmit));
 }
@@ -191,6 +237,11 @@ void GlicCueTarget::InvokeGlic(contextual_cueing::CueActionData data,
                                           GlicPinTrigger::kContextualCue);
 
   if (should_autosubmit) {
+    if (!GlicEnabling::HasConsentedForProfile(glic_keyed_service_->profile()) &&
+        base::FeatureList::IsEnabled(
+            features::kGlicMessageFirstFreForContextualCue)) {
+      options.fre_override = mojom::FreOverride::kTrustFirstInline;
+    }
     glic_keyed_service_->InvokeWithAutoSubmit(
         InvokeWithAutoSubmitPasskeyProvider::GetPassKey(), std::move(options));
   } else {
@@ -215,7 +266,7 @@ ui::ImageModel GlicCueTarget::GetOmniboxChipIcon() const {
 #else
   return ui::ImageModel::FromVectorIcon(
       glic::GlicVectorIconManager::GetVectorIcon(IDR_GLIC_BUTTON_VECTOR_ICON),
-      ui::kColorSysOnSurface, 18);
+      ui::kColorSysOnSurface, 16);
 #endif
 }
 

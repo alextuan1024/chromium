@@ -535,6 +535,10 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, WebuiRefresh2026) {
   RunTest("settings/settings_ui_test.js", "runMochaSuite('WebuiRefresh2026')");
 }
 
+IN_PROC_BROWSER_TEST_F(SettingsTest, ActiveTimer) {
+  RunTest("settings/active_timer_test.js", "mocha.run()");
+}
+
 class SettingsGlicSubpageLearnMoreTest : public SettingsBrowserTest {
  public:
   SettingsGlicSubpageLearnMoreTest() {
@@ -1409,9 +1413,7 @@ IN_PROC_BROWSER_TEST_F(SettingsClearBrowsingDataTest,
           "runMochaSuite('DeleteBrowsingDataDialog')");
 }
 
-// TODO(crbug.com/440503425): Flaky on all platforms.
-IN_PROC_BROWSER_TEST_F(SettingsClearBrowsingDataTest,
-                       DISABLED_OtherGoogleDataDialog) {
+IN_PROC_BROWSER_TEST_F(SettingsClearBrowsingDataTest, OtherGoogleDataDialog) {
   RunTest("settings/other_google_data_dialog_test.js",
           "runMochaSuite('OtherGoogleDataDialog')");
 }
@@ -1439,6 +1441,10 @@ IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, CookiesPageTest) {
 
 IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, ExceptionsList) {
   RunTest("settings/cookies_page_test.js", "runMochaSuite('ExceptionsList')");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, UniversalOptOut) {
+  RunTest("settings/cookies_page_test.js", "runMochaSuite('UniversalOptOut')");
 }
 
 // Test with --enable-pixel-output-in-tests enabled, required by fingerprint
@@ -2008,8 +2014,8 @@ IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, ShoppingPageTest) {
   RunTest("settings/shopping_page_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, SuggestionsFromGeminiSubpage) {
-  RunTest("settings/suggestions_from_gemini_subpage_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, SuggestionsFromGeminiPage) {
+  RunTest("settings/suggestions_from_gemini_page_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, TravelPageTest) {

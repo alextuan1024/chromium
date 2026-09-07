@@ -41,9 +41,9 @@ import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManag
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.drawable.BitmapDrawable;
 
 import androidx.annotation.Px;
+import androidx.core.graphics.drawable.RoundedBitmapDrawable;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -54,7 +54,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -94,7 +93,6 @@ import java.util.stream.StreamSupport;
  * properly.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TouchToFillControllerTest {
     private static final GURL TEST_URL = JUnitTestGURLs.EXAMPLE_URL;
     private static final String TEST_URL_FORMATTED =
@@ -407,16 +405,13 @@ public class TouchToFillControllerTest {
         // This value is chosen randomly for the test
         final int avatarImgeSizePx = 80;
         Bitmap expectedBitmap =
-                ((BitmapDrawable)
-                                AvatarGenerator.makeRoundAvatar(
-                                        mContext.getResources(),
-                                        mBitmapFromImageFetcher,
-                                        avatarImgeSizePx))
+                AvatarGenerator.makeRoundAvatar(
+                                mContext.getResources(), mBitmapFromImageFetcher, avatarImgeSizePx)
                         .getBitmap();
 
         assertTrue(
                 expectedBitmap.sameAs(
-                        ((BitmapDrawable) itemList.get(0).model.get(AVATAR)).getBitmap()));
+                        ((RoundedBitmapDrawable) itemList.get(0).model.get(AVATAR)).getBitmap()));
     }
 
     @Test

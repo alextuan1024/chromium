@@ -50,8 +50,12 @@ source_set("autofill_location_bar_bubble") {
 source_set("autofill_bubble_utils") {
   public = [ "autofill_bubble_utils.h" ]
   sources = [ "autofill_bubble_utils.cc" ]
-  public_deps = [ "//ui/views" ]
+  public_deps = [
+    "//components/autofill/core/browser:legal_message_line",
+    "//ui/views",
+  ]
   deps = [
+    "//chrome/browser/ui/views:layout_provider",
     "//components/strings:components_strings",
     "//components/vector_icons",
     "//ui/base",
@@ -166,4 +170,30 @@ if (enable_dice_support) {
       "//ui/views",
     ]
   }
+}
+
+source_set("autofill_field_promo_view_impl") {
+  public = [ "autofill_field_promo_view_impl.h" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/autofill",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+}
+
+source_set("autofill_field_promo_view_impl_impl") {
+  sources = [ "autofill_field_promo_view_impl.cc" ]
+  public_deps = [
+    ":autofill_field_promo_view_impl",
+    "//chrome/browser:browser_public_dependencies",
+  ]
+  deps = [
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/views/autofill/popup",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/gfx",
+    "//ui/views",
+  ]
 }

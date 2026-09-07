@@ -518,8 +518,7 @@ void FlexLayoutAlgorithm::HandleOutOfFlowPositionedItems(
   // size information (e.g. any expanded rows, etc), so for center aligned
   // items, we could end up with an incorrect static position.
   if (InvolvedInBlockFragmentation(container_builder_)) [[unlikely]] {
-    should_process_block_end = !container_builder_.DidBreakSelf() &&
-                               !container_builder_.ShouldBreakInside();
+    should_process_block_end = !container_builder_.ShouldBreak();
     if (should_process_block_end) {
       // Recompute the total block size in case |total_intrinsic_block_size|
       // changed as a result of fragmentation.
@@ -1295,7 +1294,7 @@ const LayoutResult* FlexLayoutAlgorithm::LayoutInternal() {
 
   std::optional<FlexGapAccumulator> gap_accumulator = std::nullopt;
   if (Style().HasGapRule() && !flex_lines.empty()) {
-    std::optional<GapGeometry::FlexGapPlacementReversal> gap_placement_reversal;
+    std::optional<GapGeometry::PlacementReversal> gap_placement_reversal;
     if (is_wrap_reverse_ || is_reverse_direction_) {
       gap_placement_reversal.emplace(is_wrap_reverse_, is_reverse_direction_);
     }
@@ -2065,8 +2064,9 @@ LayoutResult::EStatus FlexLayoutAlgorithm::GiveItemsFinalPositionAndSize(
             item_index_in_line == flex_line.item_indices.size() - 1;
 
         gap_accumulator->BuildGapsForCurrentItem(
-            *flex_lines, flex_line_idx, offset, is_first_item, is_last_item,
-            is_last_line, flex_line.cross_axis_offset, flex_line.LineCrossEnd(),
+            *flex_lines, flex_line_idx, item_index_in_line, offset,
+            is_first_item, is_last_item, is_last_line,
+            flex_line.cross_axis_offset, flex_line.LineCrossEnd(),
             container_main_end);
       }
 
@@ -2652,9 +2652,9 @@ FlexLayoutAlgorithm::GiveItemsFinalPositionAndSizeForFragmentation(
       }
 
       gap_accumulator->BuildGapsForCurrentItem(
-          *flex_lines, flex_line_idx, offset, is_first_item_in_line,
-          is_last_item_in_line, is_last_line, line_cross_start, line_cross_end,
-          container_main_end,
+          *flex_lines, flex_line_idx, flex_item_idx, offset,
+          is_first_item_in_line, is_last_item_in_line, is_last_line,
+          line_cross_start, line_cross_end, container_main_end,
           /*in_fragmentation=*/true);
 
       if (!is_column_ && is_last_item_in_line &&

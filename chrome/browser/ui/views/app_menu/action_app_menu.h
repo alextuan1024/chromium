@@ -15,6 +15,7 @@
 #include "ui/views/controls/menu/menu_delegate.h"
 
 class ActionAppMenuManager;
+class ActionAppMenuSearchBarView;
 class BrowserWindowInterface;
 
 namespace actions {
@@ -48,10 +49,41 @@ class ActionAppMenu : public views::MenuDelegate {
   std::optional<SkColor> GetLabelColor(int id) const override;
 
   views::MenuItemView* root_menu_item_for_testing() { return root_; }
+  ActionAppMenuSearchBarView* search_bar_for_testing() { return search_bar_; }
 
  private:
+  // Recursively populates the menu item with the `base_action_item`'s
+  // children.
   void PopulateMenu(views::MenuItemView* view_parent,
-                    actions::BaseAction* action_item);
+                    actions::BaseAction* base_action_item);
+
+  // Appends and returns a menu item to the `parent_menu_item` and adds the
+  // `base_action_item` to the command to action map.
+  views::MenuItemView* AppendMenuItem(actions::BaseAction* base_action_item,
+                                      views::MenuItemView* parent_menu_item);
+
+  // Configures the section header in a menu to display the correct text. A
+  // section header is essentially a non-interactive piece of text within the
+  // menu to helps break up the menu into sections.
+  void ConfigureSectionHeader(views::MenuItemView* header_menu_item);
+
+  // Configures the menu item to populate with the correct icon, text, and
+  // padding. ConfigureMenuItem() differs from ConfigureSectionHeader() in that
+  // ConfigureMenuItem() should only be used for clickable menu items within the
+  // action app menu or have a sub-menu.
+  void ConfigureMenuItem(views::MenuItemView* menu_item,
+                         actions::BaseAction* child_base,
+                         bool is_first_item,
+                         bool is_last_item);
+
+  void PopulateSearchBar(views::MenuItemView* view_parent,
+                         actions::ActionItem* search_action_item);
+
+  void PopulateFooter(views::MenuItemView* view_parent,
+                      actions::ActionItem* footer_action_item);
+
+  void PopulateBlockMenuItem(views::MenuItemView* view_parent,
+                             actions::ActionItem* block_action_item);
 
   // The browser window interface associated with this menu.
   raw_ptr<BrowserWindowInterface> browser_window_interface_;
@@ -70,6 +102,9 @@ class ActionAppMenu : public views::MenuDelegate {
 
   // The root menu item view. Owned by `menu_runner_`.
   raw_ptr<views::MenuItemView> root_ = nullptr;
+
+  // The search bar view in the menu, if kChroMenuSearch is enabled.
+  raw_ptr<ActionAppMenuSearchBarView> search_bar_ = nullptr;
 
   // Manages the ActionItem hierarchy and dynamic submenus.
   std::unique_ptr<ActionAppMenuManager> menu_manager_;

@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.app.tabmodel;
 
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
-import static org.chromium.chrome.browser.app.tabmodel.ShadowTabStoreValidator.ARCHIVED_TAG;
 import static org.chromium.chrome.browser.app.tabmodel.TabPersistentStoreFactory.buildAuthoritativeStore;
 import static org.chromium.chrome.browser.app.tabmodel.TabPersistentStoreFactory.buildShadowStore;
 import static org.chromium.chrome.browser.tabwindow.TabWindowManager.ARCHIVED_WINDOW_TAG;
@@ -56,8 +55,8 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.browser.tabmodel.TabOrchestratorType;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
-import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.chrome.browser.tabmodel.TabbedModeTabPersistencePolicy;
 import org.chromium.chrome.browser.tabpersistence.TabMetadataFileManager;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
@@ -306,7 +305,7 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
 
     /** Returns a supplier for the archive tab count. */
     public NonNullObservableSupplier<Integer> getTabCountSupplier() {
-        return mArchivedTabCountTracker.getSupplier();
+        return getTabArchiveSettings().getArchivedTabCountSupplier();
     }
 
     public @Nullable TabModel getTabModel() {
@@ -409,7 +408,7 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
         mMigrationManager = new PersistentStoreMigrationManagerImpl(ARCHIVED_WINDOW_TAG);
         mTabPersistentStore =
                 buildAuthoritativeStore(
-                        TabPersistentStoreImpl.CLIENT_TAG_ARCHIVED,
+                        TabOrchestratorType.ARCHIVED,
                         mMigrationManager,
                         mTabPersistencePolicy,
                         mTabModelSelector,
@@ -440,6 +439,14 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
         }
 
         mArchivedTabCountTracker.setupInternalObservers(model, mTabGroupSyncService);
+        mArchivedTabCountTracker
+                .getSupplier()
+                .addSyncObserverAndPostIfNonNull(
+                        (count) -> {
+                            if (mTabArchiveSettings != null) {
+                                mTabArchiveSettings.setArchivedTabCount(count);
+                            }
+                        });
 
         TabModel regularTabModel = mTabModelSelector.getModel(/* incognito= */ false);
         mHistoricalTabModelObserver = new HistoricalTabModelObserver(regularTabModel);
@@ -572,7 +579,7 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
                             mTabPersistentStore,
                             ARCHIVED_WINDOW_TAG,
                             mCipherFactory,
-                            ARCHIVED_TAG,
+                            TabOrchestratorType.ARCHIVED,
                             /* isNonOtrOnly= */ true,
                             /* isFromRecreating= */ false);
             if (mShadowTabPersistentStore != null) {
@@ -581,7 +588,7 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
             markStoresInitialized();
         }
 
-        mTabArchiveSettings = new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        mTabArchiveSettings = getTabArchiveSettings();
         mTabArchiveSettings.addObserver(mTabArchiveSettingsObserver);
         mTabGroupSyncService = assertNonNull(TabGroupSyncServiceFactory.getForProfile(mProfile));
         TabModel regularTabModel = mTabModelSelector.getModel(/* incognito= */ false);
@@ -623,7 +630,9 @@ public class ArchivedTabModelOrchestrator extends TabModelOrchestrator {
     // Getter methods
 
     public TabArchiveSettings getTabArchiveSettings() {
-        assertNativeReady();
+        if (mTabArchiveSettings == null) {
+            mTabArchiveSettings = new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        }
         return mTabArchiveSettings;
     }
 

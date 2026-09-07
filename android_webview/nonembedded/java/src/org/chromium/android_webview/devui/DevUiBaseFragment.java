@@ -8,6 +8,7 @@ import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.ListView;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.fragment.app.Fragment;
@@ -41,7 +42,14 @@ public abstract class DevUiBaseFragment extends Fragment {
                         new OnBackPressedCallback(true) {
                             @Override
                             public void handleOnBackPressed() {
-                                navBarButton.requestFocus();
+                                View navBar = requireActivity().findViewById(R.id.nav_view);
+                                if (navBarButton.hasFocus()
+                                        || (navBar != null && navBar.hasFocus())) {
+                                    // If navBar has the focus, pressing back should close the app
+                                    requireActivity().finish();
+                                } else {
+                                    navBarButton.requestFocus();
+                                }
                             }
                         });
     }
@@ -122,6 +130,21 @@ public abstract class DevUiBaseFragment extends Fragment {
                             && keyCode == KeyEvent.KEYCODE_DPAD_DOWN
                             && isLastItem) {
                         return true;
+                    }
+                    return false;
+                });
+    }
+
+    /** Force focus to the first item in the list view when pressing down on the source view. */
+    protected void registerDownPressToFocusOnFirstItem(View sourceView, ListView targetListView) {
+        sourceView.setOnKeyListener(
+                (v, keyCode, event) -> {
+                    if (event.getAction() == MotionEvent.ACTION_DOWN
+                            && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                        if (targetListView.getChildCount() > 0) {
+                            targetListView.getChildAt(0).requestFocus();
+                            return true;
+                        }
                     }
                     return false;
                 });

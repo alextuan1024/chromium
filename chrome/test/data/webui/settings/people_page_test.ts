@@ -72,7 +72,6 @@ function reset() {
   peoplePage.remove();
   loadTimeData.overrideValues({
     signinAllowed: true,
-    replaceSyncPromosWithSignInPromos: false,
   });
   resetRouterForTesting();
   Router.getInstance().navigateTo(routes.BASIC);
@@ -149,6 +148,11 @@ suite('ProfileInfoTests', function() {
     ProfileInfoBrowserProxyImpl.setInstance(profileInfoBrowserProxy);
 
     syncBrowserProxy = new TestSyncBrowserProxy();
+    syncBrowserProxy.testSyncStatus = {
+      syncSystemEnabled: false,
+      signedInState: SignedInState.SIGNED_OUT,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -197,6 +201,10 @@ suite('SigninDisallowedTests', function() {
     loadTimeData.overrideValues({signinAllowed: false});
 
     syncBrowserProxy = new TestSyncBrowserProxy();
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SIGNED_OUT,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -219,20 +227,24 @@ suite('SigninDisallowedTests', function() {
     assertFalse(!!peoplePage.shadowRoot.querySelector('#edit-profile'));
     assertTrue(!!peoplePage.shadowRoot.querySelector('#profile-row'));
 
-    // Control element doesn't exist when policy forbids sync.
-    await simulateSyncStatus({
-      signedInState: SignedInState.SIGNED_IN,
-      syncSystemEnabled: true,
-      statusAction: StatusAction.NO_ACTION,
-    });
+    // Control element doesn't exist when policy forbids signin.
     assertFalse(
         !!peoplePage.shadowRoot.querySelector('settings-sync-account-control'));
   });
 });
 
-suite('SyncStatusTests', function() {
+// TODO(crbug.com/40066949): Remove once kSync becomes unreachable or is
+// deleted from the codebase. See ConsentLevel::kSync documentation for
+// details.
+suite('SignoutDialogTests', function() {
   setup(async function() {
     syncBrowserProxy = new TestSyncBrowserProxy();
+    // The WebUI signout dialog is only reachable for syncing users.
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      signedInUsername: 'fakeUsername',
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -246,93 +258,6 @@ suite('SyncStatusTests', function() {
 
   teardown(function() {
     reset();
-  });
-
-  test('Toast', async function() {
-    assertFalse(peoplePage.$.toast.open);
-    webUIListenerCallback('sync-settings-saved');
-    await microtasksFinished();
-    assertTrue(peoplePage.$.toast.open);
-  });
-
-  test('ShowCorrectRows', async function() {
-    await syncBrowserProxy.whenCalled('getSyncStatus');
-    await simulateSyncStatus({
-      signedInState: SignedInState.SIGNED_IN,
-      syncSystemEnabled: true,
-      statusAction: StatusAction.NO_ACTION,
-    });
-
-    // The correct /manageProfile link row is shown.
-    assertTrue(!!peoplePage.shadowRoot.querySelector('#edit-profile'));
-    assertFalse(!!peoplePage.shadowRoot.querySelector('#profile-row'));
-
-    // The control element should exist when policy allows.
-    assertTrue(isChildVisible(peoplePage, 'settings-sync-account-control'));
-
-    // Control element doesn't exist when policy forbids sync.
-    await simulateSyncStatus({
-      syncSystemEnabled: false,
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
-
-    // Do not show Google Account when sync status could not be retrieved.
-    await simulateStoredAccounts([]);
-    await simulateSyncStatus(undefined);
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
-
-    await simulateStoredAccounts([]);
-    await simulateSyncStatus({
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
-
-    await simulateStoredAccounts([]);
-    await simulateSyncStatus({
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
-
-    // A stored account with sync off but no error should result in the
-    // Google Account being shown.
-    await simulateStoredAccounts([{email: 'foo@foo.com'}]);
-    await simulateSyncStatus({
-      signedInState: SignedInState.SIGNED_IN,
-      hasError: false,
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertTrue(isChildVisible(peoplePage, '#manage-google-account'));
-
-    // A stored account with sync off and error should not result in the
-    // Google Account being shown.
-    await simulateStoredAccounts([{email: 'foo@foo.com'}]);
-    await simulateSyncStatus({
-      signedInState: SignedInState.SIGNED_IN,
-      hasError: true,
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
-
-    // A stored account with sync on but no error should result in the
-    // Google Account being shown.
-    await simulateStoredAccounts([{email: 'foo@foo.com'}]);
-    await simulateSyncStatus({
-      signedInState: SignedInState.SYNCING,
-      hasError: false,
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertTrue(isChildVisible(peoplePage, '#manage-google-account'));
-
-    // A stored account with sync on but with error should not result in
-    // the Google Account being shown.
-    await simulateStoredAccounts([{email: 'foo@foo.com'}]);
-    await simulateSyncStatus({
-      signedInState: SignedInState.SYNCING,
-      hasError: true,
-      statusAction: StatusAction.NO_ACTION,
-    });
-    assertFalse(isChildVisible(peoplePage, '#manage-google-account'));
   });
 
   test('SignOutNavigationNormalProfile', async function() {
@@ -511,9 +436,17 @@ suite('SyncStatusTests', function() {
 });
 // </if>
 
+// TODO(crbug.com/40066949): Remove once kSync becomes unreachable or is
+// deleted from the codebase. See ConsentLevel::kSync documentation for
+// details.
 suite('SyncSettings', function() {
   setup(async function() {
     syncBrowserProxy = new TestSyncBrowserProxy();
+    // The sync settings only exist for syncing users.
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -523,13 +456,25 @@ suite('SyncSettings', function() {
     peoplePage = document.createElement('settings-people-page');
     document.body.appendChild(peoplePage);
 
-    await syncBrowserProxy.whenCalled('getSyncStatus');
+    await simulateSyncStatus({
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    });
     await microtasksFinished();
   });
 
   teardown(function() {
     reset();
   });
+
+  // <if expr="not is_chromeos">
+  test('Toast', async function() {
+    assertFalse(peoplePage.$.toast.open);
+    webUIListenerCallback('sync-settings-saved');
+    await microtasksFinished();
+    assertTrue(peoplePage.$.toast.open);
+  });
+  // </if>
 
   test('ShowCorrectSyncRow', async function() {
     assertTrue(isChildVisible(peoplePage, '#sync-setup'));
@@ -551,9 +496,11 @@ suite('SyncSettings', function() {
 
 suite('PeoplePageAccountSettings', function() {
   setup(async function() {
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
     // <if expr="is_chromeos">
-    loadTimeData.overrideValues({isAccountManagerEnabled: true});
+    loadTimeData.overrideValues({
+      replaceSyncPromosWithSignInPromos: true,
+      isAccountManagerEnabled: true,
+    });
     // </if>
     resetRouterForTesting();
     Router.getInstance().navigateTo(routes.PEOPLE);
@@ -725,7 +672,7 @@ suite('PeoplePageAccountSettings', function() {
          const testEmail = 'test@email.com';
          await simulateSignedInState(SignedInState.SIGNED_IN, [{email: testEmail}]);
 
-    // First, it shows the user's email.
+         // First, it shows the user's email.
          const accountRow =
              peoplePage.shadowRoot.querySelector<CrLinkRowElement>(
                  '#account-subpage-row')!;

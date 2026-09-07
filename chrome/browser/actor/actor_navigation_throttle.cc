@@ -107,27 +107,17 @@ ActorNavigationThrottle::WillProcessResponse() {
   if (!execution_engine_) {
     return content::NavigationThrottle::PROCEED;
   }
-  content::NavigationThrottle::ThrottleAction action =
-      execution_engine_->ShouldDeferNavigation(
-          *navigation_handle(),
-          base::BindOnce(
-              &ActorNavigationThrottle::OnNavigationConfirmationDecision,
-              weak_factory_.GetWeakPtr(), /*was_deferred=*/true));
-  if (action != content::NavigationThrottle::DEFER) {
-    OnNavigationConfirmationDecision(
-        /*was_deferred=*/false,
-        /*may_continue=*/action == content::NavigationThrottle::PROCEED);
-  }
-  return action;
+  execution_engine_->ShouldNavigationCommit(
+      *navigation_handle(),
+      base::BindOnce(&ActorNavigationThrottle::OnNavigationConfirmationDecision,
+                     weak_factory_.GetWeakPtr()));
+  return content::NavigationThrottle::DEFER;
 }
 
 void ActorNavigationThrottle::OnNavigationConfirmationDecision(
-    bool was_deferred,
-    bool may_continue) {
-  if (may_continue) {
-    if (was_deferred) {
-      Resume();
-    }
+    MayActOnUrlBlockReason block_reason) {
+  if (block_reason == MayActOnUrlBlockReason::kAllowed) {
+    Resume();
     return;
   }
   AggregatedJournal& journal = GetJournal();
@@ -138,11 +128,9 @@ void ActorNavigationThrottle::OnNavigationConfirmationDecision(
   // tool usage, consider the action a failure.
   if (navigation_handle()->IsInPrimaryMainFrame() && execution_engine_) {
     execution_engine_->FailCurrentTool(
-        mojom::ActionResultCode::kTriggeredNavigationBlocked);
+        BlockReasonToResultCode(block_reason, /*for_navigation=*/true));
   }
-  if (was_deferred) {
-    CancelDeferredNavigation(CANCEL_AND_IGNORE);
-  }
+  CancelDeferredNavigation(CANCEL_AND_IGNORE);
 }
 
 void ActorNavigationThrottle::OnUserLeaveDialogDecision(bool may_continue) {

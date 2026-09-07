@@ -47,6 +47,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kShopping = {
           initWithPrefService:prefService
                      prefName:autofill::prefs::kAutofillProfileEnabled];
       _autofillProfileEnabled.observer = self;
+      self.personalContextEnabled.observer = self;
     }
   }
   return self;
@@ -62,11 +63,13 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kShopping = {
     [self pushEntitiesToConsumer];
 
     [self updateConsumerToggleState];
+
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 
 - (void)disconnect {
-  [super disconnect];
+  self.personalContextEnabled.observer = nil;
   _shoppingEnabled.observer = nil;
   [_shoppingEnabled stop];
   _shoppingEnabled = nil;
@@ -74,6 +77,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kShopping = {
   [_autofillProfileEnabled stop];
   _autofillProfileEnabled = nil;
   _consumer = nil;
+  [super disconnect];
 }
 
 #pragma mark - BooleanObserver
@@ -82,6 +86,8 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kShopping = {
   if (observableBoolean == _shoppingEnabled ||
       observableBoolean == _autofillProfileEnabled) {
     [self updateConsumerToggleState];
+  } else if (observableBoolean == self.personalContextEnabled) {
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 

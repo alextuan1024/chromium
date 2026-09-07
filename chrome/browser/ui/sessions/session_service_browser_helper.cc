@@ -18,8 +18,10 @@
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
@@ -44,13 +46,23 @@ void UpdateTabGroupSessionMetadata(Profile& profile,
 
 }  // namespace
 
+DEFINE_USER_DATA(SessionServiceBrowserHelper);
+
+// static
+SessionServiceBrowserHelper* SessionServiceBrowserHelper::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
 SessionServiceBrowserHelper::SessionServiceBrowserHelper(
     TabStripModel* tab_strip_model,
     SessionID session_id,
     BrowserWindowInterface::Type browser_type,
     Profile* profile,
-    const BrowserWindowCreateParams* create_params)
-    : tab_strip_model_(CHECK_DEREF(tab_strip_model)),
+    const BrowserWindowCreateParams* create_params,
+    ui::UnownedUserDataHost& host)
+    : scoped_unowned_user_data_(host, *this),
+      tab_strip_model_(CHECK_DEREF(tab_strip_model)),
       session_id_(session_id),
       browser_type_(browser_type),
       profile_(CHECK_DEREF(profile)) {

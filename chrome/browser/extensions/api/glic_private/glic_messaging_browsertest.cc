@@ -21,6 +21,7 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
 #include "chrome/browser/profiles/profile.h"
@@ -94,9 +95,20 @@ class GlicMessagingAccessDisabledBrowserTest : public GlicPrivateApiTestBase {
 namespace {
 
 #if !BUILDFLAG(IS_ANDROID)
-content::EvalJsResult ExecuteInvoke(content::WebContents* web_contents,
-                                    const std::string& prompt_id,
-                                    const std::string& invocation_source) {
+content::EvalJsResult ExecuteInvoke(
+    content::WebContents* web_contents,
+    const std::string& prompt_id,
+    const std::string& invocation_source,
+    const std::optional<std::string>& conversation_id = std::nullopt,
+    const std::optional<std::string>& turn_id = std::nullopt) {
+  std::string extra_fields;
+  if (conversation_id) {
+    extra_fields +=
+        base::StringPrintf(", conversationId: '%s'", conversation_id->c_str());
+  }
+  if (turn_id) {
+    extra_fields += base::StringPrintf(", turnId: '%s'", turn_id->c_str());
+  }
   std::string script = base::StringPrintf(
       R"(
       (async () => {
@@ -107,7 +119,7 @@ content::EvalJsResult ExecuteInvoke(content::WebContents* web_contents,
           chrome.runtime.sendMessage(
               '%s', {type: 'glicPrivate.invoke', args: {
                 promptId: '%s',
-                invocationSource: '%s'
+                invocationSource: '%s'%s
               }}, (response) => {
                 if (chrome.runtime.lastError) {
                   resolve(chrome.runtime.lastError.message);
@@ -119,7 +131,7 @@ content::EvalJsResult ExecuteInvoke(content::WebContents* web_contents,
       })()
       )",
       extension_misc::kGlicExtensionId, prompt_id.c_str(),
-      invocation_source.c_str());
+      invocation_source.c_str(), extra_fields.c_str());
 
   return content::EvalJs(web_contents, script);
 }
@@ -313,7 +325,7 @@ IN_PROC_BROWSER_TEST_F(GlicMessagingBrowserTest, InvokeAPI) {
       ExecuteInvoke(GetActiveWebContents(), "1", "universal-cart");
 
   std::string result_string = result.ExtractString();
-  EXPECT_EQ("Uncaught Error: local-glic-not-enabled", result_string);
+  EXPECT_EQ("local-glic-not-enabled", result_string);
 }
 
 
@@ -565,7 +577,7 @@ class GlicMessagingFullyEnabledBrowserTest
     : public glic::GlicBrowserTestMixin<GlicMessagingBrowserTest> {
  public:
   void SetUpOnMainThread() override {
-    GlicMessagingBrowserTest::SetUpOnMainThread();
+    glic::GlicBrowserTestMixin<GlicMessagingBrowserTest>::SetUpOnMainThread();
     SetupIdentityAndCapabilities();
   }
 };
@@ -675,8 +687,7 @@ IN_PROC_BROWSER_TEST_F(GlicMessagingFullyEnabledBrowserTest,
   {
     content::EvalJsResult result = ExecuteActivateTabWithConversation(
         GetActiveWebContents(), "test-conv-id");
-    EXPECT_EQ("error: Uncaught Error: local-conversation-not-found",
-              result.ExtractString());
+    EXPECT_EQ("error: local-conversation-not-found", result.ExtractString());
   }
 
   // Test missing arguments for activateTabWithConversation.
@@ -753,8 +764,7 @@ IN_PROC_BROWSER_TEST_F(GlicMessagingFullyEnabledBrowserTest,
 
   content::EvalJsResult result = ExecuteActivateTabWithConversation(
       GetActiveWebContents(), "test-conv-no-bound");
-  EXPECT_EQ("error: Uncaught Error: local-no-bound-tabs",
-            result.ExtractString());
+  EXPECT_EQ("error: local-no-bound-tabs", result.ExtractString());
 }
 
 IN_PROC_BROWSER_TEST_F(GlicMessagingFullyEnabledBrowserTest,
@@ -786,8 +796,7 @@ IN_PROC_BROWSER_TEST_F(GlicMessagingFullyEnabledBrowserTest,
 
   content::EvalJsResult result = ExecuteActivateTabWithConversation(
       second_tab->GetContents(), "test-conv-tab-not-in-window");
-  EXPECT_EQ("error: Uncaught Error: local-tab-not-in-window",
-            result.ExtractString());
+  EXPECT_EQ("error: local-tab-not-in-window", result.ExtractString());
 
   // Re-insert the detached tab back to the browser's tab strip model so that
   // it is properly destroyed during teardown, notifying observers and
@@ -929,7 +938,7 @@ IN_PROC_BROWSER_TEST_F(GlicSubframeInvokeBrowserTest,
 
   // The browser rejects the request because the calling document is not the
   // tab's primary main frame.
-  EXPECT_EQ("error: Uncaught Error: local-invalid-document-id", result);
+  EXPECT_EQ("error: local-invalid-document-id", result);
 
   // Verify that the top-level frame remains example.com.
   EXPECT_EQ("example.com",
@@ -1025,18 +1034,32 @@ IN_PROC_BROWSER_TEST_F(GlicMessagingWebContinuityBrowserTest,
                                                          /*create=*/true));
   ASSERT_TRUE(mock_service);
 
-  // Expect InvokeWithAutoSubmit to be called with kWebContinuity source.
+  std::string cid = "c_123";
+  std::string turn_id = "t_456";
+  auto conversation_matcher = testing::VariantWith<glic::ConversationId>(
+      testing::AllOf(testing::Field(&glic::ConversationId::conversation_id,
+                                    testing::Eq(cid)),
+                     testing::Field(&glic::ConversationId::turn_id,
+                                    testing::Eq(std::make_optional(turn_id)))));
+
+  // Expect InvokeWithAutoSubmit to be called with kWebContinuity source and
+  // conversation.
   EXPECT_CALL(
       *mock_service,
       InvokeWithAutoSubmit(
           testing::_,
-          testing::Property(&glic::GlicInvokeOptions::GetInvocationSource,
-                            testing::Eq(glic::mojom::InvocationSource::kWebContinuity))))
+          testing::AllOf(
+              testing::Property(
+                  &glic::GlicInvokeOptions::GetInvocationSource,
+                  testing::Eq(glic::mojom::InvocationSource::kWebContinuity)),
+              testing::Field(&glic::GlicInvokeOptions::target,
+                             testing::Field(&glic::Target::conversation,
+                                            conversation_matcher)))))
       .Times(1);
 
   // We don't need a prompt ID for web-continuity.
   content::EvalJsResult result =
-      ExecuteInvoke(tab, "", "web-continuity");
+      ExecuteInvoke(tab, "", "web-continuity", cid, turn_id);
   EXPECT_EQ("success", result);
 }
 

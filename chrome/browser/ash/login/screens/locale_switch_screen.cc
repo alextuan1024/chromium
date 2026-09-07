@@ -16,6 +16,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/ash/login/screens/locale_switch_notification.h"
+#include "chrome/browser/ash/login/screens/sync_consent_screen.h"
 #include "chrome/browser/ash/login/users/chrome_user_manager_util.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -46,8 +47,6 @@ namespace {
 
 constexpr char kPeopleApiURL[] =
     "https://people.googleapis.com/v1/people/me?personFields=locales";
-
-constexpr base::TimeDelta kWaitTimeout = base::Seconds(5);
 
 class GetLocaleOAuth2PeopleAPICall : public OAuth2ApiCallFlow {
  public:
@@ -258,8 +257,8 @@ void LocaleSwitchScreen::ShowImpl() {
   const AccountInfo account_info =
       identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_);
   account_capabilities_loaded_ =
-      refresh_token_loaded_ &&
-      account_info.GetAccountCapabilities().AreAllCapabilitiesKnown();
+      refresh_token_loaded_ && SyncConsentScreen::AreCapabilitiesLoaded(
+                                   account_info.GetAccountCapabilities());
   if (!account_capabilities_loaded_) {
     identity_manager_observer_.Observe(identity_manager_.get());
   }
@@ -267,7 +266,7 @@ void LocaleSwitchScreen::ShowImpl() {
   FetchPreferredUserLocaleAndSwitchAsync();
 
   // Wait for a reasonable time to fetch locale and account capabilities.
-  timeout_waiter_.Start(FROM_HERE, kWaitTimeout,
+  timeout_waiter_.Start(FROM_HERE, timeout_,
                         base::BindOnce(&LocaleSwitchScreen::OnTimeout,
                                        weak_factory_.GetWeakPtr()));
 }
@@ -290,12 +289,12 @@ void LocaleSwitchScreen::OnErrorStateOfRefreshTokenUpdatedForAccount(
 
 void LocaleSwitchScreen::OnExtendedAccountInfoUpdated(
     const AccountInfo& account_info) {
-  if (account_info.gaia != gaia_id_) {
+  if (account_info.GetGaiaId() != gaia_id_) {
     return;
   }
   account_capabilities_loaded_ =
-      refresh_token_loaded_ &&
-      account_info.GetAccountCapabilities().AreAllCapabilitiesKnown();
+      refresh_token_loaded_ && SyncConsentScreen::AreCapabilitiesLoaded(
+                                   account_info.GetAccountCapabilities());
   if (!account_capabilities_loaded_) {
     return;
   }

@@ -160,8 +160,6 @@ class Browser : public TabStripModelObserver,
       DidBecomeInactiveCallback callback) override;
   Type GetType() const override;
   std::vector<tabs::TabInterface*> GetAllTabInterfaces() override;
-  Browser* GetBrowserForMigrationOnly() override;
-  const Browser* GetBrowserForMigrationOnly() const override;
   bool IsTabModalPopup() const override;
   void SetIsTabModalPopup(
       bool is_tab_modal_popup,
@@ -175,7 +173,8 @@ class Browser : public TabStripModelObserver,
  private:
   friend BrowserWindowInterface* CreateBrowserWindow(
       BrowserWindowCreateParams create_params);
-  friend std::unique_ptr<Browser> DeprecatedCreateOwnedBrowserWindowForTesting(
+  friend std::unique_ptr<BrowserWindowInterface>
+  DeprecatedCreateOwnedBrowserWindowForTesting(
       BrowserWindowCreateParams create_params);
 
   // Used to describe why a tab is being detached. This is used by

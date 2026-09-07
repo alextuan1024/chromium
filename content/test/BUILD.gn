@@ -556,7 +556,6 @@ static_library("test_support") {
     "//cc/slim",
     "//components/breadcrumbs/core",
     "//components/cbor",
-    "//components/history/core/browser:features",
     "//components/input",
     "//components/input:test_support",
     "//components/network_session_configurator/common",
@@ -1543,6 +1542,7 @@ test("content_browsertests") {
     "../browser/gpu/in_process_gpu_thread_browsertest.cc",
     "../browser/gpu/initial_gpu_channel_browsertest.cc",
     "../browser/gpu/peak_gpu_memory_tracker_impl_browsertest.cc",
+    "../browser/haptics/haptics_service_impl_browsertest.cc",
     "../browser/host_zoom_map_impl_browsertest.cc",
     "../browser/indexed_db/indexed_db_browsertest.cc",
     "../browser/indexed_db/indexed_db_transaction_feature_observer_browsertest.cc",
@@ -1761,10 +1761,6 @@ test("content_browsertests") {
     "../browser/webid/test/webid_test_content_browser_client.h",
     "../browser/webid/webid_browsertest.cc",
     "../browser/webkit_browsertest.cc",
-    "../browser/webrtc/mock_camera_device.cc",
-    "../browser/webrtc/mock_camera_device.h",
-    "../browser/webrtc/mock_capture_device_controller.cc",
-    "../browser/webrtc/mock_capture_device_controller.h",
     "../browser/webrtc/webrtc_audio_browsertest.cc",
     "../browser/webrtc/webrtc_audio_debug_recordings_browsertest.cc",
     "../browser/webrtc/webrtc_browsertest.cc",
@@ -2670,7 +2666,6 @@ test("content_unittests") {
     "../browser/media/session/media_session_impl_unittest.cc",
     "../browser/media/session/media_session_uma_helper_unittest.cc",
     "../browser/media/system_media_controls/system_media_controls_notifier_unittest.cc",
-    "../browser/media/url_provision_fetcher_unittest.cc",
     "../browser/media/webaudio/audio_context_manager_impl_unittest.cc",
     "../browser/memory/swap_metrics_driver_impl_unittest.cc",
     "../browser/memory_coordinator/browser_memory_coordinator_unittest.cc",
@@ -2885,6 +2880,7 @@ test("content_unittests") {
     "../browser/tracing/traces_internals/traces_internals_handler_unittest.cc",
     "../browser/url_loader_factory_params_helper_unittest.cc",
     "../browser/usb/web_usb_service_impl_unittest.cc",
+    "../browser/wake_lock/wake_lock_service_impl_unittest.cc",
     "../browser/web_contents/aura/gesture_nav_simple_unittest.cc",
     "../browser/web_contents/file_chooser_impl_unittest.cc",
     "../browser/web_contents/web_contents_delegate_unittest.cc",
@@ -2948,6 +2944,7 @@ test("content_unittests") {
     "../browser/webid/test/stub_digital_identity_provider.cc",
     "../browser/webid/test/stub_digital_identity_provider.h",
     "../browser/webid/user_info_request_unittest.cc",
+    "../browser/webrtc/webrtc_diagnostics_impl_unittest.cc",
     "../browser/webrtc/webrtc_internals_message_handler_unittest.cc",
     "../browser/webrtc/webrtc_internals_unittest.cc",
     "../browser/webtransport/web_transport_throttle_context_unittest.cc",
@@ -3109,6 +3106,13 @@ test("content_unittests") {
     ]
   }
 
+  if (enable_cdm_provision_fetcher) {
+    sources += [
+      "../browser/media/provision_fetcher_impl_unittest.cc",
+      "../browser/media/url_provision_fetcher_unittest.cc",
+    ]
+  }
+
   if (enable_compute_pressure) {
     sources += [
       "../browser/compute_pressure/pressure_service_for_frame_unittest.cc",
@@ -3189,6 +3193,7 @@ test("content_unittests") {
     "//base",
     "//base/allocator:buildflags",
     "//base/allocator/partition_allocator/src/partition_alloc:test_support",
+    "//base/i18n:test_support",
     "//base/test:fuzztest_support",
     "//base/test:proto_test_support",
     "//base/test:test_support",
@@ -3563,6 +3568,7 @@ test("content_unittests") {
       "//gpu/command_buffer/service:android_texture_owner_test_support",
       "//third_party/blink/public/common",
       "//third_party/blink/public/common:font_unique_name_table_proto",
+      "//ui/accessibility:ax_base_android",
       "//ui/android",
       "//ui/android:test_support",
       "//ui/android:ui_java_test_support",
@@ -3584,7 +3590,6 @@ test("content_unittests") {
       "../browser/picture_in_picture/document_picture_in_picture_window_controller_impl_unittest.cc",
       "../browser/speech/network_speech_recognition_engine_impl_unittest.cc",
       "../browser/speech/speech_recognizer_impl_unittest.cc",
-      "../browser/tracing/tracing_ui_unittest.cc",
       "../web_test/renderer/test_runner_utils_unittest.cc",
     ]
     deps += [

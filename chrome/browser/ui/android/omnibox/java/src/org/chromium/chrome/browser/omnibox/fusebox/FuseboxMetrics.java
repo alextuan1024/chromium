@@ -45,6 +45,10 @@ public class FuseboxMetrics {
     /* package */ static final String ATTACHMENT_LOAD_OOM_HISTOGRAM =
             "Omnibox.MobileFusebox.AttachmentLoadOOM";
 
+    @VisibleForTesting
+    /* package */ static final String ATTACHMENT_C2PA_DETECTED_HISTOGRAM =
+            "Lens.Composebox.ImageUpload.Java.C2paDetected";
+
     private static final String TOKEN_SEPARATOR = ".";
 
     @VisibleForTesting /* package */
@@ -161,7 +165,7 @@ public class FuseboxMetrics {
     private final boolean[] mAttachmentButtonsUsedInSession =
             new boolean[FuseboxAttachmentButtonType.COUNT];
 
-    static void notifyAiModeActivated(@AiModeActivationSource int aiModeActivationSource) {
+    public static void notifyAiModeActivated(@AiModeActivationSource int aiModeActivationSource) {
         RecordHistogram.recordEnumeratedHistogram(
                 "Omnibox.MobileFusebox.AiModeActivationSource",
                 aiModeActivationSource,
@@ -336,6 +340,10 @@ public class FuseboxMetrics {
         RecordHistogram.recordBooleanHistogram(ATTACHMENT_LOAD_OOM_HISTOGRAM, oomOccurred);
         RecordHistogram.recordBooleanHistogram(
                 getAttachmentLoadOomHistogram(fileType), oomOccurred);
+    }
+
+    static void recordAttachmentC2paDetected(boolean detected) {
+        RecordHistogram.recordBooleanHistogram(ATTACHMENT_C2PA_DETECTED_HISTOGRAM, detected);
     }
 
     @VisibleForTesting

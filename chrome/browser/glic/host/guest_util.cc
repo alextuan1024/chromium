@@ -14,6 +14,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/pattern.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/supports_user_data.h"
@@ -25,8 +26,9 @@
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
 #include "chrome/browser/glic/host/glic_guest_observer.h"
-#include "chrome/browser/glic/host/glic_page_handler.h"
 #include "chrome/browser/glic/host/glic_ui.h"
+#include "chrome/browser/glic/host/glic_web_client_manager.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/guest_util_internal.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
@@ -40,6 +42,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/ui/prefs/prefs_tab_helper.h"
+#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
@@ -48,10 +51,12 @@
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/buildflags/buildflags.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility.h"
 #include "components/origin_matcher/origin_matcher.h"
 #include "components/prefs/pref_service.h"
 #include "components/skills/features.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/navigation_handle.h"
@@ -74,6 +79,11 @@
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_format_type.h"
+#include "ui/base/clipboard/clipboard_metadata.h"
+#include "ui/base/clipboard/clipboard_monitor.h"
+#include "ui/base/clipboard/clipboard_observer.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "url/gurl.h"
 
@@ -86,16 +96,6 @@
 #else
 #include "components/guest_view/browser/slim_web_view/slim_web_view_guest.h"  // nogncheck
 #endif
-
-#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
-#include "components/optimization_guide/content/browser/page_context_eligibility.h"
-#include "components/tabs/public/tab_interface.h"
-#include "content/public/browser/clipboard_types.h"
-#include "ui/base/clipboard/clipboard.h"
-#include "ui/base/clipboard/clipboard_format_type.h"
-#include "ui/base/clipboard/clipboard_metadata.h"
-#include "ui/base/clipboard/clipboard_monitor.h"
-#include "ui/base/clipboard/clipboard_observer.h"
 
 namespace glic {
 
@@ -133,6 +133,11 @@ class GlicWebUiData : public content::WebContentsUserData<GlicWebUiData>,
     Observe(guest_contents);
   }
 
+  void SetContentsManager(GlicWebContentsManager* contents_manager) {
+    contents_manager_ = contents_manager;
+  }
+  GlicWebContentsManager* contents_manager() const { return contents_manager_; }
+
   // Returns the guest WebContents if it is attached and valid, nullptr
   // otherwise.
   content::WebContents* guest_contents() const {
@@ -157,6 +162,7 @@ class GlicWebUiData : public content::WebContentsUserData<GlicWebUiData>,
 
   using WebContentsObserver::web_contents;
 
+  raw_ptr<GlicWebContentsManager> contents_manager_ = nullptr;
   raw_ptr<content::WebContents> webui_contents_;
 };
 
@@ -182,54 +188,6 @@ class GlicProcessUserData : public base::SupportsUserData::Data {
 
  private:
   GlicProcessUserData() = default;
-};
-
-// Attached to Guest WebContents to identify it directly.
-class GlicGuestMarker : public content::WebContentsUserData<GlicGuestMarker> {
- public:
-  ~GlicGuestMarker() override = default;
-
- private:
-  explicit GlicGuestMarker(content::WebContents* web_contents)
-      : content::WebContentsUserData<GlicGuestMarker>(*web_contents) {}
-  friend class content::WebContentsUserData<GlicGuestMarker>;
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
-};
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(GlicGuestMarker);
-
-// LINT.IfChange(WebViewAutoPlayProgress)
-enum class WebViewAutoPlayProgress {
-  kWebContentsObserverRegistered = 0,
-  kAutoPlayGrantedForPrimaryRFH = 1,
-  kAutoPlayGrantedForOtherRFH = 2,
-  kMaxValue = kAutoPlayGrantedForOtherRFH,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:WebViewAutoPlayProgress)
-
-// Observes the glic webview's `WebContents`.
-class WebviewWebContentsObserver : public content::WebContentsObserver,
-                                   public base::SupportsUserData::Data {
- public:
-  explicit WebviewWebContentsObserver(content::WebContents* web_contents)
-      : content::WebContentsObserver(web_contents) {}
-
-  void ReadyToCommitNavigation(content::NavigationHandle* handle) override {
-    // Enable autoplay for the webview.
-    content::RenderFrameHost* frame = handle->GetRenderFrameHost();
-    mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient> client;
-    frame->GetRemoteAssociatedInterfaces()->GetInterface(&client);
-    client->AddAutoplayFlags(GetGuestOrigin(),
-                             blink::mojom::kAutoplayFlagForceAllow);
-    VLOG(1) << "Granted Glic AutoPlay for origin=\"" << GetGuestOrigin()
-            << "\" at " << (handle->IsInPrimaryMainFrame() ? "main " : "")
-            << "RFH with url=\"" << handle->GetURL() << "\"";
-    base::UmaHistogramEnumeration(
-        "Glic.Host.WebView.AutoPlay",
-        handle->IsInPrimaryMainFrame()
-            ? WebViewAutoPlayProgress::kAutoPlayGrantedForPrimaryRFH
-            : WebViewAutoPlayProgress::kAutoPlayGrantedForOtherRFH);
-  }
 };
 
 // Caches an OriginMatcher parsed from a space-separated origin list string.
@@ -258,15 +216,46 @@ class CachedOriginMatcher {
   origin_matcher::OriginMatcher matcher_;
 };
 
+void ConfigureGuestZoom(content::WebContents& guest_contents) {
+#if BUILDFLAG(IS_ANDROID)
+  // Apply the persisted zoom level to the guest WebContents.
+  if (Profile* profile =
+          Profile::FromBrowserContext(guest_contents.GetBrowserContext())) {
+    double zoom_factor = GetZoomFactor(profile->GetPrefs());
+    double zoom_level = blink::ZoomFactorToZoomLevel(zoom_factor);
+    content::HostZoomMap::SetZoomLevel(&guest_contents, zoom_level);
+  }
+#endif
+}
+
 }  // namespace
 
-bool IsGlicGuest(content::WebContents* web_contents) {
-  if (!web_contents ||
-      GlicGuestMarker::FromWebContents(web_contents) == nullptr) {
-    return false;
+void PrepareGlicGuestWebContents(content::WebContents& guest_contents,
+                                 GlicWebContentsManager& contents_manager) {
+  GlicGuestObserver::CreateForWebContents(guest_contents, contents_manager);
+
+  if (guest_contents.GetPrimaryMainFrame()) {
+    GlicProcessUserData::MarkProcess(
+        guest_contents.GetPrimaryMainFrame()->GetProcess());
   }
-  auto* guest_view = guest_view::GuestViewBase::FromWebContents(web_contents);
-  return guest_view && guest_view->attached();
+
+  PrefsTabHelper::CreateForWebContents(&guest_contents);
+  ConfigureGuestZoom(guest_contents);
+
+#if !BUILDFLAG(IS_ANDROID)
+  guest_contents.SetSupportsDraggableRegions(true);
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
+
+void SetHostForGuest(content::WebContents& guest_contents, Host* host) {
+  if (auto* observer = GlicGuestObserver::FromWebContents(&guest_contents)) {
+    observer->set_host(host);
+  }
+}
+
+bool IsGlicGuest(content::WebContents* web_contents) {
+  return web_contents &&
+         GlicGuestObserver::FromWebContents(web_contents) != nullptr;
 }
 
 void MarkProcessAsGlic(content::RenderProcessHost* rph) {
@@ -275,6 +264,43 @@ void MarkProcessAsGlic(content::RenderProcessHost* rph) {
 
 void CreateGlicWebUiData(content::WebContents* webui_contents) {
   GlicWebUiData::CreateForWebContents(webui_contents);
+}
+
+void SetContentsManagerForWebContents(
+    content::WebContents* web_contents,
+    GlicWebContentsManager* contents_manager) {
+  if (!web_contents) {
+    return;
+  }
+  if (auto* data = GlicWebUiData::FromWebContents(web_contents)) {
+    data->SetContentsManager(contents_manager);
+  }
+}
+
+GlicWebContentsManager* GetContentsManagerForWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  if (auto* observer = GlicGuestObserver::FromWebContents(web_contents)) {
+    return &observer->contents_manager();
+  }
+  // Only needed for the legacy nested <webview> mode where the outer WebUI
+  // WebContents holds the GlicWebUiData.
+  if (auto* data = GlicWebUiData::FromWebContents(web_contents)) {
+    if (data->contents_manager()) {
+      return data->contents_manager();
+    }
+  }
+  return nullptr;
+}
+
+GlicWebClientManager* GetWebClientManagerForWebContents(
+    content::WebContents* web_contents) {
+  if (auto* contents_manager = GetContentsManagerForWebContents(web_contents)) {
+    return &contents_manager->web_client_manager();
+  }
+  return nullptr;
 }
 
 GURL GetGuestURL() {
@@ -300,7 +326,7 @@ url::Origin GetGuestOrigin() {
   return url::Origin::Create(GetGuestURL());
 }
 
-std::string GetGlicAllowedOrigins(bool is_internal_google_account) {
+std::string GetGlicAllowedOrigins() {
   auto* command_line = base::CommandLine::ForCurrentProcess();
   std::string allowed_origins =
       command_line->GetSwitchValueASCII(::switches::kGlicAllowedOrigins);
@@ -308,10 +334,8 @@ std::string GetGlicAllowedOrigins(bool is_internal_google_account) {
     allowed_origins = features::kGlicAllowedOriginsOverride.Get();
   }
 
-  // Allow corp origins for @google accounts.
-  if (is_internal_google_account) {
-    allowed_origins += " https://*.corp.google.com";
-  }
+  // Allow corp origins, needed for @google accounts.
+  allowed_origins += " https://*.corp.google.com";
   return allowed_origins;
 }
 
@@ -399,9 +423,6 @@ bool IsAdminBlockedUrl(const GURL& url) {
 }
 
 bool IsFrameAllowedGlicApi(content::RenderFrameHost& frame_host) {
-  if (!base::FeatureList::IsEnabled(features::kGlicEnableMojoJs)) {
-    return false;
-  }
   content::WebContents* guest_contents =
       content::WebContents::FromRenderFrameHost(&frame_host);
   if (!guest_contents || !IsGlicGuest(guest_contents)) {
@@ -413,9 +434,6 @@ bool IsFrameAllowedGlicApi(content::RenderFrameHost& frame_host) {
 void BindGlicWebClientHandler(
     content::RenderFrameHost* rfh,
     mojo::PendingReceiver<glic::mojom::WebClientHandler> receiver) {
-  if (!base::FeatureList::IsEnabled(features::kGlicEnableMojoJs)) {
-    return;
-  }
   if (!IsFrameAllowedGlicApi(*rfh)) {
     return;
   }
@@ -424,18 +442,19 @@ void BindGlicWebClientHandler(
   if (!guest_contents) {
     return;
   }
-  content::WebContents* top =
-      guest_view::GuestViewBase::GetTopLevelWebContents(guest_contents);
-  if (!top) {
+  auto* observer = GlicGuestObserver::FromWebContents(guest_contents);
+  if (!observer) {
     return;
   }
-  auto* glic_ui = GlicUI::From(top);
-  if (!glic_ui || !glic_ui->host()) {
+  if (observer->host()) {
+    observer->host()->CreateWebClient(std::move(receiver));
     return;
   }
-  glic_ui->host()->CreateWebClient(std::move(receiver));
+  if (auto* manager = GetWebClientManagerForWebContents(guest_contents)) {
+    manager->SetPendingWebClientReceiver(std::move(receiver));
+    return;
+  }
 }
-
 content::StoragePartitionConfig GetGlicStoragePartitionConfig(
     content::BrowserContext* browser_context) {
   return content::StoragePartitionConfig::Create(browser_context,
@@ -516,7 +535,7 @@ content::WebContents* GetGlicGuestWebContents(
   return data ? data->guest_contents() : nullptr;
 }
 
-Host* GetGlicHostForGuest(content::WebContents* guest_contents) {
+GlicUI* GetGlicUiForGuest(content::WebContents* guest_contents) {
   if (!IsGlicGuest(guest_contents)) {
     return nullptr;
   }
@@ -525,10 +544,16 @@ Host* GetGlicHostForGuest(content::WebContents* guest_contents) {
   if (!top) {
     return nullptr;
   }
-  auto* glic_ui = GlicUI::From(top);
+  return GlicUI::From(top);
+}
+
+Host* GetGlicHostForGuest(content::WebContents* guest_contents) {
+  auto* glic_ui = GetGlicUiForGuest(guest_contents);
   return glic_ui ? glic_ui->host() : nullptr;
 }
 
+// Called by Chrome's GuestView subsystem when a `<webview>` guest is created.
+// Not used in NoWebview mode, where PrivilegedWebContents is used instead.
 bool OnGuestAdded(content::WebContents* guest_contents) {
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (!extensions::WebViewGuest::FromWebContents(guest_contents)) {
@@ -555,47 +580,19 @@ bool OnGuestAdded(content::WebContents* guest_contents) {
     return false;
   }
 
-#if !BUILDFLAG(IS_ANDROID)
-  guest_contents->SetSupportsDraggableRegions(true);
-#endif  // !BUILDFLAG(IS_ANDROID)
-
+  // The outer WebUI WebContents (top) is always created and managed by a
+  // GlicWebUIContentsManager in <webview> mode.
+  GlicWebContentsManager* contents_manager =
+      GetContentsManagerForWebContents(top);
+  CHECK(contents_manager);
   if (auto* data = GlicWebUiData::FromWebContents(top)) {
     data->SetGuestContents(guest_contents);
-    GlicGuestMarker::CreateForWebContents(guest_contents);
-    GlicProcessUserData::MarkProcess(
-        guest_contents->GetPrimaryMainFrame()->GetProcess());
-
-    PrefsTabHelper::CreateForWebContents(guest_contents);
-
-#if !BUILDFLAG(IS_ANDROID)
-    // TODO(harringtond): This looks wrong, either fix or document this.
-    blink::web_pref::WebPreferences prefs(top->GetOrCreateWebPreferences());
-    prefs.default_font_size =
-        top->GetOrCreateWebPreferences().default_font_size;
-    top->SetWebPreferences(prefs);
-#else
-    // Apply the persisted zoom level to the guest WebContents.
-    if (Profile* profile =
-            Profile::FromBrowserContext(top->GetBrowserContext())) {
-      double zoom_factor = GetZoomFactor(profile->GetPrefs());
-      double zoom_level = blink::ZoomFactorToZoomLevel(zoom_factor);
-      content::HostZoomMap::SetZoomLevel(guest_contents, zoom_level);
-    }
-#endif
+    PrepareGlicGuestWebContents(*guest_contents, *contents_manager);
   }
 
-  guest_contents->SetUserData(
-      "glic::WebviewWebContentsObserver",
-      std::make_unique<WebviewWebContentsObserver>(guest_contents));
-  if (base::FeatureList::IsEnabled(features::kGlicEnableMojoJs)) {
-    glic::GlicGuestObserver::CreateForWebContents(guest_contents);
+  if (contents_manager) {
+    contents_manager->web_client_manager().AttachGuestContents(guest_contents);
   }
-  VLOG(1) << "Registered glic::WebviewWebContentsObserver for guest "
-             "WebContents with url=\""
-          << guest_contents->GetVisibleURL() << "\"";
-  base::UmaHistogramEnumeration(
-      "Glic.Host.WebView.AutoPlay",
-      WebViewAutoPlayProgress::kWebContentsObserverRegistered);
   return true;
 }
 
@@ -737,6 +734,14 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
     state->host_capabilities.push_back(
         mojom::HostCapability::kAutoLoginSignInWithGoogle);
   }
+  if (base::FeatureList::IsEnabled(
+          features::kGlicActorAutofillOneTimePassword)) {
+    state->host_capabilities.push_back(
+        mojom::HostCapability::kAttemptOtpFilling);
+  }
+  if (base::FeatureList::IsEnabled(features::kGlicDynamicChromeTools)) {
+    state->host_capabilities.push_back(mojom::HostCapability::kChromeTools);
+  }
   state->enable_get_page_metadata =
       base::FeatureList::IsEnabled(blink::features::kFrameMetadataObserver);
   if (base::FeatureList::IsEnabled(
@@ -759,6 +764,8 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
   state->enable_open_password_manager_settings_page =
       base::FeatureList::IsEnabled(
           features::kGlicOpenPasswordManagerSettingsPageApi);
+  state->enable_open_contact_info_settings_page = base::FeatureList::IsEnabled(
+      features::kGlicOpenContactInfoSettingsPageApi);
   state->enable_trust_first_onboarding =
       !GlicEnabling::HasConsentedForProfile(profile);
   state->onboarding_completed = GlicEnabling::HasConsentedForProfile(profile);

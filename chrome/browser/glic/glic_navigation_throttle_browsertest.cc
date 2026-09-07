@@ -20,7 +20,10 @@
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
@@ -28,12 +31,14 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/common/extension_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 
 using ::testing::_;
 using ::testing::AllOf;
@@ -604,6 +609,39 @@ IN_PROC_BROWSER_TEST_F(GlicNavigationThrottleInvokeBrowserTest,
       "Glic.NavigationCapture.GlicWebContinuityFeatureEnabled", 0);
   histogram_tester.ExpectTotalCount(
       "Glic.NavigationCapture.GlicWebContinuityFeatureDisabled", 0);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicNavigationThrottleBrowserTest,
+                       TabClosedBeforePostTaskExecutes) {
+  GURL target_url("https://www.google.com/");
+  GURL continue_url = BuildContinueUrl(target_url, "123", std::nullopt);
+
+  // Open a second tab so closing one tab doesn't close the browser window.
+  chrome::AddTabAt(browser(), GURL("about:blank"), -1, true);
+  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+
+  content::WebContents* tab_to_close =
+      browser()->tab_strip_model()->GetWebContentsAt(1);
+
+  content::NavigationController::LoadURLParams params(continue_url);
+  params.initiator_origin = url::Origin::Create(
+      GURL(features::kGlicWebContinuityOriginatingHost.Get()));
+  params.transition_type = ui::PAGE_TRANSITION_LINK;
+
+  // Start the navigation which creates the throttle, cancels the navigation in
+  // WillStartRequest, and posts a task to navigate to the target URL.
+  tab_to_close->GetController().LoadURLWithParams(params);
+
+  // Close the tab immediately before the posted task executes.
+  browser()->tab_strip_model()->CloseWebContentsAt(
+      1, TabCloseTypes::CLOSE_USER_GESTURE);
+
+  // Flush pending tasks on the UI thread to ensure the posted Navigate task
+  // executes safely without dereferencing a dangling WebContents pointer.
+  base::RunLoop run_loop;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
 }
 
 }  // namespace glic

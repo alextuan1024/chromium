@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.suggestions.tile;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
@@ -25,7 +26,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -33,10 +33,13 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.ntp.NewTabPageUtils.PaddingStyle;
+import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig.DisplayStyle;
+import org.chromium.components.browser_ui.widget.displaystyle.VerticalDisplayStyle;
 
 /** Unit tests for {@link MostVisitedTilesCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MostVisitedTilesCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -49,6 +52,7 @@ public class MostVisitedTilesCoordinatorUnitTest {
     @Mock private View mMvTilesContainerLayout;
     @Mock private MostVisitedTilesLayout mMvTilesLayout;
     @Mock private MostVisitedTilesMediator mMediator;
+    @Mock private UiConfig mUiConfig;
 
     private Activity mActivity;
     private MostVisitedTilesCoordinator mCoordinator;
@@ -60,11 +64,16 @@ public class MostVisitedTilesCoordinatorUnitTest {
 
         when(mMvTilesContainerLayout.findViewById(R.id.mv_tiles_layout)).thenReturn(mMvTilesLayout);
         when(mMvTilesLayout.getContext()).thenReturn(mActivity);
+        when(mUiConfig.getCurrentDisplayStyle())
+                .thenReturn(
+                        new DisplayStyle(
+                                HorizontalDisplayStyle.REGULAR, VerticalDisplayStyle.REGULAR));
         mCoordinator =
                 new MostVisitedTilesCoordinator(
                         mActivity,
                         mActivityLifecycleDispatcher,
                         mMvTilesContainerLayout,
+                        mUiConfig,
                         null,
                         null);
         mCoordinator.setMediatorForTesting(mMediator);
@@ -78,15 +87,16 @@ public class MostVisitedTilesCoordinatorUnitTest {
 
     @Test
     public void testUpdateMvtWidth_WithWidth() {
-        int totalWidth = 1000;
+        int widthMvt = 1000;
+        int lateralMargin = 48;
         when(mMvTilesContainerLayout.getVisibility()).thenReturn(View.VISIBLE);
-        mCoordinator.updateMvtWidth(totalWidth);
-        verify(mMediator).updateMvtWidth(eq(totalWidth));
+        mCoordinator.updateMvtWidth(widthMvt, lateralMargin);
+        verify(mMediator).updateMvtWidth(eq(widthMvt), eq(lateralMargin));
 
         clearInvocations(mMediator);
         when(mMvTilesContainerLayout.getVisibility()).thenReturn(View.GONE);
-        mCoordinator.updateMvtWidth(totalWidth);
-        verify(mMediator, never()).updateMvtWidth(any(Integer.class));
+        mCoordinator.updateMvtWidth(widthMvt, lateralMargin);
+        verify(mMediator, never()).updateMvtWidth(anyInt(), anyInt());
     }
 
     @Test
@@ -141,7 +151,12 @@ public class MostVisitedTilesCoordinatorUnitTest {
         }
 
         new MostVisitedTilesCoordinator(
-                mActivity, mActivityLifecycleDispatcher, mMvTilesContainerLayout, null, null);
+                mActivity,
+                mActivityLifecycleDispatcher,
+                mMvTilesContainerLayout,
+                mUiConfig,
+                null,
+                null);
 
         if (expectPaddingSet) {
             int expectedTopPadding =

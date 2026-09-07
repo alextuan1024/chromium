@@ -1244,13 +1244,6 @@ inline constexpr char kEverythingMenuPinnedToTabstrip[] =
 inline constexpr char kTabScrollButtonsPinnedToTabstrip[] =
     "tab_scroll_buttons.pinned_to_tabstrip";
 
-// Boolean indicating whether the one-time migration for
-// kEverythingMenuPinnedToTabstrip has been completed. This sets the pinned
-// state for the button to true for users who have used vertical tab strip
-// before the migration happened.
-inline constexpr char kEverythingMenuPinnedToTabstripMigrationComplete[] =
-    "everything_menu.pinned_to_tabstrip_migration_complete";
-
 // Boolean determining whether vertical tabs are enabled.
 inline constexpr char kVerticalTabsEnabled[] = "vertical_tabs.enabled";
 
@@ -1728,10 +1721,6 @@ inline constexpr char kNtpOutlookCalendarRetryAfterTime[] =
 // Whether NTP Outlook Calendar module is visible.
 inline constexpr char kNtpOutlookModuleVisible[] =
     "NewTabPage.OutlookModuleVisible";
-// List of promos that the user has dismissed while on the NTP.
-inline constexpr char kNtpPromoBlocklist[] = "ntp.promo_blocklist";
-// Whether the promo is visible.
-inline constexpr char kNtpPromoVisible[] = "ntp.promo_visible";
 // Whether NTP Sharepoint module is visible.
 inline constexpr char kNtpSharepointModuleVisible[] =
     "NewTabPage.SharepointModuleVisible";

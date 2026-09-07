@@ -18,6 +18,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/glic_metrics.h"
+#include "chrome/browser/glic/glic_warming_checks.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/host.h"
@@ -207,12 +208,13 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
                          content::RenderFrameHost* frame,
                          const ::GURL& src_url);
 
-  AuthController& GetAuthController() { return *auth_controller_; }
+  // Null when kGlicNoWebview is enabled.
+  AuthController* GetAuthController() { return auth_controller_.get(); }
 
   void AddPreloadCallback(base::OnceCallback<void()> callback);
 
-  virtual void TryPreload();
-  void TryPreloadAfterDelay();
+  virtual void TryPreload(GlicWarmingTrigger trigger);
+  void TryPreloadAfterDelay(GlicWarmingTrigger trigger);
   void Reload(content::RenderFrameHost* render_frame_host);
   // Close the active embedder for an instance associated with this render frame
   // host.
@@ -259,7 +261,8 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
 
   void InitializeAfterConstruction();
 
-  void FinishPreload(GlicPrewarmingChecksResult reason);
+  void FinishPreload(GlicWarmingTrigger trigger,
+                     GlicPrewarmingChecksResult reason);
 
   void OnExperimentalTriggeringStateChanged();
 

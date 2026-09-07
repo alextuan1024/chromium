@@ -7,7 +7,7 @@ import {assertNotReachedCase} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {FuseboxAction, SuggestInventory} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import {TabAttachmentSource} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {DriveUploadError, SearchContextAttachment, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {DriveUploadError, SearchContextAttachment, SelectedFileInfo, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
 
@@ -273,6 +273,7 @@ export function hasOnlyAutoAddedTabs(
 
 export interface ComposeboxInputModelParams {
   files?: Map<UnguessableToken, ComposeboxFile>;
+  attachedContext?: Map<UnguessableToken, ComposeboxFile>;
   smartTabSharingActive?: boolean;
   tabFaviconChipsToCoinsEnabled?: boolean;
   input?: string;
@@ -282,7 +283,7 @@ export interface ComposeboxInputModelParams {
 }
 
 export class ComposeboxInputModel {
-  readonly files: Map<UnguessableToken, ComposeboxFile>;
+  readonly attachedContext: Map<UnguessableToken, ComposeboxFile>;
   readonly smartTabSharingActive: boolean;
   readonly tabFaviconChipsToCoinsEnabled: boolean;
   readonly input: string;
@@ -290,8 +291,13 @@ export class ComposeboxInputModel {
   readonly hasResult: boolean;
   readonly activeTool?: ToolMode;
 
+  get files(): Map<UnguessableToken, ComposeboxFile> {
+    return this.attachedContext;
+  }
+
   constructor(params?: ComposeboxInputModelParams) {
-    this.files = params?.files ?? new Map();
+    this.attachedContext =
+        params?.attachedContext ?? params?.files ?? new Map();
     this.smartTabSharingActive = params?.smartTabSharingActive ?? false;
     this.tabFaviconChipsToCoinsEnabled =
         params?.tabFaviconChipsToCoinsEnabled ?? false;
@@ -303,22 +309,22 @@ export class ComposeboxInputModel {
 
   hasTabs(): boolean {
     return (this.tabFaviconChipsToCoinsEnabled &&
-            Array.from(this.files.values()).some(f => !!f.url)) ||
+            Array.from(this.attachedContext.values()).some(f => !!f.url)) ||
         this.smartTabSharingActive;
   }
 
   hasNonTabFiles(): boolean {
-    return Array.from(this.files.values()).some(f => !f.url);
+    return Array.from(this.attachedContext.values()).some(f => !f.url);
   }
 
   getNonTabFileNum(): number {
-    return Array.from(this.files.values())
+    return Array.from(this.attachedContext.values())
         .filter(file => file.inputType !== InputType.kBrowserTab)
         .length;
   }
 
   getSharedTabs(): TabInfo[] {
-    return Array.from(this.files.values())
+    return Array.from(this.attachedContext.values())
         .filter(file => !!file.url)
         .map(file => ({
                tabId: file.tabId!,
@@ -328,15 +334,16 @@ export class ComposeboxInputModel {
   }
 
   hasFiles(): boolean {
-    return this.files.size > 0;
+    return this.attachedContext.size > 0;
   }
 
   hasOnlyAutoAddedTabs(): boolean {
-    return hasOnlyAutoAddedTabs(this.files);
+    return hasOnlyAutoAddedTabs(this.attachedContext);
   }
 
   hasUnimodalFile(): boolean {
-    return Array.from(this.files.values()).some(file => file.supportsUnimodal);
+    return Array.from(this.attachedContext.values())
+        .some(file => file.supportsUnimodal);
   }
 
   hasValidQuery(): boolean {
@@ -387,7 +394,13 @@ export interface TabUpload {
   origin: TabUploadOrigin;
 }
 
-export type ContextualUpload = TabUpload|FileUpload|DriveUpload;
+export interface BrowserFileUpload {
+  token: UnguessableToken;
+  fileInfo: SelectedFileInfo;
+}
+
+export type ContextualUpload =
+    TabUpload|FileUpload|DriveUpload|BrowserFileUpload;
 
 // Represents an embedder-agnostic request to execute a FuseboxAction in a
 // Composebox instance
@@ -662,4 +675,19 @@ export function mapUploadErrorToProcessFilesError(errorType: ContextUploadErrorT
     default:
       return ProcessFilesError.NONE;
   }
+}
+
+/**
+ * Returns whether a given tab ID represents a valid browser tab.
+ */
+export function isValidTabId(tabId: number|undefined|null): boolean {
+  return typeof tabId === 'number' && tabId > 0;
+}
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+export enum SmartTabSharingSurface {
+  OMNIBOX_COMPOSEBOX = 0,
+  CONTEXTUAL_SEARCHBOX = 1,
+  MAX_VALUE = CONTEXTUAL_SEARCHBOX,
 }

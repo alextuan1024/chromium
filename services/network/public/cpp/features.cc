@@ -537,7 +537,7 @@ BASE_FEATURE(kReportingApiEnableVariationsHeaders,
 BASE_FEATURE(kNetworkContextDirectReceiver, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool ShouldBindNetworkContextDirectReceiver() {
-  return mojo::IsDirectReceiverSupported() && base::CurrentIOThread::IsSet() &&
+  return base::CurrentIOThread::IsSet() &&
          base::FeatureList::IsEnabled(features::kNetworkContextDirectReceiver);
 }
 
@@ -552,13 +552,6 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    "initial_doh_probe_timeout",
                    base::Seconds(5));
 
-BASE_FEATURE(kRestrictForbiddenSecurityHeaders,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(bool,
-                   kRestrictForbiddenSecurityHeadersDump,
-                   &kRestrictForbiddenSecurityHeaders,
-                   false);
-
 BASE_FEATURE(kDirectSocketsUdpSendRequireMulticastPermissionPolicy,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -566,5 +559,8 @@ BASE_FEATURE(kBrowserInitiatedFileUploadValidation,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSafeRevalidation, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kBindURLLoaderFactoryToHighPriorityTaskRunner,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace network::features

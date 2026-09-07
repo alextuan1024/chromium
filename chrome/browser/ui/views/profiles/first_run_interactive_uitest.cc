@@ -50,6 +50,7 @@
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/startup/first_run_service.h"
 #include "chrome/browser/ui/startup/first_run_test_util.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/profiles/feature_showcase/feature_showcase_constants.h"
@@ -66,6 +67,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
@@ -360,6 +362,7 @@ class FirstRunInteractiveUiBaseTest
             [&](FirstRunVersion::Legacy) {
               disabled_features.push_back(switches::kFirstRunDesktopRefresh);
               disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
             },
             [&](FirstRunVersion::Refreshed refreshed) {
               enabled_features.push_back(
@@ -369,7 +372,9 @@ class FirstRunInteractiveUiBaseTest
                          refreshed.variant)}}});
               enabled_features.push_back(
                   {switches::kFirstRunDesktopChoiceScreenRefresh, {}});
+
               disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
             },
             [&](FirstRunVersion::Revamped revamped) {
               enabled_features.push_back(
@@ -389,6 +394,8 @@ class FirstRunInteractiveUiBaseTest
                 disabled_features.push_back(
                     switches::kFirstRunDesktopRevampSound);
               }
+
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
             },
             [&](FirstRunVersion::PreFirstRunRefreshed) {
               enabled_features.push_back(
@@ -2273,6 +2280,18 @@ const HatsTestParams kHatsTestParams[] = {
      .hats_trigger =
          kHatsSurveyTriggerFirstRunDesktopRevampNoFeatureShowcaseCompleted,
      .test_suffix = "RevampNoFeatureShowcaseSurvey",
+     .forced_showcase_steps = {}},
+    {.flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+     .hats_feature = switches::kPreFirstRunDesktopRefreshSurvey,
+     .hats_trigger = kHatsSurveyTriggerPreFirstRunDesktopRefreshCompleted,
+     .test_suffix = "PreFirstRunRefreshSurvey",
+     .forced_showcase_steps = {"default-browser"}},
+    {.flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+     .hats_feature =
+         switches::kPreFirstRunDesktopRefreshNoFeatureShowcaseSurvey,
+     .hats_trigger =
+         kHatsSurveyTriggerPreFirstRunDesktopRefreshNoFeatureShowcaseCompleted,
+     .test_suffix = "PreFirstRunRefreshNoFeatureShowcaseSurvey",
      .forced_showcase_steps = {}}};
 
 class FirstRunWithHatsInteractiveUiTest
@@ -2375,7 +2394,10 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTest,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+      If([this]() { return UsePreFirstRunRefreshedView(); },
+         Then(WaitForWebContentsReady(kWebContentsId, GetWelcomeURL())),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
       SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_CLOSE_WINDOW))
           .SetMustRemainVisible(false));
 
@@ -2383,7 +2405,6 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTest,
 
   EXPECT_TRUE(proceed_future.Get());
   EXPECT_TRUE(GetFirstRunFinishedPrefValue());
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
 }
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -2632,7 +2653,18 @@ INSTANTIATE_TEST_SUITE_P(
             .flow_version = FirstRunVersion::Refreshed{},
             .hats_feature = switches::kFirstRunDesktopRevampSurvey,
             .hats_trigger = kHatsSurveyTriggerFirstRunDesktopRevampCompleted,
-            .test_suffix = "RevampSurveyWithRefreshedFlow"}),
+            .test_suffix = "RevampSurveyWithRefreshedFlow"},
+        HatsTestParams{
+            .flow_version = FirstRunVersion::Revamped{},
+            .hats_feature = switches::kPreFirstRunDesktopRefreshSurvey,
+            .hats_trigger =
+                kHatsSurveyTriggerPreFirstRunDesktopRefreshCompleted,
+            .test_suffix = "PreFirstRunRefreshSurveyWithRevampFlow"},
+        HatsTestParams{
+            .flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+            .hats_feature = switches::kFirstRunDesktopRevampSurvey,
+            .hats_trigger = kHatsSurveyTriggerFirstRunDesktopRevampCompleted,
+            .test_suffix = "RevampSurveyWithPreFirstRunRefreshFlow"}),
     [](const TestParamInfo<HatsTestParams>& info) {
       return std::string(info.param.test_suffix);
     });
@@ -3795,6 +3827,20 @@ IN_PROC_BROWSER_TEST_P(PreFirstRunRefreshPolicyInteractiveUiTest,
   histogram_tester().ExpectUniqueSample(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kCompleted, 1);
+
+  if (signin_util::IsForceSigninEnabled()) {
+    histogram_tester().ExpectUniqueSample(
+        "ProfilePicker.FirstRun.FinishReason",
+        ProfilePicker::FirstRunFinishReason::kForceSignin, 1);
+    EXPECT_TRUE(IsProfileNameDefault());
+  } else {
+    histogram_tester().ExpectUniqueSample(
+        "ProfilePicker.FirstRun.FinishReason",
+        ProfilePicker::FirstRunFinishReason::kSkippedByPolicies, 1);
+    EXPECT_EQ(l10n_util::GetStringUTF16(
+                  IDS_SIGNIN_DICE_WEB_INTERCEPT_ENTERPRISE_PROFILE_NAME),
+              GetProfileName());
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(,

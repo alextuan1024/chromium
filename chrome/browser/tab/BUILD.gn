@@ -12,7 +12,6 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/tab/CollectionSaveForwarder.java",
     "java/src/org/chromium/chrome/browser/tab/CollectionStorageObserverFactory.java",
     "java/src/org/chromium/chrome/browser/tab/CurrentTabObserver.java",
-    "java/src/org/chromium/chrome/browser/tab/EmptyTabObserver.java",
     "java/src/org/chromium/chrome/browser/tab/LookAheadObservableSupplier.java",
     "java/src/org/chromium/chrome/browser/tab/SadTab.java",
     "java/src/org/chromium/chrome/browser/tab/SadTabView.java",
@@ -73,6 +72,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/tab/state/Serializer.java",
     "java/src/org/chromium/chrome/browser/tab/state/ShoppingPersistedTabData.java",
     "java/src/org/chromium/chrome/browser/tab/state/ShoppingPersistedTabDataService.java",
+    "java/src/org/chromium/chrome/browser/tab/utilities/OnDemandBackgroundTabCaptureConfig.java",
     "java/src/org/chromium/chrome/browser/tab/utilities/TabLoadingService.java",
   ]
 
@@ -196,6 +196,7 @@ robolectric_library("junit") {
     "java/src/org/chromium/chrome/browser/tab/TabStateAttributesTest.java",
     "java/src/org/chromium/chrome/browser/tab/TabStateExtractorTest.java",
     "java/src/org/chromium/chrome/browser/tab/TabSupplierObserverTest.java",
+    "java/src/org/chromium/chrome/browser/tab/state/LevelDBPersistedTabDataStorageFactoryUnitTest.java",
     "java/src/org/chromium/chrome/browser/tab/state/PriceDropMetricsLoggerTest.java",
     "java/src/org/chromium/chrome/browser/tab/state/SendTabToSelfTabCardLabelDataUnitTest.java",
     "java/src/org/chromium/chrome/browser/tab/utilities/TabLoadingServiceTest.java",
@@ -323,7 +324,6 @@ source_set("unit_tests") {
     ":tab",
     "//base",
     "//base/test:test_support",
-    "//chrome/browser",
     "//components/tabs:public",
     "//testing/gtest",
   ]

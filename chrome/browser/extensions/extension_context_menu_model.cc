@@ -66,20 +66,23 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/menu_separator_types.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 
-#if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
-#include "chrome/browser/ui/extensions/extensions_container.h"
-#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"   // nogncheck
 #include "chrome/browser/ui/side_panel/side_panel_entry_key.h"  // nogncheck
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"         // nogncheck
 #include "chrome/common/extensions/api/side_panel.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/extensions/extensions_container.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #endif
@@ -126,8 +129,7 @@ bool IsExtensionForcePinned(const Extension& extension, Profile* profile) {
 // Returns true if the given |extension| is allowed to be inspected based on
 // the Developer Tools Availability in the policy.
 bool IsExtensionInspectionAllowed(const Extension& extension,
-                                  Profile* profile,
-                                  content::WebContents* web_contents) {
+                                  Profile* profile) {
   policy::DeveloperToolsPolicyChecker* checker =
       policy::DeveloperToolsPolicyCheckerFactory::GetForBrowserContext(profile);
   if (checker) {
@@ -232,8 +234,8 @@ ExtensionContextMenuModel::ContextMenuAction CommandIdToContextMenuAction(
       return ContextMenuAction::kViewWebPermissions;
     case ExtensionContextMenuModel::POLICY_INSTALLED:
       return ContextMenuAction::kPolicyInstalled;
-    case ExtensionContextMenuModel::REVIEW_EXTENSION:
-      return ContextMenuAction::kReviewExtension;
+    case ExtensionContextMenuModel::RATE_EXTENSION:
+      return ContextMenuAction::kRateExtension;
     default:
       break;
   }
@@ -453,7 +455,7 @@ bool ExtensionContextMenuModel::IsCommandIdEnabled(int command_id) const {
       return web_contents && extension_action_ &&
              extension_action_->HasPopup(
                  sessions::SessionTabHelper::IdForTab(web_contents).id()) &&
-             IsExtensionInspectionAllowed(*extension, profile_, web_contents);
+             IsExtensionInspectionAllowed(*extension, profile_);
     }
     case UNINSTALL:
       // Uninstall is always enabled since it will only be visible when the
@@ -463,9 +465,9 @@ bool ExtensionContextMenuModel::IsCommandIdEnabled(int command_id) const {
       // This option is always enabled since it will only be visible when the
       // extension provides a side panel.
       return true;
-    case REVIEW_EXTENSION:
-      // Review extension is always enabled since it will only be visible if the
-      // eligibility checks for writing a review are met.
+    case RATE_EXTENSION:
+      // Rate extension is always enabled since it will only be visible if the
+      // eligibility checks for rating are met.
       return true;
     case POLICY_INSTALLED:
       // This option is always disabled since user cannot remove a policy
@@ -565,7 +567,6 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       break;
     }
     case TOGGLE_SIDE_PANEL_VISIBILITY: {
-#if !BUILDFLAG(IS_ANDROID)
       // Do nothing if the web contents have navigated to a different origin.
       auto* web_contents = GetActiveWebContents();
       if (!web_contents ||
@@ -574,7 +575,11 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       }
 
       SidePanelService* const side_panel_service = GetSidePanelService();
-      CHECK(side_panel_service);
+      // side_panel_service can be nullptr in unit tests and is unsupported in
+      // system/guest profiles.
+      if (!side_panel_service) {
+        return;
+      }
 
       // The state of the tab could have changed since we opened the context
       // menu. This check ensures that the extension has a valid side panel it
@@ -584,7 +589,6 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
                                                                   tab_id)) {
         side_panel_util::ToggleExtensionSidePanel(browser_, extension->id());
       }
-#endif  // !BUILDFLAG(IS_ANDROID)
       break;
     }
     case MANAGE_EXTENSIONS: {
@@ -616,7 +620,7 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       delegate_->InspectPopup();
       break;
     }
-    case REVIEW_EXTENSION: {
+    case RATE_EXTENSION: {
       util::CWSReviewSource review_source =
           (source_ == ContextMenuSource::kMenuItem)
               ? util::CWSReviewSource::kExtensionsMenu
@@ -878,8 +882,9 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
   }
 
   if (ui_util::ShouldShowReviewPrompt(*extension, *profile_)) {
-    AddItemWithStringId(REVIEW_EXTENSION,
-                        IDS_EXTENSIONS_CONTEXT_MENU_WRITE_REVIEW);
+    // Ellipsis is used because further user action is needed after clicking
+    // the item to complete the rating flow on the Chrome Web Store.
+    AddItemWithStringId(RATE_EXTENSION, IDS_EXTENSIONS_CONTEXT_MENU_RATE_IT);
   }
 
   if (has_options_page) {
@@ -890,9 +895,7 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
     AddItemWithStringId(UNINSTALL, IDS_EXTENSIONS_UNINSTALL);
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   AddSidePanelEntryIfPresent(*extension);
-#endif
 
   // Settings section.
   if (!is_component_) {
@@ -906,8 +909,7 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
   if (delegate_ && !is_component_ && action_info && !action_info->synthesized &&
       profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode)) {
     AddSeparator(ui::NORMAL_SEPARATOR);
-    if (IsExtensionInspectionAllowed(*extension, profile_,
-                                     GetActiveWebContents())) {
+    if (IsExtensionInspectionAllowed(*extension, profile_)) {
       AddItemWithStringId(INSPECT_POPUP, IDS_EXTENSION_ACTION_INSPECT_POPUP);
     } else {
       AddItemWithStringIdAndIcon(
@@ -954,8 +956,9 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
   }
 
   if (ui_util::ShouldShowReviewPrompt(*extension, *profile_)) {
-    AddItemWithStringId(REVIEW_EXTENSION,
-                        IDS_EXTENSIONS_CONTEXT_MENU_WRITE_REVIEW);
+    // Ellipsis is used because further user action is needed after clicking
+    // the item to complete the rating flow on the Chrome Web Store.
+    AddItemWithStringId(RATE_EXTENSION, IDS_EXTENSIONS_CONTEXT_MENU_RATE_IT);
   }
 
   if (OptionsPageInfo::HasOptionsPage(extension))
@@ -993,9 +996,7 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
     }
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   AddSidePanelEntryIfPresent(*extension);
-#endif
 
   if (!is_component_) {
     AddSeparator(ui::NORMAL_SEPARATOR);
@@ -1011,7 +1012,6 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
   }
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
     const Extension& extension) {
   if (!extension.permissions_data()->HasAPIPermission(
@@ -1020,7 +1020,11 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
   }
 
   SidePanelService* const side_panel_service = GetSidePanelService();
-  CHECK(side_panel_service);
+  // side_panel_service can be nullptr in unit tests and is unsupported in
+  // system/guest profiles.
+  if (!side_panel_service) {
+    return;
+  }
 
   int tab_id = ExtensionTabUtil::GetTabId(GetActiveWebContents());
   if (!side_panel_service->HasSidePanelContextMenuActionForTab(extension,
@@ -1028,9 +1032,14 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
     return;
   }
 
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser_);
+  // side_panel_ui can be nullptr in unit tests, app popups, custom windows,
+  // and during teardown.
+  if (!side_panel_ui) {
+    return;
+  }
+
   AddSeparator(ui::NORMAL_SEPARATOR);
-  SidePanelUI* const side_panel_ui = browser_->GetFeatures().side_panel_ui();
-  CHECK(side_panel_ui);
   bool is_side_panel_open = side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(SidePanelEntryId::kExtension, extension.id()));
   AddItemWithStringId(TOGGLE_SIDE_PANEL_VISIBILITY,
@@ -1038,7 +1047,6 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
                           ? IDS_EXTENSIONS_SUBMENU_CLOSE_SIDE_PANEL_ITEM
                           : IDS_EXTENSIONS_SUBMENU_OPEN_SIDE_PANEL_ITEM);
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 const Extension* ExtensionContextMenuModel::GetExtension() const {
   return ExtensionRegistry::Get(profile_)->enabled_extensions().GetByID(
@@ -1107,13 +1115,13 @@ void ExtensionContextMenuModel::CreatePageAccessItems(
 }
 
 content::WebContents* ExtensionContextMenuModel::GetActiveWebContents() const {
-  return TabListInterface::From(browser_)->GetActiveTab()->GetContents();
+  tabs::TabInterface* active_tab =
+      TabListInterface::From(browser_)->GetActiveTab();
+  return active_tab ? active_tab->GetContents() : nullptr;
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 SidePanelService* ExtensionContextMenuModel::GetSidePanelService() const {
   return SidePanelService::Get(profile_);
 }
-#endif
 
 }  // namespace extensions

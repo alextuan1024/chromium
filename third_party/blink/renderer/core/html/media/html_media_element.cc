@@ -477,6 +477,10 @@ HTMLMediaElement::HTMLMediaElement(const QualifiedName& tag_name,
   SetHasCustomStyleCallbacks();
   AddElementToDocumentMap(this, &document);
 
+  if (!CanPlayWhileHidden()) {
+    UseCounter::Count(
+        document, WebFeature::kMediaPlaybackWhileNotVisiblePermissionPolicy);
+  }
   UseCounter::Count(document, WebFeature::kHTMLMediaElement);
 }
 
@@ -500,6 +504,12 @@ void HTMLMediaElement::Dispose() {
 
 void HTMLMediaElement::DidMoveToNewDocument(Document& old_document) {
   DVLOG(3) << "didMoveToNewDocument(" << *this << ")";
+
+  if (!CanPlayWhileHidden()) {
+    UseCounter::Count(
+        GetDocument(),
+        WebFeature::kMediaPlaybackWhileNotVisiblePermissionPolicy);
+  }
 
   load_timer_.MoveToNewTaskRunner(
       GetDocument().GetTaskRunner(TaskType::kInternalMedia));
@@ -690,7 +700,7 @@ bool HTMLMediaElement::ShouldReusePlayer(Document& old_document,
 
 bool HTMLMediaElement::CanPlayWhileHidden() const {
   ExecutionContext* context = GetDocument().GetExecutionContext();
-  return context &&
+  return !context ||
          context->IsFeatureEnabled(network::mojom::PermissionsPolicyFeature::
                                        kMediaPlaybackWhileNotVisible,
                                    ReportOptions::kDoNotReport);
@@ -1786,30 +1796,7 @@ void HTMLMediaElement::StartPlayerLoad() {
   web_media_player_->RequestRemotePlaybackDisabled(
       FastHasAttribute(html_names::kDisableremoteplaybackAttr));
 
-  if (RuntimeEnabledFeatures::
-          MediaPlaybackWhileNotVisiblePermissionPolicyEnabled(
-              GetExecutionContext())) {
-    UseCounter::Count(
-        GetDocument(),
-        WebFeature::kMediaPlaybackWhileNotVisiblePermissionPolicy);
-    web_media_player_->SetShouldPauseWhenFrameIsHidden(
-        !GetDocument().GetExecutionContext()->IsFeatureEnabled(
-            network::mojom::PermissionsPolicyFeature::
-                kMediaPlaybackWhileNotVisible,
-            ReportOptions::kDoNotReport));
-  }
-
-  if (!CanPlayWhileHidden()) {
-    // The "media-playback-while-not-visible" permission policy default value
-    // was overridden, which means that either this frame or an ancestor frame
-    // changed the permission policy's default value. This should only happen if
-    // the MediaPlaybackWhileNotVisiblePermissionPolicyEnabled runtime flag is
-    // enabled.
-    UseCounter::Count(
-        GetDocument(),
-        WebFeature::kMediaPlaybackWhileNotVisiblePermissionPolicy);
-    web_media_player_->SetShouldPauseWhenFrameIsHidden(true);
-  }
+  web_media_player_->SetShouldPauseWhenFrameIsHidden(!CanPlayWhileHidden());
 
   bool is_cache_disabled = false;
   probe::IsCacheDisabled(GetDocument().GetExecutionContext(),
@@ -4589,6 +4576,18 @@ void HTMLMediaElement::MediaControlsDidBecomeVisible() {
   }
 }
 
+void HTMLMediaElement::MediaControlsDidBecomeHidden() {
+  DVLOG(3) << "mediaControlsDidBecomeHidden(" << *this << ")";
+
+  // When the user agent stops exposing a user interface for a video element,
+  // reset and re-run the text track rendering rules so cues reclaim the space
+  // that was reserved for the controls.
+  if (IsHTMLVideoElement() && TextTracksVisible()) {
+    EnsureTextTrackContainer().UpdateDisplay(
+        *this, TextTrackContainer::kDidStopExposingControls);
+  }
+}
+
 void HTMLMediaElement::SetTextTrackKindUserPreferenceForAllMediaElements(
     Document* document) {
   auto it = DocumentToElementSetMap().find(document);
@@ -5015,11 +5014,9 @@ void HTMLMediaElement::RejectScheduledPlayPromises() {
     case PlayPromiseError::kNotSupported:
       NOTREACHED();
   }
-  RejectPlayPromisesInternal(
-      DOMExceptionCode::kAbortError,
-      UNSAFE_TODO(String::Format(
-          "The play() request was interrupted%s. https://goo.gl/LdLk22",
-          reason)));
+  RejectPlayPromisesInternal(DOMExceptionCode::kAbortError,
+                             StrCat({"The play() request was interrupted",
+                                     reason, ". https://goo.gl/LdLk22"}));
 }
 
 void HTMLMediaElement::RejectPlayPromises(DOMExceptionCode code,

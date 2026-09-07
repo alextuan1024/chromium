@@ -260,15 +260,6 @@ void PageTool::Validate(ToolCallback callback) {
     return;
   }
 
-  TabInterface* tab = request_->GetTabHandle().Get();
-  if (!tab) {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(callback),
-                       MakeResult(mojom::ActionResultCode::kTabWentAway)));
-    return;
-  }
-
   RenderFrameHost* frame =
       FindTargetLocalRootFrame(request_->GetTabHandle(), request_->GetTarget());
   if (!frame) {
@@ -279,6 +270,7 @@ void PageTool::Validate(ToolCallback callback) {
     return;
   }
 
+  TabInterface* tab = request_->GetTabHandle().Get();
   const optimization_guide::proto::AnnotatedPageContent* last_observation =
       nullptr;
   if (auto* tab_data = ActorTabData::From(tab)) {
@@ -310,10 +302,18 @@ void PageTool::Validate(ToolCallback callback) {
   std::string text = request_->GetTextContentSentToRenderer();
   if (text.empty() || !scanning_enabled) {
     if (validation_supported) {
+      // If the renderer connection drops (e.g. frame detached during
+      // tool initialization), ensure the callback is invoked with
+      // kFrameWentAway.
+      ToolCallback wrapped_callback =
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              std::move(callback),
+              MakeResult(mojom::ActionResultCode::kFrameWentAway));
       chrome_render_frame_->InitializeTool(
           std::move(invocation),
           base::BindOnce(&PageTool::OnInitializeToolComplete,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+                         weak_ptr_factory_.GetWeakPtr(),
+                         std::move(wrapped_callback)));
     } else {
       std::move(callback).Run(MakeOkResult());
     }

@@ -104,6 +104,11 @@ class TestSidePanelEntryObserver final : public SidePanelEntryObserver {
     num_on_entry_hide_cancelled_received_++;
   }
 
+  void OnEntryShowDeferred(SidePanelEntry* entry) override {
+    id_for_last_entry_show_deferred_ = entry->key().id();
+    num_on_entry_show_deferred_received_++;
+  }
+
   std::optional<SidePanelEntry::Id> id_for_last_entry_shown_;
 
   std::optional<SidePanelEntry::Id> id_for_last_entry_will_hide_;
@@ -117,11 +122,14 @@ class TestSidePanelEntryObserver final : public SidePanelEntryObserver {
 
   std::optional<SidePanelEntry::Id> id_for_last_entry_hide_cancelled_;
 
+  std::optional<SidePanelEntry::Id> id_for_last_entry_show_deferred_;
+
   int num_on_entry_shown_received_ = 0;
   int num_on_entry_will_hide_received_ = 0;
   int num_on_entry_hidden_received_ = 0;
   int num_on_entry_hidden_with_reason_received_ = 0;
   int num_on_entry_hide_cancelled_received_ = 0;
+  int num_on_entry_show_deferred_received_ = 0;
 
  private:
   base::ScopedObservation<SidePanelEntry, SidePanelEntryObserver> observation_{
@@ -653,21 +661,67 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
-                       Show_InsufficientSpace_Blocked) {
+                       Show_InsufficientSpace_TriggersOnEntryShowDeferred) {
   // Arrange:
   auto entry_key = SidePanelEntryKey(SidePanelEntryId::kAboutThisSite);
-  SidePanelRegistry::From(browser_)->Register(
-      CreateSidePanelEntry(entry_key, browser_));
+  std::unique_ptr<SidePanelEntry> entry =
+      CreateSidePanelEntry(entry_key, browser_);
+  TestSidePanelEntryObserver entry_observer(entry.get());
+
+  auto* registry = SidePanelRegistry::From(browser_);
+  registry->Register(std::move(entry));
 
   // Arrange: Make the space insufficient.
   coordinator_->SimulateAutoCloseConditionForTesting();
 
   // Act: Try to show.
-  coordinator_->SidePanelUIBase::Show(
-      entry_key, SidePanelOpenTrigger::kToolbarButton, true);
+  coordinator_->SidePanelUIBase::Show(entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
 
   // Assert: Panel should NOT be showing.
   EXPECT_FALSE(coordinator_->IsSidePanelShowing());
+
+  // Assert: OnEntryShowDeferred should be triggered.
+  EXPECT_EQ(entry_observer.id_for_last_entry_show_deferred_,
+            SidePanelEntryId::kAboutThisSite);
+  EXPECT_EQ(entry_observer.num_on_entry_show_deferred_received_, 1);
+  EXPECT_EQ(entry_observer.num_on_entry_shown_received_, 0);
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
+                       Show_InsufficientSpace_ResizeWindow_ShowsEntry) {
+  // Arrange: Create and register a side panel entry.
+  auto entry_key = SidePanelEntryKey(SidePanelEntryId::kAboutThisSite);
+  std::unique_ptr<SidePanelEntry> entry =
+      CreateSidePanelEntry(entry_key, browser_);
+  TestSidePanelEntryObserver entry_observer(entry.get());
+
+  auto* registry = SidePanelRegistry::From(browser_);
+  registry->Register(std::move(entry));
+
+  // Arrange: Make the space insufficient.
+  coordinator_->SimulateAutoCloseConditionForTesting();
+
+  // Act: Try to show the entry while space is insufficient.
+  coordinator_->SidePanelUIBase::Show(entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
+
+  // Assert: Panel is not showing.
+  EXPECT_FALSE(coordinator_->IsSidePanelShowing());
+
+  // Act: Simulate resizing the window to make space sufficient (auto-restore).
+  coordinator_->SimulateAutoRestoreConditionForTesting();
+  WaitUntilOpened(coordinator_);
+
+  // Assert: Panel is now showing, and OnEntryShown is called.
+  EXPECT_TRUE(coordinator_->IsSidePanelShowing());
+  EXPECT_TRUE(
+      coordinator_->SidePanelUIBase::IsSidePanelEntryShowing(entry_key));
+  EXPECT_EQ(entry_observer.id_for_last_entry_shown_,
+            SidePanelEntryId::kAboutThisSite);
+  EXPECT_EQ(entry_observer.num_on_entry_shown_received_, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
@@ -2612,9 +2666,16 @@ IN_PROC_BROWSER_TEST_F(
       /*tab_scoped_entry_ids=*/
       {std::nullopt, SidePanelEntryId::kTestTabScopedEntry},
       /*active_tab_index=*/1);
-  tabs::TabHandle side_panel_tab_handle = src_tab_list->GetTab(1)->GetHandle();
   ASSERT_TRUE(src_coordinator->IsSidePanelEntryShowing(
       SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry)));
+  tabs::TabInterface* side_panel_tab = src_tab_list->GetTab(1);
+  tabs::TabHandle side_panel_tab_handle = side_panel_tab->GetHandle();
+  SidePanelEntry* side_panel_entry =
+      SidePanelRegistry::From(side_panel_tab)
+          ->GetEntryForKey(
+              SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry));
+  ASSERT_TRUE(side_panel_entry);
+  TestSidePanelEntryObserver side_panel_entry_observer(side_panel_entry);
 
   // Arrange: Create the destination window.
   BrowserWindowInterface* dst_window =
@@ -2633,6 +2694,10 @@ IN_PROC_BROWSER_TEST_F(
   // Assert: Side panel is not shown in the destination window, but is tracked
   // by DeferredEntryTracker.
   EXPECT_FALSE(dst_coordinator->IsSidePanelShowing());
+  EXPECT_EQ(side_panel_entry_observer.id_for_last_entry_show_deferred_,
+            SidePanelEntryId::kTestTabScopedEntry);
+  EXPECT_EQ(side_panel_entry_observer.num_on_entry_show_deferred_received_, 1);
+
   std::optional<SidePanelUIBase::UniqueKey> dst_deferred_entry =
       dst_coordinator->GetDeferredEntryTrackerForTesting()
           .GetTabOrWindowScopedEntry(side_panel_tab_handle);
@@ -2645,9 +2710,14 @@ IN_PROC_BROWSER_TEST_F(
   dst_coordinator->SimulateAutoRestoreConditionForTesting();
 
   // Assert: Side panel is shown in the destination window.
+  // OnEntryShown() is expected to be called, and OnEntryShowDeferred() isn't.
   WaitUntilOpened(dst_coordinator);
   EXPECT_TRUE(dst_coordinator->IsSidePanelEntryShowing(
       SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry)));
+  EXPECT_EQ(side_panel_entry_observer.id_for_last_entry_shown_,
+            SidePanelEntryId::kTestTabScopedEntry);
+  EXPECT_EQ(side_panel_entry_observer.num_on_entry_shown_received_, 1);
+  EXPECT_EQ(side_panel_entry_observer.num_on_entry_show_deferred_received_, 1);
 }
 
 // Setup:
@@ -2847,7 +2917,8 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
                        HasContentToShow_InitialState_ReturnsFalse) {
-  EXPECT_FALSE(coordinator_->HasContentToShow());
+  TabAndroid* tab = TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  EXPECT_FALSE(coordinator_->HasContentToShow(tab));
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
@@ -2863,7 +2934,8 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
   WaitUntilOpened(coordinator_);
 
   // Assert:
-  EXPECT_TRUE(coordinator_->HasContentToShow());
+  TabAndroid* tab = TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  EXPECT_TRUE(coordinator_->HasContentToShow(tab));
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
@@ -2883,7 +2955,8 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
   WaitUntilClosed(coordinator_);
 
   // Assert:
-  EXPECT_FALSE(coordinator_->HasContentToShow());
+  TabAndroid* tab = TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  EXPECT_FALSE(coordinator_->HasContentToShow(tab));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -2905,7 +2978,131 @@ IN_PROC_BROWSER_TEST_F(
   WaitUntilClosed(coordinator_);
 
   // Assert:
-  EXPECT_TRUE(coordinator_->HasContentToShow());
+  TabAndroid* tab = TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  EXPECT_TRUE(coordinator_->HasContentToShow(tab));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SidePanelCoordinatorAndroidBrowserTest,
+    HasContentToShow_InactiveTabHasNoActiveEntry_ReturnsFalse) {
+  // Arrange: Open 2 tabs, with first_tab active and second_tab inactive.
+  TabAndroid* first_tab =
+      TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  TabAndroid* second_tab = TabAndroid::FromTabInterface(
+      tab_list_->OpenTab(GURL("about:blank"), /*index=*/1));
+  tab_list_->ActivateTab(first_tab->GetHandle());
+
+  auto* first_registry = SidePanelRegistry::From(first_tab);
+  ASSERT_NE(nullptr, first_registry);
+  auto first_entry_key =
+      SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry);
+  first_registry->Register(CreateSidePanelEntry(first_entry_key, browser_));
+
+  // Show entry on first_tab (active tab).
+  coordinator_->SidePanelUIBase::Show(first_entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
+  WaitUntilOpened(coordinator_);
+
+  // Assert: first_tab is active with an entry; second_tab is inactive with no
+  // entry.
+  EXPECT_TRUE(first_tab->IsActivated());
+  EXPECT_FALSE(second_tab->IsActivated());
+  EXPECT_TRUE(coordinator_->HasContentToShow(first_tab));
+  EXPECT_FALSE(coordinator_->HasContentToShow(second_tab));
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorAndroidBrowserTest,
+                       HasContentToShow_InactiveTabHasActiveEntry_ReturnsTrue) {
+  // Arrange: Open second_tab and show an entry on it.
+  TabAndroid* first_tab =
+      TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  TabAndroid* second_tab = TabAndroid::FromTabInterface(
+      tab_list_->OpenTab(GURL("about:blank"), /*index=*/1));
+  auto* second_registry = SidePanelRegistry::From(second_tab);
+  ASSERT_NE(nullptr, second_registry);
+
+  auto second_entry_key =
+      SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry);
+  second_registry->Register(CreateSidePanelEntry(second_entry_key, browser_));
+
+  coordinator_->SidePanelUIBase::Show(second_entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
+  WaitUntilOpened(coordinator_);
+
+  // Switch to first_tab, making it active and closing second_tab's panel.
+  tab_list_->ActivateTab(first_tab->GetHandle());
+  WaitUntilClosed(coordinator_);
+
+  // Assert: second_tab is inactive, but has an active entry in its registry.
+  EXPECT_TRUE(first_tab->IsActivated());
+  EXPECT_FALSE(second_tab->IsActivated());
+  EXPECT_FALSE(coordinator_->HasContentToShow(first_tab));
+  EXPECT_TRUE(coordinator_->HasContentToShow(second_tab));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SidePanelCoordinatorAndroidBrowserTest,
+    HasContentToShow_InactiveTabHasDeferredEntry_ReturnsTrue) {
+  // Arrange: Open second_tab and show an entry on it.
+  TabAndroid* first_tab =
+      TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  TabAndroid* second_tab = TabAndroid::FromTabInterface(
+      tab_list_->OpenTab(GURL("about:blank"), /*index=*/1));
+  auto* second_registry = SidePanelRegistry::From(second_tab);
+  ASSERT_NE(nullptr, second_registry);
+
+  auto second_entry_key =
+      SidePanelEntryKey(SidePanelEntryId::kTestTabScopedEntry);
+  second_registry->Register(CreateSidePanelEntry(second_entry_key, browser_));
+
+  coordinator_->SidePanelUIBase::Show(second_entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
+  WaitUntilOpened(coordinator_);
+
+  // Hide the panel due to insufficient space, creating a deferred entry on
+  // second_tab.
+  coordinator_->SimulateAutoCloseConditionForTesting();
+  WaitUntilClosed(coordinator_);
+
+  // Switch to first_tab, making it active.
+  tab_list_->ActivateTab(first_tab->GetHandle());
+
+  // Assert: second_tab is inactive, but has a deferred entry in the tracker.
+  EXPECT_TRUE(first_tab->IsActivated());
+  EXPECT_FALSE(second_tab->IsActivated());
+  EXPECT_FALSE(coordinator_->HasContentToShow(first_tab));
+  EXPECT_TRUE(coordinator_->HasContentToShow(second_tab));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SidePanelCoordinatorAndroidBrowserTest,
+    HasContentToShow_InactiveTabWithWindowScopedEntry_ReturnsTrue) {
+  // Arrange: Open 2 tabs, with first_tab active and second_tab inactive.
+  TabAndroid* first_tab =
+      TabAndroid::FromTabInterface(tab_list_->GetActiveTab());
+  TabAndroid* second_tab = TabAndroid::FromTabInterface(
+      tab_list_->OpenTab(GURL("about:blank"), /*index=*/1));
+  tab_list_->ActivateTab(first_tab->GetHandle());
+
+  // Register and show a window-scoped entry. Use kBookmarks as it is a global
+  // entry defined in side_panel_entry_id.h.
+  auto entry_key = SidePanelEntryKey(SidePanelEntryId::kBookmarks);
+  auto* window_registry = SidePanelRegistry::From(browser_);
+  window_registry->Register(CreateSidePanelEntry(entry_key, browser_));
+
+  coordinator_->SidePanelUIBase::Show(entry_key,
+                                      SidePanelOpenTrigger::kToolbarButton,
+                                      /*suppress_animations=*/true);
+  WaitUntilOpened(coordinator_);
+
+  // Assert: Window-scoped entry applies to both active and inactive tabs.
+  EXPECT_TRUE(first_tab->IsActivated());
+  EXPECT_FALSE(second_tab->IsActivated());
+  EXPECT_TRUE(coordinator_->HasContentToShow(first_tab));
+  EXPECT_TRUE(coordinator_->HasContentToShow(second_tab));
 }
 
 IN_PROC_BROWSER_TEST_F(

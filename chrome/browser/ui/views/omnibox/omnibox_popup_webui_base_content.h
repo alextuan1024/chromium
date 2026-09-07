@@ -106,6 +106,9 @@ class OmniboxPopupWebUIBaseContent : public views::WebView,
 
   virtual bool EscClosesUI() const;
 
+  bool ShouldApplyHeightWorkarounds() const;
+  bool ShouldSizeWebViewToPreferredHeight() const;
+
   bool IsShown() { return is_shown_; }
   void set_is_shown(bool is_shown) { is_shown_ = is_shown; }
 

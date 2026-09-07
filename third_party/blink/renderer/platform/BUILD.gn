@@ -434,7 +434,6 @@ component("platform") {
     "audio/media_multi_channel_resampler.h",
     "audio/panner.cc",
     "audio/panner.h",
-    "audio/pffft/fft_frame_pffft.cc",
     "audio/push_pull_fifo.cc",
     "audio/push_pull_fifo.h",
     "audio/reverb.cc",
@@ -447,8 +446,6 @@ component("platform") {
     "audio/reverb_convolver_stage.h",
     "audio/simple_fft_convolver.cc",
     "audio/simple_fft_convolver.h",
-    "audio/sinc_resampler.cc",
-    "audio/sinc_resampler.h",
     "audio/stereo_panner.cc",
     "audio/stereo_panner.h",
     "audio/up_sampler.cc",
@@ -1724,7 +1721,6 @@ component("platform") {
 
   if (is_mac) {
     sources += [
-      "audio/mac/fft_frame_mac.cc",
       "audio/mac/vector_math_mac.h",
       "fonts/mac/attributed_string_type_converter.h",
       "fonts/mac/attributed_string_type_converter.mm",
@@ -1795,6 +1791,7 @@ component("platform") {
     ":blink_platform_public_deps",
     ":platform_export",
     "//build/rust/crubit",
+    "//components/language_detection/core",
     "//gpu/command_buffer/client:raster_interface",
     "//media/capture:capture_lib",
     "//mojo/public/cpp/base",
@@ -1812,7 +1809,6 @@ component("platform") {
     "//third_party/blink/renderer/platform/scheduler",
     "//third_party/dawn/include/dawn:cpp_headers",
     "//third_party/fdlibm",
-    "//third_party/pffft",
     "//ui/base",
     "//ui/base:ui_data_pack",
     "//ui/base/cursor",
@@ -1829,13 +1825,8 @@ component("platform") {
     "//cc",
     "//cc/mojo_embedder",
     "//components/input",
-    "//components/language_detection/content/common",
-    "//components/language_detection/content/common:common_blink",
-    "//components/language_detection/content/renderer",
-    "//components/language_detection/core",
     "//components/paint_preview/common",
     "//components/search_engines:search_engine_utils",
-    "//components/translate/core/language_detection",
     "//components/viz/client",
     "//components/viz/common",
     "//components/webrtc:net_address_utils",
@@ -1991,11 +1982,6 @@ component("platform") {
   if (current_cpu == "arm64" || current_cpu == "arm64e" ||
       current_cpu == "arm") {
     sources += [ "audio/cpu/arm/delay_neon.cc" ]
-  }
-
-  if (!is_mac) {
-    include_dirs += [ "//third_party/pffft/src" ]
-    deps += [ "//third_party/pffft" ]
   }
 
   if (rtc_use_h265) {
@@ -3065,10 +3051,12 @@ blink_fuzzer_test("blink_storage_key_fuzzer") {
 # Fuzzer template for blink::TextCodec.
 template("blink_text_codec_fuzzer") {
   forward_variables_from(invoker, "*")
+
   config(target_name + "_config") {
     defines = [ "$target_name" ]
   }
   name = target_name
+
   blink_fuzzer_test("blink_text_codec_" + name + "_fuzzer") {
     sources = [ "text_codec_fuzzer.cc" ]
     deps = [ ":platform" ]

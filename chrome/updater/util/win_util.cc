@@ -256,7 +256,7 @@ std::optional<std::vector<std::wstring>> CommandLineToArgv(
     const std::wstring& command_line) {
   int num_args = 0;
   base::win::ScopedLocalAllocTyped<wchar_t*> argv(
-      ::CommandLineToArgvW(&command_line[0], &num_args));
+      ::CommandLineToArgvW(command_line.c_str(), &num_args));
   if (!argv || num_args < 1) {
     LOG(ERROR) << __func__ << "!argv || num_args < 1: " << num_args;
     return std::nullopt;
@@ -1054,7 +1054,7 @@ bool IsGuid(const std::wstring& s) {
   CHECK(!s.empty());
 
   GUID guid = {0};
-  return SUCCEEDED(::IIDFromString(&s[0], &guid));
+  return SUCCEEDED(::IIDFromString(s.c_str(), &guid));
 }
 
 void ForEachRegistryRunValueWithPrefix(
@@ -1656,6 +1656,21 @@ std::optional<base::win::AccessToken> GetLoggedOnUserToken() {
   return base::win::AccessToken::FromProcess(
       process.Handle(), /*impersonation=*/false,
       TOKEN_IMPERSONATE | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE);
+}
+
+void DismissAppStartingCursor() {
+  if (base::win::IsUser32AndGdi32Available()) {
+    // Informs Windows that the process has completed startup. Calling
+    // `PeekMessage` on the primary thread clears the OS-level startup feedback
+    // (`IDC_APPSTARTING`) without modifying or removing any messages from the
+    // queue.
+    // NOTE: PeekMessage will synchronously dispatch sent messages from other
+    // threads. This is safe during early startup since no windows or other
+    // threads are running, but call locations should remain at the entry
+    // points of the process.
+    MSG msg = {};
+    ::PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE);
+  }
 }
 
 }  // namespace updater

@@ -206,8 +206,7 @@ class BrowserAutofillManager : public AutofillManager {
 
   void DidShowSuggestions(
       base::span<const Suggestion> suggestions,
-      base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
-          parent_suggestion_metadata,
+      const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       AutofillExternalDelegate::UpdateSuggestionsCallback
@@ -250,19 +249,15 @@ class BrowserAutofillManager : public AutofillManager {
 
   // Handles post-filling logic of `form`, like notifying observers and logging
   // form metrics.
-  // `filled_field_ids` are the IDs of fields that were filled by the browser.
-  // `safe_filled_fields` are the subset of `filled_fields` that were deemed
-  // safe to fill by `AutofillDriverRouter`, according to the iframe security
-  // policy.
+  // `safe_filled_fields` are the fields that were deemed safe to fill by
+  // `AutofillDriverRouter`, according to the iframe security policy.
   // `skip_reasons` tells us for each field (mapped by their IDs), whether the
   // field was skipped for filling or not and why.
-  // TODO(crbug.com/40227071): Remove `filled_field_ids`.
   void OnDidFillOrPreviewForm(
       mojom::ActionPersistence action_persistence,
       const FormStructure& form,
       const AutofillField& trigger_field,
       base::span<const AutofillField* const> safe_filled_fields,
-      const base::flat_set<FieldGlobalId>& filled_field_ids,
       const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
           skip_reasons,
       const FillingPayload& filling_payload,
@@ -483,6 +478,9 @@ class BrowserAutofillManager : public AutofillManager {
 
   // Evaluates the specifics of the ablation study, and returns whether the
   // study is enabled/disabled.
+  bool EvaluateAblationStudy(
+      const std::map<FillingProduct, std::vector<Suggestion>>& suggestions,
+      AutofillField& autofill_field);
   bool EvaluateAblationStudy(AutofillField& autofill_field,
                              FillingProduct filling_product,
                              bool has_suggestions);
@@ -526,12 +524,40 @@ class BrowserAutofillManager : public AutofillManager {
   bool MaybeShowPrivateInferenceNotice(
       base::span<const Suggestion> autofill_ai_suggestions);
 
+  // Creates passkey suggestions that will be used in
+  // `MergePasskeysAndExistingSuggestions`.
+  // TODO(crbug.com/409962888): Remove after new suggestion generation logic is
+  // launched.
+  std::vector<Suggestion> CreatePasskeySuggestionsForMerge(
+      const FormFieldData& field);
+
+  // Combines passkey suggestions and existing suggestions into a single list,
+  // prioritizing existing suggestions first.
+  static void MergePasskeysAndExistingSuggestions(
+      std::vector<Suggestion>& suggestions,
+      std::vector<Suggestion> passkey_suggestions);
+
   // Merges suggestions with `FillingProduct::kAddress` with the other
   // suggestions whose products supports merging with address suggestions (see
   // `kSupportedMerges` in `suggestion_generator.h` for more details).
-  std::vector<Suggestion> MergeWithAddressSuggestions(
-      std::map<FillingProduct, std::vector<Suggestion>>& suggestions_map,
+  static std::vector<Suggestion> MergeWithAddressSuggestions(
+      std::map<FillingProduct, std::vector<Suggestion>> suggestions_map,
+      const AutofillField* trigger_field,
       AutofillSuggestionTriggerSource trigger_source);
+
+  // Combines identity credential suggestions and existing suggestions into a
+  // single list, prioritizing identity credential suggestions first.
+  static void MergeIdentityCredentialsAndAddressSuggestions(
+      std::vector<Suggestion>& suggestions,
+      std::vector<Suggestion> identity_credential_suggestions);
+
+  // Combines autocomplete suggestions and existing suggestions into a
+  // single list, prioritizing address suggestions and filtering out
+  // autocomplete suggestions that are unlikely to match the field type.
+  static void MergeAutocompleteAndAddressSuggestions(
+      std::vector<Suggestion>& suggestions,
+      std::vector<Suggestion> autocomplete_suggestions,
+      FieldType trigger_field_type);
 
   // Generates and prioritizes different kinds of suggestions and
   // suggestion surfaces accordingly (Autofill AI, SingleFieldFiller(s), address
@@ -593,25 +619,6 @@ class BrowserAutofillManager : public AutofillManager {
   // page for the first time.
   void LogPageLoadSettingsMetrics(bool autofill_enabled);
 
-  // Combines passkey suggestions and existing suggestions into a single list,
-  // prioritizing existing suggestions first.
-  void MergePasskeysAndExistingSuggestions(
-      std::vector<Suggestion>& suggestions,
-      std::vector<Suggestion> passkey_suggestions);
-
-  // Creates passkey suggestions that will be used in
-  // MergePasskeysAndExistingSuggestions.
-  // TODO(crbug.com/409962888): Remove after new suggestion generation logic is
-  // launched.
-  std::vector<Suggestion> CreatePasskeySuggestionsForMerge(
-      const FormFieldData& field);
-
-  // Combines identity credential suggestions and existing suggestions into a
-  // single list, prioritizing identity credential suggestions first.
-  void MergeIdentityCredentialsAndAddressSuggestions(
-      std::vector<Suggestion>& suggestion,
-      std::vector<Suggestion> identity_credential_suggestions);
-
   // Iterate through all the fields in the form to process the log events for
   // each field and record into FieldInfo UKM event.
   void ProcessFieldLogEventsInForm(const FormStructure& form_structure);
@@ -626,8 +633,9 @@ class BrowserAutofillManager : public AutofillManager {
   void LogAndRecordCreditCardFill(
       const FormStructure& form,
       const AutofillField& trigger_field,
-      const base::flat_set<FieldGlobalId>& filled_field_ids,
       const base::flat_set<FieldGlobalId>& safe_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
+          skip_reasons,
       const CreditCard& card,
       AutofillTriggerSource trigger_source,
       bool is_refill);

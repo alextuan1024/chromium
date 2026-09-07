@@ -17,7 +17,11 @@
 
 namespace blink {
 
+class ExceptionState;
 class ReadableStream;
+class ScriptState;
+class WebTransportDatagramsWritable;
+class WebTransportSendOptions;
 class WritableStream;
 
 // Minimum value for incomingMaxBufferedDatagrams and
@@ -48,12 +52,17 @@ class MODULES_EXPORT DatagramDuplexStream : public ScriptWrappable {
     return web_transport_->datagramWritable();
   }
 
+  WebTransportDatagramsWritable* createWritable(ScriptState*,
+                                                WebTransportSendOptions*,
+                                                ExceptionState&);
+
   uint32_t maxDatagramSize() const { return max_datagram_size_; }
+  void SetMaxDatagramSize(uint32_t value) { max_datagram_size_ = value; }
   std::optional<double> incomingMaxAge() const { return incoming_max_age_; }
-  void setIncomingMaxAge(std::optional<double> max_age);
+  void setIncomingMaxAge(std::optional<double> max_age, ExceptionState&);
 
   std::optional<double> outgoingMaxAge() const { return outgoing_max_age_; }
-  void setOutgoingMaxAge(std::optional<double> max_age);
+  void setOutgoingMaxAge(std::optional<double> max_age, ExceptionState&);
 
   // Spec-renamed attributes use Web IDL unsigned long (uint32_t).
   uint32_t incomingMaxBufferedDatagrams() const {
@@ -90,10 +99,8 @@ class MODULES_EXPORT DatagramDuplexStream : public ScriptWrappable {
  private:
   const Member<WebTransport> web_transport_;
 
-  // TODO(yhirano): Update this variable when the session is established.
-  // We need to choose an initial value without knowing the actual network
-  // condition, so let's choose a conservative value. This will be update when
-  // the path migration happens.
+  // Use a conservative value until the session is established. The negotiated
+  // value is a handshake-time snapshot; path MTU updates are not propagated.
   uint32_t max_datagram_size_ = 1024;
   std::optional<double> incoming_max_age_;
   std::optional<double> outgoing_max_age_;

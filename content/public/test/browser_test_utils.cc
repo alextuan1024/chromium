@@ -753,7 +753,7 @@ void NavigateToURLBlockUntilNavigationsComplete(
   }
 
   web_contents->GetController().LoadURLWithParams(params);
-  web_contents->GetOutermostWebContents()->Focus();
+  web_contents->Focus();
 
   // Wait until the expected number of navigations finish.
   same_tab_observer.Wait();
@@ -965,9 +965,10 @@ bool CanCommitURLForTesting(int child_id, const GURL& url) {
 
 void SimulateUnresponsiveRenderer(WebContents* web_contents,
                                   RenderWidgetHost* widget) {
-  static_cast<WebContentsImpl*>(web_contents)
-      ->RendererUnresponsive(RenderWidgetHostImpl::From(widget),
-                             base::DoNothing());
+  RenderWidgetHostImpl::From(widget)->RendererIsUnresponsive(
+      RenderWidgetHostImpl::RendererIsUnresponsiveReason::
+          kOnInputEventAckTimeout,
+      base::DoNothing());
 }
 
 #if defined(USE_AURA)
@@ -4356,6 +4357,11 @@ void PwnMessageHelper::OpenURL(RenderFrameHost* render_frame_host,
   params->disposition = WindowOpenDisposition::CURRENT_TAB;
   params->should_replace_current_entry = false;
   params->user_gesture = true;
+  params->initiator_state_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)
+          ->current_initiator_state_token();
+  params->initiator_document_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)->GetDocumentToken();
   static_cast<mojom::FrameHost*>(
       static_cast<RenderFrameHostImpl*>(render_frame_host))
       ->OpenURL(std::move(params));
@@ -4416,7 +4422,7 @@ void VerifyStaleContentOnFrameEviction(
 
   // Initially there should be no stale content set.
   EXPECT_FALSE(
-      delegated_frame_host->stale_content_layer()->HasExternalContent());
+      delegated_frame_host->stale_content_layer()->HasTransferableResource());
   EXPECT_EQ(delegated_frame_host->frame_eviction_state(),
             DelegatedFrameHost::FrameEvictionState::kNotStarted);
 
@@ -4435,7 +4441,7 @@ void VerifyStaleContentOnFrameEviction(
   waiter.WaitForEvictionState(
       DelegatedFrameHost::FrameEvictionState::kNotStarted);
   EXPECT_TRUE(
-      delegated_frame_host->stale_content_layer()->HasExternalContent());
+      delegated_frame_host->stale_content_layer()->HasTransferableResource());
 }
 
 #endif  // defined(USE_AURA)

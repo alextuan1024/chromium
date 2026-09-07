@@ -11,7 +11,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -21,12 +20,10 @@ import org.chromium.skia.mojom.BitmapN32ImageInfo;
 
 /** Test suite for conversion-to-Frame utils. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BitmapUtilsTest {
     private static final int VALID_WIDTH = 1;
     private static final int VALID_HEIGHT = 1;
     private static final int INVALID_WIDTH = 0;
-    private static final long NUM_BYTES = VALID_WIDTH * VALID_HEIGHT * 4;
     private static final byte[] EMPTY_DATA = new byte[0];
 
     public BitmapUtilsTest() {}

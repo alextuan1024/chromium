@@ -229,7 +229,6 @@ double GetGeminiResponseReadyInterval();
 base::TimeDelta GetGeminiSessionValidityDuration();
 extern const char kGeminiSessionValidityDuration[];
 
-
 // Feature flag for Actor tools.
 BASE_DECLARE_FEATURE(kActorTools);
 bool IsActorEnabled();
@@ -286,17 +285,23 @@ enum class PageActionMenuIconVariations {
 
 PageActionMenuIconVariations GetPageActionMenuIcon();
 
-// Feature flag for enabling Gemini backend migration.
-BASE_DECLARE_FEATURE(kGeminiBackendMigration);
-bool IsGeminiBackendMigrationEnabled();
+// Feature flag for enabling Project Aureus (quota enforcement and usage
+// limits).
+BASE_DECLARE_FEATURE(kGeminiAureus);
+bool IsGeminiAureusEnabled();
 
 // Feature flag for enabling Gemini actor.
 BASE_DECLARE_FEATURE(kGeminiActor);
 bool IsGeminiActorEnabled();
 
-// Feature flag for enabling rich APC (v2) extraction for Gemini.
-BASE_DECLARE_FEATURE(kGeminiRichAPCExtraction);
-bool IsGeminiRichAPCExtractionEnabled();
+// Parameter to enable or disable backgrounding in Gemini Actor.
+extern const char kGeminiActorBackgroundingParam[];
+
+// Returns true if backgrounding for Gemini Actor is enabled. This requires:
+// 1. Compile flag `IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED` is enabled.
+// 2. `IsGeminiActorEnabled()` and `kGeminiActorBackgroundingParam` (default
+// true) are both true.
+bool IsGeminiActorBackgroundingEnabled();
 
 // Enables the GeminiUnaryMigration feature.
 BASE_DECLARE_FEATURE(kGeminiUnaryMigration);
@@ -345,13 +350,6 @@ BASE_DECLARE_FEATURE(kGeminiScreenContextMigration);
 // Returns true if the GeminiScreenContextMigration feature is enabled.
 bool IsGeminiScreenContextMigrationEnabled();
 
-// Feature flag to control the App Store In-App Events feature. Enables a
-// user to tap the promo within the iOS App Store and invoke the Gemini FRE
-// after navigating to a Gemini related web page through an external action.
-BASE_DECLARE_FEATURE(kAppStoreInAppEvents);
-
-// Returns true if the App Store In-App Events feature is enabled.
-bool IsAppStoreInAppEventsEnabled();
 
 // Feature flag controlling the generalized Gemini entry flow outside of the
 // Page Action Menu.
@@ -401,6 +399,14 @@ extern const char kGeminiContextualSuggestionsCuesTitleAndUrlOnlyParam[];
 // Returns true if category classification should only use Title and URL
 // instead of extracting APC and generating passages.
 bool IsGeminiContextualSuggestionsCuesTitleAndUrlOnlyEnabled();
+
+// Feature parameter for enabling server model execution in Gemini contextual
+// suggestions cues.
+extern const char kGeminiContextualSuggestionsCuesServerModelExecutionParam[];
+
+// Returns true if server model execution is enabled for Gemini contextual
+// suggestions cues.
+bool IsGeminiContextualSuggestionsCuesServerModelExecutionEnabled();
 
 #pragma mark - Debugging Features
 
@@ -544,5 +550,11 @@ BASE_DECLARE_FEATURE(kPageContextScreenshotPasswordRedaction);
 
 // Returns true if `kPageContextScreenshotPasswordRedaction` is enabled.
 bool IsPageContextScreenshotPasswordRedactionEnabled();
+
+// When enabled, the "Get insights with Gemini chip" is disabled.
+BASE_DECLARE_FEATURE(kGeminiInsightsChipAblation);
+
+// Returns true if the `GeminiInsightsChipAblation` feature is enabled.
+bool IsGeminiInsightsChipAblationEnabled();
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_FEATURES_FEATURES_H_

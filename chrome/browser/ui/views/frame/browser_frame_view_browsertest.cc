@@ -11,9 +11,11 @@
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/custom_tab_bar_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
@@ -227,7 +229,8 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewBrowserTest, IncognitoIsCorrectColor) {
   ui::MockOsSettingsProvider os_settings_provider;
   os_settings_provider.SetAccentColor(gfx::kGoogleBlue400);
 
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
 
   BrowserView* view = BrowserView::GetBrowserViewForBrowser(incognito_browser);
   BrowserWidget* widget = view->browser_widget();
@@ -458,7 +461,8 @@ using BrowserFrameViewPopupTest = InProcessBrowserTest;
 #define MAYBE_HitTestPopupTopChrome HitTestPopupTopChrome
 #endif
 IN_PROC_BROWSER_TEST_F(BrowserFrameViewPopupTest, MAYBE_HitTestPopupTopChrome) {
-  Browser* popup_browser = CreateBrowserForPopup(browser()->GetProfile());
+  BrowserWindowInterface* popup_browser =
+      CreateBrowserForPopup(browser()->GetProfile());
   BrowserView* popup_browser_view =
       BrowserView::GetBrowserViewForBrowser(popup_browser);
   BrowserFrameView* frame_view =

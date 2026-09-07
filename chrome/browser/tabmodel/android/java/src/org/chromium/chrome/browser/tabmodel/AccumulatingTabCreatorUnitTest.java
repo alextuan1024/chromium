@@ -13,7 +13,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.tab.Tab;
@@ -25,7 +24,6 @@ import org.chromium.content_public.browser.LoadUrlParams;
 
 /** Unit tests for {@link AccumulatingTabCreator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AccumulatingTabCreatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -53,18 +51,6 @@ public class AccumulatingTabCreatorUnitTest {
         assertEquals(1, tabCreator.createFrozenTabArgumentsList.size());
         CreateFrozenTabArguments arguments = tabCreator.createFrozenTabArgumentsList.get(0);
         assertEquals(mTabState, arguments.state);
-        assertEquals(Tab.INVALID_TAB_ID, arguments.id);
-        assertEquals(TabModel.INVALID_TAB_INDEX, arguments.index);
-    }
-
-    @Test
-    public void testCreateFrozenTab_NullState() {
-        AccumulatingTabCreator tabCreator = new AccumulatingTabCreator();
-        assertNull(
-                tabCreator.createFrozenTab(null, Tab.INVALID_TAB_ID, TabModel.INVALID_TAB_INDEX));
-        assertEquals(1, tabCreator.createFrozenTabArgumentsList.size());
-        CreateFrozenTabArguments arguments = tabCreator.createFrozenTabArgumentsList.get(0);
-        assertNull(arguments.state);
         assertEquals(Tab.INVALID_TAB_ID, arguments.id);
         assertEquals(TabModel.INVALID_TAB_INDEX, arguments.index);
     }

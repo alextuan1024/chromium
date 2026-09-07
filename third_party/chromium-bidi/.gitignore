@@ -1,6 +1,7 @@
 __pycache__
 .build
 .cache
+.pytest_cache/
 .idea
 chromium-bidi-*
 chromium-bidi.iml
@@ -8,6 +9,7 @@ lib
 logs/
 node_modules/
 out/
+gen/
 wptreport*.json
 .vscode/*
 !.vscode/extensions.json

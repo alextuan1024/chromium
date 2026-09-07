@@ -12,7 +12,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
-#include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
+#include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
+#include "third_party/blink/renderer/core/intersection_observer/intersection_geometry.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observation.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -23,6 +24,14 @@
 #include "third_party/blink/renderer/platform/heap/forward.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+
+namespace cc {
+class Region;
+}
+
+namespace gfx {
+class QuadF;
+}
 
 namespace blink {
 
@@ -96,12 +105,19 @@ class CORE_EXPORT IntersectionObserver final
   static IntersectionObserver* Create(
       const IntersectionObserverInit*,
       IntersectionObserverDelegate&,
-      std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+      std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
       ExceptionState& = ASSERT_NO_EXCEPTION);
   static IntersectionObserver* Create(ScriptState*,
                                       V8IntersectionObserverCallback*,
                                       const IntersectionObserverInit*,
                                       ExceptionState& = ASSERT_NO_EXCEPTION);
+
+  using HitNodeCb = base::RepeatingCallback<ListBasedHitTestBehavior(
+      const PhysicalRect& hit_rect,
+      const Node& node,
+      const PhysicalRect* physical_rect,
+      const gfx::QuadF* quad,
+      const cc::Region* region)>;
 
   struct Params {
     STACK_ALLOCATED();
@@ -129,6 +145,11 @@ class CORE_EXPORT IntersectionObserver final
     // Indicates whether we should compute and expose the occluder node Id.
     // This only works if you've already set true `track_visibility`.
     bool expose_occluder_id = false;
+
+    // Optional callback executed during penetrating list hit testing to
+    // classify whether a hit node contributes to occlusion. This only
+    // works if you've already set true `track_visibility`.
+    std::optional<HitNodeCb> hit_node_cb;
   };
 
   // Creates an IntersectionObserver that monitors changes to the intersection
@@ -136,12 +157,12 @@ class CORE_EXPORT IntersectionObserver final
   static IntersectionObserver* Create(
       const Document& document,
       EventCallback callback,
-      std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+      std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
       Params&& params);
 
   IntersectionObserver(
       IntersectionObserverDelegate& delegate,
-      std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+      std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
       Params&& params);
 
   // API methods.
@@ -177,6 +198,8 @@ class CORE_EXPORT IntersectionObserver final
     return trackVisibility() && expose_occluder_id_;
   }
 
+  const std::optional<HitNodeCb>& hit_node_cb() const { return hit_node_cb_; }
+
   base::TimeDelta GetEffectiveDelay() const;
 
   Vector<Length> RootMargin() const {
@@ -192,7 +215,7 @@ class CORE_EXPORT IntersectionObserver final
   bool IsInternal() const;
   // The metric id for tracking update time via UpdateTime metrics, or null for
   // internal intersection observers without explicit metrics.
-  std::optional<LocalFrameUkmAggregator::MetricId> GetUkmMetricId() const {
+  std::optional<LocalFrameMetricsAggregator::MetricId> GetUkmMetricId() const {
     return ukm_metric_id_;
   }
 
@@ -226,7 +249,7 @@ class CORE_EXPORT IntersectionObserver final
   const Member<IntersectionObserverDelegate> delegate_;
 
   // See: `GetUkmMetricId()`.
-  const std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id_;
+  const std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id_;
 
   // We use UntracedMember<> here to do custom weak processing.
   UntracedMember<Node> root_;
@@ -245,6 +268,7 @@ class CORE_EXPORT IntersectionObserver final
   const unsigned always_report_root_bounds_ : 1;
   const unsigned use_overflow_clip_edge_ : 1;
   const unsigned expose_occluder_id_ : 1;
+  const std::optional<HitNodeCb> hit_node_cb_;
 };
 
 }  // namespace blink

@@ -51,6 +51,7 @@
 #include "content/public/browser/platform_notification_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
+#include "extensions/buildflags/buildflags.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/common/notifications/notification_resources.h"
 #include "third_party/blink/public/common/notifications/platform_notification_data.h"
@@ -105,15 +106,6 @@ constexpr char
 
 #if BUILDFLAG(IS_CHROMEOS)
 
-constexpr char kNotificationResourceActionIconMemorySizeHistogram[] =
-    "Ash.NotificationResource.ActionIconSizeInKB";
-
-constexpr char kNotificationResourceBadgeMemorySizeHistogram[] =
-    "Ash.NotificationResource.BadgeMemorySizeInKB";
-
-constexpr char kNotificationReourceIconMemorySizeHistogram[] =
-    "Ash.NotificationResource.IconMemorySizeInKB";
-
 constexpr char kNotificationResourceImageMemorySizeHistogram[] =
     "Ash.NotificationResource.ImageMemorySizeInKB";
 
@@ -154,8 +146,7 @@ static bool ShouldDisplayWebNotificationOnFullScreen(Profile* profile,
         //  (b) the browser is fullscreen
         //  (c) the browser has focus.
         if (active_contents->GetURL().DeprecatedGetOriginAsURL() == origin &&
-            browser_window_interface->GetFeatures()
-                .exclusive_access_manager()
+            ExclusiveAccessManager::From(browser_window_interface)
                 ->context()
                 ->IsFullscreen() &&
             browser_window_interface->GetWindow()->IsActive()) {
@@ -585,10 +576,6 @@ PlatformNotificationServiceImpl::CreateNotificationFromData(
     // the accent color.
     optional_fields.ignore_accent_color_for_small_image = true;
   }
-
-  base::UmaHistogramMemoryKB(
-      kNotificationReourceIconMemorySizeHistogram,
-      notification_resources.notification_icon.computeByteSize() / 1024);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   message_center::NotifierId notifier_id(
@@ -634,10 +621,6 @@ PlatformNotificationServiceImpl::CreateNotificationFromData(
   // 1x bitmap - crbug.com/41238973.
   if (const SkBitmap& badge = notification_resources.badge; !badge.isNull()) {
     notification.SetSmallImage(gfx::Image::CreateFrom1xBitmap(badge));
-#if BUILDFLAG(IS_CHROMEOS)
-    base::UmaHistogramMemoryKB(kNotificationResourceBadgeMemorySizeHistogram,
-                               badge.computeByteSize() / 1024);
-#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   // Developer supplied action buttons.
@@ -649,11 +632,6 @@ PlatformNotificationServiceImpl::CreateNotificationFromData(
     // the 1x bitmap - crbug.com/41238973.
     const SkBitmap& action_icon = notification_resources.action_icons[i];
     button.icon = gfx::Image::CreateFrom1xBitmap(action_icon);
-#if BUILDFLAG(IS_CHROMEOS)
-    base::UmaHistogramMemoryKB(
-        kNotificationResourceActionIconMemorySizeHistogram,
-        action_icon.computeByteSize() / 1024);
-#endif  // BUILDFLAG(IS_CHROMEOS)
     if (action->type == blink::mojom::NotificationActionType::TEXT) {
       button.placeholder = action->placeholder.value_or(
           l10n_util::GetStringUTF16(IDS_NOTIFICATION_REPLY_PLACEHOLDER));

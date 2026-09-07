@@ -8,6 +8,7 @@
 #include <string>
 
 #include "crypto/crypto_export.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 namespace crypto {
@@ -40,6 +41,11 @@ enum class TPMOperation {
   kWrappedAttestationKeyExport,
   // An operation to hash data using the TPM.
   kMessageHashing,
+  // An operation to sign data with a restricted signing key (such as a TPM 2.0
+  // Attestation Identity Key) using restricted credentials.
+  kRestrictedMessageSigning,
+  // An operation to verify the signature of a restricted signing key.
+  kRestrictedMessageVerify,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/net/histograms.xml:TpmOperation)
 
@@ -47,8 +53,7 @@ enum class TPMOperation {
 CRYPTO_EXPORT std::string OperationToString(TPMOperation operation);
 
 // Converts the given `algorithm` to a string representation.
-CRYPTO_EXPORT std::string AlgorithmToString(
-    SignatureVerifier::SignatureAlgorithm algorithm);
+CRYPTO_EXPORT std::string AlgorithmToString(sign::SignatureKind algorithm);
 
 // Records UMA metrics of TPM availability, latency and successful usage.
 // Does the work on a new background task.

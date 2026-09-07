@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/trace_event/trace_event.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
@@ -30,6 +31,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -116,12 +118,17 @@ void OmniboxPopupViewFullWebUI::UpdatePopupAppearance() {
   if (widget && widget->IsActive() && location_bar()->IsFocusWithin()) {
     if (!IsReverting()) {
       OnFocus(/*query_zps=*/false);
-      SyncNativeStateToWebUI(/*query_zps=*/true);
+      SyncNativeStateToWebUI(/*query_zps=*/false);
     }
   }
 }
 
+// TODO(crbug.com/553005514): Instrument callsite traces
+// (ex: OnNewTabFocus, OnFocus, OnTabChanged, SaveStateToTab) at their
+// respective entry points to capture individual trigger contexts.
 void OmniboxPopupViewFullWebUI::SyncNativeStateToWebUI(bool query_zps) {
+  TRACE_EVENT1("omnibox", "OmniboxPopupViewFullWebUI::SyncNativeStateToWebUI",
+               "query_zps", query_zps);
   auto* edit_model = controller()->edit_model();
 
   edit_model->ResetDisplayTexts();
@@ -155,7 +162,7 @@ void OmniboxPopupViewFullWebUI::SyncNativeStateToWebUI(bool query_zps) {
   bool selection_changed = selection != popup_handler->latest_selection();
   bool focus_changed = !last_sent_focus_ || focus != *last_sent_focus_;
 
-  if (text_changed || selection_changed || focus_changed) {
+  if (text_changed || selection_changed || focus_changed || query_zps) {
     searchbox::mojom::InputKeywordModelPtr keyword_model =
         CreateInputKeywordModel(
             edit_model->keyword_state(), edit_model->keyword(),
@@ -231,6 +238,7 @@ void OmniboxPopupViewFullWebUI::SaveStateToTab(content::WebContents* tab) {
 }
 
 void OmniboxPopupViewFullWebUI::OnTabChanged(content::WebContents* contents) {
+  TRACE_EVENT0("omnibox", "OmniboxPopupViewFullWebUI::OnTabChanged");
   last_sent_text_.reset();
   last_sent_focus_.reset();
 
@@ -245,6 +253,9 @@ void OmniboxPopupViewFullWebUI::OnTabChanged(content::WebContents* contents) {
   // progress.
   bool non_empty_user_input_in_progress =
       state ? state->model_state.user_input_in_progress : false;
+
+  const bool is_first_tab_changed = !has_completed_first_tab_changed_;
+  has_completed_first_tab_changed_ = true;
 
   if (state) {
     // Restore the saved state for the tab.
@@ -274,6 +285,11 @@ void OmniboxPopupViewFullWebUI::OnTabChanged(content::WebContents* contents) {
     controller()->edit_model()->OnChanged();
     should_focus_popup = ShouldFocusLocationBarForTab(contents);
     if (should_focus_popup) {
+      if (!is_first_tab_changed) {
+        TRACE_EVENT_INSTANT0(
+            "omnibox", "OmniboxPopupViewFullWebUI::OnTabChanged:OnSetFocus",
+            TRACE_EVENT_SCOPE_THREAD);
+      }
       controller()->edit_model()->OnSetFocus(/*control_down=*/false);
       target_popup_state = OmniboxPopupState::kFull;
     } else {
@@ -290,12 +306,14 @@ void OmniboxPopupViewFullWebUI::OnTabChanged(content::WebContents* contents) {
   // overrides any OS-default focus selection (such as macOS Select-All).
   if (target_popup_state == OmniboxPopupState::kFull) {
     if (presenter()) {
-      // Reset cached height to 1 on tab switch. This forces
-      // `OmniboxPopupFullPresenter::SynchronizePopupBounds` to fall back to
-      // `default_height` (the single location bar height) and drop
-      // elevation to 0, preventing a transient blank white dropdown box from
-      // painting while WebUI updates matches for the new tab.
-      presenter()->OnContentHeightChanged(1);
+      if (presenter()->ShouldApplyHeightWorkarounds()) {
+        // Reset cached height to 1 on tab switch. This forces
+        // `OmniboxPopupFullPresenter::SynchronizePopupBounds` to fall back to
+        // `default_height` (the single location bar height) and drop
+        // elevation to 0, preventing a transient blank white dropdown box from
+        // painting while WebUI updates matches for the new tab.
+        presenter()->OnContentHeightChanged(1);
+      }
       presenter()->Show();
       if (should_focus_popup) {
         // Reset stored focus for the newly active WebContents (e.g. NTP) so
@@ -352,6 +370,7 @@ void OmniboxPopupViewFullWebUI::OnTabChanged(content::WebContents* contents) {
 }
 
 void OmniboxPopupViewFullWebUI::OnFocus(bool query_zps) {
+  focused_ = true;
   bool changed = controller()->popup_state_manager()->popup_state() !=
                  OmniboxPopupState::kFull;
 
@@ -374,13 +393,14 @@ void OmniboxPopupViewFullWebUI::OnFocus(bool query_zps) {
     SyncNativeStateToWebUI(query_zps);
   } else if (auto* popup_handler = GetPopupHandler()) {
     // If the popup was already open (`!changed`), explicitly send
-    // `SetFocus(true)` via IPC to ensure WebUI DOM input element focus is
-    // restored if it was lost.
-    popup_handler->SetFocus(true);
+    // `SetFocus(true, query_zps)` via IPC to ensure WebUI DOM input element
+    // focus and suggestions are restored.
+    popup_handler->SetFocus(true, query_zps);
   }
 }
 
 void OmniboxPopupViewFullWebUI::OnBlur() {
+  focused_ = false;
   if (auto* popup_handler = GetPopupHandler()) {
     popup_handler->SetFocus(false);
   }

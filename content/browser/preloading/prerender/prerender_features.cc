@@ -4,7 +4,6 @@
 
 #include "content/browser/preloading/prerender/prerender_features.h"
 
-#include "build/build_config.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
@@ -27,12 +26,7 @@ const base::FeatureParam<Prerender2FallbackPrefetchSchedulerPolicy>
     kPrerender2FallbackPrefetchSchedulerPolicy{
         &kPrerender2FallbackPrefetchSpecRules,
         "kPrerender2FallbackPrefetchSchedulerPolicy",
-// TODO(crbug.com/342089123): Use consistent policy if possible.
-#if BUILDFLAG(IS_ANDROID)
-        Prerender2FallbackPrefetchSchedulerPolicy::kNotUse,
-#else
         Prerender2FallbackPrefetchSchedulerPolicy::kBurst,
-#endif
         &kPrerender2FallbackPrefetchSchedulerPolicyOptios};
 
 BASE_FEATURE(kPrerender2NoVarySearch, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -67,6 +61,9 @@ BASE_FEATURE(kPrerender2WarmUpCompositorForNonImmediate,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrerenderUntilScriptUpgrade, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrerenderUntilScriptProcessReuse,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrerender2ReuseInitiatorProcess,
              base::FEATURE_DISABLED_BY_DEFAULT);

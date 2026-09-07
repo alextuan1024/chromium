@@ -243,12 +243,16 @@ void main(){
 function copyElementImageToWebGPUCanvas(queue, ctx, target, scaleX, scaleY,
                                         sx, sy, swidth, sheight) {
   const sourceDict = { source: target };
-  if (sx !== undefined) sourceDict.sx = sx;
-  if (sy !== undefined) sourceDict.sy = sy;
-  if (swidth !== undefined) sourceDict.swidth = swidth;
-  if (sheight !== undefined) sourceDict.sheight = sheight;
+  if (sx !== undefined)
+    sourceDict.sourceX = sx;
+  if (sy !== undefined)
+    sourceDict.sourceY = sy;
+  if (swidth !== undefined)
+    sourceDict.sourceWidth = swidth;
+  if (sheight !== undefined)
+    sourceDict.sourceHeight = sheight;
 
-  const destDict = { destination: { texture: ctx.getCurrentTexture() } };
+  const destDict = {texture: ctx.getCurrentTexture()};
 
   if (scaleX !== undefined && scaleY !== undefined) {
     let destWidth, destHeight;
@@ -260,8 +264,7 @@ function copyElementImageToWebGPUCanvas(queue, ctx, target, scaleX, scaleY,
       [destWidth, destHeight] =
             computeScaledDestinationSize(ctx.canvas, target, scaleX, scaleY);
     }
-    destDict.width = destWidth;
-    destDict.height = destHeight;
+    destDict.size = {width: destWidth, height: destHeight};
   }
 
   queue.drawElementImageToTexture(sourceDict, destDict);

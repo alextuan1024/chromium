@@ -13,7 +13,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/task/thread_pool.h"
 #include "components/enterprise/connectors/core/common.h"
-#include "components/enterprise/connectors/core/reporting_constants.h"
+#include "components/enterprise/connectors/core/reporting_event_mappings.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/cloud/realtime_reporting_job_configuration.h"
@@ -286,17 +286,23 @@ void RealtimeReportingClientBase::UploadSecurityEvent(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&GetLocalIpAddresses),
       base::BindOnce(&RealtimeReportingClientBase::OnIpAddressesFetched,
-                     AsWeakPtr(), std::move(event), client, settings));
+                     AsWeakPtr(), std::move(event), client->GetWeakPtr(),
+                     settings));
   return;
 }
 
 void RealtimeReportingClientBase::OnIpAddressesFetched(
     ::chrome::cros::reporting::proto::Event event,
-    policy::CloudPolicyClient* client,
+    base::WeakPtr<policy::CloudPolicyClient> client,
     const ReportingSettings& settings,
     std::vector<std::string> ip_addresses) {
+  if (!client) {
+    VLOG(1) << "CloudPolicyClient destroyed while fetching IP addresses; "
+               "dropping event.";
+    return;
+  }
   event.mutable_local_ips()->Add(ip_addresses.begin(), ip_addresses.end());
-  FinishUploadSecurityEvent(std::move(event), client, settings);
+  FinishUploadSecurityEvent(std::move(event), client.get(), settings);
 }
 
 void RealtimeReportingClientBase::FinishUploadSecurityEvent(
@@ -310,9 +316,9 @@ void RealtimeReportingClientBase::FinishUploadSecurityEvent(
       CreateUploadEventsRequest();
   request.add_events()->Swap(&event);
 
-  auto upload_callback = base::BindOnce(
-      &RealtimeReportingClientBase::UploadCallback, AsWeakPtr(),
-      settings.per_profile, client, event_type, base::TimeTicks::Now());
+  auto upload_callback =
+      base::BindOnce(&RealtimeReportingClientBase::UploadCallback, AsWeakPtr(),
+                     event_type, base::TimeTicks::Now());
 
   client->UploadSecurityEvent(ShouldIncludeDeviceInfo(settings.per_profile),
                               std::move(request), std::move(upload_callback));

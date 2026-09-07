@@ -22,8 +22,6 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -32,7 +30,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -71,11 +69,11 @@ import java.util.function.Supplier;
 
 /** Tests for {@link ClipboardSuggestionProcessor}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ClipboardSuggestionProcessorUnitTest {
     private static final GURL TEST_URL = JUnitTestGURLs.EXAMPLE_URL;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private OmniboxImageSupplier mImageSupplier;
@@ -84,8 +82,8 @@ public class ClipboardSuggestionProcessorUnitTest {
     @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
     @Mock private BookmarkState mBookmarkState;
     @Mock private OmniboxActionDelegate mActionDelegate;
-    @Mock private AutocompleteInput mInput;
 
+    private final AutocompleteInput mInput = new AutocompleteInput();
     private Context mContext;
     private ClipboardSuggestionProcessor mProcessor;
     private AutocompleteMatch mSuggestion;
@@ -179,7 +177,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_identifyUrlSuggestion() {
         createClipboardSuggestion(OmniboxSuggestionType.CLIPBOARD_URL, GURL.emptyGURL());
         assertFalse(mModel.get(SuggestionViewProperties.IS_SEARCH_SUGGESTION));
@@ -190,7 +187,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_showsFaviconWhenAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         createClipboardSuggestionAndClickReveal(OmniboxSuggestionType.CLIPBOARD_URL, TEST_URL);
@@ -207,7 +203,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_showsFallbackIconWhenNoFaviconIsAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         createClipboardSuggestionAndClickReveal(OmniboxSuggestionType.CLIPBOARD_URL, TEST_URL);
@@ -223,7 +218,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipobardSuggestion_urlAndTextDirection() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         // URL
@@ -240,7 +234,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_showsThumbnailWhenAvailable() {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         assertTrue(mBitmap.compress(Bitmap.CompressFormat.PNG, 100, baos));
@@ -257,7 +250,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_thumbnailShouldResizeIfTooLarge() {
         int size =
                 mContext.getResources()
@@ -277,7 +269,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_revealButton() {
         createClipboardSuggestion(OmniboxSuggestionType.CLIPBOARD_URL, GURL.emptyGURL());
         assertNotNull(mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS));
@@ -296,7 +287,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_noContentByDefault() {
         createClipboardSuggestion(OmniboxSuggestionType.CLIPBOARD_URL, GURL.emptyGURL());
         SuggestionSpannable textLine2 = mModel.get(SuggestionViewProperties.TEXT_LINE_2_TEXT);
@@ -312,7 +302,6 @@ public class ClipboardSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void clipboardSuggestion_revealAndConcealButton() {
         createClipboardSuggestion(OmniboxSuggestionType.CLIPBOARD_URL, GURL.emptyGURL());
         SuggestionSpannable textLine2 = mModel.get(SuggestionViewProperties.TEXT_LINE_2_TEXT);

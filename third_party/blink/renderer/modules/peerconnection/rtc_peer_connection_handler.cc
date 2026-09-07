@@ -72,6 +72,7 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/webrtc/api/data_channel_interface.h"
@@ -366,9 +367,10 @@ class RTCPeerConnectionHandler::WebRtcSetDescriptionObserverImpl
     auto current_remote_description =
         std::move(states.current_remote_description);
 
-    // Track result in chrome://webrtc-internals/.
+    // Result is computed while the description is still available but
+    // fired after the events.
+    StringBuilder result;
     if (tracker && handler_) {
-      StringBuilder result;
       if (action_ ==
           PeerConnectionTracker::kActionSetLocalDescriptionImplicit) {
         webrtc::SessionDescriptionInterface* created_session_description =
@@ -395,8 +397,6 @@ class RTCPeerConnectionHandler::WebRtcSetDescriptionObserverImpl
         }
         json->WriteJSON(&result);
       }
-      tracker->TrackSessionDescriptionCallback(handler_.get(), action_,
-                                               "OnSuccess", result.ToString());
       handler_->TrackSignalingChange(signaling_state);
     }
 
@@ -410,6 +410,11 @@ class RTCPeerConnectionHandler::WebRtcSetDescriptionObserverImpl
 
     // This fires JS events and could cause |handler_| to become null.
     ProcessStateChanges(std::move(states));
+
+    if (tracker && handler_) {
+      tracker->TrackSessionDescriptionCallback(handler_.get(), action_,
+                                               "OnSuccess", result.ToString());
+    }
     ResolvePromise();
   }
 
@@ -642,8 +647,7 @@ class RTCPeerConnectionHandler::Observer
             &RTCPeerConnectionHandler::Observer::OnIceCandidateErrorImpl,
             WrapCrossThreadPersistent(this),
             port ? String::FromUtf8(address) : String(),
-            static_cast<uint16_t>(port),
-            String::Format("%s:%d", address.c_str(), port),
+            static_cast<uint16_t>(port), Format("{}:{}", address, port),
             String::FromUtf8(url), error_code, String::FromUtf8(error_text)));
   }
 
@@ -893,8 +897,6 @@ bool RTCPeerConnectionHandler::Initialize(
   // Apply 40 ms worth of bursting. See webrtc::TaskQueuePacedSender.
   configuration_.pacer_burst_interval = webrtc::TimeDelta::Millis(40);
 
-  configuration_.set_stats_timestamp_with_environment_clock(true);
-
   peer_connection_observer_ =
       MakeGarbageCollected<Observer>(weak_factory_.GetWeakPtr(), task_runner_);
   native_peer_connection_ = dependency_factory_->CreatePeerConnection(
@@ -1099,7 +1101,7 @@ void RTCPeerConnectionHandler::SetLocalDescription(
     // https://crbug.com/1005251.
     if (request) {
       request->RequestFailed(webrtc::RTCError(
-          webrtc::RTCErrorType::INTERNAL_ERROR, reason_str.ToString().Utf8()));
+          webrtc::RTCErrorType::INTERNAL_ERROR, reason_str.Utf8()));
     }
     return;
   }
@@ -1174,9 +1176,8 @@ void RTCPeerConnectionHandler::SetRemoteDescription(
     // possible for |this| to be deleted after this line. See
     // https://crbug.com/1005251.
     if (request) {
-      request->RequestFailed(
-          webrtc::RTCError(webrtc::RTCErrorType::UNSUPPORTED_OPERATION,
-                           reason_str.ToString().Utf8()));
+      request->RequestFailed(webrtc::RTCError(
+          webrtc::RTCErrorType::UNSUPPORTED_OPERATION, reason_str.Utf8()));
     }
     return;
   }
@@ -1920,6 +1921,14 @@ void RTCPeerConnectionHandler::TrackIceConnectionStateChange(
     return;
   }
   peer_connection_tracker_->TrackIceConnectionStateChange(this, state);
+}
+
+void RTCPeerConnectionHandler::TrackOnTrack(const RTCTrackEvent& event) {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  if (!peer_connection_tracker_) {
+    return;
+  }
+  peer_connection_tracker_->TrackOnTrack(this, event);
 }
 
 // Called any time the combined peerconnection state changes

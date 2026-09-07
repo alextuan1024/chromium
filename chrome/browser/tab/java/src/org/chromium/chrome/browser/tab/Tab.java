@@ -376,6 +376,9 @@ public interface Tab extends TabLifecycle {
      */
     boolean isTabInBrowser();
 
+    /** Returns true if the {@link Tab} is hosted in a popup window. */
+    boolean isTabInPopup();
+
     /**
      * Returns the last time this tab was shown or the time of its initialization if it wasn't yet
      * shown.
@@ -493,7 +496,13 @@ public interface Tab extends TabLifecycle {
     @TabAlert
     int getAlertState();
 
-    /** Returns the media state of the tab. */
+    /**
+     * Returns the media state of the tab.
+     *
+     * @deprecated Android is migrating from {@link MediaState} to {@link TabAlert}. Use {@link
+     *     #getAlertState()} instead.
+     */
+    @Deprecated
     @MediaState
     int getMediaState();
 
@@ -501,7 +510,9 @@ public interface Tab extends TabLifecycle {
      * Sets the media state of the tab.
      *
      * @param mediaState The {@link MediaState} of the tab.
+     * @deprecated Android is migrating from {@link MediaState} to {@link TabAlert}.
      */
+    @Deprecated
     void setMediaState(@MediaState int mediaState);
 
     /** Called when the tab is restored from the archived tab model. */

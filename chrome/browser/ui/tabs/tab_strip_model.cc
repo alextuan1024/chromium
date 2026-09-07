@@ -52,7 +52,6 @@
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_bubble.h"
@@ -89,6 +88,7 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/reading_list/core/reading_list_model.h"
+#include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
@@ -104,6 +104,7 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -2587,9 +2588,6 @@ tabs::TabCollectionHandle TabStripModel::GetUnpinnedTabsCollectionHandle(
 bool TabStripModel::IsContextMenuCommandEnabled(
     int context_index,
     ContextMenuCommand command_id) const {
-  // Command must be valid.
-  DCHECK(command_id > CommandFirst && command_id < CommandLast);
-
   // Context Index having an index greater than tab strip model doesnt make
   // sense since this context menu must target a tab.
   if (!ContainsIndex(context_index)) {
@@ -2687,18 +2685,13 @@ bool TabStripModel::IsContextMenuCommandEnabled(
 
     case CommandToggleVertical:
       return true;
-
-    default:
-      SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
-      NOTREACHED() << "Unsupported command: " << command_id;
   }
+  SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
+  NOTREACHED() << "Unsupported command: " << command_id;
 }
 
 void TabStripModel::ExecuteContextMenuCommand(int context_index,
                                               ContextMenuCommand command_id) {
-  // This should have been tested by IsContextMenuCommandEnabled.
-  CHECK(command_id > CommandFirst && command_id < CommandLast);
-
   // The tab strip may have been modified while the context menu was open,
   // including closing the tab originally at `context_index`.
   if (!ContainsIndex(context_index)) {
@@ -3001,20 +2994,7 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       base::RecordAction(
           UserMetricsAction("TabContextMenu_MoveTabToNewWindow"));
 
-      std::vector<int> indices_to_move = GetIndicesForCommand(context_index);
-      std::vector<tab_groups::TabGroupId> groups_to_delete =
-          GetGroupsDestroyedFromRemovingIndices(indices_to_move);
-      MarkTabGroupsForClosing(groups_to_delete);
-
-      base::OnceCallback<void()> callback =
-          base::BindOnce(&TabStripModelDelegate::MoveTabsToNewWindow,
-                         base::Unretained(delegate()), indices_to_move);
-      if (!groups_to_delete.empty()) {
-        return delegate_->OnRemovingAllTabsFromGroups(groups_to_delete,
-                                                      std::move(callback));
-      } else {
-        std::move(callback).Run();
-      }
+      delegate()->MoveTabsToNewWindow(GetIndicesForCommand(context_index));
       break;
     }
 
@@ -3085,7 +3065,7 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       base::UmaHistogramCounts1000(
           "Tab.ContextMenu.ToggleVertical.SelectedTabsCount",
           selection_model_.size());
-      const BrowserWindowInterface* const browser =
+      BrowserWindowInterface* const browser =
           GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
               GetWebContentsAt(context_index));
       if (auto* controller =
@@ -3094,7 +3074,7 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
         tabs::RecordVerticalTabStripModeChanged(
             is_vertical, tabs::VerticalTabStripEntryPoint::kTabContextMenu);
       }
-      browser->GetFeatures().browser_command_controller()->ExecuteCommand(
+      chrome::BrowserCommandController::From(browser)->ExecuteCommand(
           IDC_TOGGLE_VERTICAL_TABS);
       break;
     }
@@ -3109,10 +3089,6 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       AddToNewGroupFromContextIndex(context_index);
       break;
     }
-    case CommandFirst:
-    case CommandAddNote:
-    case CommandLast:
-      NOTREACHED();
   }
 }
 
@@ -4141,7 +4117,9 @@ TabStripSelectionChange TabStripModel::SetSelection(
               base::TimeTicks::Now(),
               resource_coordinator::ResourceCoordinatorTabHelper::IsLoaded(
                   selection.new_contents),
-              view && view->HasSavedCompositorFrame());
+              view && view->HasSavedCompositorFrame(),
+              resource_coordinator::ResourceCoordinatorTabHelper::IsFrozen(
+                  selection.new_contents));
         }
       }
 
@@ -4827,6 +4805,18 @@ std::unique_ptr<tabs::TabModel> TabStripModel::RemoveTabFromIndexImpl(
 
   if (tab_detach_reason == tabs::TabInterface::DetachReason::kDelete) {
     tab_to_remove->DestroyTabFeatures();
+  }
+
+  // If a tab is removed that does not belong to the focused group (and is not
+  // a pinned tab allowed in focus mode), drop focus mode.
+  std::optional<tab_groups::TabGroupId> focused_group = GetFocusedGroup();
+  if (focused_group.has_value() &&
+      !tabs::TabStripModelSelectionState::IsTabValidInFocusedGroup(
+          tab_to_remove, focused_group)) {
+    base::UmaHistogramEnumeration(
+        "TabGroups.Focus.ExitReason",
+        TabGroupFocusExitReason::kTabOutsideGroupClosed);
+    SetFocusedGroup(std::nullopt);
   }
 
   std::optional<tab_groups::TabGroupId> old_focused_group =
@@ -5963,8 +5953,7 @@ void TabStripModel::MaybeRemoveSplitsForUpdate(
 void TabStripModel::CreateHistoricalSplitIfClosing(
     const std::vector<tabs::TabInterface*>& tabs,
     uint32_t close_types) {
-  if (base::FeatureList::IsEnabled(tabs::kSplitViewTabRestore) &&
-      (close_types & TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB)) {
+  if (close_types & TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB) {
     std::map<split_tabs::SplitTabId, int> split_closing_counts;
     for (tabs::TabInterface* t : tabs) {
       std::optional<split_tabs::SplitTabId> split_id = t->GetSplit();

@@ -6,34 +6,158 @@ goal of this system is to prevent potentially unintended user interactions with
 security, privacy, or system-state implications (e.g., "Allow" buttons on
 prompts, "Install" buttons for extensions, or "Confirm" buttons for purchases).
 
-By protecting these elements, the system mitigates risks like clickjacking,
-rapid-fire clicking, and sudden UI appearances (e.g., a dialog popping up right
-under the user's cursor).
+By protecting these elements, the system mitigates various forms of clickjacking
+and unintended interactions.
 
-## Architecture
+______________________________________________________________________
 
-The system consists of a manager and one or more policies:
+## Protection Levels: Default vs. Protected Widgets
+
+The Views framework provides two tiers of input protection:
+
+### Default Protection (All Widgets)
+
+Even when a widget does not explicitly enable input activation protection, it
+automatically receives baseline protection:
+
+- **Located Events (Clicks / Taps):** Global occlusion protection for pointer
+  interactions—blocked if the interaction coordinate is currently occluded (or
+  was recently occluded within the double-click interval) by an always-on-top
+  window.
+- **Non-Located Events (Keyboard):** Inactive on unprotected widgets.
+
+### Full Activation Protection
+
+Widgets opt in by calling `widget->EnableInputEventActivationProtection()`,
+which enables the full suite of safeguards:
+
+- **Initial Show Cooldown:** Blocks interactions immediately after the widget is
+  shown (`DefaultInputProtectionPolicy`).
+- **Click-Spam Prevention:** Enforces a minimum delay between rapid successive
+  interactions (`DefaultInputProtectionPolicy`).
+- **Sudden Window Activation:** Blocks interactions if the widget activates
+  after its parent was invisible (`WindowActivationInputProtectionPolicy`).
+- **Occlusion Protection:** Evaluates non-located events (such as keyboard
+  action keys like Space or Return) against always-on-top window occlusion
+  (`OccludedWidgetInputProtector`).
+
+| Safeguard                                                     | Enforcing Policy / Component            | Availability              |
+| :------------------------------------------------------------ | :-------------------------------------- | :------------------------ |
+| **Always-On-Top Occlusion** (Located events: Clicks / Taps)   | `OccludedWidgetInputProtector`          | **Default (All Widgets)** |
+| **Always-On-Top Occlusion** (Non-located events: Key Actions) | `OccludedWidgetInputProtector`          | **Opt-In Only**           |
+| **Initial Show Cooldown** (All events)                        | `DefaultInputProtectionPolicy`          | **Opt-In Only**           |
+| **Click-Spam Prevention** (All events)                        | `DefaultInputProtectionPolicy`          | **Opt-In Only**           |
+| **Sudden Window Activation** (All events)                     | `WindowActivationInputProtectionPolicy` | **Opt-In Only**           |
+
+______________________________________________________________________
+
+## How to Use
+
+In the modern Views framework, input protection is managed at the **`Widget`
+level**. Individual views do not need to intercept events or manage cooldowns
+manually. Event interception and evaluation are handled automatically by
+`InputProtectionEventHandler` at the `RootView` level.
+
+### 1. Enable Protection on Your Widget (Recommended)
+
+To protect sensitive UI elements (such as buttons on a dialog or permission
+prompt), enable input protection on the containing `Widget` during setup (e.g.,
+in `AddedToWidget()`):
+
+```cpp
+void MyView::AddedToWidget() {
+  // Enables standard input protection (initial show cooldown, click-spam
+  // protection, sudden activation protection, and occlusion protection for key events).
+  GetWidget()->EnableInputEventActivationProtection();
+}
+```
+
+### 2. Specify Custom Protected Bounds (Optional)
+
+By default, occlusion protection covers the physical bounds of the targeted
+view, requiring **complete occlusion** (full coverage) to block keyboard events.
+To restrict protection to a specific sub-region (such as a confirmation button)
+and enforce **partial intersection** checking, install an
+`InputProtectionSpecification` on your view:
+
+```cpp
+// In your View subclass initialization:
+InputProtectionSpecification::Install(
+    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds,
+                               base::Unretained(this)));
+```
+
+Implement the callback to return the sensitive bounds in **local view
+coordinates**:
+
+```cpp
+std::vector<gfx::Rect> MyView::GetLocalProtectedBounds() const {
+  if (accept_button_) {
+    return {accept_button_->bounds()};
+  }
+  return {};
+}
+```
+
+Installing custom bounds restricts pointer occlusion checks to the declared
+regions and causes keyboard interactions to be blocked if *any part* of the
+custom bounds is occluded (see
+[Event Occlusion Checking](#event-occlusion-checking)).
+
+### 3. Custom Policy Configurations (Optional)
+
+By default, `EnableInputEventActivationProtection()` configures an
+`InputEventActivationProtector` with the standard policy suite
+(`DefaultInputProtectionPolicy` and `WindowActivationInputProtectionPolicy`).
+
+To customize which policies are active, pass a custom
+`InputEventActivationProtector` to `EnableInputEventActivationProtection()`. The
+constructor used for `InputEventActivationProtector` controls the initial policy
+setup:
+
+- **Default Constructor (`InputEventActivationProtector()`):** Instantiates with
+  `DefaultInputProtectionPolicy` automatically installed.
+- **Parameterized Constructor (`InputEventActivationProtector(policy)`):**
+  Instantiates with **only** the provided policy (omitting
+  `DefaultInputProtectionPolicy`).
+
+If none of the existing policies meet your requirements and you need to create
+your own policy, see [How to Create a New Policy](#how-to-create-a-new-policy).
+
+```cpp
+// Instantiates with only the window activation policy (bypassing default show cooldown):
+auto custom_protector = std::make_unique<InputEventActivationProtector>(
+    std::make_unique<WindowActivationInputProtectionPolicy>(widget));
+
+// Add custom policies:
+custom_protector->AddPolicy(std::make_unique<MyCustomSecurityPolicy>());
+
+// Pass the custom protector to the widget (overriding default policies):
+widget->EnableInputEventActivationProtection(std::move(custom_protector));
+```
+
+______________________________________________________________________
+
+## Core Architecture
+
+The core framework consists of a manager (`InputEventActivationProtector`) that
+delegates interaction evaluations to one or more policy objects
+(`InputProtectionPolicy`):
 
 ```
-                               ┌──────────────┐
-                               │     View     │
-                               └──────┬───────┘
-                                      │
-                                      │ Owns
-                                      v
                        ┌─────────────────────────────┐
                        │InputEventActivationProtector│
                        └──────────────┬──────────────┘
                                       │
                                       │ Delegates to
                                       v
-           ┌──────────────────────────┼──────────────────────────┐
-           │                          │                          │
-           v                          v                          v
-┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-│DefaultInputProtection│   │WindowActivationInput │   │OcclusionAwareInput   │
-│Policy                │   │ProtectionPolicy      │   │ProtectionPolicy      │
-└──────────────────────┘   └──────────────────────┘   └──────────────────────┘
+                        ┌─────────────┴─────────────┐
+                        │                           │
+                        v                           v
+             ┌──────────────────────┐   ┌──────────────────────┐
+             │DefaultInputProtection│   │WindowActivationInput │
+             │Policy                │   │ProtectionPolicy      │
+             └──────────────────────┘   └──────────────────────┘
 ```
 
 ### `InputEventActivationProtector`
@@ -93,16 +217,16 @@ The framework automatically handles:
 - **Coordinate Conversion**: The valid bounds are automatically converted from
   the local coordinate space of the owner view to screen coordinates.
 
-The `InputProtectionSpecification` is currently only used by the
-[Occlusion-Aware Input Protection Policy](#occlusion-aware-input-protection-policy)
-during event evaluation. Other policies (such as default cooldown or window
-activation policies) do not query these bounds.
+The `InputProtectionSpecification` is used by `OccludedWidgetInputProtector`
+during occlusion evaluation; protection policies (such as default cooldown or
+window activation) do not query these bounds.
 
-> [!NOTE] Installing this specification only defines the bounds to protect. It
-> does not automatically enable input protection. To enforce occlusion
-> protection, the containing widget (or its primary window widget) must enable
-> protection by calling `Widget::EnableInputEventActivationProtection()`. For
-> details, see [How to Use](#how-to-use).
+> **Note:** Installing this specification defines custom bounds to protect. To
+> enforce occlusion checks against these bounds for non-located events (e.g.
+> keyboard action keys), the containing widget (or its primary window widget)
+> must enable protection by calling
+> `Widget::EnableInputEventActivationProtection()`. For details, see
+> [How to Use](#how-to-use).
 
 ______________________________________________________________________
 
@@ -127,24 +251,56 @@ Implemented by `WindowActivationInputProtectionPolicy`:
   window was previously invisible. This protects against cases where a dialog
   suddenly appears and steals focus just as the user is clicking.
 
-### Occlusion-Aware Input Protection Policy
+______________________________________________________________________
 
-Implemented by `OcclusionAwareInputProtectionPolicy`:
+## How to Create a New Policy
 
-- **Current/Recent Occlusion**: Blocks inputs if the target area is currently
-  covered, or was recently covered, by an always-on-top window (managed by
-  `OccludedWidgetInputProtector`).
+To create a new protection policy:
+
+1. Create a class that inherits from `InputProtectionPolicy`.
+2. Implement `IsPossiblyUnintendedInteraction` to define your blocking logic.
+3. If your policy depends on timing or lifecycle events, override
+   `OnProtectionStarted`, `OnProtectionStopped`, and/or `OnProtectionReset` to
+   manage your state (e.g., updating timestamps).
+4. (Optional) If your policy needs to observe external events (like widget
+   activation), implement the appropriate observer interface (e.g.,
+   `views::WidgetObserver`) and manage the observation lifecycle.
+5. Register your new policy with the `InputEventActivationProtector` using
+   `AddPolicy`.
+
+Example template:
+
+```cpp
+class MyCustomPolicy : public InputProtectionPolicy {
+ public:
+  MyCustomPolicy() = default;
+  ~MyCustomPolicy() override = default;
+
+  // InputProtectionPolicy:
+  bool IsPossiblyUnintendedInteraction(
+      const ui::Event& event,
+      const View* target_view,
+      const InputEventActivationProtector& protector) override {
+    // Return true if the event should be blocked based on your custom logic.
+    return SomeConditionIsMet(event);
+  }
+
+  void OnProtectionStarted() override {
+    // Initialize state when target becomes visible.
+  }
+};
+```
 
 ______________________________________________________________________
 
 ## Always-On-Top Occlusion Tracking (OccludedWidgetInputProtector)
 
 `OccludedWidgetInputProtector` is a singleton that tracks always-on-top widgets
-to prevent occlusion-based attacks.
-
-While it operates as a tracker for occlusion by always-on-top windows, it is
-primarily queried by the `OcclusionAwareInputProtectionPolicy` to check if a
-sensitive interaction is occluded.
+to prevent occlusion-based attacks. It is queried by
+`InputProtectionEventHandler` to evaluate point occlusion for located events
+(such as clicks or taps) across all widgets, and view-bounds occlusion for
+non-located events (such as keyboard action keys) on widgets with input
+activation protection enabled.
 
 ### Tracking State
 
@@ -224,23 +380,174 @@ The gathered bounds are then checked for occlusion depending on the event type:
 
 ______________________________________________________________________
 
-## How to Use
+## Protection Models
 
-To protect a view, add an `InputEventActivationProtector` member to your view
-class.
+The Views framework supports two models for applying input protection:
 
-### Step 1: Configure the Protector
+- **Modern Model (Widget-Level)**: Enforced centrally on the `Widget` via
+  `InputProtectionEventHandler`.
+- **Legacy Model (View-Level)**: Managed and queried directly by individual
+  `View`s.
+
+### Modern Model: Widget-Level Protection (Recommended)
+
+In the modern architecture, input protection is coordinated at the `Widget`
+level and enforced automatically by `InputProtectionEventHandler` on `RootView`.
+Individual views do not need to own a protector or manually intercept events.
+
+#### Architecture
+
+```
+                          ┌──────────────┐
+                          │    Widget    │
+                          └──────┬───────┘
+                                 │ Owns
+                                 ├──────────────────────────────────────────────────┐
+                                 │                                                  │
+                                 v                                                  v
+  ┌────────────────────────────────────────────────────────┐ Installed as  ┌─────────────────┐
+  │              InputProtectionEventHandler               ├──pre-target──►│    RootView     │
+  └──────────────┬──────────────────────────────┬──────────┘  handler on   └─────────────────┘
+                 │                              │
+  Queries global │                              │ Evaluates widget
+  occlusion via  │                              │ policies via
+                 v                              v
+  ┌────────────────────────────┐ ┌─────────────────────────────┐
+  │OccludedWidgetInputProtector│ │InputEventActivationProtector│
+  └────────────────────────────┘ └──────────────┬──────────────┘
+                                                │ Delegates to
+                                ┌───────────────┴───────────────┐
+                                │                               │
+                                v                               v
+                     ┌──────────────────────┐        ┌──────────────────────┐
+                     │DefaultInputProtection│        │WindowActivationInput │
+                     │Policy                │        │ProtectionPolicy      │
+                     └──────────────────────┘        └──────────────────────┘
+```
+
+#### `InputProtectionEventHandler`
+
+`InputProtectionEventHandler` is registered as a pre-target handler on the
+`Widget`'s `RootView` during widget initialization when the
+`features::kEnableInputProtection` feature flag is enabled. It intercepts
+incoming user interactions before they are dispatched down the view hierarchy.
+
+##### Event Interception and Filtering
+
+The handler listens for user interaction entry-points across multiple input
+modalities:
+
+- **Pointer/Touch Events**: Mouse presses (`kMousePressed`), touch presses
+  (`kTouchPressed`), and gesture tap sequences (`kGestureTap`,
+  `kGestureTapDown`, `kGestureDoubleTap`, `kGestureLongPress`,
+  `kGestureLongTap`).
+- **Key Events**: Key presses (`kKeyPressed`, e.g., Space or Return on a focused
+  view).
+
+To prevent redundant processing on re-dispatched or re-routed events, the
+handler stamps every evaluated event with the `kPropertyInputProtected`
+property. If an event is already tagged with this property, subsequent
+evaluations are skipped.
+
+###### Focus Traversal Key Bypass
+
+A **focus traversal key** is a key event used by `FocusManager` to move focus
+between focusable views in the UI hierarchy.
+
+Focus traversal keys include:
+
+- **Tab Traversal**: Unmodified Tab (forward) and Shift+Tab (reverse) keys
+  (without Ctrl or Alt).
+- **Arrow Key Traversal**: Unmodified arrow keys (Up, Down, Left, Right) when
+  directed to views that do not consume them internally. If the focused view
+  overrides `View::SkipDefaultKeyEventProcessing` (such as a `Textfield` that
+  handles arrow keys for text caret movement), arrow keys are treated as action
+  keys rather than traversal keys and are subject to input protection.
+
+Any other key events (such as Space, Return, or keys with modifiers like
+`Ctrl+Arrow`) are treated as action keys and are evaluated by input protection
+policies.
+
+###### Accessibility Mode Bypass
+
+When any accessibility mode is active
+(`!ui::AXPlatform::GetInstance().GetMode().is_mode_off()`), input protection is
+completely bypassed without querying active policies to avoid interfering with
+assistive technologies.
+
+##### Evaluation Order
+
+When an untagged interaction event is received, `InputProtectionEventHandler`
+performs two levels of evaluation:
+
+1. **Global Occlusion Protection**: It queries the
+   `OccludedWidgetInputProtector` singleton
+   (`ShouldBlockEvent(event, target_view)`).
+   - For located events (clicks, taps), all widgets are protected if the event
+     coordinate is occluded by an always-on-top window.
+   - For non-located events (action keys), widgets with input activation
+     protection enabled are evaluated per
+     [Event Occlusion Checking](#event-occlusion-checking) (partial occlusion
+     for view-defined specifications, or full occlusion for fallback view
+     bounds).
+2. **Widget-Level Activation Protection**: If global occlusion does not block
+   the event and input activation protection is enabled on the widget
+   (`Widget::IsInputEventActivationProtectionEnabled()`), the handler forwards
+   the event to the widget's `InputEventActivationProtector` to evaluate against
+   installed policies (such as `DefaultInputProtectionPolicy` or
+   `WindowActivationInputProtectionPolicy`).
+
+##### Event Consumption and State Reset
+
+If any active policy flags the interaction as unintended, the handler calls
+`event->StopPropagation()` to consume the event and prevent it from reaching the
+target view. In addition, it calls `RootView::ResetEventHandlers()` to clear any
+active gesture or pointer tracking state (such as `mouse_pressed_handler_`),
+ensuring that follow-up events (like mouse or touch releases) are safely dropped
+rather than triggering unintended activations.
+
+### Legacy Model: View-Level Protection (For Reference)
+
+In older code, individual sensitive views owned their own protector instances
+and manually checked interactions.
+
+#### Architecture
+
+```
+                               ┌──────────────┐
+                               │     View     │
+                               └──────┬───────┘
+                                      │
+                                      │ Owns
+                                      v
+                       ┌─────────────────────────────┐
+                       │InputEventActivationProtector│
+                       └──────────────┬──────────────┘
+                                      │
+                                      │ Delegates to
+                                      v
+                        ┌─────────────┴─────────────┐
+                        │                           │
+                        v                           v
+             ┌──────────────────────┐   ┌──────────────────────┐
+             │DefaultInputProtection│   │WindowActivationInput │
+             │Policy                │   │ProtectionPolicy      │
+             └──────────────────────┘   └──────────────────────┘
+```
+
+#### How to Use
+
+To protect a view in the legacy model, add an `InputEventActivationProtector`
+member to your view class.
+
+##### Step 1: Configure the Protector
 
 The constructor you use determines whether the protector automatically installs
 the default policy or uses a custom configuration.
 
-#### Default Configuration (Constructor without arguments)
+###### Default Configuration (Constructor without arguments)
 
-If you instantiate the protector using the default constructor, it automatically
-installs a `DefaultInputProtectionPolicy` initialized without a view.
-
-First, initialize the protector and add any additional policies (typically in
-your view's constructor):
+Instantiates with `DefaultInputProtectionPolicy` installed automatically:
 
 ```cpp
 // Instantiates with DefaultInputProtectionPolicy installed automatically.
@@ -252,21 +559,21 @@ input_protector_->AddPolicy(
 ```
 
 Then, because the automatically installed default policy does not observe the
-view, you must manually forward visibility events when the protected view's
+view, you must manually forward visibility events when the protected view
 visibility changes:
 
 ```cpp
 input_protector_->VisibilityChanged(is_visible);
 ```
 
-#### Custom Configuration (Constructor with arguments)
+###### Custom Configuration (Constructor with arguments)
 
 If you use the parameterized constructor, the protector installs **only** the
 passed policy. Use this to configure custom policies (e.g., in tests to bypass
 the default cooldown, or for specialized UIs).
 
 ```cpp
-// Instantiates with ONLY the window activation policy.
+// Instantiates with only the window activation policy.
 input_protector_ = std::make_unique<InputEventActivationProtector>(
     std::make_unique<WindowActivationInputProtectionPolicy>(widget));
 
@@ -274,9 +581,10 @@ input_protector_ = std::make_unique<InputEventActivationProtector>(
 input_protector_->AddPolicy(std::make_unique<MyCustomPolicy>());
 ```
 
-### Step 2: Query the Protector
+##### Step 2: Query the Protector
 
-Before handling a sensitive event (e.g., a button click), query the protector:
+Before handling a sensitive event (e.g., a button click), query the protector
+manually:
 
 ```cpp
 void MyView::OnButtonPressed(const ui::Event& event) {
@@ -287,21 +595,20 @@ void MyView::OnButtonPressed(const ui::Event& event) {
 }
 ```
 
-### Step 3: Specify View-Defined Protected Bounds (Optional)
+##### Step 3: Specify View-Defined Protected Bounds (Optional)
 
 If a view requires localized input protection (e.g., only protecting a specific
-button rather than the entire view), you can install an
-`InputProtectionSpecification` on the view. This is currently only queried by
-the
-[Occlusion-Aware Input Protection Policy](#occlusion-aware-input-protection-policy).
+button rather than the entire view), install an `InputProtectionSpecification`
+on the view. This is queried by `OccludedWidgetInputProtector`.
 
-To do this, call `InputProtectionSpecification::Install` during your view's
+To do this, call `InputProtectionSpecification::Install` during view
 initialization:
 
 ```cpp
 // In your View subclass initialization:
 InputProtectionSpecification::Install(
-    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds));
+    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds,
+                               base::Unretained(this)));
 ```
 
 And implement the callback method to return the bounds in **local coordinates**
@@ -309,8 +616,7 @@ of the view:
 
 ```cpp
 std::vector<gfx::Rect> MyView::GetLocalProtectedBounds() const {
-  // If the protected button exists, protect only that button's region.
-  // Note: returned bounds must be local to `MyView` (e.g., relative to 0,0 of MyView).
+  // If the protected button exists, protect only that button region.
   if (protected_button_) {
     return {protected_button_->bounds()};
   }
@@ -318,42 +624,6 @@ std::vector<gfx::Rect> MyView::GetLocalProtectedBounds() const {
 }
 ```
 
-______________________________________________________________________
-
-## How to Create a New Policy
-
-To create a new protection policy:
-
-1. Create a class that inherits from `InputProtectionPolicy`.
-2. Implement `IsPossiblyUnintendedInteraction` to define your blocking logic.
-3. If your policy depends on timing or lifecycle events, override
-   `OnProtectionStarted`, `OnProtectionStopped`, and/or `OnProtectionReset` to
-   manage your state (e.g., updating timestamps).
-4. (Optional) If your policy needs to observe external events (like widget
-   activation), implement the appropriate observer interface (e.g.,
-   `views::WidgetObserver`) and manage the observation lifecycle.
-5. Register your new policy with the `InputEventActivationProtector` using
-   `AddPolicy`.
-
-Example template:
-
-```cpp
-class MyCustomPolicy : public InputProtectionPolicy {
- public:
-  MyCustomPolicy() = default;
-  ~MyCustomPolicy() override = default;
-
-  // InputProtectionPolicy:
-  bool IsPossiblyUnintendedInteraction(
-      const ui::Event& event,
-      const View* target_view,
-      const InputEventActivationProtector& protector) override {
-    // Return true if the event should be blocked based on your custom logic.
-    return SomeConditionIsMet(event);
-  }
-
-  void OnProtectionStarted() override {
-    // Initialize state when target becomes visible.
-  }
-};
-```
+> **Note:** New code should prefer the **Widget-level modern model**
+> (`Widget::EnableInputEventActivationProtection()`) instead of manually
+> managing protectors inside individual views.

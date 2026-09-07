@@ -91,8 +91,7 @@ bool OverlayBaseController::IsOverlayActive() const {
 
 bool OverlayBaseController::IsOverlayInitializing() {
   return state_ == State::kStartingWebUI || state_ == State::kScreenshot ||
-         state_ == State::kClosingOpenedSidePanel ||
-         state_ == State::kWaitingForOpeningSidePanelReflow;
+         state_ == State::kClosingOpenedSidePanel;
 }
 
 bool OverlayBaseController::IsOverlayClosing() {
@@ -570,7 +569,7 @@ void OverlayBaseController::ShowModalUI() {
     return;
   }
   auto* const side_panel_ui =
-      tab_->GetBrowserWindowInterface()->GetFeatures().side_panel_ui();
+      SidePanelUI::From(tab_->GetBrowserWindowInterface());
   CHECK(side_panel_ui);
 
   // Setup observer to be notified of side panel opens and closes.
@@ -616,15 +615,12 @@ void OverlayBaseController::ShowModalUI() {
     state_ = State::kClosingOpenedSidePanel;
     side_panel_ui->Close(SidePanelEntryHideReason::kSidePanelClosed,
                          /*suppress_animations=*/true);
-  } else if (ShouldWaitForSidePanelReflow()) {
-    state_ = State::kWaitingForOpeningSidePanelReflow;
   } else {
     state_ = State::kScreenshot;
   }
 
   // 2. Execute the action corresponding to the state.
-  if (state_ == State::kClosingOpenedSidePanel ||
-      state_ == State::kWaitingForOpeningSidePanelReflow) {
+  if (state_ == State::kClosingOpenedSidePanel) {
     base::SingleThreadTaskRunner::GetCurrentDefault()
         ->PostNonNestableDelayedTask(
             FROM_HERE,
@@ -647,14 +643,9 @@ void OverlayBaseController::ShowModalUI() {
   }
 }
 
-bool OverlayBaseController::ShouldWaitForSidePanelReflow() {
-  return false;
-}
-
 void OverlayBaseController::FinishedWaitingForReflow(
     base::TimeTicks reflow_start_time) {
-  if (state_ == State::kClosingOpenedSidePanel ||
-      state_ == State::kWaitingForOpeningSidePanelReflow) {
+  if (state_ == State::kClosingOpenedSidePanel) {
     state_ = State::kScreenshot;
     StartScreenshotFlow();
   }
@@ -897,11 +888,10 @@ void OverlayBaseController::SetOverlayRoundedCorner() {
       pref_service_->GetBoolean(prefs::kSidePanelHorizontalAlignment);
   const base::DictValue& overrides =
       pref_service_->GetDict(prefs::kSidePanelAlignmentOverrides);
-  auto* side_panel_ui = tab_ && tab_->GetBrowserWindowInterface()
-                            ? tab_->GetBrowserWindowInterface()
-                                  ->GetFeatures()
-                                  .side_panel_ui()
-                            : nullptr;
+  auto* side_panel_ui =
+      tab_ && tab_->GetBrowserWindowInterface()
+          ? SidePanelUI::From(tab_->GetBrowserWindowInterface())
+          : nullptr;
   if (side_panel_ui) {
     if (auto current_entry_id = side_panel_ui->GetCurrentEntryId()) {
       if (auto override_val = overrides.FindBool(
@@ -1099,7 +1089,9 @@ void OverlayBaseController::OnSidePanelAlignmentChanged() {
 
 void OverlayBaseController::OnSidePanelDidOpen() {
   if (IsResultsSidePanelShowing()) {
-    SetOverlayRoundedCorner();
+    if (IsOverlayShowing()) {
+      SetOverlayRoundedCorner();
+    }
   } else {
     // If a side panel opens that is not ours, we must close the overlay.
     RequestSyncClose(DismissalSource::kUnexpectedSidePanelOpen);

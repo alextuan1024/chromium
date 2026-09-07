@@ -485,11 +485,6 @@ BASE_FEATURE(kAutofillAmbientAutofillSuppression,
 BASE_FEATURE(kAutofillAmbientAutofillSuppressionUI,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls the removal of the sign-in promotional components from the
-// Autofill and passwords settings page across platforms.
-BASE_FEATURE(kAutofillAndPasswordsRemoveSignInPromo,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // If enabled, on Android desktop, the Autofill keyboard accessory will have a
 // new behavior and design.
 // TODO(crbug.com/438125774): Remove when launched.
@@ -529,8 +524,16 @@ BASE_FEATURE(kAutofillAndroidKeyboardAccessoryHoverPreview,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
+// If enabled, on Android, form comparisons are done by comparing
+// `FormGlobalId`s instead of checking form similarity via `SimilarFormAs()`.
+BASE_FEATURE(kAutofillAndroidUseGlobalIdForFormComparison,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Feature flag for kAutofillAtMemory.
 BASE_FEATURE(kAutofillAtMemory, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, AtMemory can be triggered by pressing Ctrl twice.
+BASE_FEATURE(kAutofillAtMemoryDoubleCtrl, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // The subscription tiers for which AtMemory is eligible. Comma-separated list
 // of subscription tier integers. If empty/not defined, no tier restrictions
@@ -561,11 +564,20 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 BASE_FEATURE(kAutofillAtMemoryInactivityNudge,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls whether the previously filled suggestions from AtMemory are shown.
-BASE_FEATURE(kAutofillAtMemoryPreviouslyFilled,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+// Kill switch: If enabled, AtMemory fills by simulating a paste. If disabled,
+// AtMemory uses ExtendSelectionAndReplace().
+// TODO(crbug.com/553143213): Clean up when PasteText() has proved robust.
+BASE_FEATURE(kAutofillAtMemoryPasteText, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables search statefulness for AtMemory.
+// Controls whether the previously filled suggestions from AtMemory are shown.
+// Takes no effect when `kAutofillAtMemorySearchStatefulness` is disabled.
+BASE_FEATURE(kAutofillAtMemoryPreviouslyFilled,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, preserves the active AtMemory search query and fetched
+// suggestions when the popup is dismissed, restoring them if the user reopens
+// suggestions on the same field. State is reset once a suggestion is accepted
+// or a different field is focused.
 BASE_FEATURE(kAutofillAtMemorySearchStatefulness,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -578,6 +590,9 @@ BASE_FEATURE(kAutofillAtMemorySupportContenteditableOnAndroid,
 // Ctrl+Space.
 BASE_FEATURE(kAutofillAtMemoryTriggerShortcut,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, AtMemory can be triggered by typing the trigger string like "@@".
+BASE_FEATURE(kAutofillAtMemoryTriggerString, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, the placeholder is not considered a label fallback on the
 // renderer side anymore. Instead, local heuristic will match regexes against
@@ -710,12 +725,6 @@ BASE_FEATURE(kAutofillEnableAddressFieldParserNG,
 BASE_FEATURE(kAutofillEnableAutofillSettingsEnterprisePolicy,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls whether the deduplication process for Autofill profiles is run on a
-// background thread to avoid blocking the UI thread.
-// TODO(crbug.com/496889243): Remove when launched.
-BASE_FEATURE(kAutofillEnableDeduplicationOnBackgroundThread,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // When enabled, the height of the autofill popup is limited to show a fixed
 // maximum number of entries.
 BASE_FEATURE(kAutofillEnableEntryLimitInPopup,
@@ -786,6 +795,16 @@ BASE_FEATURE(kAutofillEnableSkippingUnrecognizedAttribute,
 BASE_FEATURE(kAutofillEnableStreetAddressMergeModes,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, shows the Wallet Disclosure Notice after submitting a form with
+// a public pass.
+BASE_FEATURE(kAutofillEnableWalletDisclosureNoticePublicPass,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, shows the Wallet Reminder Notice after submitting a form with a
+// non-private (public) pass.
+BASE_FEATURE(kAutofillEnableWalletReminderNoticePublicPass,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables extended zip code validation.
 // TODO(crbug.com/434140055): Clean up when launched.
 BASE_FEATURE(kAutofillExtendZipCodeValidation,
@@ -819,13 +838,16 @@ BASE_FEATURE(kAutofillFixLabelGenerationForStreetAddress,
 
 // When enabled, the rewriter uses updated rewrite rules.
 // TODO(crbug.com/445863287): Cleanup when launched.
-BASE_FEATURE(kAutofillFixRewriterRules, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillFixRewriterRules, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, the rationalization engine will fix misclassifications where
 // a field is detected as a COUNTRY when it should be a STATE or vice versa.
 // TODO(crbug.com/444180493): Cleanup when launched.
 BASE_FEATURE(kAutofillFixStateCountryMisclassification,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables retrieval and filling of one-time passwords (OTPs) received in Gmail.
+BASE_FEATURE(kAutofillGmailOtp, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, Greek regexes are used for parsing in branded builds.
 BASE_FEATURE(kAutofillGreekRegexes, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -855,6 +877,12 @@ BASE_FEATURE_PARAM(int,
                    &kAutofillLabelSensitiveAutocomplete,
                    "autocomplete_label_sensitive_migration_generation",
                    0);
+
+// If enabled, add autocomplete suggestions for email fields to the currently
+// shown address suggestions if they are valid email addresses.
+// TODO(crbug.com/506033768): Remove when launched.
+BASE_FEATURE(kAutofillMergeAddressAndAutocompleteEmailSuggestions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, all behaviours related to the on-device machine learning
 // model for field type predictions will be guarded.
@@ -939,6 +967,12 @@ BASE_FEATURE(kAutofillPopupCheckHtmlFormPopupOverlap,
 // emitting of "Autofill.AcceptedSuggestionDesktopRowViewVisibleEnough".
 BASE_FEATURE(kAutofillPopupDontAcceptNonVisibleEnoughSuggestion,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, `PopupBaseView` uses `DeleteSoon` instead of synchronous
+// `delete this` during `DoHide()` when no widget has been created, and
+// guards against double destruction or showing while hiding.
+// TODO(crbug.com/524084900): Remove when launched.
+BASE_FEATURE(kAutofillPopupUseDeleteSoon, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Replaces blink::WebFormElementObserver usage in FormTracker by updated logic
 // for tracking the disappearance of forms as well as other submission

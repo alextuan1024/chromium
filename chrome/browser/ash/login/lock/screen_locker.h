@@ -49,7 +49,15 @@ namespace policy {
 class BrowserPolicyConnectorAsh;
 }  // namespace policy
 
+namespace user_manager {
+class MultiUserSignInPolicyController;
+}  // namespace user_manager
+
 namespace ash {
+
+namespace system {
+class SystemClock;
+}  // namespace system
 
 class Authenticator;
 class ScreenLockerController;
@@ -65,25 +73,25 @@ class ScreenLocker
  public:
   using AuthenticateCallback = base::OnceCallback<void(bool auth_success)>;
 
-  // `local_state`, `application_locale_storage`, and
-  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
+  // `local_state`, `application_locale_storage`,
+  // `browser_policy_connector_ash`,
+  // `multi_user_sign_in_policy_controller`, and `system_clock` must be
+  // non-null and must outlive `this`.
   // `shared_url_loader_factory` must be non-null.
   ScreenLocker(
       PrefService* local_state,
       const ApplicationLocaleStorage* application_locale_storage,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      const user_manager::MultiUserSignInPolicyController*
+          multi_user_sign_in_policy_controller,
+      system::SystemClock* system_clock,
       const user_manager::UserList& users);
 
   ScreenLocker(const ScreenLocker&) = delete;
   ScreenLocker& operator=(const ScreenLocker&) = delete;
 
   ~ScreenLocker() override;
-
-  // Returns the default instance if it has been created.
-  // DEPRECATED: Use ScreenLockerController::Get().screen_locker() instead.
-  // TODO(crbug.com/539761804): Replace callers and remove this.
-  static ScreenLocker* default_screen_locker();
 
   // Returns true if the lock UI has been confirmed as displayed.
   bool locked() const { return locked_; }
@@ -247,6 +255,9 @@ class ScreenLocker
       shared_url_loader_factory_;
   const raw_ref<policy::BrowserPolicyConnectorAsh>
       browser_policy_connector_ash_;
+  const raw_ref<const user_manager::MultiUserSignInPolicyController>
+      multi_user_sign_in_policy_controller_;
+  const raw_ref<system::SystemClock> system_clock_;
 
   // Users that can unlock the device.
   user_manager::UserList users_;

@@ -2154,8 +2154,7 @@ TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
   auto* target = target_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
-  target_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(50, 60));
+  target_element->SetCanvasTransform(gfx::Transform::MakeTranslation(50, 60));
   UpdateAllLifecyclePhasesForTest();
 
   PhysicalRect local_rect(0, 0, 100, 100);
@@ -2186,10 +2185,8 @@ TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
-  a_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(100, 0));
-  b_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(0, 100));
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
   UpdateAllLifecyclePhasesForTest();
 
   PhysicalRect local_rect(0, 0, 50, 50);
@@ -2202,12 +2199,6 @@ TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 100),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 100)));
 }
 
 TEST_P(VisualRectMappingTest,
@@ -2227,10 +2218,8 @@ TEST_P(VisualRectMappingTest,
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
-  a_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(100, 0));
-  b_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(0, 100));
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
   UpdateAllLifecyclePhasesForTest();
 
   PhysicalRect local_rect(0, 0, 50, 50);
@@ -2243,12 +2232,6 @@ TEST_P(VisualRectMappingTest,
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 100),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 100)));
 }
 
 TEST_P(
@@ -2269,8 +2252,7 @@ TEST_P(
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
-  a_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(100, 0));
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
   UpdateAllLifecyclePhasesForTest();
 
   PhysicalRect local_rect(0, 0, 50, 50);
@@ -2283,12 +2265,6 @@ TEST_P(
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 0, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 0)));
 }
 
 TEST_P(VisualRectMappingTest,
@@ -2308,8 +2284,7 @@ TEST_P(VisualRectMappingTest,
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
-  a_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(100, 0));
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
   UpdateAllLifecyclePhasesForTest();
 
   PhysicalRect local_rect(0, 0, 50, 50);
@@ -2322,12 +2297,43 @@ TEST_P(VisualRectMappingTest,
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(100, 0, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(100, 0),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(100, 0)));
+}
+
+TEST_P(VisualRectMappingTest,
+       NestedElementCanvasTransformInlineVisualRectMapping) {
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; }
+      span { font: 50px/1 Ahem; }
+    </style>
+    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <span id="b" drawable style="color: green;">X</span>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
 }
 
 }  // namespace blink

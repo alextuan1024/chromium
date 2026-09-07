@@ -10,6 +10,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/trace_event/trace_event.h"
 #include "chrome/browser/file_select_helper.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
@@ -17,6 +18,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
@@ -234,11 +236,11 @@ void OmniboxPopupWebUIBaseContent::ResizeDueToAutoResize(
   is_window_resizing_ = false;
 
   if (popup_presenter_->ShouldDeferUntilVisualStateReady().has_value() ||
-      is_resizing) {
+      is_resizing || !popup_presenter_->ShouldDebounceResize()) {
     debounce_resize_timer_.Stop();
     popup_presenter_->OnContentHeightChanged(new_size.height());
   } else {
-    // Debounce the resize event by 2 frame's time (assuming 60 Hz) to avoid
+        // Debounce the resize event by 2 frame's time (assuming 60 Hz) to avoid
     // flickering issues when the renderer sends a transient initial size.
     // The issue is manifested as the popup being clipped at the top.
     // This happens when:
@@ -294,12 +296,23 @@ void OmniboxPopupWebUIBaseContent::SetContentURL(std::string_view url) {
 }
 
 void OmniboxPopupWebUIBaseContent::LoadContent() {
+  TRACE_EVENT1("omnibox",
+               perfetto::DynamicString(base::StrCat(
+                   {"OmniboxPopupWebUIBaseContent::LoadContent:",
+                    GetMetricPrefix()})),
+               "url", content_url_.spec());
   DCHECK(!content_url_.is_empty());
   contents_wrapper_ = std::make_unique<WebUIContentsWrapperT<OmniboxPopupUI>>(
       content_url_, location_bar_->GetProfile(), IDS_TASK_MANAGER_OMNIBOX,
       EscClosesUI());
   contents_wrapper_->SetHost(weak_factory_.GetWeakPtr());
   SetWebContents(contents_wrapper_->web_contents());
+  if (popup_presenter_->ShouldEvictOnHide()) {
+    if (auto* rwhv =
+            contents_wrapper_->web_contents()->GetRenderWidgetHostView()) {
+      rwhv->SetEvictOnHide(true);
+    }
+  }
   // LocationBarView can be instantiated in windows that do not have a
   // Browser object (i.e Captive Portal). In that case, features depending on
   // the browser are not supported and should be skipped.
@@ -480,6 +493,15 @@ void OmniboxPopupWebUIBaseContent::OnFileChooserClosed() {
   }
   // Release the deactivation blocker since the file chooser has been closed.
   file_chooser_deactivation_blocker_.reset();
+}
+
+bool OmniboxPopupWebUIBaseContent::ShouldApplyHeightWorkarounds() const {
+  return !popup_presenter_ || popup_presenter_->ShouldApplyHeightWorkarounds();
+}
+
+bool OmniboxPopupWebUIBaseContent::ShouldSizeWebViewToPreferredHeight() const {
+  return popup_presenter_ &&
+         popup_presenter_->ShouldSizeWebViewToPreferredHeight();
 }
 
 BEGIN_METADATA(OmniboxPopupWebUIBaseContent)

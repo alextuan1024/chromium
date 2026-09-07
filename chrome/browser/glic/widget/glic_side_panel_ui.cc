@@ -75,6 +75,7 @@ GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
   // Add capability to show web modal dialogs (e.g. Data Controls Dialogs for
   // enterprise users) via constrained_window APIs.
   SetModalDialogDelegate(this);
+  host_observation_.Observe(&delegate_->host());
   panel_state_.kind = mojom::PanelStateKind::kAttached;
 }
 
@@ -88,8 +89,9 @@ std::unique_ptr<views::View> GlicSidePanelUi::CreateView(Profile* profile) {
         if (!panel) {
           return;
         }
-        panel->Zoom(zoom_in ? mojom::ZoomAction::kZoomIn
-                            : mojom::ZoomAction::kZoomOut);
+        panel->Zoom(
+            zoom_in ? mojom::ZoomAction::kZoomIn : mojom::ZoomAction::kZoomOut,
+            ZoomSource::kScroll);
       },
       weak_ptr_factory_.GetWeakPtr()));
 
@@ -257,6 +259,14 @@ void GlicSidePanelUi::OnReload() {
   SetModalDialogDelegate(this);
 }
 
+void GlicSidePanelUi::ActiveWebContentsChanged(
+    content::WebContents* new_contents) {
+  if (glic_view_) {
+    glic_view_->SetWebContents(new_contents);
+  }
+  SetModalDialogDelegate(this);
+}
+
 std::unique_ptr<GlicUiEmbedder> GlicSidePanelUi::CreateInactiveEmbedder()
     const {
   return GlicInactiveSidePanelUi::CreateForVisibleTab(tab_, delegate_.get());
@@ -283,8 +293,8 @@ bool GlicSidePanelUi::ActivateBrowser() {
   return true;
 }
 
-void GlicSidePanelUi::Zoom(mojom::ZoomAction zoom_action) {
-  delegate_->host().Zoom(zoom_action);
+void GlicSidePanelUi::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
+  delegate_->host().Zoom(zoom_action, source);
 }
 
 bool GlicSidePanelUi::HasSelectionOverlay() {

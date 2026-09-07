@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/omnibox/test_omnibox_view.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_omnibox_client.h"
 #include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_web_contents_helper.h"
@@ -45,6 +46,7 @@
 #include "components/omnibox/browser/fusebox_action.mojom.h"
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
 #include "components/omnibox/browser/mock_autocomplete_provider_client.h"
+#include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/browser/test_omnibox_client.h"
 #include "components/omnibox/browser/vector_icons.h"
@@ -74,16 +76,17 @@
 #include "third_party/omnibox_proto/tool_config.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/base/webui/web_ui_util.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 
 // Exclude desktop-only headers for WebuiOmniboxHandler and
 // OmniboxComposeboxHandler, which are dedicated to the desktop Omnibox Popup
 // and not compiled on Android.
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -178,6 +181,90 @@ TEST_F(SearchboxHandlerTest, GetWebUIDataSourceDictSetsDragAndDrop) {
 TEST_F(SearchboxHandlerTest, GetWebUIDataSourceDictSetsVoiceWaiting) {
   base::DictValue strings = SearchboxHandler::GetWebUIDataSourceDict(profile());
   EXPECT_NE(nullptr, strings.Find("voiceWaiting"));
+}
+
+TEST_F(SearchboxHandlerTest, GetWebUIDataSourceDictSetsVirtualFocusFlags) {
+  // 1. Default state.
+  {
+    base::DictValue strings =
+        SearchboxHandler::GetWebUIDataSourceDict(profile());
+    EXPECT_FALSE(*strings.FindBool("realboxVirtualFocusNavigation"));
+    EXPECT_FALSE(*strings.FindBool("omniboxPopupVirtualFocusNavigation"));
+    EXPECT_FALSE(*strings.FindBool("lensOverlayVirtualFocusNavigation"));
+    EXPECT_TRUE(*strings.FindBool("omniboxEverywhereVirtualFocusNavigation"));
+    EXPECT_FALSE(*strings.FindBool("webuiBrowserVirtualFocusNavigation"));
+  }
+
+  // 2. Flags enabled.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        {features::kRealboxVirtualFocusNavigation,
+         features::kOmniboxPopupVirtualFocusNavigation,
+         features::kLensOverlayVirtualFocusNavigation,
+         features::kOmniboxEverywhereVirtualFocusNavigation,
+         features::kWebuiBrowserVirtualFocusNavigation},
+        {});
+    base::DictValue strings =
+        SearchboxHandler::GetWebUIDataSourceDict(profile());
+    EXPECT_TRUE(*strings.FindBool("realboxVirtualFocusNavigation"));
+    EXPECT_TRUE(*strings.FindBool("omniboxPopupVirtualFocusNavigation"));
+    EXPECT_TRUE(*strings.FindBool("lensOverlayVirtualFocusNavigation"));
+    EXPECT_TRUE(*strings.FindBool("omniboxEverywhereVirtualFocusNavigation"));
+    EXPECT_TRUE(*strings.FindBool("webuiBrowserVirtualFocusNavigation"));
+  }
+}
+
+TEST_F(SearchboxHandlerTest, GetWebUIDataSourceDictKeywordSpaceTriggering) {
+  profile()->GetPrefs()->SetBoolean(omnibox::kKeywordSpaceTriggeringEnabled,
+                                    false);
+  base::DictValue strings = SearchboxHandler::GetWebUIDataSourceDict(profile());
+  EXPECT_FALSE(*strings.FindBool("keywordSpaceTriggeringEnabled"));
+
+  profile()->GetPrefs()->SetBoolean(omnibox::kKeywordSpaceTriggeringEnabled,
+                                    true);
+  strings = SearchboxHandler::GetWebUIDataSourceDict(profile());
+  EXPECT_TRUE(*strings.FindBool("keywordSpaceTriggeringEnabled"));
+}
+
+TEST_F(SearchboxHandlerTest, KeywordSpaceTriggeringDynamicPrefChange) {
+  auto web_contents = content::WebContents::Create(
+      content::WebContents::CreateParams(profile()));
+  testing::NiceMock<MockBrowserWindowInterface> browser_window_interface;
+  ui::UnownedUserDataHost unowned_user_data_host;
+#if !BUILDFLAG(IS_ANDROID)
+  BrowserWindowFeatures browser_window_features;
+  SetupMockBrowserWindowInterface(browser_window_interface, profile(),
+                                  browser_window_features,
+                                  unowned_user_data_host);
+#else
+  ON_CALL(browser_window_interface, GetProfile())
+      .WillByDefault(testing::Return(profile()));
+  ON_CALL(browser_window_interface, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(unowned_user_data_host));
+#endif
+  webui::SetBrowserWindowInterface(web_contents.get(),
+                                   &browser_window_interface);
+
+  EXPECT_CALL(page_, SetKeywordSpaceTriggeringEnabled(true));
+  auto handler = std::make_unique<RealboxHandlerPublic>(
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>(),
+      page_.BindAndGetRemote(), profile(), web_contents.get(),
+      base::BindLambdaForTesting(
+          []() -> contextual_search::ContextualSearchSessionHandle* {
+            return nullptr;
+          }));
+  page_.FlushForTesting();
+
+  EXPECT_CALL(page_, SetKeywordSpaceTriggeringEnabled(false));
+  profile()->GetPrefs()->SetBoolean(omnibox::kKeywordSpaceTriggeringEnabled,
+                                    false);
+  page_.FlushForTesting();
+
+  EXPECT_CALL(page_, SetKeywordSpaceTriggeringEnabled(true));
+  profile()->GetPrefs()->SetBoolean(omnibox::kKeywordSpaceTriggeringEnabled,
+                                    true);
+  page_.FlushForTesting();
 }
 
 TEST_F(SearchboxHandlerTest, GetWebUIDataSourceDictLensSearchHint) {
@@ -300,6 +387,76 @@ TEST_F(SearchboxHandlerTest, QuestionMarkKeywordInput) {
 
   testing::Mock::VerifyAndClearExpectations(mock_omnibox_edit_model);
   testing::Mock::VerifyAndClearExpectations(mock_autocomplete_controller);
+
+  handler.reset();
+}
+
+TEST_F(SearchboxHandlerTest, QueryAutocomplete_IsOnFocusDoesNotSetUserText) {
+  content::RenderViewHostTestEnabler test_render_host_factories;
+  auto web_contents =
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+
+  testing::NiceMock<MockBrowserWindowInterface> browser_window_interface;
+  ui::UnownedUserDataHost unowned_user_data_host;
+#if !BUILDFLAG(IS_ANDROID)
+  BrowserWindowFeatures browser_window_features;
+  SetupMockBrowserWindowInterface(browser_window_interface, profile(),
+                                  browser_window_features,
+                                  unowned_user_data_host);
+#else
+  ON_CALL(browser_window_interface, GetProfile())
+      .WillByDefault(testing::Return(profile()));
+  ON_CALL(browser_window_interface, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(unowned_user_data_host));
+#endif
+  webui::SetBrowserWindowInterface(web_contents.get(),
+                                   &browser_window_interface);
+
+  auto handler = std::make_unique<RealboxHandlerPublic>(
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>(),
+      page_.BindAndGetRemote(), profile(), web_contents.get(),
+      base::BindLambdaForTesting(
+          []() -> contextual_search::ContextualSearchSessionHandle* {
+            return nullptr;
+          }));
+
+  handler->autocomplete_controller_observation_.Reset();
+  auto autocomplete_controller =
+      std::make_unique<testing::NiceMock<MockAutocompleteController>>(
+          std::make_unique<MockAutocompleteProviderClient>(), 0);
+  handler->SetAutocompleteControllerForTesting(
+      std::move(autocomplete_controller));
+
+  auto omnibox_edit_model =
+      std::make_unique<testing::NiceMock<MockOmniboxEditModel>>(
+          handler->omnibox_controller());
+  auto* mock_omnibox_edit_model = omnibox_edit_model.get();
+  handler->omnibox_controller()->SetEditModelForTesting(
+      std::move(omnibox_edit_model));
+
+  // When `is_on_focus` is true, SetUserText should NOT be called.
+  EXPECT_CALL(*mock_omnibox_edit_model, SetUserText(_)).Times(0);
+
+  handler->QueryAutocomplete(
+      0, /*tab_id=*/std::nullopt, u"", /*prevent_inline_autocomplete=*/false, 0,
+      omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
+      /*is_on_focus=*/true, /*keyword=*/"",
+      searchbox::mojom::InputMethod::kKeyboard);
+
+  testing::Mock::VerifyAndClearExpectations(mock_omnibox_edit_model);
+
+  // When `is_on_focus` is false (user input), SetUserText SHOULD be called.
+  EXPECT_CALL(*mock_omnibox_edit_model, SetUserText(std::u16string(u"test")))
+      .Times(1);
+
+  handler->QueryAutocomplete(
+      1, /*tab_id=*/std::nullopt, u"test",
+      /*prevent_inline_autocomplete=*/false, 4,
+      omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT,
+      /*is_on_focus=*/false, /*keyword=*/"",
+      searchbox::mojom::InputMethod::kKeyboard);
+
+  testing::Mock::VerifyAndClearExpectations(mock_omnibox_edit_model);
 
   handler.reset();
 }
@@ -464,10 +621,7 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
   {
     SCOPED_TRACE("Empty input");
 
-    std::u16string input_text;
-    EXPECT_CALL(*omnibox_edit_model_, SetUserText(_))
-        .Times(1)
-        .WillOnce(SaveArg<0>(&input_text));
+    EXPECT_CALL(*omnibox_edit_model_, SetUserText(_)).Times(0);
 
     AutocompleteInput input;
     EXPECT_CALL(*autocomplete_controller_, Start(_))
@@ -480,7 +634,6 @@ TEST_F(RealboxHandlerTest, AutocompleteController_Start) {
         /*is_on_focus=*/true, /*keyword=*/"",
         searchbox::mojom::InputMethod::kKeyboard);
 
-    EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
     EXPECT_EQ(input.focus_type(), metrics::OmniboxFocusType::INTERACTION_FOCUS);
     EXPECT_EQ(input.current_url().spec(), "");
@@ -857,10 +1010,7 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
   {
     SCOPED_TRACE("Empty input");
 
-    std::u16string input_text;
-    EXPECT_CALL(*omnibox_edit_model_, SetUserText(_))
-        .Times(1)
-        .WillOnce(SaveArg<0>(&input_text));
+    EXPECT_CALL(*omnibox_edit_model_, SetUserText(_)).Times(0);
 
     AutocompleteInput input;
     EXPECT_CALL(*autocomplete_controller_, Start(_))
@@ -890,7 +1040,6 @@ TEST_F(LensSearchboxHandlerTest, Lens_AutocompleteController_Start) {
         /*is_on_focus=*/true, /*keyword=*/"",
         searchbox::mojom::InputMethod::kKeyboard);
 
-    EXPECT_EQ(input_text, u"");
     EXPECT_EQ(input.text(), u"");
     EXPECT_EQ(input.focus_type(), metrics::OmniboxFocusType::INTERACTION_FOCUS);
     EXPECT_EQ(input.current_url(), page_url);
@@ -1004,6 +1153,7 @@ class WebuiOmniboxHandlerPublic : public WebuiOmniboxHandler {
   using SearchboxHandler::autocomplete_controller;
   using SearchboxHandler::autocomplete_controller_observation_;
   using SearchboxHandler::client;
+  using SearchboxHandler::CreateAutocompleteMatch;
   using SearchboxHandler::omnibox_controller;
   using SearchboxHandler::OpenMatch;
   using SearchboxHandler::SetAutocompleteControllerForTesting;
@@ -1111,6 +1261,48 @@ TEST_F(WebuiOmniboxHandlerTest, WebuiOmniboxUpdatesSelection) {
   EXPECT_EQ(
       searchbox::mojom::SelectionLineState::kFocusedButtonRemoveSuggestion,
       selection->state);
+}
+
+TEST_F(WebuiOmniboxHandlerTest, SetPopupSelection_IgnoresOutOfBounds) {
+  scoped_refptr<FakeAutocompleteProvider> provider =
+      new FakeAutocompleteProvider(AutocompleteProvider::TYPE_SEARCH);
+  AutocompleteMatch match1(provider.get(), 1000, false,
+                           AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+  match1.destination_url = GURL("https://example1.com");
+  AutocompleteMatch match2(provider.get(), 1000, false,
+                           AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+  match2.destination_url = GURL("https://example2.com");
+
+  auto fake_autocomplete_controller =
+      std::make_unique<FakeAutocompleteController>(&task_environment_);
+  fake_autocomplete_controller->providers_.push_back(provider);
+  fake_autocomplete_controller->internal_result_.AppendMatches(
+      {match1, match2});
+  fake_autocomplete_controller->published_result_.AppendMatches(
+      {match1, match2});
+  handler_->autocomplete_controller_observation_.Reset();
+  handler_->SetAutocompleteControllerForTesting(
+      std::move(fake_autocomplete_controller));
+
+  omnibox_controller_->edit_model()->SetPopupSelection(
+      OmniboxPopupSelection(0, OmniboxPopupSelection::NORMAL));
+  EXPECT_EQ(0U, omnibox_controller_->edit_model()->GetPopupSelection().line);
+
+  // Calling SetPopupSelection with an out-of-bounds index should be ignored.
+  auto selection = searchbox::mojom::OmniboxPopupSelection::New();
+  selection->line = 5;
+  selection->state = searchbox::mojom::SelectionLineState::kNormal;
+  selection->action_index = 0;
+  handler_->SetPopupSelection(std::move(selection));
+  EXPECT_EQ(0U, omnibox_controller_->edit_model()->GetPopupSelection().line);
+
+  // Calling SetPopupSelection with a valid index should succeed.
+  selection = searchbox::mojom::OmniboxPopupSelection::New();
+  selection->line = 1;
+  selection->state = searchbox::mojom::SelectionLineState::kNormal;
+  selection->action_index = 0;
+  handler_->SetPopupSelection(std::move(selection));
+  EXPECT_EQ(1U, omnibox_controller_->edit_model()->GetPopupSelection().line);
 }
 
 TEST_F(WebuiOmniboxHandlerTest, OnActiveTabChanged_SavesAndRestoresState) {
@@ -1249,6 +1441,100 @@ TEST_F(WebuiOmniboxHandlerTest,
             fusebox_action::mojom::QueryActionOverride::kPaste);
   EXPECT_EQ(mojom_match.value()->fusebox_action->searchbox_override,
             fusebox_action::mojom::SearchboxOverride::kComposebox);
+}
+
+TEST_F(WebuiOmniboxHandlerTest, CreateAutocompleteMatch_PopulatesSuggestStyle) {
+  AutocompleteMatch match;
+  match.destination_url = GURL("https://example.com");
+
+  omnibox::SuggestTemplateInfo suggest_template;
+  suggest_template.set_style(omnibox::SuggestTemplateInfo::RICH_IMAGE);
+  match.suggest_template = suggest_template;
+
+  bookmarks::BookmarkModel* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(profile());
+  bookmark_model->LoadEmptyForTest();
+
+  auto mojom_match = handler_->CreateAutocompleteMatch(
+      match, 0, bookmark_model, omnibox::GroupConfigMap(),
+      omnibox_controller_->client()->GetTemplateURLService());
+
+  ASSERT_TRUE(mojom_match.has_value());
+  EXPECT_EQ(mojom_match.value()->suggest_style,
+            searchbox::mojom::SuggestStyle::kRichImage);
+}
+
+TEST_F(WebuiOmniboxHandlerTest,
+       CreateAutocompleteMatch_SecondaryTextPlacement) {
+  bookmarks::BookmarkModel* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(profile());
+  bookmark_model->LoadEmptyForTest();
+
+  // Suggestion without secondary_text_placement and without image defaults to
+  // single-line.
+  {
+    AutocompleteMatch match;
+    match.destination_url = GURL("https://example.com");
+    auto mojom_match = handler_->CreateAutocompleteMatch(
+        match, 0, bookmark_model, omnibox::GroupConfigMap(),
+        omnibox_controller_->client()->GetTemplateURLService());
+    ASSERT_TRUE(mojom_match.has_value());
+    EXPECT_FALSE(mojom_match.value()->is_two_row_suggestion);
+  }
+
+  // Suggestion with secondary_text_placement = BELOW_PRIMARY_TEXT shows on
+  // second line (two-row suggestion).
+  {
+    AutocompleteMatch match;
+    match.destination_url = GURL("https://example.com");
+    omnibox::SuggestTemplateInfo suggest_template;
+    suggest_template.set_secondary_text_placement(
+        omnibox::SuggestTemplateInfo::BELOW_PRIMARY_TEXT);
+    match.suggest_template = suggest_template;
+
+    auto mojom_match = handler_->CreateAutocompleteMatch(
+        match, 0, bookmark_model, omnibox::GroupConfigMap(),
+        omnibox_controller_->client()->GetTemplateURLService());
+    ASSERT_TRUE(mojom_match.has_value());
+    EXPECT_TRUE(mojom_match.value()->is_two_row_suggestion);
+  }
+
+  // Suggestion with secondary_text_placement = IN_FRONT_OF_PRIMARY_TEXT shows
+  // on same line even if it has an image.
+  {
+    AutocompleteMatch match;
+    match.destination_url = GURL("https://example.com");
+    match.image_url = GURL("https://example.com/image.png");
+    omnibox::SuggestTemplateInfo suggest_template;
+    suggest_template.set_secondary_text_placement(
+        omnibox::SuggestTemplateInfo::IN_FRONT_OF_PRIMARY_TEXT);
+    match.suggest_template = suggest_template;
+
+    auto mojom_match = handler_->CreateAutocompleteMatch(
+        match, 0, bookmark_model, omnibox::GroupConfigMap(),
+        omnibox_controller_->client()->GetTemplateURLService());
+    ASSERT_TRUE(mojom_match.has_value());
+    EXPECT_FALSE(mojom_match.value()->is_two_row_suggestion);
+  }
+
+  // Suggestion with secondary_text_placement =
+  // SECONDARY_TEXT_PLACEMENT_UNSPECIFIED falls back to default logic (e.g.
+  // two-row if it has an image).
+  {
+    AutocompleteMatch match;
+    match.destination_url = GURL("https://example.com");
+    match.image_url = GURL("https://example.com/image.png");
+    omnibox::SuggestTemplateInfo suggest_template;
+    suggest_template.set_secondary_text_placement(
+        omnibox::SuggestTemplateInfo::SECONDARY_TEXT_PLACEMENT_UNSPECIFIED);
+    match.suggest_template = suggest_template;
+
+    auto mojom_match = handler_->CreateAutocompleteMatch(
+        match, 0, bookmark_model, omnibox::GroupConfigMap(),
+        omnibox_controller_->client()->GetTemplateURLService());
+    ASSERT_TRUE(mojom_match.has_value());
+    EXPECT_TRUE(mojom_match.value()->is_two_row_suggestion);
+  }
 }
 
 TEST_F(WebuiOmniboxHandlerTest, OpenAutocompleteMatch_KeyboardModifiers) {
@@ -1753,7 +2039,7 @@ class OmniboxComposeboxHandlerTest : public SearchboxHandlerTest {
   ~OmniboxComposeboxHandlerTest() override = default;
 
   void OpenUrl(GURL url, WindowOpenDisposition disposition) {
-    handler_->OpenUrl(url, disposition);
+    handler_->ProcessContextAndOpenUrl(url, disposition);
   }
 
   void SetUp() override {

@@ -14,10 +14,13 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_command_buffer_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_copy_element_image_destination.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_copy_element_image_source.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_draw_element_image_destination.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_draw_element_image_source.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_image_copy_external_image.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_image_copy_image_bitmap.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_image_copy_texture_tagged.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_texel_copy_texture_info.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_gpuextent3ddict_unsignedlongenforcerangesequence.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_htmlcanvaselement_htmlimageelement_htmlvideoelement_imagebitmap_imagedata_offscreencanvas_videoframe.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
@@ -459,60 +462,85 @@ void GPUQueue::copyElementImageToTexture(
     GPUCopyElementImageSource* source,
     GPUCopyElementImageDestination* destination,
     ExceptionState& exception_state) {
-  drawElementImageToTexture(source, destination, exception_state);
-}
-
-void GPUQueue::drawElementImageToTexture(
-    GPUCopyElementImageSource* source,
-    GPUCopyElementImageDestination* destination,
-    ExceptionState& exception_state) {
+  if (source->hasSx() != source->hasSy() ||
+      source->hasSx() != source->hasSwidth() ||
+      source->hasSx() != source->hasSheight()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kOperationError,
+        "Must specify all or none of (sx, sy, swidth, sheight).");
+    return;
+  }
+  if (destination->hasWidth() != destination->hasHeight()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kOperationError,
+        "Must specify neither or both of (width,height).");
+    return;
+  }
   std::optional<float> sx;
   std::optional<float> sy;
   std::optional<float> swidth;
   std::optional<float> sheight;
-  size_t explicit_param_count = 0;
   if (source->hasSx()) {
     sx = source->sx();
-    explicit_param_count++;
-  }
-  if (source->hasSy()) {
     sy = source->sy();
-    explicit_param_count++;
-  }
-  if (source->hasSwidth()) {
     swidth = source->swidth();
-    explicit_param_count++;
-  }
-  if (source->hasSheight()) {
     sheight = source->sheight();
-    explicit_param_count++;
-  }
-  if (explicit_param_count % 4 != 0) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kOperationError,
-        "Must specify all or none of (sx,sy,swidth,sheight).");
-    return;
   }
 
   std::optional<uint32_t> width;
   std::optional<uint32_t> height;
   if (destination->hasWidth()) {
     width = destination->width();
-    explicit_param_count++;
-  }
-  if (destination->hasHeight()) {
     height = destination->height();
-    explicit_param_count++;
-  }
-  if (explicit_param_count % 2 != 0) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kOperationError,
-        "Must specify neither or both of (width,height).");
-    return;
   }
 
   DrawElementImageToTextureInternal(source->source(), sx, sy, swidth, sheight,
                                     width, height, destination->destination(),
+                                    exception_state);
+}
+
+void GPUQueue::drawElementImageToTexture(
+    GPUDrawElementImageSource* source,
+    GPUDrawElementImageDestination* destination,
+    ExceptionState& exception_state) {
+  if (source->hasSourceX() != source->hasSourceY() ||
+      source->hasSourceX() != source->hasSourceWidth() ||
+      source->hasSourceX() != source->hasSourceHeight()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kOperationError,
+        "Must specify all or none of "
+        "(sourceX, sourceY, sourceWidth, sourceHeight).");
+    return;
+  }
+  std::optional<wgpu::Extent3D> dawn_copy_size;
+  if (destination->hasSize()) {
+    dawn_copy_size.emplace();
+    if (!ConvertToDawn(destination->size(), &dawn_copy_size.value(), device_,
+                       exception_state)) {
+      return;
+    }
+  }
+
+  std::optional<float> sx;
+  std::optional<float> sy;
+  std::optional<float> swidth;
+  std::optional<float> sheight;
+  if (source->hasSourceX()) {
+    sx = source->sourceX();
+    sy = source->sourceY();
+    swidth = source->sourceWidth();
+    sheight = source->sourceHeight();
+  }
+
+  std::optional<uint32_t> width;
+  std::optional<uint32_t> height;
+  if (dawn_copy_size.has_value()) {
+    width = dawn_copy_size->width;
+    height = dawn_copy_size->height;
+  }
+
+  DrawElementImageToTextureInternal(source->source(), sx, sy, swidth, sheight,
+                                    width, height, destination,
                                     exception_state);
 }
 

@@ -19,6 +19,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_content_browser_client.h"
+#include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -61,6 +62,8 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -303,6 +306,16 @@ void VerifyFactoryCounts(const TestChromeContentBrowserClient& test_client,
 
 class MultiNetworkBrowserTest : public PlatformBrowserTest {
  public:
+  MultiNetworkBrowserTest() {
+    // Prewarm creates asynchronously, in the background, network-backed
+    // HTTP/HTTPS requests to google.com. These requests happen
+    // non-deterministically during startup. To isolate the test and keep
+    // assertions deterministic disable prewarming.
+    // TODO(crbug.com/539786691): Re-enable kPrewarm and filter out the
+    // prewarm requests instead.
+    feature_list_.InitAndDisableFeature(features::kPrewarm);
+  }
+
   void SetUpOnMainThread() override {
     PlatformBrowserTest::SetUpOnMainThread();
     // When the network service runs out-of-process, all socket operations and
@@ -352,6 +365,9 @@ class MultiNetworkBrowserTest : public PlatformBrowserTest {
     CHECK_LE(network, 254);
     return base::StringPrintf("127.0.0.%d", static_cast<int>(network));
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // MultiNetworkBrowserTest rely on the assumption that EmbeddedTestServer is

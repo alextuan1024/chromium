@@ -46,10 +46,12 @@ found in the LICENSE file.
     <item type="id" name="open_recently_closed_tab" />
     <item type="id" name="open_tab_strip_context_menu" />
     <item type="id" name="print_id" />
+    <item type="id" name="quit_chrome" />
     <item type="id" name="select_next_tab" />
     <item type="id" name="select_previous_tab" />
     <item type="id" name="show_menu" />
     <item type="id" name="switch_keyboard_focus_row" />
+    <item type="id" name="switch_keyboard_focus_row_reverse" />
     <item type="id" name="tab_search" />
     <item type="id" name="tab_search_side_ui" />
     <item type="id" name="task_manager" />
@@ -241,6 +243,7 @@ found in the LICENSE file.
     <item type="id" name="new_window_menu_id" />
     <item type="id" name="ntp_customization_id" />
     <item type="id" name="offline_page_id" />
+    <item type="id" name="open_file_id" />
     <item type="id" name="open_history_menu_id" />
     <item type="id" name="open_in_app_menu_id" />
     <item type="id" name="open_webapk_id" />

@@ -13,6 +13,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
@@ -76,13 +77,13 @@ webapps::AppId WebAppFrameToolbarTestHelper::InstallAndLaunchWebApp(
 }
 
 webapps::AppId WebAppFrameToolbarTestHelper::InstallAndLaunchWebApp(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const GURL& start_url) {
   return InstallAndLaunchWebApp(browser->GetProfile(), start_url);
 }
 
 webapps::AppId WebAppFrameToolbarTestHelper::InstallAndLaunchCustomWebApp(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::unique_ptr<web_app::WebAppInstallInfo> web_app_info,
     const GURL& start_url) {
   webapps::AppId app_id = web_app::test::InstallWebApp(browser->GetProfile(),
@@ -314,7 +315,7 @@ BrowserView* WebAppFrameToolbarTestHelper::OpenPopup(
     const std::string& window_open_script) {
   content::ExecuteScriptAsync(browser_view_->GetActiveWebContents(),
                               window_open_script);
-  Browser* popup = ui_test_utils::WaitForBrowserToOpen();
+  BrowserWindowInterface* popup = ui_test_utils::WaitForBrowserToOpen();
   EXPECT_NE(app_browser_, popup);
   EXPECT_TRUE(popup);
 

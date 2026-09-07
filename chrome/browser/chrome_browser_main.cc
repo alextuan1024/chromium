@@ -59,6 +59,7 @@
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.h"
 #include "chrome/browser/profiles/profile.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_DOWNGRADE_PROCESSING)
 #include "chrome/browser/downgrade/downgrade_manager_delegate_impl.h"  // nogncheck
@@ -66,7 +67,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/profiling_host/chrome_browser_main_extra_parts_profiling.h"
 #include "chrome/browser/segmentation_platform/chrome_browser_main_extra_parts_segmentation_platform.h"
 #include "chrome/browser/sessions/chrome_serialized_navigation_driver.h"
 #include "chrome/browser/shell_integration.h"
@@ -265,6 +265,9 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/browser/pref_names.h"
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/components/javascript_dialog_extensions_client/javascript_dialog_extension_client_impl.h"
 #endif
 
@@ -833,9 +836,6 @@ std::unique_ptr<content::BrowserMainParts> ChromeBrowserMainParts::Create(
 
   main_parts->AddParts(
       std::make_unique<ChromeBrowserMainExtraPartsPerformanceManager>());
-
-  main_parts->AddParts(
-      std::make_unique<ChromeBrowserMainExtraPartsProfiling>());
 
   main_parts->AddParts(std::make_unique<ChromeBrowserMainExtraPartsMemory>());
 
@@ -1425,7 +1425,7 @@ int ChromeBrowserMainParts::PreCreateThreadsImpl() {
   return content::RESULT_CODE_NORMAL_EXIT;
 }
 
-void ChromeBrowserMainParts::PostCreateThreads() {
+int ChromeBrowserMainParts::PostCreateThreads() {
   TRACE_EVENT("startup", "ChromeBrowserMainParts::PostCreateThreads");
   // This task should be posted after the IO thread starts, and prior to the
   // base version of the function being invoked. It is functionally okay to post
@@ -1480,6 +1480,8 @@ void ChromeBrowserMainParts::PostCreateThreads() {
   for (auto& chrome_extra_part : chrome_extra_parts_) {
     chrome_extra_part->PostCreateThreads();
   }
+
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 int ChromeBrowserMainParts::PreMainMessageLoopRun() {
@@ -1533,7 +1535,7 @@ void ChromeBrowserMainParts::PreProfileInit() {
           std::make_unique<apps::PublisherHostFactoryImpl>());
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   javascript_dialog_extensions_client::InstallClient();
 #endif
 
@@ -1548,7 +1550,7 @@ void ChromeBrowserMainParts::PreProfileInit() {
   InstallChromeJavaScriptAppModalDialogViewFactory();
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   SetChromeAppModalDialogManagerDelegate();
 #endif
 
@@ -1826,14 +1828,6 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
 #if defined(USE_AURA)
   // Make sure aura::Env has been initialized.
   CHECK(aura::Env::GetInstance());
-#endif
-
-#if BUILDFLAG(IS_WIN)
-  // We must call DoUpgradeTasks now that we own the browser singleton to
-  // finish upgrade tasks (swap) and relaunch if necessary.
-  if (upgrade_util::DoUpgradeTasks(*base::CommandLine::ForCurrentProcess())) {
-    return CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED;
-  }
 #endif
 
 #if BUILDFLAG(ENABLE_DOWNGRADE_PROCESSING) && !BUILDFLAG(IS_ANDROID)

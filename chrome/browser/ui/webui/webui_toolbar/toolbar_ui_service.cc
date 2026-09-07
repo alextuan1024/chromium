@@ -101,12 +101,35 @@ void ToolbarUIService::OnFocusRequested(mojom::FocusRequestTarget target) {
   }
 }
 
+void ToolbarUIService::ShowSplitTabsContextMenu() {
+  for (const auto& observer : observers_) {
+    observer->ShowSplitTabsContextMenu();
+  }
+}
+
 void ToolbarUIService::ShowContextMenu(
     toolbar_ui_api::mojom::ContextMenuType menu_type,
     const gfx::RectF& bounds_in_css_pixels,
-    ui::mojom::MenuSourceType source) {
+    ui::mojom::MenuSourceType source,
+    std::optional<uint32_t> show_menu_token) {
   if (delegate_) {
-    delegate_->HandleContextMenu(menu_type, bounds_in_css_pixels, source);
+    delegate_->HandleContextMenu(menu_type, bounds_in_css_pixels, source,
+                                 show_menu_token);
+  }
+}
+
+void ToolbarUIService::ShowOverflowMenu(
+    std::vector<toolbar_ui_api::mojom::OverflowMenuItemPtr> controls,
+    const gfx::RectF& bounds_in_css_pixels,
+    ui::mojom::MenuSourceType source,
+    ShowOverflowMenuCallback callback) {
+  if (delegate_) {
+    delegate_->ShowOverflowMenu(std::move(controls), bounds_in_css_pixels,
+                                source, std::move(callback));
+  } else {
+    std::move(callback).Run(base::unexpected(mojo_base::mojom::Error::New(
+        mojo_base::mojom::Code::kFailedPrecondition,
+        "ToolbarUIService: null delegate_ for ShowOverflowMenu")));
   }
 }
 
@@ -155,6 +178,13 @@ void ToolbarUIService::OnContentSettingImageAnimationEnded(
     ::toolbar_ui_api::mojom::ContentSettingImageType type) {
   if (delegate_) {
     delegate_->OnContentSettingImageAnimationEnded(type);
+  }
+}
+
+void ToolbarUIService::OnPageActionPointerDown(
+    ::toolbar_ui_api::mojom::PageActionId action_id) {
+  if (delegate_) {
+    delegate_->OnPageActionPointerDown(action_id);
   }
 }
 

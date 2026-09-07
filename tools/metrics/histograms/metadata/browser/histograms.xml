@@ -117,6 +117,11 @@ chromium-metrics-reviews@google.com.
 
 <variants name="TabSwitchingType">
   <variant name="" summary="Aggregation of all tab states."/>
+  <variant name=".FrozenState.Loaded_Frozen"
+      summary="Tab is loaded and frozen."/>
+  <variant name=".FrozenState.Loaded_Unfrozen"
+      summary="Tab is loaded and not frozen."/>
+  <variant name=".FrozenState.NotLoaded" summary="Tab is not loaded."/>
   <variant name=".NoSavedFrames_Loaded"
       summary="Tab has no saved frame in the cache but is already loaded."/>
   <variant name=".NoSavedFrames_NotLoaded"
@@ -1135,7 +1140,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Browser.Responsiveness.IOJanksTotalPerMinute" units="janks"
-    expires_after="2026-11-15">
+    expires_after="2027-02-28">
   <owner>gab@chromium.org</owner>
   <owner>olivierli@chromium.org</owner>
   <summary>
@@ -2114,7 +2119,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BrowserSwitcher.LaunchTime" units="ms"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>nicolaso@chromium.org</owner>
   <owner>pastarmovj@chromium.org</owner>
   <summary>
@@ -2318,7 +2323,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SidePanel.ReadAnything.ShownDurationMax1Day" units="ms"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>alfredohiguera@google.com</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
   <summary>

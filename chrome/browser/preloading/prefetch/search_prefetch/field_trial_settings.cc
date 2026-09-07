@@ -182,6 +182,13 @@ bool IsSearchPrefetchBeaconLoggingEnabled(
          value == kSuggestPrefetchParam.Get();
 }
 
+BASE_FEATURE(kSearchPrefetchPreloadServingMetrics,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsSearchPrefetchPreloadServingMetricsEnabled() {
+  return base::FeatureList::IsEnabled(kSearchPrefetchPreloadServingMetrics);
+}
+
 bool IsPrefetchIncognitoEnabled() {
   return SearchPrefetchServicePrefetchingIsEnabled() &&
          IsSearchNavigationPrefetchEnabled() &&
@@ -195,16 +202,6 @@ const base::FeatureParam<base::TimeDelta>
     kAutocompletePreloadedDictionaryTimeout{
         &kAutocompleteDictionaryPreload,
         "autocomplete_preloaded_dictionary_timeout", base::Milliseconds(60000)};
-
-BASE_FEATURE(kSuppressesSearchPrefetchOnSlowNetwork,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Regarding how this number was chosen, see the design doc linked from
-// crbug.com/350519234.
-const base::FeatureParam<base::TimeDelta>
-    kSuppressesSearchPrefetchOnSlowNetworkThreshold{
-        &kSuppressesSearchPrefetchOnSlowNetwork,
-        "slow_network_threshold_for_search_prefetch", base::Milliseconds(208)};
 
 BASE_FEATURE(kSuppressPrefetchForUnsupportedSearchMode,
              base::FEATURE_DISABLED_BY_DEFAULT);

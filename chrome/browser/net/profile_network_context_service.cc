@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
@@ -83,6 +84,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/url_constants.h"
 #include "crypto/crypto_buildflags.h"
+#include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/base/features.h"
 #include "net/cert/asn1_util.h"
@@ -669,7 +671,6 @@ void ProfileNetworkContextService::RegisterProfilePrefs(
   registry->RegisterBooleanPref(prefs::kCAPlatformIntegrationEnabled, true);
 #endif
 #if BUILDFLAG(IS_CHROMEOS)
-  net::ServerCertificateDatabaseService::RegisterProfilePrefs(registry);
   // The following two prefs are primarily used (elsewhere) as local_state
   // prefs, but they are also used here as Profile prefs, for the login screen
   // Profile on ChromeOS. Their value is only used if managed.
@@ -1400,7 +1401,7 @@ void ProfileNetworkContextService::ConfigureNetworkContextParamsInternal(
     network_context_params->http_cache_max_size = disk_cache_size;
     if (disk_cache_size > 0) {
       network_context_params->shared_dictionary_cache_max_size =
-          disk_cache_size;
+          base::ByteSize(static_cast<uint64_t>(disk_cache_size));
     }
 
     network_context_params->file_paths =

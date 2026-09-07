@@ -27,7 +27,6 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/test_support/glic_api_test.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/chrome_features.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/sharing_message/mock_sharing_message_sender.h"
@@ -38,7 +37,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
@@ -84,8 +85,8 @@ class GlicExperimentalTriggeringMessageHandlerBrowserTest
     : public GlicApiBrowserTest {
  public:
   GlicExperimentalTriggeringMessageHandlerBrowserTest()
-      : GlicApiBrowserTest(
-            "./glic_experimental_triggering_message_handler_browsertest.js") {
+      : GlicApiBrowserTest(GlicTestJsPath(
+            "./glic_experimental_triggering_message_handler_browsertest.js")) {
     feature_list_.InitWithFeaturesAndParameters(
         {{features::kGlicExperimentalTriggering, {}},
          {features::kGlicExperimentalTriggeringScreenshot, {}},
@@ -107,7 +108,7 @@ class GlicExperimentalTriggeringMessageHandlerBrowserTest
  protected:
   void SetUpOnMainThread() override {
     GlicApiBrowserTest::SetUpOnMainThread();
-    GlicEnabling::SetBypassEnablementChecksForTesting(true);
+    scoped_glic_bypass_.emplace();
 
     // Mark enterprise management authority for platform and profile as NONE
     // to avoid ambient management state on some bots affecting tests.
@@ -141,6 +142,7 @@ class GlicExperimentalTriggeringMessageHandlerBrowserTest
     handler_.reset();
     platform_management_override_.reset();
     profile_management_override_.reset();
+    scoped_glic_bypass_.reset();
     GlicApiBrowserTest::TearDownOnMainThread();
   }
 
@@ -179,16 +181,9 @@ class GlicExperimentalTriggeringMessageHandlerBrowserTest
       platform_management_override_;
   std::unique_ptr<policy::ScopedManagementServiceOverrideForTesting>
       profile_management_override_;
+  std::optional<GlicEnabling::ScopedBypassEnablementChecksForTesting>
+      scoped_glic_bypass_;
 };
-
-IN_PROC_BROWSER_TEST_F(GlicExperimentalTriggeringMessageHandlerBrowserTest,
-                       testAllTestsAreRegistered) {
-  AssertAllTestsRegistered(
-      {"GlicExperimentalTriggeringMessageHandlerBrowserTest",
-       "GlicExperimentalTriggeringMetadataEnabledBrowserTest",
-       "GlicExperimentalTriggeringMetadataDisabledBrowserTest",
-       "GlicExperimentalTriggeringOpenWindowTest"});
-}
 
 IN_PROC_BROWSER_TEST_F(GlicExperimentalTriggeringMessageHandlerBrowserTest,
                        testGetExperimentalTriggeringUpdates) {

@@ -20,9 +20,11 @@
 
 namespace {
 // Allow runtime override of the forced embedded page host.
-std::string& GetForcedEmbeddedPageHostOverrideString() {
-  static base::NoDestructor<std::string> override_string;
-  return *override_string;
+std::optional<contextual_tasks::HostOverride>&
+GetForcedEmbeddedPageHostOverride() {
+  static base::NoDestructor<std::optional<contextual_tasks::HostOverride>>
+      override_host;
+  return *override_host;
 }
 
 // Allows tests to override the conditions for having sticky conversation.
@@ -49,8 +51,16 @@ BASE_FEATURE(kContextualTasksEphemeralBrandedEntryPoint,
 BASE_FEATURE(kContextualTasksExtraOauthScopes,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Enables the Google Drive OAuth scope for contextual tasks.
+BASE_FEATURE(kContextualTasksDriveOAuthScope, base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Enables the pin button in the toolbar for contextual tasks.
 BASE_FEATURE(kEnableContextualTasksPinButtonInToolbar,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Keeps the ephemeral contextual tasks button visible even when the permanent
+// button is pinned in the toolbar.
+BASE_FEATURE(kEphemeralPinningVisibleWhenPermanentlyPinned,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 
@@ -115,8 +125,6 @@ BASE_FEATURE(kContextualTasksSendContextualInputUploadType,
 BASE_FEATURE(kContextualTasksUrlRedirectToAimUrl,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kContextualTasksUseStratusDarkModeColors,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, animates the caret.
 BASE_FEATURE(kContextualTasksAnimatedCaret, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -191,6 +199,16 @@ BASE_FEATURE(kContextualTasksSidePanelRearchitecture,
 
 BASE_FEATURE(kContextualTasksEnableStickyConversation,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kContextualTasksClobberActiveTab,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kContextualTasksNonBlockingUrlNavigation,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool GetIsContextualTasksNonBlockingUrlNavigationEnabled() {
+  return base::FeatureList::IsEnabled(kContextualTasksNonBlockingUrlNavigation);
+}
 
 bool GetIsContextualTasksPdfCitationsEnabled() {
   return base::FeatureList::IsEnabled(kContextualTasksPdfCitations);
@@ -325,10 +343,6 @@ const base::FeatureParam<base::TimeDelta> kSmartTabSharingTabSelectionTimeout(
     "ContextualTasksContextSmartTabSharingTabSelectionTimeout",
     base::Milliseconds(300));
 
-const base::FeatureParam<double> kSmartTabSharingPromoScoreThreshold(
-    &kContextualTasksContext,
-    "ContextualTasksContextSmartTabSharingPromoScoreThreshold",
-    0.6);
 
 const base::FeatureParam<SmartTabSharingIphFirstTimePromptOption>::Option
     kSmartTabSharingIphFirstTimePromptOptions[] = {
@@ -702,25 +716,34 @@ bool ShouldShowExpandedSecurityChip() {
   return kContextualTasksShowExpandedSecurityChip.Get();
 }
 
-std::string GetForcedEmbeddedPageHost() {
-  std::string host = !GetForcedEmbeddedPageHostOverrideString().empty()
-                         ? GetForcedEmbeddedPageHostOverrideString()
-                         : kContextualTasksForcedEmbeddedPageHost.Get();
+std::optional<HostOverride> GetForcedEmbeddedPageHost() {
+  std::optional<HostOverride> host_override =
+      GetForcedEmbeddedPageHostOverride().has_value()
+          ? GetForcedEmbeddedPageHostOverride()
+          : HostOverride::FromString(
+                kContextualTasksForcedEmbeddedPageHost.Get());
+
+  if (!host_override.has_value()) {
+    return std::nullopt;
+  }
 
   // If there's a non-empty host, ensure that it is only ever going to a
-  // google.com domain. If not, return the default empty string.
+  // google.com domain. If not, return std::nullopt.
   // LINT.IfChange(AllowedHosts)
-  if (!host.empty() && !(base::EndsWith(host, ".google.com") ||
-                         base::EndsWith(host, ".googlers.com"))) {
-    return kContextualTasksForcedEmbeddedPageHost.default_value;
+  const std::string& host = host_override->host;
+  if (!(base::EndsWith(host, ".google.com") ||
+        base::EndsWith(host, ".googlers.com") || host == "google.com" ||
+        host == "googlers.com")) {
+    return std::nullopt;
   }
-  // LINT.ThenChange(//depot/chromium/chrome/browser/resources/contextual_tasks/app.ts:AllowedHosts)
+  // LINT.ThenChange(//chrome/browser/resources/contextual_tasks/internals/app.ts:AllowedHosts)
 
-  return host;
+  return host_override;
 }
 
-void SetForcedEmbeddedPageHostOverride(const std::string& host) {
-  GetForcedEmbeddedPageHostOverrideString() = host;
+void SetForcedEmbeddedPageHostOverride(
+    std::optional<HostOverride> host_override) {
+  GetForcedEmbeddedPageHostOverride() = std::move(host_override);
 }
 
 std::vector<std::string> GetContextualTasksSignInDomains() {
@@ -758,13 +781,6 @@ base::TimeDelta GetSmartTabSharingTabSelectionTimeout() {
   return base::Milliseconds(300);
 }
 
-double GetSmartTabSharingPromoScoreThreshold() {
-  if (kSmartTabSharingPromoScoreThreshold.Get() > 0.0 &&
-      kSmartTabSharingPromoScoreThreshold.Get() <= 1.0) {
-    return kSmartTabSharingPromoScoreThreshold.Get();
-  }
-  return 0.9;
-}
 
 bool GetIsTabAutoSuggestionChipEnabled() {
   return kContextualTasksTabAutoSuggestionChipEnabled.Get();
@@ -840,9 +856,6 @@ bool ShouldEnableLockAndUnlockInputCapability() {
          kContextualTasksLockAndUnlockInputCapability.Get();
 }
 
-bool ShouldUseStratusDarkModeColors() {
-  return base::FeatureList::IsEnabled(kContextualTasksUseStratusDarkModeColors);
-}
 
 bool GetEnableFileHint() {
   return base::FeatureList::IsEnabled(kContextualTasksEnableFileHint);
@@ -870,6 +883,24 @@ bool IsContextualTasksRearchitectureEnabled() {
 
 bool IsContextualTasksSidePanelRearchitectureEnabled() {
   return base::FeatureList::IsEnabled(kContextualTasksSidePanelRearchitecture);
+}
+
+bool IsContextualTasksClobberActiveTabEnabled() {
+  return base::FeatureList::IsEnabled(kContextualTasksClobberActiveTab);
+}
+
+const base::FeatureParam<std::string> kContextualTasksSearchCapabilitiesVersion{
+    &kContextualTasksRearchitecture,
+    "contextual-tasks-search-capabilities-version",
+    kContextualTasksSearchCapabilitiesDefaultVersion};
+
+std::string GetContextualTasksSearchCapabilitiesVersion() {
+  return kContextualTasksSearchCapabilitiesVersion.Get();
+}
+
+bool IsContextualTasksUnboundedMenuEnabled() {
+  return base::FeatureList::IsEnabled(kContextualTasksUnboundedMenu) ||
+         IsContextualTasksSidePanelRearchitectureEnabled();
 }
 
 bool IsContextualTasksUIEnabled() {
@@ -965,12 +996,24 @@ const char kContextualTasksSidePanelRearchitectureName[] =
 const char kContextualTasksSidePanelRearchitectureDescription[] =
     "Enables the side panel rearchitecture for contextual tasks.";
 
+const char kContextualTasksClobberActiveTabName[] =
+    "Contextual Tasks Clobber Active Tab";
+const char kContextualTasksClobberActiveTabDescription[] =
+    "Enables clicking links in the contextual tasks side panel to clobber the "
+    "active tab instead of opening in a new tab.";
+
 const char kContextualTasksBypassDismissedCapName[] =
     "Contextual Tasks Bypass Dismissed Cap";
 const char kContextualTasksBypassDismissedCapDescription[] =
     "Debugging flag that bypasses the dismissal count limit for contextual "
     "tasks tooltips, allowing them to be shown even after the user has "
     "dismissed them.";
+
+const char kEphemeralPinningVisibleWhenPermanentlyPinnedName[] =
+    "Contextual Tasks Ephemeral Pinning Visible When Permanently Pinned";
+const char kEphemeralPinningVisibleWhenPermanentlyPinnedDescription[] =
+    "Keeps the ephemeral contextual tasks button visible even when the "
+    "permanent button is pinned in the toolbar.";
 
 }  // namespace flag_descriptions
 

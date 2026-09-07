@@ -50,7 +50,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -64,7 +63,6 @@ import java.util.function.Supplier;
 
 /** Robolectric tests for {@link TabListContainerViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabListContainerViewBinderUnitTest {
     private static class MockViewHolder extends RecyclerView.ViewHolder {
         public MockViewHolder(@NonNull View itemView) {
@@ -89,7 +87,6 @@ public class TabListContainerViewBinderUnitTest {
     @Captor ArgumentCaptor<Function<Integer, View>> mFetchViewByIndexCaptor;
     @Captor ArgumentCaptor<Supplier<Pair<Integer, Integer>>> mGetVisibleRangeCaptor;
     @Captor ArgumentCaptor<OnScrollListener> mOnScrollListenerCaptor;
-    @Captor ArgumentCaptor<MonotonicObservableSupplier<Boolean>> mOnScrollingSupplierCaptor;
 
     private MonotonicObservableSupplier<Boolean> mIsScrollingSupplier;
     private TabListContainerViewBinder.ViewHolder mViewHolder;

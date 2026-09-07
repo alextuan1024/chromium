@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/android/device_info.h"
 #include "base/android/jni_string.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -35,6 +36,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/transition_manager/full_browser_transition_manager.h"
+#include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_url_parameters.h"
 #include "components/offline_items_collection/core/offline_content_aggregator.h"
 #include "components/offline_items_collection/core/offline_content_provider.h"
@@ -331,8 +333,12 @@ static void JNI_OfflinePageDownloadBridge_StartDownload(
     return;
   }
 
-  // Off the record save page are handled separately.
-  if (web_contents->GetBrowserContext()->IsOffTheRecord()) {
+  // Off the record save page and save as enabled on desktop android are
+  // handled via standard SavePackage.
+  if (web_contents->GetBrowserContext()->IsOffTheRecord() ||
+      (base::FeatureList::IsEnabled(
+           download::features::kEnableDownloadSaveAsContextMenu) &&
+       base::android::device_info::is_desktop())) {
     web_contents->OnSavePage();
     return;
   }

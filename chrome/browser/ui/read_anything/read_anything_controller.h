@@ -5,11 +5,14 @@
 #ifndef CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_CONTROLLER_H_
 #define CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_CONTROLLER_H_
 
+#include <optional>
+
 #include "base/callback_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "chrome/browser/ui/read_anything/read_anything_contents_wrapper.h"
 #include "chrome/browser/ui/read_anything/read_anything_enums.h"
 #include "chrome/browser/ui/read_anything/read_anything_hats_survey_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_activation_observer.h"
@@ -21,8 +24,6 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
-#include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_ui.h"
-#include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -159,36 +160,27 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
 
   void OnDistillationStateChanged(DistillationState new_state);
 
-  // For testing only. Allows the distillation-related reactions to occur.
-  void UnlockDistillationStateForTesting();
-
   // For testing only. Pauses distillation-related reactions from occurring.
-  // Only affects new ReadAnythingController instances created after this flag
-  // is set.
   static void SetFreezeDistillationOnCreationForTesting(bool locked);
 
   // Lazily creates and returns the WebUIContentsWrapper for the
   // Reading Mode WebUI. Transfers ownership of the WebUIContentsWrapper to the
   // caller, and the caller passes in the presentation that the webui will be
   // presented in (e.g. kInSidePanel, kInImmersiveOverlay)
-  std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-  GetOrCreateWebUIWrapper(PresentationState web_ui_new_presentation_state);
+  ReadAnythingContentsWrapper GetOrCreateWebUIWrapper(
+      PresentationState web_ui_new_presentation_state);
 
   // Getter for has_shown_ui_. This is used by RM host views to
   // determine if the Reading Mode is ready to be shown, or if it should wait
   // for a notification that it is ready.
   bool has_shown_ui() const { return has_shown_ui_; }
 
-  void SetWebUIWrapperForTest(
-      std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-          web_ui_wrapper);
+  void SetWebUIWrapperForTest(ReadAnythingContentsWrapper web_ui_wrapper);
 
   // Called by other host views of the Reading Mode WebUI to return ownership of
   // the WebUIContentsWrapper to this controller.
-  void TransferWebUiOwnership(
-      std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-          web_ui_wrapper,
-      PresentationState from_presentation);
+  void TransferWebUiOwnership(ReadAnythingContentsWrapper web_ui_wrapper,
+                              PresentationState from_presentation);
 
   // Recreates the WebUI on the next GetOrCreateWebUIWrapper() call. This should
   // be called if Reading mode crashes so that we don't get stuck in a crashed
@@ -204,6 +196,9 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
   }
 
   void OnSoftNavigation();
+
+  // Called when the Reading Mode side panel entry is about to be hidden.
+  void OnSidePanelWillHide(SidePanelEntryHideReason side_panel_reason);
 
  private:
   // Saves the presentation state to the user's preferences.
@@ -242,8 +237,7 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
   raw_ptr<SidePanelRegistry> side_panel_registry_ = nullptr;
   ui::ScopedUnownedUserData<ReadAnythingController> scoped_unowned_user_data_;
 
-  std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-      web_ui_wrapper_;
+  ReadAnythingContentsWrapper web_ui_wrapper_;
 
   std::unique_ptr<ReadAnythingSidePanelController>
       read_anything_side_panel_controller_;
@@ -258,6 +252,14 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
   // Used to ensure we keep transitions between RM UI states ( Immersive -> SP
   // and vice-versa) as part of the same RM session.
   bool is_presentation_transitioning_ = false;
+
+  // Stores the specific reason why this controller is closing the side panel
+  // programmatically (e.g. renderer crash or presentation mode switch).
+  // This ensures observers receive the accurate ReadAnythingCloseReason when
+  // OnSidePanelWillHide() is invoked. If this value is empty at that time, then
+  // the side panel was closed a different way, determined by the
+  // SidePanelEntryHideReason.
+  std::optional<ReadAnythingCloseReason> pending_side_panel_close_reason_;
 
   // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<
@@ -289,7 +291,6 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
   void ReleaseMainContentsCapture();
 
   DistillationState distillation_state_ = DistillationState::kUndefined;
-  bool distillation_state_locked_for_testing_ = false;
 
   // The handle returned by web_contents_->IncrementCapturerCount. This is
   // used to release the capture when the ReadAnythingController is destroyed.

@@ -30,6 +30,7 @@
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/common/chrome_features.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_handle.h"
@@ -43,6 +44,8 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/controls/webview/webview.h"
@@ -120,7 +123,8 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
       WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override {
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override {
     // The HaTS Next WebDialog runs with a non-primary OTR profile. This profile
     // cannot open new browser windows, so they are instead opened in the
     // regular browser that initiated the HaTS survey.
@@ -383,8 +387,8 @@ HatsNextWebDialog::HatsNextWebDialog(
       failure_callback_(std::move(failure_callback)),
       product_specific_bits_data_(product_specific_bits_data),
       product_specific_string_data_(product_specific_string_data),
-      ukm_hats_builder_(browser->GetTabStripModel()
-                            ->GetActiveWebContents()
+      ukm_hats_builder_(browser->GetActiveTabInterface()
+                            ->GetContents()
                             ->GetPrimaryMainFrame()
                             ->GetPageUkmSourceId()) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);

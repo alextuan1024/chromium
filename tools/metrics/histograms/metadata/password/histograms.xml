@@ -162,7 +162,7 @@ chromium-metrics-reviews@google.com.
 </variants>
 
 <histogram name="KeyboardAccessory.AccessoryActionImpression"
-    enum="AccessoryAction" expires_after="2026-12-27">
+    enum="AccessoryAction" expires_after="2027-02-28">
   <owner>friedrichh@chromium.org</owner>
   <owner>ioanap@chromium.org</owner>
   <summary>
@@ -172,7 +172,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="KeyboardAccessory.AccessoryActionSelected2"
-    enum="AccessoryAction" expires_after="2026-12-27">
+    enum="AccessoryAction" expires_after="2027-02-28">
   <owner>friedrichh@chromium.org</owner>
   <owner>ioanap@chromium.org</owner>
   <summary>
@@ -299,7 +299,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordBubble.BiometricAuthenticationPromo.AcceptClicked"
-    enum="BooleanSuccess" expires_after="M155">
+    enum="BooleanSuccess" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -309,7 +309,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordBubble.DisplayDisposition"
-    enum="PasswordBubbleDisplayDisposition" expires_after="2026-12-20">
+    enum="PasswordBubbleDisplayDisposition" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -486,7 +486,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.AcceptedSaveUpdateSubmissionIndicatorEvent"
-    enum="SubmissionIndicatorEvent" expires_after="2026-12-16">
+    enum="SubmissionIndicatorEvent" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -597,7 +597,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="PasswordManager.AcknowledgeGroupedAffiliationsWarning.ConfirmationResult"
     enum="AcknowledgeGroupedCredentialSheetBridgeDismissReason"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -748,7 +748,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.AffiliationDatabase.DatabaseSize" units="KB"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -767,14 +767,14 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.AffiliationDatabase.StoreResult"
-    enum="StoreAffiliationResult" expires_after="M155">
+    enum="StoreAffiliationResult" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>The result of AffiliationDatabase::Store call.</summary>
 </histogram>
 
 <histogram name="PasswordManager.AffiliationFetcher.FailedToParseResponse"
-    enum="Boolean" expires_after="M155">
+    enum="Boolean" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -976,7 +976,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.BiometricAvailabilityChromeOS"
-    enum="BiometricsStatusChromeOS" expires_after="M155">
+    enum="BiometricsStatusChromeOS" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -1209,7 +1209,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.ChangePasswordFormDetected" enum="Boolean"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -1220,7 +1220,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.ChangePasswordFormDetectionTime" units="ms"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -1268,7 +1268,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.ClassificationCorrectness.CurrentPassword"
-    enum="PasswordManagerClassificationCorrectness" expires_after="2026-12-27">
+    enum="PasswordManagerClassificationCorrectness" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -1447,7 +1447,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.CredentialRequest.ThirdParty.Get2"
-    enum="CredentialManagerAndroidGetResult" expires_after="2026-12-27">
+    enum="CredentialManagerAndroidGetResult" expires_after="2027-02-28">
   <owner>izuzic@google.com</owner>
   <owner>anki-team@google.com</owner>
   <summary>
@@ -1469,7 +1469,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.CredentialsWithDuplicates3" units="units"
-    expires_after="2026-09-20">
+    expires_after="2027-03-31">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -1521,7 +1521,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.DynamicFormChanges" units="units"
-    expires_after="2026-10-04">
+    expires_after="2027-03-31">
   <owner>kazinova@google.com</owner>
   <owner>battre@chromium.org</owner>
   <summary>
@@ -1647,7 +1647,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.FilledCredentialWasFromAndroidApp2"
-    enum="PasswordManagerFilledAndroidCredentials" expires_after="M155">
+    enum="PasswordManagerFilledAndroidCredentials" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -1746,7 +1746,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.FillSuggestionsGroupedMatchAccepted"
-    enum="Boolean" expires_after="2026-12-27">
+    enum="Boolean" expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>src/components/password_manager/OWNERS</owner>
   <summary>
@@ -1891,7 +1891,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.Import.PerFile.Notes.{Type}" units="units"
-    expires_after="2026-12-16">
+    expires_after="2027-02-28">
   <owner>natiahlyi@google.com</owner>
   <owner>markusheintz@google.com</owner>
   <summary>
@@ -2027,7 +2027,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PasswordManager.iOS.InfoBar.{Type}Duration.{Moment}"
-    units="ms" expires_after="2026-11-29">
+    units="ms" expires_after="2027-02-28">
   <owner>vincb@google.com</owner>
   <owner>eic@google.com</owner>
   <owner>bling-transactions@google.com</owner>
@@ -2149,7 +2149,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.LeakDetection.Error"
-    enum="PasswordLeakDetectionError" expires_after="2026-12-27">
+    enum="PasswordLeakDetectionError" expires_after="2027-02-28">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2210,7 +2210,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.LeakDetection.ReceiveSingleLeakResponseTime"
-    units="ms" expires_after="2026-08-23">
+    units="ms" expires_after="2027-08-23">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2220,7 +2220,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.LeakDetection.SingleLeakResponsePrefixes"
-    units="prefixes" expires_after="M155">
+    units="prefixes" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2230,7 +2230,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.LeakDetection.SingleLeakResponseSize"
-    units="bytes" expires_after="M155">
+    units="bytes" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2263,7 +2263,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.LogInWithPasswordChangeSubmission"
-    enum="LogInWithChangedPasswordOutcome" expires_after="2026-12-20">
+    enum="LogInWithChangedPasswordOutcome" expires_after="2027-02-28">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2324,7 +2324,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.MatchedFormType"
-    enum="PasswordManagerMatchedFormType" expires_after="2026-12-27">
+    enum="PasswordManagerMatchedFormType" expires_after="2027-02-28">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2433,6 +2433,21 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
+<histogram name="PasswordManager.OnDeviceEncryptionState.{Type}"
+    enum="OnDeviceEncryptionStateHistogramBucket" expires_after="2027-02-07">
+  <owner>ylahodiuk@google.com</owner>
+  <owner>markusheintz@google.com</owner>
+  <owner>anki-team@google.com</owner>
+  <summary>
+    Records the on-device encryption state for {Type}. Recorded whenever the
+    state transitions to a new valid on-device encryption state.
+  </summary>
+  <token key="Type">
+    <variant name="Passkeys" summary="passkeys"/>
+    <variant name="Passwords" summary="passwords"/>
+  </token>
+</histogram>
+
 <histogram name="PasswordManager.OpenedAsShortcut" enum="Boolean"
     expires_after="2027-02-07">
   <owner>vsemeniuk@google.com</owner>
@@ -2444,7 +2459,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.OtpPresentInMainTab" enum="Boolean"
-    expires_after="2026-10-25">
+    expires_after="2027-10-25">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2454,7 +2469,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.ParsedFormIsOtpForm2"
-    enum="PasswordVsOtpFormType" expires_after="2026-09-13">
+    enum="PasswordVsOtpFormType" expires_after="2027-03-31">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2476,7 +2491,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.Parsing.PasswordField.IsMasked" enum="Boolean"
-    expires_after="2026-09-13">
+    expires_after="2027-03-31">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -2511,7 +2526,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordChange.CanceledToast"
-    enum="PasswordChangeToastEvent" expires_after="2026-09-18">
+    enum="PasswordChangeToastEvent" expires_after="2027-09-18">
   <owner>otara@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -2533,7 +2548,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordChange.ChangingPasswordToast"
-    enum="PasswordChangeToastEvent" expires_after="2026-12-20">
+    enum="PasswordChangeToastEvent" expires_after="2027-02-28">
   <owner>rgod@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -2545,7 +2560,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordChange.CheckingSignInToast"
-    enum="PasswordChangeToastEvent" expires_after="2026-12-27">
+    enum="PasswordChangeToastEvent" expires_after="2027-02-28">
   <owner>rgod@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -2791,7 +2806,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordChange.WaitingForUserSignInToast"
-    enum="PasswordChangeToastEvent" expires_after="2026-10-18">
+    enum="PasswordChangeToastEvent" expires_after="2027-10-18">
   <owner>vsemeniuk@google.com</owner>
   <owner>rgod@google.com</owner>
   <summary>
@@ -2848,7 +2863,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordChangeVerificationTime" units="ms"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -3060,7 +3075,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 <histogram
     name="PasswordManager.PasswordGenerationBottomSheet.InteractionResult"
     enum="PasswordManager.PasswordGenerationBottomSheet.InteractionResult"
-    expires_after="2026-08-24">
+    expires_after="2027-02-24">
   <owner>atsvirchkova@google.com</owner>
   <owner>ioanap@chromium.org</owner>
   <summary>
@@ -3111,7 +3126,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordReuse.PasswordFieldDetected"
-    enum="PasswordReusePasswordFieldDetected" expires_after="2026-10-12">
+    enum="PasswordReusePasswordFieldDetected" expires_after="2027-10-12">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
   <summary>
@@ -3265,7 +3280,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordsGrouping.Time" units="ms"
-    expires_after="M155">
+    expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -3319,7 +3334,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PasswordStore.OnLoginsRetained"
-    enum="LoginsChangedTrigger" expires_after="2026-09-14">
+    enum="LoginsChangedTrigger" expires_after="2027-09-14">
   <owner>vsemeniuk@google.com</owner>
   <owner>friedrichh@chromium.org</owner>
   <summary>
@@ -3460,7 +3475,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram
     name="PasswordManager.PasswordStoreAndroidBackend.{Type}.{Function}.ErrorCode"
-    enum="PasswordStoreAndroidBackendError" expires_after="2026-11-29">
+    enum="PasswordStoreAndroidBackendError" expires_after="2027-02-28">
   <owner>izuzic@google.com</owner>
   <owner>ioanap@chromium.org</owner>
   <summary>
@@ -3717,7 +3732,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.PromoCard.ActionButtonClicked"
-    enum="PasswordManagerPromoCard" expires_after="2026-12-20">
+    enum="PasswordManagerPromoCard" expires_after="2027-02-28">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -3769,7 +3784,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.RequestVerificationAsyncResult"
-    enum="AuthenticationResultStatusWin" expires_after="2026-12-27">
+    enum="AuthenticationResultStatusWin" expires_after="2027-02-28">
   <owner>sygiet@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -3780,7 +3795,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.ReuseCheck.CheckedPasswords" units="passwords"
-    expires_after="M155">
+    expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -3791,7 +3806,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.ReuseCheck.ReusedPasswords" units="passwords"
-    expires_after="M155">
+    expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -3872,6 +3887,24 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
+<histogram name="PasswordManager.SaveUIDismissalReason.{PasswordStoreError}"
+    enum="PasswordManagerUIDismissalReason" expires_after="2027-01-31">
+  <owner>izuzic@google.com</owner>
+  <owner>anki-team@google.com</owner>
+  <owner>chrome-password-manager-metrics-alerts@google.com</owner>
+  <summary>
+    Why was the save password UI (bubble, message or infobar) closed? Recorded
+    when saving is blocked by {PasswordStoreError}.
+  </summary>
+  <token key="PasswordStoreError">
+    <variant name="PassphraseRequiredError"
+        summary="a custom passphrase error"/>
+    <variant name="PendingSignInError" summary="a pending sign-in error"/>
+    <variant name="TrustedVaultError"
+        summary="a trusted vault key retrieval error"/>
+  </token>
+</histogram>
+
 <histogram name="PasswordManager.SaveUIDismissalReason{UserSyncingType}"
     enum="PasswordManagerUIDismissalReason" expires_after="2027-01-31">
   <owner>treib@chromium.org</owner>
@@ -3884,6 +3917,21 @@ useful for Chirp alerts (go/crca-alerts). -->
     activity is destroyed or the device lock can't be set).
   </summary>
   <token key="UserSyncingType" variants="UserSyncingType"/>
+</histogram>
+
+<histogram name="PasswordManager.SaveWithTrustedVaultError.Outcome"
+    enum="PasswordManagerSaveWithTrustedVaultErrorOutcome"
+    expires_after="2027-08-31">
+  <owner>izuzic@google.com</owner>
+  <owner>anki-team@google.com</owner>
+  <owner>chrome-password-manager-metrics-alerts@google.com</owner>
+  <summary>
+    Records the outcome of the password save prompt when saving is blocked by a
+    trusted vault error. Recorded when the message times out, when the user
+    dismisses the prompt, when the user selects never save, when device lock UI
+    is canceled, when a new store error occurs, or when key retrieval completes
+    and the password is saved successfully. Logged on Android only.
+  </summary>
 </histogram>
 
 <histogram
@@ -3932,7 +3980,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.ShortcutMetric"
-    enum="PasswordManagerShortcutMetric" expires_after="M155">
+    enum="PasswordManagerShortcutMetric" expires_after="M165">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -4040,7 +4088,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.SuggestionPopupTriggerSource"
-    enum="AutofillSuggestionTriggerSource" expires_after="2026-12-20">
+    enum="AutofillSuggestionTriggerSource" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -4134,7 +4182,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.TimeSpentChangingPassword" units="ms"
-    expires_after="2026-10-05">
+    expires_after="2027-10-05">
   <owner>atsvirchkova@google.com</owner>
   <owner>vsemeniuk@google.com</owner>
   <summary>
@@ -4165,7 +4213,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.TouchToFill.Outcome"
-    enum="TouchToFill.Outcome" expires_after="2026-12-27">
+    enum="TouchToFill.Outcome" expires_after="2027-02-28">
   <owner>ioanap@chromium.org</owner>
   <owner>friedrichh@chromium.org</owner>
   <summary>
@@ -4192,7 +4240,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.TouchToFill.PasswordGeneration.UserChoice"
-    enum="GenerationDialogChoice" expires_after="2026-12-27">
+    enum="GenerationDialogChoice" expires_after="2027-02-28">
   <owner>atsvirchkova@google.com</owner>
   <owner>ioanap@chromium.org</owner>
   <summary>
@@ -4265,7 +4313,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.UI.OpenedPasswordDetailsWhileSearching"
-    enum="BooleanSuccess" expires_after="2026-09-14">
+    enum="BooleanSuccess" expires_after="2027-09-14">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -4285,7 +4333,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.UpdateUIDismissalReason"
-    enum="PasswordManagerUIDismissalReason" expires_after="2026-12-27">
+    enum="PasswordManagerUIDismissalReason" expires_after="2027-02-28">
   <owner>mamir@chromium.org</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>Why was the update password UI (bubble or infobar) closed?</summary>
@@ -4304,7 +4352,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.UPM.OldGmsNoPasswordsDialogDismissalReason"
-    enum="BooleanAccepted" expires_after="2026-12-27">
+    enum="BooleanAccepted" expires_after="2027-02-28">
   <owner>ioanap@chromium.org</owner>
   <owner>atsvirchkova@google.com</owner>
   <summary>
@@ -4352,7 +4400,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.UsernameDetectionMethod"
-    enum="UsernameDetectionMethod" expires_after="2026-12-27">
+    enum="UsernameDetectionMethod" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -4376,7 +4424,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="PasswordManager.WeakCheck.PasswordScore"
-    enum="PasswordWeaknessScore" expires_after="2026-10-04">
+    enum="PasswordWeaknessScore" expires_after="2027-10-04">
   <owner>vsemeniuk@google.com</owner>
   <owner>chrome-password-manager-metrics-alerts@google.com</owner>
   <summary>
@@ -4580,7 +4628,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram
     name="PasswordManager.{Store}TimesPasswordUsed3.{PasswordType}{CustomPassphraseStatus}"
-    units="PasswordUses" expires_after="2026-11-29">
+    units="PasswordUses" expires_after="2027-02-28">
   <owner>kazinova@google.com</owner>
   <owner>battre@chromium.org</owner>
   <owner>mamir@chromium.org</owner>
@@ -4676,7 +4724,7 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
-<histogram name="PasswordProtection.InterstitialAction"
+<histogram name="PasswordProtection.InterstitialAction{Trigger}"
     enum="PasswordProtectionWarningAction" expires_after="2027-01-03">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
@@ -4685,11 +4733,31 @@ useful for Chirp alerts (go/crca-alerts). -->
     (a.k.a chrome://reset-password page). Logged when the interstitial is shown
     and when the user chooses to change their password. Warning: this histogram
     was expired from 2021-01-30 to 2021-10-25 and 2024-09-01 to 2025-01-16; data
-    may be missing.
+    may be missing. {Trigger}
   </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".GmailNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a Gmail account."/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+    <variant name=".NonSyncPasswordEntry"
+        summary="Password protection triggered by entering an unconsented
+                 primary account password."/>
+    <variant name=".SyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password."/>
+  </token>
 </histogram>
 
-<histogram name="PasswordProtection.ModalWarningDialogAction"
+<histogram name="PasswordProtection.ModalWarningDialogAction{Trigger}"
     enum="PasswordProtectionWarningAction" expires_after="2027-04-12">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
@@ -4697,8 +4765,35 @@ useful for Chirp alerts (go/crca-alerts). -->
     Records how a user interacts with the password protection modal warning
     dialog. Logged when the dialog is shown and when the user chooses to change
     their password, ignore warning, or navigate away. Warning: this histogram
-    was expired from 2024-12-08 to 2025-01-22; data may be missing.
+    was expired from 2024-12-08 to 2025-01-22; data may be missing. {Trigger}
   </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".GmailNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a Gmail account."/>
+    <variant name=".GmailSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a Gmail account."/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+    <variant name=".NonSyncPasswordEntry"
+        summary="Password protection triggered by entering an unconsented
+                 primary account password."/>
+    <variant name=".SavedPasswordEntry"
+        summary="Password protection triggered by entering a password saved
+                 in the password manager where the account is not signed-in
+                 to Google."/>
+    <variant name=".SyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password."/>
+  </token>
 </histogram>
 
 <histogram name="PasswordProtection.ModalWarningDialogLifetime" units="ms"
@@ -4724,7 +4819,7 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
-<histogram name="PasswordProtection.PageInfoAction"
+<histogram name="PasswordProtection.PageInfoAction{Trigger}"
     enum="PasswordProtectionWarningAction" expires_after="2027-01-03">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
@@ -4733,11 +4828,38 @@ useful for Chirp alerts (go/crca-alerts). -->
     password protection warning. Logged when such page info bubble is shown and
     when the user chooses to change their password, ignore warning, or mark site
     as legitimate via buttons on the page info bubble. Warning: The histogram
-    was expired from 2025-05-13 to 2025-05-22.
+    was expired from 2025-05-13 to 2025-05-22. {Trigger}
   </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".GmailNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a Gmail account."/>
+    <variant name=".GmailSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a Gmail account."/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+    <variant name=".NonSyncPasswordEntry"
+        summary="Password protection triggered by entering an unconsented
+                 primary account password."/>
+    <variant name=".SavedPasswordEntry"
+        summary="Password protection triggered by entering a password saved
+                 in the password manager where the account is not signed-in
+                 to Google."/>
+    <variant name=".SyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password."/>
+  </token>
 </histogram>
 
-<histogram name="PasswordProtection.PasswordAlertModeOutcome"
+<histogram name="PasswordProtection.PasswordAlertModeOutcome{Trigger}"
     enum="PasswordProtectionRequestOutcome" expires_after="2026-12-08">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
@@ -4745,8 +4867,20 @@ useful for Chirp alerts (go/crca-alerts). -->
     Records the outcome of the password alert mode, indicating if password alert
     warning is shown successfully or if it is skipped for some reason. Warning:
     this histogram was expired from 2021-01-30 to 2021-10-25; data may be
-    missing.
+    missing. {Trigger}
   </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+  </token>
 </histogram>
 
 <histogram name="PasswordProtection.PasswordProtectionResponseOrErrorCode"
@@ -4774,7 +4908,7 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
-<histogram name="PasswordProtection.RequestOutcome"
+<histogram name="PasswordProtection.RequestOutcome{Trigger}"
     enum="PasswordProtectionRequestOutcome" expires_after="2027-01-17">
 <!-- Note to owner: This histogram can be renewed 1 full year if it is still
 useful for Chirp alerts (go/crca-alerts). -->
@@ -4784,8 +4918,45 @@ useful for Chirp alerts (go/crca-alerts). -->
   <summary>
     Records the outcome of the password protection request, indicating if
     request is sent out successfully or if it is skipped or canceled for some
-    reason.
+    reason. {Trigger}
   </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".AnyPasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches either/both the sync password, signed-in non-syncing
+                 password, or a saved password."/>
+    <variant name=".GmailNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a Gmail account."/>
+    <variant name=".GmailSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a Gmail account."/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+    <variant name=".NonSyncPasswordEntry"
+        summary="Password protection triggered by entering an unconsented
+                 primary account password."/>
+    <variant name=".OneTimePasswordFieldDetected"
+        summary="Password protection triggered by one time password field
+                 detected."/>
+    <variant name=".PasswordFieldOnFocus"
+        summary="Password protection triggered by password field on focus
+                 event."/>
+    <variant name=".SavedPasswordEntry"
+        summary="Password protection triggered by entering a password saved
+                 in the password manager where the account is not signed-in
+                 to Google."/>
+    <variant name=".SyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password."/>
+  </token>
 </histogram>
 
 <histogram name="PasswordProtection.RequestReferringAppSource"
@@ -4852,20 +5023,6 @@ useful for Chirp alerts (go/crca-alerts). -->
   </summary>
 </histogram>
 
-<histogram name="PasswordProtection.Verdict" enum="PasswordProtectionVerdict"
-    expires_after="2027-01-17">
-<!-- Note to owner: This histogram can be renewed 1 full year if it is still
-useful for Chirp alerts (go/crca-alerts). -->
-
-  <owner>nwokedi@chromium.org</owner>
-  <owner>chrome-counter-abuse-alerts@google.com</owner>
-  <summary>
-    Verdict types returned by Safe Browsing server for a password protection
-    request. Request can be triggered when user focuses on a password field or
-    enters a protected password (syncing, signed-in, or saved).
-  </summary>
-</histogram>
-
 <histogram
     name="PasswordProtection.Verdict.{TriggerType}.SiteEngagementScore.{VerdictType}"
     units="score" expires_after="2027-05-15">
@@ -4887,6 +5044,65 @@ useful for Chirp alerts (go/crca-alerts). -->
     <variant name="Phishing" summary="PHISHING"/>
     <variant name="Safe" summary="SAFE"/>
     <variant name="Unspecified" summary="VERDICT_TYPE_UNSPECIFIED"/>
+  </token>
+</histogram>
+
+<histogram name="PasswordProtection.Verdict{Trigger}"
+    enum="PasswordProtectionVerdict" expires_after="2027-01-17">
+<!-- Note to owner: This histogram can be renewed 1 full year if it is still
+useful for Chirp alerts (go/crca-alerts). -->
+
+  <owner>nwokedi@chromium.org</owner>
+  <owner>chrome-counter-abuse-alerts@google.com</owner>
+  <summary>
+    Verdict types returned by Safe Browsing server for a password protection
+    request. Request can be triggered when user focuses on a password field or
+    enters a protected password (syncing, signed-in, or saved). {Trigger}
+  </summary>
+  <token key="Trigger">
+    <variant name="" summary="all triggers"/>
+    <variant name=".AnyPasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches either/both the sync password, signed-in non-syncing
+                 password, or a saved password."/>
+    <variant name=".GmailNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a Gmail account."/>
+    <variant name=".GmailSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a Gmail account."/>
+    <variant name=".GSuiteNonSyncPasswordEntry"
+        summary="Password protection triggered by entering a non-syncing gaia
+                 password that is associated with a GSuite account."/>
+    <variant name=".GSuiteSyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password
+                 that is associated with a GSuite account."/>
+    <variant name=".NonGaiaEnterprisePasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a non-Gaia enterprise password."/>
+    <variant name=".NonSyncPasswordEntry"
+        summary="Password protection triggered by entering an unconsented
+                 primary account password."/>
+    <variant name=".OneTimePasswordFieldDetected"
+        summary="Password protection triggered by one time password field
+                 detected."/>
+    <variant name=".PasswordFieldOnFocus"
+        summary="Password protection triggered by password field on focus
+                 event."/>
+    <variant name=".SavedPasswordEntry"
+        summary="Password protection triggered by entering a password saved
+                 in the password manager where the account is not signed-in
+                 to Google."/>
+    <variant name=".SyncPasswordEntry"
+        summary="Password protection triggered by entering the sync password."/>
+    <variant name=".UnknownNonPrimaryPasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 does not match a primary account password but no current
+                 signed-in account is found."/>
+    <variant name=".UnknownPrimaryPasswordEntry"
+        summary="Password protection triggered by entering a password that
+                 matches a primary account password but no current signed-in
+                 account is found."/>
   </token>
 </histogram>
 

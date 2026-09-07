@@ -30,7 +30,10 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.graphics.Point;
+import android.os.SystemClock;
 import android.view.MotionEvent;
+import android.view.View;
+import android.widget.FrameLayout;
 
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -81,8 +84,6 @@ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModel;
-import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.xsurface.HybridListRenderer;
@@ -106,13 +107,11 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
-import java.util.ArrayList;
 import java.util.Locale;
 import java.util.function.Supplier;
 
 /** Tests for {@link FeedSurfaceCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @DisableFeatures({ChromeFeatureList.FEED_CONTAINMENT})
 @EnableFeatures({SigninFeatures.ENABLE_SEAMLESS_SIGNIN})
 public class FeedSurfaceCoordinatorTest {
@@ -153,18 +152,6 @@ public class FeedSurfaceCoordinatorTest {
             return false;
         }
     }
-
-    private static class TestTabModel extends EmptyTabModel {
-        public final ArrayList<TabModelObserver> mObservers = new ArrayList<>();
-
-        @Override
-        public void addObserver(TabModelObserver observer) {
-            mObservers.add(observer);
-        }
-    }
-
-    private final TestTabModel mTabModel = new TestTabModel();
-    private final TestTabModel mTabModelIncognito = new TestTabModel();
 
     private FeedSurfaceCoordinator mCoordinator;
 
@@ -617,6 +604,34 @@ public class FeedSurfaceCoordinatorTest {
         verify(swipeRefreshLayout).disableSwipe();
 
         mCoordinator = null;
+    }
+
+    @Test
+    public void testRootViewFocusabilityAndTapRequestsFocus() {
+        FrameLayout rootView = mCoordinator.getRootViewForTesting();
+        assertTrue(rootView.isFocusable());
+        assertTrue(rootView.isFocusableInTouchMode());
+
+        View otherView = new View(mActivity);
+        otherView.setFocusableInTouchMode(true);
+        rootView.addView(otherView);
+        otherView.requestFocus();
+        assertTrue(otherView.isFocused());
+        assertFalse(rootView.isFocused());
+
+        long downTime = SystemClock.uptimeMillis();
+        MotionEvent downEvent =
+                MotionEvent.obtain(
+                        /* downTime= */ downTime,
+                        /* eventTime= */ downTime,
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 100f,
+                        /* y= */ 100f,
+                        /* metaState= */ 0);
+        rootView.dispatchTouchEvent(downEvent);
+        assertTrue(rootView.isFocused());
+        assertFalse(otherView.isFocused());
+        downEvent.recycle();
     }
 
     private boolean hasStreamBound() {

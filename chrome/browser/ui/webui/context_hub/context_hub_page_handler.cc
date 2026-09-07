@@ -18,6 +18,7 @@
 #include "chrome/browser/context_hub/context_hub_service_factory.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
 #include "chrome/browser/profiles/profile.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 
@@ -141,6 +142,28 @@ void ContextHubPageHandler::UpdateAutoTodo(
   }
 
   service->UpdateAutoTodo(todo, std::move(callback));
+}
+
+void ContextHubPageHandler::ClearFirstPartyAutoTodos(
+    ClearFirstPartyAutoTodosCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (service) {
+    service->ClearFirstPartyAutoTodos(std::move(callback));
+    return;
+  }
+  std::move(callback).Run(false);
+}
+
+void ContextHubPageHandler::ClearThirdPartyAutoTodos(
+    ClearThirdPartyAutoTodosCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (service) {
+    service->ClearThirdPartyAutoTodos(std::move(callback));
+    return;
+  }
+  std::move(callback).Run(false);
 }
 
 void ContextHubPageHandler::SetTodoFeedback(
@@ -281,6 +304,45 @@ void ContextHubPageHandler::SaveMemoryBankEntry(
     return;
   }
   std::move(callback).Run(/*success=*/false);
+}
+
+void ContextHubPageHandler::GetAllMemoryBankTags(
+    GetAllMemoryBankTagsCallback callback) {
+  auto* service = ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  service->GetAllMemoryBankTags(std::move(callback));
+}
+
+void ContextHubPageHandler::GetAllMemoryBankCollections(
+    GetAllMemoryBankCollectionsCallback callback) {
+  auto* service = ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  service->GetAllMemoryBankCollections(std::move(callback));
+}
+
+void ContextHubPageHandler::UpdateMemoryBankEntryAnnotations(
+    int64_t id,
+    browser::context_hub::mojom::MemoryBankEntryAnnotationsPtr annotations,
+    UpdateMemoryBankEntryAnnotationsCallback callback) {
+  auto* service = ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service || !annotations) {
+    std::move(callback).Run(/*success=*/false);
+    return;
+  }
+
+  std::vector<std::string> tags =
+      std::move(annotations->tags).value_or(std::vector<std::string>{});
+  service->UpdateMemoryBankEntryAnnotations(
+      id, std::move(tags), std::move(annotations->note),
+      std::move(annotations->collection), std::move(callback));
 }
 
 namespace {
@@ -532,6 +594,29 @@ void ContextHubPageHandler::AskGeminiWithContext(
           std::move(callback)));
 }
 
+void ContextHubPageHandler::GetMemoryBankChatHistory(
+    GetMemoryBankChatHistoryCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  std::move(callback).Run(
+      ToMojoChatHistory(service->GetMemoryBankChatHistory()));
+}
+
+void ContextHubPageHandler::ClearMemoryBankChatHistory(
+    ClearMemoryBankChatHistoryCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (service) {
+    service->ClearMemoryBankChatHistory();
+  }
+  std::move(callback).Run();
+}
+
 void ContextHubPageHandler::ConfirmAllTabGroups(
     ConfirmAllTabGroupsCallback callback) {
   context_hub::ContextHubService* service =
@@ -641,4 +726,17 @@ void ContextHubPageHandler::RemoveAllConfirmedTabGroups(
 
   service->RemoveAllConfirmedTabGroups();
   std::move(callback).Run();
+}
+
+void ContextHubPageHandler::ExecuteSmartSearch(
+    const std::string& query,
+    ExecuteSmartSearchCallback callback) {
+  context_hub::ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  service->ExecuteSmartSearch(query, std::move(callback));
 }

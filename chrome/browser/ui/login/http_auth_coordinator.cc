@@ -8,9 +8,9 @@
 #include "chrome/browser/enterprise/net/enterprise_proxy_error_service_factory.h"
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/login/enterprise_proxy_login_delegate.h"
 #include "chrome/browser/ui/login/login_handler.h"
 #include "chrome/browser/ui/login/login_tab_helper.h"
-#include "components/enterprise/net/content/enterprise_proxy_navigation_error_data.h"
 #include "components/enterprise/net/core/enterprise_proxy_error_service.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
 #include "content/public/browser/browser_context.h"
@@ -128,12 +128,10 @@ bool HttpAuthCoordinator::Flow::ForwardToEnterpriseProxy(
   }
 
   auto callback = base::BindOnce(&Flow::OnCredentials, GetWeakPtr());
-  // TODO(crbug.com/543015664): Pass the actual navigation handle instead of
-  // nullptr here.
   return error_service->InterceptProxyAuthChallenge(
       auth_info_, url_, response_headers_,
-      std::make_unique<enterprise_net::EnterpriseProxyErrorDataDelegate>(
-          /*navigation_handle=*/nullptr),
+      std::make_unique<EnterpriseProxyLoginDelegate>(
+          web_contents_, is_request_for_primary_main_frame_navigation_),
       std::move(callback));
 }
 
@@ -223,9 +221,23 @@ void HttpAuthCoordinator::Flow::ShowDialog() {
 
   // For subresources, create a LoginHandler which will show a login prompt.
   auto wrapped_callback = base::BindOnce(&Flow::OnCredentials, GetWeakPtr());
-  login_handler_ = coordinator_->CreateLoginDelegateFromLoginHandler(
-      web_contents_.get(), auth_info_, request_id_, url_, response_headers_,
-      std::move(wrapped_callback));
+  // Showing the login prompt synchronously blocks the WebContents, which
+  // drops HTML fullscreen. Exiting fullscreen can spin a nested message loop
+  // (see the comment in WebContentsImpl::ExitFullscreenMode(),
+  // crbug.com/1506535, crbug.com/498752242) in which the auth challenge can
+  // be cancelled, synchronously destroying `this`. Check liveness before
+  // touching any member.
+  base::WeakPtr<Flow> weak_this = GetWeakPtr();
+  std::unique_ptr<content::LoginDelegate> login_handler =
+      coordinator_->CreateLoginDelegateFromLoginHandler(
+          web_contents_.get(), auth_info_, request_id_, url_, response_headers_,
+          std::move(wrapped_callback));
+  if (!weak_this) {
+    // `this` was destroyed while the prompt was being shown. Dropping
+    // `login_handler` closes the just-created prompt.
+    return;
+  }
+  login_handler_ = std::move(login_handler);
 }
 
 base::WeakPtr<HttpAuthCoordinator::Flow>

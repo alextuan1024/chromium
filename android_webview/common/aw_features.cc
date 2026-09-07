@@ -30,6 +30,11 @@ BASE_FEATURE(kPrerender2WarmUpCompositorForWebView,
 BASE_FEATURE(kStartupNonBlockingWebViewConstructor,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, starts observing for Android OS accessibility changes on
+// startup.
+BASE_FEATURE(kWebViewObserveAccessibilityState,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Kill switch for Profile.addQuicHints.
 BASE_FEATURE(kWebViewAddQuicHints, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -51,6 +56,10 @@ BASE_FEATURE(kWebViewBackgroundClassPreloading,
 // `kWebViewEarlyTracingInit`. If both flags are enabled,
 // `kWebViewEarlyTracingInit` will take precedent.
 BASE_FEATURE(kWebViewBackgroundTracingInit, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables boosting the renderer main thread priority during navigation.
+BASE_FEATURE(kWebViewBoostRendererPriorityOnNavigation,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables parsing a custom header passed by the WebView embedder during a
 // prefetch request that allows bypassing the HTTP cache for that request.
@@ -90,6 +99,12 @@ const base::FeatureParam<double> kWebViewCodeCacheSizeLimitMultiplier{
 // Enables content restriction support in WebView.
 BASE_FEATURE(kWebViewContentRestrictionSupport,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Timeout duration for content restriction classification requests before
+// we give up and assume the platform is non-responsive.
+const base::FeatureParam<base::TimeDelta> kWebViewContentRestrictionTimeout{
+    &kWebViewContentRestrictionSupport, "WebViewContentRestrictionTimeout",
+    base::Seconds(10)};
 
 // Enables a simpler URL fixup implementation for URLs passed to CookieManager.
 BASE_FEATURE(kWebViewCookieManagerSimplerUrlFixups,
@@ -294,7 +309,7 @@ BASE_FEATURE(kWebViewPersistentMetricsInNoBackupDir,
 // When enabled, HttpServerProperties will be persisted to disk across
 // app restarts.
 BASE_FEATURE(kWebViewPersistHttpServerProperties,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kWebViewPrefetchAheadOfPrerender,
              base::FEATURE_DISABLED_BY_DEFAULT);

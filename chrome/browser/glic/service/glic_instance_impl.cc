@@ -36,9 +36,9 @@
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/host/glic_skills_manager_impl.h"
 #include "chrome/browser/glic/host/glic_ui.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/host.h"
-#include "chrome/browser/glic/host/webui_contents_container.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -71,6 +71,7 @@
 #include "components/critical_actions/core/browser/features.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/prefs/pref_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "components/user_education/common/user_education_features.h"
@@ -120,8 +121,6 @@ BASE_FEATURE(kGlicAvoidReactivatingActiveEmbedder,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicUnpinOnUnbindIfUnused, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSuppressFocusOnReady, base::FEATURE_ENABLED_BY_DEFAULT);
 
 constexpr size_t kMaxRecentConversationsForPanel = 3;
 
@@ -384,9 +383,9 @@ GlicSkillsManager& GlicInstanceImpl::skills_manager() {
   return *skills_manager_;
 }
 
-std::unique_ptr<WebUIContentsContainer>
-GlicInstanceImpl::CreateWebUIContentsContainer() {
-  return coordinator_delegate_->CreateWebUIContentsContainer();
+std::unique_ptr<GlicWebContentsManager>
+GlicInstanceImpl::CreateWebContentsManager() {
+  return coordinator_delegate_->CreateWebContentsManager();
 }
 
 void GlicInstanceImpl::ReclaimWebContents(
@@ -1852,12 +1851,6 @@ void GlicInstanceImpl::WebUiStateChanged(mojom::WebUiState state) {
   TRACE_EVENT_INSTANT("glic", "GlicInstanceImpl::WebUiStateChanged",
                       perfetto::Flow::FromPointer(this), "state", state);
   instance_metrics_.OnWebUiStateChanged(state);
-  if (state == mojom::WebUiState::kReady &&
-      !base::FeatureList::IsEnabled(kSuppressFocusOnReady)) {
-    if (auto* embedder = GetActiveEmbedder()) {
-      embedder->Focus();
-    }
-  }
 }
 
 void GlicInstanceImpl::ContextAccessIndicatorChanged(bool enabled) {

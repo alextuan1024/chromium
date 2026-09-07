@@ -4,9 +4,12 @@
 
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_search_coordinator.h"
 
+#import "base/check.h"
+#import "components/autofill/core/browser/at_memory/at_memory_manager.h"
+#import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/personal_context/first_run/personal_context_first_run_service.h"
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_search_mediator.h"
-#import "ios/chrome/browser/autofill/atmemory/model/ios_at_memory_query_service_factory.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_view_controller.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_first_run_service_factory.h"
@@ -14,6 +17,7 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/web/public/web_state.h"
 
@@ -38,23 +42,39 @@
 }
 
 - (void)start {
+  web::WebState* webState =
+      self.browser->GetWebStateList()->GetActiveWebState();
+  CHECK(webState);
+
+  autofill::AutofillClientIOS* autofillClient =
+      autofill::AutofillClientIOS::FromWebState(webState);
+  CHECK(autofillClient);
+
+  autofill::AtMemoryManager* atMemoryManager =
+      autofillClient->GetAtMemoryManager();
+  CHECK(atMemoryManager);
+
+  autofill::BrowserAutofillManager* autofillManager =
+      static_cast<autofill::BrowserAutofillManager*>(
+          autofillClient->GetAutofillManagerForPrimaryMainFrame());
+  CHECK(autofillManager);
+
   _atMemorySearchViewController = [[AtMemorySearchViewController alloc]
       initWithStyle:ChromeTableViewStyle()];
   _atMemorySearchViewController.searchResultHandler = self.searchResultHandler;
   _atMemorySearchViewController.atMemoryHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), AtMemoryCommands);
+  _atMemorySearchViewController.geminiHandler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), GeminiCommands);
 
-  autofill::AtMemoryQueryService* atMemoryQueryService =
-      IOSAtMemoryQueryServiceFactory::GetForProfile(self.browser->GetProfile());
-  web::WebState* webState =
-      self.browser->GetWebStateList()->GetActiveWebState();
   personal_context::PersonalContextFirstRunService* firstRunService =
       IOSPersonalContextFirstRunServiceFactory::GetForProfile(
           self.browser->GetProfile());
-  _mediator = [[AtMemorySearchMediator alloc]
-      initWithAtMemoryQueryService:atMemoryQueryService
-                          webState:webState
-                   firstRunService:firstRunService];
+  _mediator =
+      [[AtMemorySearchMediator alloc] initWithAtMemoryManager:atMemoryManager
+                                              autofillManager:autofillManager
+                                                     webState:webState
+                                              firstRunService:firstRunService];
   _mediator.fillHandler = self.fillHandler;
   _mediator.searchResultHandler = self.searchResultHandler;
   _mediator.atMemoryHandler = HandlerForProtocol(
@@ -73,6 +93,7 @@
     [self.baseNavigationController popViewControllerAnimated:YES];
   }
   _atMemorySearchViewController = nil;
+  [_mediator disconnect];
   _mediator = nil;
 }
 

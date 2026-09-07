@@ -15,6 +15,7 @@
 #include "chrome/browser/media/media_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -1264,11 +1265,10 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, StorageIdTest) {
 }
 
 // TODO(crbug.com/40601162): Times out in debug builds.
-// TODO(crbug.com/40916095): Test flakiness.
 #if !defined(NDEBUG) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_MultipleCdmTypes DISABLED_MultipeCdmTypes
+#define MAYBE_MultipleCdmTypes DISABLED_MultipleCdmTypes
 #else
-#define MAYBE_MultipleCdmTypes MultipeCdmTypes
+#define MAYBE_MultipleCdmTypes MultipleCdmTypes
 #endif
 IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_MultipleCdmTypes) {
   base::StringPairs empty_query_params;

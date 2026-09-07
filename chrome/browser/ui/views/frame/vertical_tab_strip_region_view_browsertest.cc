@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 
+#include "base/i18n/language_tag.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/run_until.h"
@@ -20,7 +22,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -41,6 +45,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -48,6 +53,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
@@ -1067,7 +1073,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
                        GetLinkDropBoundsNoShiftRTL) {
-  base::i18n::SetICUDefaultLocale("ar");
+  base::i18n::ScopedDefaultIcuLocale scoped_locale(
+      base::i18n::GetKnownLanguageTag("ar"));
   ASSERT_TRUE(base::i18n::IsRTL());
 
   // Add a tab to ensure count > 0.
@@ -1104,7 +1111,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
                        GetLinkDropBoundsWithShiftRTL) {
-  base::i18n::SetICUDefaultLocale("ar");
+  base::i18n::ScopedDefaultIcuLocale scoped_locale(
+      base::i18n::GetKnownLanguageTag("ar"));
   ASSERT_TRUE(base::i18n::IsRTL());
 
   // Add a tab.
@@ -1295,7 +1303,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
       base::test::RunUntil([&]() { return view->is_expanded_on_hover(); }));
 
   // Create a second window to make the first inactive.
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(second_browser);
 
   ASSERT_TRUE(
@@ -1313,7 +1322,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   state_controller()->SetUncollapsedWidth(100);
 
   // Setup Window 2
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(browser2);
   auto* controller2 = tabs::VerticalTabStripStateController::From(browser2);
   ASSERT_TRUE(controller2);
@@ -1336,7 +1345,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   ui_test_utils::BrowserCreatedObserver observer1;
   chrome::ExecuteCommand(browser(), IDC_NEW_WINDOW);
-  Browser* browser3 = observer1.Wait();
+  BrowserWindowInterface* browser3 = observer1.Wait();
   ASSERT_TRUE(browser3);
 
   auto* controller3 = tabs::VerticalTabStripStateController::From(browser3);
@@ -1352,7 +1361,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   ui_test_utils::BrowserCreatedObserver observer2;
   chrome::ExecuteCommand(browser2, IDC_NEW_WINDOW);
-  Browser* browser4 = observer2.Wait();
+  BrowserWindowInterface* browser4 = observer2.Wait();
   ASSERT_TRUE(browser4);
 
   auto* controller4 = tabs::VerticalTabStripStateController::From(browser4);
@@ -1380,7 +1389,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   ui_test_utils::BrowserCreatedObserver observer;
   chrome::ExecuteCommand(browser(), IDC_MOVE_TAB_TO_NEW_WINDOW);
-  Browser* new_browser = observer.Wait();
+  BrowserWindowInterface* new_browser = observer.Wait();
   ASSERT_TRUE(new_browser);
 
   auto* new_controller =
@@ -1412,7 +1421,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   ui_test_utils::BrowserCreatedObserver observer;
   chrome::MoveGroupToNewWindow(browser(), group_id);
-  Browser* new_browser = observer.Wait();
+  BrowserWindowInterface* new_browser = observer.Wait();
   ASSERT_TRUE(new_browser);
 
   auto* new_controller =
@@ -1753,7 +1762,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   ui_test_utils::BrowserCreatedObserver observer;
   chrome::MoveGroupToNewWindow(browser(), group_id);
-  Browser* new_browser = observer.Wait();
+  BrowserWindowInterface* new_browser = observer.Wait();
   ASSERT_TRUE(new_browser);
 
   // Source browser should no longer have the group or focus.
@@ -1783,7 +1792,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   ui_test_utils::BrowserCreatedObserver observer;
   chrome::MoveTabsToNewWindow(browser(), {1, 2});
-  Browser* new_browser = observer.Wait();
+  BrowserWindowInterface* new_browser = observer.Wait();
   ASSERT_TRUE(new_browser);
 
   // Source browser should no longer have the group or focus.
@@ -1817,7 +1826,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
 
   ui_test_utils::BrowserCreatedObserver observer;
   chrome::MoveTabsToNewWindow(browser(), {0, 1, 2});
-  Browser* new_browser = observer.Wait();
+  BrowserWindowInterface* new_browser = observer.Wait();
   ASSERT_TRUE(new_browser);
 
   // Source browser should retain the remaining tab and have no focused group.
@@ -1847,7 +1856,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
   tab_strip_model()->SetFocusedGroup(group_id);
   ASSERT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
 
-  Browser* target_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* target_browser =
+      CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(target_browser);
   ASSERT_EQ(1, target_browser->GetTabStripModel()->count());
 
@@ -1884,6 +1894,15 @@ class VerticalTabStripFocusSwipeTest : public VerticalTabStripRegionViewTest {
     return enabled;
   }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  void SendMouseWheelEvent(int x_offset, int y_offset) {
+    ui::MouseWheelEvent wheel_event(gfx::Vector2d(x_offset, y_offset),
+                                    gfx::PointF(10, 10), gfx::PointF(10, 10),
+                                    base::TimeTicks::Now(), 0, 0);
+    region_view()->focus_swipe_controller_for_testing()->OnMouseEvent(
+        &wheel_event);
+  }
+#elif BUILDFLAG(IS_MAC)
   void SendScrollEvent(
       float x_offset,
       float y_offset,
@@ -1896,8 +1915,33 @@ class VerticalTabStripFocusSwipeTest : public VerticalTabStripRegionViewTest {
     region_view()->focus_swipe_controller_for_testing()->OnScrollEvent(
         &scroll_event);
   }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 };
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
+                       MouseWheelSwipeRotatesFocusedGroup) {
+  EnterVerticalTabsMode();
+  ASSERT_TRUE(region_view()->focus_swipe_controller_for_testing());
+
+  // Setup: Tab 0 (ungrouped), Tab 1 & 2 in group0, Tab 3 & 4 in group1.
+  AppendTab();
+  AppendTab();
+  AppendTab();
+  AppendTab();
+  ASSERT_EQ(5, tab_strip_model()->count());
+
+  const tab_groups::TabGroupId group0 =
+      tab_strip_model()->AddToNewGroup({1, 2});
+  tab_strip_model()->AddToNewGroup({3, 4});
+
+  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+
+  // Forward swipe (negative x_offset for physical rightward swipe).
+  SendMouseWheelEvent(-static_cast<int>(kSwipeOverThreshold), 0);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+}
+#elif BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
                        SwipeRotatesFocusedGroup) {
   EnterVerticalTabsMode();
@@ -2011,3 +2055,4 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
   EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
 }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)

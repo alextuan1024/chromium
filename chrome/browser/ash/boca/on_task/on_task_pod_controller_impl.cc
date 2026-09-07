@@ -13,12 +13,11 @@
 #include "ash/style/icon_button.h"
 #include "ash/wm/window_pin_util.h"
 #include "ash/wm/window_state.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chromeos/ash/components/boca/boca_metrics_util.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "chromeos/ui/frame/frame_header.h"
 #include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
@@ -247,7 +246,7 @@ bool OnTaskPodControllerImpl::CanNavigateToNextPage() {
 
 bool OnTaskPodControllerImpl::CanToggleTabStripVisibility() {
   return browser_ &&
-         platform_util::IsBrowserLockedFullscreen(&browser_->GetBrowser()) &&
+         browser_->IsOnTaskState(ash::BrowserDelegate::OnTaskState::kLocked) &&
          ImmersiveModeController::From(&browser_->GetBrowser())->IsEnabled();
 }
 

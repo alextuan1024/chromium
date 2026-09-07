@@ -92,8 +92,8 @@ source_set("backend") {
 
   deps = [
     ":jni_headers",
+    ":unified_password_manager_proto",
     ":utils",
-    "//chrome/browser/password_manager/protos:password_manager_proto",
     "//components/autofill/core/common:autofill_regex",
     "//components/browser_sync",
     "//components/browser_ui/device_lock/android",
@@ -297,6 +297,7 @@ robolectric_binary("password_manager_junit_tests") {
     ":java",
     ":settings_interface_java",
     ":test_support_java",
+    ":unified_password_manager_proto_java",
     ":utils_java",
     "$google_play_services_package:google_play_services_base_java",
     "$google_play_services_package:google_play_services_basement_java",
@@ -312,7 +313,6 @@ robolectric_binary("password_manager_junit_tests") {
     "//chrome/browser/flags:java",
     "//chrome/browser/loading_modal/android:java",
     "//chrome/browser/password_manager/android/pwm_disabled:java",
-    "//chrome/browser/password_manager/protos:password_manager_proto_java",
     "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/safety_check/android:java",
@@ -456,10 +456,10 @@ android_library("test_support_java") {
     ":backend_interface_java",
     ":java",
     ":settings_interface_java",
+    ":unified_password_manager_proto_java",
     "//base:base_java",
     "//build/android:build_java",
     "//chrome/browser/password_manager/android:settings_interface_java",
-    "//chrome/browser/password_manager/protos:password_manager_proto_java",
     "//components/browser_ui/bottomsheet/android:java",
     "//components/password_manager/core/browser:password_manager_java_enums",
     "//components/signin/public/android:java",
@@ -570,10 +570,10 @@ source_set("unit_tests") {
   deps = [
     ":backend",
     ":backend_public",
+    ":unified_password_manager_proto",
     ":utils",
     "//base/test:test_support",
     "//chrome/app:generated_resources",
-    "//chrome/browser",
     "//chrome/browser/autofill",
     "//chrome/browser/keyboard_accessory/test_utils/android",
     "//chrome/browser/password_edit_dialog/android",
@@ -581,7 +581,6 @@ source_set("unit_tests") {
     "//chrome/browser/password_manager:test_support",
     "//chrome/browser/password_manager/android/add_username_dialog:android",
     "//chrome/browser/password_manager/factories",
-    "//chrome/browser/password_manager/protos:password_manager_proto",
     "//chrome/browser/prefs",
     "//chrome/browser/sync",
     "//chrome/browser/touch_to_fill/password_manager/password_generation/android:public",
@@ -628,6 +627,28 @@ source_set("unit_tests") {
   configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
+proto_library("unified_password_manager_proto") {
+  sources = [
+    "protos/list_affiliated_passwords_result.proto",
+    "protos/list_passwords_result.proto",
+    "protos/password_info.proto",
+    "protos/password_with_local_data.proto",
+  ]
+  deps = [ "//components/sync/protocol" ]
+  proto_in_dir = "//"
+}
+
+proto_java_library("unified_password_manager_proto_java") {
+  proto_path = "//"
+  sources = [
+    "protos/list_affiliated_passwords_result.proto",
+    "protos/list_passwords_result.proto",
+    "protos/password_info.proto",
+    "protos/password_with_local_data.proto",
+  ]
+  deps = [ "//components/sync/protocol:protocol_java" ]
+}
+
 source_set("shared_preferences_delegate") {
   sources = [
     "shared_preferences_delegate_android.cc",
@@ -651,5 +672,36 @@ group("password_manager_android") {
     ":utils_jni_headers",
     "add_username_dialog:android",
     "grouped_affiliations:public",
+  ]
+}
+
+source_set("android_browsertests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [ "password_manager_android_browsertest.cc" ]
+  deps = [
+    ":test_support",
+    "//chrome/browser/keyboard_accessory/android",
+    "//chrome/browser/password_manager",
+    "//chrome/browser/password_manager:test_support",
+    "//chrome/browser/password_manager/factories",
+    "//chrome/browser/policy:test_support",
+    "//chrome/browser/touch_to_fill/password_manager/password_generation/android",
+    "//chrome/test/base:android_browser_test",
+    "//chrome/test/base:chrome_test_utils",
+    "//components/autofill/core/common",
+    "//components/autofill/core/common:test_support",
+    "//components/enterprise:test_support",
+    "//components/enterprise/connectors/core",
+    "//components/enterprise/connectors/core:test_support",
+    "//components/keyed_service/core",
+    "//components/password_manager/content/browser",
+    "//components/password_manager/core/browser",
+    "//components/password_manager/core/browser/password_store:password_store_interface",
+    "//components/password_manager/core/browser/password_store:test_support",
+    "//content/test:test_support",
+    "//net:test_support",
+    "//testing/gtest",
   ]
 }

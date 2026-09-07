@@ -12,6 +12,7 @@
 
 #include "android_webview/browser/metrics/android_metrics_log_uploader.h"
 #include "android_webview/browser/metrics/android_metrics_provider.h"
+#include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
 #include "android_webview/common/aw_features.h"
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
@@ -466,6 +467,24 @@ void AwMetricsServiceClient::SetUploadIntervalForTesting(
   overridden_upload_interval_ = upload_interval;
 }
 
+void AwMetricsServiceClient::RegisterSyntheticFieldTrial(
+    std::string_view trial_name,
+    std::string_view group_name,
+    variations::SyntheticTrialAnnotationMode annotation_mode) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!metrics_service_) {
+    return;
+  }
+  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+      metrics_service_.get(), trial_name, group_name, annotation_mode);
+}
+
+void AwMetricsServiceClient::FlushPendingSyntheticTrialsFromJava() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_AwMetricsServiceClient_flushPendingSyntheticTrials(env);
+}
+
 bool AwMetricsServiceClient::IsReadyToStart() const {
   return init_finished_ && set_consent_finished_ && !metrics_dir_.empty();
 }
@@ -706,13 +725,8 @@ std::string AwMetricsServiceClient::GetAppPackageNameIfLoggable() {
 }
 
 std::string AwMetricsServiceClient::GetAppPackageName() {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  base::android::ScopedJavaLocalRef<jstring> j_app_name =
-      Java_AwMetricsServiceClient_getAppPackageName(env);
-  if (j_app_name) {
-    return base::android::ConvertJavaStringToUTF8(env, j_app_name);
-  }
-  return std::string();
+  return Java_AwMetricsServiceClient_getAppPackageName(
+      jni_zero::AttachCurrentThread());
 }
 
 void AwMetricsServiceClient::SetUpMetricsDir() {
@@ -908,12 +922,20 @@ static void JNI_AwMetricsServiceClient_SetUploadIntervalForTesting(
 // static
 static void
 JNI_AwMetricsServiceClient_SetOnFinalMetricsCollectedListenerForTesting(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& listener) {
+    base::RepeatingClosure listener) {
   AwMetricsServiceClient::GetInstance()
-      ->SetOnFinalMetricsCollectedListenerForTesting(base::BindRepeating(
-          jni_zero::RunRunnable,
-          base::android::ScopedJavaGlobalRef<jobject>(listener)));
+      ->SetOnFinalMetricsCollectedListenerForTesting(std::move(listener));
+}
+
+// static
+static void JNI_AwMetricsServiceClient_RegisterSyntheticFieldTrial(
+    JNIEnv* env,
+    const std::string& trial_name,
+    const std::string& group_name,
+    int32_t annotation_mode) {
+  AwMetricsServiceClient::GetInstance()->RegisterSyntheticFieldTrial(
+      trial_name, group_name,
+      static_cast<variations::SyntheticTrialAnnotationMode>(annotation_mode));
 }
 
 }  // namespace android_webview

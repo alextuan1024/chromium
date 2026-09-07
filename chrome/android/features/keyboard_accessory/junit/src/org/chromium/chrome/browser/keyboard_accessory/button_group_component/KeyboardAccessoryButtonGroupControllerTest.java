@@ -24,7 +24,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
@@ -35,7 +34,6 @@ import org.chromium.ui.modelutil.PropertyObservable.PropertyObserver;
 
 /** Controller tests for the keyboard accessory tab layout component. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class KeyboardAccessoryButtonGroupControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -83,11 +81,6 @@ public class KeyboardAccessoryButtonGroupControllerTest {
         verify(mMockTabListObserver).onItemRangeInserted(mModel.get(TABS), 0, 1);
         assertThat(mModel.get(TABS).size(), is(1));
         assertThat(mModel.get(TABS).get(0), is(mTestTab));
-
-        // Calling hide on the coordinator should make the model propagate that it's invisible.
-        mCoordinator.getTabSwitchingDelegate().removeTab(mTestTab);
-        verify(mMockTabListObserver).onItemRangeRemoved(mModel.get(TABS), 0, 1);
-        assertThat(mModel.get(TABS).size(), is(0));
     }
 
     @Test

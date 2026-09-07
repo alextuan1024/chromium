@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.hub;
 
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab.TabId;
 
 /**
  * This is the primary interface for interacting with the Hub. Create using {@link
@@ -29,6 +31,13 @@ public interface HubManager {
     NonNullObservableSupplier<Boolean> getHubVisibilitySupplier();
 
     /**
+     * Sets a tab as active and hides the Hub.
+     *
+     * @param tabId The ID of the tab to select.
+     */
+    void selectTabAndHideHub(@TabId int tabId);
+
+    /**
      * Returns the {@link HubShowPaneHelper} used to select a pane before opening the {@link
      * HubLayout}.
      */
@@ -42,4 +51,9 @@ public interface HubManager {
 
     /** Gets the supplier providing the Hub Overview color. */
     NonNullObservableSupplier<Integer> getHubOverviewColorSupplier();
+
+    /**
+     * Gets the supplier providing the Hub Bottom Overview color if configured, or null otherwise.
+     */
+    @Nullable NonNullObservableSupplier<Integer> getHubBottomOverviewColorSupplier();
 }

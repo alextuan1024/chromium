@@ -7,7 +7,6 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_redesign_view_controller.h"
 
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_background_view.h"
 #import "ios/chrome/browser/content_suggestions/model/content_suggestions_metrics_recorder.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_item.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_collection_view.h"
@@ -24,12 +23,12 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_content_delegate.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_commands.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_view.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_image_background_trait.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_mutator.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_quick_actions_view_controller.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_shortcuts_handler.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_trait.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_utils.h"
 #import "ios/chrome/browser/ntp/ui_bundled/ntp_identity_disc_button.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
@@ -47,19 +46,10 @@ namespace {
 // Animation duration for wallpaper transition.
 constexpr CGFloat kBackgroundImageAnimationDuration = 0.25;
 
-// Spacing from the top of the bottom sheet to the omnibox when expanded.
-constexpr CGFloat kExpandedSheetOmniboxTopMargin = 16.0;
-
 // Spacing from the top of the bottom sheet to the MVTs container when
 // resting/collapsed.
 constexpr CGFloat kRestingSheetMVTTopMargin = 12.0;
 
-// Bottom padding between the MVT collection view and the bottom of its
-// container.
-constexpr CGFloat kMVTContainerBottomPadding = 10.0;
-
-// Corner radius for the MVT container when rendered with squircle styling.
-constexpr CGFloat kMVTContainerCornerRadius = 24.0;
 constexpr CGFloat kLandscapeLogoTopMargin = 8.0;
 
 // Width dimensions for Doodle and Google logo layouts.
@@ -110,9 +100,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
 @property(nonatomic, assign, readwrite) CGFloat collectionShiftingOffset;
 @property(nonatomic, assign, readwrite) BOOL scrolledToMinimumHeight;
 
-// Private helpers
-- (void)handleTraitChanges;
-
 @end
 
 @implementation NewTabPageRedesignViewController {
@@ -143,11 +130,11 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
   // Fake omnibox subviews and state
   NTPRedesignTouchAreaOverflowStackView* _buttonStack;
-  ExtendedTouchTargetButton* _voiceSearchButton;
-  ExtendedTouchTargetButton* _lensButton;
   ExtendedTouchTargetButton* _plusButton;
-  UIView* _voiceAndLensDivider;
   UIImageView* _logoView;
+  ExtendedTouchTargetButton* _voiceSearchButton;
+  UIView* _voiceAndLensDivider;
+  ExtendedTouchTargetButton* _lensButton;
   UILabel* _hintLabel;
   UIImage* _dseLogo;
   BOOL _voiceSearchIsEnabled;
@@ -159,16 +146,14 @@ const CGFloat kMinDragHandleHeight = 24.0;
   BOOL _lensButtonWithNewBadgeTapped;
   NSLayoutConstraint* _fakeLocationBarWidthConstraint;
   NSLayoutConstraint* _fakeLocationBarHeightConstraint;
-  __weak UIView* _leadingView;
-  NSLayoutConstraint* _leadingViewConstraint;
   NSLayoutConstraint* _hintLabelLeadingConstraint;
-  NSLayoutConstraint* _hintLabelTrailingConstraint;
+  NSLayoutConstraint* _dividerWidthConstraint;
   BOOL _isBottomOmnibox;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.view.backgroundColor = [UIColor colorNamed:@"ntp_background_color"];
+  self.view.backgroundColor = [UIColor colorNamed:kNTPRedesignBackgroundColor];
 
   _backgroundImageView = [[HomeCustomizationImageView alloc] init];
   _backgroundImageView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -196,12 +181,26 @@ const CGFloat kMinDragHandleHeight = 24.0;
              forControlEvents:UIControlEventTouchUpInside];
   _fakeLocationBar.isAccessibilityElement = YES;
   _fakeLocationBar.accessibilityIdentifier = @"ntp-redesign-fake-omnibox";
-  if (IsNTPRedesignStaticFakeboxEnabled()) {
-    [self.view insertSubview:_fakeLocationBar
-                belowSubview:_bottomSheetViewController.view];
-  } else {
-    [self.view addSubview:_fakeLocationBar];
-  }
+  [self.view insertSubview:_fakeLocationBar
+              belowSubview:_bottomSheetViewController.view];
+
+  _plusButton = [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
+  _plusButton.translatesAutoresizingMaskIntoConstraints = NO;
+  _plusButton.accessibilityLabel = l10n_util::GetNSString(
+      IDS_IOS_COMPOSEBOX_ADD_ATTACHMENT_BUTTON_ACCESSIBILITY_LABEL);
+  [_plusButton setImage:SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize)
+               forState:UIControlStateNormal];
+  [_plusButton addTarget:self
+                  action:@selector(openMultimodalActionsMenu:)
+        forControlEvents:UIControlEventTouchUpInside];
+  [_fakeLocationBar addSubview:_plusButton];
+  AddSquareConstraints(_plusButton, kFakeboxImageSize);
+
+  _logoView = [[UIImageView alloc] init];
+  _logoView.translatesAutoresizingMaskIntoConstraints = NO;
+  _logoView.contentMode = UIViewContentModeScaleAspectFit;
+  [_fakeLocationBar addSubview:_logoView];
+  AddSquareConstraints(_logoView, kFakeboxImageSize);
 
   _hintLabel = [[UILabel alloc] init];
   _hintLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -215,17 +214,36 @@ const CGFloat kMinDragHandleHeight = 24.0;
                                       forAxis:UILayoutConstraintAxisHorizontal];
   [_fakeLocationBar addSubview:_hintLabel];
 
-  [NSLayoutConstraint activateConstraints:@[
-    [_hintLabel.centerYAnchor constraintEqualToAnchor:_fakeLocationBar.centerYAnchor
-                                             constant:kHintLabelYOffset],
-  ]];
-
   _buttonStack = [[NTPRedesignTouchAreaOverflowStackView alloc] init];
   _buttonStack.translatesAutoresizingMaskIntoConstraints = NO;
   _buttonStack.alignment = UIStackViewAlignmentCenter;
   _buttonStack.spacing = kButtonSpacing;
   _buttonStack.layoutMarginsRelativeArrangement = YES;
   [_fakeLocationBar addSubview:_buttonStack];
+
+  _voiceSearchButton =
+      [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
+  _voiceSearchButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [_voiceSearchButton addTarget:self
+                         action:@selector(loadVoiceSearch:)
+               forControlEvents:UIControlEventTouchUpInside];
+  [_voiceSearchButton addTarget:self
+                         action:@selector(preloadVoiceSearch:)
+               forControlEvents:UIControlEventTouchDown];
+  [_buttonStack addArrangedSubview:_voiceSearchButton];
+
+  _voiceAndLensDivider = [self createDivider];
+  [_buttonStack addArrangedSubview:_voiceAndLensDivider];
+
+  _lensButton = [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
+  _lensButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [_lensButton addTarget:self
+                  action:@selector(openLensViewFinder)
+        forControlEvents:UIControlEventTouchUpInside];
+  [_lensButton addTarget:self
+                  action:@selector(lensButtonWithNewBadgeTapped:)
+        forControlEvents:UIControlEventTouchUpInside];
+  [_buttonStack addArrangedSubview:_lensButton];
 
   [_fakeLocationBar applyBackgroundTheme];
   [_fakeLocationBar updateColorsWithProgress:0.0 colorPalette:nil];
@@ -264,27 +282,42 @@ const CGFloat kMinDragHandleHeight = 24.0;
   _fakeLocationBarHeightConstraint = [_fakeLocationBar.heightAnchor
       constraintEqualToConstant:content_suggestions::FakeOmniboxHeight()];
 
+  _hintLabelLeadingConstraint = [_hintLabel.leadingAnchor
+      constraintEqualToAnchor:_fakeLocationBar.leadingAnchor
+                     constant:[self hintLabelFakeboxLeadingSpace]];
+
+  NSLayoutConstraint* hintLabelTrailingConstraint = [_hintLabel.trailingAnchor
+      constraintLessThanOrEqualToAnchor:_buttonStack.leadingAnchor
+                               constant:-kHintLabelFakeboxTrailingSpace];
+  hintLabelTrailingConstraint.priority = UILayoutPriorityDefaultHigh;
+
   [NSLayoutConstraint activateConstraints:@[
     _fakeLocationBarTopConstraint,
     [_fakeLocationBar.centerXAnchor
         constraintEqualToAnchor:self.view.centerXAnchor],
     _fakeLocationBarWidthConstraint,
     _fakeLocationBarHeightConstraint,
-
+    [_plusButton.leadingAnchor
+        constraintEqualToAnchor:_fakeLocationBar.leadingAnchor
+                       constant:kFakeboxPlusLeadingSpace],
+    [_plusButton.centerYAnchor
+        constraintEqualToAnchor:_fakeLocationBar.centerYAnchor],
+    [_logoView.leadingAnchor
+        constraintEqualToAnchor:_fakeLocationBar.leadingAnchor
+                       constant:kFakeboxImageLeadingSpace],
+    [_logoView.centerYAnchor
+        constraintEqualToAnchor:_fakeLocationBar.centerYAnchor
+                       constant:kLogoViewYOffset],
+    _hintLabelLeadingConstraint,
+    [_hintLabel.centerYAnchor
+        constraintEqualToAnchor:_fakeLocationBar.centerYAnchor
+                       constant:kHintLabelYOffset],
+    hintLabelTrailingConstraint,
     [_buttonStack.trailingAnchor
         constraintEqualToAnchor:_fakeLocationBar.trailingAnchor],
     [_buttonStack.centerYAnchor
         constraintEqualToAnchor:_fakeLocationBar.centerYAnchor],
   ]];
-
-  if (!IsMVTInBottomSheetEnabled()) {
-    [NSLayoutConstraint activateConstraints:@[
-      [_mostVisitedContainerView.widthAnchor
-          constraintEqualToAnchor:_fakeLocationBar.widthAnchor],
-      [_mostVisitedContainerView.centerXAnchor
-          constraintEqualToAnchor:_fakeLocationBar.centerXAnchor],
-    ]];
-  }
 
   if (IsAimEnabledInNtp()) {
     _qaTopConstraint = [_quickActionsViewController.view.topAnchor
@@ -301,6 +334,13 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 
   if (!IsMVTInBottomSheetEnabled()) {
+    [NSLayoutConstraint activateConstraints:@[
+      [_mostVisitedContainerView.widthAnchor
+          constraintEqualToAnchor:_fakeLocationBar.widthAnchor],
+      [_mostVisitedContainerView.centerXAnchor
+          constraintEqualToAnchor:_fakeLocationBar.centerXAnchor],
+    ]];
+
     UIView* anchorView = self.quickActionsVisible
                              ? _quickActionsViewController.view
                              : _fakeLocationBar;
@@ -315,7 +355,9 @@ const CGFloat kMinDragHandleHeight = 24.0;
   _fakeLocationBar.layer.cornerRadius =
       _fakeLocationBarHeightConstraint.constant / 2.0;
 
-  [self refreshFakeboxContent];
+  [self updateLeadingView];
+  [self updateActionButtons];
+  [self updateHintLabel];
 
   if (_mostVisitedView) {
     if (IsMVTInBottomSheetEnabled()) {
@@ -356,15 +398,11 @@ const CGFloat kMinDragHandleHeight = 24.0;
       [_identityDiscButton setSignedOutAccountImage];
     }
   }
-  __weak __typeof(self) weakSelf = self;
   [self registerForTraitChanges:@[
     UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
     UITraitPreferredContentSizeCategory.class, UITraitUserInterfaceStyle.class
   ]
-                    withHandler:^(id<UITraitEnvironment> traitEnvironment,
-                                  UITraitCollection* previousCollection) {
-                      [weakSelf handleTraitChanges];
-                    }];
+                     withAction:@selector(handleTraitChanges)];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -388,22 +426,59 @@ const CGFloat kMinDragHandleHeight = 24.0;
     self.focusAccessibilityOmniboxWhenViewAppears = NO;
   }
 
-  if (_lensButton && self.useNewBadgeForLensButton &&
-      !_didNotifyLensBadgeDisplay) {
+  [self maybeNotifyLensBadgeDisplayed];
+}
+
+- (void)maybeNotifyLensBadgeDisplayed {
+  if (self.viewDidAppear && _lensButton && !_lensButton.hidden &&
+      self.useNewBadgeForLensButton && !_didNotifyLensBadgeDisplay) {
     [self.mutator notifyLensBadgeDisplayed];
     _didNotifyLensBadgeDisplay = YES;
   }
 }
 
-#pragma mark - Private Helper
-
 - (void)handleTraitChanges {
   [self updateLogoConstraints];
-  [self refreshFakeboxContent];
   _fakeLocationBarTopConstraint.constant = [self centeredFakeOmniboxTop];
+  if (_dividerWidthConstraint) {
+    _dividerWidthConstraint.constant = 1.0 / self.traitCollection.displayScale;
+  }
+  [self updateButtonsForCurrentTraitCollection];
+  [self updateLeadingView];
   if (_bottomSheetViewController) {
     [_bottomSheetViewController updateBottomSheetPositionAnimated:NO];
   }
+}
+
+- (void)detachChildViewController:(UIViewController*)child {
+  if (!child || child.parentViewController != self) {
+    return;
+  }
+  [child willMoveToParentViewController:nil];
+  [child.view removeFromSuperview];
+  [child removeFromParentViewController];
+}
+
+- (void)containChildViewController:(UIViewController*)child
+                      insideParent:(UIViewController*)parent
+                     containerView:(UIView*)containerView {
+  if (!child || !parent || !containerView) {
+    return;
+  }
+  if (child.parentViewController == parent &&
+      child.view.superview == containerView) {
+    return;
+  }
+  if (child.parentViewController) {
+    [child willMoveToParentViewController:nil];
+    [child.view removeFromSuperview];
+    [child removeFromParentViewController];
+  }
+  [parent addChildViewController:child];
+  child.view.translatesAutoresizingMaskIntoConstraints = NO;
+  [containerView addSubview:child.view];
+  AddSameConstraints(child.view, containerView);
+  [child didMoveToParentViewController:parent];
 }
 
 - (void)setUseNewBadgeForLensButton:(BOOL)useNewBadgeForLensButton {
@@ -412,7 +487,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
   _useNewBadgeForLensButton = useNewBadgeForLensButton;
   if (self.isViewLoaded) {
-    [self refreshFakeboxContent];
+    [self updateActionButtons];
   }
 }
 
@@ -424,12 +499,27 @@ const CGFloat kMinDragHandleHeight = 24.0;
   _mostVisitedView = nil;
   self.magicStackViewController = nil;
   [self setFeedViewController:nil];
-  [_bottomSheetViewController invalidate];
-  _bottomSheetViewController = nil;
+  if (_quickActionsViewController) {
+    [self detachChildViewController:_quickActionsViewController];
+    _quickActionsViewController = nil;
+  }
+  if (_bottomSheetViewController) {
+    [_bottomSheetViewController invalidate];
+    [self detachChildViewController:_bottomSheetViewController];
+    _bottomSheetViewController = nil;
+  }
   _identityDiscButton = nil;
   _avatarImage = nil;
   _avatarName = nil;
   _avatarEmail = nil;
+  _plusButton = nil;
+  _logoView = nil;
+  _voiceSearchButton = nil;
+  _lensButton = nil;
+  _voiceAndLensDivider = nil;
+  _hintLabel = nil;
+  _buttonStack = nil;
+  _fakeLocationBar = nil;
 }
 
 #pragma mark - Public
@@ -476,9 +566,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
 - (CGFloat)expandedOffsetForBottomSheetViewController:
     (NewTabPageBottomSheetViewController*)viewController {
   CGFloat safeAreaTop = self.view.safeAreaInsets.top;
-  if (!IsNTPRedesignStaticFakeboxEnabled()) {
-    return safeAreaTop + 20.0;
-  }
   if (_isBottomOmnibox && !CanShowTabStrip(self)) {
     return safeAreaTop;
   }
@@ -497,30 +584,20 @@ const CGFloat kMinDragHandleHeight = 24.0;
     progress = MIN(1.0, MAX(0.0, progress));
   }
 
-  if (IsNTPRedesignStaticFakeboxEnabled()) {
-    if (topOffset > restingOffset) {
-      // Collapsed range: Move top content down with sheet
-      CGFloat downwardDelta = topOffset - restingOffset;
-      _fakeLocationBarTopConstraint.constant =
-          [self centeredFakeOmniboxTop] + downwardDelta;
-      _fakeLocationBar.alpha = 1.0;
-      [self.NTPContentDelegate didUpdateNTPTabOmniboxScrollProgress:0.0];
-    } else {
-      // Expanded range: Fakebox stays static at centered position & fades out
-      _fakeLocationBarTopConstraint.constant = [self centeredFakeOmniboxTop];
-      _fakeLocationBar.alpha = progress;
-      CGFloat expansionProgress = 1.0 - progress;
-      [self.NTPContentDelegate
-          didUpdateNTPTabOmniboxScrollProgress:expansionProgress];
-    }
-  } else {
-    // Default legacy behavior: Shift fakebox to the top of the sheet
-    CGFloat restingOffsetFromSheet =
-        -([self topContentHeight] + kRestingSheetMVTTopMargin);
-    CGFloat offsetFromSheet = progress * restingOffsetFromSheet +
-                              (1.0 - progress) * kExpandedSheetOmniboxTopMargin;
-    _fakeLocationBarTopConstraint.constant = topOffset + offsetFromSheet;
+  if (topOffset > restingOffset) {
+    // Collapsed range: Move top content down with sheet
+    CGFloat downwardDelta = topOffset - restingOffset;
+    _fakeLocationBarTopConstraint.constant =
+        [self centeredFakeOmniboxTop] + downwardDelta;
     _fakeLocationBar.alpha = 1.0;
+    [self.NTPContentDelegate didUpdateNTPTabOmniboxScrollProgress:0.0];
+  } else {
+    // Expanded range: Fakebox stays static at centered position & fades out
+    _fakeLocationBarTopConstraint.constant = [self centeredFakeOmniboxTop];
+    _fakeLocationBar.alpha = progress;
+    CGFloat expansionProgress = 1.0 - progress;
+    [self.NTPContentDelegate
+        didUpdateNTPTabOmniboxScrollProgress:expansionProgress];
   }
 
   // Opacity for Logo, MVT, Identity Disc, and Quick Actions
@@ -566,9 +643,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
     };
   }
 
-  _mostVisitedView =
-      [self createContainerForMostVisitedCollectionView:collectionView
-                                             inSquircle:YES];
+  _mostVisitedView = CreateMostVisitedContainerView(collectionView, YES);
 
   if (IsMVTInBottomSheetEnabled()) {
     if (_bottomSheetViewController) {
@@ -680,40 +755,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 #pragma mark - Private
 
-// Creates a container view that wraps `collectionView` with bottom padding and
-// optional squircle background styling.
-- (UIView*)createContainerForMostVisitedCollectionView:
-               (MostVisitedTilesCollectionView*)collectionView
-                                            inSquircle:(BOOL)inSquircle {
-  UIView* container = [[UIView alloc] init];
-  container.translatesAutoresizingMaskIntoConstraints = NO;
-
-  if (inSquircle) {
-    UIView* backgroundView = [[MagicStackModuleBackgroundView alloc] init];
-    backgroundView.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:backgroundView];
-    AddSameConstraints(container, backgroundView);
-    container.layer.cornerRadius = kMVTContainerCornerRadius;
-    container.clipsToBounds = YES;
-  }
-
-  collectionView.translatesAutoresizingMaskIntoConstraints = NO;
-  [container addSubview:collectionView];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [collectionView.topAnchor constraintEqualToAnchor:container.topAnchor],
-    [collectionView.leadingAnchor
-        constraintEqualToAnchor:container.leadingAnchor],
-    [collectionView.trailingAnchor
-        constraintEqualToAnchor:container.trailingAnchor],
-    [collectionView.bottomAnchor
-        constraintEqualToAnchor:container.bottomAnchor
-                       constant:-kMVTContainerBottomPadding],
-  ]];
-
-  return container;
-}
-
 // Add _mostVisitedView to the view hierarchy.
 - (void)embedMostVisitedView {
   if (IsMVTInBottomSheetEnabled()) {
@@ -781,13 +822,8 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 
   if (!IsMVTInBottomSheetEnabled()) {
-    CGFloat mvtHeight = CGRectGetHeight(_mostVisitedContainerView.bounds);
-    if (mvtHeight <= 0 && _mostVisitedView) {
-      mvtHeight = [_mostVisitedView
-                      systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]
-                      .height;
-    }
-    height += mvtHeight;
+    height +=
+        MostVisitedContainerHeight(_mostVisitedContainerView, _mostVisitedView);
   }
 
   return height;
@@ -875,7 +911,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
     return;
   }
   _voiceSearchIsEnabled = voiceSearchIsEnabled;
-  [self refreshFakeboxContent];
+  [self updateActionButtons];
 }
 
 - (void)setDefaultSearchEngineName:(NSString*)dseName {
@@ -885,12 +921,13 @@ const CGFloat kMinDragHandleHeight = 24.0;
   _defaultSearchEngineName = [dseName copy];
   _isGoogleDefaultSearchEngine =
       [_defaultSearchEngineName isEqualToString:@"Google"];
-  [self refreshFakeboxContent];
+  [self updateHintLabel];
+  [self updateActionButtons];
 }
 
 - (void)setDefaultSearchEngineImage:(UIImage*)image {
   _dseLogo = image;
-  [self refreshFakeboxContent];
+  [self updateLeadingView];
 }
 
 // Whether the quick actions button row is visible.
@@ -922,7 +959,8 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
     [self.view layoutIfNeeded];
   }
-  [self refreshFakeboxContent];
+  [self updateLeadingView];
+  [self updateActionButtons];
 }
 
 - (void)setFuseboxEligible:(BOOL)eligible {
@@ -930,13 +968,11 @@ const CGFloat kMinDragHandleHeight = 24.0;
     return;
   }
   _fuseboxEligible = eligible;
-  [self refreshFakeboxContent];
+  [self updateLeadingView];
+  [self updateActionButtons];
 }
 
 - (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox {
-  if (!IsNTPRedesignStaticFakeboxEnabled()) {
-    return;
-  }
   if (_isBottomOmnibox == isBottomOmnibox) {
     return;
   }
@@ -964,8 +1000,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
   return [_buttonStack snapshotViewAfterScreenUpdates:NO];
 }
 
-
-
 #pragma mark - Private Fakebox Helpers
 
 - (BOOL)shouldShowPlusButton {
@@ -975,13 +1009,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
 - (CGFloat)fakeLocationBarWidth {
   return content_suggestions::SearchFieldWidth(self.view.bounds.size.width,
                                                self.traitCollection);
-}
-
-- (CGFloat)fakeboxLeadingSpace {
-  if ([self shouldShowPlusButton]) {
-    return kFakeboxPlusLeadingSpace;
-  }
-  return kFakeboxImageLeadingSpace;
 }
 
 - (CGFloat)hintLabelFakeboxLeadingSpace {
@@ -1009,147 +1036,60 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 }
 
-- (void)addVoiceAndLensDivider {
-  UIView* divider = [self createDivider];
-  _voiceAndLensDivider = divider;
-  [_buttonStack addArrangedSubview:divider];
-}
-
 - (UIView*)createDivider {
   UIView* divider = [[UIView alloc] init];
   divider.translatesAutoresizingMaskIntoConstraints = NO;
+  divider.backgroundColor = [UIColor colorNamed:kToolbarButtonColor];
   CGFloat dividerWidth = 1.0 / self.traitCollection.displayScale;
+  _dividerWidthConstraint =
+      [divider.widthAnchor constraintEqualToConstant:dividerWidth];
 
   [NSLayoutConstraint activateConstraints:@[
     [divider.heightAnchor constraintEqualToConstant:kIconDividerHeight],
-    [divider.widthAnchor constraintEqualToConstant:dividerWidth],
+    _dividerWidthConstraint,
   ]];
 
   return divider;
 }
 
-- (void)refreshFakeboxContent {
+- (void)updateLeadingView {
   if (!self.isViewLoaded) {
     return;
   }
-  // 1. Remove existing subviews and constraints.
-  [_plusButton removeFromSuperview];
-  [_logoView removeFromSuperview];
-  _plusButton = nil;
-  _logoView = nil;
-  _leadingView = nil;
+  const BOOL shouldShowPlus = [self shouldShowPlusButton];
+  _plusButton.hidden = !shouldShowPlus;
+  _logoView.hidden = shouldShowPlus;
+  _logoView.image = _dseLogo;
+  _hintLabelLeadingConstraint.constant = [self hintLabelFakeboxLeadingSpace];
+}
 
-  _leadingViewConstraint.active = NO;
-  _leadingViewConstraint = nil;
-  _hintLabelLeadingConstraint.active = NO;
-  _hintLabelLeadingConstraint = nil;
-  _hintLabelTrailingConstraint.active = NO;
-  _hintLabelTrailingConstraint = nil;
-
-  for (UIView* view in _buttonStack.arrangedSubviews) {
-    [view removeFromSuperview];
+- (void)updateActionButtons {
+  if (!self.isViewLoaded) {
+    return;
   }
-  _voiceSearchButton = nil;
-  _lensButton = nil;
-  _voiceAndLensDivider = nil;
-
-  // 2. Set up leading view.
-  UIView* leadingView = nil;
-  CGFloat leadingViewYOffset = 0;
-  if ([self shouldShowPlusButton]) {
-    _plusButton = [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
-    _plusButton.accessibilityLabel = l10n_util::GetNSString(
-        IDS_IOS_COMPOSEBOX_ADD_ATTACHMENT_BUTTON_ACCESSIBILITY_LABEL);
-    [_plusButton
-        setImage:SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize)
-        forState:UIControlStateNormal];
-    [_plusButton addTarget:self.NTPShortcutsHandler
-                    action:@selector(openMultimodalActionsMenu)
-          forControlEvents:UIControlEventTouchUpInside];
-    leadingView = _plusButton;
-  } else {
-    _logoView = [[UIImageView alloc] init];
-    _logoView.contentMode = UIViewContentModeScaleAspectFit;
-    _logoView.image = _dseLogo;
-    leadingView = _logoView;
-    leadingViewYOffset = kLogoViewYOffset;
-  }
-
-  if (leadingView) {
-    leadingView.translatesAutoresizingMaskIntoConstraints = NO;
-    [_fakeLocationBar addSubview:leadingView];
-    AddSquareConstraints(leadingView, kFakeboxImageSize);
-    _leadingView = leadingView;
-
-    _leadingViewConstraint = [leadingView.leadingAnchor
-        constraintEqualToAnchor:_fakeLocationBar.leadingAnchor
-                       constant:[self fakeboxLeadingSpace]];
-
-    [NSLayoutConstraint activateConstraints:@[
-      _leadingViewConstraint,
-      [leadingView.centerYAnchor
-          constraintEqualToAnchor:_fakeLocationBar.centerYAnchor
-                         constant:leadingViewYOffset]
-    ]];
-  }
-
-  // 3. Set up trailing buttons stack.
-  _buttonStack.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
-      0, 0, 0, [self endButtonFakeboxTrailingSpace]);
-
-  // Voice Search Button.
-  _voiceSearchButton =
-      [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
   _voiceSearchButton.enabled = _voiceSearchIsEnabled;
   _voiceSearchButton.isAccessibilityElement = _voiceSearchIsEnabled;
-  [_voiceSearchButton addTarget:self
-                         action:@selector(loadVoiceSearch:)
-               forControlEvents:UIControlEventTouchUpInside];
-  [_voiceSearchButton addTarget:self
-                         action:@selector(preloadVoiceSearch:)
-               forControlEvents:UIControlEventTouchDown];
-  [_buttonStack addArrangedSubview:_voiceSearchButton];
 
-  // Lens Button.
   const BOOL useLens =
       lens_availability::CheckAndLogAvailabilityForLensEntryPoint(
           LensEntrypoint::NewTabPage, _isGoogleDefaultSearchEngine);
-  if (useLens) {
-    [self addVoiceAndLensDivider];
-    _lensButton = [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
-    [_lensButton addTarget:self
-                    action:@selector(openLensViewFinder)
-          forControlEvents:UIControlEventTouchUpInside];
-    if (self.useNewBadgeForLensButton) {
-      [_lensButton addTarget:self
-                      action:@selector(lensButtonWithNewBadgeTapped:)
-            forControlEvents:UIControlEventTouchUpInside];
-    }
-    [_buttonStack addArrangedSubview:_lensButton];
-  }
+  _lensButton.hidden = !useLens;
+  _voiceAndLensDivider.hidden = !useLens;
+
+  _buttonStack.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
+      0, 0, 0, [self endButtonFakeboxTrailingSpace]);
 
   [self updateButtonsForCurrentTraitCollection];
+  [self maybeNotifyLensBadgeDisplayed];
+}
 
-  // 4. Set placeholder text and hint label.
+- (void)updateHintLabel {
+  if (!self.isViewLoaded) {
+    return;
+  }
   NSString* placeholder = [self placeholderText];
   _hintLabel.text = placeholder;
   _fakeLocationBar.accessibilityLabel = placeholder;
-
-  // 5. Update hint label constraints.
-  _hintLabelLeadingConstraint = [_hintLabel.leadingAnchor
-      constraintEqualToAnchor:_fakeLocationBar.leadingAnchor
-                     constant:[self hintLabelFakeboxLeadingSpace]];
-  _hintLabelLeadingConstraint.active = YES;
-
-  UIView* referenceView = _buttonStack.arrangedSubviews.firstObject;
-  NSLayoutXAxisAnchor* trailingAnchor = referenceView ? referenceView.leadingAnchor
-                                                      : _fakeLocationBar.trailingAnchor;
-
-  _hintLabelTrailingConstraint = [_hintLabel.trailingAnchor
-      constraintLessThanOrEqualToAnchor:trailingAnchor
-                               constant:-kHintLabelFakeboxTrailingSpace];
-  _hintLabelTrailingConstraint.priority = UILayoutPriorityDefaultHigh;
-  _hintLabelTrailingConstraint.active = YES;
 }
 
 - (void)updateButtonsForCurrentTraitCollection {
@@ -1179,6 +1119,10 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 }
 
+- (void)openMultimodalActionsMenu:(id)sender {
+  [self.NTPShortcutsHandler openMultimodalActionsMenu];
+}
+
 - (void)loadVoiceSearch:(id)sender {
   [self.NTPShortcutsHandler preloadVoiceSearch];
   [self.NTPShortcutsHandler loadVoiceSearchFromView:_voiceSearchButton];
@@ -1193,7 +1137,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
 }
 
 - (void)lensButtonWithNewBadgeTapped:(id)sender {
-  if (!_lensButtonWithNewBadgeTapped) {
+  if (self.useNewBadgeForLensButton && !_lensButtonWithNewBadgeTapped) {
     _lensButtonWithNewBadgeTapped = YES;
     ExtendedTouchTargetButton* lensButton = _lensButton;
     [UIView

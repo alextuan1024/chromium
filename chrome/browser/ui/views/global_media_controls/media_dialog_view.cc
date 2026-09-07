@@ -43,7 +43,9 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -59,6 +61,11 @@
 
 using global_media_controls::GlobalMediaControlsEntryPoint;
 using media_session::mojom::MediaSessionAction;
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(MediaDialogView,
+                                      kMediaItemUIUpdatedViewElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(MediaDialogView,
+                                      kSaveVideoFrameButtonElementId);
 
 namespace {
 
@@ -166,6 +173,13 @@ global_media_controls::MediaItemUI* MediaDialogView::ShowMediaItem(
   global_media_controls::MediaItemUI* view_ptr;
 
   auto view = BuildMediaItemUIUpdatedView(id, item);
+  view->SetProperty(views::kElementIdentifierKey,
+                    kMediaItemUIUpdatedViewElementId);
+  if (auto* save_button = view->GetMediaActionButton(
+          media_session::mojom::MediaSessionAction::kSaveVideoFrame)) {
+    save_button->SetProperty(views::kElementIdentifierKey,
+                             kSaveVideoFrameButtonElementId);
+  }
   view_ptr = view.get();
   items_[id] = view.get();
   active_sessions_view_->ShowUpdatedItem(id, std::move(view));

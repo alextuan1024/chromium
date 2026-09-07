@@ -196,9 +196,6 @@ std::string_view GetReportTypeSuffix(
         ClientSafeBrowsingReportRequest_ReportType_URL_REALTIME_AND_HASH_REALTIME_DISCREPANCY:
       return "URLRealTimeAndHashRealTimeDiscrepancy";
     case safe_browsing::
-        ClientSafeBrowsingReportRequest_ReportType_EXTERNAL_APP_REDIRECT:
-      return "ExternalAppRedirect";
-    case safe_browsing::
         ClientSafeBrowsingReportRequest_ReportType_DANGEROUS_DOWNLOAD_WARNING_ANDROID:
       return "DangerousDownloadWarningAndroid";
     case safe_browsing::
@@ -209,6 +206,8 @@ std::string_view GetReportTypeSuffix(
         ClientSafeBrowsingReportRequest_ReportType_URL_CLIENT_SIDE_MALWARE:
     case safe_browsing::
         ClientSafeBrowsingReportRequest_ReportType_HASH_PREFIX_REAL_TIME_EXPERIMENT:
+    case safe_browsing::
+        ClientSafeBrowsingReportRequest_ReportType_EXTERNAL_APP_REDIRECT:
       NOTREACHED();
   }
 }
@@ -545,25 +544,31 @@ void PingManager::AttachThreatDetailsAndLaunchSurvey(
     time_warning_visible =
         base::NumberToString(std::max<int64_t>(0, elapsed_ms)) + "ms";
   }
-  // Populated by ChromeSafeBrowsingHatsDelegate::LaunchRedWarningSurvey on
-  // Android.
-  std::string referring_app = "";
+  SurveyStringData string_data = {
+      {kFlaggedUrl, report->url()},
+      {kMainFrameUrl, report->page_url()},
+      {kReferrerUrl, report->referrer_url()},
+      // Populated by
+      // ChromeSafeBrowsingHatsDelegateAndroid::LaunchRedWarningSurvey on
+      // Android.
+      {kReferringApp, std::string()},
+      {kReportType,
+       ClientSafeBrowsingReportRequest::ReportType_Name(report->type())},
+      {kTimeWarningVisible, time_warning_visible},
+      {kUserAction, user_action},
+      {kUserActivityWithUrls, url_encoded_serialized_report},
+  };
 
-  hats_delegate_->LaunchRedWarningSurvey(
-      {{kFlaggedUrl, report->url()},
-       {kMainFrameUrl, report->page_url()},
-       {kReferrerUrl, report->referrer_url()},
-       {kReferringApp, referring_app},
-       {kReportType,
-        ClientSafeBrowsingReportRequest::ReportType_Name(report->type())},
-       {kTimeWarningVisible, time_warning_visible},
-       {kUserAction, user_action},
-       {kUserActivityWithUrls, url_encoded_serialized_report}},
-      {{kLearnMoreClicked, learn_more_clicked},
-       {kOpenDiagnostic, open_diagnostic_clicked},
-       {kRepeatVisit, repeat_visit},
-       {kReportPhishingErrorClicked, report_phishing_error_clicked},
-       {kShowMoreClicked, show_more_clicked}});
+  SurveyBitsData bits_data = {
+      {kLearnMoreClicked, learn_more_clicked},
+      {kOpenDiagnostic, open_diagnostic_clicked},
+      {kRepeatVisit, repeat_visit},
+      {kReportPhishingErrorClicked, report_phishing_error_clicked},
+      {kShowMoreClicked, show_more_clicked},
+  };
+
+  hats_delegate_->LaunchRedWarningSurvey(std::move(string_data),
+                                         std::move(bits_data), is_tab_closed);
 }
 
 void PingManager::ReportThreatDetailsOnGotAccessToken(

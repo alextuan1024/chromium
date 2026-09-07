@@ -136,8 +136,8 @@ struct BLINK_EXPORT WebNavigationInfo {
 
   // Used to retrieve data related to the initiator of the navigation stored in
   // the browser process.
-  base::UnguessableToken initiator_state_token;
-  blink::DocumentToken initiator_document_token;
+  InitiatorStateToken initiator_state_token;
+  DocumentToken initiator_document_token;
 
   // Whether the navigation initiator frame has the
   // |network::mojom::blink::WebSandboxFlags::kDownloads| bit set in its sandbox
@@ -265,9 +265,9 @@ struct BLINK_EXPORT WebNavigationParams {
   // `initiator_state_token` and `base_auction_nonce` rather than randomly
   // creating new ones.
   explicit WebNavigationParams(
-      const blink::DocumentToken& document_token,
+      const DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       const base::Uuid& base_auction_nonce);
 
   // Shortcut for navigating based on WebNavigationInfo parameters.
@@ -419,7 +419,7 @@ struct BLINK_EXPORT WebNavigationParams {
   // taking into account the origin computed by the renderer.
   StorageKey storage_key;
 
-  blink::DocumentToken document_token;
+  DocumentToken document_token;
   // The devtools token for this navigation. See DocumentLoader
   // for details.
   base::UnguessableToken devtools_navigation_token;
@@ -427,7 +427,7 @@ struct BLINK_EXPORT WebNavigationParams {
   // An unguessable token used to retrieve the complete set of policies to pass
   // to navigations initiated from the document resulting in this navigation
   // commit.
-  base::UnguessableToken initiator_state_token;
+  InitiatorStateToken initiator_state_token;
 
   // Token used to derive a consistent opaque origin for the initial empty
   // document of a newly created sandboxed frame (e.g., `<iframe sandbox>`) or
@@ -460,6 +460,9 @@ struct BLINK_EXPORT WebNavigationParams {
   // This is based on a user activation but is different from the above bit as
   // it can be propagated across redirects and is consumed on use.
   bool has_text_fragment_token = false;
+  // Whether the navigation that produced the text fragment token was initiated
+  // from the same-origin as the document or was browser-initiated.
+  bool text_fragment_token_had_trusted_initiator = false;
   // Whether this navigation was browser initiated.
   bool is_browser_initiated = false;
   // Whether the document should be able to access local file:// resources.
@@ -666,6 +669,11 @@ struct BLINK_EXPORT WebNavigationParams {
   // CommitNavigationParams. Same-process descendants'
   // HasInsecureContextInAncestors() stops at frames with this bit set.
   bool is_secure_context_root = false;
+
+  // Policy controlling script injection tracking and protections for this
+  // document.
+  mojom::ScriptInjectionPolicy script_injection_policy =
+      mojom::ScriptInjectionPolicy::kNone;
 };
 
 }  // namespace blink

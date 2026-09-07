@@ -18,14 +18,11 @@ import android.view.View;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkAllTabsHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.TabStripLayoutType;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabStripMenuMetricsUtils.StripMenuAction;
-import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
-import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.glic.GlicHelper;
 import org.chromium.chrome.browser.glic.GlicUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
@@ -65,7 +62,6 @@ import java.util.function.BooleanSupplier;
  */
 @NullMarked
 public class TabStripContextMenuCoordinator {
-    @VisibleForTesting static final String FEEDBACK_CATEGORY_SUFFIX = ".tabstrip";
 
     private final Context mContext;
     private final TabModel mTabModel;
@@ -134,27 +130,15 @@ public class TabStripContextMenuCoordinator {
      */
     public void showMenu(
             RectProvider anchorViewRectProvider, boolean isIncognito, Activity activity) {
-        ModelList modelList = new ModelList();
-        configureMenuItems(modelList, isIncognito);
-        if (modelList.isEmpty()) return;
+        View contentView = buildMenuView(isIncognito);
+        if (contentView == null) return;
 
         Drawable background = TabOverflowMenuCoordinator.getMenuBackground(mContext, isIncognito);
+        View decorView = activity.getWindow().getDecorView();
 
-        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
-        View contentView =
-                LayoutInflater.from(mContext)
-                        .inflate(R.layout.tab_switcher_action_menu_layout, null);
-        ListMenuUtils.clipContentViewOutline(contentView, R.attr.popupBgCornerRadius);
-
-        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
         TouchTrackingListView touchTrackingListView =
                 contentView.findViewById(R.id.tab_group_action_menu_list);
-        ListMenuItemAdapter adapter =
-                createAdapter(modelList, Set.of(), getListMenuDelegate(contentView));
-        touchTrackingListView.setItemsCanFocus(true);
-        touchTrackingListView.setAdapter(adapter);
-
-        View decorView = activity.getWindow().getDecorView();
+        ListMenuItemAdapter adapter = (ListMenuItemAdapter) touchTrackingListView.getAdapter();
 
         // Similar to Chrome Desktop (W/M/L), compute the translated strings' width
         // dynamically, clamp the value between a preselected
@@ -276,12 +260,11 @@ public class TabStripContextMenuCoordinator {
 
             boolean showNewBadge =
                     isEnablingVerticalTabs
-                            && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(mContext);
+                            && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(
+                                    mContext, profile);
 
             CharSequence title;
             if (showNewBadge) {
-                // Increment view count every time the badge is shown.
-                VerticalTabUtils.incrementNewBadgeViewCount();
                 // Prepare the title with the "New" badge.
                 title = VerticalTabUtils.getTitleWithNewBadge(mContext, layoutTitleRes);
             } else {
@@ -297,17 +280,8 @@ public class TabStripContextMenuCoordinator {
                             .withEnabled(enabled)
                             .build();
             itemList.add(item);
-
-            // Add "Send feedback" option
-            if (FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
-                itemList.add(
-                        new ListItemBuilder()
-                                .withTitleRes(R.string.send_feedback_about_tab_strip)
-                                .withMenuId(R.id.send_feedback_about_tab_strip_menu_id)
-                                .withIsIncognito(isIncognito)
-                                .build());
-            }
         }
+
         // Add "Task Manager" option with divider.
         if (TaskManager.isEnabled()) {
             itemList.add(BasicListMenu.buildMenuDivider(isIncognito));
@@ -321,8 +295,32 @@ public class TabStripContextMenuCoordinator {
     }
 
     @VisibleForTesting
-    @Nullable AnchoredPopupWindow getPopupWindow() {
+    @Nullable
+    public AnchoredPopupWindow getPopupWindow() {
         return mMenuWindow;
+    }
+
+    @VisibleForTesting
+    public @Nullable View buildMenuView(boolean isIncognito) {
+        ModelList modelList = new ModelList();
+        configureMenuItems(modelList, isIncognito);
+        if (modelList.isEmpty()) return null;
+
+        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
+        View contentView =
+                LayoutInflater.from(mContext)
+                        .inflate(R.layout.tab_switcher_action_menu_layout, null);
+        ListMenuUtils.clipContentViewOutline(contentView, R.attr.popupBgCornerRadius);
+
+        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
+        TouchTrackingListView touchTrackingListView =
+                contentView.findViewById(R.id.tab_group_action_menu_list);
+        ListMenuItemAdapter adapter =
+                createAdapter(modelList, Set.of(), getListMenuDelegate(contentView));
+        touchTrackingListView.setItemsCanFocus(true);
+        touchTrackingListView.setAdapter(adapter);
+
+        return contentView;
     }
 
     @VisibleForTesting
@@ -353,7 +351,9 @@ public class TabStripContextMenuCoordinator {
                         StripMenuAction.TOGGLE_TAB_LAYOUT, mTabStripLayout);
                 boolean isEnablingVerticalTabs = mTabStripLayout == TabStripLayoutType.HORIZONTAL;
                 VerticalTabUtils.recordLayoutToggle(
-                        LayoutSwitchEntryPoint.TAB_STRIP_CONTEXT_MENU, isEnablingVerticalTabs);
+                        mContext,
+                        LayoutSwitchEntryPoint.TAB_STRIP_CONTEXT_MENU,
+                        isEnablingVerticalTabs);
                 if (mContext instanceof MenuOrKeyboardActionController controller) {
                     controller.onMenuOrKeyboardAction(
                             R.id.toggle_tab_layout_menu_id, /* fromMenu= */ false);
@@ -376,40 +376,9 @@ public class TabStripContextMenuCoordinator {
                         StripMenuAction.TASK_MANAGER, mTabStripLayout);
                 TaskManager taskManager = TaskManagerFactory.createTaskManager();
                 taskManager.launch(ContextUtils.getApplicationContext());
-            } else if (model.get(MENU_ITEM_ID) == R.id.send_feedback_about_tab_strip_menu_id) {
-                TabStripMenuMetricsUtils.recordStripMenuUserAction(
-                        StripMenuAction.SEND_FEEDBACK, mTabStripLayout);
-                Activity activity = mWindowAndroid.getActivity().get();
-                if (activity != null && profile != null) {
-                    String categoryTag = getFeedbackCategoryTag();
-                    HelpAndFeedbackLauncherFactory.getForProfile(profile)
-                            .showFeedback(activity, /* url= */ null, categoryTag);
-                }
             }
             assumeNonNull(mMenuWindow).dismiss();
         };
-    }
-
-    /**
-     * Returns the appropriate feedback category tag to send with the feedback request. A Listnr
-     * allowlisted category tag is required when sending feedback otherwise Listnr will drop the
-     * request silently.
-     */
-    @VisibleForTesting
-    @Nullable String getFeedbackCategoryTag() {
-        String prefix;
-        if (VersionInfo.isCanaryBuild()) {
-            prefix = "com.chrome.canary";
-        } else if (VersionInfo.isDevBuild()) {
-            prefix = "com.chrome.dev";
-        } else if (VersionInfo.isBetaBuild()) {
-            prefix = "com.chrome.beta";
-        } else if (VersionInfo.isStableBuild()) {
-            prefix = "com.android.chrome";
-        } else {
-            return null;
-        }
-        return prefix + FEEDBACK_CATEGORY_SUFFIX;
     }
 
     /**

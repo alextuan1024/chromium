@@ -38,6 +38,7 @@
 #include "net/base/privacy_mode.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/request_priority.h"
+#include "net/cert/x509_util.h"
 #include "net/dns/host_resolver.h"
 #include "net/dns/public/resolve_error_info.h"
 #include "net/http/alternate_protocol_usage.h"
@@ -508,7 +509,6 @@ class HttpStreamPoolAttemptManagerTest : public TestWithTaskEnvironment {
         std::move(mock_crypto_client_stream_factory);
 
     SSLContextConfig config;
-    config.ech_enabled = true;
     session_deps_.ssl_config_service =
         std::make_unique<TestSSLConfigService>(config);
 
@@ -518,10 +518,9 @@ class HttpStreamPoolAttemptManagerTest : public TestWithTaskEnvironment {
 
   void DestroyHttpNetworkSession() { http_network_session_.reset(); }
 
-  void SetEchEnabled(bool ech_enabled) {
-    SSLContextConfig config = ssl_config_service()->GetSSLContextConfig();
-    config.ech_enabled = ech_enabled;
-    ssl_config_service()->UpdateSSLConfigAndNotify(config);
+  void SetEchMode(EchMode ech_mode, std::string_view host) {
+    ssl_config_service()->SetEchModeGetter(
+        std::make_unique<TestStaticEchModeGetter>(ech_mode, host));
   }
 
   HttpStreamPool& pool() { return *http_network_session_->http_stream_pool(); }
@@ -7574,7 +7573,7 @@ TEST_F(HttpStreamPoolAttemptManagerTest, EchOk) {
 }
 
 TEST_F(HttpStreamPoolAttemptManagerTest, EchDisabled) {
-  SetEchEnabled(false);
+  SetEchMode(EchMode::kDisabled, "www.example.org");
 
   std::vector<uint8_t> ech_config_list;
   ASSERT_TRUE(MakeTestEchKeys("www.example.org", /*max_name_len=*/128,
@@ -7774,7 +7773,8 @@ TEST_F(HttpStreamPoolAttemptManagerTest, TrustAnchorIDsDisabled) {
   AddScopedFeatureList().InitAndDisableFeature(features::kTLSTrustAnchorIDs);
 
   SSLContextConfig config = ssl_config_service()->GetSSLContextConfig();
-  config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}};
+  config.trust_anchor_ids = x509_util::EncodeTlsRequestedTrustAnchorIDList(
+      {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}});
   ssl_config_service()->UpdateSSLConfigAndNotify(config);
 
   SequencedSocketData data;
@@ -7812,7 +7812,8 @@ TEST_F(HttpStreamPoolAttemptManagerTest, TrustAnchorIDs) {
   AddScopedFeatureList().InitAndEnableFeature(features::kTLSTrustAnchorIDs);
 
   SSLContextConfig config = ssl_config_service()->GetSSLContextConfig();
-  config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}};
+  config.trust_anchor_ids = x509_util::EncodeTlsRequestedTrustAnchorIDList(
+      {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}});
   ssl_config_service()->UpdateSSLConfigAndNotify(config);
 
   SequencedSocketData data;
@@ -7851,10 +7852,11 @@ TEST_F(HttpStreamPoolAttemptManagerTest, TrustAnchorIDsEnabledWithECHDisabled) {
   AddScopedFeatureList().InitAndEnableFeature(features::kTLSTrustAnchorIDs);
 
   SSLContextConfig config = ssl_config_service()->GetSSLContextConfig();
-  config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}};
+  config.trust_anchor_ids = x509_util::EncodeTlsRequestedTrustAnchorIDList(
+      {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}});
   ssl_config_service()->UpdateSSLConfigAndNotify(config);
 
-  SetEchEnabled(false);
+  SetEchMode(EchMode::kDisabled, "www.example.org");
 
   SequencedSocketData data;
   socket_factory()->AddSocketDataProvider(&data);

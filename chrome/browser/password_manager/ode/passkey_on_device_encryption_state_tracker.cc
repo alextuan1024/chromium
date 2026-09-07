@@ -7,8 +7,9 @@
 #include <vector>
 
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
-#include "components/sync/base/data_type.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_user_settings.h"
 #include "components/webauthn/core/browser/passkey_model.h"
 #include "components/webauthn/core/browser/passkey_model_change.h"
 
@@ -64,13 +65,36 @@ void PasskeyOnDeviceEncryptionStateTracker::OnPasskeyModelIsReady(
 }
 
 void PasskeyOnDeviceEncryptionStateTracker::ComputeState() {
-  if (!sync_service() || !sync_service()->IsEngineInitialized()) {
+  // The logic of deriving the state based on sync_service() is similar for
+  // passkey state tracker and for password state tracker.
+  // TODO(crbug.com/540854648): Consider moving the common logic to a base
+  // class.
+  if (!sync_service()) {
+    SetState(OnDeviceEncryptionState::kOnDeviceEncryptionStateNotAvailable);
+    return;
+  }
+  if (sync_service()->HasDisableReason(
+          syncer::SyncService::DISABLE_REASON_NOT_SIGNED_IN)) {
+    SetState(OnDeviceEncryptionState::kProfileNotSignedIn);
+    return;
+  }
+  if (sync_service()->GetTransportState() ==
+      syncer::SyncService::TransportState::PAUSED) {
+    SetState(OnDeviceEncryptionState::kProfileSignInPending);
+    return;
+  }
+  if (!sync_service()->IsEngineInitialized()) {
     SetState(OnDeviceEncryptionState::kOnDeviceEncryptionStateNotAvailable);
     return;
   }
 
-  if (!sync_service()->GetActiveDataTypes().Has(syncer::WEBAUTHN_CREDENTIAL)) {
-    SetState(OnDeviceEncryptionState::kOnDeviceEncryptionNotEnabled);
+  // Verify whether the user disabled syncing of passwords and passkeys.
+  syncer::SyncUserSettings* user_settings = sync_service()->GetUserSettings();
+  if (!user_settings || !user_settings->GetSelectedTypes().Has(
+                            syncer::UserSelectableType::kPasswords)) {
+    // TODO(crbug.com/540854648): Consider introducing separate states for
+    // cases when sync is disabled by a user or by an enterprise policy.
+    SetState(OnDeviceEncryptionState::kPasswordAndPasskeySyncDisabled);
     return;
   }
 

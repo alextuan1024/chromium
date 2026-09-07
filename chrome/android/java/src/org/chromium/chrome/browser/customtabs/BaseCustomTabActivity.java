@@ -432,6 +432,7 @@ public abstract class BaseCustomTabActivity extends ChromeActivity {
                         getActivityResultTracker(),
                         getChromeAndroidTaskSupplier(),
                         getLifecycleDispatcher(),
+                        getMultiWindowModeStateDispatcher(),
                         getLayoutManagerSupplier(),
                         /* menuOrKeyboardActionController= */ this,
                         this::getActivityThemeColor,
@@ -1187,7 +1188,8 @@ public abstract class BaseCustomTabActivity extends ChromeActivity {
                 mBaseCustomTabRootUiCoordinator::getContextualPageActionController,
                 mIntentDataProvider.getClientPackageNameIdentitySharing() != null,
                 mBaseCustomTabRootUiCoordinator.getPageZoomManager(),
-                mBaseCustomTabRootUiCoordinator.getOpenInAppMenuItemProvider());
+                mBaseCustomTabRootUiCoordinator.getOpenInAppMenuItemProvider(),
+                mBaseCustomTabRootUiCoordinator::getWebAppHeaderLayoutCoordinator);
     }
 
     @Override

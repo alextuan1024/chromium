@@ -30,8 +30,8 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
@@ -1093,7 +1093,8 @@ class AuthenticatorWindowTest : public SigninBrowserTestBase {
 // EnclaveManager.
 class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
  public:
-  explicit QuitBrowserWhenKeysStored(Browser* browser) : browser_(browser) {
+  explicit QuitBrowserWhenKeysStored(BrowserWindowInterface* browser)
+      : browser_(browser) {
     EnclaveManager* const enclave_manager =
         EnclaveManagerFactory::GetAsEnclaveManagerForProfile(
             browser_->GetProfile());
@@ -1112,7 +1113,7 @@ class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
   }
 
  private:
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
   std::unique_ptr<EnclaveManager::StoreKeysLock> store_keys_lock_;
 };
 

@@ -15,13 +15,16 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom-shared.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/performance_controls/memory_saver_bubble_observer.h"
 #include "chrome/browser/ui/performance_controls/performance_controls_metrics.h"
 #include "chrome/browser/ui/performance_controls/test_support/memory_saver_browser_test_mixin.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/performance_controls/memory_saver_resource_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/branded_strings.h"
@@ -34,6 +37,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/text/bytes_formatting.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/types/event_type.h"
@@ -131,18 +135,17 @@ class MemorySaverBubbleViewTest
     }
   }
 
-  IconLabelBubbleView* GetPageActionIconView(Browser* b = nullptr) {
+  page_actions::PageActionViewInterface* GetPageActionView(
+      BrowserWindowInterface* b = nullptr) {
     if (!b) {
       b = browser();
     }
     auto* provider =
         BrowserView::GetBrowserViewForBrowser(b)->toolbar_button_provider();
-    return page_actions::GetIconLabelBubbleViewForTesting(
-        provider->GetPageActionViewInterface(kActionShowMemorySaverChip),
-        kActionShowMemorySaverChip);
+    return provider->GetPageActionViewInterface(kActionShowMemorySaverChip);
   }
 
-  views::View* GetBubbleView(Browser* b = nullptr) {
+  views::View* GetBubbleView(BrowserWindowInterface* b = nullptr) {
     if (!b) {
       b = browser();
     }
@@ -153,7 +156,8 @@ class MemorySaverBubbleViewTest
   }
 
   template <class T>
-  T* GetMatchingView(ui::ElementIdentifier identifier, Browser* b = nullptr) {
+  T* GetMatchingView(ui::ElementIdentifier identifier,
+                     BrowserWindowInterface* b = nullptr) {
     views::View* bubble_view = GetBubbleView(b);
     if (!bubble_view || !bubble_view->GetWidget()) {
       return nullptr;
@@ -165,13 +169,11 @@ class MemorySaverBubbleViewTest
         identifier, context);
   }
 
-  void ClickPageActionChip(Browser* b = nullptr) {
-    auto* view = GetPageActionIconView(b);
-
-    ui::MouseEvent e(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
-                     ui::EventTimeForNow(), 0, 0);
-    views::test::ButtonTestApi test_api(view);
-    test_api.NotifyClick(e);
+  void ClickPageActionChip(BrowserWindowInterface* b = nullptr) {
+    if (!b) {
+      b = browser();
+    }
+    page_actions::PageActionTestAccessor(b, kActionShowMemorySaverChip).Click();
   }
 
   base::HistogramTester histogram_tester_;
@@ -205,7 +207,7 @@ IN_PROC_BROWSER_TEST_F(MemorySaverBubbleViewTest,
   // Open bubble
   StubMemorySaverBubbleObserver observer;
   auto* bubble = MemorySaverBubbleView::ShowBubble(
-      browser(), views::BubbleAnchor(GetPageActionIconView()), &observer);
+      browser(), GetPageActionView()->GetBubbleAnchor(), &observer);
   ASSERT_NE(GetBubbleView(), nullptr);
 
   // Close bubble
@@ -233,7 +235,7 @@ IN_PROC_BROWSER_TEST_F(MemorySaverBubbleViewTest,
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(MemorySaverBubbleViewTest,
                        ShowDialogWithoutExcludeSiteButtonInGuestMode) {
-  Browser* guest_browser = CreateGuestBrowser();
+  BrowserWindowInterface* guest_browser = CreateGuestBrowser();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(guest_browser,
                                            GetURL("foo.com", "/title1.html")));
 
@@ -268,20 +270,29 @@ IN_PROC_BROWSER_TEST_F(MemorySaverBubbleViewTest,
   SetTabDiscardState(1, true);
   tab_strip_model->ActivateTabAt(1);
   content::WaitForLoadStop(tab_strip_model->GetWebContentsAt(1));
-  EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return GetPageActionIconView()->ShouldShowLabel(); }));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return page_actions::PageActionTestAccessor(browser(),
+                                                kActionShowMemorySaverChip)
+        .IsChipVisible();
+  }));
 
   SetTabDiscardState(0, true);
 
   tab_strip_model->SelectNextTab();
   content::WaitForLoadStop(tab_strip_model->GetWebContentsAt(0));
-  EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return GetPageActionIconView()->ShouldShowLabel(); }));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return page_actions::PageActionTestAccessor(browser(),
+                                                kActionShowMemorySaverChip)
+        .IsChipVisible();
+  }));
 
   ClickPageActionChip();
   tab_strip_model->SelectPreviousTab();
-  EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return !GetPageActionIconView()->ShouldShowLabel(); }));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !page_actions::PageActionTestAccessor(browser(),
+                                                 kActionShowMemorySaverChip)
+                .IsChipVisible();
+  }));
 }
 
 // The memory savings should be rendered within the resource view.
@@ -320,7 +331,15 @@ IN_PROC_BROWSER_TEST_P(MemorySaverBubbleViewSavingsTest,
                        ShowsCorrectLabelsForDifferentSavings) {
   AddNewTab(std::get<0>(GetParam()),
             ::mojom::LifecycleUnitDiscardReason::PROACTIVE);
-  SetTabDiscardState(0, true);
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
+  tab_strip_model->ActivateTabAt(0);
+  SetTabDiscardState(1, true);
+  tab_strip_model->ActivateTabAt(1);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return page_actions::PageActionTestAccessor(browser(),
+                                                kActionShowMemorySaverChip)
+        .IsChipVisible();
+  }));
 
   ClickPageActionChip();
 

@@ -21,11 +21,13 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/test_timeouts.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
+#include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
@@ -36,6 +38,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
@@ -48,14 +51,18 @@
 #include "chrome/browser/ui/views/toolbar/reload_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_and_views_toolbar_interactive_uitest_base.h"
+#include "chrome/browser/ui/views/toolbar/webui_overflow_button.h"
 #include "chrome/browser/ui/views/toolbar/webui_reload_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view_test_base.h"
 #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container.h"
+#include "chrome/browser/user_education/user_education_service.h"
+#include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -63,17 +70,24 @@
 #include "components/prefs/pref_service.h"
 #include "components/translate/core/browser/translate_step.h"
 #include "components/translate/core/common/translate_errors.h"
+#include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/scoped_accessibility_mode_override.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/accessibility/ax_node_data.h"
+#include "ui/accessibility/platform/ax_platform_node_delegate.h"
 #include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/client/drag_drop_client_observer.h"
 #include "ui/aura/env.h"
@@ -87,14 +101,19 @@
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/display/screen.h"
+#include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
 #include "ui/views/metrics.h"
 #include "ui/views/test/view_skia_gold_pixel_diff.h"
+#include "ui/webui/tracked_element/tracked_element_handler.h"
 
 namespace {
 
@@ -230,6 +249,8 @@ class WebUIToolbarPixelInteractiveUiTest : public InteractiveBrowserTest {
  public:
   WebUIToolbarPixelInteractiveUiTest() {
     // All features for Webium Production should be included here.
+    // TODO(crbug.com/539786691): Re-enable kPrewarm once the feature is
+    // compatible with the test.
     feature_list_.InitWithFeatures(
         {features::kInitialWebUI, features::kWebUIReloadButton,
          features::kWebUISplitTabsButton, features::kWebUIBackForwardButton,
@@ -237,7 +258,7 @@ class WebUIToolbarPixelInteractiveUiTest : public InteractiveBrowserTest {
          features::kWebUILocationBar, features::kWebUIAppMenuButton,
          features::kSkipIPCChannelPausingForNonGuests,
          features::kWebUIInProcessResourceLoadingV2},
-        {});
+        {features::kPrewarm});
   }
 
   void SetUp() override {
@@ -252,7 +273,8 @@ class WebUIToolbarPixelInteractiveUiTest : public InteractiveBrowserTest {
         ->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kLight);
   }
 
-  void BasicPixelTest(Browser* browser, const std::string& screenshot_name) {
+  void BasicPixelTest(BrowserWindowInterface* browser,
+                      const std::string& screenshot_name) {
     ui::TrackedElement* element = nullptr;
     WebUIToolbarWebView* webui_toolbar_view = nullptr;
     views::WebView* web_view = nullptr;
@@ -441,7 +463,7 @@ class WebUIToolbarViewsInteractiveUiTest
   // started, so use with care.
   StepBuilder DoWaitForLoadStop() {
     StepBuilder step = Do(base::BindOnce(
-        [](Browser* browser) {
+        [](BrowserWindowInterface* browser) {
           content::WaitForLoadStop(
               browser->GetTabStripModel()->GetActiveWebContents());
         },
@@ -607,7 +629,7 @@ class WebUIToolbarViewsInteractiveUiTest
   // reload button.
   StepBuilder DoStartReloadWithoutClick() {
     StepBuilder step = Do(base::BindOnce(
-        [](Browser* browser) {
+        [](BrowserWindowInterface* browser) {
           browser->GetTabStripModel()
               ->GetActiveWebContents()
               ->GetController()
@@ -1075,6 +1097,70 @@ IN_PROC_BROWSER_TEST_P(WebUIToolbarViewsInteractiveUiTest,
   EXPECT_EQ(observer.num_committed_navigations(), 2u);
 }
 
+// Test that closing a WebUI help bubble does not cause a CHECK(!iterating_)
+// crash when element hidden callbacks (such as sequence abort or tutorial
+// reset) destroy the help bubble during visibility lock cleanup.
+IN_PROC_BROWSER_TEST_P(WebUIToolbarViewsInteractiveUiTest,
+                       CloseBrowserWithHelpBubbleShowing) {
+  if (!IsWebUIReloadButtonEnabled()) {
+    GTEST_SKIP() << "Test requires WebUI toolbar buttons enabled";
+  }
+
+  ui::TrackedElement* element = nullptr;
+  RunTestSequence(
+      SetUpReloadButtonTest(),
+      InAnyContext(WaitForShow(kReloadButtonElementId)), Do([&]() {
+        element =
+            ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+                kReloadButtonElementId);
+        ASSERT_NE(nullptr, element);
+        ASSERT_NE(nullptr, element->AsA<ui::TrackedElementWebUI>());
+      }));
+
+  user_education::HelpBubbleParams params;
+  params.body_text = u"Test help bubble";
+  auto* user_education_service =
+      UserEducationServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  std::unique_ptr<user_education::HelpBubble> help_bubble =
+      user_education_service->help_bubble_factory_registry().CreateHelpBubble(
+          element, std::move(params));
+  ASSERT_NE(nullptr, help_bubble);
+
+  // Hide WebContents. Because visibility_lock is held by HelpBubbleHandlerBase,
+  // effective_visibility remains true until visibility_lock is released.
+  auto* webui_element = element->AsA<ui::TrackedElementWebUI>();
+  webui_element->handler()->OnVisibilityChanged(content::Visibility::HIDDEN);
+
+  // Simulate TutorialService / InteractionSequence behavior: when element
+  // hidden notification fires (triggered when visibility_lock is released while
+  // WebContents is hidden), destroy the help_bubble.
+  base::RunLoop run_loop;
+  auto subscription =
+      ui::ElementTracker::GetElementTracker()->AddElementHiddenCallback(
+          kReloadButtonElementId, element->context(),
+          base::BindLambdaForTesting([&](ui::TrackedElement*) {
+            help_bubble.reset();
+            run_loop.Quit();
+          }));
+
+  // Close the help bubble. Without the PostTask fix in
+  // TrackedElementVisibilityLock, resetting visibility_lock inside
+  // OnFloatingHelpBubbleClosed synchronously fires
+  // ElementTracker::NotifyElementHidden (since WebContents is hidden), which
+  // invokes the callback above to destroy help_bubble while its
+  // on_closing_callbacks_ list is iterating, causing a CHECK(!iterating_)
+  // crash.
+  help_bubble->Close(
+      user_education::HelpBubble::CloseReason::kProgrammaticallyClosed);
+
+  // Wait for the deferred visibility lock destruction task to run and trigger
+  // the hidden callback.
+  run_loop.Run();
+
+  EXPECT_EQ(nullptr, help_bubble);
+}
+
 #if BUILDFLAG(IS_MAC)
 // Regression test for the GlassFrame click-through bug: NSGlassEffectView
 // was intercepting clicks on the WebUI reload button.
@@ -1204,11 +1290,13 @@ class WebUIToolbarViewsLocationBarInteractiveUiTest
     : public WebUIAndViewsToolbarInteractiveUiTestBase {
  public:
   WebUIToolbarViewsLocationBarInteractiveUiTest() {
+    // TODO(crbug.com/539786691): Re-enable kPrewarm once the feature is
+    // compatible with the test.
     feature_list_.InitWithFeatures(
         {features::kInitialWebUI, features::kWebUIBackForwardButton,
          features::kWebUIReloadButton, features::kWebUIHomeButton,
          features::kWebUISplitTabsButton, features::kWebUILocationBar},
-        {});
+        {features::kPrewarm});
   }
 
   ~WebUIToolbarViewsLocationBarInteractiveUiTest() override = default;
@@ -1639,9 +1727,13 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
 #endif
 }
 
-// TODO(crbug.com/538459286): Flaky on MSan due to clipboard synchronization
-// timeouts.
-#if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS) && !defined(MEMORY_SANITIZER)
+class WebUIToolbarViewsLocationBarClipboardInteractiveUiTest
+    : public WebUIToolbarViewsLocationBarInteractiveUiTest {
+ private:
+  content::BrowserTestClipboardScope test_clipboard_scope_;
+};
+
+#if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_CopyTextFromWebUIOmnibox CopyTextFromWebUIOmnibox
 #define MAYBE_CopyUrlFromWebUIOmnibox CopyUrlFromWebUIOmnibox
 #define MAYBE_CutUrlFromWebUIOmnibox CutUrlFromWebUIOmnibox
@@ -1660,7 +1752,7 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
   DISABLED_CopyPartialUrlFromWebUIOmnibox
 #endif
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CopyTextFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const char kAdjustTextScript[] = R"(
@@ -1680,32 +1772,36 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
 #endif
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CopyUrlFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const GURL initial_url = embedded_test_server()->GetURL("/title1.html");
-  RunTestSequence(RunClipboardSetTest(kClipboardOp::kCopy, initial_url,
-                                      "title1",
-                                      "(el) => { el.focus(); el.select(); }",
-                                      "el => el.adjustedCopyResult !== null",
-                                      base::UTF8ToUTF16(initial_url.spec())));
+  RunTestSequence(RunClipboardSetTest(
+      kClipboardOp::kCopy, initial_url, "title1",
+      "(el) => { el.focus(); el.select(); }",
+      base::StringPrintf("el => el.adjustedCopyResult?.adjustedText === '%s'",
+                         initial_url.spec().c_str()),
+      base::UTF8ToUTF16(initial_url.spec())));
 #endif
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CutUrlFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const GURL initial_url = embedded_test_server()->GetURL("/title1.html");
-  RunTestSequence(RunClipboardSetTest(kClipboardOp::kCut, initial_url, "title1",
-                                      "(el) => { el.focus(); el.select(); }",
-                                      "el => el.adjustedCopyResult !== null",
-                                      base::UTF8ToUTF16(initial_url.spec())),
+  RunTestSequence(RunClipboardSetTest(
+                      kClipboardOp::kCut, initial_url, "title1",
+                      "(el) => { el.focus(); el.select(); }",
+                      base::StringPrintf(
+                          "el => el.adjustedCopyResult?.adjustedText === '%s'",
+                          initial_url.spec().c_str()),
+                      base::UTF8ToUTF16(initial_url.spec())),
                   WaitForJsResultAt(WebUIToolbarId(), kTextInputDeepQuery,
                                     "el => el.value === ''"));
 #endif
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CopyJavascriptFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const char kAdjustTextTemplate[] = R"(
@@ -1727,35 +1823,39 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
 #endif
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CopyChromeUrlFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const std::string chrome_url_to_copy = "chrome://version/";
-  RunTestSequence(RunClipboardSetTest(kClipboardOp::kCopy,
-                                      GURL("chrome://version/"), "version",
-                                      "(el) => { el.focus(); el.select(); }",
-                                      "el => el.adjustedCopyResult !== null",
-                                      base::UTF8ToUTF16(chrome_url_to_copy)));
+  RunTestSequence(RunClipboardSetTest(
+      kClipboardOp::kCopy, GURL("chrome://version/"), "version",
+      "(el) => { el.focus(); el.select(); }",
+      base::StringPrintf("el => el.adjustedCopyResult?.adjustedText === '%s'",
+                         chrome_url_to_copy.c_str()),
+      base::UTF8ToUTF16(chrome_url_to_copy)));
 #endif
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_F(WebUIToolbarViewsLocationBarClipboardInteractiveUiTest,
                        MAYBE_CopyPartialUrlFromWebUIOmnibox) {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   const GURL initial_url =
       embedded_test_server()->GetURL("a.test", "/title1.html");
+  const std::string expected_text = initial_url.GetWithEmptyPath().spec();
   RunTestSequence(RunClipboardSetTest(
       kClipboardOp::kCopy, initial_url, "title1",
       R"(
         (el) => {
           el.focus();
+          el.adjustedCopyResult = null;
           const slashIndex = el.value.indexOf('/');
           const selectEnd = slashIndex !== -1 ? slashIndex + 1 : el.value.length;
           el.setSelectionRange(0, selectEnd);
         }
       )",
-      "el => el.adjustedCopyResult !== null",
-      base::UTF8ToUTF16(initial_url.GetWithEmptyPath().spec())));
+      base::StringPrintf("el => el.adjustedCopyResult?.adjustedText === '%s'",
+                         expected_text.c_str()),
+      base::UTF8ToUTF16(expected_text)));
 #endif
 }
 
@@ -1777,7 +1877,7 @@ class WebUIToolbarFocusInteractiveUiTestBase
   }
 
  protected:
-  views::View* GetViewForIdentifier(Browser* browser,
+  views::View* GetViewForIdentifier(BrowserWindowInterface* browser,
                                     ui::ElementIdentifier el_id) {
     auto* element_tracker_views = views::ElementTrackerViews::GetInstance();
     ui::ElementContext context = BrowserElements::From(browser)->GetContext();
@@ -1820,13 +1920,13 @@ class WebUIToolbarFocusInteractiveUiTestBase
             if (curr.getAttribute('part') === 'searchbox-input') {
               return 'omnibox-text-input';
             }
+            if (curr.tagName === 'LOCATION-ICON') {
+              return 'location-icon-container';
+            }
             if (curr.id && curr.id !== 'container' &&
                 curr.id !== 'buttonWrapper' && curr.id !== 'textInput' &&
                 curr.id !== 'button') {
               return curr.id;
-            }
-            if (curr.id === 'container') {
-              return 'location-icon-container';
             }
             let parent = curr.parentElement || curr.parentNode;
             if (parent && parent.host) {
@@ -2357,3 +2457,652 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<RightClickContextMenuTestParam>& info) {
       return info.param.test_name;
     });
+
+class WebUIToolbarFullyEnabledInteractiveUiTest
+    : public WebUIToolbarWebViewTestBase {
+ public:
+  WebUIToolbarFullyEnabledInteractiveUiTest() {
+    feature_list_.InitAndEnableFeature(features::kWebUIToolbar);
+  }
+  ~WebUIToolbarFullyEnabledInteractiveUiTest() override = default;
+
+  // Waits until the overflow button location is available, clicks it, and spins
+  // until the menu is created.
+  [[nodiscard]] OverflowMenu* OpenOverflowMenu() {
+    ui::TrackedElement* overflow_element =
+        WaitForTrackedElementVisible(kToolbarOverflowButtonElementId);
+    if (!overflow_element) {
+      return nullptr;
+    }
+
+    // Click on overflow button.
+    gfx::Point screen_point = overflow_element->GetScreenBounds().CenterPoint();
+    if (!ui_test_utils::SendMouseMoveSync(screen_point) ||
+        !ui_test_utils::SendMouseEventsSync(
+            ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP)) {
+      return nullptr;
+    }
+
+    WebUIOverflowButton* overflow_button =
+        &GetWebUIToolbar()->overflow_button_for_testing();
+    // Wait for overflow menu to appear.
+    if (!base::test::RunUntil([&]() -> bool {
+          auto* menu = overflow_button->overflow_menu_for_testing();
+          return menu && menu->IsMenuRunning();
+        })) {
+      return nullptr;
+    }
+
+    return overflow_button->overflow_menu_for_testing();
+  }
+
+  // Simulates a mouse click on the MenuItemView at `index` within
+  // `overflow_menu`.
+  [[nodiscard]] bool ClickOverflowMenuItem(OverflowMenu& overflow_menu,
+                                           size_t index) {
+    views::MenuItemView* root_item = overflow_menu.root_menu_item();
+    if (!root_item || !root_item->GetSubmenu()) {
+      return false;
+    }
+    views::MenuItemView* item = root_item->GetSubmenu()->GetMenuItemAt(index);
+    if (!item || !item->GetVisible()) {
+      return false;
+    }
+
+    gfx::Point center = item->GetBoundsInScreen().CenterPoint();
+    if (!ui_test_utils::SendMouseMoveSync(center) ||
+        !ui_test_utils::SendMouseEventsSync(
+            ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP)) {
+      return false;
+    }
+
+    WebUIOverflowButton* overflow_button =
+        &GetWebUIToolbar()->overflow_button_for_testing();
+    // Wait for overflow menu to fully close.
+    return base::test::RunUntil([&]() -> bool {
+      return !overflow_button->overflow_menu_for_testing();
+    });
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Test the contents of the overflow menu when all overflowable items overflow.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuOverflowAllItemsOverflow) {
+  // Enable the home and split-tabs buttons.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
+                                                  true);
+
+  // Wait until all three overflowable buttons are visible. This step is
+  // necessary to avoid any races between causing all elements to be overflowed
+  // and enabling the buttons.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId}));
+
+  // Set the spacer width to the full width of the window, forcing all
+  // overflowable elements into the overflow menu.
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
+  ASSERT_EQ(SetSpacerWidth(window_bounds.width()), true);
+
+  // Wait for the forward, home, and split-tabs buttons to be hidden and the
+  // overflow button to be visible.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarOverflowButtonElementId},
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId}));
+
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Check that the overflow menu has the three expected buttons in the expected
+  // order, and nothing else.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  ASSERT_EQ(menu_model->GetItemCount(), 3u);
+
+  EXPECT_EQ(menu_model->GetLabelAt(0),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_FORWARD));
+  // The forward button should be disabled, since the back button has never been
+  // pressed.
+  EXPECT_FALSE(menu_model->IsEnabledAt(0));
+
+  EXPECT_EQ(menu_model->GetLabelAt(1),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_HOME));
+  EXPECT_TRUE(menu_model->IsEnabledAt(1));
+
+  EXPECT_EQ(menu_model->GetLabelAt(2),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_SPLIT_VIEW));
+  EXPECT_TRUE(menu_model->IsEnabledAt(2));
+}
+
+// Test the contents of the overflow menu when only some overflowable items
+// overflow.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuOverflowSomeItemsOverflow) {
+  // Enable the home and split-tabs buttons.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
+                                                  true);
+
+  // Wait until all three overflowable buttons are visible. This step is
+  // necessary to avoid any races between causing all elements to be overflowed
+  // and enabling the buttons.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId}));
+
+  // The width needed for the spacer to cause the home and forward buttons to
+  // overflow, but leave higher priority controls visible.
+  //
+  // To calculate this, we call into Javascript, and set the home button and all
+  // controls of higher priority than it to their preferred widths. All lower
+  // priority controls are set to their min widths. The spacer size we need is
+  // then the client width of the window, less the current width of the toolbar,
+  // plus 1, to cause the home button to overflow. Since we need to display the
+  // overflow button, too, that should cause the home button to overflow as
+  // well. This logic assumes there are no lower priority overflowable buttons.
+  // It also assumes the overflow button is not displayed at the default window
+  // width.
+  int needed_spacer_width = content::EvalJs(GetWebUIWebContents(), R"(
+        (() => {
+          const app = document.querySelector('toolbar-app');
+          const controls = app.getResponsiveControls();
+          let seenHomeButton = false;
+          for (const control of controls) {
+            if (!control.shouldBeShown()) {
+              continue;
+            }
+            if (seenHomeButton) {
+              control.setToMinWidth();
+            } else {
+              control.setToPreferredWidth();
+              if (control.id === 'home') {
+                seenHomeButton = true;
+              }
+            }
+          }
+          const neededSpacerWidth = Math.round(
+              window.innerWidth - app.getBoundingClientRect().width + 1);
+          // Restore original layout. Not strictly necessary.
+          app.layoutResponsiveControls();
+          return neededSpacerWidth;
+        })()
+      )")
+                                .ExtractInt();
+
+  // Set spacer width to `needed_spacer_width`, hiding forward and home controls
+  // (and anything of lower priority). a couple pixels of padding will likely be
+  // added around the spacer as well, but not enough to cause anything else to
+  // overflow.
+  ASSERT_EQ(SetSpacerWidth(needed_spacer_width), true);
+
+  // Wait for forward and home buttons to be hidden, and split-tabs and overflow
+  // button to be visible.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarOverflowButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId},
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId}));
+
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Check that the overflow menu has only home and forward items.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  ASSERT_EQ(menu_model->GetItemCount(), 2u);
+
+  EXPECT_EQ(menu_model->GetLabelAt(0),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_FORWARD));
+  EXPECT_FALSE(menu_model->IsEnabledAt(0));
+
+  EXPECT_EQ(menu_model->GetLabelAt(1),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_HOME));
+  EXPECT_TRUE(menu_model->IsEnabledAt(1));
+}
+
+// Test that clicking the home item on the overflow menu works.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuClickHomeButton) {
+  const GURL kHomePageUrl("data:text/plain,Home Page");
+  browser()->GetProfile()->GetPrefs()->SetString(prefs::kHomePage,
+                                                 kHomePageUrl.spec());
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kHomePageIsNewTabPage,
+                                                  false);
+
+  // Enable the home button.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+
+  // Wait until home and forward buttons are visible. This step is necessary to
+  // avoid any races between causing all elements to be overflowed and enabling
+  // the home button.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId}));
+
+  // Set the spacer width to the full width of the window, forcing all
+  // overflowable elements into the overflow menu.
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
+  ASSERT_EQ(SetSpacerWidth(window_bounds.width()), true);
+
+  // Wait for forward and home buttons to be hidden and overflow button to be
+  // visible.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarOverflowButtonElementId},
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId}));
+
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Check that the overflow menu has the two expected buttons in the expected
+  // order, and nothing else.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  ASSERT_EQ(menu_model->GetItemCount(), 2u);
+
+  EXPECT_EQ(menu_model->GetLabelAt(0),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_FORWARD));
+  // The forward button should be disabled, since the back button has never been
+  // pressed.
+  EXPECT_FALSE(menu_model->IsEnabledAt(0));
+
+  EXPECT_EQ(menu_model->GetLabelAt(1),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_HOME));
+  EXPECT_TRUE(menu_model->IsEnabledAt(1));
+
+  // Click the home button in the overflow menu and wait for navigation to
+  // commit.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::TestNavigationObserver navigation_observer(web_contents);
+  ASSERT_TRUE(ClickOverflowMenuItem(*overflow_menu, 1));
+  navigation_observer.Wait();
+  EXPECT_EQ(web_contents->GetLastCommittedURL(), kHomePageUrl);
+}
+
+// Test that clicking the forward menu item on the overflow menu works.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuClickForwardButton) {
+  const GURL kSecondUrl("data:text/plain,Second");
+
+  // Get the original URL, which should not match `kSecondUrl`.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  const GURL initial_url = web_contents->GetLastCommittedURL();
+  CHECK_NE(initial_url, kSecondUrl);
+
+  // Navigate to `kSecondUrl`.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), kSecondUrl));
+
+  // Press the back button, and check that we return to the original URL. This
+  // should result in the forward button being enabled, though we only check the
+  // forward button on the overflow menu is enabled.
+  content::TestNavigationObserver back_observer(web_contents);
+  chrome::BrowserCommandController::From(browser())->ExecuteCommand(IDC_BACK);
+  back_observer.Wait();
+  EXPECT_EQ(web_contents->GetLastCommittedURL(), initial_url);
+
+  // Wait until the WebUI knows the forward button should be enabled. The test
+  // would probably always pass without this, but it may technically be possible
+  // for the click on the overflow button to reach Javascript before the
+  // instruction to enable the forward button.
+  ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
+    return content::EvalJs(GetWebUIWebContents(), R"(
+          (() => {
+            const app = document.querySelector('toolbar-app');
+            const forwardButton = app.shadowRoot.querySelector('#forward');
+            return forwardButton.state.enabled;
+          })()
+        )")
+        .ExtractBool();
+  }));
+
+  // Set the spacer width to the full width of the window, forcing all
+  // overflowable elements into the overflow menu.
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
+  ASSERT_EQ(SetSpacerWidth(window_bounds.width()), true);
+
+  // Wait for forward button to be hidden and overflow button to be visible.
+  ASSERT_TRUE(WaitForTrackedElements({kToolbarOverflowButtonElementId},
+                                     {kToolbarForwardButtonElementId}));
+
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Check that the overflow menu has the forward button, and nothing else.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  ASSERT_EQ(menu_model->GetItemCount(), 1u);
+
+  EXPECT_EQ(menu_model->GetLabelAt(0),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_FORWARD));
+  EXPECT_TRUE(menu_model->IsEnabledAt(0));
+
+  // Click the forward button in the overflow menu and wait for navigation to
+  // commit.
+  content::TestNavigationObserver forward_observer(web_contents);
+  ASSERT_TRUE(ClickOverflowMenuItem(*overflow_menu, 0));
+  forward_observer.Wait();
+  // Make sure the expected URL committed.
+  EXPECT_EQ(web_contents->GetLastCommittedURL(), kSecondUrl);
+}
+
+// Test clicking the split-tabs button when it appears on the overflow menu.
+// Clicking it once should split the tab. Clicking it again should force the
+// icon to be visible and show a menu anchored at the split-tabs button's
+// location. Closing the menu should hide the button again, due to the same lack
+// of space that made it show on the overflow menu in the first place.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuClickSplitTabsButton) {
+  // Pin the split-tabs button.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
+                                                  true);
+
+  // Wait until split-tabs button is visible initially.
+  ASSERT_TRUE(
+      WaitForTrackedElements({kToolbarSplitTabsToolbarButtonElementId}));
+
+  // Force all overflowable elements into the overflow menu.
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
+  ASSERT_EQ(SetSpacerWidth(window_bounds.width()), true);
+
+  // Wait for split-tabs button to be hidden and overflow button to be visible.
+  ASSERT_TRUE(
+      WaitForTrackedElements({kToolbarOverflowButtonElementId},
+                             {kToolbarSplitTabsToolbarButtonElementId}));
+
+  // Open the overflow menu.
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Find the split-tabs item index in the overflow menu model.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  std::optional<size_t> split_tabs_index;
+  for (size_t i = 0; i < menu_model->GetItemCount(); ++i) {
+    if (menu_model->GetLabelAt(i) ==
+        l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_SPLIT_VIEW)) {
+      split_tabs_index = i;
+      break;
+    }
+  }
+  ASSERT_TRUE(split_tabs_index.has_value());
+
+  // First press: Click split-tabs item on the overflow menu.
+  ASSERT_TRUE(ClickOverflowMenuItem(*overflow_menu, *split_tabs_index));
+
+  // Wait for the active tab to be split.
+  ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
+    auto* tab_strip_model = browser()->GetTabStripModel();
+    return tab_strip_model && tab_strip_model->GetActiveTab() &&
+           tab_strip_model->GetActiveTab()->IsSplit();
+  }));
+
+  // Expect the split-tabs button itself to remain overflowed / not-visible.
+  EXPECT_TRUE(
+      WaitForTrackedElements({kToolbarOverflowButtonElementId},
+                             {kToolbarSplitTabsToolbarButtonElementId}));
+
+  // Open the overflow menu a second time.
+  overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  WebUIToolbarWebView* webui_toolbar_view = GetWebUIToolbarWebView(browser());
+  WebUISplitTabsControl* split_tabs_control =
+      &webui_toolbar_view->split_tabs_control_for_testing();
+  menu_model = overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  split_tabs_index.reset();
+  for (size_t i = 0; i < menu_model->GetItemCount(); ++i) {
+    if (menu_model->GetLabelAt(i) ==
+        l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_SPLIT_VIEW)) {
+      split_tabs_index = i;
+      break;
+    }
+  }
+  ASSERT_TRUE(split_tabs_index.has_value());
+
+  // Second press: Click split-tabs item on the overflow menu again.
+  ASSERT_TRUE(ClickOverflowMenuItem(*overflow_menu, *split_tabs_index));
+
+  // Expect second press to both show the split-tabs button and trigger menu
+  // creation.
+  ui::TrackedElement* split_tabs_element =
+      WaitForTrackedElementVisible(kToolbarSplitTabsToolbarButtonElementId);
+  ASSERT_TRUE(split_tabs_element);
+
+  ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
+    auto* menu_runner = split_tabs_control->menu_runner_for_testing();
+    if (!menu_runner || !menu_runner->IsRunning()) {
+      return false;
+    }
+    // Close the menu as soon as it's observed.
+    menu_runner->Cancel();
+    return true;
+  }));
+
+  // Close the menu and verify that the split-tabs button is hidden again.
+  if (split_tabs_control->menu_runner_for_testing()) {
+    split_tabs_control->menu_runner_for_testing()->Cancel();
+  }
+  // Verify that the split-tabs button is hidden again, in response to closing
+  // the menu.
+  EXPECT_TRUE(
+      WaitForTrackedElementHidden(kToolbarSplitTabsToolbarButtonElementId));
+}
+
+// Test that manual invocations of showOverflowMenu() with an empty list of
+// controls, a list of unknown controls, a list containing a combination of
+// known and unknown controls, and a list of valid controls are handled
+// appropriately.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowMenuInvalidMessages) {
+  WebUIOverflowButton* overflow_button =
+      &GetWebUIToolbar()->overflow_button_for_testing();
+
+  // Helper function that takes a Javascript Array of OverflowMenuItems as a
+  // string, and passes it to showOverflowMenu(). Returns "SUCCESS" if no
+  // exception is thrown, or the exception error message otherwise. Since it
+  // waits to receive a response, the Menu will have already been instantiated
+  // by the time the call returns, if the call were to trigger the creation of a
+  // menu.
+  auto show_overflow_menu = [&](std::string_view controls_json) -> std::string {
+    content::EvalJsResult res = content::EvalJs(
+        GetWebUIWebContents(), base::StringPrintf(R"(
+              (async () => {
+                const app = document.querySelector('toolbar-app');
+                const browserProxy = app.browserProxyForTesting;
+                try {
+                  await browserProxy.toolbarUIHandler.showOverflowMenu(
+                      %s, {x: 0, y: 0, width: 10, height: 10}, 0);
+                  return 'SUCCESS';
+                } catch (err) {
+                  return err.message;
+                }
+              })();
+            )",
+                                                  controls_json));
+    return res.ExtractString();
+  };
+
+  // Manually invoke showOverflowMenu() with an empty control array. It should
+  // not return an error, but no menu should be shown.
+  EXPECT_EQ(show_overflow_menu("[]"), "SUCCESS");
+  EXPECT_FALSE(overflow_button->overflow_menu_for_testing());
+
+  // Manually invoke showOverflowMenu() with invalid controls. It should throw
+  // an exception.
+  EXPECT_THAT(show_overflow_menu(R"([
+              {id: {nativeIdentifier: 'invalid-control-1',
+                    secondaryIdentifier: 'sec-1'},
+               isEnabled: true},
+              {id: {nativeIdentifier: 'invalid-control-2',
+                    secondaryIdentifier: 'sec-2'},
+               isEnabled: false}])"),
+              testing::HasSubstr("invalid-control-1"));
+  EXPECT_FALSE(overflow_button->overflow_menu_for_testing());
+
+  // Manually invoke showOverflowMenu() with a mix of valid and invalid
+  // controls. It should throw an exception.
+  EXPECT_THAT(show_overflow_menu(R"([
+              {id: {nativeIdentifier: 'kToolbarSplitTabsToolbarButtonElementId',
+                    secondaryIdentifier: 'sec-1'},
+               isEnabled: true},
+              {id: {nativeIdentifier: 'invalid-control',
+                    secondaryIdentifier: 'sec-2'},
+               isEnabled: true}])"),
+              testing::HasSubstr("invalid-control"));
+  EXPECT_FALSE(overflow_button->overflow_menu_for_testing());
+
+  // Manually invoke showOverflowMenu() with a valid control. Even though the
+  // split-tabs button isn't pinned, we still allow this - as there may have
+  // been a race between unpinning the button and showing the overflow menu.
+  EXPECT_EQ(show_overflow_menu(R"([
+          {id: {nativeIdentifier: 'kToolbarSplitTabsToolbarButtonElementId',
+                secondaryIdentifier: 'sec-1'},
+           isEnabled: true}])"),
+            "SUCCESS");
+
+  // Wait for overflow menu to appear.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() -> bool { return overflow_button->overflow_menu_for_testing(); }));
+
+  OverflowMenu* overflow_menu = overflow_button->overflow_menu_for_testing();
+  ASSERT_TRUE(overflow_menu);
+
+  // Expect the real control (split-tabs) to be present in the menu model.
+  const ui::SimpleMenuModel* menu_model =
+      overflow_menu->menu_model_for_testing();
+  ASSERT_TRUE(menu_model);
+  ASSERT_EQ(menu_model->GetItemCount(), 1u);
+
+  EXPECT_EQ(menu_model->GetLabelAt(0),
+            l10n_util::GetStringUTF16(IDS_OVERFLOW_MENU_ITEM_TEXT_SPLIT_VIEW));
+  EXPECT_TRUE(menu_model->IsEnabledAt(0));
+
+  // Close the menu. Not strictly needed, as it should be closed during
+  // teardown, anyways, but can't hurt.
+  overflow_menu->root_menu_item()->Cancel();
+}
+
+// Test the overflow button correctly affects the accessibility tree. Start with
+// the overflow button hidden, then cause some controls to overflow, then show
+// the overflow menu, and finally hide the menu, and check the accessibility
+// tree for the overflow button each time its state changes.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledInteractiveUiTest,
+                       OverflowButtonAccessibility) {
+  content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
+
+  std::string overflow_name =
+      l10n_util::GetStringUTF8(IDS_TOOLTIP_OVERFLOW_BUTTON);
+  // Helper to retrieve the current AXNodeData for the overflow button.
+  auto get_overflow_node_data = [&]() -> std::optional<ui::AXNodeData> {
+    content::FindAccessibilityNodeCriteria find_criteria;
+    find_criteria.name = overflow_name;
+    ui::AXPlatformNodeDelegate* overflow_node =
+        content::FindAccessibilityNode(GetWebUIWebContents(), find_criteria);
+    if (!overflow_node) {
+      return std::nullopt;
+    }
+    return overflow_node->GetData();
+  };
+
+  // Enable the home and split-tabs buttons.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
+                                                  true);
+
+  // Wait until all three overflowable buttons are visible.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId}));
+
+  // Wait until the split tabs button is part of the accessibility tree.
+  std::string split_tabs_name =
+      l10n_util::GetStringUTF8(IDS_ACCNAME_SPLIT_TABS_TOOLBAR_BUTTON_PINNED);
+  content::WaitForAccessibilityTreeToContainNodeWithName(GetWebUIWebContents(),
+                                                         split_tabs_name);
+
+  // Check that the overflow button is not part of the accessibility tree before
+  // anything overflows.
+  EXPECT_FALSE(get_overflow_node_data().has_value());
+
+  // Force all overflowable elements into the overflow menu.
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
+  ASSERT_EQ(SetSpacerWidth(window_bounds.width()), true);
+
+  // Wait for forward, home, and split-tabs buttons to be hidden and the
+  // overflow button to be visible. Not strictly needed.
+  ASSERT_TRUE(WaitForTrackedElements(
+      {kToolbarOverflowButtonElementId},
+      {kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
+       kToolbarSplitTabsToolbarButtonElementId}));
+  // Wait for the accessibility tree to be updated.
+  content::WaitForAccessibilityTreeToContainNodeWithName(GetWebUIWebContents(),
+                                                         overflow_name);
+
+  // Verify initial accessibility properties, with the button visible before
+  // showing the menu.
+  std::optional<ui::AXNodeData> data = get_overflow_node_data();
+  ASSERT_TRUE(data.has_value());
+  EXPECT_EQ(ax::mojom::Role::kPopUpButton, data->role);
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kName));
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kDescription));
+  EXPECT_EQ(static_cast<int>(ax::mojom::HasPopup::kMenu),
+            data->GetIntAttribute(ax::mojom::IntAttribute::kHasPopup));
+  EXPECT_FALSE(data->HasState(ax::mojom::State::kExpanded));
+
+  // Open the overflow menu with a click.
+  OverflowMenu* overflow_menu = OpenOverflowMenu();
+  ASSERT_TRUE(overflow_menu);
+
+  // Wait until the accessibility node is updated to expanded.
+  ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
+    auto node_data = get_overflow_node_data();
+    return node_data.has_value() &&
+           node_data->HasState(ax::mojom::State::kExpanded);
+  }));
+
+  // Verify properties with the menu visible.
+  data = get_overflow_node_data();
+  ASSERT_TRUE(data.has_value());
+  EXPECT_EQ(ax::mojom::Role::kPopUpButton, data->role);
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kName));
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kDescription));
+  EXPECT_EQ(static_cast<int>(ax::mojom::HasPopup::kMenu),
+            data->GetIntAttribute(ax::mojom::IntAttribute::kHasPopup));
+  EXPECT_TRUE(data->HasState(ax::mojom::State::kExpanded));
+
+  // Close the menu.
+  overflow_menu->root_menu_item()->Cancel();
+
+  // Wait for the node to be updated.
+  ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
+    auto node_data = get_overflow_node_data();
+    return node_data.has_value() &&
+           !node_data->HasState(ax::mojom::State::kExpanded);
+  }));
+
+  // Verify properties after closing the menu.
+  data = get_overflow_node_data();
+  ASSERT_TRUE(data.has_value());
+  EXPECT_EQ(ax::mojom::Role::kPopUpButton, data->role);
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kName));
+  EXPECT_EQ(overflow_name,
+            data->GetStringAttribute(ax::mojom::StringAttribute::kDescription));
+  EXPECT_EQ(static_cast<int>(ax::mojom::HasPopup::kMenu),
+            data->GetIntAttribute(ax::mojom::IntAttribute::kHasPopup));
+  EXPECT_FALSE(data->HasState(ax::mojom::State::kExpanded));
+}

@@ -301,11 +301,18 @@ const base::FeatureParam<int> kBocaReceiverCustomPollingMaxFailuresCount{
 
 BASE_FEATURE(kCrosSwitcher, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enables Camera Cloud Storage for saving photos and videos on Google Drive
+// or OneDrive, controlled by CameraSaveLocation policy.
+BASE_FEATURE(kCameraCloudStorage, base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Indicates whether the camera super resolution is supported. Note that this
 // feature is overridden by login_manager based on whether a per-board build
 // sets the USE camera_feature_super_res flag. Refer to:
 // chromiumos/src/platform2/login_manager/chrome_setup.cc
 BASE_FEATURE(kCameraSuperResSupported, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enable Borealis on Chrome OS.
+BASE_FEATURE(kBorealis, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enable Big GL when using Borealis.
 BASE_FEATURE(kBorealisBigGl, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -453,6 +460,9 @@ BASE_FEATURE(kCrosSafetyService, base::FEATURE_DISABLED_BY_DEFAULT);
 // Enables syncing attestation certificates to cryptauth for use by Cross Device
 // features, including Eche and Phone Hub.
 BASE_FEATURE(kCryptauthAttestationSyncing, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enable project Crostini, Linux VMs on Chrome OS.
+BASE_FEATURE(kCrostini, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables experimental containerless Crostini VMs.
 BASE_FEATURE(kCrostiniContainerless, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -800,23 +810,9 @@ BASE_FEATURE(kForceOnDeviceAppControlsForAllRegions,
 // For more info, see go/crosforest.
 BASE_FEATURE(kForestFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables the new backend (uses `viz::ClientResourceProvider` +
-// `cc::ResourcePool`) for FrameSinkHost.
-BASE_FEATURE(kFrameSinkHostNewBackend, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables the new backend for `ViewTreeHostRootView` backend.
-BASE_FEATURE(kViewTreeHostRootViewNewBackend,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables the new backend for `FastInkHost` backend.
-BASE_FEATURE(kFastInkHostNewBackend, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enables low priority hint instead of overlay candidate override in
 // `FastInkHost`.
 BASE_FEATURE(kFastInkHostLowPriorityHint, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables the new backend for `RoundedDisplayHost` backend.
-BASE_FEATURE(kRoundedDisplayHostNewBackend, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, there will be an alert bubble showing up when the device
 // returns from low brightness (e.g., sleep, closed cover) without a lock screen
@@ -1964,6 +1960,9 @@ BASE_FEATURE(kWifiSyncUploadProxyConfigs, base::FEATURE_DISABLED_BY_DEFAULT);
 // Wi-Fi networks that are received from Chrome Sync.
 BASE_FEATURE(kWifiSyncApplyProxyConfigs, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Enables window preview on hover for shelf app icons and menu items.
+BASE_FEATURE(kWindowPreviewOnShelf, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables an experimental feature that splits windows by dragging one window
 // over another window.
 BASE_FEATURE(kWindowSplitting, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -2157,6 +2156,11 @@ BASE_FEATURE(kHappinessTrackingSystemSlowAndLaggyDeepDive,
 
 // Enables new UX for files policy restrictions on ChromeOS.
 BASE_FEATURE(kNewFilesPolicyUX, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables the SkyVault (cloud-first) changes, some of which are also controlled
+// by policies: removing local storage, saving downloads and screen captures to
+// the cloud, and related UX changes, primarily in the Files App.
+BASE_FEATURE(kSkyVault, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables the SkyVault V2 changes, which are also controlled by policies:
 // LocalUserFilesAllowed, DownloadDirectory and ScreenCaptureLocation.
@@ -2620,24 +2624,8 @@ bool IsFullscreenAlertBubbleEnabled() {
   return base::FeatureList::IsEnabled(kFullscreenAlertBubble);
 }
 
-bool IsFrameSinkHostNewBackendEnabled() {
-  return base::FeatureList::IsEnabled(kFrameSinkHostNewBackend);
-}
-
-bool IsViewTreeHostNewBackendEnabled() {
-  return base::FeatureList::IsEnabled(kViewTreeHostRootViewNewBackend);
-}
-
-bool IsFastInkHostNewBackendEnabled() {
-  return base::FeatureList::IsEnabled(kFastInkHostNewBackend);
-}
-
 bool IsFastInkHostLowPriorityHintEnabled() {
   return base::FeatureList::IsEnabled(kFastInkHostLowPriorityHint);
-}
-
-bool IsRoundedDisplayHostNewBackendEnabled() {
-  return base::FeatureList::IsEnabled(kRoundedDisplayHostNewBackend);
 }
 
 bool IsBlockFwupdClientEnabled() {
@@ -3285,6 +3273,10 @@ bool IsWifiConcurrencyEnabled() {
 
 bool IsWifiSyncAndroidEnabled() {
   return base::FeatureList::IsEnabled(kWifiSyncAndroid);
+}
+
+bool IsWindowPreviewOnShelfEnabled() {
+  return base::FeatureList::IsEnabled(kWindowPreviewOnShelf);
 }
 
 bool IsWindowSplittingEnabled() {

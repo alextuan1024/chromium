@@ -14,7 +14,8 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsOffsetTagsInfo;
-import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.CompositorModelChangeProcessor;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.SceneOverlay;
@@ -24,9 +25,12 @@ import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
 import org.chromium.components.browser_ui.widget.ClipDrawableProgressBar;
+import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.resources.ResourceManager;
 
+import java.util.Collections;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** The public interface for the top toolbar texture component. */
@@ -39,7 +43,7 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
     private final TopToolbarSceneLayer mSceneLayer;
 
     /** Handles processing updates to the model. */
-    private final CompositorModelChangeProcessor mChangeProcessor;
+    private final @Nullable CompositorModelChangeProcessor mChangeProcessor;
 
     /** Business logic for this overlay. */
     private final TopToolbarOverlayMediator mMediator;
@@ -51,7 +55,7 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
             LayoutManager layoutManager,
             Callback<ClipDrawableProgressBar.DrawingInfo> progressInfoCallback,
             NullableObservableSupplier<Tab> tabSupplier,
-            BrowserControlsStateProvider browserControlsStateProvider,
+            BrowserControlsVisibilityManager browserControlsVisibilityManager,
             Supplier<ResourceManager> resourceManagerSupplier,
             ToolbarThemeColorProvider toolbarThemeColorProvider,
             NonNullObservableSupplier<Integer> bottomToolbarControlsOffsetSupplier,
@@ -73,13 +77,21 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
                         .with(TopToolbarOverlayProperties.X_OFFSET, 0)
                         .with(
                                 TopToolbarOverlayProperties.LEGACY_CONTENT_OFFSET,
-                                browserControlsStateProvider.getContentOffset())
+                                browserControlsVisibilityManager.getContentOffset())
                         .with(TopToolbarOverlayProperties.ANONYMIZE, false)
                         .with(TopToolbarOverlayProperties.SHOW_SHADOW, true)
                         .build();
         mSceneLayer = new TopToolbarSceneLayer(resourceManagerSupplier);
+        Set<PropertyKey> exclusions =
+                ChromeFeatureList.sBottomControlsJankImprovement.isEnabled()
+                        ? Set.of(
+                                TopToolbarOverlayProperties.Y_OFFSET,
+                                TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG,
+                                TopToolbarOverlayProperties.LEGACY_CONTENT_OFFSET)
+                        : Collections.emptySet();
         mChangeProcessor =
-                layoutManager.createCompositorMCP(mModel, mSceneLayer, TopToolbarSceneLayer::bind);
+                layoutManager.createCompositorMCPWithExclusions(
+                        mModel, mSceneLayer, TopToolbarSceneLayer::bind, exclusions);
 
         mMediator =
                 new TopToolbarOverlayMediator(
@@ -88,7 +100,7 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
                         layoutManager,
                         progressInfoCallback,
                         tabSupplier,
-                        browserControlsStateProvider,
+                        browserControlsVisibilityManager,
                         toolbarThemeColorProvider,
                         bottomToolbarControlsOffsetSupplier,
                         suppressToolbarSceneLayerSupplier,
@@ -150,7 +162,9 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
 
     /** Clean up this component. */
     public void destroy() {
-        mChangeProcessor.destroy();
+        if (mChangeProcessor != null) {
+            mChangeProcessor.destroy();
+        }
         mMediator.destroy();
         mSceneLayer.destroy();
     }

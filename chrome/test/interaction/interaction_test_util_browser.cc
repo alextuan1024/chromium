@@ -12,6 +12,8 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -34,9 +36,9 @@
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
-#include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
+#include "ui/webui/tracked_element/interaction_test_util_web_ui.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -408,6 +410,8 @@ void InteractionTestUtilBrowser::PopulateSimulators(
     ui::test::InteractionTestUtil& test_util) {
   test_util.AddSimulator(
       std::make_unique<InteractionTestUtilSimulatorBrowser>());
+  test_util.AddSimulator(
+      std::make_unique<ui::InteractionTestUtilSimulatorWebUI>());
 }
 
 // static

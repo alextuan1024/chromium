@@ -91,6 +91,7 @@ const ROOT_PIPE = 0 as RootPipe;
 // Manages pipes and provides a way to send and receive messages over
 // `postMessage`.
 export interface PostMessageRouter {
+  receiver?: PostMessageRequestReceiver;
   // Creates a new pipe bound to a pending receiver and a remote.
   newPipeWithRemote<RemoteInterface extends InterfaceDef>(
       remoteInterfaceDef: RemoteInterface): {
@@ -117,9 +118,6 @@ export interface PostMessageRouter {
 
   // Destroy all pipes created by this router.
   destroy(): void;
-
-  // Enable logging for all messages.
-  setLoggingEnabled(enabled: boolean): void;
 
   // Adds a close handler to the pipe associated with the given id.
   // If the pipe is already closed, calls the handler immediately.
@@ -175,32 +173,6 @@ function newSenderId(): string {
   const array = new Uint8Array(8);
   crypto.getRandomValues(array);
   return Array.from(array).map((n: number) => n.toString(16)).join('');
-}
-
-class MessageLogger {
-  loggingEnabled = false;
-  loggingPrefix: string;
-  constructor(senderId: string, protected prefix: string) {
-    this.loggingPrefix = `${prefix}(${senderId.substring(0, 6)})`;
-  }
-
-  setLoggingEnabled(v: boolean): void {
-    this.loggingEnabled = v;
-  }
-
-  shouldLogMessage(requestType: string): boolean {
-    return this.loggingEnabled && requestType !== 'checkResponsive';
-  }
-
-  maybeLogMessage(requestType: string, message: string, payload: unknown) {
-    if (!this.shouldLogMessage(requestType)) {
-      return;
-    }
-    console.info(
-        `${this.loggingPrefix} [${requestType}] ${message}: ${
-            toDebugJson(payload)}`,
-        payload);
-  }
 }
 
 // Implements a simple queue with O(1) push and shift.
@@ -359,8 +331,7 @@ class Pipe implements PipeInterface {
   }
 }
 
-export class PostMessageRouterImpl extends MessageLogger implements
-    PostMessageRouter {
+export class PostMessageRouterImpl implements PostMessageRouter {
   private onDestroy: () => void;
   sender?: PostMessageRequestSender;
   receiver?: PostMessageRequestReceiver;
@@ -369,6 +340,7 @@ export class PostMessageRouterImpl extends MessageLogger implements
   // Tracks IDs of pipes that have been closed.
   readonly closedPipes = new InverseSet();
   private nextPipeId: number;
+  readonly loggingPrefix: string;
 
   constructor(
       public readonly remoteOrigin: string, readonly senderId: string,
@@ -378,7 +350,7 @@ export class PostMessageRouterImpl extends MessageLogger implements
         serialize: e => ({exception: e}),
         deserialize: raw => raw.exception,
       }) {
-    super(senderId, logPrefix);
+    this.loggingPrefix = `${logPrefix}(${senderId.substring(0, 6)})`;
     // Use even and odd scheme to ensure host and client pipe ids don't clash.
     this.nextPipeId = isHost ? 2 : 1;
     const handler = this.onMessage.bind(this);
@@ -430,7 +402,6 @@ export class PostMessageRouterImpl extends MessageLogger implements
       requestPayload,
       senderId: this.senderId,
     } satisfies RequestMessage;
-    this.maybeLogMessage(type, 'sending request', request);
     this.messageSender.postMessage(request, this.remoteOrigin, transfer);
   }
 
@@ -448,7 +419,6 @@ export class PostMessageRouterImpl extends MessageLogger implements
     if (exception) {
       response.exception = exception;
     }
-    this.maybeLogMessage(type, 'sending response', response);
     this.messageSender.postMessage(response, this.remoteOrigin, transfer);
   }
 
@@ -623,6 +593,7 @@ export class PostMessageReceiverImpl implements PostMessageReceiver {
     this.pipe.addCloseHandler(f);
   }
 }
+
 // Sends requests over postMessage.
 export class PostMessageRequestSender {
   requestId = 1;
@@ -691,13 +662,8 @@ export class PostMessageRequestSender {
         type: requestType,
         handler: (response: ResponseMessage) => {
           if (response.exception !== undefined) {
-            this.router.maybeLogMessage(
-                requestType, 'received response with exception',
-                response.exception);
             reject(this.router.errorCodec.deserialize(response.exception));
           } else {
-            this.router.maybeLogMessage(
-                requestType, 'received response', response.responsePayload);
             resolve(response.responsePayload);
           }
         },
@@ -711,7 +677,6 @@ export class PostMessageRequestSender {
         console.warn(
             `WARNING! ${this.router.loggingPrefix}:` +
             ` Too many in-flight requests, starting to queue them.`);
-        this.logInFlightRequestsForDebugging();
         this.queueNoticeLogged = true;
       }
       this.sendQueue.push(processFn);
@@ -744,19 +709,6 @@ export class PostMessageRequestSender {
   private isQueueing() {
     return this.inFlightRequestCount() >= this.maxInFlightRequests ||
         this.sendQueue.length > 0;
-  }
-
-  private logInFlightRequestsForDebugging() {
-    const counts: Map<string, number> = new Map();
-    for (const entry of this.responseHandlers.values()) {
-      counts.set(entry.type, (counts.get(entry.type) || 0) + 1);
-    }
-    const entries = Array.from(counts.entries());
-    entries.sort((a, b) => b[1] - a[1]);
-    const entriesString =
-        entries.map(([type, count]) => `${type}: ${count}`).join(', ');
-    console.info(
-        `${this.router.loggingPrefix}: In-flight requests: ${entriesString}`);
   }
 }
 
@@ -834,7 +786,6 @@ export class PostMessageRequestReceiver {
     if (!handleFn) {
       return;
     }
-    this.router.maybeLogMessage(type, 'processing request', requestPayload);
 
     let response;
     let exception: TransferableException|undefined;
@@ -867,46 +818,95 @@ export class PostMessageRequestReceiver {
   }
 }
 
-export function createBidirectionalPostMessageTransport<
-    RemoteInterface extends InterfaceDef,
-                            ReceiverInterface extends InterfaceDef>(
-    remoteOrigin: string,
-    postMessageSender: PostMessageSender,
-    lifecycleObserver: PostMessageLifecycleObserver,
-    rootMessageHandler: PostMessageHandler<ReceiverInterface>,
+// Creates a direct in-memory messaging transport pair between host and client
+// without going through real window.postMessage.
+export function createDirectMessagingPair<
+    HostRemoteInterface extends InterfaceDef,
+                                ClientRemoteInterface extends InterfaceDef>(
     logPrefix: string,
-    isHost: boolean,
     errorCodec: ErrorCodec,
-    interfaceDef: ReceiverInterface,
-    _remoteInterfaceDef: RemoteInterface,
+    clientRootHandler: PostMessageHandler<ClientRemoteInterface>,
+    hostRootHandler: PostMessageHandler<HostRemoteInterface>,
+    clientInterfaceDef: ClientRemoteInterface,
+    hostInterfaceDef: HostRemoteInterface,
+    clientLifecycleObserver: PostMessageLifecycleObserver = {},
+    hostLifecycleObserver: PostMessageLifecycleObserver = {},
 ) {
-  const senderId = newSenderId();
-  const router = new PostMessageRouterImpl(
-      remoteOrigin, senderId, postMessageSender, logPrefix, isHost, errorCodec);
-  const sender = new PostMessageRequestSender(router);
-  const receiver = new PostMessageRequestReceiver(router, lifecycleObserver);
-  const rootReceiver =
-      router.newReceiver(ROOT_PIPE, rootMessageHandler, interfaceDef);
-  const rootRemote =
-      new PostMessageRemoteImpl<RemoteInterface>(ROOT_PIPE, sender, router);
-  return {router, sender, receiver, rootRemote, rootReceiver};
-}
+  const targetForClient: {router?: PostMessageRouterImpl} = {};
+  const targetForHost: {router?: PostMessageRouterImpl} = {};
 
-// Converts a value to JSON for debug logging.
-function toDebugJson(v: unknown): string {
-  return JSON.stringify(v, (_key, value) => {
-    // stringify throws on bigint, so convert it.
-    if (typeof value === 'bigint') {
-      return value.toString();
-    }
-    if (value instanceof ArrayBuffer) {
-      return `ArrayBuffer(${value.byteLength})`;
-    }
-    if (ArrayBuffer.isView(value)) {
-      return `${value.constructor.name}(${value.byteLength})`;
-    }
-    return value;
-  });
+  const senderToHost: PostMessageSender = {
+    postMessage(
+        message: unknown, _targetOrigin: string, _transfer?: Transferable[]) {
+      queueMicrotask(() => {
+        targetForHost.router?.onMessage({
+          origin: '*',
+          source: window,
+          data: message,
+          ports: [],
+        } as unknown as MessageEvent);
+      });
+    },
+  };
+
+  const senderToClient: PostMessageSender = {
+    postMessage(
+        message: unknown, _targetOrigin: string, _transfer?: Transferable[]) {
+      queueMicrotask(() => {
+        targetForClient.router?.onMessage({
+          origin: '*',
+          source: window,
+          data: message,
+          ports: [],
+        } as unknown as MessageEvent);
+      });
+    },
+  };
+
+  const clientSenderId = newSenderId();
+  const hostSenderId = newSenderId();
+
+  const routerClient = new PostMessageRouterImpl(
+      '*', clientSenderId, senderToHost, `${logPrefix}_client`, false,
+      errorCodec);
+  const routerHost = new PostMessageRouterImpl(
+      '*', hostSenderId, senderToClient, `${logPrefix}_host`, true, errorCodec);
+
+  targetForClient.router = routerClient;
+  targetForHost.router = routerHost;
+
+  const clientSender = new PostMessageRequestSender(routerClient);
+  const clientReceiver =
+      new PostMessageRequestReceiver(routerClient, clientLifecycleObserver);
+  const clientRootReceiver = routerClient.newReceiver(
+      ROOT_PIPE, clientRootHandler, clientInterfaceDef);
+  const clientRootRemote = new PostMessageRemoteImpl<HostRemoteInterface>(
+      ROOT_PIPE, clientSender, routerClient);
+
+  const hostSender = new PostMessageRequestSender(routerHost);
+  const hostReceiver =
+      new PostMessageRequestReceiver(routerHost, hostLifecycleObserver);
+  const hostRootReceiver =
+      routerHost.newReceiver(ROOT_PIPE, hostRootHandler, hostInterfaceDef);
+  const hostRootRemote = new PostMessageRemoteImpl<ClientRemoteInterface>(
+      ROOT_PIPE, hostSender, routerHost);
+
+  return {
+    client: {
+      router: routerClient,
+      sender: clientSender,
+      receiver: clientReceiver,
+      rootRemote: clientRootRemote,
+      rootReceiver: clientRootReceiver,
+    },
+    host: {
+      router: routerHost,
+      sender: hostSender,
+      receiver: hostReceiver,
+      rootRemote: hostRootRemote,
+      rootReceiver: hostRootReceiver,
+    },
+  };
 }
 
 // Stores a set of non-negative integers in O(N) memory where N is the largest

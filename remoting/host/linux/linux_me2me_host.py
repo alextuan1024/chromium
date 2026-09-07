@@ -18,6 +18,7 @@ import abc
 import argparse
 import atexit
 import base64
+import datetime
 import dbus
 import errno
 import getpass
@@ -102,6 +103,7 @@ CONFIG_DIR = os.path.join(HOME_DIR, ".config/chrome-remote-desktop")
 SESSION_FILE_PATH = os.path.join(HOME_DIR, ".chrome-remote-desktop-session")
 SYSTEM_SESSION_FILE_PATH = "/etc/chrome-remote-desktop-session"
 SYSTEM_PRE_SESSION_FILE_PATH = "/etc/chrome-remote-desktop-pre-session"
+PRE_SESSION_TIMEOUT_SECONDS = 30
 
 DEBIAN_XSESSION_PATH = "/etc/X11/Xsession"
 
@@ -349,16 +351,26 @@ def terminate_process(pid, name):
 
   logging.info("Sending SIGTERM to %s proc (pid=%s)",
                name, pid)
+  psutil_proc = psutil.Process(pid)
   try:
-    psutil_proc = psutil.Process(pid)
     psutil_proc.terminate()
 
     # Use a short timeout, to avoid delaying service shutdown if the
     # process refuses to die for some reason.
     psutil_proc.wait(timeout=10)
   except psutil.TimeoutExpired:
-    logging.error("Timed out - sending SIGKILL")
-    psutil_proc.kill()
+    logging.error("Timed out - sending SIGKILL to %s proc (pid=%s)",
+                  name, pid)
+    try:
+      psutil_proc.kill()
+      psutil_proc.wait(timeout=10)
+    except psutil.TimeoutExpired:
+      logging.error(
+          "Timed out - process did not die after SIGKILL: %s proc (pid=%s)",
+          name, pid)
+    except psutil.NoSuchProcess:
+      # The process exited before or while sending SIGKILL, which is harmless.
+      pass
   except psutil.Error:
     logging.error("Error terminating process")
 
@@ -572,7 +584,6 @@ class Desktop(abc.ABC):
     self.pipewire_pulse_proc = None
     self.pipewire_session_manager = None
     self.pipewire_session_manager_proc = None
-    self.pre_session_proc = None
     self.session_proc = None
     self.host_proc = None
     self.child_env = None
@@ -748,30 +759,45 @@ class Desktop(abc.ABC):
 
     return False
 
-  def _launch_pre_session(self):
-    # Launch the pre-session script, if it exists. Returns true if the script
-    # was launched, false if it didn't exist.
+  def _run_pre_session(self):
+    # Runs the pre-session script synchronously, if it exists. Returns true if
+    # the script was run successfully or didn't exist, false if it failed.
     if os.path.exists(SYSTEM_PRE_SESSION_FILE_PATH):
       pre_session_command = bash_invocation_for_script(
           SYSTEM_PRE_SESSION_FILE_PATH)
 
-      logging.info("Launching pre-session: %s" % pre_session_command)
-      self.pre_session_proc = subprocess.Popen(pre_session_command,
-                                               stdin=subprocess.DEVNULL,
-                                               stdout=subprocess.PIPE,
-                                               stderr=subprocess.STDOUT,
-                                               cwd=HOME_DIR,
-                                               env=self.child_env)
+      logging.info("Running pre-session: %s" % pre_session_command)
+      try:
+        proc = subprocess.run(pre_session_command,
+                              stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT,
+                              timeout=PRE_SESSION_TIMEOUT_SECONDS,
+                              cwd=HOME_DIR,
+                              env=self.child_env,
+                              text=True,
+                              errors="replace")
+      except subprocess.TimeoutExpired as e:
+        logging.error("Pre-session timed out after %d seconds" %
+                      PRE_SESSION_TIMEOUT_SECONDS)
+        if e.output:
+          for line in e.output.splitlines():
+            logging.info("Pre-session output: %s" % line)
+        return False
+      except OSError as e:
+        logging.error("Could not run pre-session: %s" % e)
+        return False
 
-      if not self.pre_session_proc.pid:
-        raise Exception("Could not start pre-session")
+      if proc.stdout:
+        for line in proc.stdout.splitlines():
+          logging.info("Pre-session output: %s" % line)
 
-      output_filter_thread = SessionOutputFilterThread(
-          self.pre_session_proc.stdout, "Pre-session output: ", None)
-      output_filter_thread.start()
+      if proc.returncode != 0:
+        logging.error("Pre-session failed with code %d" % proc.returncode)
+        return False
 
-      return True
-    return False
+      logging.info("Pre-session finished successfully.")
+    return True
 
   def launch_session(self, server_args, backoff_time):
     """Launches process required for session and records the backoff time
@@ -779,39 +805,20 @@ class Desktop(abc.ABC):
     that time has passed."""
     logging.info("Setting up and launching session")
     self._setup_gnubby()
+    if not self._run_pre_session():
+      logging.error("Pre-session failed. Tearing down.")
+      self.session_inhibitor.record_started(MINIMUM_PROCESS_LIFETIME,
+                                            backoff_time)
+      self.session_inhibitor.record_stopped(expected=False)
+      return
     self._launch_server(server_args)
-    if not self._launch_pre_session():
-      # If there was no pre-session script, launch the session immediately.
-      self.launch_desktop_session()
+    self.launch_desktop_session()
     self.server_inhibitor.record_started(MINIMUM_PROCESS_LIFETIME,
-                                      backoff_time)
+                                         backoff_time)
     self.session_inhibitor.record_started(MINIMUM_PROCESS_LIFETIME,
-                                     backoff_time)
-
-  def _wait_for_setup_before_host_launch(self):
-    """
-    If a virtual desktop needs to do some setup before launching the host
-    process, it can override this method and ensure that the required setup is
-    done before returning from this process.
-
-    Returns:
-      True if setup completed successfully and the host process can be started.
-    """
-    return True
+                                          backoff_time)
 
   def launch_host(self, extra_start_host_args, backoff_time):
-    if not self._wait_for_setup_before_host_launch():
-      logging.error("Could not start the host process, since some required "
-                    "setup failed.")
-
-      # The failure might be temporary, for example, if the Wayland compositor
-      # takes a long time to start up after a fresh system boot. This should
-      # be consistent with launch_desktop_session().
-      sys.exit(RELAUNCH_EXIT_CODE)
-
-      # TODO: crbug.com/475260233 - Refactor both places to cleanly tear down
-      # and restart all processes, taking into account any inhibitors.
-
     logging.info("Launching host process")
 
     # Start remoting host
@@ -886,7 +893,6 @@ class Desktop(abc.ABC):
     for proc, name in [(self.host_proc, "host"),
                        (self.crash_uploader_proc, "crash-uploader"),
                        (self.session_proc, "session"),
-                       (self.pre_session_proc, "pre-session"),
                        (self.pipewire_proc, "pipewire"),
                        (self.pipewire_pulse_proc, "pipewire-pulse"),
                        (self.pipewire_session_manager_proc,
@@ -898,7 +904,6 @@ class Desktop(abc.ABC):
     self.pipewire_proc = None
     self.pipewire_pulse_proc = None
     self.pipewire_session_manager_proc = None
-    self.pre_session_proc = None
     self.session_proc = None
     self.host_proc = None
     self.crash_uploader_proc = None
@@ -924,25 +929,6 @@ class Desktop(abc.ABC):
       self.server_proc = None
       self.server_inhibitor.record_stopped(expected=False)
       tear_down = True
-
-    if (self.pre_session_proc is not None and
-        pid == self.pre_session_proc.pid):
-      self.pre_session_proc = None
-      if status == 0:
-        logging.info("Pre-session terminated successfully. Starting session.")
-        self.launch_desktop_session()
-      else:
-        logging.info("Pre-session failed. Tearing down.")
-        # The pre-session may have exited on its own or been brought down by
-        # the display server dying. Check if the display server is still running
-        # so we know whom to penalize.
-        if self.check_server_responding():
-          # Pre-session and session use the same inhibitor.
-          self.session_inhibitor.record_stopped(expected=False)
-        else:
-          self.server_inhibitor.record_stopped(expected=False)
-        # Either way, we want to tear down the session.
-        tear_down = True
 
     if self.pipewire_proc is not None and pid == self.pipewire_proc.pid:
       logging.info("PipeWire process terminated")
@@ -1233,7 +1219,7 @@ class WaylandDesktop(Desktop):
   """Manage a single virtual wayland based desktop"""
 
   WL_SERVER_CHECK_DELAY_SECONDS = 1
-  WL_SERVER_CHECK_TIMEOUT_SECONDS = 30
+  WL_SERVER_CHECK_TIMEOUT_SECONDS = 60
   WL_SERVER_REPLY_TIMEOUT_SECONDS = 1
 
   def __init__(self, sizes, host_config, wayland_session):
@@ -1407,24 +1393,9 @@ class WaylandDesktop(Desktop):
 
     logging.info("Done restarting the portal services")
 
-  def _wait_for_setup_before_host_launch(self):
-    return self._wait_for_wayland_compositor_running()
-
   def cleanup(self):
     if self.host_proc is not None:
-      logging.info("Sending SIGTERM to host proc (pid=%s)", self.host_proc.pid)
-      try:
-        psutil_proc = psutil.Process(self.host_proc.pid)
-        psutil_proc.terminate()
-
-        # Use a short timeout, to avoid delaying service shutdown if the
-        # process refuses to die for some reason.
-        psutil_proc.wait(timeout=10)
-      except psutil.TimeoutExpired:
-        logging.error("Timed out - sending SIGKILL")
-        psutil_proc.kill()
-      except psutil.Error:
-        logging.error("Error terminating process")
+      terminate_process(self.host_proc.pid, "host")
       self.host_proc = None
     self._wayland_session.cleanup()
 
@@ -2344,6 +2315,12 @@ def main():
     return run_command_as_root(["systemctl", "start",
                                 "chrome-remote-desktop@" + getpass.getuser()])
 
+  logging.info("CRD service is starting")
+  logging.info("Machine hostname: %s", socket.getfqdn())
+  uptime = datetime.timedelta(
+      seconds=int(time.clock_gettime(time.CLOCK_BOOTTIME)))
+  logging.info("Machine uptime: %s", uptime)
+
   if display_manager_is_gdm():
     # See https://gitlab.gnome.org/GNOME/gdm/-/issues/580 for details on the
     # bug.
@@ -2494,10 +2471,9 @@ def main():
           and not desktop.pipewire_inhibitor.disabled
           and desktop.pipewire_inhibitor.failures < MAX_LAUNCH_FAILURES):
         desktop.setup_audio(host.host_id, backoff_time)
-      if (desktop.server_proc is None and desktop.pre_session_proc is None and
-          desktop.session_proc is None):
+      if (desktop.server_proc is None and desktop.session_proc is None):
         desktop.launch_session(options.args, backoff_time)
-      if desktop.host_proc is None:
+      if desktop.server_proc is not None and desktop.host_proc is None:
         desktop.launch_host(extra_start_host_args, backoff_time)
       if desktop.crash_uploader_proc is None:
         desktop.launch_crash_uploader(backoff_time)

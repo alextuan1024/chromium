@@ -43,12 +43,13 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/tabs/tab_activity_simulator.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
@@ -99,14 +100,14 @@ class FakeBrowser {
       : FakeBrowser(
             DeprecatedCreateOwnedBrowserWindowForTesting(std::move(params))) {}
 
-  explicit FakeBrowser(std::unique_ptr<Browser> browser)
+  explicit FakeBrowser(std::unique_ptr<BrowserWindowInterface> browser)
       : browser_(std::move(browser)) {
     if (browser_->GetType() !=
         BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
       // Add a tab to the browser to ensure that `CloseAllTabs()` works.
       // Note that tabs are not supported with PICTURE_IN_PICTURE windows.
       TabActivitySimulator().AddWebContentsAndNavigate(
-          browser_->tab_strip_model(), GURL(kTestUrl));
+          browser_->GetTabStripModel(), GURL(kTestUrl));
     }
     static_cast<TestBrowserWindow*>(browser_->GetWindow())
         ->SetCloseCallback(base::BindOnce(&FakeBrowser::OnBrowserWindowClosed,
@@ -114,10 +115,10 @@ class FakeBrowser {
   }
 
   ~FakeBrowser() {
-    if (browser_ && !browser_->tab_strip_model()->empty()) {
+    if (browser_ && !browser_->GetTabStripModel()->empty()) {
       // This is required to prevent a DCHECK crash in the destructor of
       // `Browser` if tabs remain open.
-      browser_->tab_strip_model()->CloseAllTabs();
+      browser_->GetTabStripModel()->CloseAllTabs();
     }
   }
 
@@ -125,8 +126,7 @@ class FakeBrowser {
   bool IsClosed() { return closed_future_.IsReady(); }
 
   bool IsFullscreen() {
-    return browser_->GetFeatures()
-        .exclusive_access_manager()
+    return ExclusiveAccessManager::From(browser_.get())
         ->fullscreen_controller()
         ->IsFullscreenForBrowser();
   }
@@ -145,7 +145,7 @@ class FakeBrowser {
   void RemoveBrowser() { browser_.reset(); }
 
   base::test::TestFuture<void> closed_future_;
-  std::unique_ptr<Browser> browser_;
+  std::unique_ptr<BrowserWindowInterface> browser_;
   base::WeakPtrFactory<FakeBrowser> weak_ptr_{this};
 };
 
@@ -238,9 +238,7 @@ template <typename KioskBrowserSessionParamType>
 class KioskBrowserSessionBaseTest
     : public ::testing::TestWithParam<KioskBrowserSessionParamType> {
  public:
-  KioskBrowserSessionBaseTest()
-      : testing_profile_manager_(TestingBrowserProcess::GetGlobal()) {}
-
+  KioskBrowserSessionBaseTest() = default;
   KioskBrowserSessionBaseTest(const KioskBrowserSessionBaseTest&) = delete;
   KioskBrowserSessionBaseTest& operator=(const KioskBrowserSessionBaseTest&) =
       delete;
@@ -251,9 +249,26 @@ class KioskBrowserSessionBaseTest
 
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    ash_test_helper_.SetUp(ash::AshTestHelper::InitParams());
-    ASSERT_TRUE(testing_profile_manager_.SetUp());
-    profile_ = testing_profile_manager_.CreateTestingProfile("test@user");
+    ash::AshTestHelper::InitParams init_params;
+    init_params.post_subsystems_teardown_callback =
+        base::BindOnce(&KioskBrowserSessionBaseTest::OnSubsystemsTornDown,
+                       base::Unretained(this));
+    ash_test_helper_.SetUp(std::move(init_params));
+    testing_profile_manager_ = std::make_unique<TestingProfileManager>(
+        TestingBrowserProcess::GetGlobal());
+    ASSERT_TRUE(testing_profile_manager_->SetUp());
+    profile_ = testing_profile_manager_->CreateTestingProfile("test@user");
+  }
+
+  void TearDown() override {
+    kiosk_browser_session_.reset();
+    web_kiosk_main_browser_.reset();
+    ash_test_helper_.TearDown();
+  }
+
+  void OnSubsystemsTornDown() {
+    profile_ = nullptr;
+    testing_profile_manager_.reset();
   }
 
   static void TearDownTestSuite() { chromeos::PowerManagerClient::Shutdown(); }
@@ -306,7 +321,7 @@ class KioskBrowserSessionBaseTest
     CreateWebKioskMainBrowser(web_app_id);
 
     kiosk_browser_session_ = KioskBrowserSession::CreateForTesting(
-        profile(), base::DoNothing(), local_state(), {crash_path().value()});
+        local_state(), profile(), base::DoNothing(), {crash_path().value()});
     kiosk_browser_session_->InitForWebKiosk(web_app_id);
 
     task_environment_.RunUntilIdle();
@@ -318,14 +333,14 @@ class KioskBrowserSessionBaseTest
     CreateWebKioskMainBrowser(iwa_id);
 
     kiosk_browser_session_ = KioskBrowserSession::CreateForTesting(
-        profile(), base::DoNothing(), local_state(), {crash_path().value()});
+        local_state(), profile(), base::DoNothing(), {crash_path().value()});
     kiosk_browser_session_->InitForIwaKiosk(iwa_id);
   }
 
   // Simulate starting a chrome app kiosk session.
   void StartChromeAppKioskSession() {
     kiosk_browser_session_ = std::make_unique<KioskBrowserSession>(
-        profile(), base::DoNothing(), local_state());
+        local_state(), profile(), base::DoNothing());
     kiosk_browser_session_->InitForChromeAppKiosk(kTestAppId);
   }
 
@@ -391,7 +406,7 @@ class KioskBrowserSessionBaseTest
   // `RenderViewHostTestEnabled` is required to make the navigation work that
   // happens in the tab added to `TestBrowserWindow` in `FakeBrowser`.
   content::RenderViewHostTestEnabler enabler_;
-  TestingProfileManager testing_profile_manager_;
+  std::unique_ptr<TestingProfileManager> testing_profile_manager_;
   raw_ptr<TestingProfile> profile_;
   // Main browser window created when launching a web or IWA kiosk app.
   // Will be nullptr if `CreateWebKioskMainBrowser` function was not called.
@@ -601,13 +616,14 @@ TEST_F(KioskBrowserSessionTest, EnsureSecondBrowserIsFullscreenInWebKiosk) {
 
 TEST_F(KioskBrowserSessionTest,
        DoNotOpenSecondBrowserInWebKioskIfTypeIsNotAppPopup) {
-  const std::vector<Browser::Type> not_app_popup_browser_types = {
-      Browser::Type::TYPE_NORMAL,
-      Browser::Type::TYPE_POPUP,
-      Browser::Type::TYPE_APP,
-      Browser::Type::TYPE_DEVTOOLS,
-      Browser::Type::TYPE_PICTURE_IN_PICTURE,
-  };
+  const std::vector<BrowserWindowInterface::Type> not_app_popup_browser_types =
+      {
+          BrowserWindowInterface::Type::TYPE_NORMAL,
+          BrowserWindowInterface::Type::TYPE_POPUP,
+          BrowserWindowInterface::Type::TYPE_APP,
+          BrowserWindowInterface::Type::TYPE_DEVTOOLS,
+          BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE,
+      };
 
   GetPrefs()->SetBoolean(ash::prefs::kNewWindowsInKioskAllowed, true);
   StartWebKioskSession(kTestWebAppId1);
@@ -868,15 +884,17 @@ TEST_P(KioskBrowserSessionTroubleshootingTest,
 
 TEST_P(KioskBrowserSessionTroubleshootingTest,
        OnlyAllowRegularBrowserAndDevToolsAsTroubleshootingBrowsers) {
-  const std::vector<Browser::Type> should_be_closed_browser_types = {
-      Browser::Type::TYPE_POPUP,        Browser::Type::TYPE_APP,
-      Browser::Type::TYPE_APP_POPUP,
-      Browser::TYPE_PICTURE_IN_PICTURE,
-  };
+  const std::vector<BrowserWindowInterface::Type>
+      should_be_closed_browser_types = {
+          BrowserWindowInterface::Type::TYPE_POPUP,
+          BrowserWindowInterface::Type::TYPE_APP,
+          BrowserWindowInterface::Type::TYPE_APP_POPUP,
+          BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE,
+      };
   SetUpKioskSession();
   UpdateTroubleshootingToolsPolicy(/*enable=*/true);
 
-  for (Browser::Type type : should_be_closed_browser_types) {
+  for (BrowserWindowInterface::Type type : should_be_closed_browser_types) {
     EXPECT_TRUE(
         DidSessionCloseNewWindow(CreateBrowserWithTestWindowAndType(type)));
   }

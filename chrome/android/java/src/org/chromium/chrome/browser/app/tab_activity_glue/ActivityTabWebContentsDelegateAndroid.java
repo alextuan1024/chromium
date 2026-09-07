@@ -83,7 +83,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 import org.chromium.url.GURL;
 
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -266,7 +266,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
 
     @Override
     protected boolean addNewContents(
-            WebContents sourceWebContents,
+            @Nullable WebContents sourceWebContents,
             WebContents webContents,
             GURL targetUrl,
             int disposition,
@@ -307,7 +307,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             tabLaunchType = TabLaunchType.FROM_LONGPRESS_FOREGROUND;
         }
 
-        final CompletableFuture<Boolean> addTabToModel = new CompletableFuture<Boolean>();
+        final CompletableFuture<Boolean> addTabToModel = new CompletableFuture<>();
         final Tab tab =
                 tabCreator.createTabWithWebContents(
                         mTab,
@@ -345,6 +345,10 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             }
         }
 
+        if (sourceWebContents == null) {
+            return true;
+        }
+
         Tab sourceTab = fromWebContents(sourceWebContents);
         if (sourceTab == null) {
             return true;
@@ -370,7 +374,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
                     && !Objects.equals(newTab.getTabGroupId(), sourceTab.getTabGroupId())
                     && tabModel.isTabModelRestored()) {
                 tabModel.mergeListOfTabsToGroup(
-                        Arrays.asList(newTab),
+                        Collections.singletonList(newTab),
                         sourceTab,
                         /* notify= */ TabGroupMergeNotificationType.DONT_NOTIFY);
                 if (mChromeActivityNativeDelegate != null) {
@@ -871,7 +875,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
         return TabModelUtils.getTabModelByTab(tab);
     }
 
-    protected Tab fromWebContents(WebContents webContents) {
+    protected @Nullable Tab fromWebContents(WebContents webContents) {
         return TabUtils.fromWebContents(webContents);
     }
 

@@ -9,10 +9,12 @@
 #include "base/base_paths.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/headless/test/headless_browser_test_utils.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
@@ -511,5 +513,36 @@ HEADLESS_MODE_PROTOCOL_TEST(NormalWindowHasOpener,
 
 HEADLESS_MODE_PROTOCOL_TEST(GetBrowserContexts,
                             "shared/get-browser-contexts.js")
+
+class HeadlessModeProtocolBrowserTestWithDownload
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUp() override {
+    ASSERT_TRUE(download_dir_.CreateUniqueTempDir());
+    HeadlessModeProtocolBrowserTest::SetUp();
+  }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    base::DictValue dict;
+    dict.Set("downloadPath", download_dir_.GetPath().AsUTF8Unsafe());
+    return dict;
+  }
+
+ private:
+  base::ScopedTempDir download_dir_;
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownload,
+                              "shared/file-download.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadRepeated,
+                              "shared/file-download-repeated.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadSecondTab,
+                              "shared/file-download-second-tab.js")
 
 }  // namespace headless

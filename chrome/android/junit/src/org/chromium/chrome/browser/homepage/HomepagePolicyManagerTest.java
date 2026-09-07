@@ -15,7 +15,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -32,7 +31,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 /** Tests for the {@link HomepagePolicyManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class HomepagePolicyManagerTest {
     public static final String TEST_URL = JUnitTestGURLs.EXAMPLE_URL.getSpec();
     public static final String CHROME_NTP = JUnitTestGURLs.NTP_URL.getSpec();
@@ -616,5 +614,27 @@ public class HomepagePolicyManagerTest {
         mHomepagePolicyManager = new HomepagePolicyManager(mMockRegistrar, mListener);
         HomepagePolicyManager.setInstanceForTests(mHomepagePolicyManager);
         mHomepagePolicyManager.getHomepageLocationPolicyUrl(); // Should throw
+    }
+
+    @Test
+    public void testSetHomepageForTesting() {
+        HomepagePolicyManager.setHomepageForTesting(true, JUnitTestGURLs.EXAMPLE_URL, false);
+        Assert.assertTrue(HomepagePolicyManager.isHomepageLocationManaged());
+        Assert.assertEquals(JUnitTestGURLs.EXAMPLE_URL, HomepagePolicyManager.getHomepageUrl());
+        Assert.assertFalse(HomepagePolicyManager.isHomepageNewTabPageEnabled());
+
+        HomepagePolicyManager.setHomepageForTesting(false, GURL.emptyGURL(), true);
+        Assert.assertFalse(HomepagePolicyManager.isHomepageLocationManaged());
+        Assert.assertEquals(GURL.emptyGURL(), HomepagePolicyManager.getHomepageUrl());
+        Assert.assertTrue(HomepagePolicyManager.isHomepageNewTabPageEnabled());
+    }
+
+    @Test
+    public void testSetIsInitializedWithNativeForTesting() {
+        HomepagePolicyManager.setIsInitializedWithNativeForTesting(true);
+        Assert.assertTrue(HomepagePolicyManager.isInitializedWithNative());
+
+        HomepagePolicyManager.setIsInitializedWithNativeForTesting(false);
+        Assert.assertFalse(HomepagePolicyManager.isInitializedWithNative());
     }
 }

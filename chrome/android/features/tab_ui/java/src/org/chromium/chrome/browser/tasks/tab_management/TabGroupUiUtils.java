@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
+import android.content.Context;
+
 import androidx.annotation.StringRes;
 
 import org.chromium.base.Token;
@@ -32,6 +34,17 @@ import java.util.Objects;
 @NullMarked
 public class TabGroupUiUtils {
 
+    /** Returns whether cross-window tab group operations are enabled. */
+    public static boolean isCrossWindowTabGroupOperationsEnabled() {
+        return ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled();
+    }
+
+    /** Returns whether remote group operations are enabled. */
+    public static boolean isRemoteGroupOperationsEnabled() {
+        return isCrossWindowTabGroupOperationsEnabled()
+                && ChromeFeatureList.sCrossWindowTabGroupOperationsRemoteGroupOperations.getValue();
+    }
+
     /**
      * Returns the string resource ID for the 'add to group' menu item ("Add tab to group" vs "Add
      * tab to new group" vs "Move tab to group").
@@ -53,17 +66,14 @@ public class TabGroupUiUtils {
      *
      * @param tabModel The current {@link TabModel}.
      * @param currentTabGroupId The tab group ID of the current tab if already in a group, or null.
-     * @param checkAllWindows Whether to check across all active windows for existing tab groups.
      */
     public static @StringRes int getAddToGroupMenuItemString(
-            @Nullable TabModel tabModel,
-            @Nullable Token currentTabGroupId,
-            boolean checkAllWindows) {
+            @Nullable TabModel tabModel, @Nullable Token currentTabGroupId) {
         if (currentTabGroupId != null) {
             return R.string.menu_move_tab_to_group;
         }
         Collection<TabModelSelector> selectors =
-                checkAllWindows
+                isCrossWindowTabGroupOperationsEnabled()
                         ? TabWindowManagerSingleton.getInstance().getAllTabModelSelectors()
                         : Collections.emptyList();
         return getAddToGroupMenuItemString(
@@ -71,15 +81,20 @@ public class TabGroupUiUtils {
     }
 
     /**
-     * Returns the string resource ID for the 'add to group' menu item.
+     * Returns the string title for adding/moving tab(s) to a tab group.
      *
-     * @param tabModel The current {@link TabModel}.
-     * @param currentTabGroupId The tab group ID of the current tab if already in a group, or null.
+     * @param context The current context.
+     * @param currentGroupId The group ID of the current tab group, or null if outside a group.
+     * @param tabCount The number of tabs to add or move.
+     * @return The string title for the menu item.
      */
-    public static @StringRes int getAddToGroupMenuItemString(
-            @Nullable TabModel tabModel, @Nullable Token currentTabGroupId) {
-        return getAddToGroupMenuItemString(
-                tabModel, currentTabGroupId, /* checkAllWindows= */ false);
+    public static String getAddToGroupMenuItemTitle(
+            Context context, @Nullable Token currentGroupId, int tabCount) {
+        if (currentGroupId != null) {
+            return context.getString(R.string.menu_move_tab_to_group);
+        }
+        return context.getResources()
+                .getQuantityString(R.plurals.add_tab_to_group_menu_item, tabCount);
     }
 
     /**
@@ -88,17 +103,20 @@ public class TabGroupUiUtils {
      *
      * @param sourceTabModel The source {@link TabModel}.
      * @param tabs The list of {@link Tab}s to add to the group.
-     * @param destinationGroupId The ID of the target tab group.
+     * @param destinationGroup The {@link GroupWindowInfo} representing the target tab group.
      * @param tabMovedCallback Optional callback invoked when tabs are moved.
      * @param bringToFront Whether to bring the destination window to the front if cross-window.
      */
     public static void addTabsToGroup(
             TabModel sourceTabModel,
             List<Tab> tabs,
-            Token destinationGroupId,
+            GroupWindowInfo destinationGroup,
             @Nullable TabMovedCallback tabMovedCallback,
             boolean bringToFront) {
-        if (tabs.isEmpty() || areTabsAlreadyInGroup(tabs, destinationGroupId)) {
+        Token destinationGroupId = destinationGroup.localId;
+        if (destinationGroupId == null
+                || tabs.isEmpty()
+                || areTabsAlreadyInGroup(tabs, destinationGroupId)) {
             return;
         }
 
@@ -108,7 +126,7 @@ public class TabGroupUiUtils {
             return;
         }
 
-        if (ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled()) {
+        if (isCrossWindowTabGroupOperationsEnabled()) {
             TabWindowManager windowManager = TabWindowManagerSingleton.getInstance();
             if (windowManager != null) {
                 int windowId = windowManager.findWindowIdForTabGroup(destinationGroupId);

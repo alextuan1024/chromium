@@ -29,8 +29,8 @@
 #import "components/autofill/core/browser/payments/payments_autofill_client.h"
 #import "components/autofill/core/browser/payments/payments_network_interface.h"
 #import "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#import "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
@@ -42,6 +42,7 @@
 #import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
+#import "components/password_manager/core/browser/password_string.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
@@ -145,7 +146,8 @@ password_manager::PasswordForm CreateExamplePasswordForm(
     const GURL& url = GURL("https://example.com/")) {
   password_manager::PasswordForm password_form;
   password_form.username_value = kExampleUsername;
-  password_form.password_value = kExamplePassword;
+  password_form.password_value =
+      password_manager::PasswordString(kExamplePassword);
   password_form.url = url;
   password_form.signon_realm =
       password_manager_util::GetSignonRealm(password_form.url);

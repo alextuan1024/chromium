@@ -57,7 +57,6 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   const GURL& add_account_url() const;
   const GURL& reauth_url() const;
   const GURL& account_capabilities_batch_get_url() const;
-  const GURL& account_capabilities_get_all_visible_url() const;
 
   const std::string& oauth2_chrome_client_id() const;
   const std::string& oauth2_chrome_client_secret() const;
@@ -73,6 +72,7 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   const GURL& classroom_api_origin_url() const;
   const GURL& tasks_api_origin_url() const;
   const GURL& people_api_origin_url() const;
+  const GURL& kids_management_api_origin_url() const;
 
   // URL to a blank page on the Gaia domain.
   const GURL& blank_page_url() const;
@@ -112,6 +112,7 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   GURL classroom_api_origin_url_;
   GURL tasks_api_origin_url_;
   GURL people_api_origin_url_;
+  GURL kids_management_api_origin_url_;
 
   GURL embedded_setup_chromeos_url_;
   GURL embedded_setup_chromeos_kid_signup_url_;
@@ -134,7 +135,6 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   GURL add_account_url_;
   GURL reauth_url_;
   GURL account_capabilities_batch_get_url_;
-  GURL account_capabilities_get_all_visible_url_;
   GURL get_check_connection_info_url_;
 
   GURL oauth2_token_url_;

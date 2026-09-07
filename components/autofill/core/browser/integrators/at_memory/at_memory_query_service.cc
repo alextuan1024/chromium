@@ -5,6 +5,7 @@
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h"
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -25,16 +26,20 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/autofill/core/browser/at_memory/autofill_data_provider.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_eligibility_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_string_filtering_util.h"
+#include "components/autofill/core/browser/integrators/at_memory/logging_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type_util.h"
+#include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_internals/log_message.h"
+#include "components/autofill/core/common/autofill_internals/logging_scope.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/personal_context/core/personal_context_debug_features.h"
@@ -257,7 +262,8 @@ bool PreferFirstResult(const MemorySearchResult& first,
 // more complete metadata. The `sources` from the discarded duplicate are
 // intentionally not merged, as we only want to keep the actually relevant
 // sources that link to the correct "manage" UI surface for the kept entry.
-void DeduplicateResults(std::vector<MemorySearchResult>& results) {
+void DeduplicateResults(std::vector<MemorySearchResult>& results,
+                        LogManager& log_manager) {
   std::vector<MemorySearchResult> unique_results;
   unique_results.reserve(results.size());
   for (MemorySearchResult& result : results) {
@@ -267,7 +273,12 @@ void DeduplicateResults(std::vector<MemorySearchResult>& results) {
         });
     if (it != unique_results.end()) {
       if (!PreferFirstResult(*it, result)) {
+        LogDiscardedDuplicate(log_manager, /*discarded=*/*it,
+                              /*retained=*/result);
         *it = std::move(result);
+      } else {
+        LogDiscardedDuplicate(log_manager, /*discarded=*/result,
+                              /*retained=*/*it);
       }
     } else {
       unique_results.push_back(std::move(result));
@@ -308,7 +319,8 @@ MetadataAttributeKey GetMetadataAttributeKey(const EntryMetadata& metadata) {
 // attributes are identified by their `MemoryDataType`, while schemaless
 // attributes (`MemoryDataType::kUnknown`) are identified by their `type_name`.
 // Ties preserve their original relative order.
-void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results) {
+void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results,
+                                 LogManager& log_manager) {
   absl::flat_hash_map<MetadataAttributeKey, size_t> frequency_map;
   for (const MemorySearchResult& result : results) {
     for (const EntryMetadata& metadata : result.metadata_list) {
@@ -316,13 +328,21 @@ void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results) {
     }
   }
 
+  auto proj = [&frequency_map](const EntryMetadata& m) {
+    return frequency_map.at(GetMetadataAttributeKey(m));
+  };
+
   for (MemorySearchResult& result : results) {
-    std::ranges::stable_sort(
-        result.metadata_list,
-        /*comp=*/{},
-        /*proj=*/[&frequency_map](const EntryMetadata& m) {
-          return frequency_map.at(GetMetadataAttributeKey(m));
-        });
+    if (log_manager.IsLoggingActive()) {
+      const bool is_reordered =
+          !std::ranges::is_sorted(result.metadata_list, /*comp=*/{}, proj);
+      if (is_reordered) {
+        LOG_AF(log_manager)
+            << LoggingScope::kAtMemory << LogMessage::kAtMemory
+            << "Reordering disambiguation metadata:" << Br{} << result;
+      }
+    }
+    std::ranges::stable_sort(result.metadata_list, /*comp=*/{}, proj);
   }
 }
 
@@ -379,11 +399,27 @@ std::vector<MemorySearchResult> RankResults(
   return ranked_results;
 }
 
+// Combines local and remote results, deduplicates them, and reorders secondary
+// metadata attributes by uniqueness.
+std::vector<MemorySearchResult> CombineAndProcessResults(
+    std::vector<MemorySearchResult> local_results,
+    std::vector<MemorySearchResult> remote_results,
+    LogManager& log_manager) {
+  std::vector<MemorySearchResult> combined_results =
+      RankResults(std::move(local_results), std::move(remote_results));
+  DeduplicateResults(combined_results, log_manager);
+  ReorderMetadataByUniqueness(combined_results, log_manager);
+  LOG_AF(log_manager) << LoggingScope::kAtMemory << LogMessage::kAtMemory
+                      << "Combined results:" << Br{} << combined_results;
+  return combined_results;
+}
+
 // For debugging purposes only. Runs a debug query that directly retrieves
 // local suggestions via `data_provider`, bypassing query classification and
 // remote resolution.
 void QueryPersonalContextDebug(
     AutofillDataProvider* data_provider,
+    LogManager& log_manager,
     base::RepeatingCallback<void(MemorySearchResults)> update_callback) {
   if (!data_provider) {
     update_callback.Run(
@@ -396,13 +432,13 @@ void QueryPersonalContextDebug(
               .Get())},
       base::BindOnce(
           [](base::RepeatingCallback<void(MemorySearchResults)> update_cb,
-             std::vector<MemorySearchResult> results) {
-            DeduplicateResults(results);
-            ReorderMetadataByUniqueness(results);
+             LogManager& log_mgr, std::vector<MemorySearchResult> results) {
             update_cb.Run(MemorySearchResults(
-                MemorySearchStatus::kFinalResponseSuccess, std::move(results)));
+                MemorySearchStatus::kFinalResponseSuccess,
+                CombineAndProcessResults(std::move(results),
+                                         /*remote_results=*/{}, log_mgr)));
           },
-          std::move(update_callback)));
+          std::move(update_callback), std::ref(log_manager)));
 }
 
 // Runs the callback asynchronously on the current sequenced task runner.
@@ -691,8 +727,10 @@ AtMemoryQueryService::AtMemoryQueryService(
         personal_context_eligibility_service,
     subscription_eligibility::SubscriptionEligibilityService*
         subscription_eligibility_service,
-    PrefService* pref_service)
-    : data_provider_(std::move(data_provider)),
+    PrefService* pref_service,
+    LogRouter* log_router)
+    : log_manager_(LogManager::Create(log_router, base::NullCallback())),
+      data_provider_(std::move(data_provider)),
       personal_context_service_(personal_context_service),
       locale_(locale),
       eligibility_metrics_tracker_(personal_context_eligibility_service,
@@ -726,7 +764,7 @@ void AtMemoryQueryService::Query(
   }
   if (base::FeatureList::IsEnabled(
           personal_context::features::debug::kMockPersonalContextResult)) {
-    QueryPersonalContextDebug(data_provider_.get(), callback);
+    QueryPersonalContextDebug(data_provider_.get(), *log_manager_, callback);
     return;
   }
 
@@ -836,6 +874,8 @@ void AtMemoryQueryService::OnPersonalContextRetrieved(
   if (response.has_autofill_fetch_plan()) {
     const personal_context::proto::AutofillFetchPlan& plan =
         response.autofill_fetch_plan();
+    LOG_AF(*log_manager_) << LoggingScope::kAtMemory << LogMessage::kAtMemory
+                          << "Evaluating Autofill fetch plan:" << Br{} << plan;
     if (!plan.fetch_specifications().empty()) {
       fetch_specifications = base::ToVector(plan.fetch_specifications());
       local_data_types = base::ToVector(
@@ -847,12 +887,10 @@ void AtMemoryQueryService::OnPersonalContextRetrieved(
   }
 
   if (local_data_types.empty() || !data_provider_) {
-    std::vector<MemorySearchResult> ranked_results =
-        RankResults(/*local_results=*/{}, std::move(remote_results));
-    DeduplicateResults(ranked_results);
-    ReorderMetadataByUniqueness(ranked_results);
+    std::vector<MemorySearchResult> combined_results = CombineAndProcessResults(
+        /*local_results=*/{}, std::move(remote_results), *log_manager_);
     run_callback(MemorySearchStatus::kFinalResponseSuccess,
-                 std::move(ranked_results));
+                 std::move(combined_results));
     return;
   }
 
@@ -874,17 +912,23 @@ void AtMemoryQueryService::OnLocalDataRetrieved(
       "Autofill.AtMemory.ProviderResultCount.AutofillDataProvider",
       local_results.size());
 
+  LOG_AF(*log_manager_) << LoggingScope::kAtMemory << LogMessage::kAtMemory
+                        << "Retrieved local data results (unfiltered):" << Br{}
+                        << local_results;
+
   std::vector<MemorySearchResult> filtered_local_results =
       !fetch_specifications.empty()
           ? FilterResults(std::move(local_results), fetch_specifications)
           : std::move(local_results);
-  std::vector<MemorySearchResult> ranked_results =
-      RankResults(std::move(filtered_local_results), std::move(remote_results));
-  DeduplicateResults(ranked_results);
-  ReorderMetadataByUniqueness(ranked_results);
 
+  LOG_AF(*log_manager_) << LoggingScope::kAtMemory << LogMessage::kAtMemory
+                        << "Filtered local data results:" << Br{}
+                        << filtered_local_results;
+  std::vector<MemorySearchResult> combined_results =
+      CombineAndProcessResults(std::move(filtered_local_results),
+                               std::move(remote_results), *log_manager_);
   MemorySearchResults search_results(MemorySearchStatus::kFinalResponseSuccess,
-                                     std::move(ranked_results));
+                                     std::move(combined_results));
   search_results.server_request_id = std::move(server_request_id);
   callback.Run(std::move(search_results));
 }

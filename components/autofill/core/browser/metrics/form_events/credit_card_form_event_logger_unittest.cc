@@ -11,8 +11,8 @@
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 #include "components/autofill/core/browser/metrics/payments/bnpl_metrics.h"
-#include "components/autofill/core/browser/metrics/ukm_metrics_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/metrics/ukm_metrics_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -185,8 +185,8 @@ TEST_F(CreditCardFormEventLoggerTest,
             /*credit_card=*/card,
             /*form=*/form,
             /*field=*/AutofillField(),
-            /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
             /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+            /*skip_reasons=*/{},
             /*signin_state_for_metrics=*/
             AutofillMetrics::PaymentsSigninState::kSignedIn,
             /*trigger_source=*/AutofillTriggerSource::kPopup);
@@ -242,8 +242,8 @@ TEST_F(CreditCardFormEventLoggerTest,
           /*credit_card=*/test::GetVirtualCard(),
           /*form=*/form,
           /*field=*/AutofillField(),
-          /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
           /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+          /*skip_reasons=*/{},
           /*signin_state_for_metrics=*/
           AutofillMetrics::PaymentsSigninState::kSignedIn,
           /*trigger_source=*/AutofillTriggerSource::kPopup);
@@ -289,8 +289,8 @@ TEST_F(CreditCardFormEventLoggerTest,
           /*credit_card=*/card,
           /*form=*/form,
           /*field=*/AutofillField(),
-          /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
           /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+          /*skip_reasons=*/{},
           /*signin_state_for_metrics=*/
           AutofillMetrics::PaymentsSigninState::kSignedIn,
           /*trigger_source=*/AutofillTriggerSource::kPopup);
@@ -333,8 +333,8 @@ TEST_F(CreditCardFormEventLoggerTest,
             /*credit_card=*/card,
             /*form=*/form,
             /*field=*/AutofillField(),
-            /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
             /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+            /*skip_reasons=*/{},
             /*signin_state_for_metrics=*/
             AutofillMetrics::PaymentsSigninState::kSignedIn,
             /*trigger_source=*/AutofillTriggerSource::kPopup);
@@ -383,8 +383,8 @@ TEST_F(CreditCardFormEventLoggerTest, LogFormSubmitted_BnplFormFilledOnce) {
             /*credit_card=*/card,
             /*form=*/form,
             /*field=*/AutofillField(),
-            /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
             /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+            /*skip_reasons=*/{},
             /*signin_state_for_metrics=*/
             AutofillMetrics::PaymentsSigninState::kSignedIn,
             /*trigger_source=*/AutofillTriggerSource::kPopup);
@@ -455,8 +455,8 @@ TEST_F(CreditCardFormEventLoggerTest,
           /*credit_card=*/test::GetVirtualCard(),
           /*form=*/form,
           /*field=*/AutofillField(),
-          /*newly_filled_fields=*/base::flat_set<FieldGlobalId>(),
           /*safe_filled_fields=*/base::flat_set<FieldGlobalId>(),
+          /*skip_reasons=*/{},
           /*signin_state_for_metrics=*/
           AutofillMetrics::PaymentsSigninState::kSignedIn,
           /*trigger_source=*/AutofillTriggerSource::kPopup);

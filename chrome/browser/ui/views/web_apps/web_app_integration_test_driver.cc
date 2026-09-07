@@ -42,6 +42,7 @@
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -69,6 +70,7 @@
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/startup/web_app_startup_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/create_application_shortcut_view_test_support.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -139,6 +141,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
@@ -171,6 +174,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/test/test_event.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/image_button.h"
@@ -1387,10 +1391,8 @@ void WebAppIntegrationTestDriver::EnterFullScreenApp() {
   if (!BeforeStateChangeAction(__FUNCTION__)) {
     return;
   }
-  FullscreenController* fullscreen_controller = app_browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(app_browser())->fullscreen_controller();
   ASSERT_FALSE(fullscreen_controller->IsFullscreenForBrowser());
   ui_test_utils::ToggleFullscreenModeAndWait(app_browser());
   ASSERT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
@@ -1401,10 +1403,8 @@ void WebAppIntegrationTestDriver::ExitFullScreenApp() {
   if (!BeforeStateChangeAction(__FUNCTION__)) {
     return;
   }
-  FullscreenController* fullscreen_controller = app_browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(app_browser())->fullscreen_controller();
   ASSERT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
   ui_test_utils::ToggleFullscreenModeAndWait(app_browser());
   ASSERT_FALSE(fullscreen_controller->IsFullscreenForBrowser());
@@ -1861,6 +1861,7 @@ void WebAppIntegrationTestDriver::LaunchFileExpectDialog(
     if (is_open_in_app_browser) {
       browser_added_waiter.Wait();
       app_browser_ = browser_added_waiter.browser_added();
+      active_app_id_ = app_id;
       target_contents =
           app_browser_->GetTabStripModel()->GetActiveWebContents();
     } else {
@@ -1916,6 +1917,7 @@ void WebAppIntegrationTestDriver::LaunchFileExpectNoDialog(
   if (is_open_in_app_browser) {
     browser_added_waiter.Wait();
     app_browser_ = browser_added_waiter.browser_added();
+    active_app_id_ = app_id;
     target_contents = app_browser_->GetTabStripModel()->GetActiveWebContents();
   } else {
     target_contents = tab_added_waiter.Wait();
@@ -2761,7 +2763,6 @@ void WebAppIntegrationTestDriver::SwitchProfileClients(ProfileClient client) {
   active_profile_ = delegate_->GetProfileClient(client);
   CHECK(active_profile_)
       << "Cannot switch profile clients if delegate only supports one profile";
-  delegate_->AwaitWebAppQuiescence();
   AfterStateChangeAction();
 }
 
@@ -3625,7 +3626,8 @@ void WebAppIntegrationTestDriver::CheckInstallIconShown() {
     return;
   }
   content::WebContents* web_contents = GetCurrentTab(browser());
-  if (webapps::AppBannerManagerDesktop::FromWebContents(web_contents)) {
+  if (webapps::AppBannerManagerDesktop::From(
+          tabs::TabInterface::GetFromContents(web_contents))) {
     auto* app_banner_manager =
         webapps::TestAppBannerManagerDesktop::FromWebContents(web_contents);
     app_banner_manager->WaitForInstallableCheck();
@@ -3642,7 +3644,8 @@ void WebAppIntegrationTestDriver::CheckInstallIconNotShown() {
     return;
   }
   content::WebContents* web_contents = GetCurrentTab(browser());
-  if (webapps::AppBannerManagerDesktop::FromWebContents(web_contents)) {
+  if (webapps::AppBannerManagerDesktop::From(
+          tabs::TabInterface::GetFromContents(web_contents))) {
     auto* app_banner_manager =
         webapps::TestAppBannerManagerDesktop::FromWebContents(web_contents);
     app_banner_manager->WaitForInstallableCheck();
@@ -4521,7 +4524,7 @@ WebAppIntegrationTestDriver::ConstructStateSnapshot() {
           if (!is_app_browser && active_tab_contents != nullptr) {
             EXPECT_TRUE(AwaitIntentPickerTabHelperIconUpdateComplete(
                 active_tab_contents));
-            launch_icon_shown = GetIntentPickerButton(browser)->GetVisible();
+            launch_icon_shown = GetIntentPickerButton(browser).GetVisible();
           }
 
           webapps::AppId app_id;
@@ -5133,15 +5136,17 @@ void WebAppIntegrationTest::SetUpCommandLine(base::CommandLine* command_line) {
   ASSERT_TRUE(embedded_test_server()->Start());
 }
 
-Browser* WebAppIntegrationTest::CreateBrowser(Profile* profile) {
+BrowserWindowInterface* WebAppIntegrationTest::CreateBrowser(Profile* profile) {
   return InProcessBrowserTest::CreateBrowser(profile);
 }
 
-void WebAppIntegrationTest::CloseBrowserSynchronously(Browser* browser) {
+void WebAppIntegrationTest::CloseBrowserSynchronously(
+    BrowserWindowInterface* browser) {
   InProcessBrowserTest::CloseBrowserSynchronously(browser);
 }
 
-void WebAppIntegrationTest::AddBlankTabAndShow(Browser* browser) {
+void WebAppIntegrationTest::AddBlankTabAndShow(
+    BrowserWindowInterface* browser) {
   InProcessBrowserTest::AddBlankTabAndShow(browser);
 }
 

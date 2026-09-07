@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.ui.enterprise_signals_disclaimer;
 import android.content.Context;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.signin.identitymanager.IdentityManager;
@@ -34,6 +35,8 @@ public class EnterpriseSignalsDisclaimerCoordinator {
     private final EnterpriseSignalsDisclaimerMediator mMediator;
     private final PropertyModelChangeProcessor mModelChangeProcessor;
     private final EnterpriseSignalsDisclaimerHost mDisclaimerHost;
+    private boolean mIsDestroyed;
+    private @Nullable Runnable mOnDestroyCallback;
 
     /**
      * Constructs an {@link EnterpriseSignalsDisclaimerCoordinator}.
@@ -52,23 +55,32 @@ public class EnterpriseSignalsDisclaimerCoordinator {
             BottomSheetController bottomSheetController,
             ModalDialogManager modalDialogManager,
             SigninManager signinManager,
-            Delegate delegate) {
+            Delegate delegate,
+            Runnable onDestroyCallback) {
+        mIsDestroyed = false;
+        mOnDestroyCallback = onDestroyCallback;
         final IdentityManager identityManager = signinManager.getIdentityManager();
         assert identityManager.hasPrimaryAccount();
-        mMediator = new EnterpriseSignalsDisclaimerMediator(context, identityManager, delegate);
 
         EnterpriseSignalsDisclaimerView view;
         // For the large form factors a modal dialog will be displayed, while smaller screens will
         // get a bottom sheet.
         if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)) {
             view = EnterpriseSignalsDisclaimerView.createForModalDialog(context);
-            mDisclaimerHost = new ModalDialogDisclaimerHost(modalDialogManager, view);
+            mDisclaimerHost =
+                    new ModalDialogDisclaimerHost(
+                            modalDialogManager, view, this::onDialogDismissed);
         } else {
             var sheetContent = new EnterpriseSignalsDisclaimerBottomSheetView(context);
             view = sheetContent;
-            mDisclaimerHost = new BottomSheetDisclaimerHost(bottomSheetController, sheetContent);
+            mDisclaimerHost =
+                    new BottomSheetDisclaimerHost(
+                            bottomSheetController, sheetContent, this::onDialogDismissed);
         }
 
+        mMediator =
+                new EnterpriseSignalsDisclaimerMediator(
+                        context, identityManager, delegate, signinManager, mDisclaimerHost::hide);
         mModelChangeProcessor =
                 PropertyModelChangeProcessor.create(
                         mMediator.getModel(), view, EnterpriseSignalsDisclaimerViewBinder::bind);
@@ -79,6 +91,7 @@ public class EnterpriseSignalsDisclaimerCoordinator {
      * put in a queue and shown whenever possible.
      */
     public void show() {
+        assert !mIsDestroyed;
         mDisclaimerHost.show();
     }
 
@@ -86,13 +99,33 @@ public class EnterpriseSignalsDisclaimerCoordinator {
      * @return true if dialog is being shown or is in queue, false otherwise.
      */
     public boolean isActive() {
-        return mDisclaimerHost.isActive();
+        return !mIsDestroyed && mDisclaimerHost.isActive();
     }
 
     /** Destroys the coordinator, hiding the sheet and cleaning up resources. */
     public void destroy() {
-        mDisclaimerHost.hide();
+        if (mIsDestroyed) {
+            return;
+        }
+        mIsDestroyed = true;
+        mDisclaimerHost.destroy();
         mModelChangeProcessor.destroy();
         mMediator.destroy();
+        if (mOnDestroyCallback != null) {
+            mOnDestroyCallback.run();
+            mOnDestroyCallback = null;
+        }
+    }
+
+    private void onDialogDismissed(boolean reasonWasUserAction) {
+        if (mIsDestroyed) {
+            return;
+        }
+        if (reasonWasUserAction) {
+            // The user should not be signed out if the dialog is being dismissed by an external
+            // force - for instance, the Controller being destroyed.
+            mMediator.signOutUser();
+        }
+        destroy();
     }
 }

@@ -78,6 +78,7 @@ import org.chromium.chrome.browser.ChromeActivitySessionTracker;
 import org.chromium.chrome.browser.ChromeApplicationImpl;
 import org.chromium.chrome.browser.ChromeKeyboardVisibilityDelegate;
 import org.chromium.chrome.browser.ChromeWindow;
+import org.chromium.chrome.browser.ConfirmQuitHelper;
 import org.chromium.chrome.browser.DeferredStartupHandler;
 import org.chromium.chrome.browser.GracefulShutdownService;
 import org.chromium.chrome.browser.IntentHandler;
@@ -93,6 +94,7 @@ import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.app.download.DownloadMessageUiDelegate;
 import org.chromium.chrome.browser.app.metrics.LaunchCauseMetrics;
 import org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl;
+import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingDelegateFactory;
 import org.chromium.chrome.browser.app.tab_activity_glue.TabReparentingController;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.app.tabmodel.TabModelOrchestrator;
@@ -194,6 +196,7 @@ import org.chromium.chrome.browser.tab.RequestDesktopUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabSelectionType;
@@ -338,7 +341,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
     private final SettableMonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier =
             ObservableSuppliers.createMonotonic();
 
-    private final SettableMonotonicObservableSupplier<TabModelOrchestrator>
+    private SettableMonotonicObservableSupplier<TabModelOrchestrator>
             mTabModelOrchestratorSupplier = ObservableSuppliers.createMonotonic();
 
     /** Used to access the {@link TabModelSelector} from {@link WindowAndroid}. */
@@ -784,7 +787,8 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
                             () ->
                                     PriceDropNotificationManagerFactory.create(
                                             mTabModelProfileSupplier.get()),
-                            mRootUiCoordinator::getBookmarkBarVisibility);
+                            mRootUiCoordinator::getBookmarkBarVisibility,
+                            OfflinePageUtils::saveBookmarkOffline);
             mTabBookmarkerSupplier.set(tabBookmarker);
             if (!isCustomTab()) {
                 mStartupSigninStateCheckController =
@@ -1609,6 +1613,8 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
 
     @Override
     public void onPauseWithNative() {
+        // Cancel any pending hold-to-quit timer and reset state when moving to the background.
+        ConfirmQuitHelper.getInstance().cancel(/* dismissToast= */ true);
         RecordUserAction.record("MobileGoToBackground");
         mLaunchCause = LaunchCauseMetrics.LaunchCause.UNINITIALIZED;
         Tab tab = getActivityTab();
@@ -2206,6 +2212,19 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         return false;
     }
 
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        // Cancel the hold-to-quit timer if the user releases either key of the Ctrl+Q shortcut
+        // (releasing Q or releasing Ctrl). Releasing unrelated keys while Ctrl is still held
+        // does not abort the quit or consume the key event.
+        if (ConfirmQuitHelper.getInstance().isQuitInProgress()
+                && (keyCode == KeyEvent.KEYCODE_Q || !event.isCtrlPressed())) {
+            ConfirmQuitHelper.getInstance().cancel(/* dismissToast= */ false);
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
     /** Returns snackbar manager for all snackbar related operations. */
     @Override
     public SnackbarManager getSnackbarManager() {
@@ -2311,7 +2330,9 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         }
         mTabReparentingControllerSupplier.set(
                 new TabReparentingController(
-                        this::getTabModelSelector, AsyncTabParamsManagerSingleton.getInstance()));
+                        ReparentingDelegateFactory.createReparentingControllerDelegate(
+                                getTabModelSelector()),
+                        AsyncTabParamsManagerSingleton.getInstance()));
 
         // This must be initialized after initialization of tab reparenting controller.
         var windowAndroid = getWindowAndroid();
@@ -2451,6 +2472,15 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
     public final MonotonicObservableSupplier<TabModelOrchestrator>
             getTabModelOrchestratorSupplier() {
         return mTabModelOrchestratorSupplier;
+    }
+
+    /** Sets the {@link TabModelOrchestrator} for testing purposes. */
+    public void setTabModelOrchestratorForTesting(TabModelOrchestrator tabModelOrchestrator) {
+        if (mTabModelOrchestratorSupplier == null) {
+            mTabModelOrchestratorSupplier = ObservableSuppliers.createMonotonic();
+        }
+        mTabModelOrchestrator = tabModelOrchestrator;
+        mTabModelOrchestratorSupplier.set(tabModelOrchestrator);
     }
 
     /** Returns an {@link MonotonicObservableSupplier} for {@link TabModelSelector}. */
@@ -2965,6 +2995,10 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
             return true;
         }
 
+        if (id == R.id.quit_chrome && !fromMenu) {
+            return ConfirmQuitHelper.getInstance().handleQuitRequest(this);
+        }
+
         final Tab currentTab = getActivityTab();
 
         if (id == R.id.help_id) {
@@ -3088,10 +3122,20 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         if (id == R.id.tab_group_tab_menu_item) {
             assert menuItemData != null
                     && menuItemData.containsKey(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY);
-            TabModelUtils.selectTabById(
-                    getTabModelSelector(),
-                    menuItemData.getInt(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY),
-                    TabSelectionType.FROM_USER);
+            @TabId int tabId = menuItemData.getInt(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY);
+            if (ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled()) {
+                Tab tab = TabWindowManagerSingleton.getInstance().getTabById(tabId);
+                if (tab != null) {
+                    getTabCreator(tab.isIncognito())
+                            .createNewTab(
+                                    new LoadUrlParams(tab.getUrl()),
+                                    TabLaunchType.FROM_CHROME_UI,
+                                    /* parent= */ null);
+                }
+            } else {
+                TabModelUtils.selectTabById(
+                        getTabModelSelector(), tabId, TabSelectionType.FROM_USER);
+            }
             RecordUserAction.record("MobileMenuSelectTabFromGroup");
             return true;
         }

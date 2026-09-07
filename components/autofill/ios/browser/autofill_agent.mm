@@ -36,7 +36,7 @@
 #import "base/uuid.h"
 #import "base/values.h"
 #import "build/branding_buildflags.h"
-#import "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
+#import "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #import "components/autofill/core/browser/autofill_field.h"
 #import "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -293,6 +293,15 @@ bool HasGuid(const Suggestion::Payload& payload) {
 
   // Check for suggestions if the form activity is initiated by the user.
   if (!hasUserGesture) {
+    completion(NO);
+    return;
+  }
+
+  // kContentEditable is added for AtMemory. Suggestions are not available.
+  // A user uses AtMemory UI to run a search and then fill data manually to it.
+  if (formQuery.fieldType ==
+          autofill::FormActivityParams::FieldType::kContentEditable &&
+      base::FeatureList::IsEnabled(kAutofillSupportContentEditableIos)) {
     completion(NO);
     return;
   }
@@ -691,7 +700,6 @@ bool HasGuid(const Suggestion::Payload& payload) {
       case SuggestionType::kManageEnhancedAutofill:
       case SuggestionType::kMaximizeCreditCardBenefitsEntry:
       case SuggestionType::kMerchantPromoCodeEntry:
-      case SuggestionType::kMixedFormMessage:
       case SuggestionType::kOneTimePasswordEntry:
       case SuggestionType::kPasswordEntry:
       case SuggestionType::kPasswordFieldByFieldFilling:
@@ -806,7 +814,7 @@ bool HasGuid(const Suggestion::Payload& payload) {
   // TODO(crbug.com/363958046): Pass the actually shown suggestions instead of
   // `popup_suggestions`.
   if (delegate) {
-    delegate->OnSuggestionsShown(popup_suggestions, std::nullopt);
+    delegate->OnSuggestionsShown(popup_suggestions, /*metadata=*/{});
   }
 }
 

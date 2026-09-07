@@ -8,7 +8,6 @@ import("//build/config/rust.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/win/visual_studio_version.gni")
 import("//build/toolchain/cc_wrapper.gni")
-import("//build/toolchain/gcc_toolchain.gni")
 import("//build/toolchain/rbe.gni")
 import("//build/toolchain/toolchain.gni")
 import("//build/toolchain/win/win_toolchain_data.gni")
@@ -142,15 +141,7 @@ template("msvc_toolchain") {
     }
 
     if (host_os != "win" || (use_lld && defined(invoker.sys_lib_flags))) {
-      # TODO(crbug.com/548717713): Find a better way to retrieve object files
-      # for the link step. At least, it doesn't need to use tool_wrapper.py.
-      if (enable_resource_allowlist_generation) {
-        linker_wrapper =
-            "$python_path $_tool_wrapper_path link-wrapper $env False "
-      } else {
-        linker_wrapper = ""
-      }
-
+      linker_wrapper = ""
       sys_lib_flags = "${invoker.sys_lib_flags}"
 
       # TODO(thakis): Remove once crbug.com/1300005 is fixed
@@ -234,6 +225,7 @@ template("msvc_toolchain") {
     }
 
     tool("cc") {
+      output = "$object_subdir/{{source_name_part}}.obj"
       precompiled_header_type = "msvc"
       pdbname = "{{target_out_dir}}/{{label_name}}_c.pdb"
 
@@ -242,22 +234,26 @@ template("msvc_toolchain") {
       # full file name and will quote automatically when necessary.
       depsformat = "msvc"
       description = "CC {{output}}"
-      outputs = [ "$object_subdir/{{source_name_part}}.obj" ]
+      outputs = [ output ]
 
       # Note that the code coverage wrapper scripts assumes that {{source}}
       # comes immediately after /c.
-      command = "$coverage_wrapper$env_wrapper$cl /c {{source}} /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_c}}${module_name_flag} /Fo{{output}} /Fd\"$pdbname\""
+      # {{output}} may contain additional outputs, so use $output instead of
+      # {{output}} in command.
+      command = "$coverage_wrapper$env_wrapper$cl /c {{source}} /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_c}}${module_name_flag} /Fo$output /Fd\"$pdbname\""
     }
 
     tool("cxx_module") {
+      output = "$object_subdir/{{source_name_part}}.pcm"
       pdbname = "{{target_out_dir}}/{{label_name}}_c.pdb"
       depsformat = "msvc"
       description = "CXX_MODULE {{output}}"
-      outputs = [ "$object_subdir/{{source_name_part}}.pcm" ]
-      command = "$env_wrapper$cl /Fo{{output}} /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} {{module_deps_no_self}} -fmodule-name=\"{{cc_module_name}}\" /Fd\"$pdbname\" /c -x c++ -Xclang -emit-module {{source}}"
+      outputs = [ output ]
+      command = "$env_wrapper$cl /Fo$output /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} {{module_deps_no_self}} -fmodule-name=\"{{cc_module_name}}\" /Fd\"$pdbname\" /c -x c++ -Xclang -emit-module {{source}}"
     }
 
     tool("cxx") {
+      output = "$object_subdir/{{source_name_part}}.obj"
       precompiled_header_type = "msvc"
 
       # The PDB name needs to be different between C and C++ compiled files.
@@ -266,11 +262,13 @@ template("msvc_toolchain") {
       # See comment in CC tool about quoting.
       depsformat = "msvc"
       description = "CXX {{output}}"
-      outputs = [ "$object_subdir/{{source_name_part}}.obj" ]
+      outputs = [ output ]
 
       # Note that the code coverage wrapper scripts assumes that {{source}}
       # comes immediately after /c.
-      command = "$coverage_wrapper$env_wrapper$cl /c {{source}} /Fo{{output}} /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} /TP {{module_deps}}${module_name_flag} /Fd\"$pdbname\""
+      # {{output}} may contain additional outputs, so use $output instead of
+      # {{output}} in command.
+      command = "$coverage_wrapper$env_wrapper$cl /c {{source}} /Fo$output /nologo $show_includes $sys_include_flags{{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} /TP {{module_deps}}${module_name_flag} /Fd\"$pdbname\""
     }
 
     tool("rc") {

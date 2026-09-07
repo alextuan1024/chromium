@@ -47,9 +47,9 @@
 #include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/browser/ui/ash/session/session_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/test_browser_window_aura.h"
@@ -125,13 +125,14 @@ class TestShellDelegateChromeOS : public ash::TestShellDelegate {
   }
 };
 
-std::unique_ptr<Browser> CreateTestBrowser(aura::Window* window,
-                                           const gfx::Rect& bounds,
-                                           BrowserWindowCreateParams params) {
+std::unique_ptr<BrowserWindowInterface> CreateTestBrowser(
+    aura::Window* window,
+    const gfx::Rect& bounds,
+    BrowserWindowCreateParams params) {
   if (!bounds.IsEmpty()) {
     window->SetBounds(bounds);
   }
-  std::unique_ptr<Browser> browser =
+  std::unique_ptr<BrowserWindowInterface> browser =
       chrome::CreateBrowserWithAuraTestWindowForParams(base::WrapUnique(window),
                                                        std::move(params));
   return browser;
@@ -155,7 +156,7 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
   // ChromeAshTestBase:
   void SetUp() override;
   void TearDown() override;
-  void OnHelperWillBeDestroyed() override;
+  void OnSubsystemsTornDown() override;
 
  protected:
   void SwitchActiveUser(const AccountId& account_id) {
@@ -451,7 +452,7 @@ void MultiUserWindowManagerBrowserAdaptorTest::TearDown() {
   browser_controller_.reset();
 
   ChromeAshTestBase::TearDown();
-  // ProfileManager instance is destroyed in OnHelperWillBeDestroyed()
+  // ProfileManager instance is destroyed in OnSubsystemsTornDown()
   // invoked inside ChromeAshTestBase::TearDown().
   EXPECT_FALSE(profile_manager_.get());
   user_manager_.Reset();
@@ -460,8 +461,8 @@ void MultiUserWindowManagerBrowserAdaptorTest::TearDown() {
   ash::DeviceSettingsService::Shutdown();
 }
 
-void MultiUserWindowManagerBrowserAdaptorTest::OnHelperWillBeDestroyed() {
-  ChromeAshTestBase::OnHelperWillBeDestroyed();
+void MultiUserWindowManagerBrowserAdaptorTest::OnSubsystemsTornDown() {
+  ChromeAshTestBase::OnSubsystemsTornDown();
   profile_manager_.reset();
 }
 
@@ -1667,7 +1668,7 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, GetActiveBrowser) {
       ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
           kAccountIdA));
   BrowserWindowCreateParams params(profile, true);
-  std::unique_ptr<Browser> browser(
+  std::unique_ptr<BrowserWindowInterface> browser(
       CreateTestBrowser(CreateTestWindowInShell({.window_id = 0}).release(),
                         {16, 32, 640, 320}, std::move(params)));
   browser->GetWindow()->Activate();

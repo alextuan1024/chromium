@@ -21,6 +21,7 @@
 #include "chrome/browser/media/media_engagement_service.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
+#include "chrome/browser/picture_in_picture/video_overlay_window.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -48,6 +49,7 @@
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -419,8 +421,7 @@ std::unique_ptr<VideoOverlayWindowViews> VideoOverlayWindowViews::Create(
 }
 
 // static
-std::unique_ptr<content::VideoOverlayWindow>
-content::VideoOverlayWindow::Create(
+std::unique_ptr<content::VideoOverlayWindow> CreateVideoOverlayWindow(
     content::VideoPictureInPictureWindowController* controller) {
   return VideoOverlayWindowViews::Create(controller);
 }
@@ -1465,9 +1466,7 @@ void VideoOverlayWindowViews::UpdateLayerBoundsWithLetterboxing(
   window_background_view_->SetBoundsRect(
       gfx::Rect(gfx::Point(0, 0), GetBounds().size()));
   video_view_->SetBoundsRect(video_bounds);
-  if (video_view_->layer()->HasExternalContent()) {
-    video_view_->layer()->AsSurface()->SetSurfaceSize(video_bounds.size());
-  }
+  video_view_->layer()->AsSurface()->SetSurfaceSize(video_bounds.size());
 
   if (IsOverlayViewShown()) {
     overlay_view_->SetBoundsRect(gfx::Rect(GetBounds().size()));

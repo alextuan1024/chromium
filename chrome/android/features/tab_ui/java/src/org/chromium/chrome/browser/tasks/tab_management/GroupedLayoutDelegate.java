@@ -14,7 +14,6 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
-import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -25,6 +24,7 @@ import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
@@ -68,24 +68,27 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    @MediaState
-    int getMediaIndicatorState(Tab representativeTab, PropertyModel model) {
-        @MediaState int stateToReturn = representativeTab.getMediaState();
+    @TabAlert
+    int getAlertState(Tab representativeTab, PropertyModel model) {
+        @TabAlert int stateToReturn = representativeTab.getAlertState();
+        int statePriority = TabUtils.getTabAlertPriority(stateToReturn);
         // Fast exit if not in a group or already at maximum priority state.
         if (!mMediator.isTabInTabGroup(representativeTab)
-                || stateToReturn == MediaState.MAX_VALUE) {
+                || statePriority == TabUtils.MAX_TAB_ALERT_PRIORITY) {
             return stateToReturn;
         }
 
-        // Check all tabs in the group tosurface the highest priority media state onto the group
+        // Check all tabs in the group to surface the highest priority alert state onto the group
         // card.
         List<Tab> relatedTabs = mMediator.getRelatedTabsForId(representativeTab.getId());
         for (Tab tab : relatedTabs) {
-            @MediaState int currentState = tab.getMediaState();
-            if (currentState > stateToReturn) {
+            @TabAlert int currentState = tab.getAlertState();
+            int currentPriority = TabUtils.getTabAlertPriority(currentState);
+            if (currentPriority > statePriority) {
+                statePriority = currentPriority;
                 stateToReturn = currentState;
             }
-            if (stateToReturn == MediaState.MAX_VALUE) return stateToReturn;
+            if (statePriority == TabUtils.MAX_TAB_ALERT_PRIORITY) return stateToReturn;
         }
         return stateToReturn;
     }
@@ -115,6 +118,32 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         // Get the position of the nth tab card ignoring any other CARD_TYPE entries present in the
         // model list outside of TAB, TAB_GROUP, and ARCHIVED_TAB_GROUP.
         return mModelList.indexOfNthTabCard(tabIndex);
+    }
+
+    /**
+     * Returns the index in {@link #mModelList} of the group with {@code tabGroupId} and the {@link
+     * Tab} representing the group. Will be null if the entry is not present, the tab cannot be
+     * found, or the tab is not part of a tab group.
+     */
+    @Override
+    @Nullable Pair<Integer, Tab> getIndexAndTabForTabGroupId(@Nullable Token tabGroupId) {
+        if (tabGroupId == null) return null;
+
+        TabModel tabModel = mMediator.getCurrentTabModelChecked();
+        @TabId int lastShownTabId = tabModel.getGroupLastShownTabId(tabGroupId);
+
+        int index = mMediator.getIndexForTabIdWithRelatedTabs(lastShownTabId);
+        if (index == TabModel.INVALID_TAB_INDEX) return null;
+
+        Tab tab = mMediator.getTabForIndex(index);
+        // If the found tab has a different group ID from the tabGroupId set in the args then the
+        // update is likely for a group that no longer exists so we should drop the update.
+        if (tab == null
+                || !tabGroupId.equals(tab.getTabGroupId())
+                || !tabModel.isTabInTabGroup(tab)) {
+            return null;
+        }
+        return Pair.create(index, tab);
     }
 
     @Override
@@ -200,11 +229,15 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         // same tab as before entering the switcher), which is not tracked at this level.
     }
 
+    // TabObserver implementation.
+
     @Override
-    void onFaviconUpdated(Tab updatedTab, @Nullable Bitmap icon, @Nullable GURL iconUrl) {
+    public void onFaviconUpdated(Tab updatedTab, @Nullable Bitmap icon, @Nullable GURL iconUrl) {
+        assert mMediator.isShowingTabs();
+
         if (mMediator.isTabInTabGroup(updatedTab)) {
             @Nullable Pair<Integer, Tab> indexAndTab =
-                    mMediator.getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
+                    getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
             if (indexAndTab == null) return;
 
             PropertyModel model = mModelList.get(indexAndTab.first).model;
@@ -218,10 +251,12 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    void onUrlUpdated(Tab updatedTab) {
+    public void onUrlUpdated(Tab updatedTab) {
+        assert mMediator.isShowingTabs();
+
         if (mMediator.isTabInTabGroup(updatedTab)) {
             @Nullable Pair<Integer, Tab> indexAndTab =
-                    mMediator.getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
+                    getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
             if (indexAndTab == null) return;
 
             PropertyModel model = mModelList.get(indexAndTab.first).model;
@@ -238,12 +273,13 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    void onMediaStateChanged(Tab updatedTab, @MediaState int mediaState) {
+    public void onAlertStateChanged(Tab updatedTab, @TabAlert int alertState) {
+        assert mMediator.isShowingTabs();
+
         if (mMediator.isTabInTabGroup(updatedTab)) {
             Token tabGroupId = updatedTab.getTabGroupId();
             assumeNonNull(tabGroupId);
-            @Nullable Pair<Integer, Tab> indexAndTab =
-                    mMediator.getIndexAndTabForTabGroupId(tabGroupId);
+            @Nullable Pair<Integer, Tab> indexAndTab = getIndexAndTabForTabGroupId(tabGroupId);
             if (indexAndTab == null) return;
 
             PropertyModel model = mModelList.get(indexAndTab.first).model;
@@ -251,12 +287,11 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
                 return;
             }
             Tab representativeTab = indexAndTab.second;
-            model.set(
-                    TabProperties.MEDIA_INDICATOR,
-                    mMediator.getTabListMediaIndicator(representativeTab, model));
+            @TabAlert int alertStateToSet = getAlertState(representativeTab, model);
+            model.set(TabProperties.ALERT_STATE, alertStateToSet);
             mMediator.updateDescriptionString(model);
         } else {
-            super.onMediaStateChanged(updatedTab, mediaState);
+            super.onAlertStateChanged(updatedTab, alertState);
         }
     }
 
@@ -299,10 +334,11 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         super.onTabClose(tab);
     }
 
+    // TabGroupObserver implementation.
+
     @Override
     public void didChangeTabGroupColor(Token tabGroupId, @TabGroupColorId int newColor) {
-        @Nullable Pair<Integer, Tab> indexAndTab =
-                mMediator.getIndexAndTabForTabGroupId(tabGroupId);
+        @Nullable Pair<Integer, Tab> indexAndTab = getIndexAndTabForTabGroupId(tabGroupId);
         if (indexAndTab == null) return;
         Tab tab = indexAndTab.second;
         PropertyModel model = mModelList.get(indexAndTab.first).model;
@@ -320,6 +356,7 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
      */
     @Override
     public void didMoveWithinGroup(Tab movedTab, int tabModelOldIndex, int tabModelNewIndex) {
+        if (tabModelNewIndex == tabModelOldIndex) return;
         if (mThumbnailProvider == null) {
             return;
         }

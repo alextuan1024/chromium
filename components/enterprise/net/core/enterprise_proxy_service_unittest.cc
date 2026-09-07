@@ -171,8 +171,9 @@ class EnterpriseProxyServiceTest : public testing::Test {
     AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
         email, signin::ConsentLevel::kSignin);
     identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-        account_info.account_id, account_info.email, account_info.gaia,
-        "managed.com", "Full Name", "Given Name", "en-US", "picture_url");
+        account_info.GetAccountId(), account_info.GetEmail(),
+        account_info.GetGaiaId(), "managed.com", "Full Name", "Given Name",
+        "en-US", "picture_url");
   }
 
   void CreateService(
@@ -744,8 +745,9 @@ TEST_F(EnterpriseProxyServiceTest, RouteFlushingOnAuthFailureAndRecovery) {
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
 
-  // Verify that active routes were FLUSHED to prevent IdP loop.
-  EXPECT_EQ(0u, service_->GetDynamicRoutingConfig().routing_rules.size());
+  // Verify that active routes are PRESERVED on blocked state for maximal
+  // availability.
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
   configs = service_->GetProvisioningDomainConfigs();
   ASSERT_EQ(1u, configs.size());
   EXPECT_EQ(ProvisioningDomainProxyConfig::State::kFailedBlocked,
@@ -1007,9 +1009,7 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchFailure) {
       GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
-              CREDENTIALS_REJECTED_BY_SERVER));
+      GoogleServiceAuthError::FromServiceUnavailable("error"));
 
   EXPECT_EQ(
       EnterpriseProxyService::ProxyAuthChallengeResult::kCredentialFetchFailure,
@@ -1018,6 +1018,29 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchFailure) {
   ExpectChallengeResultHistogram(
       histogram_tester, EnterpriseProxyService::ProxyAuthChallengeResult::
                             kCredentialFetchFailure);
+}
+
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       SignInRequired_InvalidCredentials) {
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
+                         const std::optional<net::AuthCredentials>&>
+      future;
+  service_->HandleProxyAuthChallenge(
+      CreateProxyAuthChallengeInfo("proxy1.example.com"),
+      GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
+
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+
+  EXPECT_EQ(EnterpriseProxyService::ProxyAuthChallengeResult::kSignInRequired,
+            future.Get<0>());
+  EXPECT_FALSE(future.Get<1>().has_value());
+  ExpectChallengeResultHistogram(
+      histogram_tester,
+      EnterpriseProxyService::ProxyAuthChallengeResult::kSignInRequired);
 }
 
 }  // namespace

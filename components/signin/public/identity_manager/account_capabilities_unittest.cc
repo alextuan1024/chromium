@@ -30,32 +30,6 @@ TEST_F(AccountCapabilitiesTest, GetSupportedAccountCapabilityNames) {
   EXPECT_THAT(names, Contains(kCanUseModelExecutionFeaturesName));
 }
 
-#if !defined(NDEBUG) && !BUILDFLAG(IS_ANDROID)
-TEST_F(AccountCapabilitiesTest,
-       GetSupportedAccountCapabilityNames_FlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(switches::kEnableFakeCapabilityForTesting);
-
-  auto names =
-      AccountCapabilities::GetSupportedAccountCapabilityNamesInternal();
-
-  // Check one of the existing expected account capabilities.
-  EXPECT_THAT(names, Not(Contains(kFakeCapabilityForTestingName)));
-}
-
-TEST_F(AccountCapabilitiesTest,
-       GetSupportedAccountCapabilityNames_FlagEnabled) {
-  base::test::ScopedFeatureList feature_list{
-      switches::kEnableFakeCapabilityForTesting};
-
-  auto names =
-      AccountCapabilities::GetSupportedAccountCapabilityNamesInternal();
-
-  // Check one of the existing expected account capabilities.
-  EXPECT_THAT(names, Contains(kFakeCapabilityForTestingName));
-}
-#endif  // !defined(NDEBUG) && !BUILDFLAG(IS_ANDROID)
-
 TEST_F(AccountCapabilitiesTest, CanFetchFamilyMemberInfo) {
   AccountCapabilities capabilities;
   EXPECT_EQ(capabilities.can_fetch_family_member_info(),
@@ -104,6 +78,19 @@ TEST_F(AccountCapabilitiesTest, CanMakeChromeSearchEngineChoiceScreenChoice) {
             signin::Tribool::kFalse);
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+TEST_F(AccountCapabilitiesTest, CanOverrideAccountInfo) {
+  AccountCapabilities capabilities;
+  EXPECT_EQ(capabilities.can_override_account_info(),
+            signin::Tribool::kUnknown);
+
+  AccountCapabilitiesTestMutator mutator(&capabilities);
+  mutator.set_can_override_account_info(true);
+  EXPECT_EQ(capabilities.can_override_account_info(), signin::Tribool::kTrue);
+
+  mutator.set_can_override_account_info(false);
+  EXPECT_EQ(capabilities.can_override_account_info(), signin::Tribool::kFalse);
+}
 
 TEST_F(AccountCapabilitiesTest,
        CanShowHistorySyncOptInsWithoutMinorModeRestrictions) {
@@ -661,17 +648,18 @@ TEST_F(AccountCapabilitiesTest, CapabilityOverridesPrecedence) {
   AccountCapabilitiesTestMutator mutator(&capabilities);
 
   // 1. Configures an override.
-  mutator.SetCapabilityOverride(
-      kCanFetchFamilyMemberInfoCapabilityName, signin::Tribool::kTrue);
+  mutator.SetCapabilityOverride(kCanFetchFamilyMemberInfoCapabilityName,
+                                signin::Tribool::kTrue);
 
-  // 2. Simulates receiving a different value for the same capability from the server.
+  // 2. Simulates receiving a different value for the same capability from the
+  // server.
   mutator.set_can_fetch_family_member_info(false);
 
-  // 3. Checks that capability still has the overridden value, and not the one received later from the server.
+  // 3. Checks that capability still has the overridden value, and not the one
+  // received later from the server.
   EXPECT_EQ(capabilities.can_fetch_family_member_info(),
             signin::Tribool::kTrue);
 }
-
 
 #if BUILDFLAG(IS_ANDROID)
 

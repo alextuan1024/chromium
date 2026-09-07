@@ -260,6 +260,7 @@ class WebRtcAudioRendererTest : public testing::Test {
             mojo::NullRemote(),
             LocalFrameToken(),
             DocumentToken(),
+            InitiatorStateToken(),
             /*policy_container=*/nullptr)) {
     MediaStreamComponentVector dummy_components;
     stream_descriptor_ = MakeGarbageCollected<MediaStreamDescriptor>(

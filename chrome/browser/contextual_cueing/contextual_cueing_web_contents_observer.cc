@@ -12,6 +12,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
 
 namespace contextual_cueing {
 
@@ -39,6 +40,7 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
   if (!navigation_handle->IsInPrimaryMainFrame()) {
     return;
   }
+  should_evaluate_cues_on_load_ = false;
   if (!navigation_handle->HasCommitted()) {
     return;
   }
@@ -73,7 +75,12 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
           ContextualCueingController::GetForWebContents(GetWebContents())) {
     controller->HideCue();
     if (tab->IsActivated()) {
-      controller->UrlChanged(navigation_handle->GetURL());
+      controller->OnUrlChanged(navigation_handle->GetURL());
+    }
+    if (navigation_handle->IsServedFromBackForwardCache()) {
+      controller->EvaluateCues();
+    } else if (!navigation_handle->IsSameDocument()) {
+      should_evaluate_cues_on_load_ = true;
     }
   }
 
@@ -90,6 +97,24 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
         }
       }
     }
+  }
+}
+
+void ContextualCueingWebContentsObserver::
+    DocumentOnLoadCompletedInPrimaryMainFrame() {
+  if (!should_evaluate_cues_on_load_) {
+    return;
+  }
+  should_evaluate_cues_on_load_ = false;
+
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(&GetWebContents());
+  if (!tab) {
+    return;
+  }
+
+  if (auto* controller =
+          ContextualCueingController::GetForWebContents(GetWebContents())) {
+    controller->EvaluateCues();
   }
 }
 

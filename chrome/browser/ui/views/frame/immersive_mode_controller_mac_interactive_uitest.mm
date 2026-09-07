@@ -15,7 +15,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
-#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -31,6 +31,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #import "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -57,9 +58,7 @@ class ScopedAlwaysShowToolbar {
 
 class ImmersiveModeControllerMacInteractiveTest : public InProcessBrowserTest {
  public:
-  ImmersiveModeControllerMacInteractiveTest() {
-    scoped_feature_list_.InitWithFeatures({tabs::kVerticalTabs}, {});
-  }
+  ImmersiveModeControllerMacInteractiveTest() = default;
 
   ImmersiveModeControllerMacInteractiveTest(
       const ImmersiveModeControllerMacInteractiveTest&) = delete;
@@ -148,9 +147,8 @@ class ImmersiveModeControllerMacInteractiveTest : public InProcessBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<Browser> second_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface> second_browser_ = nullptr;
 };
 
 // Tests that the browser can be toggled into and out of immersive fullscreen,
@@ -167,10 +165,8 @@ IN_PROC_BROWSER_TEST_F(ImmersiveModeControllerMacInteractiveTest,
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget), nullptr);
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
 
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
 
   EXPECT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget),
@@ -322,10 +318,8 @@ IN_PROC_BROWSER_TEST_F(ImmersiveModeControllerMacInteractiveTest,
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget), nullptr);
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
 
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
 
   EXPECT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget),
@@ -357,10 +351,8 @@ IN_PROC_BROWSER_TEST_F(ImmersiveModeControllerMacInteractiveTest,
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget), nullptr);
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
 
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
 
   EXPECT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
   EXPECT_EQ(GetMovedContentViewForWidget(overlay_widget),
@@ -503,10 +495,8 @@ IN_PROC_BROWSER_TEST_F(ImmersiveModeControllerMacInteractiveTest,
 
   // Transition to fullscreen.
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   EXPECT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
 
   // Simulate a synchronous destruction of the overlay widget. This should not
@@ -622,10 +612,8 @@ IN_PROC_BROWSER_TEST_F(ImmersiveModeControllerMacInteractiveTest,
 
   // Step 2: Enter fullscreen with horizontal tabs.
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   EXPECT_TRUE(fullscreen_controller->IsFullscreenForBrowser());
 
   // The tab overlay widget should be visible with horizontal tabs in

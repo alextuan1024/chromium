@@ -32,13 +32,16 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/ttc/resources/generated_tool_definitions.h"
+#include "chrome/browser/ttc/tool_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/webui/ai_overlay_dialog/tools/generated_tool_definitions.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -128,7 +131,11 @@ AiOverlayTools::AiOverlayTools(
     PageContextMonitor* page_context_monitor)
     : receiver_(this, std::move(receiver)),
       browser_(browser),
-      page_context_monitor_(page_context_monitor) {}
+      page_context_monitor_(page_context_monitor) {
+  if (features::kAiOverlayDialogUsesActor.Get()) {
+    tool_controller_ = std::make_unique<ToolController>(browser_->GetProfile());
+  }
+}
 
 AiOverlayTools::~AiOverlayTools() = default;
 
@@ -142,6 +149,12 @@ void AiOverlayTools::OpenUrl(const std::string& url_string,
                              bool new_tab,
                              OpenUrlCallback callback) {
   RecordToolCallInvoked("OpenUrl");
+  if (tool_controller_) {
+    tool_controller_->OpenUrl(browser_, url_string, new_tab,
+                              std::move(callback));
+    return;
+  }
+
   GURL url(url_string);
   if (!url.is_valid()) {
     std::move(callback).Run(base::unexpected("Invalid URL"));
@@ -428,9 +441,9 @@ void AiOverlayTools::PauseVideo(PauseVideoCallback callback) {
   }
 }
 
-void AiOverlayTools::InvokeGlic(const std::string& prompt,
-                                InvokeGlicCallback callback) {
-  RecordToolCallInvoked("InvokeGlic");
+void AiOverlayTools::OpenGeminiPanel(const std::string& prompt,
+                                     OpenGeminiPanelCallback callback) {
+  RecordToolCallInvoked("OpenGeminiPanel");
   glic::GlicKeyedService* glic_service =
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(
           browser_->GetProfile());
@@ -456,14 +469,14 @@ void AiOverlayTools::InvokeGlic(const std::string& prompt,
   auto split_callback = base::SplitOnceCallback(std::move(callback));
 
   options.on_success = base::BindOnce(
-      [](InvokeGlicCallback cb) {
-        std::move(cb).Run(base::ok("Glic panel opened and task completed."));
+      [](OpenGeminiPanelCallback cb) {
+        std::move(cb).Run(base::ok("Gemini panel opened."));
       },
       std::move(split_callback.first));
 
   options.on_error = base::BindOnce(
-      [](InvokeGlicCallback cb, glic::GlicInvokeError error) {
-        std::move(cb).Run(base::unexpected("Glic invocation failed"));
+      [](OpenGeminiPanelCallback cb, glic::GlicInvokeError error) {
+        std::move(cb).Run(base::unexpected("Failed to open Gemini panel"));
       },
       std::move(split_callback.second));
 

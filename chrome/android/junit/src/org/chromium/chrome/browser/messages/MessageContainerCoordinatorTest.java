@@ -4,9 +4,12 @@
 
 package org.chromium.chrome.browser.messages;
 
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.res.Resources;
+import android.view.View;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -16,7 +19,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
@@ -26,7 +28,6 @@ import org.chromium.components.messages.MessageContainer;
 
 /** Unit tests for {@link MessageContainerCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MessageContainerCoordinatorTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -84,5 +85,59 @@ public class MessageContainerCoordinatorTest {
 
         int offset = mCoordinator.getMessageTopOffset();
         Assert.assertEquals(0, offset);
+    }
+
+    @Test
+    public void testIsVisible_containerNull() {
+        MessageContainerCoordinator coordinator =
+                new MessageContainerCoordinator(null, mControlsManager);
+        Assert.assertFalse(coordinator.isVisible());
+        Assert.assertFalse(coordinator.containsKeyboardFocus());
+    }
+
+    @Test
+    public void testIsVisible_containerNotVisible() {
+        when(mContainer.getVisibility()).thenReturn(View.GONE);
+        when(mContainer.getChildCount()).thenReturn(1);
+        Assert.assertFalse(mCoordinator.isVisible());
+    }
+
+    @Test
+    public void testIsVisible_containerVisibleNoChildren() {
+        when(mContainer.getVisibility()).thenReturn(View.VISIBLE);
+        when(mContainer.getChildCount()).thenReturn(0);
+        Assert.assertFalse(mCoordinator.isVisible());
+    }
+
+    @Test
+    public void testIsVisible_containerVisibleWithChild() {
+        when(mContainer.getVisibility()).thenReturn(View.VISIBLE);
+        when(mContainer.getChildCount()).thenReturn(1);
+        Assert.assertTrue(mCoordinator.isVisible());
+    }
+
+    @Test
+    public void testContainsKeyboardFocus() {
+        when(mContainer.hasFocus()).thenReturn(false);
+        Assert.assertFalse(mCoordinator.containsKeyboardFocus());
+
+        when(mContainer.hasFocus()).thenReturn(true);
+        Assert.assertTrue(mCoordinator.containsKeyboardFocus());
+    }
+
+    @Test
+    public void testRequestKeyboardFocus_notVisible() {
+        when(mContainer.getVisibility()).thenReturn(View.GONE);
+        mCoordinator.requestKeyboardFocus();
+        verify(mContainer, never()).requestFocus();
+    }
+
+    @Test
+    public void testRequestKeyboardFocus_visible() {
+        when(mContainer.getVisibility()).thenReturn(View.VISIBLE);
+        when(mContainer.getChildCount()).thenReturn(1);
+
+        mCoordinator.requestKeyboardFocus();
+        verify(mContainer).requestFocus();
     }
 }

@@ -69,6 +69,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/accessibility/ax_action_data.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -105,11 +106,12 @@ class AppMenuBrowserTest : public UiBrowserTest {
   // Changes the return value of `browser()` as long as the returned object is
   // alive. This resetting behavior is necessary to null `browser_` before its
   // destruction, lest the allocator complain about dangling refs.
-  [[nodiscard]] base::AutoReset<raw_ptr<Browser>> SetBrowser(Browser* browser) {
-    return base::AutoReset<raw_ptr<Browser>>(&browser_, browser);
+  [[nodiscard]] base::AutoReset<raw_ptr<BrowserWindowInterface>> SetBrowser(
+      BrowserWindowInterface* browser) {
+    return base::AutoReset<raw_ptr<BrowserWindowInterface>>(&browser_, browser);
   }
 
-  Browser* browser() {
+  BrowserWindowInterface* browser() {
     return browser_ ? browser_.get() : UiBrowserTest::browser();
   }
 
@@ -122,7 +124,7 @@ class AppMenuBrowserTest : public UiBrowserTest {
   }
 
  private:
-  raw_ptr<Browser> browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   std::optional<int> command_id_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -233,7 +235,8 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, ShowWithRecentlyClosedWindow) {
   TabRestoreServiceLoadWaiter tab_restore_service_load_waiter(
       tab_restore_service);
   tab_restore_service_load_waiter.Wait();
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   content::WebContents* new_contents = chrome::AddSelectedTabWithURL(
       second_browser,
       chrome_test_utils::GetTestUrl(

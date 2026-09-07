@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -70,9 +71,6 @@ void ActorOverlayWebView::CloseUI() {
     // Re-enable mouse, keyboard, and a11y input events to the underlying web
     // contents by resetting the ScopedIgnoreInputEvents object.
     scoped_ignore_input_events_.reset();
-    // Reset tab interface tracking on close so EmbedderContextData does not
-    // hold a dangling raw_ptr to the tab when it is destroyed.
-    webui::SetTabInterface(web_contents(), nullptr);
     web_contents()->WasHidden();
   }
 }

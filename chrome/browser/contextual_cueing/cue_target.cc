@@ -27,7 +27,30 @@ const char* GetName(CueTargetType type) {
       return "Glic";
     case CueTargetType::kTestSource:
       return "TestSource";
+    case CueTargetType::kIndigo:
+      return "Indigo";
   }
+}
+
+const char* GetName(CueIntrusiveness intrusiveness) {
+  switch (intrusiveness) {
+    case CueIntrusiveness::kLoud:
+      return "Loud";
+    case CueIntrusiveness::kQuiet:
+      return "Quiet";
+  }
+}
+
+bool CueTarget::SupportsIntrusiveness(CueIntrusiveness intrusiveness) const {
+  if (RequiresModelExecution()) {
+    return intrusiveness == CueIntrusiveness::kLoud;
+  }
+  return SupportsIntrusivenessImpl(intrusiveness);
+}
+
+bool CueTarget::SupportsIntrusivenessImpl(
+    CueIntrusiveness intrusiveness) const {
+  return true;
 }
 
 }  // namespace contextual_cueing

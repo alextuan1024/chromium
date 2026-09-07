@@ -52,6 +52,8 @@ class MockToolbarUIObserver : public toolbar_ui_api::mojom::ToolbarUIObserver {
               (toolbar_ui_api::mojom::FocusRequestTarget target),
               (override));
 
+  MOCK_METHOD(void, ShowSplitTabsContextMenu, (), (override));
+
  private:
   mojo::Receiver<toolbar_ui_api::mojom::ToolbarUIObserver> receiver_{this};
 };
@@ -67,8 +69,17 @@ class MockToolbarUIServiceDelegate
               HandleContextMenu,
               (toolbar_ui_api::mojom::ContextMenuType,
                const gfx::RectF&,
-               ui::mojom::MenuSourceType),
+               ui::mojom::MenuSourceType,
+               std::optional<uint32_t>),
               (override));
+  MOCK_METHOD(
+      void,
+      ShowOverflowMenu,
+      (std::vector<toolbar_ui_api::mojom::OverflowMenuItemPtr>,
+       const gfx::RectF&,
+       ui::mojom::MenuSourceType,
+       toolbar_ui_api::mojom::ToolbarUIService::ShowOverflowMenuCallback),
+      (override));
   MOCK_METHOD(void,
               ShowContentSettingsBubble,
               (::toolbar_ui_api::mojom::ContentSettingImageType type,
@@ -83,6 +94,10 @@ class MockToolbarUIServiceDelegate
   MOCK_METHOD(void,
               OnContentSettingImageAnimationEnded,
               (::toolbar_ui_api::mojom::ContentSettingImageType),
+              (override));
+  MOCK_METHOD(void,
+              OnPageActionPointerDown,
+              (::toolbar_ui_api::mojom::PageActionId action_id),
               (override));
   MOCK_METHOD(
       void,

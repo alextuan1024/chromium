@@ -219,8 +219,8 @@ void AccountPreviewDataServiceImpl::UpdateExternalAppAccount(
   if (email.has_value() && !email->empty() && identity_manager_) {
     AccountInfo account_info =
         identity_manager_->FindExtendedAccountInfoByEmailAddress(*email);
-    if (!account_info.IsEmpty() && !account_info.gaia.empty()) {
-      new_external_account = account_info.gaia;
+    if (!account_info.IsEmpty() && !account_info.GetGaiaId().empty()) {
+      new_external_account = account_info.GetGaiaId();
     }
   }
 
@@ -434,8 +434,8 @@ void AccountPreviewDataServiceImpl::EnsureAllAccountsFetched(
         "Signin.AccountPreview.TriggerCauseAccountsUnchangedSinceLastFetch",
         cause);
 
-    all_accounts_fetched_barrier_.Reset();
-    if (all_data_available_callback_for_testing_) {
+    if (!all_accounts_fetched_barrier_ &&
+        all_data_available_callback_for_testing_) {
       std::move(all_data_available_callback_for_testing_).Run();
     }
     return;
@@ -547,11 +547,8 @@ void AccountPreviewDataServiceImpl::StartFetch(const GaiaId& gaia_id) {
   it->second->Start();
 }
 
-std::optional<AccountPreviewDataService::AccountPreviewPreference>
-AccountPreviewDataServiceImpl::ComputePreferredAccount() const {
-  CHECK(base::FeatureList::IsEnabled(
-      switches::kEnableAccountPreviewPreferredAccount));
-
+std::vector<AccountPreviewHeuristicContext>
+AccountPreviewDataServiceImpl::GetHeuristicContexts() const {
   // Get candidate accounts in platform display priority order (where index 0 is
   // the platform's default account for promos).
   std::vector<AccountInfo> ordered_accounts =
@@ -563,34 +560,36 @@ AccountPreviewDataServiceImpl::ComputePreferredAccount() const {
 #endif
   std::vector<AccountPreviewHeuristicContext> contexts;
   for (const AccountInfo& account : ordered_accounts) {
-    auto cache_it = cached_data_.find(account.gaia);
+    auto cache_it = cached_data_.find(account.GetGaiaId());
     if (cache_it == cached_data_.end()) {
       continue;
     }
 
     contexts.push_back(AccountPreviewHeuristicContext{
-        .gaia_id = account.gaia,
+        .gaia_id = account.GetGaiaId(),
         .preview_data = raw_ref(cache_it->second),
         .is_managed = account.IsManaged() == signin::Tribool::kTrue,
         .is_child = account.IsChildAccount() == signin::Tribool::kTrue,
 #if BUILDFLAG(IS_ANDROID)
         .is_external_app_primary = external_app_account.has_value() &&
-                                   *external_app_account == account.gaia,
+                                   *external_app_account == account.GetGaiaId(),
 #else
         .is_external_app_primary = false,
 #endif
     });
   }
-
-  return ComputePreferredAccountForPromo(contexts);
+  return contexts;
 }
 
 void AccountPreviewDataServiceImpl::ComputeAndStorePreferredAccount() {
   if (base::FeatureList::IsEnabled(
           switches::kEnableAccountPreviewPreferredAccount)) {
-    std::optional<AccountPreviewPreference> preferred_account =
-        ComputePreferredAccount();
-    WritePreferredAccountToPrefs(preferred_account);
+    std::vector<AccountPreviewHeuristicContext> contexts =
+        GetHeuristicContexts();
+    AccountPreviewSelectionResult result =
+        ComputePreferredAccountForPromo(contexts);
+    WritePreferredAccountToPrefs(result.preference);
+    metrics_recorder_.RecordSelectionHeuristicResult(contexts, result);
   }
 }
 
@@ -609,7 +608,6 @@ AccountPreviewDataServiceImpl::GetAccountsWithValidRefreshTokens() const {
 }
 
 void AccountPreviewDataServiceImpl::RefreshAccountIdToGaiaIdMapping() {
-  account_id_to_gaia_id_.clear();
   for (const auto& account : GetAccountsWithValidRefreshTokens()) {
     account_id_to_gaia_id_[account.account_id] = account.gaia;
   }

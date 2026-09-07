@@ -21,12 +21,14 @@
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/common/input_state.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "third_party/lens_server_proto/aim_communication.pb.h"
+#include "ui/base/window_open_disposition.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
@@ -292,7 +294,7 @@ void ContextualTasksExtensionHandler::SubmitQuery(const std::string& query_text,
 }
 void ContextualTasksExtensionHandler::OpenLensSearch() {}
 void ContextualTasksExtensionHandler::SetActiveToolMode(omnibox::ToolMode tool,
-                                                        bool is_set_by_server) {
+                                                        bool is_set_by_aim) {
   active_tool_ = tool;
 }
 void ContextualTasksExtensionHandler::RecordToolSelectionAction(
@@ -315,6 +317,8 @@ void ContextualTasksExtensionHandler::OnDriveDisclaimerAccepted() {}
 void ContextualTasksExtensionHandler::OnDriveUploadClicked(
     OnDriveUploadClickedCallback callback) {}
 void ContextualTasksExtensionHandler::OpenProfilePicker() {}
+void ContextualTasksExtensionHandler::ShowScreenshotMenu(
+    const gfx::Rect& anchor_rect) {}
 void ContextualTasksExtensionHandler::GetPageClassification(
     GetPageClassificationCallback callback) {
   std::move(callback).Run("INVALID_SPEC");
@@ -501,5 +505,10 @@ ContextualTasksExtensionHandler::GetOrCreateInputStateModel() {
 void ContextualTasksExtensionHandler::StartScreenshare(
     bool prefer_entire_screen,
     StartScreenshareCallback callback) {
-  std::move(callback).Run(std::nullopt);
+  NOTREACHED();
+}
+
+void ContextualTasksExtensionHandler::CaptureRegionScreenshot(
+    CaptureRegionScreenshotCallback callback) {
+  NOTREACHED();
 }

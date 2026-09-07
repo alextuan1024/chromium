@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "chrome/browser/app_controller_mac.h"
+
 #import <Cocoa/Cocoa.h>
 
 #include <string>
 
 #import "base/apple/scoped_objc_class_swizzler.h"
 #include "chrome/app/chrome_command_ids.h"
-#import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -35,6 +36,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "net/base/apple/url_conversions.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #import "ui/events/test/cocoa_test_event_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_show_state_waiter.h"
@@ -85,7 +87,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerInteractiveUITest, DeleteEphemeralProfile) {
   Profile& profile2 = profiles::testing::CreateProfileSync(
       g_browser_process->profile_manager(),
       profile_manager->user_data_dir().AppendASCII("Profile 2"));
-  Browser* browser2 = CreateBrowser(&profile2);
+  BrowserWindowInterface* browser2 = CreateBrowser(&profile2);
   // This should not crash.
   [[NSNotificationCenter defaultCenter]
       postNotificationName:NSWindowDidBecomeMainNotification
@@ -152,7 +154,8 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuInteractiveUITest,
 
   // Create an incognito browser.
   Profile* original_profile = browser()->GetProfile();
-  Browser* incognito_browser = CreateIncognitoBrowser(original_profile);
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(original_profile);
   EXPECT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
 
@@ -172,7 +175,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuInteractiveUITest,
   [app_controller commandDispatch:item];
 
   // Check that a new non-incognito browser is opened.
-  Browser* new_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_created_observer.Wait();
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   EXPECT_TRUE(new_browser->GetProfile()->IsRegularProfile());
   EXPECT_EQ(original_profile, new_browser->GetProfile());

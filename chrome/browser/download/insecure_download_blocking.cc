@@ -30,6 +30,7 @@
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -83,8 +84,9 @@ const base::FeatureParam<std::string> kWarnExtensionList(
     "");
 
 const char kSafeExtensions[] =
-    ("txt,css,json,csv,tsv,jpg,jpeg,png,gif,tif,tiff,ico,webp,aac,midi,ogg,"
-     "wav,webm,mp3,webm,mp4,mpeg,mov,wmv");
+    ("txt,css,json,csv,tsv,"
+     "jpg,jpeg,png,gif,tif,tiff,ico,webp,avif,"
+     "aac,midi,ogg,wav,webm,mp3,mp4,m4a,flac,mpeg,mov,wmv");
 
 // Get appropriate enum value for the initiator/download security state combo
 // for histogram reporting. |dl_secure| signifies whether the download was

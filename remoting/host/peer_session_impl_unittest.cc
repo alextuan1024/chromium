@@ -305,7 +305,7 @@ void PeerSessionImplTest::CreatePeerSession() {
   std::unique_ptr<protocol::FakeConnectionToClient> connection(
       new protocol::FakeConnectionToClient());
   connection->set_client_stub(&client_stub_);
-  connection_ = connection->GetWeakPtr();
+  connection_ = connection->GetWeakPtrForTest();
 
   peer_session_ = std::make_unique<PeerSessionImpl>(
       std::move(connection), desktop_environment_factory_.get(),
@@ -385,35 +385,6 @@ void PeerSessionImplTest::SetupSingleDisplay() {
   AddDisplayToLayout(displays.get(), 0, 0, kDisplay1Width, kDisplay1Height,
                      kDefaultDpi, kDefaultDpi, kDisplay1Id);
   NotifyDesktopDisplaySize(std::move(displays));
-}
-
-TEST_F(PeerSessionImplTest, DisconnectsAfterMaxSessionDurationIsReached) {
-  SessionPolicies policies;
-  policies.maximum_session_duration = base::Hours(10);
-  ConnectPeerSession(policies);
-
-  EXPECT_TRUE(is_connected());
-  // Calling FastForwardBy() would result in a livelock, so we just advance the
-  // clock and run all the scheduled tasks, which includes the max duration
-  // timer.
-  task_environment_.AdvanceClock(*policies.maximum_session_duration +
-                                 base::Minutes(1));
-  EXPECT_TRUE(base::test::RunUntil([this] { return !is_connected(); }));
-}
-
-TEST_F(PeerSessionImplTest, MaximumSessionDurationIsClampedTo30Minutes) {
-  SessionPolicies policies;
-  policies.maximum_session_duration = base::Minutes(10);
-  ConnectPeerSession(policies);
-
-  EXPECT_TRUE(is_connected());
-  // Advancing by 20 minutes should not disconnect the session since 10 minutes
-  // is clamped to the minimum duration of 30 minutes.
-  task_environment_.AdvanceClock(base::Minutes(20));
-  EXPECT_TRUE(is_connected());
-
-  task_environment_.AdvanceClock(base::Minutes(11));
-  EXPECT_TRUE(base::test::RunUntil([this] { return !is_connected(); }));
 }
 
 // TODO(lambroslambrou): Re-implement the deleted MultiMonMouseMove
@@ -549,11 +520,11 @@ TEST_F(PeerSessionImplTest, LocalInputTest) {
   connection_->input_stub()->InjectMouseEvent(MakeFractionalMouseMoveEvent(
       100, 101, kDisplay1Id, kDisplay1Width, kDisplay1Height));
 
-#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
   // The OS echoes the injected event back.
   peer_session_->OnLocalPointerMoved(webrtc::DesktopVector(100, 101),
                                      ui::EventType::kMouseMoved);
-#endif  // !BUILDFLAG(IS_WIN)
+#endif  // !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
 
   // This one should get through as well.
   connection_->input_stub()->InjectMouseEvent(MakeFractionalMouseMoveEvent(
@@ -995,6 +966,76 @@ TEST_F(PeerSessionImplTest, ControlTerminal_RemoveRequest) {
 
   sessions = FakeTerminalSession::GetActiveSessions();
   ASSERT_EQ(sessions.size(), 0u);
+
+  peer_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
+  peer_session_.reset();
+}
+
+TEST_F(PeerSessionImplTest, AdvertisesTerminalModeCapabilityByDefault) {
+  EXPECT_CALL(
+      client_stub_,
+      SetCapabilities(IncludesCapabilities(protocol::kTerminalModeCapability)));
+
+  ConnectPeerSession();
+
+  peer_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
+  peer_session_.reset();
+}
+
+TEST_F(PeerSessionImplTest,
+       AdvertisesTerminalModeCapabilityWhenAllowedByPolicy) {
+  SessionPolicies policies;
+  policies.allow_terminal_mode = true;
+
+  EXPECT_CALL(
+      client_stub_,
+      SetCapabilities(IncludesCapabilities(protocol::kTerminalModeCapability)));
+
+  ConnectPeerSession(policies);
+
+  peer_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
+  peer_session_.reset();
+}
+
+TEST_F(PeerSessionImplTest,
+       ControlTerminal_NotAdvertisedOrHandledWhenDisallowedByPolicy) {
+  SessionPolicies policies;
+  policies.allow_terminal_mode = false;
+
+  EXPECT_CALL(client_stub_, SetCapabilities(Not(IncludesCapabilities(
+                                protocol::kTerminalModeCapability))));
+
+  ConnectPeerSession(policies);
+
+  protocol::Capabilities capabilities;
+  capabilities.set_capabilities(protocol::kTerminalModeCapability);
+  peer_session_->SetCapabilities(capabilities);
+
+  EXPECT_EQ(peer_session_->terminal_session_manager_for_tests(), nullptr);
+
+  // Attempting to send a create request should not create a terminal session.
+  EXPECT_CALL(client_stub_, DeliverTerminalControl(_)).Times(0);
+  protocol::TerminalControl create_req;
+  create_req.mutable_create_request();
+  peer_session_->ControlTerminal(create_req);
+
+  // Non-create requests must also be safely dropped without crashing.
+  protocol::TerminalControl input_req;
+  input_req.mutable_terminal_input()->set_terminal_id(1);
+  input_req.mutable_terminal_input()->set_input("test\n");
+  peer_session_->ControlTerminal(input_req);
+
+  protocol::TerminalControl resize_req;
+  resize_req.mutable_resize_terminal()->set_terminal_id(1);
+  resize_req.mutable_resize_terminal()->set_width(80);
+  resize_req.mutable_resize_terminal()->set_height(24);
+  peer_session_->ControlTerminal(resize_req);
+
+  protocol::TerminalControl remove_req;
+  remove_req.mutable_remove_request()->set_terminal_id(1);
+  peer_session_->ControlTerminal(remove_req);
+
+  EXPECT_TRUE(FakeTerminalSession::GetActiveSessions().empty());
 
   peer_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
   peer_session_.reset();

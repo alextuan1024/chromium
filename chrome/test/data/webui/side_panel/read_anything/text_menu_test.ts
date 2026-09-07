@@ -5,13 +5,13 @@
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
 import type {TextMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {DEFAULT_SETTINGS, LineFocusMovement, LineFocusStyle, ReadAnythingSettingsChange, ToolbarEvent, VisualBrowserProxyImpl} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {DEFAULT_SETTINGS, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {assertCheckMarksForDropdown, assertTestSettingsAreNotDefaultSettings, mockMetrics, stubAnimationFrame} from './common.js';
+import {assertCheckMarksForDropdown, assertTestSettingsAreNotDefaultSettings, setupTestEnvironment, stubAnimationFrame} from './common.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
-import {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
+import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('TextMenuElement', () => {
   let textMenu: TextMenuElement;
@@ -23,12 +23,11 @@ suite('TextMenuElement', () => {
   });
 
   setup(() => {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    visualBrowserProxy = new TestVisualBrowserProxy();
-    VisualBrowserProxyImpl.setInstance(visualBrowserProxy);
+    const result = setupTestEnvironment();
+    visualBrowserProxy = result.visualBrowserProxy;
     visualBrowserProxy.supportedFonts = ['Poppins', 'Sans-serif', 'Serif'];
     visualBrowserProxy.fontName = 'Poppins';
-    metrics = mockMetrics();
+    metrics = result.metrics;
 
     textMenu = document.createElement('text-menu');
     textMenu.areFontsLoaded = true;
@@ -224,148 +223,5 @@ suite('TextMenuElement', () => {
     assertTrue(textMenu.$.menu.$.lazyMenu.get().open);
     textMenu.close();
     assertFalse(textMenu.$.menu.$.lazyMenu.get().open);
-  });
-
-  suite('With line focus enabled', () => {
-    setup(async () => {
-      metrics.reset();
-      visualBrowserProxy.lineFocusEnabled = true;
-      textMenu.lineFocusEnabled = true;
-      textMenu.settingsPrefs = {...textMenu.settingsPrefs};
-      await microtasksFinished();
-    });
-
-    test('adds line focus menu groups to dropdown when on', () => {
-      assertEquals(6, textMenu.$.menu.menuGroups.length);
-    });
-
-    test(
-        'hides style and movement groups when lineFocusEnabled is false',
-        async () => {
-          textMenu.lineFocusEnabled = false;
-          await microtasksFinished();
-          assertEquals(4, textMenu.$.menu.menuGroups.length);
-        });
-
-    test('line focus style prop update changes selected items', async () => {
-      const window = LineFocusStyle.MEDIUM_WINDOW;
-      textMenu.lineFocusStyle = window;
-      await microtasksFinished();
-      let selectedItems =
-          textMenu.$.menu.menuGroups[4]!.items.filter(item => item.selected);
-      assertEquals(1, selectedItems.length, 'selected');
-      assertEquals(window, selectedItems[0]!.data, 'data');
-
-      const line = LineFocusStyle.UNDERLINE;
-      textMenu.lineFocusStyle = line;
-      await microtasksFinished();
-      selectedItems =
-          textMenu.$.menu.menuGroups[4]!.items.filter(item => item.selected);
-      assertEquals(1, selectedItems.length, 'selected line');
-      assertEquals(line, selectedItems[0]!.data, 'data line');
-    });
-
-    test(
-        'line focus enabled prop update changes selected items and group count',
-        async () => {
-          textMenu.lineFocusEnabled = true;
-          await microtasksFinished();
-          let selectedItems = textMenu.$.menu.menuGroups[3]!.items.filter(
-              item => item.selected);
-          assertEquals(1, selectedItems.length, 'selected true');
-          assertEquals(true, selectedItems[0]!.data);
-          assertEquals(6, textMenu.$.menu.menuGroups.length);
-
-          textMenu.lineFocusEnabled = false;
-          await microtasksFinished();
-          selectedItems = textMenu.$.menu.menuGroups[3]!.items.filter(
-              item => item.selected);
-          assertEquals(1, selectedItems.length, 'selected false');
-          assertEquals(false, selectedItems[0]!.data);
-          assertEquals(4, textMenu.$.menu.menuGroups.length);
-        });
-
-    test('line focus movement prop update changes selected items', async () => {
-      const cursor = LineFocusMovement.CURSOR;
-      textMenu.lineFocusMovement = cursor;
-      await microtasksFinished();
-      let selectedItems =
-          textMenu.$.menu.menuGroups[5]!.items.filter(item => item.selected);
-      assertEquals(1, selectedItems.length);
-      assertEquals(cursor, selectedItems[0]!.data);
-
-      const staticMovement = LineFocusMovement.STATIC;
-      textMenu.lineFocusMovement = staticMovement;
-      await microtasksFinished();
-      selectedItems =
-          textMenu.$.menu.menuGroups[5]!.items.filter(item => item.selected);
-      assertEquals(1, selectedItems.length);
-      assertEquals(staticMovement, selectedItems[0]!.data);
-    });
-
-    test('on line focus style change', async () => {
-      let closeAllMenusCount = 0;
-      document.addEventListener(
-          ToolbarEvent.CLOSE_ALL_MENUS, () => closeAllMenusCount += 1);
-
-      textMenu.$.menu.dispatchEvent(new CustomEvent(
-          ToolbarEvent.LINE_FOCUS_STYLE,
-          {detail: {data: LineFocusStyle.LARGE_WINDOW}}));
-      await microtasksFinished();
-
-      assertEquals(
-          ReadAnythingSettingsChange.LINE_FOCUS_STYLE_CHANGE,
-          await metrics.whenCalled('recordTextSettingsChange'));
-      assertEquals(0, closeAllMenusCount);
-    });
-
-    test('on line focus toggle change', async () => {
-      let closeAllMenusCount = 0;
-      document.addEventListener(
-          ToolbarEvent.CLOSE_ALL_MENUS, () => closeAllMenusCount += 1);
-
-      textMenu.$.menu.dispatchEvent(new CustomEvent(
-          ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}}));
-      await microtasksFinished();
-
-      assertEquals(
-          ReadAnythingSettingsChange.LINE_FOCUS_TOGGLE,
-          await metrics.whenCalled('recordTextSettingsChange'));
-      assertEquals(0, closeAllMenusCount);
-    });
-
-    test('on line focus movement change', async () => {
-      let closeAllMenusCount = 0;
-      document.addEventListener(
-          ToolbarEvent.CLOSE_ALL_MENUS, () => closeAllMenusCount += 1);
-
-      textMenu.$.menu.dispatchEvent(new CustomEvent(
-          ToolbarEvent.LINE_FOCUS_MOVEMENT,
-          {detail: {data: LineFocusMovement.CURSOR}}));
-      await microtasksFinished();
-
-      assertEquals(
-          ReadAnythingSettingsChange.LINE_FOCUS_MOVEMENT_CHANGE,
-          await metrics.whenCalled('recordTextSettingsChange'));
-      assertEquals(0, closeAllMenusCount);
-    });
-
-    test('can be closed programatically', () => {
-      stubAnimationFrame();
-      textMenu.open(document.body);
-      assertTrue(textMenu.$.menu.$.lazyMenu.get().open);
-      textMenu.close();
-      assertFalse(textMenu.$.menu.$.lazyMenu.get().open);
-    });
-
-    test(
-        'does not add line focus menu groups when isLineFocusEnabled is false',
-        async () => {
-          visualBrowserProxy.lineFocusEnabled = false;
-          textMenu.settingsPrefs = {...textMenu.settingsPrefs};
-          await microtasksFinished();
-
-          assertEquals(3, textMenu.$.menu.menuGroups.length);
-        });
   });
 });

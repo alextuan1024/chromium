@@ -95,7 +95,7 @@
 }
 
 - (void)onUserAction:(const std::string&)action {
-  if (!_levelUpService) {
+  if (!_levelUpService || !_levelUpService->IsOptedIn()) {
     return;
   }
 
@@ -109,7 +109,9 @@
     TaskType taskType = it->second;
     if (!_levelUpService->IsTaskCompleted(taskType)) {
       _levelUpService->MarkTaskCompleted(taskType);
-      [self showCompletionSnackbarForTask:taskType];
+      if (_levelUpService->IsUIEnabled()) {
+        [self showCompletionSnackbarForTask:taskType];
+      }
     }
   }
 }

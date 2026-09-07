@@ -503,6 +503,16 @@ LRESULT OwnerDrawTitleBarWindow::OnDrawItem(UINT, WPARAM, LPARAM lparam) {
   return 0;
 }
 
+LRESULT OwnerDrawTitleBarWindow::OnSetCursor(UINT,
+                                             WPARAM wparam,
+                                             LPARAM lparam) {
+  if (MaybeSetArrowCursor(hwnd(), wparam, lparam)) {
+    return TRUE;
+  }
+  SetMsgHandled(FALSE);
+  return 0;
+}
+
 void OwnerDrawTitleBarWindow::OnClose(UINT, int, HWND) {
   ::PostMessage(::GetParent(hwnd()), WM_SYSCOMMAND, MAKEWPARAM(SC_CLOSE, 0), 0);
 }
@@ -666,8 +676,8 @@ CustomDlgColors::~CustomDlgColors() = default;
 
 void CustomDlgColors::UpdateThemeState() {
   is_high_contrast_ = IsHighContrastOn();
-  is_dark_mode_ = !is_high_contrast_ && IsDarkModeOn();
-  if (is_dark_mode_) {
+  is_dark_mode_ = IsDarkModeOn();
+  if (is_dark_mode_ && !is_high_contrast_) {
     if (!dark_bk_brush_.is_valid()) {
       dark_bk_brush_.reset(::CreateSolidBrush(kBgColorDark));
     }
@@ -740,7 +750,7 @@ CustomProgressBarCtrl::~CustomProgressBarCtrl() = default;
 
 void CustomProgressBarCtrl::UpdateThemeState() {
   is_high_contrast_ = IsHighContrastOn();
-  is_dark_mode_ = !is_high_contrast_ && IsDarkModeOn();
+  is_dark_mode_ = IsDarkModeOn();
 }
 
 LRESULT CustomProgressBarCtrl::OnEraseBkgnd(UINT, WPARAM, LPARAM) {
@@ -1028,7 +1038,7 @@ FlatButton::~FlatButton() = default;
 
 void FlatButton::UpdateThemeState() {
   is_high_contrast_ = IsHighContrastOn();
-  is_dark_mode_ = !is_high_contrast_ && IsDarkModeOn();
+  is_dark_mode_ = IsDarkModeOn();
 }
 
 void FlatButton::SetIsPrimary(bool is_primary) {

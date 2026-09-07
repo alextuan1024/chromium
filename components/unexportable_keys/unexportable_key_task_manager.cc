@@ -27,7 +27,7 @@
 #include "components/unexportable_keys/service_error.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
 #include "components/unexportable_keys/unexportable_key_tasks.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 namespace unexportable_keys {
@@ -40,22 +40,6 @@ constexpr std::string_view kBaseTaskRetriesHistogramName =
     "Crypto.UnexportableKeys.BackgroundTaskRetries";
 constexpr size_t kSignTaskMaxRetries = 3;
 constexpr size_t kCertifyTaskMaxRetries = 3;
-
-std::string_view GetBackgroundTaskOriginSuffixForHistograms(
-    BackgroundTaskOrigin origin) {
-  // LINT.IfChange(BackgroundTaskOriginSuffixForHistograms)
-  switch (origin) {
-    case BackgroundTaskOrigin::kRefreshTokenBinding:
-      return ".RefreshTokenBinding";
-    case BackgroundTaskOrigin::kDeviceBoundSessionCredentials:
-      return ".DeviceBoundSessions";
-    case BackgroundTaskOrigin::kDeviceBoundSessionCredentialsPrototype:
-      return ".BoundSessionCredentials";
-    case BackgroundTaskOrigin::kOrphanedKeyGarbageCollection:
-      return ".OrphanedKeyGarbageCollection";
-  }
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/histograms.xml:UnexportableKeysBackgroundTaskOrigin)
-}
 
 template <class CallbackReturnType>
 void ReportResultMetrics(BackgroundTaskType task_type,
@@ -151,8 +135,7 @@ void UnexportableKeyTaskManager::GetAllKeysForGarbageCollectionSlowlyAsync(
 void UnexportableKeyTaskManager::GenerateSigningKeySlowlyAsync(
     BackgroundTaskOrigin origin,
     crypto::UnexportableKeyProvider::Config config,
-    base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms,
+    base::span<const crypto::sign::SignatureKind> acceptable_algorithms,
     BackgroundTaskPriority priority,
     base::OnceCallback<
         void(ServiceErrorOr<scoped_refptr<RefCountedUnexportableSigningKey>>)>
@@ -206,13 +189,16 @@ void UnexportableKeyTaskManager::FromWrappedSigningKeySlowlyAsync(
 }
 
 void UnexportableKeyTaskManager::SignSlowlyAsync(
+    BackgroundTaskType task_type,
     BackgroundTaskOrigin origin,
     scoped_refptr<RefCountedUnexportableSigningKey> signing_key,
     base::span<const uint8_t> data,
     BackgroundTaskPriority priority,
     base::OnceCallback<void(ServiceErrorOr<std::vector<uint8_t>>)> callback) {
-  auto metrics_callback = CreateMetricsCallback<std::vector<uint8_t>>(
-      BackgroundTaskType::kSign, origin);
+  CHECK(task_type == BackgroundTaskType::kSign ||
+        task_type == BackgroundTaskType::kSignWithAttestationKey);
+  auto metrics_callback =
+      CreateMetricsCallback<std::vector<uint8_t>>(task_type, origin);
 
   // TODO(alexilin): convert this to a CHECK().
   if (!signing_key) {
@@ -225,7 +211,7 @@ void UnexportableKeyTaskManager::SignSlowlyAsync(
   // TODO(b/263249728): deduplicate tasks with the same parameters.
   // TODO(b/263249728): implement a cache of recent signings.
   auto task = std::make_unique<SignTask>(
-      std::move(signing_key), data, priority, kSignTaskMaxRetries,
+      std::move(signing_key), data, priority, task_type, kSignTaskMaxRetries,
       std::move(callback), std::move(metrics_callback));
   task_scheduler_.PostTask(std::move(task));
 }
@@ -300,8 +286,7 @@ void UnexportableKeyTaskManager::DeleteAllKeysSlowlyAsync(
 void UnexportableKeyTaskManager::GenerateAttestationKeySlowlyAsync(
     BackgroundTaskOrigin origin,
     crypto::UnexportableKeyProvider::Config config,
-    base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms,
+    base::span<const crypto::sign::SignatureKind> acceptable_algorithms,
     BackgroundTaskPriority priority,
     base::OnceCallback<void(
         ServiceErrorOr<scoped_refptr<RefCountedUnexportableAttestationKey>>)>

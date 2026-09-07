@@ -97,8 +97,6 @@ source_set("web_applications") {
     "commands/web_app_uninstall_command.h",
     "commands/web_install_from_manifest_command.cc",
     "commands/web_install_from_manifest_command.h",
-    "commands/web_install_from_url_command.cc",
-    "commands/web_install_from_url_command.h",
     "custom_icon_fetcher.cc",
     "custom_icon_fetcher.h",
     "daily_metrics_helper.cc",
@@ -945,7 +943,6 @@ source_set("prevent_close_test_support") {
     ":web_applications_test_support",
     "//chrome/browser/policy:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/test:test_support",
     "//components/policy/core/common:test_support",
     "//components/webapps/common",
@@ -1023,7 +1020,6 @@ source_set("web_applications_unit_tests") {
     "isolated_web_apps/isolated_web_app_url_loader_factory_unittest.cc",
     "isolated_web_apps/isolated_web_app_user_installed_manager_unittest.cc",
     "isolated_web_apps/iwa_permissions_policy_cache_unittest.cc",
-    "isolated_web_apps/key_distribution/iwa_key_distribution_info_provider_unittest.cc",
     "isolated_web_apps/manifest_update_unittest.cc",
     "isolated_web_apps/policy/isolated_web_app_installer_unittest.cc",
     "isolated_web_apps/policy/isolated_web_app_policy_manager_unittest.cc",
@@ -1275,7 +1271,6 @@ source_set("web_applications_browser_tests") {
     "commands/parse_manifest_from_manifest_url_command_browsertest.cc",
     "commands/update_protocol_handler_approval_command_browsertest.cc",
     "commands/web_app_install_from_migrate_from_field_command_browsertest.cc",
-    "commands/web_install_from_url_command_browsertest.cc",
     "get_installed_related_apps_browsertest.cc",
     "install_element_browsertest.cc",
     "isolated_web_apps/browser_navigator_iwa_browsertest.cc",
@@ -1329,10 +1324,6 @@ source_set("web_applications_browser_tests") {
     "web_install_from_manifest_browsertest.cc",
   ]
 
-  if (!is_win) {
-    sources += [ "web_app_internals_browsertest.cc" ]
-  }
-
   if (!is_chromeos) {
     sources += [
       "web_app_navigation_capturing_aux_content_focus_browsertest.cc",
@@ -1383,6 +1374,7 @@ source_set("web_applications_browser_tests") {
     "//chrome/browser/browsing_data:constants",
     "//chrome/browser/component_updater",
     "//chrome/browser/content_settings:content_settings_factory",
+    "//chrome/browser/devtools",
     "//chrome/browser/devtools:test_support",
     "//chrome/browser/gcm",
     "//chrome/browser/notifications:system_notification_helper",
@@ -1396,12 +1388,16 @@ source_set("web_applications_browser_tests") {
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/navigator:browser_tests",
     "//chrome/browser/ui/profiles",
+    "//chrome/browser/ui/views:intent_picker_bubble_view",
     "//chrome/browser/ui/views/location_bar",
     "//chrome/browser/ui/views/toolbar",
     "//chrome/browser/ui/views/web_apps:web_app_install_progress_view",
+    "//chrome/browser/ui/views/web_apps/isolated_web_apps:isolated_web_app_installer_coordinator",
+    "//chrome/browser/ui/views/web_apps/isolated_web_apps:isolated_web_app_installer_view_controller",
     "//chrome/browser/ui/views/web_apps/sub_apps",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/ui/web_applications:launch_utils",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/browser/ui/webui/web_app_internals",
     "//chrome/browser/web_applications:features",
     "//chrome/browser/web_applications/isolated_web_apps/test:test_support",
@@ -1496,7 +1492,10 @@ source_set("app_service_browser_tests") {
       "chromeos_web_app_experiments_browsertest.cc",
     ]
 
-    deps += [ "//chrome/browser/ui/web_applications" ]
+    deps += [
+      "//chrome/browser/ui/web_applications",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
+    ]
   }
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -1606,7 +1605,6 @@ if (!is_android) {
     deps = [
       ":web_applications_test_support",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
       "//chrome/common:constants",
     ]
 

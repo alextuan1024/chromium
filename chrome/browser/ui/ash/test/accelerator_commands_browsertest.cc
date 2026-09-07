@@ -12,10 +12,10 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "content/public/test/browser_test.h"
@@ -24,6 +24,7 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
+#include "ui/base/base_window.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -108,9 +109,8 @@ IN_PROC_BROWSER_TEST_P(AcceleratorCommandsFullscreenBrowserTest,
           "Test", /*trusted_source=*/true, gfx::Rect(), browser()->GetProfile(),
           /*user_gesture=*/true));
 
-  Browser* app_host_browser =
-      CreateBrowserWindow(std::move(browser_create_params))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* app_host_browser =
+      CreateBrowserWindow(std::move(browser_create_params));
   ASSERT_NE(app_host_browser->GetType(),
             BrowserWindowInterface::Type::TYPE_POPUP);
   ASSERT_EQ(app_host_browser->GetType(),
@@ -133,8 +133,8 @@ IN_PROC_BROWSER_TEST_P(AcceleratorCommandsFullscreenBrowserTest,
   browser_create_params = BrowserWindowCreateParams(
       BrowserWindowInterface::TYPE_POPUP, browser()->GetProfile(),
       /*from_user_gesture=*/true);
-  Browser* popup_browser = CreateBrowserWindow(std::move(browser_create_params))
-                               ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* popup_browser =
+      CreateBrowserWindow(std::move(browser_create_params));
   ASSERT_EQ(popup_browser->GetType(), BrowserWindowInterface::Type::TYPE_POPUP);
   ASSERT_NE(popup_browser->GetType(), BrowserWindowInterface::Type::TYPE_APP);
   AddBlankTabAndShow(popup_browser);

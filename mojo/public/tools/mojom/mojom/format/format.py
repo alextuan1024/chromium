@@ -119,6 +119,7 @@ def _write_import_list(nodes, state):
 
 def _write_import(node, state):
     assert isinstance(node, ast.Import)
+    _write_line_comments(node.comments_before, state)
     state.write(_format_attribute_list(node.attribute_list, state.get_indent()))
     state.write(f'import "{node.import_filename}";')
     _write_eol(node, state)
@@ -484,8 +485,9 @@ def _write_typename(tnode, state):
             state.write(', ')
             state.write(str(node.fixed_size))
         state.write('>')
-    elif isinstance(node, ast.Map):
-        state.write('map<')
+    elif isinstance(node, (ast.Map, ast.HashMap)):
+        name = 'hash_map<' if isinstance(node, ast.HashMap) else 'map<'
+        state.write(name)
         state.write(node.key_type.id)
         state.write(', ')
         _write_typename(node.value_type, state)

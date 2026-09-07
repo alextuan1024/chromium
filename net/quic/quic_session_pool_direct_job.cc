@@ -45,6 +45,7 @@ QuicSessionPool::DirectJob::DirectJob(
           std::move(key),
           std::move(client_config_handle),
           priority,
+          session_creation_initiator,
           quic_connection_reuse_details,
           NetLogWithSource::Make(
               net_log.net_log(),
@@ -56,7 +57,6 @@ QuicSessionPool::DirectJob::DirectJob(
       cert_verify_flags_(cert_verify_flags),
       retry_on_alternate_network_before_handshake_(
           retry_on_alternate_network_before_handshake),
-      session_creation_initiator_(session_creation_initiator),
       connection_management_config_(connection_management_config) {
   // TODO(davidben): `require_dns_https_alpn_` only exists to be `DCHECK`ed
   // for consistency against `quic_version_`. Remove the parameter?
@@ -257,9 +257,8 @@ bool QuicSessionPool::DirectJob::IsSvcbOptional(
   // If SVCB/HTTPS resolution succeeded, the client supports ECH, and all
   // alternative endpoints support ECH, disable the A/AAAA fallback. See
   // Section 5.1 of draft-ietf-tls-svcb-ech-08.
-  if (!pool_->ssl_config_service_->GetSSLContextConfig().ech_enabled ||
-      pool_->ssl_config_service_->GetEchMode(key().session_key().host()) ==
-          EchMode::kDisabled) {
+  if (pool_->ssl_config_service_->GetEchMode(key().session_key().host()) ==
+      EchMode::kDisabled) {
     return true;  // ECH is not supported for this request.
   }
 

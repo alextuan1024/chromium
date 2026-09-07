@@ -42,6 +42,7 @@ ScopedWebFrame::ScopedWebFrame()
                                                    mojo::NullRemote(),
                                                    blink::LocalFrameToken(),
                                                    blink::DocumentToken(),
+                                                   blink::InitiatorStateToken(),
                                                    nullptr)) {
   view_->DidAttachLocalMainFrame();
 }

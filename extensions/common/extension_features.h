@@ -119,6 +119,10 @@ BASE_DECLARE_FEATURE(kApiRuntimeGetPlatformInfoNaClArch);
 // runtime.connectNative on Desktop Android.
 BASE_DECLARE_FEATURE(kApiDesktopAndroidNativeMessaging);
 
+// If enabled, bypasses the allowlist check on Desktop Android for native
+// messaging extension IDs.
+BASE_DECLARE_FEATURE(kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist);
+
 ///////////////////////////////////////////////////////////////////////////////
 // Other Features
 ///////////////////////////////////////////////////////////////////////////////
@@ -314,6 +318,12 @@ BASE_DECLARE_FEATURE_PARAM(bool,
 // engine override dialog.
 BASE_DECLARE_FEATURE(kSearchEngineUnconditionalDialog);
 
+// When enabled, Event argument ref-counting is used to share arguments across
+// dispatched events instead of deep-cloning. Behind a feature to assess impact
+// (go/chrome-performance-work-should-be-finched).
+// TODO(crbug.com/424432184): Clean up when experiment is complete.
+BASE_DECLARE_FEATURE(kShareEventArgsOnDispatch);
+
 // Enables the securityInfo in chrome.webRequest API for extensions.
 // Allowing them to retrieve certificate information from web requests.
 BASE_DECLARE_FEATURE(kWebRequestSecurityInfo);
@@ -333,6 +343,9 @@ BASE_DECLARE_FEATURE(kOptimizeWebRequestProxy);
 // `webRequestInternal.eventHandled` function, and signals completion with a
 // single `WebRequestHost.EventHandlingDone` mojo call per target.
 BASE_DECLARE_FEATURE(kWebRequestPerContextEventDispatch);
+
+// If enabled, `HashedExtensionId` uses SHA-256 hashes instead of SHA-1.
+BASE_DECLARE_FEATURE(kUseSha256ForExtensionHashes);
 
 }  // namespace extensions_features
 

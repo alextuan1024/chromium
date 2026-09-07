@@ -92,6 +92,7 @@ source_set("searchbox") {
       "//chrome/browser/contextual_tasks",
       "//chrome/browser/resources/new_tab_page:resources",
       "//chrome/browser/resources/new_tab_page:resources_grit",
+      "//chrome/browser/ui:tab_ui_helper",
       "//chrome/browser/ui/bookmarks",
       "//chrome/browser/ui/search",
       "//chrome/browser/ui/tabs:tab_strip",
@@ -223,12 +224,17 @@ source_set("unit_tests") {
   ]
 
   if (!is_android) {
-    sources += [ "contextual_searchbox_handler_unittest.cc" ]
+    sources += [
+      "contextual_searchbox_handler_unittest.cc",
+      "contextual_searchbox_screenshare_controller_unittest.cc",
+    ]
     deps += [
       "//chrome/browser/contextual_tasks",
       "//chrome/browser/feature_engagement",
+      "//chrome/browser/media/webrtc",
       "//chrome/browser/search_engines",
       "//chrome/browser/signin",
+      "//chrome/browser/ui:tab_ui_helper",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/views/drive_picker_host",
       "//chrome/browser/ui/webui/cr_components/composebox",
@@ -242,7 +248,9 @@ source_set("unit_tests") {
       "//components/omnibox/common:features",
       "//components/omnibox/composebox:mojo_bindings",
       "//components/prefs",
+      "//third_party/webrtc_overrides:webrtc_component",
       "//ui/base:test_support",
+      "//ui/gfx/codec",
     ]
 
     if (is_chromeos) {
@@ -260,6 +268,7 @@ source_set("unit_tests") {
     deps += [
       ":searchbox",
       "//chrome/browser/bookmarks",
+      "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/omnibox",
       "//chrome/browser/ui/omnibox:test_support",
       "//chrome/browser/ui/webui/cr_components/searchbox",
@@ -297,6 +306,7 @@ if (enable_webui_ntp && !is_android) {
       "//chrome/browser/contextual_search",
       "//chrome/browser/signin",
       "//chrome/browser/ui",
+      "//chrome/browser/ui/views/frame:contents_web_view",
       "//chrome/browser/ui/views/page_action:test_support",
       "//chrome/browser/ui/webui/new_tab_page/composebox/variations",
       "//chrome/browser/ui/webui/test_support",

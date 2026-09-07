@@ -31,10 +31,13 @@
 #include "components/personal_context/core/mock_personal_context_service.h"
 #include "components/personal_context/core/personal_context_service.h"
 #include "components/personal_context/proto/features/auto_todos.pb.h"
+#include "components/personal_context/proto/features/common_data.pb.h"
+#include "components/personal_context/proto/features/smart_search.pb.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
+#include "components/saved_tab_groups/test_support/saved_tab_group_test_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
@@ -182,6 +185,7 @@ class ContextHubPageHandlerTest : public testing::Test {
         {features::kContextHub, features::kMemoryBanks,
          browser::context_hub::mojom::kAutoTabGroups,
          browser::context_hub::mojom::kAutoTodos,
+         browser::context_hub::mojom::kSmartSearch,
          optimization_guide::features::kOptimizationHints},
         {});
     return feature_list;
@@ -420,7 +424,8 @@ TEST(ContextHubMojomTraitsTest, GroupTypeSerialization) {
        {context_hub::ThirdPartyData::GroupType::kNoMatch,
         context_hub::ThirdPartyData::GroupType::kNudgeToClose,
         context_hub::ThirdPartyData::GroupType::kReadingList,
-        context_hub::ThirdPartyData::GroupType::kUnfinishedAction}) {
+        context_hub::ThirdPartyData::GroupType::kUnfinishedAction,
+        context_hub::ThirdPartyData::GroupType::kShoppingCart}) {
     context_hub::ThirdPartyData::GroupType output;
     ASSERT_TRUE(
         mojo::test::SerializeAndDeserialize<
@@ -451,6 +456,65 @@ TEST(ContextHubMojomTraitsTest, SourceReferenceSerialization) {
               browser::context_hub::mojom::SourceReference>(input, output));
   EXPECT_EQ(output.url, GURL("https://mail.google.com/mail/u/0/#inbox/123"));
   EXPECT_EQ(output.subject, "Test Subject");
+}
+
+TEST(ContextHubMojomTraitsTest, SmartSearchResultSerialization) {
+  personal_context::proto::SmartSearchItem input;
+  input.set_description("Document discussing project plan.");
+  personal_context::proto::DriveFile* drive_ref =
+      input.add_source_references()->mutable_drive();
+  drive_ref->set_name("Project Plan 2026");
+  drive_ref->set_url("https://docs.google.com/document/d/123");
+
+  personal_context::proto::SmartSearchItem output;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              browser::context_hub::mojom::SmartSearchResult>(input, output));
+  EXPECT_EQ(output.description(), "Document discussing project plan.");
+  ASSERT_EQ(output.source_references_size(), 1);
+  EXPECT_TRUE(output.source_references(0).has_drive());
+  EXPECT_EQ(output.source_references(0).drive().name(), "Project Plan 2026");
+  EXPECT_EQ(output.source_references(0).drive().url(),
+            "https://docs.google.com/document/d/123");
+}
+
+TEST(ContextHubMojomTraitsTest, SmartSearchResultSerialization_GmailAndPhotos) {
+  personal_context::proto::SmartSearchItem input;
+  input.set_description("Results with multiple sources.");
+
+  personal_context::proto::DriveFile* drive_ref =
+      input.add_source_references()->mutable_drive();
+  drive_ref->set_name("Project Plan 2026");
+  drive_ref->set_url("https://docs.google.com/document/d/123");
+
+  personal_context::proto::GmailReference* gmail_ref =
+      input.add_source_references()->mutable_gmail();
+  gmail_ref->set_message_url("https://mail.google.com/mail/u/0/#inbox/456");
+  gmail_ref->set_subject("Project Discussion");
+
+  personal_context::proto::PhotosReference* photos_ref =
+      input.add_source_references()->mutable_photos();
+  photos_ref->set_photos_url("https://photos.google.com/photo/789");
+
+  personal_context::proto::SmartSearchItem output;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              browser::context_hub::mojom::SmartSearchResult>(input, output));
+  EXPECT_EQ(output.description(), "Results with multiple sources.");
+  ASSERT_EQ(output.source_references_size(), 3);
+
+  EXPECT_TRUE(output.source_references(0).has_drive());
+  EXPECT_EQ(output.source_references(0).drive().name(), "Project Plan 2026");
+  EXPECT_EQ(output.source_references(0).drive().url(),
+            "https://docs.google.com/document/d/123");
+
+  EXPECT_TRUE(output.source_references(1).has_gmail());
+  EXPECT_EQ(output.source_references(1).gmail().message_url(),
+            "https://mail.google.com/mail/u/0/#inbox/456");
+  EXPECT_EQ(output.source_references(1).gmail().subject(),
+            "Project Discussion");
+
+  EXPECT_TRUE(output.source_references(2).has_photos());
+  EXPECT_EQ(output.source_references(2).photos().photos_url(),
+            "https://photos.google.com/photo/789");
 }
 
 TEST(ContextHubMojomTraitsTest, FirstPartyDataSerialization) {
@@ -840,6 +904,70 @@ TEST_F(ContextHubPageHandlerTest, UpdateAutoTodo_ThirdParty_Success) {
             ThirdPartyData::GroupType::kUnfinishedAction);
 }
 
+TEST_F(ContextHubPageHandlerTest, ClearFirstPartyAutoTodos) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  AutoTodoEntry fp_entry;
+  fp_entry.id = "fp_1";
+  fp_entry.title = "Workspace Todo";
+  fp_entry.data = FirstPartyData{};
+
+  AutoTodoEntry tp_entry;
+  tp_entry.id = "tp_1";
+  tp_entry.title = "Browser Todo";
+  tp_entry.data = ThirdPartyData{.tab_id = 123};
+
+  base::test::TestFuture<bool> add_future1, add_future2;
+  service->UpdateAutoTodo(std::move(fp_entry), add_future1.GetCallback());
+  EXPECT_TRUE(add_future1.Get());
+  service->UpdateAutoTodo(std::move(tp_entry), add_future2.GetCallback());
+  EXPECT_TRUE(add_future2.Get());
+
+  base::test::TestFuture<bool> clear_future;
+  handler_->ClearFirstPartyAutoTodos(clear_future.GetCallback());
+  EXPECT_TRUE(clear_future.Get());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service->GetAutoTodos(get_future.GetCallback());
+  auto entries = get_future.Get();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].id, "tp_1");
+}
+
+TEST_F(ContextHubPageHandlerTest, ClearThirdPartyAutoTodos) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  AutoTodoEntry fp_entry;
+  fp_entry.id = "fp_1";
+  fp_entry.title = "Workspace Todo";
+  fp_entry.data = FirstPartyData{};
+
+  AutoTodoEntry tp_entry;
+  tp_entry.id = "tp_1";
+  tp_entry.title = "Browser Todo";
+  tp_entry.data = ThirdPartyData{.tab_id = 123};
+
+  base::test::TestFuture<bool> add_future1, add_future2;
+  service->UpdateAutoTodo(std::move(fp_entry), add_future1.GetCallback());
+  EXPECT_TRUE(add_future1.Get());
+  service->UpdateAutoTodo(std::move(tp_entry), add_future2.GetCallback());
+  EXPECT_TRUE(add_future2.Get());
+
+  base::test::TestFuture<bool> clear_future;
+  handler_->ClearThirdPartyAutoTodos(clear_future.GetCallback());
+  EXPECT_TRUE(clear_future.Get());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service->GetAutoTodos(get_future.GetCallback());
+  auto entries = get_future.Get();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].id, "fp_1");
+}
+
 TEST_F(ContextHubPageHandlerTest, OnAutoTodosChanged) {
   ContextHubService* service =
       ContextHubServiceFactory::GetForProfile(&profile_);
@@ -1072,6 +1200,67 @@ TEST_F(ContextHubPageHandlerTest, DeleteMemoryBankEntries_Success) {
   std::vector<browser::context_hub::mojom::MemoryBankEntryPtr> entries2 =
       get_all_future2.Take();
   EXPECT_TRUE(entries2.empty());
+}
+
+TEST_F(ContextHubPageHandlerTest, GetAllMemoryBankTags_Empty) {
+  base::test::TestFuture<const std::vector<std::string>&> tags_future;
+  handler_->GetAllMemoryBankTags(tags_future.GetCallback());
+  EXPECT_TRUE(tags_future.Get().empty());
+}
+
+TEST_F(ContextHubPageHandlerTest, GetAllMemoryBankTags_Success) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  MemoryBankEntry entry1(MemoryBankType::kTab, GURL("https://example.com/tab1"),
+                         "Tab Title 1", "Page text 1");
+  entry1.tags = {"tag1", "tag2"};
+  base::test::TestFuture<bool> save_tab_future1;
+  service->SaveMemoryBankEntry(entry1, save_tab_future1.GetCallback());
+  ASSERT_TRUE(save_tab_future1.Wait());
+
+  MemoryBankEntry entry2(MemoryBankType::kTab, GURL("https://example.com/tab2"),
+                         "Tab Title 2", "Page text 2");
+  entry2.tags = {"tag2", "tag3"};
+  base::test::TestFuture<bool> save_tab_future2;
+  service->SaveMemoryBankEntry(entry2, save_tab_future2.GetCallback());
+  ASSERT_TRUE(save_tab_future2.Wait());
+
+  base::test::TestFuture<const std::vector<std::string>&> tags_future;
+  handler_->GetAllMemoryBankTags(tags_future.GetCallback());
+  EXPECT_THAT(tags_future.Get(),
+              testing::UnorderedElementsAre("tag1", "tag2", "tag3"));
+}
+
+TEST_F(ContextHubPageHandlerTest, GetAllMemoryBankCollections_Empty) {
+  base::test::TestFuture<const std::vector<std::string>&> coll_future;
+  handler_->GetAllMemoryBankCollections(coll_future.GetCallback());
+  EXPECT_TRUE(coll_future.Get().empty());
+}
+
+TEST_F(ContextHubPageHandlerTest, GetAllMemoryBankCollections_Success) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  MemoryBankEntry entry1(MemoryBankType::kTab, GURL("https://example.com/tab1"),
+                         "Tab Title 1", "Page text 1");
+  entry1.collection = "Research";
+  base::test::TestFuture<bool> save_tab_future1;
+  service->SaveMemoryBankEntry(entry1, save_tab_future1.GetCallback());
+  ASSERT_TRUE(save_tab_future1.Wait());
+
+  MemoryBankEntry entry2(MemoryBankType::kTab, GURL("https://example.com/tab2"),
+                         "Tab Title 2", "Page text 2");
+  entry2.collection = "Recipes";
+  base::test::TestFuture<bool> save_tab_future2;
+  service->SaveMemoryBankEntry(entry2, save_tab_future2.GetCallback());
+  ASSERT_TRUE(save_tab_future2.Wait());
+
+  base::test::TestFuture<const std::vector<std::string>&> coll_future;
+  handler_->GetAllMemoryBankCollections(coll_future.GetCallback());
+  EXPECT_THAT(coll_future.Get(), testing::ElementsAre("Recipes", "Research"));
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -1416,6 +1605,36 @@ TEST_F(ContextHubPageHandlerTest, ClearTabGroupChatHistory) {
   EXPECT_TRUE(service->GetTabGroupChatHistory().empty());
 }
 
+TEST_F(ContextHubPageHandlerTest, GetAndClearMemoryBankChatHistory) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  service->AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER, "User query");
+  task_environment_.FastForwardBy(base::Milliseconds(1));
+  service->AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT,
+      "Assistant response");
+
+  base::test::TestFuture<
+      std::vector<browser::context_hub::mojom::ChatMessagePtr>>
+      get_future;
+  handler_->GetMemoryBankChatHistory(get_future.GetCallback());
+  auto history = get_future.Take();
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history[0]->role, browser::context_hub::mojom::ChatRole::kUser);
+  EXPECT_EQ(history[0]->content, "User query");
+  EXPECT_EQ(history[1]->role,
+            browser::context_hub::mojom::ChatRole::kAssistant);
+  EXPECT_EQ(history[1]->content, "Assistant response");
+
+  base::test::TestFuture<void> clear_future;
+  handler_->ClearMemoryBankChatHistory(clear_future.GetCallback());
+  EXPECT_TRUE(clear_future.Wait());
+  EXPECT_TRUE(service->GetMemoryBankChatHistory().empty());
+}
+
 TEST_F(ContextHubPageHandlerTest, ClearTabGroups) {
   ContextHubService* service =
       ContextHubServiceFactory::GetForProfile(&profile_);
@@ -1613,9 +1832,14 @@ TEST_F(ContextHubPageHandlerTest, GetConfirmedTabGroups) {
   auto* sync_service =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(&profile_);
   base::Uuid uuid = base::Uuid::GenerateRandomV4();
-  tab_groups::SavedTabGroup group(u"Test Group",
-                                  tab_groups::TabGroupColorId::kBlue, {},
-                                  /*position=*/std::nullopt, uuid);
+  tab_groups::SavedTabGroup group(
+      u"Test Group", tab_groups::TabGroupColorId::kBlue, {},
+      /*position=*/std::nullopt, uuid,
+      tab_groups::test::GenerateRandomTabGroupID());
+  tab_groups::SavedTabGroupTab tab(
+      GURL("https://example.com"), u"Example", group.saved_guid(),
+      /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/1);
+  group.AddTabLocally(tab);
   sync_service->AddGroup(group);
 
   base::test::TestFuture<std::vector<browser::context_hub::mojom::TabGroupPtr>>
@@ -1686,9 +1910,14 @@ TEST_F(ContextHubPageHandlerTest, RemoveAllConfirmedTabGroups) {
   auto* sync_service =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(&profile_);
   base::Uuid uuid = base::Uuid::GenerateRandomV4();
-  tab_groups::SavedTabGroup group(u"Test Group",
-                                  tab_groups::TabGroupColorId::kBlue, {},
-                                  /*position=*/std::nullopt, uuid);
+  tab_groups::SavedTabGroup group(
+      u"Test Group", tab_groups::TabGroupColorId::kBlue, {},
+      /*position=*/std::nullopt, uuid,
+      tab_groups::test::GenerateRandomTabGroupID());
+  tab_groups::SavedTabGroupTab tab(
+      GURL("https://example.com"), u"Example", group.saved_guid(),
+      /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/1);
+  group.AddTabLocally(tab);
   sync_service->AddGroup(group);
 
   EXPECT_CALL(*mock_tab_provider_, UngroupGroupFromTabstripIfOpen(uuid));
@@ -1798,6 +2027,138 @@ TEST_F(ContextHubPageHandlerTest, SaveMemoryBankEntry_WithContext) {
   EXPECT_EQ(entries[0].note, "Test Note");
   EXPECT_EQ(entries[0].collection, "Test Collection");
   EXPECT_THAT(entries[0].tags, testing::ElementsAre("tag1"));
+}
+
+TEST_F(ContextHubPageHandlerTest, UpdateMemoryBankEntryAnnotations_Success) {
+  auto* service = ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  MemoryBankEntry entry(MemoryBankType::kTextSelection,
+                        GURL("https://example.com/test"), "Test Title",
+                        "Test Snippet");
+  entry.tags = {"old_tag"};
+  entry.note = "Old Note";
+  entry.collection = "Old Collection";
+
+  base::test::TestFuture<bool> save_future;
+  service->SaveMemoryBankEntry(std::move(entry), save_future.GetCallback());
+  EXPECT_TRUE(save_future.Get());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> entries_future;
+  service->GetAllEntries(entries_future.GetCallback());
+  auto entries = entries_future.Take();
+  ASSERT_EQ(entries.size(), 1u);
+  int64_t id = entries[0].id;
+
+  auto new_annotations =
+      browser::context_hub::mojom::MemoryBankEntryAnnotations::New();
+  new_annotations->note = "New Note";
+  new_annotations->collection = "New Collection";
+  new_annotations->tags = std::vector<std::string>{"new_tag1", "new_tag2"};
+
+  base::test::TestFuture<bool> update_future;
+  handler_->UpdateMemoryBankEntryAnnotations(id, std::move(new_annotations),
+                                             update_future.GetCallback());
+  EXPECT_TRUE(update_future.Get());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> updated_entries_future;
+  service->GetAllEntries(updated_entries_future.GetCallback());
+  auto updated_entries = updated_entries_future.Take();
+  ASSERT_EQ(updated_entries.size(), 1u);
+  EXPECT_EQ(updated_entries[0].id, id);
+  EXPECT_EQ(updated_entries[0].note, "New Note");
+  EXPECT_EQ(updated_entries[0].collection, "New Collection");
+  EXPECT_THAT(updated_entries[0].tags,
+              testing::ElementsAre("new_tag1", "new_tag2"));
+}
+
+TEST_F(ContextHubPageHandlerTest, UpdateMemoryBankEntryAnnotations_NotFound) {
+  auto new_annotations =
+      browser::context_hub::mojom::MemoryBankEntryAnnotations::New();
+  new_annotations->note = "Note";
+
+  base::test::TestFuture<bool> update_future;
+  handler_->UpdateMemoryBankEntryAnnotations(999999, std::move(new_annotations),
+                                             update_future.GetCallback());
+  EXPECT_FALSE(update_future.Get());
+}
+
+TEST_F(ContextHubPageHandlerTest, ExecuteSmartSearch_Success) {
+  personal_context::proto::SmartSearchResponse expected_response;
+
+  personal_context::proto::SmartSearchItem* item =
+      expected_response.add_items();
+  item->set_description("Document discussing project plan.");
+  personal_context::proto::SourceReference* ref =
+      item->add_source_references();
+  ref->mutable_drive()->set_name("Project Plan 2026");
+  ref->mutable_drive()->set_url("https://docs.google.com/document/d/123");
+
+  personal_context::proto::Any any_response;
+  expected_response.SerializeToString(any_response.mutable_value());
+
+  EXPECT_CALL(
+      *GetMockService(),
+      FetchContext(
+          personal_context::proto::CONTEXT_MEMORY_FEATURE_SMART_SEARCH, _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  base::test::TestFuture<
+      const std::vector<personal_context::proto::SmartSearchItem>&>
+      future;
+  handler_->ExecuteSmartSearch("project", future.GetCallback());
+
+  const auto& results = future.Get();
+  ASSERT_EQ(1u, results.size());
+
+  EXPECT_EQ("Document discussing project plan.", results[0].description());
+  ASSERT_EQ(1, results[0].source_references_size());
+  EXPECT_TRUE(results[0].source_references(0).has_drive());
+  EXPECT_EQ("Project Plan 2026",
+            results[0].source_references(0).drive().name());
+  EXPECT_EQ("https://docs.google.com/document/d/123",
+            results[0].source_references(0).drive().url());
+}
+
+TEST_F(ContextHubPageHandlerTest, ExecuteSmartSearch_Failure) {
+  EXPECT_CALL(
+      *GetMockService(),
+      FetchContext(
+          personal_context::proto::CONTEXT_MEMORY_FEATURE_SMART_SEARCH, _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::unexpected(
+              personal_context::ContextMemoryError::FromExecutionError(
+                  personal_context::ContextMemoryError::ExecutionError::
+                      kUnknown)))));
+
+  base::test::TestFuture<
+      const std::vector<personal_context::proto::SmartSearchItem>&>
+      future;
+  handler_->ExecuteSmartSearch("project", future.GetCallback());
+
+  const auto& results = future.Get();
+  EXPECT_TRUE(results.empty());
+}
+
+TEST_F(ContextHubPageHandlerTest, ExecuteSmartSearch_EmptyResults) {
+  personal_context::proto::SmartSearchResponse expected_response;
+  personal_context::proto::Any any_response;
+  expected_response.SerializeToString(any_response.mutable_value());
+
+  EXPECT_CALL(
+      *GetMockService(),
+      FetchContext(
+          personal_context::proto::CONTEXT_MEMORY_FEATURE_SMART_SEARCH, _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  base::test::TestFuture<
+      const std::vector<personal_context::proto::SmartSearchItem>&>
+      future;
+  handler_->ExecuteSmartSearch("nonexistent", future.GetCallback());
+
+  const auto& results = future.Get();
+  EXPECT_TRUE(results.empty());
 }
 
 }  // namespace

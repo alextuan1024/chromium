@@ -21,7 +21,6 @@ include_rules = [
   "+chrome/browser/extensions/chrome_extension_test_notification_observer.h",
   "+chrome/browser/extensions/chrome_test_extension_loader.h",
   "+chrome/browser/extensions/scoped_test_mv2_enabler.h",
-  "+chrome/browser/notifications",
   "+chrome/browser/profiles",
   "+chrome/browser/signin",
   "+chrome/browser/supervised_user",
@@ -35,9 +34,10 @@ include_rules = [
   "+chrome/browser/ui/webui/ash/login",
   "+chrome/browser/ui/webui/signin/ash",
   "+chrome/common/chrome_paths.h",
-  "+chrome/common/chrome_switches.h",
   "+chrome/grit",
   "+chrome/test/base",
+
+  "+ui/message_center/message_center.h",
 ]
 
 specific_include_rules = {

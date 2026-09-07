@@ -218,6 +218,14 @@ const LayerWithExternalTexture* Layer::AsWithExternalTexture() const {
   return As<LayerWithExternalTexture>();
 }
 
+LayerNotDrawn* Layer::AsNotDrawn() {
+  return As<LayerNotDrawn>();
+}
+
+const LayerNotDrawn* Layer::AsNotDrawn() const {
+  return As<LayerNotDrawn>();
+}
+
 Layer::Layer(LayerType type)
     : type_(type),
       subpixel_position_offset_(
@@ -297,7 +305,7 @@ std::unique_ptr<Layer> Layer::Clone() const {
   clone->SetName(name_);
 
   // TODO(crbug.com/522627357): Move to LayerSolidColor.
-  if (type() != LAYER_SOLID_COLOR) {
+  if (!AsSolidColor()) {
     clone->SetFillsBoundsOpaquely(fills_bounds_opaquely_);
   }
 
@@ -405,8 +413,15 @@ void Layer::Remove(Layer* child) {
 }
 
 void Layer::StackAtTop(Layer* child) {
-  if (children_.size() <= 1 || child == children_.back())
+  // `child` must be a direct child of this layer to be restacked. This is a
+  // no-op if `child` is null or does not belong to this layer, which occurs
+  // during transient UI lifecycle states (e.g. reparenting or animations).
+  if (!child || child->parent() != this) {
+    return;
+  }
+  if (children_.size() <= 1 || child == children_.back()) {
     return;  // Already in front.
+  }
   StackAbove(child, children_.back());
 }
 
@@ -415,8 +430,15 @@ void Layer::StackAbove(Layer* child, Layer* other) {
 }
 
 void Layer::StackAtBottom(Layer* child) {
-  if (children_.size() <= 1 || child == children_.front())
+  // `child` must be a direct child of this layer to be restacked. This is a
+  // no-op if `child` is null or does not belong to this layer, which occurs
+  // during transient UI lifecycle states (e.g. reparenting or animations).
+  if (!child || child->parent() != this) {
+    return;
+  }
+  if (children_.size() <= 1 || child == children_.front()) {
     return;  // Already on bottom.
+  }
   StackBelow(child, children_.front());
 }
 
@@ -646,27 +668,23 @@ void Layer::SetLayerInverted(bool inverted) {
   SetLayerFilters();
 }
 
-void Layer::SetMaskLayer(Layer* layer_mask) {
+void Layer::SetMaskLayer(LayerTextured* layer_mask) {
   if (layer_mask_ == layer_mask)
     return;
-  // The provided mask should not have a layer mask itself.
-  DCHECK(!layer_mask ||
-         (!layer_mask->layer_mask_layer() && layer_mask->children().empty()));
   DCHECK(!layer_mask_back_link_);
-  DCHECK(!layer_mask || layer_mask->type() == LAYER_TEXTURED);
-  // Masks must be backed by a PictureLayer.
-  DCHECK(!layer_mask || layer_mask->AsTextured()->content_layer());
   // We need to de-reference the currently linked object so that no problem
   // arises if the mask layer gets deleted before this object.
   if (layer_mask_) {
     layer_mask_->layer_mask_back_link_ = nullptr;
   }
   layer_mask_ = layer_mask;
-  cc_layer_->SetMaskLayer(layer_mask ? layer_mask->AsTextured()->content_layer()
-                                     : nullptr);
+  cc_layer_->SetMaskLayer(layer_mask ? layer_mask->content_layer() : nullptr);
   // We need to reference the linked object so that it can properly break the
   // link to us when it gets deleted.
   if (layer_mask) {
+    // The provided mask should not have a layer mask itself.
+    DCHECK(!layer_mask->layer_mask_layer() && layer_mask->children().empty());
+    DCHECK(!layer_mask->IsPaintDeferred());
     // A `layer_mask` of this would lead to recursion.
     CHECK(layer_mask != this);
 
@@ -1049,20 +1067,12 @@ base::WeakPtr<Layer> Layer::AsWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
-
-bool Layer::HasExternalContent() const {
-  return false;
-}
-
 bool Layer::SchedulePaint(const gfx::Rect& invalid_rect) {
   if (!ShouldSchedulePaint()) {
     return false;
   }
 
   damaged_region_.Union(invalid_rect);
-  if (layer_mask_)
-    layer_mask_->damaged_region_.Union(invalid_rect);
-
   OnPaintScheduled();
   return true;
 }
@@ -1084,22 +1094,19 @@ void Layer::SendDamagedRects() {
   if (delegate_)
     delegate_->UpdateVisualState();
 
-  if (!ShouldCommitDamage()) {
+  CommitDamage();
+}
+
+void Layer::CommitDamage() {
+  if (damaged_region_.IsEmpty()) {
     return;
   }
 
-  CommitDamage(damaged_region_);
-  damaged_region_.Clear();
-}
-
-void Layer::CommitDamage(const cc::Region& damage) {
-  for (gfx::Rect damaged_rect : damage) {
+  for (gfx::Rect damaged_rect : damaged_region_) {
     cc_layer_->SetNeedsDisplayRect(damaged_rect);
   }
-}
 
-bool Layer::ShouldCommitDamage() const {
-  return !damaged_region_.IsEmpty();
+  damaged_region_.Clear();
 }
 
 void Layer::CompleteAllAnimations() {
@@ -1285,12 +1292,24 @@ void Layer::StackRelativeTo(Layer* child, Layer* other, bool above) {
   DCHECK_EQ(this, child->parent());
   DCHECK_EQ(this, other->parent());
 
+  // Restacking requires both layers to be distinct direct children of this
+  // layer. If either layer does not belong to this layer (e.g. during
+  // reparenting or animation transitions), no restacking can be performed.
+  if (!child || !other || child == other || child->parent() != this ||
+      other->parent() != this) {
+    return;
+  }
+
   const size_t child_i =
       std::ranges::find(children_, child) - children_.begin();
   const size_t other_i =
       std::ranges::find(children_, other) - children_.begin();
   DCHECK_LT(child_i, children_.size()) << " child not in vector";
   DCHECK_LT(other_i, children_.size()) << " other not in vector";
+  if (child_i >= children_.size() || other_i >= children_.size()) {
+    return;
+  }
+
   if ((above && child_i == other_i + 1) || (!above && child_i + 1 == other_i))
     return;
 

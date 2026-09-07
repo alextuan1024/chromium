@@ -19,6 +19,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
@@ -28,6 +29,7 @@
 #include "chrome/browser/indigo/indigo_image_replacement.h"
 #include "chrome/browser/indigo/indigo_image_replacement_manager.h"
 #include "chrome/browser/indigo/indigo_menu_model.h"
+#include "chrome/browser/indigo/indigo_metrics.h"
 #include "chrome/browser/indigo/indigo_prefs.h"
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/indigo/indigo_service_factory.h"
@@ -50,6 +52,7 @@
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/page_content_annotations/core/tracked_element_feature.h"
+#include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skills_service.h"
@@ -72,8 +75,9 @@
 
 namespace indigo {
 
-namespace {
 const char kForceIndigoSwitch[] = "force-indigo";
+
+namespace {
 const char kForceIndigoOnboardingSwitch[] = "force-indigo-onboarding";
 
 // The minimum width of the primary image frame in DIPs below which
@@ -129,42 +133,6 @@ void RecordTransformationResultCannotGenerateImage(
   }
 
   base::UmaHistogramEnumeration("Indigo.Transformation.Result", result);
-}
-
-void RecordInvokeEntryPointMetrics(
-    EntryPoint entry_point,
-    std::optional<page_actions::PageActionPriorityCategory>
-        last_anchored_message_priority) {
-  switch (entry_point) {
-    case EntryPoint::kSuggestionChip:
-      base::RecordAction(
-          base::UserMetricsAction("Indigo.PageAction.SuggestionChip.Click"));
-      base::UmaHistogramEnumeration(
-          "Indigo.PageAction.ClickedEntryPoint",
-          IndigoPageActionEntryPoint::kSuggestionChip);
-      break;
-    case EntryPoint::kAnchoredMessage:
-      base::RecordAction(
-          base::UserMetricsAction("Indigo.PageAction.AnchoredMessage.Click"));
-      if (last_anchored_message_priority ==
-          page_actions::PageActionPriorityCategory::kContextualCue) {
-        base::UmaHistogramEnumeration(
-            "Indigo.PageAction.ClickedEntryPoint",
-            IndigoPageActionEntryPoint::kProactiveAnchoredMessage);
-      } else if (last_anchored_message_priority ==
-                 page_actions::PageActionPriorityCategory::kUserInteraction) {
-        base::UmaHistogramEnumeration(
-            "Indigo.PageAction.ClickedEntryPoint",
-            IndigoPageActionEntryPoint::kReactiveAnchoredMessage);
-      }
-      break;
-    case EntryPoint::kErrorToast:
-      base::RecordAction(
-          base::UserMetricsAction("Indigo.ErrorToast.Retry.Click"));
-      base::UmaHistogramEnumeration("Indigo.PageAction.ClickedEntryPoint",
-                                    IndigoPageActionEntryPoint::kErrorToast);
-      break;
-  }
 }
 
 class Require1PSkillRefreshObserver : public skills::SkillsService::Observer {
@@ -251,7 +219,7 @@ IndigoPageActionController* IndigoPageActionController::From(
 }
 
 void IndigoPageActionController::InvokeAction(EntryPoint entry_point) {
-  RecordInvokeEntryPointMetrics(entry_point, last_anchored_message_priority_);
+  RecordClickedEntryPoint(entry_point, last_anchored_message_priority_);
 
   if (!indigo_service_) {
     return;
@@ -336,8 +304,9 @@ void IndigoPageActionController::ContinueInvoke(
   const bool invoked_glic = !skip_glic_invoke && MaybeInvokeGlic();
   if (!invoked_glic) {
     // The glic invocation path will trigger the Indigo agent after the panel is opened.
-    // Otherwise, do so now.
-    TriggerIndigoAgent();
+    TriggerIndigoAgent(skip_glic_invoke
+                           ? IndigoTransformationTriggerSource::kErrorToastRetry
+                           : IndigoTransformationTriggerSource::kPageAction);
   }
 }
 
@@ -367,6 +336,10 @@ bool IndigoPageActionController::MaybeInvokeGlic() {
       return false;
     }
   }
+
+  base::UmaHistogramBoolean(
+      "Indigo.PageAction.IsGlicOptedOutOnIndigoInvocation",
+      !glic::IsAnyEntryPointEnabled(profile));
 
   glic::GlicInvokeOptions options(
       glic::Target(tab(), glic::NewConversation()),
@@ -410,7 +383,8 @@ bool IndigoPageActionController::MaybeInvokeGlic() {
   // image elements in the process.
   options.on_panel_opened =
       base::BindOnce(&IndigoPageActionController::TriggerIndigoAgentWithDelay,
-                     invoke_weak_ptr_factory_.GetWeakPtr());
+                     invoke_weak_ptr_factory_.GetWeakPtr(),
+                     IndigoTransformationTriggerSource::kPageAction);
 
   options.prompts.push_back(std::move(prompt));
   glic_keyed_service->InvokeWithAutoSubmit(
@@ -419,7 +393,8 @@ bool IndigoPageActionController::MaybeInvokeGlic() {
   return true;
 }
 
-void IndigoPageActionController::TriggerIndigoAgent() {
+void IndigoPageActionController::TriggerIndigoAgent(
+    IndigoTransformationTriggerSource source) {
   content::WebContents* web_contents = tab().GetContents();
   if (!web_contents) {
     return;
@@ -428,15 +403,18 @@ void IndigoPageActionController::TriggerIndigoAgent() {
           ->Invoke()) {
     base::RecordAction(
         base::UserMetricsAction("Indigo.Transformation.Trigger"));
+    base::UmaHistogramEnumeration("Indigo.Transformation.TriggerSource",
+                                  source);
   }
 }
 
-void IndigoPageActionController::TriggerIndigoAgentWithDelay() {
+void IndigoPageActionController::TriggerIndigoAgentWithDelay(
+    IndigoTransformationTriggerSource source) {
   CHECK(base::FeatureList::IsEnabled(features::kIndigoOpenGlic));
   delay_agent_invoke_timer_.Start(
       FROM_HERE, features::kIndigoGlicTriggerDelay.Get(),
       base::BindOnce(&IndigoPageActionController::TriggerIndigoAgent,
-                     invoke_weak_ptr_factory_.GetWeakPtr()));
+                     invoke_weak_ptr_factory_.GetWeakPtr(), source));
 }
 
 void IndigoPageActionController::ShowOnboardingDialog(
@@ -522,6 +500,7 @@ void IndigoPageActionController::ShowInvocationErrorToast(
     IndigoTransformationResult result) {
   CHECK_NE(result, IndigoTransformationResult::kSuccess);
   base::UmaHistogramEnumeration("Indigo.Transformation.Result", result);
+  base::RecordAction(base::UserMetricsAction("Indigo.Transformation.Failure"));
 
   ToastController* toast_controller =
       ToastController::MaybeGetForTabInterface(&tab());
@@ -571,6 +550,7 @@ void IndigoPageActionController::DidFinishNavigation(
 
   invoke_weak_ptr_factory_.InvalidateWeakPtrs();
 
+  last_evaluated_url_ = navigation_handle->GetURL();
   ResetTriggeringState();
 
   if (navigation_handle->IsSameDocument()) {
@@ -618,6 +598,11 @@ void IndigoPageActionController::OnClose(IndigoToolbar* toolbar) {
 }
 
 void IndigoPageActionController::OnRegenerate(IndigoToolbar* toolbar) {
+  TriggerRegeneration(IndigoTransformationTriggerSource::kRegenerate);
+}
+
+void IndigoPageActionController::TriggerRegeneration(
+    IndigoTransformationTriggerSource source) {
   content::WebContents* web_contents = tab().GetContents();
   if (!web_contents) {
     return;
@@ -628,6 +613,10 @@ void IndigoPageActionController::OnRegenerate(IndigoToolbar* toolbar) {
   auto* manager =
       IndigoImageReplacementManager::GetForPage(web_contents->GetPrimaryPage());
   if (manager && manager->RegenerateImage()) {
+    base::RecordAction(
+        base::UserMetricsAction("Indigo.Transformation.Trigger"));
+    base::UmaHistogramEnumeration("Indigo.Transformation.TriggerSource",
+                                  source);
     DestroyToolbar();
   }
 }
@@ -680,29 +669,72 @@ void IndigoPageActionController::OnDeleteOriginalPhotoComplete(
   }
 }
 
-std::optional<IndigoTriggerSource>
-IndigoPageActionController::DetermineTriggerSource() const {
+IndigoPageActionController::TriggerEvaluation
+IndigoPageActionController::EvaluateTriggerState() const {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(kForceIndigoSwitch)) {
-    return IndigoTriggerSource::kForced;
+    return {.is_pending = false,
+            .source = IndigoTriggerSource::kForced,
+            .holds_regardless_of_url = true};
   }
   if (!indigo_service_ || !indigo_service_->IsLocallyEligible()) {
-    return std::nullopt;
+    return {.is_pending = false,
+            .source = std::nullopt,
+            .holds_regardless_of_url = true};
   }
   if (optimization_guide_decision_ ==
       optimization_guide::OptimizationGuideDecision::kTrue) {
-    return IndigoTriggerSource::kOptimizationGuide;
+    return {.is_pending = false,
+            .source = IndigoTriggerSource::kOptimizationGuide};
   }
-  if (page_has_allowed_category_by_heuristic_) {
-    return IndigoTriggerSource::kLocalProductKeywordHeuristic;
+  if (heuristic_result_.has_value() && *heuristic_result_) {
+    return {.is_pending = false,
+            .source = IndigoTriggerSource::kLocalProductKeywordHeuristic};
   }
-  return std::nullopt;
+
+  if (optimization_guide_decision_ ==
+      optimization_guide::OptimizationGuideDecision::kUnknown) {
+    return {.is_pending = true, .source = std::nullopt};
+  }
+
+  CHECK_EQ(optimization_guide_decision_,
+           optimization_guide::OptimizationGuideDecision::kFalse);
+
+  if (base::FeatureList::IsEnabled(features::kIndigoMetadataKeywordHeuristic) &&
+      !heuristic_result_.has_value()) {
+    return {.is_pending = true, .source = std::nullopt};
+  }
+
+  return {.is_pending = false, .source = std::nullopt};
+}
+
+content::RenderFrameHost*
+IndigoPageActionController::GetLiveMainFrameIfEligible() {
+  content::WebContents* web_contents = tab().GetContents();
+  if (!web_contents) {
+    return nullptr;
+  }
+
+  const GURL& url = web_contents->GetLastCommittedURL();
+
+  if (!indigo_service_ || !indigo_service_->IsConfigLoaded() ||
+      !indigo_service_->IsOriginAllowed(url::Origin::Create(url))) {
+    return nullptr;
+  }
+
+  content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
+  if (!rfh || !rfh->IsRenderFrameLive()) {
+    return nullptr;
+  }
+
+  return rfh;
 }
 
 void IndigoPageActionController::ResetTriggeringState() {
   optimization_guide_decision_ =
       optimization_guide::OptimizationGuideDecision::kUnknown;
-  page_has_allowed_category_by_heuristic_ = false;
+  heuristic_result_ = std::nullopt;
   last_anchored_message_priority_ = std::nullopt;
+  last_trigger_source_ = std::nullopt;
   metadata_remote_.reset();
   UpdateEntryPointsState();
 }
@@ -714,8 +746,28 @@ void IndigoPageActionController::UpdateEntryPointsState() {
     return;
   }
 
-  std::optional<IndigoTriggerSource> trigger_source = DetermineTriggerSource();
-  const bool should_show = trigger_source.has_value();
+  TriggerEvaluation eval = EvaluateTriggerState();
+  last_trigger_source_ = eval.source;
+  const bool should_show = eval.source.has_value();
+  if (should_show) {
+    ResolvePendingEligibilityCallbacks(/*eligible=*/true);
+    // For V2, we defer recording the trigger source until
+    // `IndigoCueTarget::GenerateContent` is called. This ensures we only record
+    // it when the cue is actually prepared to be shown, rather than just when
+    // eligibility is evaluated (which might be called multiple times or not
+    // lead to a shown cue).
+    if (!base::FeatureList::IsEnabled(features::kIndigoContextualCueingV2)) {
+      base::UmaHistogramEnumeration("Indigo.PageAction.TriggerSource",
+                                    *eval.source);
+    }
+  } else if (!eval.is_pending) {
+    ResolvePendingEligibilityCallbacks(/*eligible=*/false);
+  }
+
+  if (base::FeatureList::IsEnabled(features::kIndigoContextualCueingV2)) {
+    return;
+  }
+
   if (should_show == is_shown_) {
     return;
   }
@@ -729,27 +781,34 @@ void IndigoPageActionController::UpdateEntryPointsState() {
     } else {
       page_action_controller_->ShowSuggestionChip(kActionIndigo);
     }
-    base::UmaHistogramEnumeration("Indigo.PageAction.TriggerSource",
-                                  *trigger_source);
 
-    // Refresh discovery skills to make sure the latest skills are available for
-    // the user.
-    if (content::WebContents* web_contents = tab().GetContents()) {
-      if (Profile* profile =
-              Profile::FromBrowserContext(web_contents->GetBrowserContext())) {
-        if (skills::SkillsService* skills_service =
-                skills::SkillsServiceFactory::GetForProfile(profile)) {
-          Require1PSkillRefreshObserver observer;
-          skills_service->AddObserver(&observer);
-          skills_service->RefreshDiscoverySkills();
-          skills_service->RemoveObserver(&observer);
-        }
-      }
-    }
+    RefreshDiscoverySkills();
   } else {
     page_action_controller_->Hide(kActionIndigo);
   }
   is_shown_ = should_show;
+}
+
+void IndigoPageActionController::RefreshDiscoverySkills() {
+  if (content::WebContents* web_contents = tab().GetContents()) {
+    if (Profile* profile =
+            Profile::FromBrowserContext(web_contents->GetBrowserContext())) {
+      if (skills::SkillsService* skills_service =
+              skills::SkillsServiceFactory::GetForProfile(profile)) {
+        Require1PSkillRefreshObserver observer;
+        skills_service->AddObserver(&observer);
+        skills_service->RefreshDiscoverySkills();
+        skills_service->RemoveObserver(&observer);
+      }
+    }
+  }
+}
+
+void IndigoPageActionController::RecordTriggerSource() {
+  if (last_trigger_source_.has_value()) {
+    base::UmaHistogramEnumeration("Indigo.PageAction.TriggerSource",
+                                  *last_trigger_source_);
+  }
 }
 
 void IndigoPageActionController::OnOnboardingDialogClosed(
@@ -782,7 +841,7 @@ void IndigoPageActionController::OnOnboardingDialogClosed(
 
     if (disposition == OnboardingDisposition::kReplacePhoto) {
       indigo_service_->NotifyPhotoChanged();
-      OnRegenerate(toolbar_.get());
+      TriggerRegeneration(IndigoTransformationTriggerSource::kReplacePhoto);
     } else {
       indigo_service_->GetCombinedEligibility(base::BindOnce(
           &IndigoPageActionController::ContinueInvoke,
@@ -803,27 +862,17 @@ void IndigoPageActionController::OnPageActionAnchoredMessageShown(
   }
   if (last_anchored_message_priority_ ==
       page_actions::PageActionPriorityCategory::kUserInteraction) {
-    base::RecordAction(base::UserMetricsAction(
-        "Indigo.PageAction.AnchoredMessage.Reactive.Show"));
-    base::UmaHistogramEnumeration(
-        "Indigo.PageAction.ShownEntryPoint",
-        IndigoPageActionEntryPoint::kReactiveAnchoredMessage);
+    RecordShownEntryPoint(IndigoPageActionEntryPoint::kReactiveAnchoredMessage);
   } else if (last_anchored_message_priority_ ==
              page_actions::PageActionPriorityCategory::kContextualCue) {
-    base::RecordAction(base::UserMetricsAction(
-        "Indigo.PageAction.AnchoredMessage.Proactive.Show"));
-    base::UmaHistogramEnumeration(
-        "Indigo.PageAction.ShownEntryPoint",
+    RecordShownEntryPoint(
         IndigoPageActionEntryPoint::kProactiveAnchoredMessage);
   }
 }
 
 void IndigoPageActionController::OnPageActionChipShown(
     const page_actions::PageActionState& page_action) {
-  base::RecordAction(
-      base::UserMetricsAction("Indigo.PageAction.SuggestionChip.Show"));
-  base::UmaHistogramEnumeration("Indigo.PageAction.ShownEntryPoint",
-                                IndigoPageActionEntryPoint::kSuggestionChip);
+  RecordShownEntryPoint(IndigoPageActionEntryPoint::kSuggestionChip);
 }
 
 void IndigoPageActionController::OnOptimizationGuideDecision(
@@ -975,6 +1024,7 @@ void IndigoPageActionController::OnDiscardContents(
 
   RegisterObserverWithHost(nullptr);
   Reset(ResetType::kResetReplacementsAndContentScript);
+  last_evaluated_url_ = GURL();
   ResetTriggeringState();
 }
 
@@ -1041,34 +1091,16 @@ void IndigoPageActionController::TriggerMetadataClassification() {
           features::kIndigoMetadataKeywordHeuristic)) {
     return;
   }
-  content::WebContents* web_contents = tab().GetContents();
-  if (!web_contents) {
-    return;
-  }
-
-  const GURL& url = web_contents->GetLastCommittedURL();
-
-  if (!indigo_service_) {
-    return;
-  }
-
-  if (!indigo_service_->IsConfigLoaded()) {
-    return;
-  }
-
-  url::Origin origin = url::Origin::Create(url);
-  if (!indigo_service_->IsOriginAllowed(origin)) {
-    return;
-  }
-
   // If OptGuide already said YES, we don't need heuristic.
   if (optimization_guide_decision_ ==
       optimization_guide::OptimizationGuideDecision::kTrue) {
     return;
   }
 
-  content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
-  if (!rfh || !rfh->IsRenderFrameLive()) {
+  content::RenderFrameHost* rfh = GetLiveMainFrameIfEligible();
+  if (!rfh) {
+    heuristic_result_ = false;
+    UpdateEntryPointsState();
     return;
   }
 
@@ -1087,15 +1119,66 @@ void IndigoPageActionController::OnProductClassified(
     blink::mojom::ProductClassificationResultPtr result) {
   if (!result) {
     // Product not found.
-    page_has_allowed_category_by_heuristic_ = false;
+    heuristic_result_ = false;
   } else {
     // Product found.
-    page_has_allowed_category_by_heuristic_ =
+    heuristic_result_ =
         result->allowed_keyword_found && !result->blocked_keyword_found;
   }
   base::UmaHistogramBoolean("Indigo.Discovery.MetadataKeywordHeuristic",
-                            page_has_allowed_category_by_heuristic_);
+                            *heuristic_result_);
   UpdateEntryPointsState();
+}
+
+void IndigoPageActionController::CheckEligibilityForCueing(
+    EligibilityCallback callback) {
+  TriggerEvaluation eval = EvaluateTriggerState();
+
+  // Check if our state is for the current URL.
+  // This check is needed because Contextual Cueing can call CheckEligibility
+  // before IndigoPageActionController::DidFinishNavigation has had a chance to
+  // run and update the state. In this case, the decision might appear
+  // up-to-date but is actually for the previous page. We can't assert here
+  // because this race condition is expected in normal operation.
+  bool url_matches = false;
+  if (content::WebContents* web_contents = tab().GetContents()) {
+    url_matches = web_contents->GetLastCommittedURL().EqualsIgnoringRef(
+        last_evaluated_url_);
+  }
+
+  if (eval.is_pending || (!eval.holds_regardless_of_url && !url_matches)) {
+    if (pending_eligibility_callback_) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(std::move(pending_eligibility_callback_), false));
+    }
+    pending_eligibility_callback_ = std::move(callback);
+    eligibility_timeout_timer_.Stop();
+    eligibility_timeout_timer_.Start(
+        FROM_HERE, base::Seconds(3), this,
+        &IndigoPageActionController::OnEligibilityTimeout);
+    return;
+  }
+
+  const bool eligible = eval.source.has_value();
+  last_trigger_source_ = eval.source;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), eligible));
+}
+
+void IndigoPageActionController::ResolvePendingEligibilityCallbacks(
+    bool eligible) {
+  eligibility_timeout_timer_.Stop();
+  if (pending_eligibility_callback_) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(pending_eligibility_callback_), eligible));
+  }
+}
+
+void IndigoPageActionController::OnEligibilityTimeout() {
+  TriggerEvaluation eval = EvaluateTriggerState();
+  ResolvePendingEligibilityCallbacks(eval.source.has_value());
 }
 
 }  // namespace indigo

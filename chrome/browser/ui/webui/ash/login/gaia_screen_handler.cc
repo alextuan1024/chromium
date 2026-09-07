@@ -80,7 +80,6 @@
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/common/channel_info.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/installer/util/google_update_settings.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -1738,7 +1737,9 @@ void GaiaScreenHandler::HideOfflineMessage(NetworkStateInformer::State state,
 
   // Forces a reload for Gaia screen on hiding error message.
   if (IsGaiaVisible() || IsGaiaHiddenByError()) {
-    ReloadGaia(reason == NetworkError::ERROR_REASON_NETWORK_STATE_CHANGED);
+    if (frame_state_ != FRAME_STATE_LOADED) {
+      ReloadGaia(reason == NetworkError::ERROR_REASON_NETWORK_STATE_CHANGED);
+    }
   }
 }
 
@@ -1787,7 +1788,9 @@ void GaiaScreenHandler::OnProxyAuthDone() {
 void GaiaScreenHandler::OnErrorScreenHide() {
   histogram_helper_->OnErrorHide();
   error_screen_->SetParentScreen(ash::OOBE_SCREEN_UNKNOWN);
-  ReloadGaia(/*force_reload=*/true);
+  if (frame_state_ != FRAME_STATE_LOADED) {
+    ReloadGaia(/*force_reload=*/true);
+  }
   ShowScreenDeprecated(GaiaView::kScreenId);
 }
 

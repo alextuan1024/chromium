@@ -29,6 +29,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.android_webview.accessibility.AwAccessibilityStateVisibilityManager;
 import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.common.AwSwitches;
@@ -78,6 +79,7 @@ import org.chromium.content_public.browser.BrowserStartupController.StartupCallb
 import org.chromium.content_public.browser.ChildProcessCreationParams;
 import org.chromium.content_public.browser.ChildProcessLauncherHelper;
 import org.chromium.net.NetworkChangeNotifier;
+import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.display.DisplayAndroidManager;
 
 import java.io.File;
@@ -368,6 +370,7 @@ public final class AwBrowserProcess {
     public static void startForTesting() {
         runPreBrowserProcessStart();
         finishBrowserProcessStart();
+        startObservingOsAccessibilitySettingChanges();
         onStartupComplete();
     }
 
@@ -786,6 +789,14 @@ public final class AwBrowserProcess {
         }
     }
 
+    /** Starts observing Android OS accessibility setting changes. */
+    public static void startObservingOsAccessibilitySettingChanges() {
+        if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_OBSERVE_ACCESSIBILITY_STATE)) {
+            AccessibilityState.registerObservers();
+            AccessibilityState.initializeOnStartup(new AwAccessibilityStateVisibilityManager());
+        }
+    }
+
     /**
      * Post tasks that need to run in the background thread after the browser process has started.
      */
@@ -895,7 +906,22 @@ public final class AwBrowserProcess {
     }
 
     /**
+     * Read the command line flags required for tracing init.
+     *
+     * <p>This method must be called on the main thread, to ensure there is no cross-thread access
+     * to the native CommandLine instance.
+     *
+     * <p>Must be called before {@link #initTracing(boolean, boolean)}.
+     */
+    public static void readTracingCommandLineOnMainThread() {
+        AwBrowserProcessJni.get().readTracingCommandLineOnMainThread();
+    }
+
+    /**
      * Start tracing initialization.
+     *
+     * <p>This requires {@link #readTracingCommandLineOnMainThread()} to be called before calling
+     * this method.
      *
      * <p>This must only be called <em>before</em> Content startup. If Content Main has already been
      * called, tracing will already be initialized, and this method will crash.
@@ -942,6 +968,8 @@ public final class AwBrowserProcess {
         void setProcessNameCrashKey(@JniType("std::string") String processName);
 
         void onStartupComplete();
+
+        void readTracingCommandLineOnMainThread();
 
         void initTracing(
                 @JniType("bool") boolean enableSystemConsumer,

@@ -18,6 +18,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_settings_overridden_dialog.h"
@@ -199,7 +200,8 @@ class SettingsOverriddenDialogInteractiveUiTest
     });
   }
 
-  auto PerformSearchFromOmnibox(Browser* target_browser = nullptr) {
+  auto PerformSearchFromOmnibox(
+      BrowserWindowInterface* target_browser = nullptr) {
     return Do([this, target_browser]() {
       ui_test_utils::SendToOmniboxAndSubmit(
           target_browser ? target_browser : browser(), "Penguin",
@@ -459,9 +461,65 @@ IN_PROC_BROWSER_TEST_F(SettingsOverriddenExplicitChoiceDialogInteractiveUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(SettingsOverriddenExplicitChoiceDialogInteractiveUiTest,
+                       ClosingInitiatingTabDropsSearch) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabId);
+  const GURL kSecondTabUrl("chrome://version/");
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsId),
+      // Open a second tab so the browser stays open when tab 0 is closed.
+      AddInstrumentedTab(kSecondTabId, kSecondTabUrl),
+      // Switch back to tab 0 to initiate the search.
+      SelectTab(kTabStripElementId, 0),
+      SetNewSearchProvider(DefaultSearch::kUseDefault),
+      LoadExtensionOverridingSearch(), PerformSearchFromOmnibox(),
+      WaitForDialogToShow(),
+      // Close tab 0 (the initiating tab) while the dialog is visible.
+      Do([this]() {
+        browser()->tab_strip_model()->CloseWebContentsAt(
+            0, TabCloseTypes::CLOSE_USER_GESTURE);
+      }),
+      // Verify dialog is still present.
+      EnsurePresent(kSettingsOverriddenDialogId),
+      // Select the new search setting and save.
+      PressButton(kNewSettingButtonId), PressButton(kSaveButtonId),
+      WaitForHide(kSettingsOverriddenDialogId),
+      // Verify the active tab (kSecondTabId) was not navigated to the search
+      // URL.
+      CheckActiveUrl(kSecondTabUrl));
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsOverriddenExplicitChoiceDialogInteractiveUiTest,
+                       SwitchingTabsDuringDialogDropsSearch) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabId);
+  const GURL kSecondTabUrl("chrome://version/");
+
+  RunTestSequence(InstrumentTab(kWebContentsId),
+                  // Open a second tab.
+                  AddInstrumentedTab(kSecondTabId, kSecondTabUrl),
+                  // Switch back to tab 0 to initiate the search.
+                  SelectTab(kTabStripElementId, 0),
+                  SetNewSearchProvider(DefaultSearch::kUseDefault),
+                  LoadExtensionOverridingSearch(), PerformSearchFromOmnibox(),
+                  WaitForDialogToShow(),
+                  // Switch to tab 1 (leaving tab 0 alive in the background)
+                  // while the dialog is visible.
+                  SelectTab(kTabStripElementId, 1),
+                  // Verify dialog is still present.
+                  EnsurePresent(kSettingsOverriddenDialogId),
+                  // Select the new search setting and save.
+                  PressButton(kNewSettingButtonId), PressButton(kSaveButtonId),
+                  WaitForHide(kSettingsOverriddenDialogId),
+                  // Verify the active tab (kSecondTabId) was not navigated to
+                  // the search URL.
+                  CheckActiveUrl(kSecondTabUrl));
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsOverriddenExplicitChoiceDialogInteractiveUiTest,
                        OnlyOneDialogShownAtATimeAcrossWindows) {
   // Create a second browser window.
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(second_browser);
 
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondWebContentsId);

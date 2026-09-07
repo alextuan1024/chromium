@@ -44,13 +44,14 @@
 #include "base/types/expected.h"
 #include "base/types/optional_ref.h"
 #include "base/types/pass_key.h"
+#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/addresses/field_filling_address_util.h"
 #include "components/autofill/core/browser/filling/autofill_ai/field_filling_entity_util.h"
@@ -199,31 +200,6 @@ bool AllowPaymentSwapping(const AutofillField& trigger_field,
          has_relevant_cc_field_type(trigger_field) &&
          has_relevant_cc_field_type(field) && !is_refill &&
          IsPaymentsFieldSwappingEnabled();
-}
-
-// Returns whether a filling action for `filling_product` should be included in
-// the form autofill history.
-bool ShouldRecordFillingHistory(FillingProduct filling_product) {
-  switch (filling_product) {
-    case FillingProduct::kAddress:
-    case FillingProduct::kAutofillAi:
-    case FillingProduct::kCreditCard:
-    case FillingProduct::kLoyaltyCard:
-    case FillingProduct::kOneTimePassword:
-      return true;
-    case FillingProduct::kNone:
-    case FillingProduct::kMerchantPromoCode:
-    case FillingProduct::kIban:
-    case FillingProduct::kAutocomplete:
-    case FillingProduct::kPasskey:
-    case FillingProduct::kPassword:
-    case FillingProduct::kCompose:
-    case FillingProduct::kIdentityCredential:
-    case FillingProduct::kDataList:
-    case FillingProduct::kAtMemory:
-      return false;
-  }
-  NOTREACHED();
 }
 
 // Called by `FormFiller::MaybeScheduleAutomaticRefill()` and constructs a
@@ -974,19 +950,9 @@ void FormFiller::FillOrPreviewForm(
                      augmented_filling_payload.filling_product(),
                      filling_content, skip_reasons);
 
-  // TODO(crbug.com/40227071): Remove.
-  base::flat_set<FieldGlobalId> filled_field_ids;
-  for (const auto& [id, reasons] : skip_reasons) {
-    if (reasons.empty() ||
-        reasons == DenseSet{FieldFillingSkipReason::kIframeSecurityPolicy}) {
-      filled_field_ids.insert(id);
-    }
-  }
-
   manager_->OnDidFillOrPreviewForm(
-      action_persistence, form, trigger_field, safe_filled_fields,
-      std::move(filled_field_ids), skip_reasons, filling_payload,
-      trigger_source, refill_options.reason());
+      action_persistence, form, trigger_field, safe_filled_fields, skip_reasons,
+      filling_payload, trigger_source, refill_options.reason());
 }
 
 void FormFiller::SuppressAutomaticRefills(const FillId& fill_id) {

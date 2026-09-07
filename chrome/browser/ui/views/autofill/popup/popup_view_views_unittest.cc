@@ -41,7 +41,7 @@
 #include "chrome/browser/ui/views/autofill/popup/popup_view_utils.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_view_views_test_api.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_warning_view.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/testing_browser_process_death_test_mixin.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
@@ -1659,9 +1659,7 @@ TEST_F(PopupViewViewsTest, RemoveLine) {
     EXPECT_CALL(controller(), RemoveSuggestion).Times(0);
     EXPECT_CALL(check, Call("2: verify no RemoveSuggestion calls"));
 
-    EXPECT_CALL(controller(),
-                RemoveSuggestion(1, AutofillMetrics::SingleEntryRemovalMethod::
-                                        kKeyboardShiftDeletePressed));
+    EXPECT_CALL(controller(), RemoveSuggestion(1));
   }
 
   // If no cell is selected, pressing delete has no effect.
@@ -1690,10 +1688,7 @@ TEST_F(PopupViewViewsTest, RemoveAutofillInvokesController) {
                          PopupCellSelectionSource::kNonUserInput);
 
   // No metrics are recorded if the entry is not an Autocomplete entry.
-  EXPECT_CALL(controller(),
-              RemoveSuggestion(1, AutofillMetrics::SingleEntryRemovalMethod::
-                                      kKeyboardShiftDeletePressed))
-      .WillOnce(Return(true));
+  EXPECT_CALL(controller(), RemoveSuggestion(1)).WillOnce(Return(true));
   SimulateKeyPress(ui::VKEY_DELETE, /*shift_modifier_pressed=*/true);
 }
 
@@ -3321,7 +3316,7 @@ TEST_F(PopupViewViewsTest, TabbedPane_InitialWidthMaintainedWhenSwitchingTabs) {
 
 TEST_F(PopupViewViewsTest, WarningOnShowA11yFocus) {
   views::test::AXEventCounter counter(views::AXUpdateNotifier::Get());
-  CreateAndShowView({SuggestionType::kMixedFormMessage});
+  CreateAndShowView({SuggestionType::kInsecureContextPaymentDisabledMessage});
 
   ASSERT_EQ(1u, test_api(view()).rows().size());
   auto* const* row_view =
@@ -3333,7 +3328,8 @@ TEST_F(PopupViewViewsTest, WarningOnShowA11yFocus) {
 
 TEST_F(PopupViewViewsTest, WarningOnShow_DestroyOnA11yFocus) {
   CreateView();
-  controller().set_suggestions({SuggestionType::kMixedFormMessage});
+  controller().set_suggestions(
+      {SuggestionType::kInsecureContextPaymentDisabledMessage});
   view().DestroyOnNotifyAxSelection();
 
   // This should not crash!

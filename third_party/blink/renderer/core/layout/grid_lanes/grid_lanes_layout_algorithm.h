@@ -149,7 +149,8 @@ class CORE_EXPORT GridLanesLayoutAlgorithm
       GridLanesGapGeometryState* out_gap_geometry_state = nullptr);
   void PlaceGridLanesItemsForFragmentation(
       const GridLanesDataVector& grid_lanes,
-      const GridLayoutSubtree& layout_subtree);
+      const GridLayoutSubtree& layout_subtree,
+      LayoutUnit total_intrinsic_block_size);
 
   // Iterates through and lays out each item in `grid_lanes_items`. If
   // `placement_phase` is kCalculateBaselines, this method measures items and
@@ -219,6 +220,10 @@ class CORE_EXPORT GridLanesLayoutAlgorithm
   // containing the layout boxes of OOF grid-lanes items. If 'fill-reverse' is
   // enabled, this method will also apply the necessary reverse offsets to the
   // OOF items so that they are positioned correctly along the stacking axis.
+  //
+  // When block fragmented, `oof_children` is also an output param: candidates
+  // that don't belong in this fragment are left in the output vector, to be
+  // handled by a subsequent fragment.
   void PlaceOutOfFlowItems(const GridLayoutData& layout_data,
                            LayoutUnit block_size,
                            HeapVector<Member<LayoutBox>>& oof_children);

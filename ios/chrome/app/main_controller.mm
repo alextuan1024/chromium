@@ -29,6 +29,7 @@
 #import "base/values.h"
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/component_updater/component_updater_service.h"
+#import "components/component_updater/installer_policies/actor_safety_lists_component_installer.h"
 #import "components/component_updater/installer_policies/on_device_head_suggest_component_installer.h"
 #import "components/component_updater/installer_policies/optimization_hints_component_installer.h"
 #import "components/component_updater/installer_policies/safety_tips_component_installer.h"
@@ -66,6 +67,7 @@
 #import "ios/chrome/app/profile/profile_state_observer.h"
 #import "ios/chrome/app/safe_mode_app_state_agent.h"
 #import "ios/chrome/app/scene_identifier_map.h"
+#import "ios/chrome/app/scene_identifier_map_impl.h"
 #import "ios/chrome/app/startup/app_startup_utils.h"
 #import "ios/chrome/app/startup/chrome_app_startup_parameters.h"
 #import "ios/chrome/app/startup/chrome_main_starter.h"
@@ -96,6 +98,7 @@
 #import "ios/chrome/browser/download/model/download_directory_util.h"
 #import "ios/chrome/browser/first_run/model/first_run.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/memory/model/memory_debugger_manager.h"
 #import "ios/chrome/browser/metrics/model/first_user_action_recorder.h"
 #import "ios/chrome/browser/metrics/model/incognito_usage_app_state_agent.h"
@@ -121,7 +124,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -240,6 +242,10 @@ void RegisterComponentsForUpdate() {
       cus, GetApplicationContext()->GetApplicationLocaleStorage()->Get());
   RegisterSafetyTipsComponent(cus);
   RegisterOptimizationHintsComponent(cus);
+  if (IsActorEnabled()) {
+    component_updater::RegisterActorSafetyListsComponent(cus,
+                                                         base::DoNothing());
+  }
 }
 
 // The delay before beginning memory experimentation.
@@ -266,14 +272,6 @@ enum class ProfileChoice {
 
 // Returns the available ProfileChoices.
 base::span<const ProfileChoice> GetProfileChoices() {
-  if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-    // Note: Separate profiles for managed accounts are launched; this code path
-    // is only relevant for some EG tests covering the migration.
-    static constexpr auto kSingleProfileChoices = std::to_array<ProfileChoice>({
-        ProfileChoice::kPersonalProfile,
-    });
-    return kSingleProfileChoices;
-  }
   static constexpr auto kProfileChoices = std::to_array<ProfileChoice>({
       ProfileChoice::kProfileFromTask,
       ProfileChoice::kProfileForScene,
@@ -560,10 +558,24 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   _chromeMain = [ChromeMainStarter startChromeMain];
 
   ApplicationContext* applicationContext = GetApplicationContext();
-  _sceneIdentifierMap = std::make_unique<LegacySceneIdentifierMap>(
-      self.appState,
-      applicationContext->GetProfileManager()->GetProfileAttributesStorage(),
-      base::ios::IsMultipleScenesSupported());
+  if (base::FeatureList::IsEnabled(kRecoverTabsOfLastClosedWindow)) {
+    _sceneIdentifierMap = std::make_unique<SceneIdentifierMapImpl>(
+        applicationContext->GetLocalState(),
+        applicationContext->GetProfileManager()->GetProfileAttributesStorage(),
+        base::ios::IsMultipleScenesSupported());
+  } else {
+    _sceneIdentifierMap = std::make_unique<LegacySceneIdentifierMap>(
+        self.appState,
+        applicationContext->GetProfileManager()->GetProfileAttributesStorage(),
+        base::ios::IsMultipleScenesSupported());
+
+    // Clear preferences used by SceneIdentifierMapImpl (in case the feature
+    // has been enabled and then disabled).
+    PrefService* localState = applicationContext->GetLocalState();
+    localState->ClearPref(prefs::kLastConnectedSceneIdentifier);
+    localState->ClearPref(prefs::kSceneSessionIdentifierMap);
+  }
+  CHECK(_sceneIdentifierMap);
 
   // Register the ChangeProfileCommands handler with AccountProfileMapper.
   applicationContext->GetAccountProfileMapper()
@@ -1138,9 +1150,7 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   refreshAgent.audience = _appState;
   [_appState addAgent:refreshAgent];
   // Register background refresh providers.
-  if (IsDiscoverBackgroundRefreshEnabled()) {
-    [refreshAgent addAppRefreshProvider:[[DiscoverFeedProvider alloc] init]];
-  }
+  [refreshAgent addAppRefreshProvider:[[DiscoverFeedProvider alloc] init]];
 
   [refreshAgent addAppRefreshProvider:[[TestRefresher alloc]
                                           initWithAppState:self.appState]];
@@ -1371,8 +1381,10 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
           boolForKey:kWidgetKitRefreshFiveMinutes]),
       kFieldTrialVersionKey : @1,
     },
+    // TODO(crbug.com/407498240): Remove this key and its usages, since
+    // multi-profile is now always enabled.
     kMultiprofileKey : @{
-      kFieldTrialValueKey : @(AreSeparateProfilesForManagedAccountsEnabled()),
+      kFieldTrialValueKey : @YES,
       kFieldTrialVersionKey : @1,
     },
   };
@@ -1640,7 +1652,6 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
              forScene:(SceneState*)sceneState
                reason:(ChangeProfileReason)reason
          continuation:(ChangeProfileContinuation)continuation {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
   CHECK_EQ(self.appState.initStage, AppInitStage::kFinal);
 
   CHECK(sceneState);
@@ -1706,7 +1717,6 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 }
 
 - (void)deleteProfile:(std::string_view)profileName {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
   CHECK_EQ(self.appState.initStage, AppInitStage::kFinal);
   ProfileManagerIOS* manager = GetApplicationContext()->GetProfileManager();
   CHECK(manager->CanDeleteProfileWithName(profileName));

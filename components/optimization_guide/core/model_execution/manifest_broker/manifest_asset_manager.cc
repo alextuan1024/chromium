@@ -127,9 +127,14 @@ void ManifestAssetManager::ComponentContext::SetAssetId(
 }
 
 void ManifestAssetManager::ComponentContext::SetUninstallComplete() {
-  CHECK_EQ(state_, ComponentState::kUninstalling);
-  state_ = ComponentState::kNotRegistered;
-  requested_version_ = "";
+  // A registration could be mid-flight if this was uninstalled externally.
+  // We still expect the new registration to finish in that case.
+  if (state_ != ComponentState::kRegistering) {
+    state_ = ComponentState::kNotRegistered;
+    requested_version_ = "";
+  }
+  install_dir_ = std::nullopt;
+  version_ = std::nullopt;
 }
 
 void ManifestAssetManager::ComponentContext::SetRegistering(
@@ -311,6 +316,32 @@ bool ManifestAssetManager::DiskSpaceStatus::CanSupportProactiveDownload()
              free_space_.value());
 }
 
+AssetPriorities::AssetPriorities() = default;
+AssetPriorities::~AssetPriorities() = default;
+AssetPriorities::AssetPriorities(const AssetPriorities&) = default;
+AssetPriorities& AssetPriorities::operator=(const AssetPriorities&) = default;
+AssetPriorities::AssetPriorities(AssetPriorities&&) = default;
+AssetPriorities& AssetPriorities::operator=(AssetPriorities&&) = default;
+
+void AssetPriorities::Raise(
+    AssetPriority priority,
+    const absl::flat_hash_set<Manifest::AssetId>& assets) {
+  for (const auto& asset : assets) {
+    auto [it, inserted] = priorities_.try_emplace(asset, priority);
+    it->second = std::max(it->second, priority);
+  }
+}
+
+void AssetPriorities::Clear() {
+  priorities_.clear();
+}
+
+bool AssetPriorities::IsAtLeast(AssetPriority priority,
+                                const Manifest::AssetId& asset_id) const {
+  auto it = priorities_.find(asset_id);
+  return it != priorities_.end() && it->second >= priority;
+}
+
 ManifestAssetManager::ManifestAssetManager(
     PrefService& local_state,
     UsageTracker& usage_tracker,
@@ -439,15 +470,15 @@ void ManifestAssetManager::UpdateSolutionFactory(
     context.SetAssetId(asset_id);
   }
 
-  std::vector<Manifest::UseCaseName> background_download_use_cases;
+  asset_priorities_.Clear();
   for (const auto& [use_case_name, use_case_config] :
        factory_->manifest().GetDeviceCategoryConfig().use_cases()) {
     if (use_case_config.background_download()) {
-      background_download_use_cases.push_back(use_case_name);
+      asset_priorities_.Raise(
+          AssetPriority::kSpeculative,
+          *factory_->manifest().GetRequiredAssets(use_case_name));
     }
   }
-  background_download_assets_by_id_ =
-      factory_->manifest().GetRequiredAssets(background_download_use_cases);
 
   UpdateActiveAssets();
 }
@@ -461,9 +492,8 @@ void ManifestAssetManager::RefreshSolutions() {
 
 void ManifestAssetManager::UninstallModels() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  model_execution::prefs::ClearAllUseCaseUsages(&*local_state_);
-  active_assets_by_id_.clear();
-  background_download_assets_by_id_.clear();
+  usage_tracker_->ClearAllUseCaseUsages();
+  asset_priorities_.Clear();
 
   std::vector<std::string> keys_to_save;
   for (auto& [public_key, context] : ledger_.GetMutableContexts()) {
@@ -497,30 +527,32 @@ bool ManifestAssetManager::VerifyInstallation(const base::FilePath& install_dir,
   return base::PathExists(install_dir);
 }
 
-void ManifestAssetManager::OnDeviceEligibleUseCaseUsed(
+void ManifestAssetManager::OnPriorityIncrease(
     const std::string& use_case_name,
-    bool is_first_usage) {
+    std::optional<UsageTracker::Priority> previous_priority) {
   TRACE_EVENT("optimization_guide",
-              "ManifestAssetManager::OnDeviceEligibleUseCaseUsed",
-              perfetto::Flow::FromPointer(this), "use_case_name", use_case_name,
-              "is_first_usage", is_first_usage);
-  if (is_first_usage) {
-    UpdateActiveAssets();
-  }
+              "ManifestAssetManager::OnPriorityIncrease",
+              perfetto::Flow::FromPointer(this), "use_case_name", use_case_name);
+  UpdateActiveAssets();
 }
 
 // Get all assets required by used use cases in usage_tracker.
 void ManifestAssetManager::UpdateActiveAssets() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::vector<Manifest::UseCaseName> active_use_cases;
   for (const auto& [use_case, _] :
        factory_->manifest().GetDeviceCategoryConfig().use_cases()) {
-    if (usage_tracker_->WasUseCaseRecentlyUsed(use_case)) {
-      active_use_cases.push_back(use_case);
+    std::optional<UsageTracker::Priority> priority =
+        usage_tracker_->GetPriority(use_case);
+    if (!priority) {
+      continue;
     }
+    AssetPriority asset_priority =
+        *priority == UsageTracker::Priority::kUserBlocking
+            ? AssetPriority::kUserBlocking
+            : AssetPriority::kBestEffort;
+    asset_priorities_.Raise(asset_priority,
+                            *factory_->manifest().GetRequiredAssets(use_case));
   }
-  active_assets_by_id_ =
-      factory_->manifest().GetRequiredAssets(active_use_cases);
   UpdateRegistrations();
 }
 
@@ -571,11 +603,13 @@ bool ManifestAssetManager::ShouldInstall(
     }
     return false;
   }
-  if (active_assets_by_id_.contains(context.asset_id())) {
+  if (asset_priorities_.IsAtLeast(AssetPriority::kBestEffort,
+                                  context.asset_id())) {
     return true;
   }
   return disk_space_status_.CanSupportProactiveDownload() &&
-         background_download_assets_by_id_.contains(context.asset_id());
+         asset_priorities_.IsAtLeast(AssetPriority::kSpeculative,
+                                     context.asset_id());
 #endif
 }
 
@@ -655,7 +689,8 @@ void ManifestAssetManager::UpdateRegistrations() {
     NotifyFactory(public_key, context);
 
     if (context.state() == ComponentState::kRegistered) {
-      if (active_assets_by_id_.contains(context.asset_id())) {
+      if (asset_priorities_.IsAtLeast(AssetPriority::kUserBlocking,
+                                      context.asset_id())) {
         context.SetOnDemandDownloading();
         // This doesn't change a persistent state, so it's okay to not save.
         delegate_->RequestUpdate(public_key,
@@ -682,12 +717,20 @@ void ManifestAssetManager::OnAssetUninstalled(const std::string& public_key) {
   TRACE_EVENT("optimization_guide", "ManifestAssetManager::OnAssetUninstalled",
               perfetto::Flow::FromPointer(this), "public_key", public_key);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  ComponentContext* context = ledger_.GetContext(public_key);
+  if (!context) {
+    // The component is not tracked by this manager, so there is no state to
+    // update.
+    return;
+  }
+  // The uninstall may have been requested by this manager or by something
+  // else (e.g. the component updater unregistering the component).
+  context->SetUninstallComplete();
   const proto::OnDemandComponent* component =
       factory_->manifest().GetAssetByPublicKey(public_key);
   if (component) {
-    // We've finished an uninstall, but the manifest might need this component.
-    // Keep tracking it in the ledger, and check if we should install it again.
-    ledger_.GetContext(public_key)->SetUninstallComplete();
+    // The manifest might need this component. Keep tracking it in the ledger,
+    // and check if we should install it again.
     ledger_.SaveContexts({public_key});
     UpdateRegistrations();
     return;

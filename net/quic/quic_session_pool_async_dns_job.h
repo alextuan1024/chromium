@@ -170,6 +170,10 @@ class QuicSessionPool::AsyncDnsJob
   void OnServiceEndpointsUpdated() override;
   void OnServiceEndpointRequestFinished(int rv) override;
 
+  void MaybePromoteStaleConnectors();
+  bool IsStaleConnector(const EndpointConnector& connector) const;
+  bool IsEndpointInFreshList(const IPEndPoint& endpoint) const;
+
   // Returns the endpoints in the current resolver results that are usable
   // for QUIC, applying QUIC version selection to each endpoint. This is the
   // only interpretation of the resolver results. The IP-pooling check and
@@ -196,7 +200,7 @@ class QuicSessionPool::AsyncDnsJob
   // handshake succeeds. An attempt with a stale ECH config can fail where a
   // plain A/AAAA endpoint to the same IP works.
   std::optional<Candidate> TakeNextCandidate(
-      const EndpointConnector* connector);
+      const EndpointConnector& connector);
 
   // Called by a connector every time one of its attempts failed. The job
   // keeps the most recent failure and reports it when it runs out of
@@ -208,7 +212,7 @@ class QuicSessionPool::AsyncDnsJob
   // ERR_IO_PENDING means the session was created and its crypto handshake
   // is still in flight. A failed result is held until the job's outcome is
   // known, because a later attempt may still create a session.
-  void OnSessionCreationDecided(int rv, const EndpointConnector* connector);
+  void OnSessionCreationDecided(int rv, const EndpointConnector& connector);
 
   // Called by `connector` when it settled successfully or when it ran out of
   // untried candidates. A connector settles successfully when its attempt
@@ -216,18 +220,43 @@ class QuicSessionPool::AsyncDnsJob
   // then destroys the other connector together with its in-flight attempt.
   // Running out of candidates fails the job only when the other connector has
   // nothing in flight and DNS has finished.
-  void OnConnectorComplete(int rv, EndpointConnector* connector);
+  void OnConnectorComplete(int rv, EndpointConnector& connector);
 
   // Returns the name of the slot `connector` occupies. For logging.
-  const char* SlotName(const EndpointConnector* connector) const;
+  const char* SlotName(const EndpointConnector& connector) const;
 
   // Called immediately before `connector` starts an attempt. Updates the
   // attempt metrics, logs the attempt, and returns its job-wide identifier.
-  int OnAttemptStarted(const EndpointConnector* connector,
+  int OnAttemptStarted(const EndpointConnector& connector,
                        const Candidate& candidate,
                        base::TimeTicks start_time);
 
  private:
+  struct ConnectionState {
+    ConnectionState();
+    ~ConnectionState();
+
+    // Runs while only the primary slot is filled. On expiry the job fills the
+    // secondary slot so that an IPv4 attempt runs next to the IPv6 one.
+    base::OneShotTimer slow_timer;
+    // Set once the slow timer was armed. The timer is armed at most once per
+    // connection state.
+    bool slow_timer_started = false;
+    // The connector that may use IPv6 once both slots are filled, and both
+    // families while the secondary slot is empty. Created when the job first
+    // has something to attempt.
+    std::unique_ptr<EndpointConnector> primary_connector;
+    // The connector that may use IPv4 only. Created when the slow timer fires.
+    std::unique_ptr<EndpointConnector> secondary_connector;
+    // The candidates already handed out for an attempt. Lives here because the
+    // connectors of one state must not attempt the same candidate twice. A
+    // vector because ParsedQuicVersion can be compared but not ordered.
+    std::vector<Candidate> claimed_candidates_;
+  };
+
+  ConnectionState& GetState(const EndpointConnector& connector);
+  const ConnectionState& GetState(const EndpointConnector& connector) const;
+
   // The result and the error details of one failed attempt.
   struct AttemptFailure {
     int rv = OK;
@@ -252,34 +281,31 @@ class QuicSessionPool::AsyncDnsJob
   // which case the other connector has been destroyed. Returns ERR_IO_PENDING
   // while an attempt is in flight, and std::nullopt when nothing could be
   // started.
-  std::optional<int> AdvanceConnectors();
+  // Tries to advance the connectors of a specific state.
+  std::optional<int> AdvanceConnectors(ConnectionState& state);
 
   // Called when `connector` settled the job. Logs how it settled, destroys the
   // other connector together with the attempt it had in flight, and moves
   // `connector` into the primary slot when it was in the secondary one.
-  void DestroyOtherConnector(const EndpointConnector* connector);
+  void DestroyOtherConnector(const EndpointConnector& connector);
 
   // Starts the slow timer when the primary connector has its first attempt in
   // flight. The deadline is kept while the primary moves on to other
   // candidates, and the timer never starts a second time.
-  void MaybeStartSlowTimer();
+  void MaybeStartSlowTimer(ConnectionState& state);
 
   // Fills the secondary slot so that the job can run two attempts at once.
   // Called by the slow timer. The slot is filled whether or not the primary
   // connector has an attempt in flight at that moment.
-  void OnSlowTimer();
+  void OnSlowTimer(ConnectionState* state);
 
   // True when a connector could start an attempt as soon as the job has a
   // candidate for it.
-  bool HasWaitingConnector() const;
+  bool HasWaitingConnector(const ConnectionState& state) const;
 
   // True when a connector has an attempt in flight.
   bool HasAttemptInFlight() const;
 
-  // Returns the connector in the other slot, or nullptr when the other slot
-  // is empty.
-  const EndpointConnector* OtherConnector(
-      const EndpointConnector* connector) const;
 
   // Returns the result of the most recently failed attempt, or nothing while
   // no attempt failed.
@@ -324,7 +350,6 @@ class QuicSessionPool::AsyncDnsJob
   const bool require_dns_https_alpn_;
   const int cert_verify_flags_;
   const bool retry_on_alternate_network_before_handshake_;
-  const MultiplexedSessionCreationInitiator session_creation_initiator_;
   const std::optional<ConnectionManagementConfig> connection_management_config_;
 
   // Set when the resolver reported its final result.
@@ -341,19 +366,18 @@ class QuicSessionPool::AsyncDnsJob
   // Cleared after the first IP pooling check that saw endpoints. Later
   // checks do not record negative metric entries.
   bool log_negative_ip_pool_result_ = true;
-  // Set once the slow timer was armed. The timer is armed at most once per
-  // job.
-  bool slow_timer_started_ = false;
+
   // The number of attempts the connectors of this job started. Reported when
   // the job settles.
   size_t attempt_count_ = 0;
+  // Tracks how many endpoints have already been checked for pooling to avoid
+  // wasteful active_sessions_ scans.
+  size_t num_endpoints_evaluated_for_pooling_ = 0;
+  // True if stale endpoints were evaluated for pooling.
+  bool stale_endpoints_evaluated_for_pooling_ = false;
+
   // Set before every successful completion.
   SuccessSource success_source_ = SuccessSource::kNone;
-  // The candidates already handed out for an attempt. Lives here because the
-  // connectors of one job must not attempt the same candidate twice. A vector
-  // because ParsedQuicVersion can be compared but not ordered, and because one
-  // job has few candidates.
-  std::vector<Candidate> claimed_candidates_;
   // The most recently failed attempt of either connector. The job's failure
   // is reported from here.
   std::optional<AttemptFailure> last_attempt_failure_;
@@ -375,15 +399,14 @@ class QuicSessionPool::AsyncDnsJob
   base::TimeTicks first_attempt_start_time_;
   // When the successful attempt started.
   base::TimeTicks successful_attempt_start_time_;
-  // Runs while only the primary slot is filled. On expiry the job fills the
-  // secondary slot so that an IPv4 attempt runs next to the IPv6 one.
-  base::OneShotTimer slow_timer_;
-  // The connector that may use IPv6 once both slots are filled, and both
-  // families while the secondary slot is empty. Created when the job first
-  // has something to attempt.
-  std::unique_ptr<EndpointConnector> primary_connector_;
-  // The connector that may use IPv4 only. Created when the slow timer fires.
-  std::unique_ptr<EndpointConnector> secondary_connector_;
+
+  // Tracks connection attempts for fresh DNS results. This is the primary
+  // state machine for standard connection attempts.
+  ConnectionState fresh_state_;
+  // Tracks connection attempts based on stale DNS results when optimistic DNS
+  // is enabled. Operates independently until fresh results arrive.
+  ConnectionState stale_state_;
+
   CompletionOnceCallback callback_;
 
   base::WeakPtrFactory<AsyncDnsJob> weak_factory_{this};

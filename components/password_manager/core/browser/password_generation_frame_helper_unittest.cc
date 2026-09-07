@@ -22,8 +22,8 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -365,7 +365,7 @@ TEST_F(PasswordGenerationFrameHelperTest, ProcessPasswordRequirements) {
         client_->GetPasswordRequirementsService()->GetSpec(
             origin, FormSignature(form_signature.value() + 1), field_signature);
     EXPECT_EQ(test.expected_spec_for_unknown_signature.max_length(),
-              spec.max_length());
+              spec_for_unknown_signature.max_length());
   }
 }
 

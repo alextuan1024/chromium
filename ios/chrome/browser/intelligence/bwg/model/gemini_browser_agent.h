@@ -164,6 +164,9 @@ class GeminiBrowserAgent : public BrowserUserData<GeminiBrowserAgent>,
   // floaty to be shown.
   void ShowFloatyIfInvoked(bool animated, gemini::FloatyUpdateSource source);
 
+  // Collapses floaty if invoked.
+  void CollapseFloatyIfInvoked();
+
   // Temporarily route SDK events from GeminiContainerMediator to
   // GeminiBrowserAgent to handle work that is necessary for the overlay UI but
   // not for the embedded UI. TODO(crbug.com/535579970): Remove this once
@@ -174,7 +177,6 @@ class GeminiBrowserAgent : public BrowserUserData<GeminiBrowserAgent>,
   void OnProcessingStatusChanged(
       ios::provider::GeminiClientMode processing_status,
       ios::provider::GeminiDormantReason dormant_reason) override;
-  void CollapseFloatyIfInvoked() override;
   void SetLastShownViewState(
       ios::provider::GeminiViewState view_state) override;
   void OnLiveButtonTapped() override;
@@ -241,9 +243,12 @@ class GeminiBrowserAgent : public BrowserUserData<GeminiBrowserAgent>,
   // Records the page type when Gemini is invoked.
   void RecordInvocationPageType();
 
-  // Helper to get the GeminiTabHelper for the active web state if it matches
-  // the provided web state.
-  GeminiTabHelper* GetActiveTabHelper(web::WebState* web_state) const;
+  // Configures Gemini with startup parameters.
+  void ConfigureGemini();
+
+  // Helper to get the GeminiTabHelper for the active web state, or nullptr if
+  // none exists.
+  GeminiTabHelper* GetActiveTabHelper() const;
 
   // Returns the ID of the active web state, or an invalid ID if none exists.
   web::WebStateID GetActiveWebStateID() const;
@@ -424,6 +429,9 @@ class GeminiBrowserAgent : public BrowserUserData<GeminiBrowserAgent>,
 
   // Mediator for the Gemini container. Remove after bottom sheet migrations.
   __strong GeminiContainerMediator* gemini_container_mediator_ = nil;
+
+  // Handler for link opening.
+  __strong GeminiLinkOpeningHandler* link_opening_handler_ = nil;
 
   // Reference to fullscreen controller. Used to observe fullscreen progress
   // updates related to the Gemini overlay for the legacy fullscreen

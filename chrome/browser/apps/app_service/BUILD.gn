@@ -54,6 +54,7 @@ source_set("app_service") {
     "//chrome/browser/ui/extensions",
     "//chrome/browser/web_applications:features",
     "//components/app_constants",
+    "//components/tabs:public",
     "//components/web_package",
   ]
 
@@ -355,7 +356,6 @@ source_set("test_support") {
     ]
 
     deps += [
-      "//chrome/browser",
       "//chrome/browser/apps/app_service/publishers",
       "//chrome/browser/ash/login/users:test_support",
       "//chrome/browser/ash/profiles",

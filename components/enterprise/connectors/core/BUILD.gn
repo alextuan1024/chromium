@@ -98,10 +98,6 @@ source_set("core") {
   if (enterprise_data_controls) {
     deps += [ "//components/enterprise/data_controls/core/browser" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (enterprise_cloud_content_analysis || is_android) {
@@ -134,8 +130,6 @@ if (enterprise_cloud_content_analysis || is_android) {
       "cloud_content_scanning/files_request_handler_base.h",
       "cloud_content_scanning/multipart_uploader.cc",
       "cloud_content_scanning/multipart_uploader.h",
-      "cloud_content_scanning/multipart_uploader_base.cc",
-      "cloud_content_scanning/multipart_uploader_base.h",
       "cloud_content_scanning/request_handler_base.cc",
       "cloud_content_scanning/request_handler_base.h",
       "cloud_content_scanning/resumable_uploader.cc",
@@ -197,8 +191,9 @@ if (enterprise_cloud_content_analysis || is_android) {
 
 source_set("constants") {
   sources = [
-    "reporting_constants.cc",
     "reporting_constants.h",
+    "reporting_event_mappings.cc",
+    "reporting_event_mappings.h",
   ]
   deps = [
     "//base",
@@ -321,7 +316,6 @@ if (enterprise_cloud_content_analysis || is_android) {
       "cloud_content_scanning/file_analysis_request_base_unittest.cc",
       "cloud_content_scanning/file_opening_job_unittest.cc",
       "cloud_content_scanning/files_request_handler_base_unittest.cc",
-      "cloud_content_scanning/multipart_uploader_base_unittest.cc",
       "cloud_content_scanning/multipart_uploader_unittest.cc",
       "cloud_content_scanning/resumable_uploader_base_unittest.cc",
     ]

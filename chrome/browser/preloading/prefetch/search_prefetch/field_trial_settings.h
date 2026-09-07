@@ -24,6 +24,11 @@ BASE_DECLARE_FEATURE(kSearchPrefetchWithNoVarySearchDiskCache);
 
 BASE_DECLARE_FEATURE(kSearchPrefetchBeaconLogging);
 
+BASE_DECLARE_FEATURE(kSearchPrefetchPreloadServingMetrics);
+
+// Whether to record legacy search prefetch in PreloadServingMetrics.
+bool IsSearchPrefetchPreloadServingMetricsEnabled();
+
 // Whether the search prefetch service actually initiates prefetches.
 bool SearchPrefetchServicePrefetchingIsEnabled();
 
@@ -105,13 +110,6 @@ BASE_DECLARE_FEATURE(kAutocompleteDictionaryPreload);
 // The amount of time preloaded dictionary is kept alive.
 extern const base::FeatureParam<base::TimeDelta>
     kAutocompletePreloadedDictionaryTimeout;
-
-// If enabled, suppresses SearchPrefetch (https://crbug.com/350519234)
-BASE_DECLARE_FEATURE(kSuppressesSearchPrefetchOnSlowNetwork);
-
-// The threshold to determine if the network is slow or not.
-extern const base::FeatureParam<base::TimeDelta>
-    kSuppressesSearchPrefetchOnSlowNetworkThreshold;
 
 BASE_DECLARE_FEATURE(kSuppressPrefetchForUnsupportedSearchMode);
 extern const base::FeatureParam<std::string> kUnsupportedSearchPrefetchModes;

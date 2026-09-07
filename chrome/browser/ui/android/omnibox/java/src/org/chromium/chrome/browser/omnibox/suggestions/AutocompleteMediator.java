@@ -54,6 +54,7 @@ import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController.OnSuggestionsReceivedListener;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator.OmniboxSuggestionsVisualStateObserver;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteDelegate.AutocompleteLoadCallback;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.RoundSides;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionFactory;
@@ -225,6 +226,8 @@ class AutocompleteMediator
     private @Nullable OmniboxSuggestionsVisualStateObserver mOmniboxSuggestionsVisualStateObserver;
     private final FuseboxCoordinator mFuseboxCoordinator;
     private @Nullable SideUiStateProvider mSideUiStateProvider;
+    private final Callback<@Nullable SideUiStateProvider> mSideUiStateProviderObserver =
+            this::setSideUiStateProvider;
     private int mLeftSideUiMarginPx = -1;
 
     AutocompleteMediator(
@@ -278,6 +281,9 @@ class AutocompleteMediator
         mActivityWindowFocused = (activity != null && activity.hasWindowFocus());
         mDeferredIMEWindowInsetApplicationCallback = deferredIMEWindowInsetApplicationCallback;
         mUiOverrides = uiOverrides;
+        mUiOverrides
+                .getSideUiStateProviderSupplier()
+                .addSyncObserverAndCallIfNonNull(mSideUiStateProviderObserver);
 
         var pm = context.getPackageManager();
         var dialIntent = new Intent(Intent.ACTION_DIAL);
@@ -324,10 +330,8 @@ class AutocompleteMediator
         mDataProvider.getToolbarPositionSupplier().removeObserver(mToolbarPositionChangedCallback);
 
         mFuseboxCoordinator.getFuseboxStateSupplier().removeObserver(mOnFuseboxStateChanged);
-        if (mSideUiStateProvider != null) {
-            mSideUiStateProvider.removeObserver(this);
-            mSideUiStateProvider = null;
-        }
+        mUiOverrides.getSideUiStateProviderSupplier().removeObserver(mSideUiStateProviderObserver);
+        setSideUiStateProvider(null);
         mHandler.removeCallbacksAndMessages(null);
         mDropdownViewInfoListBuilder.destroy();
         mDropdownViewInfoListManager.destroy();
@@ -1120,6 +1124,18 @@ class AutocompleteMediator
             return;
         }
 
+        if (ToolModeUtils.isAimRequest(mAutocompleteInput.getRequestType())
+                && mDataProvider.isIncognitoBranded()) {
+            stopAutocomplete(AutocompleteStopReason.CLOBBERED);
+
+            // Since we are not querying native autocomplete, onSuggestionsReceived() will not be
+            // called. Explicitly push an empty result to clear any existing suggestions and
+            // remove inline autocompletion from the URL bar.
+            showSuggestions(
+                    mAutocompleteInput, AutocompleteResult.EMPTY_RESULT, /* isFinal= */ true);
+            return;
+        }
+
         // Always re-set the list's final state when we're about to request new suggestions.
         // This avoids a problem, where the property does not get an explicit update that the list
         // is final, which, in turn, may suppress certain functionality from getting invoked if the
@@ -1129,15 +1145,18 @@ class AutocompleteMediator
         boolean isInZeroPrefixContext = mAutocompleteInput.isInZeroPrefixContext();
         boolean isUnconventional = !mAutocompleteInput.isConventionalRequestType();
         boolean hasDesktopExperience = OmniboxCapabilities.hasDesktopExperience(mContext);
-        @SelectionController.Mode int selectionMode;
-        if (!hasDesktopExperience || isUnconventional) {
-            selectionMode = SelectionController.Mode.WRAPPING_WITH_SENTINEL;
+        @TraversalMode int selectionMode;
+        if (mAutocompleteInput.getPageClassification()
+                == PageClassification.ANDROID_TAB_SEARCH_OVERLAY) {
+            selectionMode = TraversalMode.SATURATING_WITH_SENTINEL;
+        } else if (!hasDesktopExperience || isUnconventional) {
+            selectionMode = TraversalMode.WRAPPING_WITH_SENTINEL;
         } else if (isInZeroPrefixContext) {
             // In desktop experiences, we use SENTINEL_THEN_WRAPPING to match the behavior of the
             // desktop browser.
-            selectionMode = SelectionController.Mode.SENTINEL_THEN_WRAPPING;
+            selectionMode = TraversalMode.SENTINEL_THEN_WRAPPING;
         } else {
-            selectionMode = SelectionController.Mode.WRAPPING;
+            selectionMode = TraversalMode.WRAPPING;
         }
         mListPropertyModel.set(SuggestionListProperties.SELECTION_MODE, selectionMode);
         mListPropertyModel.set(SuggestionListProperties.RESET_SELECTION, null);
@@ -1857,16 +1876,7 @@ class AutocompleteMediator
             // embedded omnibox is inflated via SearchActivity rather than ToolbarManager (main
             // browser). Ensure that this use case does not have a left margin.
             if (isActive) {
-                boolean applyMargin =
-                        mUiOverrides.isMainBrowserOmnibox()
-                                && VerticalTabUtils.isVerticalTabsEnabled(mContext);
-                mListPropertyModel.set(
-                        SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR, applyMargin);
-                if (mSideUiStateProvider != null) {
-                    onSideUiSpecsChanged(mSideUiStateProvider.getCurrentSideUiSpecs());
-                } else {
-                    setSideUiStateProvider(mUiOverrides.getSideUiStateProvider());
-                }
+                updateLeftSideUiMargin();
             }
             mListPropertyModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, isActive);
             mIgnoreOmniboxItemSelection |= isActive;
@@ -1876,12 +1886,26 @@ class AutocompleteMediator
         }
     }
 
-    private void setSideUiStateProvider(@Nullable SideUiStateProvider provider) {
-        if (provider == null) return;
+    private void updateLeftSideUiMargin() {
+        boolean applyMargin =
+                mUiOverrides.isMainBrowserOmnibox()
+                        && VerticalTabUtils.isVerticalTabsEnabled(mContext);
+        mListPropertyModel.set(
+                SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR, applyMargin);
+        if (mSideUiStateProvider != null) {
+            onSideUiSpecsChanged(mSideUiStateProvider.getCurrentSideUiSpecs());
+        }
+    }
 
+    private void setSideUiStateProvider(@Nullable SideUiStateProvider provider) {
+        if (provider == mSideUiStateProvider) return;
+
+        if (mSideUiStateProvider != null) {
+            mSideUiStateProvider.removeObserver(this);
+        }
         mSideUiStateProvider = provider;
-        provider.addObserver(this);
-        onSideUiSpecsChanged(provider.getCurrentSideUiSpecs());
+        if (provider != null) provider.addObserver(this);
+        updateLeftSideUiMargin();
     }
 
     @Override

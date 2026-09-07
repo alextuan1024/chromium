@@ -29,6 +29,7 @@
 #include "chrome/browser/profiles/batch_upload/batch_upload_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_metrics.h"
@@ -76,6 +77,7 @@
 #include "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/feature_engagement/public/feature_constants.h"
+#include "components/prefs/pref_service.h"
 #include "components/signin/core/browser/account_preview_data_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
@@ -141,18 +143,6 @@ std::u16string GetSyncErrorButtonText(
 
   return l10n_util::GetStringUTF16(
       GetSyncErrorButtonStringId(error, /*support_title_case=*/true));
-}
-
-std::u16string GetProfileIdentifier(const ProfileAttributesEntry& entry) {
-  switch (entry.GetNameForm()) {
-    case NameForm::kGaiaName:
-    case NameForm::kLocalName:
-      return entry.GetName();
-    case NameForm::kGaiaAndLocalName:
-      return l10n_util::GetStringFUTF16(
-          IDS_PROFILE_MENU_PROFILE_IDENTIFIER_WITH_SEPARATOR,
-          entry.GetGAIANameToDisplay(), entry.GetLocalProfileName());
-  }
 }
 
 }  // namespace
@@ -433,11 +423,12 @@ void ProfileMenuView::OnSignoutButtonClicked() {
     return;
   }
   GetWidget()->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
-  browser().GetFeatures().signin_view_controller()->SignoutOrReauthWithPrompt(
-      signin_metrics::AccessPoint::kProfileMenuSignoutConfirmationPrompt,
-      signin_metrics::ProfileSignout::kUserClickedSignoutProfileMenu,
-      signin_metrics::SourceForRefreshTokenOperation::
-          kUserMenu_SignOutAllAccounts);
+  SigninViewController::From(&browser())
+      ->SignoutOrReauthWithPrompt(
+          signin_metrics::AccessPoint::kProfileMenuSignoutConfirmationPrompt,
+          signin_metrics::ProfileSignout::kUserClickedSignoutProfileMenu,
+          signin_metrics::SourceForRefreshTokenOperation::
+              kUserMenu_SignOutAllAccounts);
 }
 
 void ProfileMenuView::OnOtherProfileSelected(
@@ -669,7 +660,6 @@ ProfileMenuView::GetIdentitySectionParams(const ProfileAttributesEntry& entry) {
   const AccountInfo primary_extended_account_info =
       identity_manager->FindExtendedAccountInfo(primary_account_info);
   CoreAccountInfo account_info_for_signin_action = primary_account_info;
-
 
   IdentitySectionParams params;
   params.title = GetProfileIdentifier(entry);

@@ -16,7 +16,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/url_with_title.h"
-#import "ios/chrome/browser/sharing/ui_bundled/activity_services/data/chrome_activity_item_thumbnail_generator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/activity_services/data/share_to_data.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
@@ -49,13 +48,6 @@ ShareToData* ShareToDataForWebState(web::WebState* web_state,
 
   BOOL is_page_printable = [web_state->GetView() viewPrintFormatter] != nil;
 
-  // Thumbnail should not be generated for incognito tabs.
-  ChromeActivityItemThumbnailGenerator* thumbnail_generator =
-      web_state->GetBrowserState()->IsOffTheRecord()
-          ? nil
-          : [[ChromeActivityItemThumbnailGenerator alloc]
-                initWithWebState:web_state];
-
   const GURL& final_url_to_share =
       share_url.is_valid() ? share_url : web_state->GetVisibleURL();
   web::NavigationItem* visible_item =
@@ -84,9 +76,10 @@ ShareToData* ShareToDataForWebState(web::WebState* web_state,
   metadata.URL = net::NSURLWithGURL(final_url_to_share);
   metadata.title = tab_title;
   metadata.originalURL = net::NSURLWithGURL(web_state->GetVisibleURL());
+  UIImage* thumbnail = nil;
   if (!web_state->GetBrowserState()->IsOffTheRecord()) {
-    UIImage* thumbnail = SnapshotTabHelper::FromWebState(web_state)
-                             ->GenerateSnapshotWithoutOverlays();
+    thumbnail = SnapshotTabHelper::FromWebState(web_state)
+                    ->GenerateSnapshotWithoutOverlays();
     if (thumbnail) {
       metadata.imageProvider =
           [[NSItemProvider alloc] initWithObject:thumbnail];
@@ -97,6 +90,7 @@ ShareToData* ShareToDataForWebState(web::WebState* web_state,
     metadata.iconProvider = [[NSItemProvider alloc]
         initWithObject:favicon_status.image.ToUIImage()];
   }
+
   return [[ShareToData alloc] initWithShareURL:final_url_to_share
                                     visibleURL:web_state->GetVisibleURL()
                                          title:tab_title
@@ -106,14 +100,20 @@ ShareToData* ShareToDataForWebState(web::WebState* web_state,
                               isPageSearchable:is_page_searchable
                               canSendTabToSelf:can_send_tab_to_self
                                      userAgent:user_agent
-                            thumbnailGenerator:thumbnail_generator
+                                     thumbnail:thumbnail
                                   linkMetadata:metadata];
 }
 
-ShareToData* ShareToDataForURL(const GURL& url,
-                               NSString* title,
-                               NSString* additional_text,
-                               LPLinkMetadata* link_metadata) {
+ShareToData* ShareToDataForURL(
+    const GURL& url,
+    NSString* title,
+    NSString* additional_text,
+    LPLinkMetadata* link_metadata,
+    send_tab_to_self::SendTabToSelfSyncService* send_tab_to_self_service) {
+  const BOOL can_send_tab_to_self =
+      send_tab_to_self_service &&
+      send_tab_to_self_service->GetEntryPointDisplayReason(url).has_value();
+
   return [[ShareToData alloc] initWithShareURL:url
                                     visibleURL:url
                                          title:title
@@ -121,14 +121,17 @@ ShareToData* ShareToDataForURL(const GURL& url,
                                isOriginalTitle:YES
                                isPagePrintable:NO
                               isPageSearchable:NO
-                              canSendTabToSelf:NO
+                              canSendTabToSelf:can_send_tab_to_self
                                      userAgent:web::UserAgentType::NONE
-                            thumbnailGenerator:nil
+                                     thumbnail:nil
                                   linkMetadata:link_metadata];
 }
 
-ShareToData* ShareToDataForURLWithTitle(URLWithTitle* url_with_title) {
-  return ShareToDataForURL(url_with_title.URL, url_with_title.title, nil, nil);
+ShareToData* ShareToDataForURLWithTitle(
+    URLWithTitle* url_with_title,
+    send_tab_to_self::SendTabToSelfSyncService* send_tab_to_self_service) {
+  return ShareToDataForURL(url_with_title.URL, url_with_title.title, nil, nil,
+                           send_tab_to_self_service);
 }
 
 }  // namespace activity_services

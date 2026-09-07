@@ -245,8 +245,8 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorTabGroupTabStripFrameInactivePink, kColorTabGroupDialogPink,
           kColorTabGroupContextMenuPink, kColorSavedTabGroupForegroundPink,
           kColorSavedTabGroupOutlinePink, kColorTabGroupBookmarkBarPink,
-          gfx::kTabGroupMagentaDarkMode, gfx::kTabGroupMagentaLightMode,
-          gfx::kTabGroupMagentaChipDarkMode, gfx::kTabGroupMagentaChipLightMode,
+          gfx::kTabGroupPinkDarkMode, gfx::kTabGroupPinkLightMode,
+          gfx::kTabGroupPinkChipDarkMode, gfx::kTabGroupPinkChipLightMode,
           gfx::kGooglePink300, gfx::kGooglePink700, gfx::kGooglePink100,
           gfx::kGooglePink800, gfx::kGooglePink300, gfx::kGooglePink700,
           SkColorSetRGB(0x55, 0x39, 0x49), gfx::kGooglePink050),
@@ -275,8 +275,8 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorTabGroupTabStripFrameInactiveYellow, kColorTabGroupDialogYellow,
           kColorTabGroupContextMenuYellow, kColorSavedTabGroupForegroundYellow,
           kColorSavedTabGroupOutlineYellow, kColorTabGroupBookmarkBarYellow,
-          gfx::kTabGroupLimeDarkMode, gfx::kTabGroupLimeLightMode,
-          gfx::kTabGroupLimeChipDarkMode, gfx::kTabGroupLimeChipLightMode,
+          gfx::kTabGroupYellowDarkMode, gfx::kTabGroupYellowLightMode,
+          gfx::kTabGroupYellowChipDarkMode, gfx::kTabGroupYellowChipLightMode,
           gfx::kGoogleYellow300, gfx::kGoogleYellow600, gfx::kGoogleYellow100,
           gfx::kGoogleGrey800, gfx::kGoogleYellow300, gfx::kGoogleYellow600,
           SkColorSetRGB(0x55, 0x4B, 0x30), gfx::kGoogleYellow050)};
@@ -327,6 +327,18 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorAppMenuHighlightPrimary] = {ui::kColorButtonBackgroundProminent};
   mixer[kColorAppMenuExpandedForegroundPrimary] = {
       ui::kColorButtonForegroundProminent};
+  mixer[kColorAppMenuYourChromeBackground] = {ui::kColorSysTonalContainer};
+  mixer[kColorAppMenuToolsAndActionsBackground] = {
+      ui::kColorSysNeutralContainer};
+  mixer[kColorAppMenuBlockButtonBackground] = {ui::kColorSysSurface};
+  mixer[kColorAppMenuBlockButtonBackgroundHovered] = {
+      ui::kColorSysTonalContainer};
+  mixer[kColorAppMenuBlockButtonBorder] = {ui::kColorSysInversePrimary};
+  mixer[kColorAppMenuBlockButtonForeground] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonForeground] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonForegroundHovered] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonBackgroundHovered] = {
+      ui::kColorSysStateHoverOnSubtle};
   mixer[kColorAvatarButtonHighlightDefault] =
       AdjustHighlightColorForContrast(ui::kColorAccent, kColorToolbar);
   mixer[kColorAvatarButtonHighlightSyncError] = AdjustHighlightColorForContrast(
@@ -451,11 +463,8 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       ui::GetColorWithMaxContrast({ui::kColorFrameActive});
   mixer[kColorFrameCaptionInactive] =
       ui::GetColorWithMaxContrast({ui::kColorFrameInactive});
-  if (dark_mode) {
-    mixer[kColorGlicBackground] = {SkColorSetRGB(0x13, 0x13, 0x14)};
-  } else {
-    mixer[kColorGlicBackground] = {ui::kColorBubbleBackground};
-  }
+  mixer[kColorGlicBackground] = {dark_mode ? SK_ColorBLACK
+                                           : SkColorSetRGB(0xFD, 0xFC, 0xFC)};
   // Invert modal colors w.r.t. Chrome dark mode.
   mixer[kColorGlicModalBackground] = {dark_mode
                                           ? SkColorSetRGB(0xE3, 0xE3, 0xE3)
@@ -820,6 +829,7 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorToolbarTopSeparatorFrameInactive] =
       GetToolbarTopSeparatorColorTransform(kColorToolbar,
                                            ui::kColorFrameInactive);
+  mixer[kColorSettingsWebuiPageBackground] = {ui::kColorSysSurface2};
   mixer[kColorWebContentsBackground] =
       ui::SetAlpha(kColorNewTabPageBackground, SK_AlphaOPAQUE);
   mixer[kColorWebContentsBackgroundLetterboxing] =

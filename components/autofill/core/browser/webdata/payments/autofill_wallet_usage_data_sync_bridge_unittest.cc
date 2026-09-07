@@ -15,7 +15,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_backend.h"
@@ -117,8 +117,6 @@ TEST_F(AutofillWalletUsageDataSyncBridgeTest, VerifyGetClientTag) {
       AutofillWalletUsageData::ForVirtualCard(test::GetVirtualCardUsageData1());
   SetAutofillWalletUsageSpecificsFromAutofillWalletUsageData(data, &specifics);
 
-  sync_pb::AutofillWalletUsageSpecifics::VirtualCardUsageData
-      virtual_card_usage_data = specifics.virtual_card_usage_data();
 
   EXPECT_EQ(bridge()->GetClientTag(SpecificsToEntity(specifics)),
             kExpectedClientTagAndStorageKey);
@@ -130,8 +128,6 @@ TEST_F(AutofillWalletUsageDataSyncBridgeTest, VerifyGetStorageKey) {
       AutofillWalletUsageData::ForVirtualCard(test::GetVirtualCardUsageData1());
   SetAutofillWalletUsageSpecificsFromAutofillWalletUsageData(data, &specifics);
 
-  sync_pb::AutofillWalletUsageSpecifics::VirtualCardUsageData
-      virtual_card_usage_data = specifics.virtual_card_usage_data();
 
   EXPECT_EQ(bridge()->GetStorageKey(SpecificsToEntity(specifics)),
             kExpectedClientTagAndStorageKey);

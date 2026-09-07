@@ -16,6 +16,7 @@ import static org.chromium.chrome.browser.keyboard_accessory.bar_component.Keybo
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.HAS_SUGGESTIONS;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.OBFUSCATED_CHILD_AT_CALLBACK;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.ON_TOUCH_EVENT_CALLBACK;
+import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SELECTED_SUGGESTION_INDEX;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SHEET_OPENER_ITEM;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SHOW_SWIPING_IPH;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SKIP_CLOSING_ANIMATION;
@@ -27,6 +28,7 @@ import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
@@ -63,6 +65,8 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.ButtonCompat;
 import org.chromium.ui.widget.RectProvider;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -157,6 +161,8 @@ class KeyboardAccessoryViewBinder {
         private final KeyboardAccessoryView mKeyboardAccessory;
         private final UiConfiguration mUiConfiguration;
         private final ViewGroup mParent;
+        private final List<BarItemViewHolder> mChildViewHolders = new ArrayList<>();
+        private final List<Integer> mChildViewTypes = new ArrayList<>();
 
         BarItemGroupViewHolder(
                 KeyboardAccessoryView keyboardAccessory,
@@ -171,13 +177,55 @@ class KeyboardAccessoryViewBinder {
         @Override
         @SuppressWarnings({"rawtypes", "unchecked"}) // Heterogeneous viewHolder dispatch by type.
         protected void bind(GroupBarItem group, KeyboardAccessoryChipGroup chipGroup) {
+            List<ActionBarItem> items = group.getActionBarItems();
+            if (canReuseChildHolders(items)) {
+                rebindChildHolders(items);
+                return;
+            }
+
+            recycle();
             chipGroup.removeAllViews();
-            for (ActionBarItem item : group.getActionBarItems()) {
+            for (ActionBarItem item : items) {
                 BarItemViewHolder viewHolder =
                         create(mKeyboardAccessory, mUiConfiguration, mParent, item.getViewType());
-
-                viewHolder.bind(item, viewHolder.itemView);
+                mChildViewHolders.add(viewHolder);
+                mChildViewTypes.add(item.getViewType());
+                viewHolder.bind(item);
                 chipGroup.addView(viewHolder.itemView);
+            }
+        }
+
+        @Override
+        protected void recycle() {
+            for (BarItemViewHolder viewHolder : mChildViewHolders) {
+                viewHolder.recycle();
+            }
+            mChildViewHolders.clear();
+            mChildViewTypes.clear();
+        }
+
+        /**
+         * Checks if the existing child view holders can be reused for the given items without
+         * recreating views. Child holders can be reused if the count and view types of items match
+         * exactly, avoiding unnecessary view inflation and visual flickering when only properties
+         * change.
+         */
+        private boolean canReuseChildHolders(List<ActionBarItem> items) {
+            if (mChildViewHolders.size() != items.size()) {
+                return false;
+            }
+            for (int i = 0; i < items.size(); i++) {
+                if (mChildViewTypes.get(i) != items.get(i).getViewType()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** Rebinds the existing child view holders with updated item models. */
+        private void rebindChildHolders(List<ActionBarItem> items) {
+            for (int i = 0; i < items.size(); i++) {
+                mChildViewHolders.get(i).bind(items.get(i));
             }
         }
     }
@@ -297,6 +345,22 @@ class KeyboardAccessoryViewBinder {
                 chipView.showLoadingView(/* loadingViewObserver= */ null);
             } else {
                 chipView.hideLoadingView(/* loadingViewObserver= */ null, /* skipDelay= */ true);
+            }
+
+            @Nullable Callback<Boolean> hoverCallback = action.getHoverCallback();
+            if (hoverCallback != null) {
+                chipView.setOnHoverListener(
+                        (view, motionEvent) -> {
+                            int actionMasked = motionEvent.getActionMasked();
+                            if (actionMasked == MotionEvent.ACTION_HOVER_ENTER) {
+                                hoverCallback.onResult(true);
+                            } else if (actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
+                                hoverCallback.onResult(false);
+                            }
+                            return false;
+                        });
+            } else {
+                chipView.setOnHoverListener(null);
             }
 
             @Nullable String voiceOver = item.getSuggestion().getVoiceOver();
@@ -544,6 +608,8 @@ class KeyboardAccessoryViewBinder {
             view.setHasStickyLastItem(model.get(HAS_STICKY_LAST_ITEM));
         } else if (propertyKey == ANIMATE_SUGGESTIONS_FROM_TOP) {
             view.setAnimateSuggestionsFromTop(model.get(ANIMATE_SUGGESTIONS_FROM_TOP));
+        } else if (propertyKey == SELECTED_SUGGESTION_INDEX) {
+            // TODO(crbug.com/542535472): Binding will be added in the next CL.
         } else if (propertyKey == SHEET_OPENER_ITEM || propertyKey == DISMISS_ITEM) {
             // No binding required.
         } else {

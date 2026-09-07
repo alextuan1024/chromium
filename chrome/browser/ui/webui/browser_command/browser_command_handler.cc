@@ -17,7 +17,6 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
-#include "chrome/browser/new_tab_page/promos/promo_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -278,7 +277,7 @@ void BrowserCommandHandler::StartTutorial(StartTutorialInPage::Params params) {
 
 bool BrowserCommandHandler::TutorialServiceExists() {
   auto* service = UserEducationServiceFactory::GetForBrowserContext(profile_);
-  auto* tutorial_service = service ? &service->tutorial_service() : nullptr;
+  auto* tutorial_service = service ? service->tutorial_service() : nullptr;
   return !!tutorial_service;
 }
 

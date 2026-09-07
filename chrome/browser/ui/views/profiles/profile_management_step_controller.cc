@@ -36,6 +36,7 @@
 #include "components/regional_capabilities/regional_capabilities_switches.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "content/public/browser/navigation_controller.h"
 
 namespace {
 class ProfilePickerAppStepController : public ProfileManagementStepController {
@@ -426,9 +427,6 @@ class DeviceSignalsDisclaimerStepController
         },
         std::move(step_shown_callback.value()), web_contents_.get());
 
-    // TODO(b/535164842): Once the refreshed profile picker UI is launched this
-    // screen will be inconsistent with the rest of the flow. This screen should
-    // be then updated to match the new flow.
     host()->ShowScreen(web_contents_.get(),
                        GURL(chrome::kChromeUIManagedUserProfileNoticeUrl),
                        std::move(navigation_finished_closure));

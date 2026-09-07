@@ -212,14 +212,16 @@ class RenderFrameHostFactoryForHistoryBackInterceptor
       const blink::LocalFrameToken& frame_token,
       const blink::DocumentToken& document_token,
       base::UnguessableToken devtools_frame_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       bool renderer_initiated_creation,
       RenderFrameHostImpl::LifecycleStateImpl lifecycle_state,
       scoped_refptr<BrowsingContextState> browsing_context_state) override {
     return base::WrapUnique(new RenderFrameHostImplForHistoryBackInterceptor(
         site_instance, std::move(render_view_host), delegate, frame_tree,
         frame_tree_node, routing_id, std::move(frame_remote), frame_token,
-        document_token, devtools_frame_token, renderer_initiated_creation,
-        lifecycle_state, std::move(browsing_context_state),
+        document_token, devtools_frame_token, initiator_state_token,
+        renderer_initiated_creation, lifecycle_state,
+        std::move(browsing_context_state),
         frame_tree_node->frame_owner_element_type(), frame_tree_node->parent(),
         frame_tree_node->fenced_frame_status()));
   }
@@ -4089,14 +4091,14 @@ IN_PROC_BROWSER_TEST_F(NavigationBrowserTest,
     })
   )"));
 
-  RenderFrameHost* openee_rfh =
+  RenderFrameHostImpl* openee_rfh = static_cast<RenderFrameHostImpl*>(
       static_cast<WebContentsImpl*>(openee_shell->web_contents())
-          ->GetPrimaryMainFrame();
+          ->GetPrimaryMainFrame());
   // Issue a KeepAlive for the navigation state so that the PolicyContainerHost
   // will still exist after the initiator RenderFrameHost is gone.
   mojo::PendingRemote<blink::mojom::NavigationStateKeepAliveHandle> keep_alive;
-  static_cast<RenderFrameHostImpl*>(openee_rfh)
-      ->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver());
+  openee_rfh->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver(),
+                                   openee_rfh->current_initiator_state_token());
 
   auto initiator_global_token = openee_rfh->GetGlobalFrameToken();
   base::RunLoop loop;

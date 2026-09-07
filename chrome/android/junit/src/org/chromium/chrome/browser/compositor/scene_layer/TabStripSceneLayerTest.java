@@ -59,7 +59,7 @@ import org.chromium.ui.resources.ResourceManager;
 
 /** Tests for {@link TabStripSceneLayer}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw600dp")
+@Config(qualifiers = "sw600dp")
 public class TabStripSceneLayerTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -303,11 +303,7 @@ public class TabStripSceneLayerTest {
                         /* scrimOpacity= */ eq(0.3f),
                         eq(leftPadding),
                         eq(rightPadding),
-                        eq(topPadding),
-                        anyFloat(),
-                        anyBoolean(),
-                        anyInt(),
-                        anyInt());
+                        eq(topPadding));
         verify(mTabStripSceneMock).finishBuildingFrame(1L);
     }
 
@@ -347,6 +343,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
@@ -441,6 +438,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -503,6 +501,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
@@ -581,6 +580,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),

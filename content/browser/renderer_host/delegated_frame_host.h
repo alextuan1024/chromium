@@ -205,7 +205,7 @@ class CONTENT_EXPORT DelegatedFrameHost
     return weak_factory_.GetWeakPtr();
   }
 
-  const ui::Layer* stale_content_layer() const {
+  const ui::LayerWithExternalTexture* stale_content_layer() const {
     return stale_content_layer_.get();
   }
 
@@ -226,6 +226,8 @@ class CONTENT_EXPORT DelegatedFrameHost
   viz::SurfaceId GetBFCacheFallbackSurfaceIdForTesting() const;
 
   void SetIsFrameSinkIdOwner(bool is_owner);
+
+  void SetEvictOnHide(bool evict_on_hide);
 
  private:
   friend class DelegatedFrameHostClient;

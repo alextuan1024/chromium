@@ -24,6 +24,7 @@ BASE_DECLARE_FEATURE(kWebViewAwClassPreloader);
 BASE_DECLARE_FEATURE(kWebViewBackForwardCache);
 BASE_DECLARE_FEATURE(kWebViewBackgroundClassPreloading);
 BASE_DECLARE_FEATURE(kWebViewBackgroundTracingInit);
+BASE_DECLARE_FEATURE(kWebViewBoostRendererPriorityOnNavigation);
 // TODO(crbug.com/455296998): Remove this code for M145.
 BASE_DECLARE_FEATURE(kWebViewBypassHttpCacheForPrefetchFromHeader);
 BASE_DECLARE_FEATURE(kWebViewCacheSizeLimitDerivedFromAppCacheQuota);
@@ -32,6 +33,8 @@ extern const base::FeatureParam<int> kWebViewCacheSizeLimitMinimum;
 extern const base::FeatureParam<int> kWebViewCacheSizeLimitMaximum;
 extern const base::FeatureParam<double> kWebViewCodeCacheSizeLimitMultiplier;
 BASE_DECLARE_FEATURE(kWebViewContentRestrictionSupport);
+extern const base::FeatureParam<base::TimeDelta>
+    kWebViewContentRestrictionTimeout;
 BASE_DECLARE_FEATURE(kWebViewCookieManagerSimplerUrlFixups);
 BASE_DECLARE_FEATURE(kWebViewCppMetricsFiltering);
 BASE_DECLARE_FEATURE(kWebViewCrossOriginAllowlistApi);
@@ -45,6 +48,7 @@ extern const base::FeatureParam<bool> kWebViewEnableDnsPlatformNoSystem;
 BASE_DECLARE_FEATURE(kWebViewFasterGetDefaultUserAgent);
 BASE_DECLARE_FEATURE(kWebViewFileSystemAccess);
 BASE_DECLARE_FEATURE(kWebViewForceWebAuthn);
+BASE_DECLARE_FEATURE(kWebViewObserveAccessibilityState);
 BASE_DECLARE_FEATURE(kWebViewPurgeMemoryInBackground);
 extern const base::FeatureParam<base::TimeDelta>
     kWebViewPurgeMemoryInBackgroundDelay;

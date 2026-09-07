@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
+#include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/remote_dom_window.h"
 #include "third_party/blink/renderer/core/frame/remote_frame_client.h"
 #include "third_party/blink/renderer/core/frame/remote_frame_owner.h"
@@ -282,6 +283,8 @@ void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
   params->triggering_event_info = mojom::blink::TriggeringEventInfo::kUnknown;
   params->blob_url_token = frame_request.GetBlobURLToken();
   params->href_translate = String(frame_request.HrefTranslate().Latin1());
+  params->initiator_state_token = frame_request.GetInitiatorStateToken();
+  params->initiator_document_token = frame_request.GetInitiatorDocumentToken();
   params->initiator_navigation_state_keep_alive_handle =
       std::move(initiator_navigation_state_keep_alive_handle);
   params->initiator_frame_token =
@@ -471,6 +474,19 @@ void RemoteFrame::CreateView() {
 
   if (OwnerLayoutObject())
     DeprecatedLocalOwner()->SetEmbeddedContentView(view_);
+
+  // Force the embedding (parent) frame to recompute and propagate this frame's
+  // viewport intersection state on the next lifecycle update. This ensures the
+  // remote frame receives its initial `is_hidden_for_media_playback` bit even
+  // when it has no layout object (e.g. an out-of-process iframe that is
+  // display:none before insertion). Without this, such a frame would keep the
+  // default (not-hidden) state, allowing media to play while hidden.
+  if (LocalFrame* parent_local_frame = DynamicTo<LocalFrame>(Tree().Parent())) {
+    if (LocalFrameView* parent_view = parent_local_frame->View()) {
+      parent_view->SetIntersectionObservationState(LocalFrameView::kRequired);
+      parent_view->ScheduleAnimation();
+    }
+  }
 }
 
 void RemoteFrame::ForwardPostMessage(
@@ -601,19 +617,26 @@ void RemoteFrame::SetReplicatedOrigin(
 }
 
 bool RemoteFrame::IsAdFrame() const {
-  return is_ad_frame_;
+  return ad_frame_status_ != mojom::blink::FrameAdStatus::kNotAd;
 }
 
-void RemoteFrame::SetReplicatedIsAdFrame(bool is_ad_frame) {
-  TRACE_EVENT("navigation", "RemoteFrame::SetReplicatedIsAdFrame");
+void RemoteFrame::SetReplicatedAdFrameStatus(
+    mojom::blink::FrameAdStatus ad_frame_status) {
+  TRACE_EVENT("navigation", "RemoteFrame::SetReplicatedAdFrameStatus");
 
-  // Currently, a frame cannot be untagged.
-  DCHECK_LE(is_ad_frame_, is_ad_frame);
+  // A frame's ad status can only be upgraded monotonically. Ignore redundant
+  // updates and reject attempted downgrades. This fails safe in production
+  // and DCHECKs in debug builds.
+  if (ad_frame_status <= ad_frame_status_) {
+    DCHECK_EQ(ad_frame_status, ad_frame_status_)
+        << "A frame's ad status must not be downgraded.";
+    return;
+  }
 
-  is_ad_frame_ = is_ad_frame;
+  ad_frame_status_ = ad_frame_status;
 
   if (auto* owner_element = DynamicTo<HTMLFrameOwnerElement>(Owner())) {
-    if (is_ad_frame) {
+    if (ad_frame_status != mojom::blink::FrameAdStatus::kNotAd) {
       // If an ad script created this frame, the provenance was likely already
       // set via LocalFrame::SetAdEvidence() on the initial empty LocalFrame
       // prior to swapping, making this call a no-op. The provenance data is

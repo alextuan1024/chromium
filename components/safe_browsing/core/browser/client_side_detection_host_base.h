@@ -25,6 +25,7 @@
 #include "components/safe_browsing/core/browser/credit_card_form_event.h"
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
+#include "components/safe_browsing/core/common/client_side_detection_enums.h"
 #include "components/safe_browsing/core/common/phishing_classifier/phishing_image_embedder.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/threat_enums.h"
@@ -40,26 +41,6 @@ class HistoryService;
 namespace safe_browsing {
 
 using HostInnerTextCallback = base::OnceCallback<void(std::string)>;
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class ClientSideDetectionEvent {
-  kTriggerStartsPreClassification = 0,
-  kPreClassificationCheckComplete = 1,
-  kImageClassificationBegin = 2,
-  kImageClassificationComplete = 3,
-  kVerdictProtoParseComplete = 4,
-  kLocalModelResultComplete = 5,
-  kImageEmbeddingBegin = 6,
-  kImageEmbeddingComplete = 7,
-  kIntelligentScanBegin = 8,
-  kIntelligentScanComplete = 9,
-  kMiscellaneousFieldsAdded = 10,
-  kNetworkRequestSent = 11,
-  kNetworkResponseReceived = 12,
-  kWarningShown = 13,
-  kMaxValue = kWarningShown,
-};
 
 std::string_view GetRequestTypeName(
     ClientSideDetectionType client_side_detection_type);
@@ -129,6 +110,11 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
 
   virtual bool IsAccountSignedIn() = 0;
   virtual bool IsErrorDocument() = 0;
+
+  // Returns the site engagement score for `url`. Returns std::nullopt if the
+  // score is not available (e.g., for off-the-record profiles, if WebContents
+  // is null, or if SiteEngagementService is unavailable).
+  virtual std::optional<double> GetSiteEngagementScore(const GURL& url) const;
 
   // Returns the inner text from the tab. The callback is used to retrieve a
   // string back when the inner text function is completed. This string is then
@@ -216,6 +202,8 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
       IntelligentScanDelegate* intelligent_scan_delegate) {
     intelligent_scan_delegate_ = intelligent_scan_delegate;
   }
+
+  bool is_off_the_record() const { return is_off_the_record_; }
 
   void set_is_off_the_record_for_testing(bool is_off_the_record) {
     is_off_the_record_ = is_off_the_record;

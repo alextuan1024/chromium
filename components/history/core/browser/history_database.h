@@ -15,6 +15,8 @@
 #include "build/build_config.h"
 #include "components/history/core/browser/download_database.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/history/core/browser/journeys/journeys_database.h"
+#include "components/history/core/browser/journeys/journeys_sync_metadata_database.h"
 #include "components/history/core/browser/sync/history_sync_metadata_database.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/history/core/browser/visit_annotations_database.h"
@@ -50,7 +52,8 @@ class HistoryDatabase : public DownloadDatabase,
                         public VisitDatabase,
                         public VisitAnnotationsDatabase,
                         public VisitedLinkDatabase,
-                        public VisitSegmentDatabase {
+                        public VisitSegmentDatabase,
+                        public journeys::JourneysDatabase {
  public:
   // Reasons for initialization to fail. These are logged to UMA. It corresponds
   // to the HistoryInitStep enum in enums.xml.
@@ -135,9 +138,8 @@ class HistoryDatabase : public DownloadDatabase,
   // this, NOT any `HistoryDBTask`, which has a non-owning pointer to this.
   std::unique_ptr<sql::Transaction> CreateTransaction();
 
-  // We DO NOT support transaction nesting. It's considered a "misfeature", and
-  // so the return value of this should always be 0 or 1 during runtime.
-  int transaction_nesting() const { return db_.transaction_nesting(); }
+  // Returns true if at least one `Transaction` is active on the database.
+  bool HasActiveTransactions() const { return db_.HasActiveTransactions(); }
 
   // Drops all tables except the URL, and download tables, and recreates them
   // from scratch. This is done to rapidly clean up stuff when deleting all
@@ -257,13 +259,17 @@ class HistoryDatabase : public DownloadDatabase,
   // Returns the sub-database used for storing Sync metadata for History.
   HistorySyncMetadataDatabase* GetHistoryMetadataDB();
 
+  // Returns the sub-database used for storing Sync metadata for Journeys.
+  journeys::JourneysSyncMetadataDatabase* GetJourneysMetadataDB();
+
   sql::Database& GetDBForTesting();
 
  private:
   friend class ::InMemoryURLIndexTest;
 
-  // Overridden from URLDatabase, DownloadDatabase, VisitDatabase, and
-  // VisitSegmentDatabase.
+  // Overridden from URLDatabase, DownloadDatabase, VisitDatabase,
+  // VisitAnnotationsDatabase, VisitedLinkDatabase, VisitSegmentDatabase, and
+  // JourneysDatabase.
   sql::Database& GetDB() override;
 
   // Migration -----------------------------------------------------------------
@@ -303,8 +309,9 @@ class HistoryDatabase : public DownloadDatabase,
   // Most of the sub-DBs (URLDatabase etc.) are integrated into HistoryDatabase
   // via inheritance. However, that can lead to "diamond inheritance" issues
   // when multiple of these base classes define the same methods. Therefore the
-  // Sync metadata DB is integrated via composition instead.
+  // Sync metadata DBs are integrated via composition instead.
   HistorySyncMetadataDatabase history_metadata_db_;
+  journeys::JourneysSyncMetadataDatabase journeys_metadata_db_;
 
   base::Time cached_early_expiration_threshold_;
 };

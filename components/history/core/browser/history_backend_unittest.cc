@@ -48,6 +48,7 @@
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/in_memory_database.h"
 #include "components/history/core/browser/in_memory_history_backend.h"
+#include "components/history/core/browser/journeys/journey_row.h"
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/browser/keyword_search_term_util.h"
 #include "components/history/core/browser/page_usage_data.h"
@@ -1358,10 +1359,6 @@ TEST_F(HistoryBackendTest, SegmentsDoNotIncludeRedirects) {
 }
 
 TEST_F(HistoryBackendTest, AddPage404) {
-  // Enable `history::kVisitedLinksOn404` to make 404s eligible for History.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(history::kVisitedLinksOn404);
-
   ASSERT_TRUE(backend_.get());
 
   // Call `AddPage()` with a 404 visit.
@@ -3452,10 +3449,6 @@ TEST_F(HistoryBackendTest, AddPageNoVisitForBookmark) {
 }
 
 TEST_F(HistoryBackendTest, ExpireHistoryForTimes) {
-  // Allow 404s to be saved to History.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kVisitedLinksOn404);
-
   ASSERT_TRUE(backend_.get());
 
   // Make 10 visits, each 1µs apart. All visits have a response code of 200,
@@ -4417,10 +4410,6 @@ TEST_F(HistoryBackendTest, AddPageWithContextAnnotations) {
 }
 
 TEST_F(HistoryBackendTest, AddPageVisitAddedDueTo404) {
-  // Allow 404s to be saved to History.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(history::kVisitedLinksOn404);
-
   base::HistogramTester histogram_tester;
 
   // Test a redirect chain ending in a 404.
@@ -4611,10 +4600,6 @@ TEST_F(HistoryBackendTest, GetAnnotatedVisits) {
 }
 
 TEST_F(HistoryBackendTest, GetAnnotatedVisits_404s) {
-  // Allow 404s to be persisted to the History DB.
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitAndEnableFeature(kVisitedLinksOn404);
-
   // Add a 404 visit.
   const auto [url_id, visit_id] = backend_->AddPageVisit(
       GURL("https://google.com/"), GetRelativeTime(0), /*referring_visit=*/0,
@@ -6646,6 +6631,127 @@ TEST_F(HistoryBackendTest, ProcessDBTaskWithMultipleIterations) {
   EXPECT_CALL(first_task_done, Run);
   EXPECT_CALL(second_task_done, Run);
   task_environment_.RunUntilIdle();
+}
+
+TEST_F(HistoryBackendTest, GetRedirectChain_CappedAtMaxLength) {
+  const int kChainLength = 50;
+  base::Time now = base::Time::Now();
+
+  auto [url_id, prev_visit_id] = backend_->AddPageVisit(
+      GURL("https://example.com/start"), now, /*referring_visit=*/0,
+      /*external_referrer_url=*/GURL(),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_CHAIN_START |
+                                ui::PAGE_TRANSITION_CHAIN_END),
+      /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+      /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+      /*consider_for_ntp_most_visited=*/true);
+
+  VisitRow last_visit;
+  for (int i = 1; i < kChainLength; ++i) {
+    auto [refresh_url_id, next_visit_id] = backend_->AddPageVisit(
+        GURL("https://example.com/refresh"), now + base::Seconds(i),
+        /*referring_visit=*/prev_visit_id,
+        /*external_referrer_url=*/GURL(),
+        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                  ui::PAGE_TRANSITION_CLIENT_REDIRECT |
+                                  ui::PAGE_TRANSITION_CHAIN_END),
+        /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+        /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+        /*consider_for_ntp_most_visited=*/true);
+    prev_visit_id = next_visit_id;
+    if (i == kChainLength - 1) {
+      backend_->db()->GetRowForVisit(next_visit_id, &last_visit);
+    }
+  }
+
+  VisitVector chain = backend_->GetRedirectChain(last_visit);
+  EXPECT_EQ(chain.size(), HistoryBackend::kMaxRedirectChainLength);
+  EXPECT_EQ(chain.back().visit_id, last_visit.visit_id);
+}
+
+TEST_F(HistoryBackendTest, GetAnnotatedVisits_LongRedirectChain) {
+  const int kChainLength = 50;
+  base::Time now = base::Time::Now();
+
+  auto [url_id, prev_visit_id] = backend_->AddPageVisit(
+      GURL("https://example.com/start"), now, /*referring_visit=*/0,
+      /*external_referrer_url=*/GURL(),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_CHAIN_START |
+                                ui::PAGE_TRANSITION_CHAIN_END),
+      /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+      /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+      /*consider_for_ntp_most_visited=*/true);
+
+  for (int i = 1; i < kChainLength; ++i) {
+    auto [refresh_url_id, next_visit_id] = backend_->AddPageVisit(
+        GURL("https://example.com/refresh"), now + base::Seconds(i),
+        /*referring_visit=*/prev_visit_id,
+        /*external_referrer_url=*/GURL(),
+        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                  ui::PAGE_TRANSITION_CLIENT_REDIRECT |
+                                  ui::PAGE_TRANSITION_CHAIN_END),
+        /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+        /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+        /*consider_for_ntp_most_visited=*/true);
+    prev_visit_id = next_visit_id;
+  }
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+  options.max_count = kChainLength;
+
+  auto annotated_visits = backend_->GetAnnotatedVisits(
+      options, /*compute_redirect_chain_start_properties=*/true,
+      /*get_unclustered_visits_only=*/false);
+  EXPECT_EQ(annotated_visits.size(), static_cast<size_t>(kChainLength));
+}
+
+TEST_F(HistoryBackendTest, JourneysSyncDisabledByDefault) {
+  ASSERT_TRUE(backend_);
+  EXPECT_EQ(nullptr, backend_->GetJourneysSyncControllerDelegate());
+}
+
+class HistoryBackendJourneysSyncTest : public HistoryBackendTest {
+ public:
+  HistoryBackendJourneysSyncTest() {
+    scoped_feature_list_.InitAndEnableFeature(syncer::kSyncJourney);
+  }
+};
+
+TEST_F(HistoryBackendJourneysSyncTest, JourneysSyncBackendIntegration) {
+  ASSERT_TRUE(backend_);
+  EXPECT_NE(nullptr, backend_->GetJourneysSyncControllerDelegate());
+
+  journeys::JourneyRow journey1;
+  journey1.journey_id = "backend_journey_1";
+  journey1.title = "Trip to Tokyo";
+  journey1.creation_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(1000));
+
+  journeys::JourneyRow journey2;
+  journey2.journey_id = "backend_journey_2";
+  journey2.title = "Trip to Kyoto";
+  journey2.creation_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(2000));
+
+  EXPECT_TRUE(backend_->AddOrUpdateJourneys({journey1, journey2}));
+  EXPECT_EQ(2u, backend_->GetAllJourneys().size());
+
+  EXPECT_TRUE(backend_->DeleteJourneys({"backend_journey_1"}));
+  std::vector<journeys::JourneyRow> remaining = backend_->GetAllJourneys();
+  ASSERT_EQ(1u, remaining.size());
+  EXPECT_EQ("backend_journey_2", remaining[0].journey_id);
+
+  EXPECT_TRUE(backend_->DeleteAllJourneys());
+  EXPECT_TRUE(backend_->GetAllJourneys().empty());
+
+  // DeleteAllHistory should also clear all journeys.
+  EXPECT_TRUE(backend_->AddOrUpdateJourneys({journey1, journey2}));
+  EXPECT_EQ(2u, backend_->GetAllJourneys().size());
+  backend_->DeleteAllHistory();
+  EXPECT_TRUE(backend_->GetAllJourneys().empty());
 }
 
 }  // namespace history

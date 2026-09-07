@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/webui/whats_new/whats_new_registrar.h"
 
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_storage_service_impl.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
@@ -13,6 +12,7 @@
 #include "components/performance_manager/public/features.h"
 #include "components/search/ntp_features.h"
 #include "components/user_education/webui/whats_new_registry.h"
+#include "media/base/media_switches.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/webui/resources/js/browser_command/browser_command.mojom.h"
 
@@ -31,9 +31,13 @@ void RegisterWhatsNewModules(whats_new::WhatsNewRegistry* registry) {
                                           BrowserCommand::kOpenSplitView));
 
   // M147
-  registry->RegisterModule(WhatsNewModule(tabs::kVerticalTabsLaunch,
+  registry->RegisterModule(WhatsNewModule("VerticalTabsLaunch",
                                           "charlesmeng@google.com",
                                           BrowserCommand::kEnableVerticalTabs));
+
+  // M155
+  registry->RegisterModule(
+      WhatsNewModule(media::kHeadlessLiveCaption, "ahmedmoussa@google.com"));
 }
 
 void RegisterWhatsNewEditions(whats_new::WhatsNewRegistry* registry) {

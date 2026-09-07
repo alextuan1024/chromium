@@ -25,6 +25,7 @@
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_field_detector.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/otp_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/common/autofill_internals/log_message.h"
@@ -135,9 +136,21 @@ void OtpManagerImpl::OnFieldTypesDetermined(
     return;
   }
 
+  std::vector<FieldGlobalId> otp_field_ids;
+  for (const auto& field : form->fields()) {
+    if (field->Type().GetTypes().contains(ONE_TIME_CODE)) {
+      otp_field_ids.push_back(field->global_id());
+    }
+  }
+
   LOG_AF(owner_->client().GetCurrentLogManager())
       << LoggingScope::kOneTimeTokens << "OTP field detected in web form."
       << Br{} << "Form ID: " << form_id;
+
+  if (OtpMetricsTracker* tracker = owner_->client().GetOtpMetricsTracker()) {
+    tracker->OnOtpFieldDetected(form_id, std::move(otp_field_ids),
+                                owner_->GetWeakPtr());
+  }
 
   GetRecentOtpsAndRenewSubscription();
 }

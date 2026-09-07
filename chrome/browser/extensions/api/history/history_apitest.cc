@@ -11,7 +11,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service.h"
@@ -24,9 +23,11 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/process_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -86,17 +87,6 @@ class HistoryApiTest : public ExtensionApiTest {
     EXPECT_TRUE(result.is_string());
     return result.is_string() ? result.GetString() : std::string();
   }
-};
-
-class HistoryApi404Test : public HistoryApiTest {
- public:
-  HistoryApi404Test() {
-    // Allow 404s to be saved to History.
-    scoped_feature_list_.InitAndEnableFeature(history::kVisitedLinksOn404);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 class SyncEnabledHistoryApiTest : public HistoryApiTest {
@@ -163,7 +153,7 @@ IN_PROC_BROWSER_TEST_F(HistoryApiTest, GetVisits) {
   ASSERT_TRUE(RunExtensionTest("history/regular/get_visits")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(HistoryApi404Test, GetVisits_Excludes404Visits) {
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, GetVisits_Excludes404Visits) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   history::HistoryService* history_service =
       HistoryServiceFactory::GetForProfile(profile(),

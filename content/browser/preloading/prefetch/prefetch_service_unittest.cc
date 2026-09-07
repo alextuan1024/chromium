@@ -651,7 +651,8 @@ class PrefetchServiceTestBase : public PrefetchingMetricsTestBase {
       const GURL& url,
       net::HttpStatusCode http_status = net::HTTP_PERMANENT_REDIRECT,
       net::ReferrerPolicy referrer_policy =
-          net::ReferrerPolicy::REDUCE_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN) {
+          net::ReferrerPolicy::REDUCE_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN,
+      bool use_prefetch_proxy = true) {
     network::TestURLLoaderFactory::PendingRequest* request =
         test_url_loader_factory_.GetPendingRequest(0);
     ASSERT_TRUE(request);
@@ -664,7 +665,7 @@ class PrefetchServiceTestBase : public PrefetchingMetricsTestBase {
     request->client->OnReceiveRedirect(
         redirect_info,
         CreateURLResponseHeadForPrefetch(http_status, kHTMLMimeType,
-                                         /*use_prefetch_proxy=*/true, {}, url));
+                                         use_prefetch_proxy, {}, url));
     task_environment()->RunUntilIdle();
   }
 
@@ -4932,6 +4933,7 @@ TEST_P(PrefetchServiceTest, PrefetchEvictionForEligibleButNotStartedPrefetch) {
   const auto url_1 = GURL("https://example.com/one");
   const auto url_2 = GURL("https://example.com/two");
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5024,6 +5026,7 @@ TEST_P(PrefetchServiceTest, PrefetchEvictionDuringEligiblityCheck) {
 
   const auto url_1 = GURL("https://example.com/one");
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5100,6 +5103,7 @@ TEST_P(PrefetchServiceTest, PrefetchEvictionDuringProxyLookup) {
   // The URL is cross-site to trigger proxy lookup.
   const auto url_1 = GURL("https://cross-site.example.org/one");
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5171,6 +5175,7 @@ TEST_P(PrefetchServiceTest, PrefetchEvictionWhenHoldback) {
 
   const auto url_1 = GURL("https://example.com/one");
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5432,6 +5437,7 @@ TEST_P(PrefetchServiceLimitsTest, PrefetchWithNoCandidateIsNotStarted) {
       std::make_unique<testing::NiceMock<MockPrefetchServiceDelegate>>());
 
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5492,6 +5498,7 @@ TEST_P(PrefetchServiceLimitsTest,
       std::make_unique<testing::NiceMock<MockPrefetchServiceDelegate>>());
 
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5552,6 +5559,7 @@ TEST_P(PrefetchServiceLimitsTest, CompletedPrefetchWithNoCandidateIsEvicted) {
       std::make_unique<testing::NiceMock<MockPrefetchServiceDelegate>>());
 
   auto candidate_1 = blink::mojom::SpeculationCandidate::New();
+  candidate_1->tags = {std::nullopt};
   candidate_1->url = url_1;
   candidate_1->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate_1->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5615,6 +5623,7 @@ TEST_P(PrefetchServiceLimitsTest, PrefetchReset) {
       mock_destruction_callback.Get());
 
   auto candidate = blink::mojom::SpeculationCandidate::New();
+  candidate->tags = {std::nullopt};
   candidate->url = url;
   candidate->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5708,6 +5717,7 @@ TEST_P(PrefetchServiceLimitsTest, NextPrefetchQueuedImmediatelyAfterReset) {
       mock_destruction_callback.Get());
 
   auto base_candidate = blink::mojom::SpeculationCandidate::New();
+  base_candidate->tags = {std::nullopt};
   base_candidate->action = blink::mojom::SpeculationAction::kPrefetch;
   base_candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
   base_candidate->referrer = blink::mojom::Referrer::New();
@@ -5809,6 +5819,7 @@ TEST_P(PrefetchServiceLimitsTest, PrefetchFailsAndIsReset) {
       mock_destruction_callback.Get());
 
   auto candidate = blink::mojom::SpeculationCandidate::New();
+  candidate->tags = {std::nullopt};
   candidate->url = url;
   candidate->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -5861,6 +5872,7 @@ TEST_P(PrefetchServiceLimitsTest, ImmediatePrefetchLimitIsDynamic) {
       destruction_cb.Get());
 
   auto base_candidate = blink::mojom::SpeculationCandidate::New();
+  base_candidate->tags = {std::nullopt};
   base_candidate->action = blink::mojom::SpeculationAction::kPrefetch;
   base_candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
   base_candidate->referrer = blink::mojom::Referrer::New();
@@ -6028,6 +6040,7 @@ TEST_P(PrefetchServiceLimitsTest, RemoveCandidateForFailedPrefetch) {
       std::make_unique<testing::NiceMock<MockPrefetchServiceDelegate>>());
 
   auto candidate = blink::mojom::SpeculationCandidate::New();
+  candidate->tags = {std::nullopt};
   candidate->url = url;
   candidate->action = blink::mojom::SpeculationAction::kPrefetch;
   candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
@@ -8015,6 +8028,16 @@ TEST_P(PrefetchServiceTest,
       0, 1);
   histogram_tester().ExpectUniqueSample(
       base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToFirstURLRequestStarted.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({"Prefetch.PrefetchContainer."
+                    "PrefetchStartedToFirstURLRequestStarted.Embedder_",
+                    test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat(
           {"Prefetch.PrefetchContainer.AddedToURLRequestStarted.Embedder_",
            test::kPreloadingEmbedderHistogramSuffixForTesting}),
       kAddedToURLRequestStartLatency, 1);
@@ -8052,6 +8075,101 @@ TEST_P(PrefetchServiceTest,
 }
 
 TEST_P(PrefetchServiceTest,
+       UMA_Prefetch_PrefetchContainer_AddedTo_Embedder_Redirect_Success) {
+  NavigateAndCommit(GURL("https://example.com"));
+  MakePrefetchService(
+      std::make_unique<testing::NiceMock<MockPrefetchServiceDelegate>>());
+
+  const auto url = GURL("https://example.com/prefetched");
+  const auto redirect_url1 = GURL("https://example.com/redirected1");
+  const auto redirect_url2 = GURL("https://example.com/redirected2");
+  auto handle = MakePrefetchFromBrowserContext(url, std::nullopt, {}, nullptr);
+  task_environment()->RunUntilIdle();
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+
+  task_environment()->FastForwardBy(
+      base::Milliseconds(kAddedToURLRequestStartLatency + kHeaderLatency));
+
+  // The first request hop start time will be at
+  // `kAddedToURLRequestStartLatency`.
+  MakeSingleRedirectAndWait(
+      redirect_url1, net::HTTP_MOVED_PERMANENTLY,
+      net::ReferrerPolicy::REDUCE_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN,
+      /*use_prefetch_proxy=*/false);
+
+  constexpr base::TimeDelta kRedirectHop1Duration = base::Milliseconds(20);
+  task_environment()->FastForwardBy(kRedirectHop1Duration);
+
+  // The second request hop start time will be at
+  // `kAddedToURLRequestStartLatency + kRedirectHop1Duration`.
+  MakeSingleRedirectAndWait(
+      redirect_url2, net::HTTP_MOVED_PERMANENTLY,
+      net::ReferrerPolicy::REDUCE_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN,
+      /*use_prefetch_proxy=*/false);
+
+  constexpr base::TimeDelta kRedirectHop2Duration = base::Milliseconds(30);
+  task_environment()->FastForwardBy(kRedirectHop2Duration);
+
+  constexpr base::TimeDelta kTotalRedirectDuration =
+      kRedirectHop1Duration + kRedirectHop2Duration;
+
+  // The third request hop start time will be at
+  // `kAddedToURLRequestStartLatency + kTotalRedirectDuration`.
+  auto head = CreateURLResponseHeadForPrefetch(net::HTTP_OK, kHTMLMimeType,
+                                               /*use_prefetch_proxy=*/false,
+                                               {{"X-Testing", "Hello World"}},
+                                               redirect_url2);
+
+  MakeResponseAndWait(
+      test_url_loader_factory_.GetPendingRequest(0)->request.url, net::OK,
+      std::move(head), kHTMLBody);
+
+  // Call `PrefetchContainer::dtor()` to record UMAs.
+  handle.reset();
+
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToInitialEligibility.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      0, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToPrefetchStarted.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      0, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToFirstURLRequestStarted.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({"Prefetch.PrefetchContainer."
+                    "PrefetchStartedToFirstURLRequestStarted.Embedder_",
+                    test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToURLRequestStarted.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency + kTotalRedirectDuration.InMilliseconds(),
+      1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({"Prefetch.PrefetchContainer."
+                    "AddedToHeaderDeterminedSuccessfully.Embedder_",
+                    test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency + kTotalRedirectDuration.InMilliseconds() +
+          kHeaderLatency,
+      1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({"Prefetch.PrefetchContainer."
+                    "AddedToPrefetchCompletedSuccessfully.Embedder_",
+                    test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      kAddedToURLRequestStartLatency + kTotalRedirectDuration.InMilliseconds() +
+          kHeaderLatency,
+      1);
+}
+
+TEST_P(PrefetchServiceTest,
        UMA_Prefetch_PrefetchContainer_AddedTo_Embedder_Fail) {
   NavigateAndCommit(GURL("https://example.com"));
   MakePrefetchService(
@@ -8077,6 +8195,16 @@ TEST_P(PrefetchServiceTest,
           {"Prefetch.PrefetchContainer.AddedToPrefetchStarted.Embedder_",
            test::kPreloadingEmbedderHistogramSuffixForTesting}),
       0, 1);
+  histogram_tester().ExpectTotalCount(
+      base::StrCat(
+          {"Prefetch.PrefetchContainer.AddedToFirstURLRequestStarted.Embedder_",
+           test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      0);
+  histogram_tester().ExpectTotalCount(
+      base::StrCat({"Prefetch.PrefetchContainer."
+                    "PrefetchStartedToFirstURLRequestStarted.Embedder_",
+                    test::kPreloadingEmbedderHistogramSuffixForTesting}),
+      0);
   histogram_tester().ExpectTotalCount(
       base::StrCat(
           {"Prefetch.PrefetchContainer.AddedToURLRequestStarted.Embedder_",

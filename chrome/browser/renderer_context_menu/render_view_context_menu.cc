@@ -59,6 +59,7 @@
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
+#include "chrome/browser/enterprise/isolated_mode/isolated_mode_settings_service_factory.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
@@ -68,11 +69,14 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
+#include "chrome/browser/indigo/indigo_image_replacement.h"
+#include "chrome/browser/indigo/indigo_image_replacement_manager.h"
 #include "chrome/browser/language/language_model_manager_factory.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/navigation_predictor/navigation_predictor_features.h"
 #include "chrome/browser/navigation_predictor/navigation_predictor_keyed_service.h"
 #include "chrome/browser/navigation_predictor/navigation_predictor_keyed_service_factory.h"
+#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/policy/chrome_policy_blocklist_service_factory.h"
@@ -171,7 +175,6 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/custom_handlers/protocol_handler.h"
 #include "components/download/public/common/download_url_parameters.h"
-#include "components/enterprise/isolated_mode/settings.h"
 #include "components/google/core/common/google_util.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/language/core/browser/language_model_manager.h"
@@ -223,6 +226,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
@@ -272,8 +276,10 @@
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/color/color_provider.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_conversions.h"
@@ -359,6 +365,7 @@
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
 #include "chrome/browser/renderer_context_menu/read_write_card_observer.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
@@ -1005,6 +1012,26 @@ std::pair<int, const gfx::VectorIcon*> GetOpenLinkInSplitStringAndIcon(
   return {string_id, icon};
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+// Resolves a blink::FrameToken from a renderer process to its corresponding
+// RenderFrameHost. Handles both same-process (LocalFrameToken) and
+// cross-process OOPIF (RemoteFrameToken) subframes.
+content::RenderFrameHost* GetRenderFrameHostForFrameToken(
+    content::ChildProcessId process_id,
+    const blink::FrameToken& frame_token) {
+  if (frame_token.Is<blink::LocalFrameToken>()) {
+    return content::RenderFrameHost::FromFrameToken(
+        content::GlobalRenderFrameHostToken(
+            process_id, frame_token.GetAs<blink::LocalFrameToken>()));
+  }
+  if (frame_token.Is<blink::RemoteFrameToken>()) {
+    return content::RenderFrameHost::FromPlaceholderToken(
+        process_id.GetUnsafeValue(),
+        frame_token.GetAs<blink::RemoteFrameToken>());
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 // static
@@ -1759,9 +1786,8 @@ bool RenderViewContextMenu::IsHTML5Fullscreen() const {
     return false;
   }
 
-  FullscreenController* controller = browser->GetFeatures()
-                                         .exclusive_access_manager()
-                                         ->fullscreen_controller();
+  FullscreenController* controller =
+      ExclusiveAccessManager::From(browser)->fullscreen_controller();
   return controller->IsTabFullscreen();
 }
 
@@ -1773,9 +1799,8 @@ bool RenderViewContextMenu::IsPressAndHoldEscRequiredToExitFullscreen() const {
     return false;
   }
 
-  KeyboardLockController* controller = browser->GetFeatures()
-                                           .exclusive_access_manager()
-                                           ->keyboard_lock_controller();
+  KeyboardLockController* controller =
+      ExclusiveAccessManager::From(browser)->keyboard_lock_controller();
   return controller->RequiresPressAndHoldEscToExit();
 }
 
@@ -2025,8 +2050,7 @@ void RenderViewContextMenu::AppendLinkItems() {
     }
 
     bool isolated_mode_enabled =
-        enterprise_isolated_mode::IsolatedModeReplacesIncognito(
-            *GetProfile()->GetPrefs(), chrome::GetChannel());
+        enterprise_isolated_mode::IsolatedModeReplacesIncognito(GetProfile());
 
     if (show_open_link_off_the_record && isolated_mode_enabled) {
       AddItemWithOptionalIcon(IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED,
@@ -3189,6 +3213,13 @@ void RenderViewContextMenu::AppendDictationItems() {
   }
   observers_.AddObserver(dictation_menu_observer_.get());
   dictation_menu_observer_->InitMenu(params_);
+
+  auto index = menu_model_.GetIndexOfCommandId(IDC_CONTENT_CONTEXT_DICTATION);
+  if (index.has_value()) {
+    menu_model_.SetIsNewFeatureAt(
+        index.value(), UserEducationService::MaybeShowNewBadge(
+                           GetBrowserContext(), dictation::kDictation));
+  }
 }
 
 void RenderViewContextMenu::AppendProtocolHandlerSubMenu() {
@@ -3253,7 +3284,8 @@ void RenderViewContextMenu::AppendRegionSearchItem() {
     }
     menu_model_.AddItemWithStringIdAndIcon(
         IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH,
-        lens::GetLensOverlayEntrypointLabelAltIds(), icon);
+        lens::GetLensOverlayEntrypointLabelAltIds(/*is_context_menu=*/true),
+        icon);
     const int command_index =
         menu_model_.GetIndexOfCommandId(IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH)
             .value();
@@ -3314,25 +3346,33 @@ bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
   // NOTE: If new commands are being added, please disable them by default and
   // notify the ChromeOS team by filing a bug under this component --
   // b/?q=componentid:1389107.
-  bool should_disable_command_for_locked_fullscreen_or_on_task = false;
   BrowserWindowInterface* const browser_window = GetBrowser();
-  if (browser_window &&
-      platform_util::IsBrowserLockedFullscreen(browser_window)) {
-    should_disable_command_for_locked_fullscreen_or_on_task = true;
-  }
-  if (browser_window && ash::boca::OnTaskLockedController::From(browser_window)
-                            ->is_locked_for_on_task()) {
-    bool is_page_nav_command =
-        (id == IDC_BACK) || (id == IDC_FORWARD) || (id == IDC_RELOAD);
-    bool is_allowed_content_context_command =
-        (id == IDC_CONTENT_CONTEXT_COPYIMAGE) ||
-        (id == IDC_CONTENT_CONTEXT_COPYIMAGELOCATION);
-    should_disable_command_for_locked_fullscreen_or_on_task =
-        !is_page_nav_command && !is_allowed_content_context_command &&
-        !ContextMenuMatcher::IsExtensionsCustomCommandId(id);
-  }
-  if (should_disable_command_for_locked_fullscreen_or_on_task) {
-    return false;
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    if (browser_window && !chromeos::LockedStateController::From(browser_window)
+                               ->IsCommandIdEnabled(id)) {
+      return false;
+    }
+  } else {
+    bool should_disable_command_for_locked_fullscreen_or_on_task = false;
+    if (browser_window &&
+        platform_util::IsBrowserLockedFullscreen(browser_window)) {
+      should_disable_command_for_locked_fullscreen_or_on_task = true;
+    }
+    if (browser_window &&
+        ash::boca::OnTaskLockedController::From(browser_window)
+            ->is_locked_for_on_task()) {
+      bool is_page_nav_command =
+          (id == IDC_BACK) || (id == IDC_FORWARD) || (id == IDC_RELOAD);
+      bool is_allowed_content_context_command =
+          (id == IDC_CONTENT_CONTEXT_COPYIMAGE) ||
+          (id == IDC_CONTENT_CONTEXT_COPYIMAGELOCATION);
+      should_disable_command_for_locked_fullscreen_or_on_task =
+          !is_page_nav_command && !is_allowed_content_context_command &&
+          !ContextMenuMatcher::IsExtensionsCustomCommandId(id);
+    }
+    if (should_disable_command_for_locked_fullscreen_or_on_task) {
+      return false;
+    }
   }
 #endif
 
@@ -3390,8 +3430,7 @@ bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
   }
 #endif
   bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(
-          *GetProfile()->GetPrefs(), chrome::GetChannel());
+      enterprise_isolated_mode::IsolatedModeReplacesIncognito(GetProfile());
 
   switch (id) {
     case IDC_BACK:
@@ -3846,12 +3885,24 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
       ExecCopyLinkText();
       break;
 
-    case IDC_CONTENT_CONTEXT_COPYIMAGELOCATION:
+    case IDC_CONTENT_CONTEXT_COPYIMAGELOCATION: {
+      GURL url = params_.src_url;
+      if (base::FeatureList::IsEnabled(features::kIndigoContextMenuCopy)) {
+        if (GURL replacement_url = GetIndigoReplacementImageURL();
+            !replacement_url.is_empty()) {
+          url = replacement_url;
+        }
+      }
+      WriteURLToClipboard(url, id);
+      break;
+    }
     case IDC_CONTENT_CONTEXT_COPYAVLOCATION:
       WriteURLToClipboard(params_.src_url, id);
       break;
 
     case IDC_CONTENT_CONTEXT_COPYIMAGE:
+      // TODO(b/530284842): Support copying replacement image data to
+      // clipboard.
       ExecCopyImageAt();
       break;
 
@@ -4148,8 +4199,10 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
                 if (!web_contents) {
                   return;
                 }
-                web_contents->OpenURL(params,
-                                      /*navigation_handle_callback=*/{});
+                web_contents->OpenURL(
+                    params,
+                    base::BindOnce(
+                        &AttachContextMenuSearchNavigationHandleUserData));
               },
               source_web_contents_->GetWeakPtr(), std::move(open_url_params)));
       break;
@@ -4221,9 +4274,17 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
 #endif  // BUILDFLAG(ENABLE_COMPOSE)
 
     default:
+      if (ExecPlatformCommand(id, event_flags)) {
+        break;
+      }
       DUMP_WILL_BE_NOTREACHED() << "Unhandled id: " << id;
       break;
   }
+}
+
+bool RenderViewContextMenu::ExecPlatformCommand(int command_id,
+                                                int event_flags) {
+  return false;
 }
 
 void RenderViewContextMenu::AddSpellCheckServiceItem(bool is_checked) {
@@ -4696,10 +4757,8 @@ void RenderViewContextMenu::AppendSendTabToSelfItem(bool add_separator) {
   }
 
   const bool should_offer_submenu =
-      (base::FeatureList::IsEnabled(
-           send_tab_to_self::kSendTabToSelfEnhancedDesktopUI) ||
-       base::FeatureList::IsEnabled(
-           send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2)) &&
+      base::FeatureList::IsEnabled(
+          send_tab_to_self::kSendTabToSelfEnhancedDesktopUI) &&
       (*display_reason ==
        send_tab_to_self::EntryPointDisplayReason::kOfferFeature);
 
@@ -4723,7 +4782,7 @@ void RenderViewContextMenu::AppendSendTabToSelfItem(bool add_separator) {
 #if BUILDFLAG(IS_MAC)
     if (features::IsMenuSimplificationEnabled()) {
       menu_model_.AddSubMenuWithStringIdAndIcon(
-          IDC_SEND_TAB_TO_SELF, IDS_MENU_SEND_TAB_TO_SELF,
+          IDC_SEND_TAB_TO_SELF, IDS_CONTEXT_MENU_SEND_TAB_TO_SELF,
           send_tab_to_self_submenu_.get(),
           ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
                                              ? kDevicesIcon
@@ -4731,12 +4790,12 @@ void RenderViewContextMenu::AppendSendTabToSelfItem(bool add_separator) {
     } else {
       menu_model_.AddSubMenu(
           IDC_SEND_TAB_TO_SELF,
-          l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF),
+          l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_SEND_TAB_TO_SELF),
           send_tab_to_self_submenu_.get());
     }
 #else
     menu_model_.AddSubMenuWithStringIdAndIcon(
-        IDC_SEND_TAB_TO_SELF, IDS_MENU_SEND_TAB_TO_SELF,
+        IDC_SEND_TAB_TO_SELF, IDS_CONTEXT_MENU_SEND_TAB_TO_SELF,
         send_tab_to_self_submenu_.get(),
         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
                                            ? kDevicesIcon
@@ -4761,18 +4820,19 @@ void RenderViewContextMenu::AppendSendTabToSelfItem(bool add_separator) {
   if (features::IsMenuSimplificationEnabled()) {
     menu_model_.AddItemWithIcon(
         IDC_SEND_TAB_TO_SELF,
-        l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF),
+        l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_SEND_TAB_TO_SELF),
         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
                                            ? kDevicesIcon
                                            : kDevicesOldIcon));
   } else {
-    menu_model_.AddItem(IDC_SEND_TAB_TO_SELF,
-                        l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF));
+    menu_model_.AddItem(
+        IDC_SEND_TAB_TO_SELF,
+        l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_SEND_TAB_TO_SELF));
   }
 #else
   menu_model_.AddItemWithIcon(
       IDC_SEND_TAB_TO_SELF,
-      l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF),
+      l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_SEND_TAB_TO_SELF),
       ui::ImageModel::FromVectorIcon(
           features::IsRoundedIconsEnabled() ? kDevicesIcon : kDevicesOldIcon));
 #endif
@@ -5071,6 +5131,12 @@ void RenderViewContextMenu::ExecSaveAs() {
 
   RecordDownloadSource(DOWNLOAD_INITIATED_BY_CONTEXT_MENU);
   GURL url = params_.src_url;
+  if (base::FeatureList::IsEnabled(features::kIndigoContextMenuCopy)) {
+    if (GURL replacement_url = GetIndigoReplacementImageURL();
+        !replacement_url.is_empty()) {
+      url = replacement_url;
+    }
+  }
   const bool is_plugin =
       params_.media_type == ContextMenuDataMediaType::kPlugin;
   RenderFrameHost* target_frame_host = nullptr;
@@ -5300,7 +5366,7 @@ void RenderViewContextMenu::ExecRegionSearch(
           ? lens::AmbientSearchEntryPoint::
                 CONTEXT_MENU_SEARCH_REGION_WITH_GOOGLE_LENS
           : lens::AmbientSearchEntryPoint::CONTEXT_MENU_SEARCH_REGION_WITH_WEB;
-  browser->GetFeatures().lens_region_search_controller()->Start(
+  lens::LensRegionSearchController::From(browser)->Start(
       embedder_web_contents_, use_fullscreen_capture,
       is_google_default_search_provider, entry_point);
   lens_region_search_controller_started_for_testing_ = true;
@@ -5775,7 +5841,7 @@ ToastController* RenderViewContextMenu::GetToastController() const {
   }
 #endif
 
-  return browser ? browser->GetFeatures().toast_controller() : nullptr;
+  return browser ? ToastController::From(browser) : nullptr;
 }
 
 bool RenderViewContextMenu::CanTranslate(bool menu_logging) {
@@ -6043,3 +6109,31 @@ bool RenderViewContextMenu::IsLinkToIsolatedWebApp() const {
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
+
+GURL RenderViewContextMenu::GetIndigoReplacementImageURL() const {
+  if (!params_.image_replacement_frame_token.has_value()) {
+    return GURL();
+  }
+  RenderFrameHost* frame_host = GetRenderFrameHost();
+  if (!frame_host) {
+    return GURL();
+  }
+
+  content::RenderFrameHost* subframe_host =
+      GetRenderFrameHostForFrameToken(frame_host->GetProcess()->GetID(),
+                                      *params_.image_replacement_frame_token);
+  if (!subframe_host || &subframe_host->GetPage() != &frame_host->GetPage() ||
+      subframe_host->GetParent() != frame_host) {
+    return GURL();
+  }
+  auto* manager =
+      indigo::IndigoImageReplacementManager::GetForPage(frame_host->GetPage());
+  if (!manager) {
+    return GURL();
+  }
+  auto* replacement = manager->GetImageReplacementForFrame(*subframe_host);
+  if (!replacement) {
+    return GURL();
+  }
+  return replacement->GetReplacementImageURL();
+}

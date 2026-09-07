@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/tabs/tab_group_data.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/mock_tab_group.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -33,6 +34,9 @@ namespace {
 
 class MockDelegate : public TabGroupHeaderView::Delegate {
  public:
+  MockDelegate() {
+    ON_CALL(*this, GetTabClosingHelper).WillByDefault(testing::Return(nullptr));
+  }
   MOCK_METHOD(void,
               ToggleCollapsedState,
               (ToggleTabGroupCollapsedStateOrigin),
@@ -61,6 +65,10 @@ class MockDelegate : public TabGroupHeaderView::Delegate {
   MOCK_METHOD(void, ShiftGroupUp, (), (override));
   MOCK_METHOD(void, ShiftGroupDown, (), (override));
   MOCK_METHOD(bool, IsGroupFocused, (), (const, override));
+  MOCK_METHOD(HorizontalTabClosingHelper*,
+              GetTabClosingHelper,
+              (),
+              (const, override));
 };
 
 int GetPlatformDependentAccelerator() {

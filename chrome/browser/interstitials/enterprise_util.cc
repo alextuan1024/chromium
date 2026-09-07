@@ -12,6 +12,7 @@
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 
@@ -104,7 +105,8 @@ void MaybeTriggerSecurityInterstitialShownEvent(
     content::WebContents* web_contents,
     const GURL& page_url,
     const std::string& reason,
-    int net_error_code) {
+    int net_error_code,
+    const std::string& tab_title) {
 #if BUILDFLAG(ENABLE_EXTENSIONS) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   extensions::SafeBrowsingPrivateEventRouter* safe_browsing_event_router =
       GetSafeBrowsingEventRouter(web_contents);
@@ -144,7 +146,8 @@ void MaybeTriggerSecurityInterstitialProceededEvent(
     content::WebContents* web_contents,
     const GURL& page_url,
     const std::string& reason,
-    int net_error_code) {
+    int net_error_code,
+    const std::string& tab_title) {
 #if BUILDFLAG(ENABLE_EXTENSIONS) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   extensions::SafeBrowsingPrivateEventRouter* safe_browsing_event_router =
       GetSafeBrowsingEventRouter(web_contents);
@@ -178,7 +181,8 @@ void MaybeTriggerUrlFilteringInterstitialEvent(
     content::WebContents* web_contents,
     const GURL& page_url,
     const std::string& threat_type,
-    safe_browsing::RTLookupResponse rt_lookup_response) {
+    safe_browsing::RTLookupResponse rt_lookup_response,
+    const std::string& tab_title) {
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
   google::protobuf::RepeatedPtrField<safe_browsing::ReferrerChainEntry>
       referrer_chain;

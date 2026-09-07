@@ -24,7 +24,6 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/ash/video_conference/video_conference_manager_ash.h"
@@ -42,10 +41,11 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/enterprise/common/proto/synced/dlp_policy_event.pb.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
@@ -55,6 +55,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window_observer.h"
+#include "ui/base/base_window.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/test/event_generator.h"
@@ -77,7 +78,7 @@ constexpr char kRuleId[] = "testid1";
 const policy::DlpRulesManager::RuleMetadata kRuleMetadata(kRuleName, kRuleId);
 
 // Returns the native window of the given `browser`.
-aura::Window* GetBrowserWindow(Browser* browser) {
+aura::Window* GetBrowserWindow(BrowserWindowInterface* browser) {
   return browser->GetWindow()->GetNativeWindow();
 }
 
@@ -133,12 +134,12 @@ void StartVideoRecording() {
 
 // Marks the active web contents of the given `browser` as DLP restricted with a
 // warning level.
-void MarkActiveTabAsDlpWarnedForScreenCapture(Browser* browser) {
+void MarkActiveTabAsDlpWarnedForScreenCapture(BrowserWindowInterface* browser) {
   auto* dlp_content_observer = policy::DlpContentObserver::Get();
   ASSERT_TRUE(dlp_content_observer);
 
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   dlp_content_observer->OnConfidentialityChanged(web_contents,
                                                  kScreenCaptureWarned);
@@ -153,7 +154,7 @@ void WaitForCountDownToFinish() {
 }
 
 // Stops the video recording and waits for the DLP warning dialog to be added.
-void StopRecordingAndWaitForDlpWarningDialog(Browser* browser) {
+void StopRecordingAndWaitForDlpWarningDialog(BrowserWindowInterface* browser) {
   auto* root = GetBrowserWindow(browser)->GetRootWindow();
   ASSERT_TRUE(root);
   DlpWarningDialogWaiter waiter{root};
@@ -163,7 +164,7 @@ void StopRecordingAndWaitForDlpWarningDialog(Browser* browser) {
   EXPECT_FALSE(test_api.IsVideoRecordingInProgress());
 }
 
-void SendKeyEvent(Browser* browser,
+void SendKeyEvent(BrowserWindowInterface* browser,
                   ui::KeyboardCode key_code,
                   int flags = ui::EF_NONE) {
   auto* browser_window = GetBrowserWindow(browser);
@@ -1024,9 +1025,9 @@ class CaptureModePolicyBrowserTest
   CaptureModePolicyBrowserTest()
       : for_video_(GetParam().first), skyvault_enabled_(GetParam().second) {
     if (skyvault_enabled_) {
-      scoped_feature_list_.InitAndEnableFeature(features::kSkyVault);
+      scoped_feature_list_.InitAndEnableFeature(ash::features::kSkyVault);
     } else {
-      scoped_feature_list_.InitAndDisableFeature(features::kSkyVault);
+      scoped_feature_list_.InitAndDisableFeature(ash::features::kSkyVault);
     }
   }
 

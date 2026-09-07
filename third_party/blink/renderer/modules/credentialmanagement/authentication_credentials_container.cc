@@ -91,6 +91,7 @@
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -1440,6 +1441,12 @@ DOMException* AuthenticatorStatusToDOMException(
           DOMExceptionCode::kNotAllowedError,
           "This origin is not permitted to use the "
           "'remoteDesktopClientOverride' extension.");
+    case AuthenticatorStatus::REMOTE_CLIENT_DATA_JSON_INVALID:
+      return MakeGarbageCollected<DOMException>(
+          DOMExceptionCode::kEncodingError,
+          "The 'remoteClientDataJSON' extension input could not be parsed "
+          "as a valid clientDataJSON: missing or invalid 'type', 'origin', "
+          "or 'crossOrigin' field, or the JSON is not well-formed.");
     case AuthenticatorStatus::CERTIFICATE_ERROR:
       return MakeGarbageCollected<DOMException>(
           DOMExceptionCode::kNotAllowedError,
@@ -2472,8 +2479,7 @@ void AuthenticationCredentialsContainer::GetForIdentity(
     if (!provider_url.IsValid() || client_id.empty()) {
       resolver->Reject(MakeGarbageCollected<DOMException>(
           DOMExceptionCode::kInvalidStateError,
-          String::Format("Provider %i information is incomplete.",
-                         provider_index)));
+          Format("Provider {} information is incomplete.", provider_index)));
       return;
     }
     // We disallow redirects (in idp_network_request_manager.cc), so it is

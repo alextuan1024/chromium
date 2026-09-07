@@ -58,7 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, sdk = BaseRobolectricTestRunner.MIN_SDK)
+@Config(sdk = BaseRobolectricTestRunner.MIN_SDK)
 public class TabbedNavigationBarColorControllerUnitTest {
     public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
 
@@ -389,24 +389,6 @@ public class TabbedNavigationBarColorControllerUnitTest {
         mOverviewColorSupplier.set(Color.RED);
         // Color should reset to the tab background color.
         verify(mEdgeToEdgeSystemBarColorHelper).setNavigationBarColor(eq(Color.LTGRAY));
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR + ":show_bottom_bar_on_gts/true"})
-    public void testOverviewMode_BottomBarEnabledInGts() {
-        mNavColorController.updateActiveTabForTesting();
-        mNavColorController.enableOverviewMode();
-        mOverviewColorSupplier.set(Color.BLUE);
-        runColorUpdateAnimation();
-
-        Mockito.clearInvocations(mEdgeToEdgeSystemBarColorHelper);
-
-        mNavColorController.onBottomAttachedColorChanged(Color.RED, false, false);
-        runColorUpdateAnimation();
-
-        verify(mEdgeToEdgeSystemBarColorHelper).setNavigationBarColor(eq(Color.RED));
-        verify(mEdgeToEdgeSystemBarColorHelper, Mockito.never())
-                .setNavigationBarColor(eq(Color.BLUE));
     }
 
     @Test

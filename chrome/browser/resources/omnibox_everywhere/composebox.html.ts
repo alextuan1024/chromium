@@ -93,49 +93,24 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                     @mousedown="${this.onContextMenuContainerMousedown}"
                     @click="${this.onContextMenuContainerClick}">
                   ${hasAllowedInputs(this.inputState, this.usePecApi) ? html`
-                    <cr-composebox-contextual-entrypoint-and-menu
+                    <cr-composebox-contextual-entrypoint-button
                         id="contextEntrypoint"
                         part="composebox-entrypoint"
                         exportparts="context-menu-entrypoint-icon,
                                      entrypoint-button"
                         class="upload-button no-overlap"
-                        @add-tab-context="${this.onAddTabContext}"
-                        @delete-tab-context="${this.onDeleteTabContext}"
-                        @tool-click="${this.onToolClick}"
-                        @model-click="${this.onModelClick}"
-                        @get-tab-preview="${this.onGetTabPreview}"
-                        @context-menu-closed="${this.onContextMenuClosed}"
-                        @context-menu-opened="${this.onContextMenuOpened}"
-                        @open-image-upload="${this.onOpenImageUpload}"
-                        @open-file-upload="${this.onOpenFileUpload}"
-                        @open-drive-upload="${this.onOpenDriveUpload}"
-                        @smart-tab-sharing-active-changed="${
-                            this.onSmartTabSharingActiveChanged}"
-                        @share-tabs-flyout-open-changed="${
-                            this.onShareTabsFlyoutOpenChanged}"
-                        @request-tab-suggestions-load="${
-                            this.onRequestTabSuggestionsLoad}"
-                        .shareTabsFlyoutOpen="${this.shareTabsFlyoutOpen}"
-                        .smartTabSharingVisible="${this.smartTabSharingVisible}"
-                        .tabSuggestionsState="${this.tabSuggestionsState}"
                         .inputState="${this.inputState}"
-                        .usePecApi="${this.usePecApi}"
-                        .smartTabSharingActive="${this.smartTabSharingActive}"
-                        .contextManagementInComposeboxEnabled="${
-                            this.contextManagementInComposeboxEnabled}"
-                        .searchboxLayoutMode="${this.searchboxLayoutMode}"
-                        .tabSuggestions="${this.tabSuggestions}"
-                        .recentTabId="${this.recentTabId}"
-                        .hasImageFiles="${this.hasImageFiles()}"
-                        .selectedTabIds="${this.addedTabsIds}"
-                        .aimThreadRestoredTabs="${this.aimThreadRestoredTabs}"
-                        .fileNum="${this.files.size}"
                         .sharedTabs="${this.getSharedTabs()}"
+                        .restoredTabs="${this.aimThreadRestoredTabs}"
+                        .smartTabSharingActive="${this.smartTabSharingActive}"
+                        .energyEffectAnimationEnabled="${
+                            this.energyEffectAnimationEnabled}"
                         ?upload-button-disabled="${this.uploadButtonDisabled}"
-                        unbounded-menu-enabled
                         ?show-context-menu-description="${
-                            this.showContextMenuDescription}">
-                    </cr-composebox-contextual-entrypoint-and-menu>
+                            this.showContextMenuDescription}"
+                        @context-menu-entrypoint-click="${
+                            this.onContextMenuEntrypointClick_}">
+                    </cr-composebox-contextual-entrypoint-button>
                   ` : ''}
                   ${this.inToolMode ? html`
                     <cr-composebox-tool-chip
@@ -156,7 +131,8 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                   </button>
                 </div>
                 ` : ''}
-                <div class="searchbox-icon-button-container lens">
+                <div class="searchbox-icon-button-container lens ${
+                    this.isScreenshotMenuOpen ? 'menu-open' : ''}">
                   <button id="lensSearchButton" class="searchbox-icon-button"
                       @click="${this.onLensSearchClick_}"
                       title="${this.i18n('lensSearchButtonLabel')}">
@@ -179,25 +155,6 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
           </cr-composebox-file-inputs>
         </div>
     </div>
-    <cr-action-menu id="screenshotMenu" role-description="menu"
-        @close="${this.onScreenshotMenuClose_}">
-      <div class="menu-title">${this.i18n('shareScreenshotLabel')}</div>
-      <button class="dropdown-item" id="screenshotFullscreen"
-          @click="${this.onScreenshotEntireScreenClick_}">
-        <div class="icon entire-screen"></div>
-        ${this.i18n('screenshotEntireScreenLabel')}
-      </button>
-      <button class="dropdown-item" id="screenshotWindow"
-          @click="${this.onScreenshotWindowClick_}">
-        <div class="icon window"></div>
-        ${this.i18n('screenshotWindowLabel')}
-      </button>
-      <button class="dropdown-item" id="screenshotRegion"
-          @click="${this.onScreenshotRegionClick_}">
-        <div class="icon region"></div>
-        ${this.i18n('screenshotRegionLabel')}
-      </button>
-    </cr-action-menu>
 <!--_html_template_end_-->`;
   // clang-format on
 }

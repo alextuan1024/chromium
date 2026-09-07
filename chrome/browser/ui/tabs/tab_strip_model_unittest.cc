@@ -37,6 +37,7 @@
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_close_types_data.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -71,6 +72,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/models/list_selection_model.h"
+#include "ui/base/page_transition_types.h"
 
 using content::WebContents;
 
@@ -2811,6 +2813,23 @@ TEST_F(TabStripModelTest, NewBackgroundTabWithoutGroupUnsetsFocus) {
   // focus.
   EXPECT_EQ(std::nullopt, tabstrip()->GetTabGroupForTab(4));
   EXPECT_EQ(std::nullopt, tabstrip()->GetFocusedGroup());
+}
+
+TEST_F(TabStripModelTest, DeletingTabOutsideFocusedGroupUnsetsFocus) {
+  base::HistogramTester histogram_tester;
+  PrepareTabs(tabstrip(), 4);
+  tab_groups::TabGroupId group_id = tabstrip()->AddToNewGroup({1, 2});
+  tabstrip()->SetFocusedGroup(group_id);
+  ASSERT_EQ(group_id, tabstrip()->GetFocusedGroup());
+
+  // Close tab at index 0 (an ungrouped tab outside the focused group).
+  tabstrip()->CloseWebContentsAt(0, TabCloseTypes::CLOSE_NONE);
+
+  // Focus mode should be dropped so the strip is unfocused.
+  EXPECT_EQ(std::nullopt, tabstrip()->GetFocusedGroup());
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.Focus.ExitReason",
+      TabGroupFocusExitReason::kTabOutsideGroupClosed, 1);
 }
 
 TEST_F(TabStripModelTest, NewPinnedTabInFocusedGroupDoesNotJoinFocusedGroup) {
@@ -7124,12 +7143,24 @@ class TabToWindowTestTabStripModelDelegate : public TestTabStripModelDelegate {
 
   void MoveGroupToNewWindow(const tab_groups::TabGroupId& group) override {}
 
+  void OnRemovingAllTabsFromGroups(
+      const std::vector<tab_groups::TabGroupId>& group_ids,
+      base::OnceCallback<void()> callback) override {
+    removing_all_tabs_calls_.push_back(group_ids);
+    std::move(callback).Run();
+  }
+
   std::vector<int> can_move_calls() { return can_move_calls_; }
   std::vector<int> move_calls() { return move_calls_; }
+  const std::vector<std::vector<tab_groups::TabGroupId>>&
+  removing_all_tabs_calls() const {
+    return removing_all_tabs_calls_;
+  }
 
  private:
   std::vector<int> can_move_calls_;
   std::vector<int> move_calls_;
+  std::vector<std::vector<tab_groups::TabGroupId>> removing_all_tabs_calls_;
 };
 
 // Sanity check to ensure that the "Move Tabs to Window" command talks to
@@ -7157,6 +7188,29 @@ TEST_F(TabStripModelTest, MoveTabsToNewWindow) {
   EXPECT_GT(delegate.can_move_calls().size(), 0u);
   ASSERT_EQ(delegate.move_calls().size(), 1u);
   EXPECT_EQ(delegate.move_calls().back(), 0);
+
+  tabstrip.CloseAllTabs();
+}
+
+TEST_F(TabStripModelTest, MoveTabsToNewWindow_WithGroup) {
+  TabToWindowTestTabStripModelDelegate delegate;
+  TabStripModel tabstrip(&delegate, profile());
+  PrepareTabs(&tabstrip, 3);
+
+  tab_groups::TabGroupId group_id = tabstrip.AddToNewGroup({0});
+
+  EXPECT_TRUE(tabstrip.IsContextMenuCommandEnabled(
+      0, TabStripModel::CommandMoveTabsToNewWindow));
+
+  tabstrip.ExecuteContextMenuCommand(0,
+                                     TabStripModel::CommandMoveTabsToNewWindow);
+
+  // Moving tabs in a group to a new window must not trigger group deletion
+  // confirmation.
+  EXPECT_TRUE(delegate.removing_all_tabs_calls().empty());
+  EXPECT_EQ(delegate.move_calls().size(), 1u);
+  EXPECT_EQ(delegate.move_calls().back(), 0);
+  EXPECT_FALSE(tabstrip.group_model()->GetTabGroup(group_id)->IsGroupClosing());
 
   tabstrip.CloseAllTabs();
 }

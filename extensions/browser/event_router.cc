@@ -202,14 +202,16 @@ void EventRouter::DispatchExtensionMessage(
     const mojom::HostID& host_id,
     int event_id,
     const std::string& event_name,
-    base::ListValue event_args,
+    scoped_refptr<const EventArgs> event_args,
     UserGestureState user_gesture,
     mojom::EventFilteringInfoPtr info,
     mojom::EventDispatcher::DispatchEventCallback callback) {
+  CHECK(event_args);
+  CHECK(info);
   if (host_id.type == mojom::HostID::HostType::kExtensions) {
     NotifyEventDispatched(browser_context,
                           GenerateExtensionIdFromHostId(host_id), event_name,
-                          event_args);
+                          event_args->data);
   }
   auto params = mojom::DispatchEventParams::New();
   params->worker_thread_id = worker_thread_id;
@@ -225,7 +227,7 @@ void EventRouter::DispatchExtensionMessage(
 void EventRouter::RouteDispatchEvent(
     content::RenderProcessHost* rph,
     mojom::DispatchEventParamsPtr params,
-    base::ListValue event_args,
+    scoped_refptr<const EventArgs> event_args,
     mojom::EventDispatcher::DispatchEventCallback callback) {
   CHECK(observed_process_set_.contains(rph));
 
@@ -287,9 +289,11 @@ void EventRouter::DispatchEventToSender(
     const std::string& event_name,
     int worker_thread_id,
     int64_t service_worker_version_id,
-    base::ListValue event_args,
+    scoped_refptr<const EventArgs> event_args,
     mojom::EventFilteringInfoPtr info) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(event_args);
+  CHECK(info);
   int event_id = g_extension_event_id.GetNext();
 
   auto* registry = ExtensionRegistry::Get(browser_context);
@@ -467,6 +471,38 @@ bool EventRouter::CanProcessAccessOrigin(RenderProcessHost& process,
                                url::Origin::Create(url));
 }
 
+void EventRouter::ReportUnauthorizedExtensionProcess(
+    const ExtensionId& extension_id,
+    RenderProcessHost& process) {
+  SCOPED_CRASH_KEY_STRING64("EventRouter", "extension_id", extension_id);
+
+  SCOPED_CRASH_KEY_BOOL(
+      "EventRouter", "cpsp_allows_origin",
+      CanProcessAccessOrigin(
+          process, Extension::GetBaseURLFromExtensionId(extension_id)));
+
+  // The extension that `ProcessMap` currently associates with `process`.
+  ProcessMap* process_map = ProcessMap::Get(browser_context_);
+  SCOPED_CRASH_KEY_STRING64(
+      "EventRouter", "process_map_entry",
+      process_map ? process_map->GetExtensionIdForProcess(process.GetID())
+                        .value_or("none")
+                  : "none");
+
+  // Whether ProcessManager tracks a worker for this extension in `process`.
+  ProcessManager* process_manager = ProcessManager::Get(browser_context_);
+  const bool worker_known =
+      process_manager &&
+      std::ranges::any_of(
+          process_manager->GetServiceWorkersForExtension(extension_id),
+          [&process](const WorkerId& worker_id) {
+            return worker_id.render_process_id == process.GetID();
+          });
+  SCOPED_CRASH_KEY_BOOL("EventRouter", "worker_known", worker_known);
+
+  receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
+}
+
 bool EventRouter::ValidateMainThreadListenerOwner(
     const mojom::EventListenerOwner& listener_owner,
     RenderProcessHost& process,
@@ -489,7 +525,7 @@ bool EventRouter::ValidateMainThreadListenerOwner(
             : IsProcessAuthorizedForMainThreadExtensionListener(extension_id,
                                                                 process);
     if (!is_authorized) {
-      receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
+      ReportUnauthorizedExtensionProcess(extension_id, process);
       return false;
     }
     return true;
@@ -532,7 +568,7 @@ bool EventRouter::ValidateServiceWorkerListenerForExtension(
   // state. A process that merely ran an extension content or user script is not
   // authorized to mutate that state.
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, process)) {
-    receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
+    ReportUnauthorizedExtensionProcess(extension_id, process);
     return false;
   }
 
@@ -605,7 +641,7 @@ void EventRouter::AddLazyListenerForMainThread(const ExtensionId& extension_id,
   }
 
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, *process)) {
-    receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
+    ReportUnauthorizedExtensionProcess(extension_id, *process);
     return;
   }
 
@@ -762,7 +798,7 @@ void EventRouter::RemoveLazyListenerForMainThread(
   }
 
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, *process)) {
-    receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
+    ReportUnauthorizedExtensionProcess(extension_id, *process);
     return;
   }
 
@@ -1469,11 +1505,15 @@ void EventRouter::DispatchEventToProcess(const ExtensionId& extension_id,
     callback = base::DoNothing();
   }
 
-  DispatchExtensionMessage(process, worker_thread_id, listener_context,
-                           GenerateHostIdFromExtensionId(extension_id),
-                           event_id, event->event_name,
-                           std::move(event->event_args), event->user_gesture,
-                           std::move(event->filter_info), std::move(callback));
+  CHECK(event->args_ptr());
+  CHECK(event->filter_info);
+  DispatchExtensionMessage(
+      process, worker_thread_id, listener_context,
+      GenerateHostIdFromExtensionId(extension_id), event_id, event->event_name,
+      event->args_ptr(), event->user_gesture,
+      test_observers_.empty() ? std::move(event->filter_info)
+                              : event->filter_info.Clone(),
+      std::move(callback));
 
   if (!event->did_dispatch_callback.is_null()) {
     event->did_dispatch_callback.Run(
@@ -1482,10 +1522,6 @@ void EventRouter::DispatchEventToProcess(const ExtensionId& extension_id,
   }
 
   for (TestObserver& observer : test_observers_) {
-    // TODO(andreaorru): the event passed here is missing `event_args` and
-    // `filter_info` since they were moved during the call to
-    // `DispatchExtensionMessage`. We could instead make a copy if
-    // `test_observers_` is not empty, if required.
     observer.OnDidDispatchEventToProcess(*event, process->GetDeprecatedID());
   }
 
@@ -1862,6 +1898,9 @@ void EventRouter::OnExtensionUnloaded(content::BrowserContext* browser_context,
                                       UnloadedExtensionReason reason) {
   // Remove all registered listeners from our cache.
   listeners_.RemoveListenersForExtension(extension->id());
+
+  // Drop registration phases across all contexts on unload.
+  listener_registration_phases_.RemoveAllForExtension(extension->id());
 }
 
 void EventRouter::OnStoppedTrackingServiceWorkerInstance(
@@ -1976,16 +2015,57 @@ Event::Event(events::HistogramValue histogram_value,
              mojom::EventFilteringInfoPtr info,
              bool lazy_background_active_on_dispatch,
              base::TimeTicks dispatch_start_time)
+    : Event(histogram_value,
+            event_name,
+            base::MakeRefCounted<EventArgs>(std::move(event_args)),
+            restrict_to_browser_context,
+            restrict_to_context_type,
+            event_url,
+            user_gesture,
+            std::move(info),
+            lazy_background_active_on_dispatch,
+            dispatch_start_time) {}
+
+Event::Event(events::HistogramValue histogram_value,
+             std::string_view event_name,
+             scoped_refptr<const EventArgs> event_args)
+    : Event(histogram_value, event_name, std::move(event_args), nullptr) {}
+
+Event::Event(events::HistogramValue histogram_value,
+             std::string_view event_name,
+             scoped_refptr<const EventArgs> event_args,
+             content::BrowserContext* restrict_to_browser_context,
+             std::optional<mojom::ContextType> restrict_to_context_type)
+    : Event(histogram_value,
+            event_name,
+            std::move(event_args),
+            restrict_to_browser_context,
+            restrict_to_context_type,
+            GURL(),
+            EventRouter::UserGestureState::kUnknown,
+            mojom::EventFilteringInfo::New()) {}
+
+Event::Event(events::HistogramValue histogram_value,
+             std::string_view event_name,
+             scoped_refptr<const EventArgs> event_args,
+             content::BrowserContext* restrict_to_browser_context,
+             std::optional<mojom::ContextType> restrict_to_context_type,
+             const GURL& event_url,
+             EventRouter::UserGestureState user_gesture,
+             mojom::EventFilteringInfoPtr info,
+             bool lazy_background_active_on_dispatch,
+             base::TimeTicks dispatch_start_time)
     : histogram_value(histogram_value),
       event_name(event_name),
-      event_args(std::move(event_args)),
       restrict_to_browser_context(restrict_to_browser_context),
       restrict_to_context_type(restrict_to_context_type),
       event_url(event_url),
       dispatch_start_time(dispatch_start_time),
       lazy_background_active_on_dispatch(lazy_background_active_on_dispatch),
       user_gesture(user_gesture),
-      filter_info(std::move(info)) {
+      filter_info(info ? std::move(info) : mojom::EventFilteringInfo::New()),
+      event_args_(event_args ? std::move(event_args)
+                             : base::MakeRefCounted<EventArgs>()) {
   DCHECK_NE(events::UNKNOWN, histogram_value)
       << "events::UNKNOWN cannot be used as a histogram value.\n"
       << "If this is a test, use events::FOR_TEST.\n"
@@ -1996,12 +2076,29 @@ Event::Event(events::HistogramValue histogram_value,
 
 Event::~Event() = default;
 
-std::unique_ptr<Event> Event::CopySelectively(bool copy_event_args,
-                                              bool copy_filter_info) const {
-  auto copied_event_args =
-      copy_event_args ? event_args.Clone() : base::ListValue();
-  auto copied_filter_info =
-      copy_filter_info ? filter_info.Clone() : mojom::EventFilteringInfo::New();
+std::unique_ptr<Event> Event::CopySelectively(
+    std::optional<base::ListValue> modified_event_args,
+    mojom::EventFilteringInfoPtr modified_filter_info) const {
+  scoped_refptr<const EventArgs> copied_event_args;
+  if (modified_event_args.has_value()) {
+    copied_event_args =
+        base::MakeRefCounted<EventArgs>(std::move(*modified_event_args));
+  } else if (base::FeatureList::IsEnabled(
+                 extensions_features::kShareEventArgsOnDispatch)) {
+    copied_event_args = event_args_;
+  } else {
+    copied_event_args =
+        base::MakeRefCounted<EventArgs>(event_args_->data.Clone());
+  }
+
+  mojom::EventFilteringInfoPtr copied_filter_info;
+  if (modified_filter_info) {
+    copied_filter_info = std::move(modified_filter_info);
+  } else if (filter_info) {
+    copied_filter_info = filter_info.Clone();
+  } else {
+    copied_filter_info = mojom::EventFilteringInfo::New();
+  }
 
   auto copy = std::make_unique<Event>(
       histogram_value, event_name, std::move(copied_event_args),
@@ -2018,8 +2115,8 @@ std::unique_ptr<Event> Event::CopySelectively(bool copy_event_args,
   return copy;
 }
 
-std::unique_ptr<Event> Event::DeepCopy() const {
-  return CopySelectively(true, true);
+std::unique_ptr<Event> Event::Clone() const {
+  return CopySelectively();
 }
 
 // This constructor is only used by tests, for non-ServiceWorker context

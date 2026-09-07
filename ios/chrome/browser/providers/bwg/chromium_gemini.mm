@@ -31,7 +31,8 @@ void UpdatePageAttachmentState(
     GeminiPageContextAttachmentState gemini_attachment_state) {}
 
 void UpdatePromptAction(gemini::EntryPoint entry_point,
-                        NSString* prepopulated_prompt) {}
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit) {}
 
 bool IsProtectedUrl(std::string url) {
   return false;
@@ -103,6 +104,16 @@ void ShowAccountSnackbar() {}
 
 UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration) {
+  return nil;
+}
+
+// TODO(crbug.com/554243740): Implement this function.
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode) {
+  return false;
+}
+
+// TODO(crbug.com/554243740): Implement this function.
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode) {
   return nil;
 }
 

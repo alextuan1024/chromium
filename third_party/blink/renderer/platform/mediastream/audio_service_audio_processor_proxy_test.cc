@@ -214,4 +214,43 @@ TEST_F(AudioServiceAudioProcessorProxyTest, SetVoiceIsolation) {
   task_environment_.RunUntilIdle();
 }
 
+TEST_F(AudioServiceAudioProcessorProxyTest,
+       SetVoiceIsolationBufferedBeforeSetControls) {
+  scoped_refptr<AudioServiceAudioProcessorProxy> proxy =
+      new webrtc::RefCountedObject<AudioServiceAudioProcessorProxy>();
+  StrictMock<MockAudioProcessorControls> controls;
+  EXPECT_CALL(controls, SetVoiceIsolationCalled(false));
+
+  proxy->SetVoiceIsolation(false);
+
+  proxy->SetControls(&controls);
+  task_environment_.RunUntilIdle();
+}
+
+TEST_F(AudioServiceAudioProcessorProxyTest,
+       DoesNotSetVoiceIsolationIfDoesNotChange) {
+  scoped_refptr<AudioServiceAudioProcessorProxy> proxy =
+      new webrtc::RefCountedObject<AudioServiceAudioProcessorProxy>();
+  StrictMock<MockAudioProcessorControls> controls;
+  EXPECT_CALL(controls, SetVoiceIsolationCalled(true)).Times(1);
+
+  proxy->SetControls(&controls);
+
+  proxy->SetVoiceIsolation(true);
+  proxy->SetVoiceIsolation(true);
+  task_environment_.RunUntilIdle();
+}
+
+TEST_F(AudioServiceAudioProcessorProxyTest, VoiceIsolation) {
+  scoped_refptr<AudioServiceAudioProcessorProxy> proxy =
+      new webrtc::RefCountedObject<AudioServiceAudioProcessorProxy>();
+  EXPECT_FALSE(proxy->VoiceIsolation().has_value());
+
+  proxy->SetVoiceIsolation(true);
+  EXPECT_EQ(proxy->VoiceIsolation(), true);
+
+  proxy->SetVoiceIsolation(false);
+  EXPECT_EQ(proxy->VoiceIsolation(), false);
+}
+
 }  // namespace blink

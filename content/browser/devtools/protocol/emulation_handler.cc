@@ -26,6 +26,7 @@
 #include "content/browser/idle/idle_manager_impl.h"
 #include "content/browser/renderer_host/input/touch_emulator_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/screen_orientation/screen_orientation_provider.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -144,6 +145,19 @@ void EmulationHandler::SetRenderer(int process_host_id,
                                    RenderFrameHostImpl* frame_host) {
   if (host_ == frame_host)
     return;
+  RenderWidgetHostImpl* old_render_widget_host =
+      host_ ? host_->render_view_host()->GetWidget() : nullptr;
+  RenderWidgetHostImpl* new_render_widget_host =
+      frame_host ? frame_host->render_view_host()->GetWidget() : nullptr;
+  if (focus_emulation_enabled_) {
+    if (old_render_widget_host &&
+        old_render_widget_host != new_render_widget_host) {
+      old_render_widget_host->SetFocusEmulationEnabled(false);
+    }
+    if (new_render_widget_host) {
+      new_render_widget_host->SetFocusEmulationEnabled(true);
+    }
+  }
   if (!frame_host) {
     sensor_overrides_.clear();
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
@@ -672,7 +686,8 @@ Response EmulationHandler::SetDeviceMetricsOverride(
     std::unique_ptr<protocol::Emulation::DisplayFeature> display_feature,
     std::unique_ptr<protocol::Emulation::DevicePosture> device_posture,
     std::optional<std::string> scrollbar_type,
-    std::optional<bool> screen_orientation_lock_emulation) {
+    std::optional<bool> screen_orientation_lock_emulation,
+    std::optional<std::string> viewport_meta) {
   const static int max_size = 10000000;
   const static double max_scale = 10;
   const static int max_orientation_angle = 360;
@@ -798,6 +813,12 @@ Response EmulationHandler::SetDeviceMetricsOverride(
   } else {
     params.force_android_overlay_scrollbar = false;
   }
+
+  params.force_viewport_meta =
+      mobile ||
+      (viewport_meta &&
+       *viewport_meta ==
+           Emulation::SetDeviceMetricsOverride::ViewportMetaEnum::Enable);
 
   if (viewport) {
     params.viewport_offset.SetPoint(viewport->GetX(), viewport->GetY());
@@ -1012,6 +1033,9 @@ Response EmulationHandler::SetUserAgentOverride(
 }
 
 Response EmulationHandler::SetFocusEmulationEnabled(bool enabled) {
+  if (host_) {
+    host_->render_view_host()->GetWidget()->SetFocusEmulationEnabled(enabled);
+  }
   if (enabled == focus_emulation_enabled_)
     return Response::FallThrough();
   focus_emulation_enabled_ = enabled;

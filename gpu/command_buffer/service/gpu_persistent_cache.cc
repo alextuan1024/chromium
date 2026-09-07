@@ -134,6 +134,7 @@ std::string GetHistogramName(std::string_view prefix, std::string_view metric) {
 NOINLINE NOOPT void HandlePersistentCacheError(
     GpuProcessShmCount* use_shader_cache_shm_count,
     persistent_cache::TransactionError error) {
+  LOG(ERROR) << "Persistent cache error: " << static_cast<int>(error);
   switch (error) {
     case persistent_cache::TransactionError::kPermanent:
       if (use_shader_cache_shm_count) {
@@ -433,11 +434,8 @@ void GpuPersistentCache::InitializeCache(
       auto cache,
       persistent_cache::PersistentCache::Bind(
           persistent_cache::Client::kShaderCache, std::move(pending_backend)),
-      [use_shader_cache_shm_count](persistent_cache::TransactionError error) {
-        // Treat any failure to bind to the cache as a permanent error.
-        HandlePersistentCacheError(
-            &use_shader_cache_shm_count->data,
-            persistent_cache::TransactionError::kPermanent);
+      [&](persistent_cache::TransactionError error) {
+        HandlePersistentCacheError(&use_shader_cache_shm_count->data, error);
       });
 
   disk_cache_ = base::MakeRefCounted<DiskCache>(
@@ -604,10 +602,15 @@ int64_t GpuPersistentCache::GLBlobCacheGet(const void* key,
   return discovered_size;
 }
 
-void GpuPersistentCache::PurgeMemory(
-    base::MemoryPressureLevel memory_pressure_level) {
+void GpuPersistentCache::OnUpdateMemoryLimit(int memory_limit) {
   if (memory_cache_) {
-    memory_cache_->PurgeMemory(memory_pressure_level);
+    memory_cache_->OnUpdateMemoryLimit(memory_limit);
+  }
+}
+
+void GpuPersistentCache::OnReleaseMemory(int memory_limit) {
+  if (memory_cache_) {
+    memory_cache_->OnReleaseMemory(memory_limit);
   }
 }
 
@@ -789,10 +792,10 @@ void GpuPersistentCache::StoreImpl(std::string_view key,
 
   // Record the cache key and value sizes infrequently.
   if (base::ShouldRecordSubsampledMetric(kRecordCacheEntrySizeFrequency)) {
-    base::UmaHistogramMemoryKB(GetHistogramName(cache_prefix_, "KeySize"),
-                               base::ByteSize(key.size()));
-    base::UmaHistogramMemoryKB(GetHistogramName(cache_prefix_, "ValueSize"),
-                               base::ByteSize(value.size()));
+    base::UmaHistogramCounts1M(GetHistogramName(cache_prefix_, "KeySize2"),
+                               key.size());
+    base::UmaHistogramCounts1M(GetHistogramName(cache_prefix_, "ValueSize2"),
+                               value.size());
   }
 
   scoped_refptr<MemoryCacheEntry> memory_cache_entry;
@@ -1023,14 +1026,22 @@ scoped_refptr<GpuPersistentCache> GpuPersistentCacheCollection::GetCache(
                   GetCacheHistogramPrefix(handle), std::move(memory_cache),
                   metadata_options_, async_write_options_));
   DCHECK(inserted);
+  iter->second->OnUpdateMemoryLimit(current_memory_limit_);
   return iter->second;
 }
 
-void GpuPersistentCacheCollection::PurgeMemory(
-    base::MemoryPressureLevel memory_pressure_level) {
+void GpuPersistentCacheCollection::OnUpdateMemoryLimit(int memory_limit) {
+  base::AutoLock lock(mutex_);
+  current_memory_limit_ = memory_limit;
+  for (auto& [_, cache] : caches_) {
+    cache->OnUpdateMemoryLimit(memory_limit);
+  }
+}
+
+void GpuPersistentCacheCollection::OnReleaseMemory(int memory_limit) {
   base::AutoLock lock(mutex_);
   for (auto& [_, cache] : caches_) {
-    cache->PurgeMemory(memory_pressure_level);
+    cache->OnReleaseMemory(memory_limit);
   }
 }
 

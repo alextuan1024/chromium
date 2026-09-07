@@ -65,7 +65,10 @@ import org.chromium.ui.base.DeviceInput;
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 // TODO(crbug.com/40899175): Investigate batching.
 @DoNotBatch(reason = "Test has side-effects (bookmarks, pageloads) and thus can't be batched.")
-@DisableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT})
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
+})
 public class BookmarkTabletTest {
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
@@ -88,7 +91,8 @@ public class BookmarkTabletTest {
     private void openBookmarkManager() throws InterruptedException {
         BookmarkTestUtil.waitForBookmarkModelLoaded();
 
-        mActivityTestRule.loadUrl(getOriginalNativeBookmarksUrl());
+        String rootFolderId = "folder/0";
+        mActivityTestRule.loadUrl(getOriginalNativeBookmarksUrl() + rootFolderId);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mItemsContainer =
@@ -180,7 +184,8 @@ public class BookmarkTabletTest {
                                 }
                             });
                 });
-        mActivityTestRule.loadUrl(getOriginalNativeBookmarksUrl());
+        String rootFolderId = "folder/0";
+        mActivityTestRule.loadUrl(getOriginalNativeBookmarksUrl() + rootFolderId);
         onView(withText(startsWith("Mobile bookmarks"))).check(matches(isDisplayed()));
         assertEquals(0, callbackHelper.getCallCount());
     }

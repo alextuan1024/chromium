@@ -447,6 +447,7 @@ ci.builder(
                 isolate_profile_data = False,
             ),
             "interactive_ui_tests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 9,
                 ),
@@ -457,6 +458,7 @@ ci.builder(
                 ),
             ),
             "sync_integration_tests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 3,
                 ),
@@ -627,7 +629,7 @@ ci.thin_tester(
                 swarming = targets.swarming(
                     # This is for slow test execution that often becomes a
                     # critical path of swarming jobs. crbug.com/868114
-                    shards = 20,
+                    shards = 40,
                 ),
             ),
             "browser_tests_no_field_trial": targets.remove(

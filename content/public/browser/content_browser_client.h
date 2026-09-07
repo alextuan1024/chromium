@@ -1019,6 +1019,8 @@ class CONTENT_EXPORT ContentBrowserClient {
   // are to be sent to the renderer process when a worker is created. Note that
   // We don't use this method for Dedicated Workers as they inherit preferences
   // from their closest ancestor frame.
+  // Note: You probably want to call `UpdateRendererPreferencesForWorkerHelper`
+  // to ensure proper content-specific overrides are applied.
   virtual void UpdateRendererPreferencesForWorker(
       BrowserContext* browser_context,
       blink::RendererPreferences* out_prefs);
@@ -1122,6 +1124,11 @@ class CONTENT_EXPORT ContentBrowserClient {
   virtual void PrewarmServiceWorkerRegistrationForDSE(
       BrowserContext* browser_context,
       ServiceWorkerContext& service_worker_context);
+
+  // Returns the script injection policy for a page at `url`.
+  virtual blink::mojom::ScriptInjectionPolicy GetScriptInjectionPolicy(
+      BrowserContext* browser_context,
+      const GURL& url);
 
   // Allows the embedder to implement policy for whether an SCT auditing report
   // should be sent.
@@ -2880,14 +2887,11 @@ class CONTENT_EXPORT ContentBrowserClient {
   // page (resulting in mixed content).
   virtual void OnDisplayInsecureContent(WebContents* web_contents) {}
 
-#if BUILDFLAG(IS_MAC)
-  // Gets the suffix for an embedder-specific helper child process. The
-  // |child_flags| is a value greater than
-  // ChildProcessHost::CHILD_EMBEDDER_FIRST. The embedder-specific helper app
-  // bundle should be placed next to the known //content Mac helpers in the
-  // framework bundle.
-  virtual std::string GetChildProcessSuffix(int child_flags);
-#endif  // BUILDFLAG(IS_MAC)
+  // Returns the executable path to use for a child process with the given
+  // `flags` (from ChildProcessHost), allowing embedders to override the
+  // binary for specific child processes. Return an empty FilePath to use
+  // the default path.
+  virtual base::FilePath GetChildProcessPath(int flags);
 
   // Checks if Isolated Web Apps are enabled, e.g. by feature flag
   // or in any other way.

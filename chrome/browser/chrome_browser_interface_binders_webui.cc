@@ -13,8 +13,6 @@
 #include "chrome/browser/ui/webui/actor_internals/actor_internals_ui.h"
 #include "chrome/browser/ui/webui/bluetooth_internals/bluetooth_internals.mojom.h"
 #include "chrome/browser/ui/webui/bluetooth_internals/bluetooth_internals_ui.h"
-#include "chrome/browser/ui/webui/chrome_finds_internals/chrome_finds_internals.mojom.h"
-#include "chrome/browser/ui/webui/chrome_finds_internals/chrome_finds_internals_ui.h"
 #include "chrome/browser/ui/webui/chrome_urls/chrome_urls_ui.h"
 #include "chrome/browser/ui/webui/connectors_internals/connectors_internals_ui.h"
 #include "chrome/browser/ui/webui/content_settings/content_settings_internals.mojom.h"
@@ -45,6 +43,7 @@
 #include "components/history_clusters/history_clusters_internals/webui/history_clusters_internals_ui.h"
 #include "components/policy/core/common/features.h"
 #include "components/site_engagement/core/mojom/site_engagement_details.mojom.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_ui_browser_interface_broker_registry.h"
 #include "content/public/browser/web_ui_controller_interface_binder.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -125,15 +124,22 @@ void BindColorChangeListener(
 }
 #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 
+void FinishBindTrackedElementHandler(
+    mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
+        pending_receiver,
+    base::WeakPtr<ui::TrackedElementHandler> handler) {
+  if (handler) {
+    handler->BindInterface(std::move(pending_receiver));
+  }
+}
+
 void BindTrackedElementHandler(
     content::RenderFrameHost* frame_host,
     mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
         pending_receiver) {
-  auto handler =
-      ui::TrackedElementHandlerDocumentSingleton::GetOrCreate(frame_host);
-  if (handler) {
-    handler->BindInterface(std::move(pending_receiver));
-  }
+  ui::TrackedElementHandlerDocumentSingleton::GetOrCreateAsync(
+      frame_host, base::BindOnce(&FinishBindTrackedElementHandler,
+                                 std::move(pending_receiver)));
 }
 
 void BindTrackedElementHandlerRestricted(
@@ -159,6 +165,7 @@ void BindTrackedElementHandlerRestricted(
       controller->GetAs<CustomizeChromeUI>() ||
       controller->GetAs<PasswordManagerUI>() ||
       controller->GetAs<HistoryUI>() ||
+      controller->GetAs<OmniboxEverywhereUI>() ||
 #if !BUILDFLAG(IS_CHROMEOS)
       controller->GetAs<ProfilePickerUI>() ||
 #endif  // !BUILDFLAG(IS_CHROMEOS)
@@ -177,10 +184,6 @@ void BindTrackedElementHandlerRestricted(
 void PopulateChromeWebUIFrameBindersPartsAllPlatforms(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* map,
     content::RenderFrameHost* render_frame_host) {
-  RegisterWebUIControllerInterfaceBinder<
-      chrome_finds_internals::mojom::PageHandlerFactory,
-      chrome_finds_internals::ChromeFindsInternalsUI>(map);
-
   RegisterWebUIControllerInterfaceBinder<::mojom::BluetoothInternalsHandler,
                                          BluetoothInternalsUI>(map);
 

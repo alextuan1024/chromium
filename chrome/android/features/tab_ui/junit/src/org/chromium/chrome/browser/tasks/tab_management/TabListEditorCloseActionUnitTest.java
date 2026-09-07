@@ -21,7 +21,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
@@ -36,6 +35,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Icon
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ShowMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorActionUnitTestHelper.TabIdGroup;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorActionUnitTestHelper.TabListHolder;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 
@@ -50,7 +50,6 @@ import java.util.stream.Collectors;
 
 /** Unit tests for {@link TabListEditorCloseAction}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabListEditorCloseActionUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -74,8 +73,8 @@ public class TabListEditorCloseActionUnitTest {
         mTabModel.setTabRemoverForTesting(mTabRemover);
     }
 
-    private void configure(boolean actionOnRelatedTabs) {
-        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, actionOnRelatedTabs);
+    private void configure(@TabListLayoutType int layoutType) {
+        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, layoutType);
     }
 
     @Test
@@ -99,7 +98,7 @@ public class TabListEditorCloseActionUnitTest {
 
     @Test
     public void testCloseActionNoTabs() {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         mAction.onSelectionStateChange(Collections.emptyList());
         assertEquals(false, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(0, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
@@ -107,7 +106,7 @@ public class TabListEditorCloseActionUnitTest {
 
     @Test
     public void testCloseActionWithOneTab() {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
         List<Tab> tabs =
                 tabIds.stream().map(id -> mTabModel.addTab(id)).collect(Collectors.toList());
@@ -130,7 +129,7 @@ public class TabListEditorCloseActionUnitTest {
 
     @Test
     public void testCloseActionWithTabs() throws TimeoutException {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
         List<TabListEditorItemSelectionId> itemIds =
                 Arrays.asList(
@@ -168,9 +167,8 @@ public class TabListEditorCloseActionUnitTest {
     }
 
     @Test
-    public void testCloseActionWithTabGroups_ActionOnRelatedTabs() {
-        final boolean actionOnRelatedTabs = true;
-        configure(actionOnRelatedTabs);
+    public void testCloseActionWithTabGroups_GroupedLayout() {
+        configure(TabListLayoutType.GROUPED);
         List<TabIdGroup> tabIdGroups = new ArrayList<>();
         tabIdGroups.add(
                 new TabIdGroup(
@@ -238,9 +236,8 @@ public class TabListEditorCloseActionUnitTest {
     }
 
     @Test
-    public void testCloseActionWithTabGroups_NoActionOnRelatedTabs() {
-        final boolean actionOnRelatedTabs = false;
-        configure(actionOnRelatedTabs);
+    public void testCloseActionWithTabGroups_FlatLayout() {
+        configure(TabListLayoutType.FLAT);
         List<TabIdGroup> tabIdGroups = new ArrayList<>();
         tabIdGroups.add(
                 new TabIdGroup(

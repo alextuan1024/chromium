@@ -17,6 +17,7 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -112,7 +113,7 @@ class SearchAIModeSignInPromoViewPixelTest
   void ShowUi(const std::string& name) override {
     ShowPromoView(std::make_unique<SearchAIModeSignInPromoView>(
         GetAvatarBubbleAnchor(),
-        browser()->GetTabStripModel()->GetActiveWebContents(),
+        browser()->GetActiveTabInterface()->GetContents(),
         /*controller=*/nullptr));
   }
 
@@ -141,9 +142,13 @@ class ComposeboxDriveSignInPromoViewPixelTest
   }
 
   void ShowUi(const std::string& name) override {
+    if (name == "SignInPending") {
+      SignInWithAccount();
+      identity_test_env()->SetInvalidRefreshTokenForPrimaryAccount();
+    }
     ShowPromoView(std::make_unique<ComposeboxDriveSignInPromoView>(
         GetAvatarBubbleAnchor(),
-        browser()->GetTabStripModel()->GetActiveWebContents(),
+        browser()->GetActiveTabInterface()->GetContents(),
         /*controller=*/nullptr));
   }
 
@@ -153,6 +158,11 @@ class ComposeboxDriveSignInPromoViewPixelTest
 
 IN_PROC_BROWSER_TEST_P(ComposeboxDriveSignInPromoViewPixelTest,
                        InvokeUi_default) {
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_P(ComposeboxDriveSignInPromoViewPixelTest,
+                       InvokeUi_SignInPending) {
   ShowAndVerifyUi();
 }
 

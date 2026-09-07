@@ -10,28 +10,43 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.Mode;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /** Robolectric unit tests for {@link SelectionController}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class SelectionControllerUnitTest {
     private static final int DEFAULT_NUM_ITEMS = 3;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    private SelectionController createTestController(@Mode int mode) {
+    private int mItemCount = DEFAULT_NUM_ITEMS;
+    private final Set<Integer> mUnselectablePositions = new HashSet<>();
+
+    @Before
+    public void setUp() {
+        mItemCount = DEFAULT_NUM_ITEMS;
+        mUnselectablePositions.clear();
+    }
+
+    private SelectionController createTestController(@TraversalMode int mode) {
         return spy(
                 new SelectionController(mode) {
                     @Override
@@ -39,42 +54,47 @@ public class SelectionControllerUnitTest {
 
                     @Override
                     protected int getItemCount() {
-                        return DEFAULT_NUM_ITEMS;
+                        return mItemCount;
+                    }
+
+                    @Override
+                    protected boolean isSelectableItem(int position) {
+                        return !mUnselectablePositions.contains(position);
                     }
                 });
     }
 
     private void verifyPositionReset(SelectionController c, int position) {
-        verify(c).setItemState(position, false);
+        verify(c).setItemState(position, /* isSelected= */ false);
         assertEquals(null, c.getPosition());
         assertTrue(c.isParkedAtSentinel());
         clearInvocations(c);
     }
 
     private void verifyPositionSet(SelectionController c, int position) {
-        verify(c).setItemState(position, true);
+        verify(c).setItemState(position, /* isSelected= */ true);
         assertEquals(Integer.valueOf(position), c.getPosition());
         assertFalse(c.isParkedAtSentinel());
         clearInvocations(c);
     }
 
     private void verifyPositionChanged(SelectionController c, int from, int to) {
-        verify(c).setItemState(from, false);
+        verify(c).setItemState(from, /* isSelected= */ false);
         verifyPositionSet(c, to);
     }
 
     @Test
     public void selectNextItem_saturating() {
-        var c = createTestController(Mode.SATURATING);
+        var c = createTestController(TraversalMode.SATURATING);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 1, 2);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 2);
 
         // Cannot move any further. We've reached the limit.
         assertFalse(c.selectNextItem());
@@ -86,7 +106,7 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_saturatingWithSentinel() {
-        var c = createTestController(Mode.SATURATING_WITH_SENTINEL);
+        var c = createTestController(TraversalMode.SATURATING_WITH_SENTINEL);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -95,10 +115,10 @@ public class SelectionControllerUnitTest {
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 1, 2);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 2);
 
         assertFalse(c.selectNextItem());
         verifyPositionReset(c, 2);
@@ -109,17 +129,17 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_saturating() {
-        var c = createTestController(Mode.SATURATING);
+        var c = createTestController(TraversalMode.SATURATING);
         c.reset();
 
         c.setPosition(DEFAULT_NUM_ITEMS);
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
 
         // Cannot move any further. We've reached the limit.
         assertFalse(c.selectPreviousItem());
@@ -131,17 +151,17 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_saturatingWithSentinel() {
-        var c = createTestController(Mode.SATURATING_WITH_SENTINEL);
+        var c = createTestController(TraversalMode.SATURATING_WITH_SENTINEL);
         c.reset();
 
         c.setPosition(DEFAULT_NUM_ITEMS - 1);
         verifyPositionSet(c, 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
 
         assertFalse(c.selectPreviousItem());
         verifyPositionReset(c, 0);
@@ -152,43 +172,43 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_skipMiddleItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(1)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(1);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
 
-        verify(c, times(1)).setItemState(0, false);
-        verify(c, times(1)).setItemState(2, true);
+        verify(c).setItemState(/* position= */ 0, /* isSelected= */ false);
+        verify(c).setItemState(/* position= */ 2, /* isSelected= */ true);
         assertEquals(Integer.valueOf(2), c.getPosition());
     }
 
     @Test
     public void selectPreviousItem_skipMiddleItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(1)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(1);
         c.reset();
 
         c.setPosition(2);
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
         assertTrue(c.selectPreviousItem());
 
         // This will try to move away from position 0 twice
         // - to advance to position 1, which will fail
         // - then, to advance to position 0, which should work.
-        verify(c, times(1)).setItemState(2, false);
-        verify(c, times(1)).setItemState(0, true);
+        verify(c).setItemState(/* position= */ 2, /* isSelected= */ false);
+        verify(c).setItemState(/* position= */ 0, /* isSelected= */ true);
         verify(c, times(2)).setItemState(anyInt(), anyBoolean());
         assertEquals(Integer.valueOf(0), c.getPosition());
     }
 
     @Test
     public void selectNextItem_skipTailItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         verifyPositionSet(c, 0);
@@ -196,7 +216,7 @@ public class SelectionControllerUnitTest {
         assertFalse(c.selectNextItem());
 
         // Selection never moved.
-        verify(c, times(0)).setItemState(anyInt(), anyBoolean());
+        verify(c, never()).setItemState(anyInt(), anyBoolean());
 
         // We shouldn't move the selection.
         assertEquals(Integer.valueOf(0), c.getPosition());
@@ -204,16 +224,16 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_skipTailItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(0)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(0);
 
         c.setPosition(2);
         verifyPositionSet(c, 2);
         assertFalse(c.selectPreviousItem());
 
         // Selection never moved.
-        verify(c, times(0)).setItemState(anyInt(), anyBoolean());
+        verify(c, never()).setItemState(anyInt(), anyBoolean());
 
         // We shouldn't move the selection.
         assertEquals(Integer.valueOf(2), c.getPosition());
@@ -221,9 +241,9 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_skipTailItems_saturatingWithSentinel() {
-        var c = createTestController(Mode.SATURATING_WITH_SENTINEL);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING_WITH_SENTINEL);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         // Sentinel -> position 0:
@@ -238,9 +258,9 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_skipTailItems_saturatingWithSentinel() {
-        var c = createTestController(Mode.SATURATING_WITH_SENTINEL);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(0)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING_WITH_SENTINEL);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(0);
 
         c.setPosition(2);
         verifyPositionSet(c, 2);
@@ -253,10 +273,10 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_noSelectableItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(0)).thenReturn(false);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(0);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -265,10 +285,10 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_noSelectableItems_saturating() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.isSelectableItem(0)).thenReturn(false);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.SATURATING);
+        mUnselectablePositions.add(0);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -277,8 +297,8 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectionControllerWithNoItems() {
-        var c = createTestController(Mode.SATURATING);
-        when(c.getItemCount()).thenReturn(0);
+        var c = createTestController(TraversalMode.SATURATING);
+        mItemCount = 0;
         c.reset();
 
         // Normally, saturating controller should start at valid range, but this is an edge case.
@@ -287,13 +307,13 @@ public class SelectionControllerUnitTest {
 
         // Simulate we now have an item. This should make the saturating controller immediately jump
         // to the first valid item.
-        when(c.getItemCount()).thenReturn(1);
+        mItemCount = 1;
         c.reset();
         assertFalse(c.isParkedAtSentinel());
         assertEquals(Integer.valueOf(0), c.getPosition());
 
         // Simulate we lost all items. This should make the saturating controller revert to sentnel.
-        when(c.getItemCount()).thenReturn(0);
+        mItemCount = 0;
         c.reset();
         assertTrue(c.isParkedAtSentinel());
         assertEquals(null, c.getPosition());
@@ -301,27 +321,27 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void reset_saturating() {
-        var c = createTestController(Mode.SATURATING);
+        var c = createTestController(TraversalMode.SATURATING);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         c.selectNextItem(); // 1
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
         c.reset(); // back to default (0)
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
     }
 
     @Test
     public void selectionControllerWithNoItems_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
-        when(c.getItemCount()).thenReturn(0);
+        var c = createTestController(TraversalMode.WRAPPING);
+        mItemCount = 0;
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
         assertEquals(null, c.getPosition());
 
-        when(c.getItemCount()).thenReturn(1);
+        mItemCount = 1;
         c.reset();
         assertFalse(c.isParkedAtSentinel());
         assertEquals(Integer.valueOf(0), c.getPosition());
@@ -329,14 +349,14 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectionControllerWithNoItems_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
-        when(c.getItemCount()).thenReturn(0);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
+        mItemCount = 0;
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
         assertEquals(null, c.getPosition());
 
-        when(c.getItemCount()).thenReturn(1);
+        mItemCount = 1;
         c.reset();
         assertTrue(c.isParkedAtSentinel());
         assertEquals(null, c.getPosition());
@@ -344,33 +364,33 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_onlyOneSelectableItem_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 0);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 0);
     }
 
     @Test
     public void reset_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
+        var c = createTestController(TraversalMode.WRAPPING);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         c.selectNextItem();
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
         c.reset();
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
     }
 
     @Test
     public void reset_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -383,27 +403,27 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
+        var c = createTestController(TraversalMode.WRAPPING);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 1, 2);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 2);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 2, 0);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
     }
 
     @Test
     public void selectNextItem_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -412,10 +432,10 @@ public class SelectionControllerUnitTest {
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 1, 2);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 2);
 
         assertFalse(c.selectNextItem());
         verifyPositionReset(c, 2);
@@ -426,24 +446,24 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectPreviousItem_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
+        var c = createTestController(TraversalMode.WRAPPING);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
     }
 
     @Test
     public void selectPreviousItem_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -452,10 +472,10 @@ public class SelectionControllerUnitTest {
         verifyPositionSet(c, 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
 
         assertFalse(c.selectPreviousItem());
         verifyPositionReset(c, 0);
@@ -466,7 +486,7 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void reset_sentinelThenWrapping() {
-        var c = createTestController(Mode.SENTINEL_THEN_WRAPPING);
+        var c = createTestController(TraversalMode.SENTINEL_THEN_WRAPPING);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -479,7 +499,7 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_sentinelThenWrapping() {
-        var c = createTestController(Mode.SENTINEL_THEN_WRAPPING);
+        var c = createTestController(TraversalMode.SENTINEL_THEN_WRAPPING);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -488,21 +508,21 @@ public class SelectionControllerUnitTest {
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 1, 2);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 2);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 2, 0);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 1);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 1);
     }
 
     @Test
     public void selectPreviousItem_sentinelThenWrapping() {
-        var c = createTestController(Mode.SENTINEL_THEN_WRAPPING);
+        var c = createTestController(TraversalMode.SENTINEL_THEN_WRAPPING);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -511,44 +531,44 @@ public class SelectionControllerUnitTest {
         verifyPositionSet(c, 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 1, 0);
+        verifyPositionChanged(c, /* from= */ 1, /* to= */ 0);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
 
         assertTrue(c.selectPreviousItem());
-        verifyPositionChanged(c, 2, 1);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 1);
     }
 
     @Test
     public void selectNextItem_skipMiddleItems_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
-        when(c.isSelectableItem(1)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING);
+        mUnselectablePositions.add(1);
         c.reset();
 
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 2, 0);
+        verifyPositionChanged(c, /* from= */ 2, /* to= */ 0);
     }
 
     @Test
     public void selectNextItem_skipMiddleItems_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
-        when(c.isSelectableItem(1)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
+        mUnselectablePositions.add(1);
         c.reset();
 
         assertTrue(c.selectNextItem());
         verifyPositionSet(c, 0);
 
         assertTrue(c.selectNextItem());
-        verifyPositionChanged(c, 0, 2);
+        verifyPositionChanged(c, /* from= */ 0, /* to= */ 2);
 
         assertFalse(c.selectNextItem());
         verifyPositionReset(c, 2);
@@ -559,10 +579,10 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_noSelectableItems_wrapping() {
-        var c = createTestController(Mode.WRAPPING);
-        when(c.isSelectableItem(0)).thenReturn(false);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING);
+        mUnselectablePositions.add(0);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -576,10 +596,10 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_noSelectableItems_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
-        when(c.isSelectableItem(0)).thenReturn(false);
-        when(c.isSelectableItem(1)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
+        mUnselectablePositions.add(0);
+        mUnselectablePositions.add(1);
+        mUnselectablePositions.add(2);
         c.reset();
 
         assertTrue(c.isParkedAtSentinel());
@@ -593,9 +613,9 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void selectNextItem_onlyMiddleSelectableItem_wrappingWithSentinel() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
-        when(c.isSelectableItem(0)).thenReturn(false);
-        when(c.isSelectableItem(2)).thenReturn(false);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
+        mUnselectablePositions.add(0);
+        mUnselectablePositions.add(2);
         c.reset();
 
         assertTrue(c.selectNextItem());
@@ -613,21 +633,21 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void setSelectionMode() {
-        var c = createTestController(Mode.WRAPPING);
+        var c = createTestController(TraversalMode.WRAPPING);
         c.reset();
         verifyPositionSet(c, 0);
 
-        c.setSelectionMode(Mode.WRAPPING_WITH_SENTINEL);
+        c.setSelectionMode(TraversalMode.WRAPPING_WITH_SENTINEL);
         c.reset();
         verifyPositionReset(c, 0);
         assertTrue(c.isParkedAtSentinel());
 
-        c.setSelectionMode(Mode.WRAPPING);
+        c.setSelectionMode(TraversalMode.WRAPPING);
         c.reset();
         verifyPositionSet(c, 0);
         assertFalse(c.isParkedAtSentinel());
 
-        c.setSelectionMode(Mode.SENTINEL_THEN_WRAPPING);
+        c.setSelectionMode(TraversalMode.SENTINEL_THEN_WRAPPING);
         c.reset();
         verifyPositionReset(c, 0);
         assertTrue(c.isParkedAtSentinel());
@@ -635,8 +655,7 @@ public class SelectionControllerUnitTest {
 
     @Test
     public void testSelectFirstAndLastAttachment() {
-        var c = createTestController(Mode.WRAPPING_WITH_SENTINEL);
-        when(c.getItemCount()).thenReturn(3);
+        var c = createTestController(TraversalMode.WRAPPING_WITH_SENTINEL);
 
         c.selectFirstItem();
         assertEquals(0, c.getPosition().intValue());

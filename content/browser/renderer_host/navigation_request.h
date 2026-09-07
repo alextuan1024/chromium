@@ -103,6 +103,7 @@
 
 namespace network {
 struct IntegrityPolicy;
+class ResourceRequestBody;
 struct URLLoaderCompletionStatus;
 }  // namespace network
 
@@ -116,6 +117,7 @@ class AgentClusterKey;
 class CrossOriginEmbedderPolicyReporter;
 class FrameTreeNode;
 class InitiatorNavigationStateImpl;
+class NavigationFastFetchManager;
 class NavigationUIData;
 class NavigationURLLoader;
 class NavigatorDelegate;
@@ -124,7 +126,8 @@ class PrerenderHostRegistry;
 class RenderFrameHostCSPContext;
 class ServiceWorkerMainResourceHandle;
 class SubframeHistoryNavigationThrottle;
-class NavigationFastFetchManager;
+
+enum class ErrorPageProcess;
 
 // The primary implementation of NavigationHandle.
 //
@@ -411,6 +414,7 @@ class CONTENT_EXPORT NavigationRequest
   const NavigationHandleTiming& GetNavigationHandleTiming() override;
   bool IsPost() override;
   std::string GetRequestMethod() override;
+  scoped_refptr<network::ResourceRequestBody> GetPostData() const override;
   const blink::mojom::Referrer& GetReferrer() override;
   void SetReferrer(blink::mojom::ReferrerPtr referrer) override;
   bool HasUserGesture() override;
@@ -1456,20 +1460,7 @@ class CONTENT_EXPORT NavigationRequest
     return std::move(web_ui_);
   }
 
-  enum ErrorPageProcess {
-    kNotErrorPage,
-    kPostCommitErrorPage,
-    kCurrentProcess,
-    kDestinationProcess,
-    kIsolatedProcess
-  };
-  // Helper to determine whether a navigation is committing an error page and
-  // should stay in the current process (kCurrentProcess), the destination
-  // URL's process (kDestinationProcess), an isolated process
-  // (kIsolatedProcess), or is a post-commit error page that does not have any
-  // specific process requirements and goes through the "normal navigation"
-  // path. Returns kNotErrorPage if the navigation is not an error page
-  // navigation.
+  // Helper to determine a navigation's process requirements.
   ErrorPageProcess ComputeErrorPageProcess();
 
   // This describes the reason for performing an early RenderFrameHost swap, if
@@ -1912,9 +1903,14 @@ class CONTENT_EXPORT NavigationRequest
   // Returns a token that will be used to retrieve the InitiatorNavigationState
   // of the document created by this navigation at commit time (if any). Note
   // that this does not identify the initiator of this navigation.
-  const base::UnguessableToken& initiator_state_token_to_commit() const {
+  const blink::InitiatorStateToken& initiator_state_token_to_commit() const {
     return initiator_state_token_to_commit_;
   }
+
+  // Returns true if this navigation is for a subframe inside an ancestor ad
+  // frame tree that has site-keyed OAC status by default, and this navigation's
+  // origin is same-site to that ancestor ad frame.
+  bool HasSameSiteAdAncestor();
 
  private:
   friend class NavigationRequestTest;
@@ -2256,6 +2252,13 @@ class CONTENT_EXPORT NavigationRequest
   // (possibly blocking it).
   void SetupConnectionAllowlistEmbeddedEnforcement();
 
+  // Records `feature` against the embedder, which is the document that asserted
+  // (or inherited) the Connection-Allowlist requirement. The framed document
+  // may be blocked and never commit, so the parent is the only frame reliably
+  // available to attribute usage to.
+  void LogConnectionAllowlistEmbeddedEnforcementUseCounter(
+      blink::mojom::WebFeature feature);
+
   enum class ConnectionAllowlistEmbeddedEnforcementResult {
     ALLOW_RESPONSE,
     BLOCK_RESPONSE,
@@ -2557,7 +2560,7 @@ class CONTENT_EXPORT NavigationRequest
   void DidChangeReferrerPolicy(
       network::mojom::ReferrerPolicy referrer_policy) final {}
   void DidUpdateInitiatorStateToken(
-      const base::UnguessableToken& new_initiator_state_token) final;
+      const blink::InitiatorStateToken& new_initiator_state_token) final;
 
   // CHECK that transitioning from the current state to |state| valid. This
   // does nothing in non-debug builds.
@@ -3195,6 +3198,9 @@ class CONTENT_EXPORT NavigationRequest
   struct OriginRelatedState {
     int64_t item_sequence_number;
     int64_t document_sequence_number;
+    // The origin that was recorded when the FrameNavigationEntry was previously
+    // committed, if any. May be nullopt for entries that have never committed.
+    std::optional<url::Origin> committed_origin;
   };
   std::optional<OriginRelatedState> origin_related_state_;
 
@@ -3842,9 +3848,26 @@ class CONTENT_EXPORT NavigationRequest
   // document created by this navigation at commit time (if any). Note that this
   // does not identify the initiator of this navigation. See
   // `initiator_navigation_state` for this.
-  base::UnguessableToken initiator_state_token_to_commit_;
+  blink::InitiatorStateToken initiator_state_token_to_commit_;
 
   base::WeakPtrFactory<NavigationRequest> weak_factory_{this};
+};
+
+enum class ErrorPageProcess {
+  // Navigation is not an error page navigation.
+  kNotErrorPage,
+  // Post-commit error page that does not have any specific process requirements
+  // and goes through the "normal navigation" path.
+  kPostCommitErrorPage,
+  // Navigation is committing an error page and should stay in the current
+  // process.
+  kCurrentProcess,
+  // Navigation is committing an error page and should stay in the destination
+  // URL's process.
+  kDestinationProcess,
+  // Navigation is committing an error page and should stay in an isolated
+  // process.
+  kIsolatedProcess
 };
 
 }  // namespace content

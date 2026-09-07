@@ -26,13 +26,10 @@ BASE_FEATURE(kGlicBlockFileSystemAccessApiFilePicker,
 BASE_FEATURE(kGlicDeferDownloadFilePickerToUserTakeover,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kGlicActorLocalhostIsSensitive, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kGlicCrossOriginNavigationGating,
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(bool,
-                   kGlicPromptUserForSensitiveNavigations,
-                   &kGlicCrossOriginNavigationGating,
-                   "prompt_user_for_sensitive_navigations",
-                   true);
 BASE_FEATURE_PARAM(bool,
                    kGlicConfirmNavigationToNewOrigins,
                    &kGlicCrossOriginNavigationGating,
@@ -66,6 +63,8 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kGlicAttachNavigationThrottleToPausedTasks,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicPageActivationGating, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicSkipAwaitVisualStateForNewTabs,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -137,6 +136,12 @@ BASE_FEATURE(kActorLoginObservationStartDelay,
 const base::FeatureParam<base::TimeDelta>
     kActorLoginObservationStartDelayDuration{&kActorLoginObservationStartDelay,
                                              "start_delay", base::Seconds(3)};
+
+BASE_FEATURE(kActorTypeToolObservationStartDelay,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+const base::FeatureParam<base::TimeDelta>
+    kActorTypeToolObservationStartDelayDuration{
+        &kActorTypeToolObservationStartDelay, "start_delay", base::Seconds(1)};
 
 BASE_FEATURE(kActorSendBrowserSignalForAction,
              base::FEATURE_ENABLED_BY_DEFAULT);

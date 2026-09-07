@@ -30,10 +30,10 @@
 #include "chrome/browser/printing/test_print_view_manager_for_request_preview.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/task_manager/mock_web_contents_task_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -62,7 +62,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
 #include "url/gurl.h"
@@ -182,19 +184,17 @@ class PrintPreviewDialogControllerBrowserTest : public printing::PrintPreviewBro
 
     test_web_contents_.clear();
 
-
-
-    for (Browser* browser : browsers_) {
-      browser->tab_strip_model()->CloseAllTabs();
+    for (BrowserWindowInterface* browser : browsers_) {
+      browser->GetTabStripModel()->CloseAllTabs();
     }
 
-    std::vector<Browser*> local_browsers;
-    for (Browser* browser : browsers_) {
+    std::vector<BrowserWindowInterface*> local_browsers;
+    for (BrowserWindowInterface* browser : browsers_) {
       local_browsers.push_back(browser);
     }
     browsers_.clear();
 
-    for (Browser* browser : local_browsers) {
+    for (BrowserWindowInterface* browser : local_browsers) {
       BrowserManagerService::SynchronouslyDestroyBrowser(browser);
     }
 
@@ -211,12 +211,11 @@ class PrintPreviewDialogControllerBrowserTest : public printing::PrintPreviewBro
   }
 
  protected:
-  Browser* CreateBrowser(std::unique_ptr<BrowserWindow> window) {
+  BrowserWindowInterface* CreateBrowser(std::unique_ptr<BrowserWindow> window) {
     BrowserWindowCreateParams params(browser()->GetProfile(),
                                      /*from_user_gesture=*/true);
     params.window = window.release();
-    Browser* browser =
-        CreateBrowserWindow(std::move(params))->GetBrowserForMigrationOnly();
+    BrowserWindowInterface* browser = CreateBrowserWindow(std::move(params));
     browsers_.push_back(browser);
     return browser;
   }
@@ -244,7 +243,7 @@ class PrintPreviewDialogControllerBrowserTest : public printing::PrintPreviewBro
   raw_ptr<WebContents, AcrossTasksDanglingUntriaged> initiator_ = nullptr;
 
   std::vector<std::unique_ptr<WebContents>> test_web_contents_;
-  std::vector<raw_ptr<Browser>> browsers_;
+  std::vector<raw_ptr<BrowserWindowInterface>> browsers_;
 };
 
 // Test to verify that when a initiator navigates, we can create a new preview
@@ -858,11 +857,11 @@ class PrintPreviewDialogControllerDialogDelegateTest
     size_ = size;
     auto window =
         std::make_unique<DialogTestBrowserWindowWithMaxDialogSize>(*this);
-    Browser* browser = CreateBrowser(std::move(window));
+    BrowserWindowInterface* browser = CreateBrowser(std::move(window));
 
     WebContents* initiator_ptr = CreateTestTab();
     // Add to mock browser's tab strip so standard APIs don't assert
-    browser->tab_strip_model()->AppendWebContents(
+    browser->GetTabStripModel()->AppendWebContents(
         std::unique_ptr<WebContents>(initiator_ptr), true);
     // Release ownership from test_web_contents_ as the tab strip now owns it!
     ReleaseTrackedWebContents(initiator_ptr);

@@ -15,7 +15,6 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
 #include "chrome/browser/ash/file_manager/open_util.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -31,6 +30,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/enterprise/data_controls/core/browser/component.h"
 #include "components/enterprise/data_controls/core/browser/dlp_histogram_helper.h"
 #include "components/strings/grit/components_strings.h"
@@ -77,15 +77,14 @@ class FilesPolicyDialogBrowserTest
   }
 
  protected:
-  Browser* FindFilesApp() {
+  BrowserWindowInterface* FindFilesApp() {
     ash::BrowserDelegate* delegate = FindSystemWebAppBrowser(
         browser()->GetProfile(), ash::SystemWebAppType::FILE_MANAGER,
         ash::BrowserType::kApp);
-    return delegate ? delegate->GetBrowser().GetBrowserForMigrationOnly()
-                    : nullptr;
+    return delegate ? &delegate->GetBrowser() : nullptr;
   }
 
-  Browser* OpenFilesApp() {
+  BrowserWindowInterface* OpenFilesApp() {
     base::RunLoop run_loop;
     file_manager::util::ShowItemInFolder(
         browser()->GetProfile(),
@@ -162,7 +161,7 @@ IN_PROC_BROWSER_TEST_P(WarningDialogBrowserTest, WithParent) {
   dlp::FileAction action = GetParam();
 
   ASSERT_FALSE(FindFilesApp());
-  Browser* files_app = OpenFilesApp();
+  BrowserWindowInterface* files_app = OpenFilesApp();
   ASSERT_TRUE(files_app);
   ASSERT_EQ(files_app, FindFilesApp());
 
@@ -360,7 +359,7 @@ IN_PROC_BROWSER_TEST_P(ErrorDialogBrowserTest, WithParent) {
   dlp::FileAction action = GetParam();
 
   ASSERT_FALSE(FindFilesApp());
-  Browser* files_app = OpenFilesApp();
+  BrowserWindowInterface* files_app = OpenFilesApp();
   ASSERT_TRUE(files_app);
   ASSERT_EQ(files_app, FindFilesApp());
 

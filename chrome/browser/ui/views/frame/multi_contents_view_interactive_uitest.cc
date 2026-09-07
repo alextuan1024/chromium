@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_highlight_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -86,7 +87,6 @@ class ViewBoundsChangedObserver : public views::ViewObserver,
   void OnViewIsDeleting(views::View* view) override { observation_.Reset(); }
 
  private:
-  raw_ptr<Browser> browser_;
   int bounds_changed_count_ = 0;
   base::ScopedObservation<views::View, views::ViewObserver> observation_{this};
 };

@@ -10,14 +10,13 @@
 #include "base/check.h"
 #include "base/containers/span.h"
 #include "chrome/browser/ash/browser_delegate/browser_delegate_impl.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
 #include "chrome/browser/ash/browser_delegate/browser_type_conversion.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_list/tab_removed_reason.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -29,13 +28,16 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/simple_web_view_dialog.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "components/account_id/account_id.h"
 #include "ui/aura/window.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -49,7 +51,7 @@ bool BrowserMatchesURL(BrowserWindowInterface* browser, const GURL& url) {
 bool BrowserMatches(BrowserWindowInterface* browser,
                     Profile* profile,
                     webapps::AppId app_id,
-                    Browser::Type type,
+                    BrowserWindowInterface::Type type,
                     const GURL& url) {
   return browser->GetProfile() == profile && browser->GetType() == type &&
          web_app::GetAppIdFromApplicationName(
@@ -85,9 +87,20 @@ namespace ash {
 
 BrowserControllerImpl::BrowserControllerImpl() {
   observation_.Observe(GlobalBrowserCollection::GetInstance());
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [this](BrowserWindowInterface* browser) {
+        browser->GetTabStripModel()->AddObserver(this);
+        return true;
+      });
 }
 
-BrowserControllerImpl::~BrowserControllerImpl() = default;
+BrowserControllerImpl::~BrowserControllerImpl() {
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [this](BrowserWindowInterface* browser) {
+        browser->GetTabStripModel()->RemoveObserver(this);
+        return true;
+      });
+}
 
 BrowserDelegate* BrowserControllerImpl::GetDelegate(
     BrowserWindowInterface* bwi) {
@@ -97,9 +110,7 @@ BrowserDelegate* BrowserControllerImpl::GetDelegate(
 
   auto it = browsers_.find(bwi);
   if (it == browsers_.end()) {
-    it = browsers_
-             .emplace(bwi, std::make_unique<BrowserDelegateImpl>(
-                               bwi->GetBrowserForMigrationOnly()))
+    it = browsers_.emplace(bwi, std::make_unique<BrowserDelegateImpl>(bwi))
              .first;
   }
   return it->second.get();
@@ -195,7 +206,8 @@ BrowserDelegate* BrowserControllerImpl::FindWebApp(const AccountId& account_id,
 
   CHECK(browser_type == BrowserType::kApp ||
         browser_type == BrowserType::kAppPopup);
-  Browser::Type internal_type = ToInternalBrowserType(browser_type);
+  BrowserWindowInterface::Type internal_type =
+      ToInternalBrowserType(browser_type);
 
   BrowserDelegate* browser_delegate = nullptr;
   GlobalBrowserCollection::GetInstance()->ForEach(
@@ -240,8 +252,7 @@ BrowserDelegate* BrowserControllerImpl::NewTabWithPostData(
     BrowserWindowCreateParams create_params(profile,
                                             navigate_params.user_gesture);
     create_params.should_trigger_session_restore = false;
-    navigate_params.browser = CreateBrowserWindow(std::move(create_params))
-                                  ->GetBrowserForMigrationOnly();
+    navigate_params.browser = CreateBrowserWindow(std::move(create_params));
   }
 
   Navigate(&navigate_params);
@@ -263,7 +274,7 @@ BrowserDelegate* BrowserControllerImpl::CreateWebApp(
   CHECK(profile);
 
   if (GetBrowserWindowCreationStatusForProfile(*profile) !=
-      Browser::CreationStatus::kOk) {
+      BrowserWindowInterface::CreationStatus::kOk) {
     LOG(WARNING) << "Cannot create browser for given profile";
     return nullptr;
   }
@@ -307,10 +318,26 @@ void BrowserControllerImpl::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
+void BrowserControllerImpl::AddTabObserver(TabObserver* observer) {
+  tab_observers_.AddObserver(observer);
+}
+
+void BrowserControllerImpl::RemoveTabObserver(TabObserver* observer) {
+  tab_observers_.RemoveObserver(observer);
+}
+
 void BrowserControllerImpl::OnBrowserCreated(BrowserWindowInterface* browser) {
   ash::BrowserDelegate* browser_delegate = GetDelegate(browser);
   for (auto& observer : observers_) {
     observer.OnBrowserCreated(browser_delegate);
+  }
+
+  browser->GetTabStripModel()->AddObserver(this);
+  for (size_t i = 0; i < browser_delegate->GetWebContentsCount(); ++i) {
+    content::WebContents* contents = browser_delegate->GetWebContentsAt(i);
+    for (auto& observer : tab_observers_) {
+      observer.OnTabInserted(browser_delegate, contents);
+    }
   }
 }
 
@@ -324,15 +351,69 @@ void BrowserControllerImpl::OnBrowserActivated(
 
 void BrowserControllerImpl::OnBrowserClosed(BrowserWindowInterface* browser) {
   ash::BrowserDelegate* browser_delegate = GetDelegate(browser);
+
+  for (size_t i = browser_delegate->GetWebContentsCount(); i-- > 0;) {
+    content::WebContents* contents = browser_delegate->GetWebContentsAt(i);
+    for (auto& observer : tab_observers_) {
+      observer.OnTabRemoved(browser_delegate, contents, /*will_delete=*/true);
+    }
+  }
+  browser->GetTabStripModel()->RemoveObserver(this);
+
   for (auto& observer : observers_) {
     observer.OnBrowserClosed(browser_delegate);
-
     if (GlobalBrowserCollection::GetInstance()->IsEmpty()) {
       observer.OnLastBrowserClosed();
     }
   }
+
   browsers_.erase(browser);
-  // The corresponding BrowserDelegateImpl, if any, is now dead.
+  // `browser_delegate` is now dead.
+}
+
+void BrowserControllerImpl::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  BrowserDelegate* browser =
+      GetDelegate(tab_strip_model->delegate()->GetBrowserWindowInterface());
+
+  switch (change.type()) {
+    case TabStripModelChange::kInserted:
+      for (const auto& item : change.GetInsert()->contents) {
+        for (auto& observer : tab_observers_) {
+          observer.OnTabInserted(browser, item.contents);
+        }
+      }
+      break;
+    case TabStripModelChange::kRemoved:
+      for (const auto& item : change.GetRemove()->contents) {
+        bool will_delete =
+            TabRemoveReasonUtils::WillDeleteTab(item.remove_reason);
+        for (auto& observer : tab_observers_) {
+          observer.OnTabRemoved(browser, item.contents, will_delete);
+        }
+      }
+      break;
+    case TabStripModelChange::kReplaced: {
+      auto* replace = change.GetReplace();
+      for (auto& observer : tab_observers_) {
+        observer.OnTabReplaced(browser, replace->old_contents,
+                               replace->new_contents);
+      }
+      break;
+    }
+    case TabStripModelChange::kMoved:
+    case TabStripModelChange::kSelectionOnly:
+      break;
+  }
+
+  if (selection.active_tab_changed() && !tab_strip_model->empty()) {
+    for (auto& observer : tab_observers_) {
+      observer.OnActiveWebContentsChanged(browser, selection.old_contents,
+                                          selection.new_contents);
+    }
+  }
 }
 
 void BrowserControllerImpl::CreateAutofillClientForWebContents(

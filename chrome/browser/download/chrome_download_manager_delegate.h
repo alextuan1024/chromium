@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -314,6 +315,13 @@ class ChromeDownloadManagerDelegate
       const base::FilePath& suggested_path,
       DownloadTargetDeterminerDelegate::ConfirmationCallback callback);
 
+  // Displays the file picker for `download`, queueing or deferring to user
+  // takeover if another picker or execution engine takeover is active.
+  void ShowFilePickerWithUserTakeover(
+      download::DownloadItem* download,
+      const base::FilePath& suggested_path,
+      DownloadTargetDeterminerDelegate::ConfirmationCallback callback);
+
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Called when CrxInstaller in running_crx_installs_ finishes installation.
   void OnInstallerDone(const base::UnguessableToken& token,
@@ -397,10 +405,16 @@ class ChromeDownloadManagerDelegate
   // Called after user interacted on the incognito download confirmation message
   // before proceeding to save a package.
   void RequestIncognitoSavePackageConfirmationDone(
-      const GURL& url,
+      content::WebContents* web_contents,
       const base::FilePath& suggested_path,
       content::SavePackagePathPickedCallback callback,
       bool accept);
+
+  void OnDetermineSavePackagePathDone(
+      base::WeakPtr<content::WebContents> web_contents,
+      content::SavePackagePathPickedCallback callback,
+      const base::FilePath& file_path,
+      const base::FilePath& display_name);
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)

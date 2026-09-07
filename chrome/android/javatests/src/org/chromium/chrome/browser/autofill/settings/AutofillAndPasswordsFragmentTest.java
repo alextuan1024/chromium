@@ -53,6 +53,7 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.PayloadCallbackHelper;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
@@ -90,6 +91,7 @@ import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.test.util.TestAccounts;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** Tests for {@link AutofillAndPasswordsFragment}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -180,6 +182,7 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
+    @Restriction(DeviceFormFactor.PHONE) // Tablets and desktops don't have a help button or menu.
     public void testHelpMenuTriggersAutofillHelp() {
         mSettingsTestRule.startSettingsActivity();
 
@@ -201,7 +204,6 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoVisible_noAccount() {
         signInPromoDeclined(false);
 
@@ -223,29 +225,11 @@ public class AutofillAndPasswordsFragmentTest {
     @Test
     @SmallTest
     @EnableFeatures({
-        ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO,
         SigninFeatures.ENABLE_SEAMLESS_SIGNIN
                 + ":seamless-signin-promo-type/compact"
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    public void testSignInPromoNotVisible_promoRemovalEnabled() {
-        signInPromoDeclined(false);
-
-        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
-
-        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoNotSelectable() {
         signInPromoDeclined(false);
 
@@ -266,7 +250,6 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoVisible_withAccount() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
         signInPromoDeclined(false);
@@ -289,10 +272,7 @@ public class AutofillAndPasswordsFragmentTest {
     @Test
     @SmallTest
     @EnableFeatures({ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID})
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
     public void testSignInPromoVisible_seamlessDisabled() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
         signInPromoDeclined(false);
@@ -316,7 +296,6 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoDismiss() {
         signInPromoDeclined(false);
 
@@ -341,12 +320,12 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoClick() {
         signInPromoDeclined(false);
 
         mSettingsTestRule.startSettingsActivity(createFragmentArgs());
 
+        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
         onView(withId(R.id.signin_promo_primary_button)).perform(click());
 
         verify(mAutofillAndPasswordsSigninCoordinator).startSigninFlow(any());
@@ -360,7 +339,6 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoMaxImpressions() {
         signInPromoDeclined(false);
         ChromeSharedPreferences.getInstance()
@@ -383,7 +361,6 @@ public class AutofillAndPasswordsFragmentTest {
                 + "/seamless-signin-string-type/continueButton",
         ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
     })
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AND_PASSWORDS_REMOVE_SIGN_IN_PROMO)
     public void testSignInPromoNotVisible_whenLaunchedFromSearch() {
         signInPromoDeclined(false);
 

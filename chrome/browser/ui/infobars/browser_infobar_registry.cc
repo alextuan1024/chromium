@@ -16,6 +16,7 @@
 #include "chrome/browser/infobars/browser_infobar_manager.h"
 #include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/infobars/infobar_spec.h"
+#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/obsolete_system/obsolete_system.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/known_interception_disclosure_infobar_delegate.h"
@@ -29,14 +30,26 @@
 #include "components/version_info/version_info.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/google_api_keys.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/strings/grit/ui_strings.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/extensions/api/debugger/debugger_api.h"
+#include "chrome/browser/extensions/api/identity/web_auth_flow.h"
+#endif
+
+#include "components/omnibox/browser/vector_icons.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/startup/default_browser_prompt/pin_infobar/pin_infobar_controller.h"
-#include "components/omnibox/browser/vector_icons.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/ui/views/session_restore_infobar/session_restore_infobar_manager.h"
 #endif
 
 namespace infobars {
@@ -68,6 +81,26 @@ void RegisterInfoBars() {
             .Build();
     browser_infobar_manager->Register(std::move(spec));
   }
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (IsInfoBarMigrated(
+          InfoBarDelegate::ENABLE_LINK_CAPTURING_INFOBAR_DELEGATE)) {
+    auto spec = InfoBarSpec::Builder(
+                    InfoBarDelegate::ENABLE_LINK_CAPTURING_INFOBAR_DELEGATE)
+                    .SetIcon(features::IsRoundedIconsEnabled()
+                                 ? vector_icons::kSettingsFilledIcon
+                                 : vector_icons::kSettingsOldIcon)
+                    .SetScope(InfoBarScope::kTab)
+                    .AddOkButton(
+                        l10n_util::GetStringUTF16(
+                            IDR_INTENT_PICKER_SUPPORTED_LINKS_INFOBAR_OK_LABEL),
+                        base::DoNothing())
+                    .AddCancelButton(l10n_util::GetStringUTF16(IDS_NO_THANKS),
+                                     base::DoNothing())
+                    .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+#endif
 
   if (IsInfoBarMigrated(InfoBarDelegate::GOOGLE_API_KEYS_INFOBAR_DELEGATE)) {
     auto spec =
@@ -181,13 +214,173 @@ void RegisterInfoBars() {
             .Build();
     browser_infobar_manager->Register(std::move(spec));
   }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  if (IsInfoBarMigrated(
+          InfoBarDelegate::EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(
+            InfoBarDelegate::EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE)
+            .SetMessageTextTemplate(
+                l10n_util::GetStringUTF16(IDS_DEV_TOOLS_INFOBAR_LABEL))
+            .SetSubstitutionsCallback(base::BindRepeating(
+                [](content::WebContents*) {
+                  return extensions::ExtensionDevToolsInfoBarController::
+                      GetMessageSubstitutions();
+                }))
+            .SetScope(InfoBarScope::kGlobal)
+            .SetExpireOnNavigation(false)
+            .AddCancelButton(
+                l10n_util::GetStringUTF16(IDS_APP_CANCEL),
+                base::BindRepeating([](content::WebContents*) {
+                  extensions::ExtensionDevToolsInfoBarController::
+                      OnInfoBarAction();
+                }))
+            .SetDismissAction(base::BindRepeating([](content::WebContents*) {
+              extensions::ExtensionDevToolsInfoBarController::
+                  OnInfoBarAction();
+            }))
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+
+  if (IsInfoBarMigrated(InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(
+            InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE)
+            .SetScope(InfoBarScope::kTab)
+            .SetLinkNavigationUrl(GURL(
+                "https://support.google.com/chrome_webstore/?p=crx_warning"))
+            .AddOkButton(std::u16string(), base::DoNothing())
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+
+  if (IsInfoBarMigrated(
+          InfoBarDelegate::EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE)) {
+    extensions::WebAuthFlow::RegisterInfoBar(*browser_infobar_manager);
+  }
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  if (IsInfoBarMigrated(InfoBarDelegate::DEFAULT_BROWSER_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(InfoBarDelegate::DEFAULT_BROWSER_INFOBAR_DELEGATE)
+            // The pin-to-taskbar variant of the text and the result callback
+            // come in per show via InfoBarShowParams.
+            .SetMessageText(
+                l10n_util::GetStringUTF16(IDS_DEFAULT_BROWSER_INFOBAR_TEXT))
+            .SetIcon(vector_icons::kProductRefreshIcon)
+            .SetDarkModeIcon(features::IsRoundedIconsEnabled()
+                                 ? omnibox::kChromeProductIcon
+                                 : omnibox::kProductChromeRefreshOldIcon)
+            .SetScope(InfoBarScope::kGlobal)
+            .SetExpireOnNavigation(false)
+            .SetShouldHideInFullscreen(true)
+            .SetShouldAnimate(false)
+            .SetBrowserFilter(
+                base::BindRepeating([](BrowserWindowInterface* browser) {
+                  const Profile* profile = browser->GetProfile();
+                  return browser->GetType() ==
+                             BrowserWindowInterface::TYPE_NORMAL &&
+                         !profile->IsIncognitoProfile() &&
+                         !profile->IsGuestSession();
+                }))
+            .AddOkButton(l10n_util::GetStringUTF16(
+                             IDS_DEFAULT_BROWSER_INFOBAR_OK_BUTTON_LABEL),
+                         base::DoNothing())
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+
+  if (IsInfoBarMigrated(InfoBarDelegate::SESSION_RESTORE_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(InfoBarDelegate::SESSION_RESTORE_INFOBAR_DELEGATE)
+            .SetMessageTextTemplate(u"$1")
+            .SetSubstitutionsCallback(base::BindRepeating(
+                [](content::WebContents*) {
+                  return session_restore_infobar::
+                      SessionRestoreInfoBarManager::GetInstance()
+                          ->GetMessageSubstitutions();
+                }))
+            .SetLinkText(l10n_util::GetStringUTF16(IDS_SESSION_RESTORE_LINK))
+            .SetLinkNavigationUrl(GURL("chrome://settings/onStartup"))
+            .SetIcon(vector_icons::kProductRefreshIcon)
+            .SetDarkModeIcon(features::IsRoundedIconsEnabled()
+                                 ? omnibox::kChromeProductIcon
+                                 : omnibox::kProductChromeRefreshOldIcon)
+            .SetScope(InfoBarScope::kGlobal)
+            .SetExpireOnNavigation(false)
+            .SetBrowserFilter(base::BindRepeating(
+                [](BrowserWindowInterface* browser) {
+                  return session_restore_infobar::
+                      SessionRestoreInfoBarManager::GetInstance()
+                          ->ShouldTrackBrowser(browser);
+                }))
+            .SetResultCallback(base::BindRepeating(
+                [](content::WebContents*, InfoBarResult result) {
+                  session_restore_infobar::
+                      SessionRestoreInfoBarManager::GetInstance()
+                          ->OnInfoBarResult(result);
+                }))
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+#endif
+
+  if (IsInfoBarMigrated(InfoBarDelegate::DEV_TOOLS_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(InfoBarDelegate::DEV_TOOLS_INFOBAR_DELEGATE)
+            // The message and the decision callback come in per show via
+            // InfoBarShowParams.
+            .AddOkButton(
+                l10n_util::GetStringUTF16(IDS_DEV_TOOLS_CONFIRM_ALLOW_BUTTON),
+                base::DoNothing())
+            .AddCancelButton(
+                l10n_util::GetStringUTF16(IDS_DEV_TOOLS_CONFIRM_DENY_BUTTON),
+                base::DoNothing())
+            .SetScope(InfoBarScope::kGlobal)
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+
+  if (IsInfoBarMigrated(
+          InfoBarDelegate::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(
+            InfoBarDelegate::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE)
+            .SetMessageText(l10n_util::GetStringUTF16(
+                IDS_OSCRYPTASYNC_AVAILABILITY_INFOBAR_MESSAGE))
+            .SetIcon(features::IsRoundedIconsEnabled()
+                         ? vector_icons::kErrorFilledIcon
+                         : vector_icons::kErrorOldIcon)
+            .SetScope(InfoBarScope::kTab)
+            .SetPriority(InfoBarDelegate::InfobarPriority::kCriticalSecurity)
+            .SetExpireOnNavigation(false)
+            // The warning holds until the relaunch actually happens: no
+            // close button, and the relaunch button leaves the infobar up
+            // in case the relaunch gets cancelled.
+            .SetIsCloseable(false)
+            .SetCloseOnAccept(false)
+            .AddOkButton(l10n_util::GetStringUTF16(
+                             IDS_OSCRYPTASYNC_AVAILABILITY_INFOBAR_BUTTON),
+                         base::BindRepeating([](content::WebContents*) {
+                           chrome::AttemptRelaunch();
+                         }))
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
 }
 
+void RegisterPreProfileInitInfoBars() {
+  auto* browser_infobar_manager =
+      BrowserInfoBarManager::From(g_browser_process);
+  if (!browser_infobar_manager) {
+    return;
+  }
+
 #if BUILDFLAG(CHROME_FOR_TESTING)
-void RegisterChromeForTestingInfoBar() {
   if (IsInfoBarMigrated(InfoBarDelegate::CHROME_FOR_TESTING_INFOBAR_DELEGATE)) {
-    auto* browser_infobar_manager =
-        BrowserInfoBarManager::From(g_browser_process);
     CHECK(browser_infobar_manager);
     auto spec =
         InfoBarSpec::Builder(
@@ -204,7 +397,32 @@ void RegisterChromeForTestingInfoBar() {
             .Build();
     browser_infobar_manager->Register(std::move(spec));
   }
-}
 #endif
+
+  if (IsInfoBarMigrated(InfoBarDelegate::AUTOMATION_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(InfoBarDelegate::AUTOMATION_INFOBAR_DELEGATE)
+            .SetMessageText(
+                l10n_util::GetStringUTF16(IDS_CONTROLLED_BY_AUTOMATION))
+            .SetScope(InfoBarScope::kGlobal)
+            .SetPriority(InfoBarDelegate::InfobarPriority::kCriticalSecurity)
+            .SetExpireOnNavigation(false)
+            .SetShouldAnimate(false)
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+
+#if !BUILDFLAG(IS_ANDROID)
+  if (IsInfoBarMigrated(InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE)) {
+    auto spec =
+        InfoBarSpec::Builder(InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE)
+            .SetScope(InfoBarScope::kGlobal)
+            .SetExpireOnNavigation(false)
+            .SetShouldAnimate(false)
+            .Build();
+    browser_infobar_manager->Register(std::move(spec));
+  }
+#endif
+}
 
 }  // namespace infobars

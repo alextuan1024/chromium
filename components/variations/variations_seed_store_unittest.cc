@@ -83,6 +83,9 @@ class TestVariationsSeedStore : public VariationsSeedStore {
       : VariationsSeedStore(
             local_state,
             std::move(initial_seed),
+            /*signature_verification_enabled_on_load=*/
+            signature_verification_needed,
+            /*signature_verification_enabled_on_receive=*/
             signature_verification_needed,
             std::make_unique<VariationsSafeSeedStore>(local_state,
                                                       seed_file_dir,
@@ -823,7 +826,6 @@ TEST_P(LoadSeedDataControlAndDefaultGroupsTest, LoadSeedAsync_ValidSeed) {
       });
 
   base::HistogramTester histogram_tester;
-  VariationsSeed loaded_seed;
   // Check that loading a seed works correctly.
   base::RunLoop run_loop;
   seed_store.LoadSeed(base::BindLambdaForTesting(
@@ -864,7 +866,6 @@ TEST_P(LoadSeedDataControlAndDefaultGroupsTest,
       });
 
   base::HistogramTester histogram_tester;
-  VariationsSeed loaded_seed;
   // Check that loading a seed fails.
   base::RunLoop run_loop;
   seed_store.LoadSeed(base::BindLambdaForTesting(
@@ -896,7 +897,6 @@ TEST_P(LoadSeedDataControlAndDefaultGroupsTest, LoadSeedAsync_EmptySeed) {
   ASSERT_EQ(result, LoadSeedResult::kEmpty);
 
   base::HistogramTester histogram_tester;
-  VariationsSeed loaded_seed;
 
   // Verify that loading a seed fails.
   base::RunLoop run_loop;
@@ -1391,7 +1391,6 @@ TEST_F(LoadSeedDataSeedFilesGroupTest, LoadSeedAsync_ValidSeed) {
   histogram_tester.ExpectUniqueSample("Variations.SeedFileReadResult.Latest",
                                       LoadSeedResult::kSuccess, 1);
 
-  VariationsSeed loaded_seed;
   // Check that loading a seed works correctly.
   base::RunLoop run_loop;
   seed_store.LoadSeed(base::BindLambdaForTesting(
@@ -1430,7 +1429,6 @@ TEST_F(LoadSeedDataSeedFilesGroupTest, LoadSeedAsync_InvalidSignature) {
   histogram_tester.ExpectUniqueSample("Variations.SeedFileReadResult.Latest",
                                       LoadSeedResult::kSuccess, 1);
 
-  VariationsSeed loaded_seed;
   // Check that loading a seed fails because the signature is invalid.
   base::RunLoop run_loop;
   seed_store.LoadSeed(base::BindLambdaForTesting(

@@ -19,7 +19,6 @@
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
@@ -29,6 +28,7 @@
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -41,6 +41,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
@@ -161,6 +162,13 @@ void WebUILoginView::Init() {
   WebContentsModalDialogManager::FromWebContents(web_contents)
       ->SetDelegate(this);
   web_contents->SetDelegate(this);
+  content::WebContentsObserver::Observe(web_contents);
+}
+
+void WebUILoginView::PrimaryPageChanged(content::Page& page) {
+  if (GetWebUI() && GetWebUI()->GetController() && !GetOobeUI() && GetWidget()) {
+    GetWidget()->Close();
+  }
 }
 
 void WebUILoginView::RequestFocus() {
@@ -233,7 +241,7 @@ OobeUI* WebUILoginView::GetOobeUI() {
     return nullptr;
   }
 
-  return static_cast<OobeUI*>(GetWebUI()->GetController());
+  return GetWebUI()->GetController()->GetAs<OobeUI>();
 }
 
 void WebUILoginView::OnPostponedShow() {

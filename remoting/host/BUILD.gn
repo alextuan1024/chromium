@@ -799,6 +799,10 @@ static_library("common") {
       "keyboard_layout_monitor_win.cc",
       "pairing_registry_delegate_win.cc",
       "pairing_registry_delegate_win.h",
+      "remote_client_cert_store.cc",
+      "remote_client_cert_store.h",
+      "remote_ssl_private_key.cc",
+      "remote_ssl_private_key.h",
       "sas_injector_win.cc",
       "touch_injector_win.cc",
       "touch_injector_win.h",
@@ -884,6 +888,7 @@ source_set("unit_tests") {
     "chromoting_host_unittest.cc",
     "client_session_unittest.cc",
     "config_file_watcher_unittest.cc",
+    "continue_window_unittest.cc",
     "corp_host_status_logger_unittest.cc",
     "corp_signaling_connector_unittest.cc",
     "delegating_desktop_display_info_monitor_unittest.cc",
@@ -1027,6 +1032,7 @@ source_set("unit_tests") {
 
   if (is_linux) {
     sources += [
+      "disconnect_window_linux_unittest.cc",
       "pairing_registry_delegate_linux_unittest.cc",
       "terminal_process_monitor_linux_unittest.cc",
     ]
@@ -1066,6 +1072,8 @@ source_set("unit_tests") {
     sources += [
       "clipboard_win_unittest.cc",
       "pairing_registry_delegate_win_unittest.cc",
+      "remote_client_cert_store_unittest.cc",
+      "remote_ssl_private_key_unittest.cc",
       "touch_injector_win_unittest.cc",
     ]
     deps += [ "//remoting/host/win:unit_tests" ]
@@ -1422,6 +1430,7 @@ if (enable_me2me_host) {
     group("remoting_me2me_host") {
       deps = [ "//remoting/host/win:remoting_me2me_host" ]
     }
+
     group("remoting_native_messaging_host") {
       deps = [ "//remoting/host/win:remoting_native_messaging_host" ]
     }
@@ -1429,6 +1438,7 @@ if (enable_me2me_host) {
     group("remoting_me2me_host") {
       deps = [ "//remoting/host/mac:remoting_me2me_host" ]
     }
+
     group("remoting_native_messaging_host") {
       deps = [ "//remoting/host/mac:remoting_native_messaging_host" ]
     }
@@ -1439,6 +1449,7 @@ if (enable_me2me_host) {
       # https://crbug.com/1198747
       assert_no_deps = [ "//ui/gtk" ]
     }
+
     group("remoting_native_messaging_host") {
       public_deps = [ "//remoting/host/linux:remoting_native_messaging_host" ]
     }

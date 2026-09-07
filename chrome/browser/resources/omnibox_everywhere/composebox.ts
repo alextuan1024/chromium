@@ -7,12 +7,9 @@ import '//resources/cr_components/composebox/composebox_file_inputs.js';
 import '//resources/cr_components/composebox/composebox_input.js';
 import '//resources/cr_components/composebox/composebox_tool_chip.js';
 import '//resources/cr_components/composebox/contextual_entrypoint_button.js';
-import '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import '//resources/cr_components/composebox/composebox_submit.js';
 import '//resources/cr_components/composebox/file_carousel.js';
 import '//resources/cr_components/search/animated_glow.js';
-import '//resources/cr_components/composebox/composebox_voice_search.js';
-import '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 
 import {getLoadTimeBoolean} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
@@ -21,19 +18,17 @@ import type {ComposeboxFileInputsElement} from '//resources/cr_components/compos
 import type {ComposeboxInputElement} from '//resources/cr_components/composebox/composebox_input.js';
 import {ComposeboxEmbedderMixin, SubmitButtonIconType} from '//resources/cr_components/composebox/composebox_mixin.js';
 import {ComposeboxProxyImpl} from '//resources/cr_components/composebox/composebox_proxy.js';
-import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import type {ContextualEntrypointButtonElement} from '//resources/cr_components/composebox/contextual_entrypoint_button.js';
+import {HelpBubbleMixinLit} from '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 import {GlowAnimationState} from '//resources/cr_components/search/constants.js';
-import {AnchorAlignment} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import type {CrActionMenuElement} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 
+import {OmniboxEverywhereBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './composebox.css.js';
 import {getHtml} from './composebox.html.js';
-import {UnboundedMenuManager} from './unbounded_utils.js';
 
 export interface OmniboxEverywhereComposeboxElement {
   $: {
@@ -44,8 +39,11 @@ export interface OmniboxEverywhereComposeboxElement {
   };
 }
 
-export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
-(CrLitElement) {
+const OmniboxEverywhereComposeboxElementBase =
+    HelpBubbleMixinLit(ComposeboxEmbedderMixin(CrLitElement));
+
+export class OmniboxEverywhereComposeboxElement extends
+    OmniboxEverywhereComposeboxElementBase {
   static get is() {
     return 'omnibox-everywhere-composebox';
   }
@@ -69,7 +67,11 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
       energyEffectAnimationEnabled: {type: Boolean},
       submitButtonIconType: {type: String},
       clearAllInputsWhenSubmittingQuery: {type: Boolean},
-      screenshotMenuOpen: {
+      isScreenshotMenuOpen: {
+        type: Boolean,
+        reflect: true,
+      },
+      isContextMenuOpen: {
         type: Boolean,
         reflect: true,
       },
@@ -83,6 +85,8 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   accessor entrypointName: string = 'OmniboxEverywhere';
   accessor disableComposeboxAnimation: boolean = false;
   accessor applyContextButtonBackground: boolean = false;
+  accessor isScreenshotMenuOpen: boolean = false;
+  accessor isContextMenuOpen: boolean = false;
   override accessor energyEffectAnimationEnabled: boolean =
       getLoadTimeBoolean('composeboxEnergyEffectAnimationEnabled', true);
   override accessor submitButtonIconType = SubmitButtonIconType.FORWARD;
@@ -90,7 +94,6 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   // across hide/show cycles, clear all inputs and attachments upon query
   // submission so subsequent invocations start fresh.
   override accessor clearAllInputsWhenSubmittingQuery: boolean = true;
-  protected accessor screenshotMenuOpen: boolean = false;
 
   override onVoiceSearchButtonClick() {
     this.dispatchEvent(
@@ -98,55 +101,42 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   }
 
   protected onLensSearchClick_(e: Event) {
-    this.screenshotMenuOpen = true;
-    const menu =
-        this.shadowRoot.querySelector<CrActionMenuElement>('#screenshotMenu')!;
+    this.notifyHelpBubbleAnchorActivated(
+        'kOmniboxEverywhereLensButtonElementId');
+    this.isScreenshotMenuOpen = true;
     const anchor = e.currentTarget as HTMLElement;
     const rect = anchor.getBoundingClientRect();
-
-    menu.showAtPosition({
-      top: rect.top,
-      left: rect.left,
-      height: rect.height - 2,
-      width: rect.width,
-      anchorAlignmentX: AnchorAlignment.AFTER_START,
-      anchorAlignmentY: AnchorAlignment.AFTER_END,
-      maxX: Number.MAX_SAFE_INTEGER,
+    this.searchboxHandler_.showScreenshotMenu({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
     });
-
-    this.screenshotMenuManager_.onContextMenuOpened();
   }
 
-  protected onScreenshotMenuClose_() {
-    this.screenshotMenuOpen = false;
-    this.screenshotMenuManager_.onContextMenuClosed();
-  }
-
-  protected onScreenshotWindowClick_() {
-    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
-    // trigger.
-    this.shadowRoot.querySelector<CrActionMenuElement>(
-                       '#screenshotMenu')!.close();
-  }
-
-  protected onScreenshotEntireScreenClick_() {
-    // TODO(crbug.com/532197177): Hook up screenshot/screenshare capture
-    // trigger.
-    this.shadowRoot.querySelector<CrActionMenuElement>(
-                       '#screenshotMenu')!.close();
-  }
-
-  protected onScreenshotRegionClick_() {
-    // TODO(crbug.com/532198850): Hook up screenshot/screenshare capture
-    // trigger.
-    this.shadowRoot.querySelector<CrActionMenuElement>(
-                       '#screenshotMenu')!.close();
+  protected onContextMenuEntrypointClick_(e?: CustomEvent<{
+    anchorRect?: {x: number, y: number, width: number, height: number},
+  }>) {
+    this.isContextMenuOpen = true;
+    const rect = e?.detail?.anchorRect ||
+        this.getContextEntrypointElement()?.getBoundingClientRect();
+    if (rect) {
+      OmniboxEverywhereBrowserProxyImpl.getInstance()
+          .handler.showContextActionMenu({
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+    }
   }
   private webuiOmniboxSimplificationEnabled_: boolean =
       getLoadTimeBoolean('webuiOmniboxSimplificationEnabled', false);
   private pageHandler_: PageHandlerRemote;
   private searchboxCallbackRouter_: SearchboxPageCallbackRouter;
   private searchboxHandler_: SearchboxPageHandlerRemote;
+  private glowAnimationRafId_: number|null = null;
+  private glowAnimationTimeoutId_: number|null = null;
 
   constructor() {
     super();
@@ -158,8 +148,25 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
 
   override connectedCallback() {
     super.connectedCallback();
-    this.animationState = GlowAnimationState.EXPANDING;
+    this.playGlowAnimation();
     this.refreshTabSuggestions(/*forceRefresh=*/ true);
+    this.searchboxListenerIds.push(
+        this.getSearchboxCallbackRouter().onScreenshotMenuClosed.addListener(
+            () => {
+              this.isScreenshotMenuOpen = false;
+            }));
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.glowAnimationRafId_ !== null) {
+      cancelAnimationFrame(this.glowAnimationRafId_);
+      this.glowAnimationRafId_ = null;
+    }
+    if (this.glowAnimationTimeoutId_ !== null) {
+      clearTimeout(this.glowAnimationTimeoutId_);
+      this.glowAnimationTimeoutId_ = null;
+    }
   }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
@@ -175,6 +182,12 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   override firstUpdated(changedProperties: PropertyValues<this>) {
     super.firstUpdated(changedProperties);
     this.focusInput();
+    const lensButton =
+        this.shadowRoot?.querySelector<HTMLElement>('#lensSearchButton');
+    if (lensButton) {
+      this.registerHelpBubble(
+          'kOmniboxEverywhereLensButtonElementId', lensButton);
+    }
   }
 
   override getActiveElement(): Element|null {
@@ -201,9 +214,9 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
     return this.searchboxHandler_;
   }
 
-  override getContextEntrypointElement(): ContextualEntrypointButtonElement|
-      ContextualEntrypointAndMenuElement|null {
-    return this.shadowRoot?.querySelector<ContextualEntrypointAndMenuElement>(
+  override getContextEntrypointElement(): ContextualEntrypointButtonElement
+      |null {
+    return this.shadowRoot?.querySelector<ContextualEntrypointButtonElement>(
                '#contextEntrypoint') ||
         null;
   }
@@ -211,33 +224,24 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   override getFileInputsElement(): ComposeboxFileInputsElement|null {
     return this.shouldDisableFileInputs() ? null : this.$.fileInputs;
   }
-
-  private unboundedMenuManager_ = new UnboundedMenuManager(
-      () => this.getContextEntrypointElement() as HTMLElement | null);
-
-  private screenshotMenuManager_ = new UnboundedMenuManager(
-      () => this.shadowRoot?.querySelector('#screenshotMenu') ?? null, () => {
-        const menu = this.shadowRoot?.querySelector<CrActionMenuElement>(
-            '#screenshotMenu');
-        menu?.close();
-      });
-
   override computeShowDropdown(): boolean {
-    return (this.unboundedMenuManager_?.isDialogOpen() ?? false) ||
-        (this.screenshotMenuManager_?.isDialogOpen() ?? false) ||
-        super.computeShowDropdown();
+    return this.isContextMenuOpen || super.computeShowDropdown();
   }
 
   override onContextMenuOpened() {
     super.onContextMenuOpened();
     this.showDropdown = this.computeShowDropdown();
-    this.unboundedMenuManager_.onContextMenuOpened();
   }
 
   override async onContextMenuClosed(): Promise<void> {
+    this.isContextMenuOpen = false;
     await super.onContextMenuClosed();
     this.showDropdown = this.computeShowDropdown();
-    this.unboundedMenuManager_.onContextMenuClosed();
+  }
+
+  override async keepMenuOpenForMultiSelection(): Promise<void> {
+    // Omnibox Everywhere uses a native Views context menu rather than an
+    // embedded WebUI menu on the entrypoint button.
   }
 
 
@@ -265,8 +269,9 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
   override hasValidQuery(): boolean {
     // If there is at least one file that supports unimodal search, query is
     // valid.
-    if (this.files.size > 0 &&
-        Array.from(this.files.values()).some(file => file.supportsUnimodal)) {
+    if (this.attachedContext.size > 0 &&
+        Array.from(this.attachedContext.values())
+            .some(file => file.supportsUnimodal)) {
       return true;
     }
 
@@ -290,10 +295,25 @@ export class OmniboxEverywhereComposeboxElement extends ComposeboxEmbedderMixin
     }
   }
 
-  playGlowAnimation() {
+  playGlowAnimation(timeoutMs: number = 1000) {
+    if (this.glowAnimationRafId_ !== null) {
+      cancelAnimationFrame(this.glowAnimationRafId_);
+      this.glowAnimationRafId_ = null;
+    }
+    if (this.glowAnimationTimeoutId_ !== null) {
+      clearTimeout(this.glowAnimationTimeoutId_);
+      this.glowAnimationTimeoutId_ = null;
+    }
     this.animationState = GlowAnimationState.NONE;
-    requestAnimationFrame(() => {
+    this.glowAnimationRafId_ = requestAnimationFrame(() => {
+      this.glowAnimationRafId_ = null;
       this.animationState = GlowAnimationState.EXPANDING;
+      this.glowAnimationTimeoutId_ = setTimeout(() => {
+        if (this.animationState === GlowAnimationState.EXPANDING) {
+          this.animationState = GlowAnimationState.NONE;
+        }
+        this.glowAnimationTimeoutId_ = null;
+      }, timeoutMs);
     });
   }
 }

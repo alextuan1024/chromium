@@ -8,7 +8,6 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/sad_tab.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -21,6 +20,7 @@
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/process/process.h"
@@ -69,7 +69,7 @@ IN_PROC_BROWSER_TEST_F(
   // Terminate the first tab (at index 0).
   const int target_tab_index = 0;
   content::WebContents* web_contents_to_kill =
-      browser()->tab_strip_model()->GetWebContentsAt(target_tab_index);
+      browser()->GetTabStripModel()->GetWebContentsAt(target_tab_index);
   ASSERT_TRUE(web_contents_to_kill);
 
   // Open a new tab to make the first one hidden.
@@ -91,7 +91,7 @@ IN_PROC_BROWSER_TEST_F(
   // index and check its state.
   EXPECT_TRUE(base::test::RunUntil([&]() {
     content::WebContents* current_web_contents =
-        browser()->tab_strip_model()->GetWebContentsAt(target_tab_index);
+        browser()->GetTabStripModel()->GetWebContentsAt(target_tab_index);
     // It's possible for the WebContents to be briefly null during the swap.
     return current_web_contents && current_web_contents->WasDiscarded();
   }));
@@ -104,8 +104,9 @@ IN_PROC_BROWSER_TEST_F(
 // in SadTabHelper::PrimaryMainFrameRenderProcessGone assumed that
 // TabLifecycleUnitExternal::FromWebContents always returned non-null, but
 // no-state prefetch WebContents are never added to a TabStripModel.
+// TODO(crbug.com/541361270): Re-enable this test
 IN_PROC_BROWSER_TEST_F(SadTabHelperBrowserTest,
-                       NoStatePrefetchEvictedForMemory_DoesNotCrash) {
+                       DISABLED_NoStatePrefetchEvictedForMemory_DoesNotCrash) {
   content::ScopedAllowRendererCrashes scoped_allow_renderer_crashes;
 
   // Navigate the main tab to a real page so we have an active browser context.

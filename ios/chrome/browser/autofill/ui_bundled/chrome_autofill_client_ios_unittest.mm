@@ -21,7 +21,7 @@
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/autofill_prefs.h"
-#import "components/autofill/core/common/autofill_test_utils.h"
+#import "components/autofill/core/common/autofill_test_util.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/core/common/form_field_data.h"
 #import "components/autofill/ios/browser/autofill_agent.h"
@@ -39,6 +39,7 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/web/model/chrome_web_client.h"
@@ -300,34 +301,19 @@ TEST_F(ChromeAutofillClientIOSTest, ShowAutofillAiPreFetchFailureNotification) {
   EXPECT_EQ(infobar_manager->infobars().size(), 1u);
 }
 
-// Tests that `ShowAutofillAiPrivateInferenceNotice()` successfully adds
-// the private inference notice infobar to the InfoBarManager and sets the
-// first shown timestamp pref.
+// Tests that `ShowAutofillAiPrivateInferenceNotice()` dispatches the command to
+// show the Autofill AI Private Inference notice bottom sheet.
 TEST_F(ChromeAutofillClientIOSTest, ShowAutofillAiPrivateInferenceNotice) {
-  infobars::InfoBarManager* infobar_manager =
-      InfoBarManagerImpl::FromWebState(web_state());
-  ASSERT_EQ(infobar_manager->infobars().size(), 0u);
+  id mock_autofill_commands_handler =
+      OCMStrictProtocolMock(@protocol(AutofillCommands));
+  client().set_commands_handler(mock_autofill_commands_handler);
 
-  PrefService* prefs = profile()->GetPrefs();
-  EXPECT_TRUE(
-      prefs->GetTime(prefs::kAutofillAiPrivateInferenceNoticeShownTimestamp)
-          .is_null());
+  OCMExpect(
+      [mock_autofill_commands_handler showAutofillAIPrivateInferenceNotice]);
 
   client().ShowAutofillAiPrivateInferenceNotice();
 
-  ASSERT_EQ(infobar_manager->infobars().size(), 1u);
-  infobars::InfoBar* infobar = infobar_manager->infobars()[0];
-  EXPECT_EQ(infobar->delegate()->GetIdentifier(),
-            infobars::InfoBarDelegate::
-                FORMS_AI_PRIVATE_INFERENCE_INFOBAR_DELEGATE_IOS);
-
-  EXPECT_FALSE(
-      prefs->GetTime(prefs::kAutofillAiPrivateInferenceNoticeShownTimestamp)
-          .is_null());
-
-  // Calling it again should replace the existing one, so count remains 1.
-  client().ShowAutofillAiPrivateInferenceNotice();
-  ASSERT_EQ(infobar_manager->infobars().size(), 1u);
+  EXPECT_OCMOCK_VERIFY(mock_autofill_commands_handler);
 }
 
 // Tests that IsAutofillTypeBlockedByPolicy returns true when a domain
@@ -535,6 +521,26 @@ TEST_F(ChromeAutofillClientIOSTest, IsTabInActorMode_ActorTabHelper) {
 TEST_F(ChromeAutofillClientIOSTest, IsTabInActorMode_NoActorTabHelper) {
   web_state()->RemoveUserData(ActorTabHelper::UserDataKey());
   EXPECT_FALSE(client().IsTabInActorMode());
+}
+
+// Test that `OnActorTaskStateChange` reparses known forms when actuating.
+TEST_F(ChromeAutofillClientIOSTest, OnActorTaskStateChange_ReparsesForms) {
+  ActorTabHelper* actor_tab_helper = ActorTabHelper::FromWebState(web_state());
+  ASSERT_TRUE(actor_tab_helper);
+
+  NSString* html = @"<form><input name='name'><input name='address'></form>";
+  ASSERT_TRUE(LoadHtmlAndWaitForFormsSeen(html, 1));
+
+  actor_tab_helper->SetActuating(true);
+  ASSERT_TRUE(main_frame_manager()->waiter().Wait(1));
+  EXPECT_TRUE(client().IsTabInActorMode());
+}
+
+// Test that `GetEntitySuppressionManager` returns the manager for the profile.
+TEST_F(ChromeAutofillClientIOSTest, GetEntitySuppressionManager) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillAmbientAutofillSuppression);
+  EXPECT_NE(client().GetEntitySuppressionManager(), nullptr);
 }
 
 }  // namespace autofill

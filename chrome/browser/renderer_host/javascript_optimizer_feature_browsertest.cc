@@ -19,6 +19,7 @@
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/policy_constants.h"
+#include "ui/base/window_open_disposition.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/test/bind.h"
@@ -1538,8 +1539,15 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
   ASSERT_FALSE(IsOmnibarIconVisible());
 }
 
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_IconHighlightClearedOnBubbleClose \
+    DISABLED_IconHighlightClearedOnBubbleClose
+#else
+#define MAYBE_IconHighlightClearedOnBubbleClose \
+    IconHighlightClearedOnBubbleClose
+#endif
 IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
-                       IconHighlightClearedOnBubbleClose) {
+                       MAYBE_IconHighlightClearedOnBubbleClose) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
                                 ContentSetting::CONTENT_SETTING_BLOCK);

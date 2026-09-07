@@ -54,6 +54,8 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
 
   bool has_attempt() const { return attempt_ != nullptr; }
 
+  bool has_attempt_in_flight() const { return attempt_in_flight_; }
+
   // A stable name that does not change when this connector moves between
   // slots. For logging.
   const char* name() const { return name_; }
@@ -69,6 +71,8 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   size_t attempts_started() const { return attempts_started_; }
 
   bool created_by_slow_timer() const { return created_by_slow_timer_; }
+
+  bool is_stale() const;
 
   // True when this connector could start an attempt as soon as the job has a
   // candidate for it. The job advances such connectors when new resolver

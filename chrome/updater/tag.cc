@@ -820,12 +820,8 @@ std::unique_ptr<tagging::BinaryInterface> CreateBinary(
 }
 
 std::string BinaryReadTagString(const base::FilePath& file) {
-  if (file.MatchesExtension(FILE_PATH_LITERAL(".pkg"))) {
-    return ReadTagFromPkg(ReadFileTail(file));
-  }
-
   // For MSI files, simply search the tail of the file for the tag.
-  if (!file.MatchesExtension(FILE_PATH_LITERAL(".exe"))) {
+  if (file.MatchesExtension(FILE_PATH_LITERAL(".msi"))) {
     return ParseTagBuffer(ReadFileTail(file));
   }
 
@@ -843,12 +839,11 @@ std::string BinaryReadTagString(const base::FilePath& file) {
 
   std::optional<std::vector<uint8_t>> tag = bin->tag();
   if (!tag) {
-    LOG(ERROR) << __func__ << ": No superfluous certificate in file: " << file;
+    LOG(ERROR) << __func__ << ": No tag in file: " << file;
     return {};
   }
 
-  const std::vector<uint8_t> tag_data = {tag->begin(), tag->end()};
-  const std::string tag_string = ReadTag(tag_data);
+  const std::string tag_string = ReadTag(*tag);
   if (tag_string.empty()) {
     LOG(ERROR) << __func__ << ": file is untagged: " << file;
   }

@@ -11,6 +11,7 @@
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/power_monitor_test.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/context_hub/memory_bank/in_memory_memory_bank.h"
 #include "chrome/browser/context_hub/storage/context_hub_backend.h"
 #include "chrome/browser/context_hub/tab_group_store/in_memory_tab_group_store.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_tab_visit_tracker.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom-features.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/optimization_guide/core/model_execution/test/mock_remote_model_executor.h"
@@ -35,17 +37,22 @@
 #include "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
 #include "components/saved_tab_groups/test_support/saved_tab_group_test_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/tab_groups/tab_group_color.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/tab_list/tab_removed_reason.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #endif
 
@@ -111,6 +118,11 @@ class ContextHubServiceTest : public testing::Test {
                  std::make_unique<InMemoryTabGroupStore>(),
                  /*context_hub_backend=*/nullptr,
                  std::make_unique<InMemoryAutoTodosStore>()) {
+    // Advance mock clock past Unix epoch so that relative timestamps (e.g.
+    // `base::Time::Now() - base::Hours(3)`) are positive regardless of host
+    // uptime.
+    task_environment_.AdvanceClock(base::Days(100));
+
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/
         {
@@ -600,20 +612,21 @@ TEST_F(ContextHubServiceTest, IsGeneratingStateAccessors) {
   EXPECT_FALSE(service_.IsGeneratingFirstPartyAutoTodos());
 }
 
-TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_NoEligibleTabs) {
-  // Tab was active recently (< 2 hours ago), so it is not eligible.
+TEST_F(ContextHubServiceTest,
+       GenerateTabBasedTodos_TabWithNullLastActiveTimeNotEligible) {
+  // Tab without last active time is not eligible.
   auto web_contents =
-      CreateEligibleTab(GURL("https://example.com"), base::Hours(1));
-
-  MockServiceObserver observer;
-  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
-      observation(&observer);
-  observation.Observe(&service_);
+      content::WebContentsTester::CreateTestWebContents(&profile_, nullptr);
+  sessions::SessionTabHelper::CreateForWebContents(
+      web_contents.get(), sessions::SessionTabHelper::DelegateLookup());
+  content::WebContentsTester::For(web_contents.get())
+      ->NavigateAndCommit(GURL("https://example.com"));
+  content::WebContentsTester::For(web_contents.get())
+      ->SetLastActiveTime(base::Time());
+  web_contents->WasHidden();
 
   EXPECT_CALL(mock_page_content_extraction_service_,
               GetExtractedPageContentAndEligibilityForPageAsync(_, _, _))
-      .Times(0);
-  EXPECT_CALL(observer, OnThirdPartyAutoTodosGenerationStateChanged(_))
       .Times(0);
 
   base::test::TestFuture<bool> future;
@@ -625,7 +638,7 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_NoEligibleTabs) {
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_VisibleTabNotEligible) {
-  // Tab was active 3 hours ago, but is currently visible.
+  // Tab is visible and therefore not eligible.
   auto web_contents =
       CreateEligibleTab(GURL("https://example.com"), base::Hours(3),
                         /*is_visible=*/true);
@@ -641,25 +654,31 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_VisibleTabNotEligible) {
   EXPECT_TRUE(future.Get());
 }
 
-TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_MultipleTabsFiltering) {
-  // Tab 1: Active 3 hours ago (eligible)
-  auto web_contents1 = CreateEligibleTabWithMockExtraction(
-      GURL("https://example.com/tab1"), "Tab 1");
-  // Tab 2: Active 30 mins ago (not eligible)
-  auto web_contents2 =
-      CreateEligibleTab(GURL("https://example.com/tab2"), base::Minutes(30));
+TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_PinnedTabNotEligible) {
+  // Tab is pinned and therefore not eligible.
+  tabs::MockTabInterface mock_tab;
+  ui::UnownedUserDataHost user_data_host;
+  ON_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(user_data_host));
+  ON_CALL(mock_tab, IsPinned()).WillByDefault(testing::Return(true));
+
+  auto web_contents = CreateEligibleTab(GURL("https://example.com"));
+  ON_CALL(mock_tab, GetContents())
+      .WillByDefault(testing::Return(web_contents.get()));
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents.get(),
+                                                       &mock_tab);
 
   EXPECT_CALL(mock_page_content_extraction_service_,
-              GetExtractedPageContentAndEligibilityForPageAsync(
-                  testing::Ref(web_contents2->GetPrimaryPage()), _, _))
+              GetExtractedPageContentAndEligibilityForPageAsync(_, _, _))
       .Times(0);
 
   base::test::TestFuture<bool> future;
-  service_.GenerateTabBasedTodos(
-      {web_contents1->GetWeakPtr(), web_contents2->GetWeakPtr()},
-      future.GetCallback());
+  service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
+                                 future.GetCallback());
 
   EXPECT_TRUE(future.Get());
+  EXPECT_EQ(service_.GetLastThirdPartyGenerationTime(), base::Time::Now());
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_ReentrancyBlocked) {
@@ -757,6 +776,11 @@ TEST_F(ContextHubServiceTest,
               const optimization_guide::ModelExecutionOptions& options,
               optimization_guide::OptimizationGuideModelExecutionResultCallback
                   callback) {
+            const auto& request = static_cast<
+                const optimization_guide::proto::ContextHubRequest&>(
+                request_metadata);
+            EXPECT_GT(request.entry_items(0).tab().last_active_timestamp_ms(),
+                      0);
             base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
                 FROM_HERE,
                 base::BindOnce(
@@ -785,6 +809,62 @@ TEST_F(ContextHubServiceTest,
                                  future.GetCallback());
   EXPECT_TRUE(future.Get());
   EXPECT_EQ(service_.GetLastThirdPartyGenerationTime(), base::Time::Now());
+}
+
+TEST_F(ContextHubServiceTest,
+       GenerateTabBasedTodos_PopulatesLastForegroundDuration) {
+  tabs::MockTabInterface mock_tab;
+  ui::UnownedUserDataHost user_data_host;
+  ON_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(user_data_host));
+
+  auto web_contents = CreateEligibleTabWithMockExtraction(
+      GURL("https://example.com/item"), "Item Details");
+  ON_CALL(mock_tab, GetContents())
+      .WillByDefault(testing::Return(web_contents.get()));
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents.get(),
+                                                       &mock_tab);
+  contextual_tasks::ContextualTasksTabVisitTracker tracker(mock_tab);
+  tracker.SetClockForTesting(task_environment_.GetMockTickClock());
+
+  // Simulate a 5-second foreground visit before hiding.
+  web_contents->WasShown();
+  task_environment_.FastForwardBy(base::Seconds(5));
+  web_contents->WasHidden();
+
+  EXPECT_CALL(
+      mock_remote_model_executor_,
+      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
+                   _, _))
+      .WillOnce(
+          [this](
+              optimization_guide::ModelBasedCapabilityKey feature,
+              const google::protobuf::MessageLite& request_metadata,
+              const optimization_guide::ModelExecutionOptions& options,
+              optimization_guide::OptimizationGuideModelExecutionResultCallback
+                  callback) {
+            const auto& request = static_cast<
+                const optimization_guide::proto::ContextHubRequest&>(
+                request_metadata);
+            EXPECT_EQ(
+                request.entry_items(0).tab().last_foreground_duration_ms(),
+                5000);
+            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                FROM_HERE,
+                base::BindOnce(
+                    std::move(callback),
+                    CreateContextHubResponseResult(
+                        "Todo title",
+                        optimization_guide::proto::BrowserBasedTodosResponse::
+                            GROUP_TYPE_UNFINISHED),
+                    nullptr));
+          });
+
+  base::test::TestFuture<bool> future;
+  service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
+                                 future.GetCallback());
+  EXPECT_TRUE(future.Get());
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_MissingPageContentSkipped) {
@@ -961,6 +1041,47 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_SkipsInvalidGroupType) {
   EXPECT_TRUE(todos.empty());
 }
 
+TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_ShoppingCartGroupType) {
+  auto web_contents = CreateEligibleTabWithMockExtraction(
+      GURL("https://example.com/cart"), "Shopping Cart");
+
+  EXPECT_CALL(
+      mock_remote_model_executor_,
+      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
+                   _, _))
+      .WillOnce(
+          [this](
+              optimization_guide::ModelBasedCapabilityKey feature,
+              const google::protobuf::MessageLite& request_metadata,
+              const optimization_guide::ModelExecutionOptions& options,
+              optimization_guide::OptimizationGuideModelExecutionResultCallback
+                  callback) {
+            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                FROM_HERE,
+                base::BindOnce(
+                    std::move(callback),
+                    CreateContextHubResponseResult(
+                        "Cart items",
+                        optimization_guide::proto::BrowserBasedTodosResponse::
+                            GROUP_TYPE_SHOPPING_CART),
+                    nullptr));
+          });
+
+  base::test::TestFuture<bool> future;
+  service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
+                                 future.GetCallback());
+  EXPECT_TRUE(future.Get());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> todos_future;
+  service_.GetAutoTodos(todos_future.GetCallback());
+  auto todos = todos_future.Get();
+  ASSERT_EQ(todos.size(), 1u);
+  EXPECT_EQ(todos[0].title, "Cart items");
+  ASSERT_TRUE(todos[0].group_type().has_value());
+  EXPECT_EQ(todos[0].group_type().value(),
+            ThirdPartyData::GroupType::kShoppingCart);
+}
+
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_EmptyTitleSkipped) {
   auto web_contents = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/tab"), "Tab");
@@ -1078,6 +1199,75 @@ TEST_F(ContextHubServiceTest, GetEntriesByIds) {
   EXPECT_EQ(entries[0].tab_title, selected_entries[0].tab_title);
 }
 
+TEST_F(ContextHubServiceTest, UpdateMemoryBankEntryAnnotations) {
+  service_.SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTab, GURL("https://example.com"),
+                      "Original Title", "Page text"),
+      base::DoNothing());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> get_entries_future;
+  service_.GetAllEntries(get_entries_future.GetCallback());
+  auto entries = get_entries_future.Get();
+  ASSERT_EQ(1u, entries.size());
+  int64_t id = entries[0].id;
+
+  base::test::TestFuture<bool> update_future;
+  service_.UpdateMemoryBankEntryAnnotations(
+      id, {"tag1", "tag2"}, "Updated Note", "Updated Collection",
+      update_future.GetCallback());
+  EXPECT_TRUE(update_future.Get());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> get_updated_future;
+  service_.GetAllEntries(get_updated_future.GetCallback());
+  auto updated_entries = get_updated_future.Get();
+  ASSERT_EQ(1u, updated_entries.size());
+  EXPECT_EQ(id, updated_entries[0].id);
+  EXPECT_EQ("Original Title", updated_entries[0].tab_title);
+  EXPECT_EQ("Updated Note", updated_entries[0].note);
+  EXPECT_EQ("Updated Collection", updated_entries[0].collection);
+  EXPECT_THAT(updated_entries[0].tags, ElementsAre("tag1", "tag2"));
+}
+
+TEST_F(ContextHubServiceTest, UpdateMemoryBankEntryAnnotations_NotFound) {
+  base::test::TestFuture<bool> update_future;
+  service_.UpdateMemoryBankEntryAnnotations(
+      999999, {"tag1"}, "Note", "Collection", update_future.GetCallback());
+  EXPECT_FALSE(update_future.Get());
+}
+
+TEST_F(ContextHubServiceTest, GetAllMemoryBankTags) {
+  MemoryBankEntry entry1(MemoryBankType::kTab, GURL("https://example1.com"),
+                         "Title1", "Page text 1");
+  entry1.tags = {"tag1", "tag2"};
+  service_.SaveMemoryBankEntry(entry1, base::DoNothing());
+
+  MemoryBankEntry entry2(MemoryBankType::kTab, GURL("https://example2.com"),
+                         "Title2", "Page text 2");
+  entry2.tags = {"tag2", "tag3"};
+  service_.SaveMemoryBankEntry(entry2, base::DoNothing());
+
+  base::test::TestFuture<const std::vector<std::string>&> tags_future;
+  service_.GetAllMemoryBankTags(tags_future.GetCallback());
+  EXPECT_THAT(tags_future.Get(),
+              testing::UnorderedElementsAre("tag1", "tag2", "tag3"));
+}
+
+TEST_F(ContextHubServiceTest, GetAllMemoryBankCollections) {
+  MemoryBankEntry entry1(MemoryBankType::kTab, GURL("https://example1.com"),
+                         "Title1", "Page text 1");
+  entry1.collection = "Research";
+  service_.SaveMemoryBankEntry(entry1, base::DoNothing());
+
+  MemoryBankEntry entry2(MemoryBankType::kTab, GURL("https://example2.com"),
+                         "Title2", "Page text 2");
+  entry2.collection = "Recipes";
+  service_.SaveMemoryBankEntry(entry2, base::DoNothing());
+
+  base::test::TestFuture<const std::vector<std::string>&> coll_future;
+  service_.GetAllMemoryBankCollections(coll_future.GetCallback());
+  EXPECT_THAT(coll_future.Get(), testing::ElementsAre("Recipes", "Research"));
+}
+
 TEST_F(ContextHubServiceTest, GroupTabs_NoTabs) {
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -1182,6 +1372,7 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithConfirmedGroupsPayload) {
   tab_groups::SavedTabGroup confirmed_group(
       u"Confirmed Group", tab_groups::TabGroupColorId::kBlue, {},
       /*position=*/std::nullopt);
+  confirmed_group.SetLocalGroupId(tab_groups::test::GenerateRandomTabGroupID());
   tab_groups::SavedTabGroupTab confirmed_tab1(
       GURL("https://example1.com"), u"Tab 1", confirmed_group.saved_guid(),
       /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/1);
@@ -1536,6 +1727,33 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Error) {
   EXPECT_FALSE(future.Get().has_value());
 }
 
+TEST_F(ContextHubServiceTest, AddAndGetMemoryBankChatHistory) {
+  service_.AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER, "User query");
+  task_environment_.FastForwardBy(base::Milliseconds(1));
+  service_.AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT,
+      "Assistant memory answer");
+
+  auto history = service_.GetMemoryBankChatHistory();
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history[0].role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_USER);
+  EXPECT_EQ(history[0].message_content(), "User query");
+  EXPECT_EQ(history[1].role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT);
+  EXPECT_EQ(history[1].message_content(), "Assistant memory answer");
+}
+
+TEST_F(ContextHubServiceTest, MemoryBankChatHistory_Clear) {
+  service_.AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER, "Query");
+  EXPECT_EQ(service_.GetMemoryBankChatHistory().size(), 1u);
+
+  service_.ClearMemoryBankChatHistory();
+  EXPECT_TRUE(service_.GetMemoryBankChatHistory().empty());
+}
+
 TEST_F(ContextHubServiceTest, UpdateAutoTodo) {
   MockServiceObserver observer;
   base::ScopedObservation<ContextHubService, ContextHubService::Observer>
@@ -1614,6 +1832,74 @@ TEST_F(ContextHubServiceTest, DeleteAutoTodoByTabId) {
   base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
   service_.GetAutoTodos(get_future.GetCallback());
   EXPECT_TRUE(get_future.Get().empty());
+}
+
+TEST_F(ContextHubServiceTest, ClearFirstPartyAutoTodos) {
+  AutoTodoEntry fp_entry;
+  fp_entry.id = "fp_todo_1";
+  fp_entry.title = "Workspace Todo";
+  fp_entry.status = AutoTodoEntry::Status::kActive;
+  fp_entry.data = FirstPartyData{};
+
+  AutoTodoEntry tp_entry;
+  tp_entry.id = "tp_todo_1";
+  tp_entry.title = "Browser Todo";
+  tp_entry.status = AutoTodoEntry::Status::kActive;
+  tp_entry.data = ThirdPartyData{
+      .tab_id = 123,
+      .group_type = ThirdPartyData::GroupType::kNudgeToClose,
+  };
+
+  base::test::TestFuture<bool> add_future1, add_future2;
+  service_.UpdateAutoTodo(fp_entry, add_future1.GetCallback());
+  EXPECT_TRUE(add_future1.Get());
+  service_.UpdateAutoTodo(tp_entry, add_future2.GetCallback());
+  EXPECT_TRUE(add_future2.Get());
+
+  base::test::TestFuture<bool> clear_future;
+  service_.ClearFirstPartyAutoTodos(clear_future.GetCallback());
+  EXPECT_TRUE(clear_future.Get());
+  EXPECT_TRUE(service_.GetLastFirstPartyGenerationTime().is_null());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service_.GetAutoTodos(get_future.GetCallback());
+  auto items = get_future.Get();
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0].id, "tp_todo_1");
+}
+
+TEST_F(ContextHubServiceTest, ClearThirdPartyAutoTodos) {
+  AutoTodoEntry fp_entry;
+  fp_entry.id = "fp_todo_1";
+  fp_entry.title = "Workspace Todo";
+  fp_entry.status = AutoTodoEntry::Status::kActive;
+  fp_entry.data = FirstPartyData{};
+
+  AutoTodoEntry tp_entry;
+  tp_entry.id = "tp_todo_1";
+  tp_entry.title = "Browser Todo";
+  tp_entry.status = AutoTodoEntry::Status::kActive;
+  tp_entry.data = ThirdPartyData{
+      .tab_id = 123,
+      .group_type = ThirdPartyData::GroupType::kNudgeToClose,
+  };
+
+  base::test::TestFuture<bool> add_future1, add_future2;
+  service_.UpdateAutoTodo(fp_entry, add_future1.GetCallback());
+  EXPECT_TRUE(add_future1.Get());
+  service_.UpdateAutoTodo(tp_entry, add_future2.GetCallback());
+  EXPECT_TRUE(add_future2.Get());
+
+  base::test::TestFuture<bool> clear_future;
+  service_.ClearThirdPartyAutoTodos(clear_future.GetCallback());
+  EXPECT_TRUE(clear_future.Get());
+  EXPECT_TRUE(service_.GetLastThirdPartyGenerationTime().is_null());
+
+  base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
+  service_.GetAutoTodos(get_future.GetCallback());
+  auto items = get_future.Get();
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0].id, "fp_todo_1");
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -1803,26 +2089,52 @@ TEST_F(ContextHubServiceTest, ConfirmAllTabGroups_EmptyGroups) {
 }
 
 TEST_F(ContextHubServiceTest, GetConfirmedTabGroups) {
-  tab_groups::SavedTabGroup group(u"Test Group",
-                                  tab_groups::TabGroupColorId::kBlue, {},
-                                  /*position=*/std::nullopt);
-  tab_groups::SavedTabGroupTab tab(GURL("https://example.com"), u"Example",
-                                   group.saved_guid(), /*position=*/0);
-  group.AddTabLocally(tab);
-  fake_tab_group_sync_service_.AddGroup(group);
+  // 1. Open group with an open tab (should be included).
+  tab_groups::SavedTabGroup open_group(u"Open Group",
+                                       tab_groups::TabGroupColorId::kBlue, {},
+                                       /*position=*/std::nullopt);
+  open_group.SetLocalGroupId(tab_groups::test::GenerateRandomTabGroupID());
+  tab_groups::SavedTabGroupTab open_tab(
+      GURL("https://example.com"), u"Example", open_group.saved_guid(),
+      /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/1);
+  open_group.AddTabLocally(open_tab);
+  fake_tab_group_sync_service_.AddGroup(open_group);
+
+  // 2. Closed group without local_group_id (should be excluded).
+  tab_groups::SavedTabGroup closed_group(u"Closed Group",
+                                         tab_groups::TabGroupColorId::kRed, {},
+                                         /*position=*/std::nullopt);
+  tab_groups::SavedTabGroupTab closed_tab(
+      GURL("https://example2.com"), u"Example 2", closed_group.saved_guid(),
+      /*position=*/0, /*saved_tab_guid=*/std::nullopt, /*local_tab_id=*/2);
+  closed_group.AddTabLocally(closed_tab);
+  fake_tab_group_sync_service_.AddGroup(closed_group);
+
+  // 3. Group with local_group_id but no open tabs (should be excluded).
+  tab_groups::SavedTabGroup no_open_tabs_group(
+      u"Group Without Open Tabs", tab_groups::TabGroupColorId::kGreen, {},
+      /*position=*/std::nullopt);
+  no_open_tabs_group.SetLocalGroupId(
+      tab_groups::test::GenerateRandomTabGroupID());
+  tab_groups::SavedTabGroupTab unopened_tab(
+      GURL("https://example3.com"), u"Example 3",
+      no_open_tabs_group.saved_guid(), /*position=*/0);
+  no_open_tabs_group.AddTabLocally(unopened_tab);
+  fake_tab_group_sync_service_.AddGroup(no_open_tabs_group);
 
   std::vector<TabGroupEntry> groups = service_.GetConfirmedTabGroups();
   ASSERT_EQ(groups.size(), 1u);
-  EXPECT_EQ(groups[0].id, group.saved_guid().AsLowercaseString());
-  EXPECT_EQ(groups[0].label, "Test Group");
+  EXPECT_EQ(groups[0].id, open_group.saved_guid().AsLowercaseString());
+  EXPECT_EQ(groups[0].label, "Open Group");
   ASSERT_EQ(groups[0].tabs.size(), 1u);
+  EXPECT_EQ(groups[0].tabs[0].id, 1);
   EXPECT_EQ(groups[0].tabs[0].title, "Example");
   EXPECT_EQ(groups[0].tabs[0].url, GURL("https://example.com"));
 
   std::optional<TabGroupEntry> fetched_group =
-      service_.GetConfirmedTabGroup(group.saved_guid());
+      service_.GetConfirmedTabGroup(open_group.saved_guid());
   ASSERT_TRUE(fetched_group.has_value());
-  EXPECT_EQ(fetched_group->id, group.saved_guid().AsLowercaseString());
+  EXPECT_EQ(fetched_group->id, open_group.saved_guid().AsLowercaseString());
   EXPECT_EQ(fetched_group->tabs.size(), 1u);
 }
 
@@ -2133,6 +2445,194 @@ TEST_F(ContextHubServiceTest,
                    _, _, _));
 
   task_environment_.FastForwardBy(base::Hours(12));
+}
+
+TEST_F(ContextHubServiceTest, AutoTodos_ManualGenerationResetsPeriodicTimer) {
+  identity_test_environment_.MakePrimaryAccountAvailable(
+      "test@example.com", signin::ConsentLevel::kSignin);
+
+  personal_context::proto::AutoTodosResponse expected_response;
+  personal_context::proto::Any any_response;
+  expected_response.SerializeToString(any_response.mutable_value());
+
+  personal_context::MockPersonalContextService mock_personal_context_service;
+  // Triggers once on startup and completes.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      std::make_unique<InMemoryMemoryBank>(),
+      std::make_unique<InMemoryTabGroupStore>(),
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+
+  // Advance to 2 hours before the 24-hour periodic timer would trigger (22
+  // hours after startup).
+  task_environment_.FastForwardBy(base::Hours(22));
+
+  // Trigger manual generation.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  base::test::TestFuture<bool> future;
+  service.GenerateFirstPartyAutoTodos(future.GetCallback());
+  EXPECT_TRUE(future.Get());
+
+  // Fast-forward 2 hours (24 hours after startup). Because manual generation
+  // reset the periodic timer, the timer should NOT trigger here.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .Times(0);
+  task_environment_.FastForwardBy(base::Hours(2));
+
+  // Fast-forward another 22 hours (24 hours after manual generation). The
+  // periodic timer should now trigger.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _));
+
+  task_environment_.FastForwardBy(base::Hours(22));
+}
+
+TEST_F(ContextHubServiceTest,
+       AutoTodos_PowerResume_TriggersWhenIntervalElapsed) {
+  base::test::ScopedPowerMonitorTestSource power_monitor_source;
+  identity_test_environment_.MakePrimaryAccountAvailable(
+      "test@example.com", signin::ConsentLevel::kSignin);
+
+  personal_context::proto::AutoTodosResponse expected_response;
+  personal_context::proto::Any any_response;
+  expected_response.SerializeToString(any_response.mutable_value());
+
+  personal_context::MockPersonalContextService mock_personal_context_service;
+  // Triggers once on startup and completes.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      std::make_unique<InMemoryMemoryBank>(),
+      std::make_unique<InMemoryTabGroupStore>(),
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+
+  // 10 hours of uptime.
+  task_environment_.FastForwardBy(base::Hours(10));
+
+  // Machine suspends.
+  power_monitor_source.GenerateSuspendEvent();
+
+  // 15 hours pass while suspended (total 25 hours wall-clock time since last
+  // generation).
+  task_environment_.AdvanceClock(base::Hours(15));
+
+  // Machine resumes. Since >= 24 hours have elapsed, generation should trigger.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  power_monitor_source.GenerateResumeEvent();
+}
+
+TEST_F(ContextHubServiceTest,
+       AutoTodos_PowerResume_AdjustsTimerWhenIntervalNotElapsed) {
+  base::test::ScopedPowerMonitorTestSource power_monitor_source;
+
+  identity_test_environment_.MakePrimaryAccountAvailable(
+      "test@example.com", signin::ConsentLevel::kSignin);
+
+  personal_context::proto::AutoTodosResponse expected_response;
+  personal_context::proto::Any any_response;
+  expected_response.SerializeToString(any_response.mutable_value());
+
+  personal_context::MockPersonalContextService mock_personal_context_service;
+  // Triggers once on startup and completes.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      std::make_unique<InMemoryMemoryBank>(),
+      std::make_unique<InMemoryTabGroupStore>(),
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+
+  // 6 hours of uptime.
+  task_environment_.FastForwardBy(base::Hours(6));
+
+  // Machine suspends and sleeps for 10 hours.
+  power_monitor_source.GenerateSuspendEvent();
+  task_environment_.AdvanceClock(base::Hours(10));
+
+  // Machine resumes. 16 hours elapsed in total (< 24 hours).
+  // It should NOT trigger generation immediately, but adjust the timer to fire
+  // in 8 hours (24 - 16).
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .Times(0);
+
+  power_monitor_source.GenerateResumeEvent();
+
+  // Fast forward 7 hours (23 hours total wall-clock time). Still shouldn't
+  // trigger.
+  task_environment_.FastForwardBy(base::Hours(7));
+
+  // Fast forward 1 more hour (24 hours total wall-clock time). Timer fires.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .WillOnce(RunOnceCallback<3>(
+          personal_context::FetchContextResult(base::ok(any_response))));
+
+  task_environment_.FastForwardBy(base::Hours(1));
+
+  // Verify that after successful generation, the timer is restored to the full
+  // 24-hour interval rather than repeating the shortened 8-hour delay.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _))
+      .Times(0);
+  task_environment_.FastForwardBy(base::Hours(8));
+
+  // At +24 hours after generation (8h + 16h), the timer fires again.
+  EXPECT_CALL(
+      mock_personal_context_service,
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS,
+                   _, _, _));
+  task_environment_.FastForwardBy(base::Hours(16));
 }
 
 TEST_F(ContextHubServiceTest,

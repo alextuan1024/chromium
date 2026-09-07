@@ -13,6 +13,7 @@
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/test_timeouts.h"
@@ -24,8 +25,11 @@
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/intent_picker_tab_helper.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -33,6 +37,7 @@
 #include "chrome/browser/ui/views/location_bar/intent_chip_button_test_base.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_navigation_browsertest.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
@@ -128,11 +133,10 @@ class IntentChipButtonBrowserTest
   // Clicks the intent chip, and optionally waits for a browser app window to
   // appear if `wait_for_browser` is true. If waiting is specified, the new
   // browser window is returned; if waiting is not specified, null is returned.
-  Browser* ClickIntentChip(bool wait_for_browser) {
+  BrowserWindowInterface* ClickIntentChip(bool wait_for_browser) {
     ui_test_utils::BrowserCreatedObserver browser_created_observer;
 
-    views::test::ButtonTestApi(GetIntentChip(browser()))
-        .NotifyDefaultMouseClick();
+    GetIntentChip(browser()).Click();
 
     if (wait_for_browser) {
       return browser_created_observer.Wait();
@@ -186,13 +190,14 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), in_scope_url));
   }));
   EXPECT_TRUE(WaitForPageActionButtonVisible(browser()));
-  EXPECT_TRUE(GetIntentChip(browser())->GetVisible());
+  EXPECT_TRUE(GetIntentChip(browser()).GetVisible());
 
   // If a single app is installed, then clicking on the intent chip button
   // directly launches the app on all platforms, if the app is set to be the
   // preferred app for capturing links.
   base::UserActionTester user_action_tester;
-  Browser* app_browser = ClickIntentChip(/*wait_for_browser=*/true);
+  BrowserWindowInterface* app_browser =
+      ClickIntentChip(/*wait_for_browser=*/true);
   ASSERT_EQ(1, user_action_tester.GetActionCount("IntentPickerIconClicked"));
   ASSERT_TRUE(app_browser);
   ASSERT_EQ(app_browser->GetType(), BrowserWindowInterface::Type::TYPE_APP);
@@ -203,7 +208,7 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
   const GURL out_of_scope_url = embedded_https_test_server().GetURL(
       GetAppUrlHost(), GetOutOfScopeUrlPath());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), out_of_scope_url));
-  EXPECT_FALSE(GetIntentChip(browser())->GetVisible());
+  EXPECT_FALSE(GetIntentChip(browser()).GetVisible());
 }
 
 IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
@@ -213,7 +218,7 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
   const GURL out_of_scope_url = embedded_https_test_server().GetURL(
       GetAppUrlHost(), GetOutOfScopeUrlPath());
 
-  const views::Button* intent_chip = GetIntentChip(browser());
+  auto intent_chip = GetIntentChip(browser());
   // First three visits will always show as expanded.
   for (int i = 0; i < 3; i++) {
     EXPECT_TRUE(DoAndWaitForIntentPickerIconUpdate([this, in_scope_url] {
@@ -222,13 +227,13 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
 
     EXPECT_TRUE(WaitForPageActionButtonVisible(browser()));
 
-    EXPECT_TRUE(intent_chip->GetVisible());
+    EXPECT_TRUE(intent_chip.GetVisible());
     EXPECT_FALSE(IsIntentChipFullyCollapsed(browser()));
 
     EXPECT_TRUE(DoAndWaitForIntentPickerIconUpdate([this, out_of_scope_url] {
       ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), out_of_scope_url));
     }));
-    EXPECT_FALSE(intent_chip->GetVisible());
+    EXPECT_FALSE(intent_chip.GetVisible());
   }
 
   // Fourth visit should show as expanded because the app is set as preferred
@@ -238,7 +243,7 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest,
   }));
 
   EXPECT_TRUE(WaitForPageActionButtonVisible(browser()));
-  EXPECT_TRUE(intent_chip->GetVisible());
+  EXPECT_TRUE(intent_chip.GetVisible());
   EXPECT_FALSE(IsIntentChipFullyCollapsed(browser()));
 }
 
@@ -254,7 +259,8 @@ IN_PROC_BROWSER_TEST_P(IntentChipButtonBrowserTest, OpensAppForPreferredApp) {
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), in_scope_url));
   }));
 
-  Browser* app_browser = ClickIntentChip(/*wait_for_browser=*/true);
+  BrowserWindowInterface* app_browser =
+      ClickIntentChip(/*wait_for_browser=*/true);
 
   EXPECT_TRUE(web_app::AppBrowserController::IsForWebApp(app_browser,
                                                          test_web_app_id()));
@@ -295,21 +301,29 @@ class IntentChipButtonBrowserUiTest
         {{apps::PickerEntryType::kWeb, ui::ImageModel(), "app_id",
           "Test app"}});
     run_loop.Run();
+    if (features::IsWebUILocationBarEnabled()) {
+      auto intent_chip = GetIntentChip(browser());
+      EXPECT_TRUE(base::test::RunUntil([&]() {
+        return intent_chip.GetVisible() &&
+               !IsIntentChipFullyCollapsed(browser()) &&
+               intent_chip.GetElement() != nullptr;
+      }));
+    }
   }
 
   bool VerifyUi() override {
-    auto* const browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-    if (!browser_view) {
+    auto intent_chip = GetIntentChip(browser());
+
+    bool is_intent_chip_visible_and_expanded =
+        intent_chip.GetVisible() && !IsIntentChipFullyCollapsed(browser());
+    if (!is_intent_chip_visible_and_expanded) {
       return false;
     }
 
-    auto* const location_bar = browser_view->GetLocationBarView();
-    const views::Button* intent_chip = GetIntentChip(browser());
-
-    bool is_intent_chip_visible_and_expanded =
-        intent_chip && intent_chip->GetVisible() &&
-        !IsIntentChipFullyCollapsed(browser());
-    if (!is_intent_chip_visible_and_expanded) {
+    auto* const location_bar =
+        BrowserElements::From(browser())->GetElement(kLocationBarElementId);
+    EXPECT_NE(location_bar, nullptr);
+    if (!location_bar) {
       return false;
     }
 

@@ -47,6 +47,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_animator.h"
 #include "ui/compositor/layer_owner.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/skia_conversions.h"
@@ -273,9 +274,7 @@ ContextualTasksButton::ContextualTasksButton(
 }
 
 ContextualTasksButton::~ContextualTasksButton() {
-  if (drop_shadow_painted_layer_) {
-    views::View::RemoveLayerFromRegions(drop_shadow_painted_layer_->layer());
-  }
+  ClearDropShadow();
 }
 
 float ContextualTasksButton::GetCornerRadiusFor(
@@ -322,10 +321,15 @@ void ContextualTasksButton::OnButtonPress() {
   auto* controller = contextual_tasks::ContextualTasksPanelController::From(
       browser_window_interface_);
   CHECK(controller);
-  // TODO(crbug.com/480218994): Clean up the ToggleContextualTasksSidePanel
-  // browser action, since the logic is now handled in this method.
-  bool is_pinned = contextual_tasks::GetEffectivePinState(
-      browser_window_interface_->GetProfile());
+
+  // When kEphemeralPinningVisibleWhenPermanentlyPinned is enabled, the
+  // ephemeral button remains visible alongside the pinned button, and presses
+  // on this button should always be logged as EphemeralToolbarButton actions.
+  bool is_pinned =
+      !base::FeatureList::IsEnabled(
+          contextual_tasks::kEphemeralPinningVisibleWhenPermanentlyPinned) &&
+      contextual_tasks::GetEffectivePinState(
+          browser_window_interface_->GetProfile());
 
   if (controller->IsPanelOpenForContextualTask()) {
     base::RecordAction(base::UserMetricsAction(
@@ -368,7 +372,6 @@ void ContextualTasksButton::OnButtonPress() {
     }
   }
 }
-
 
 void ContextualTasksButton::OnSidePanelAlignmentChanged() {
   if (contextual_tasks::kShowEntryPoint.Get() ==
@@ -491,10 +494,13 @@ void ContextualTasksButton::MaybeUpdateVisibility() {
                               true);
     MaybeShowFeaturePromo();
   } else {
-    SetVisible(will_be_visible);
-    if (was_visible && !will_be_visible) {
+    if (!will_be_visible) {
+      if (layer() && layer()->GetAnimator()) {
+        layer()->GetAnimator()->AbortAllAnimations();
+      }
       ClearDropShadow();
     }
+    SetVisible(will_be_visible);
   }
 }
 
@@ -556,11 +562,10 @@ void ContextualTasksButton::AnimateShow() {
     return;
   }
   views::AnimationBuilder builder;
-  auto& sequence =
-      builder.Once()
-          .SetDuration(
-              base::Milliseconds(features::kSidePanelFlyoverDurationMs.Get()))
-          .SetOpacity(layer(), 1.0f);
+  auto& sequence = builder.Once()
+                       .SetDuration(base::Milliseconds(
+                           features::kSidePanelFlyoverDurationMs.Get()))
+                       .SetOpacity(layer(), 1.0f);
 
   if (drop_shadow_painted_layer_) {
     drop_shadow_painted_layer_->layer()->SetOpacity(0.0f);
@@ -570,7 +575,12 @@ void ContextualTasksButton::AnimateShow() {
 
 void ContextualTasksButton::ClearDropShadow() {
   if (drop_shadow_painted_layer_) {
-    views::View::RemoveLayerFromRegions(drop_shadow_painted_layer_->layer());
+    if (auto* drop_shadow_layer = drop_shadow_painted_layer_->layer()) {
+      if (drop_shadow_layer->GetAnimator()) {
+        drop_shadow_layer->GetAnimator()->AbortAllAnimations();
+      }
+      views::View::RemoveLayerFromRegions(drop_shadow_layer);
+    }
     drop_shadow_painted_layer_.reset();
   }
 }

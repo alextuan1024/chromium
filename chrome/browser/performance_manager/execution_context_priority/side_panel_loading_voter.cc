@@ -5,24 +5,11 @@
 #include "chrome/browser/performance_manager/execution_context_priority/side_panel_loading_voter.h"
 
 #include "chrome/common/webui_url_constants.h"
-#include "components/performance_manager/public/execution_context/execution_context_registry.h"
+#include "components/performance_manager/public/execution_context/execution_context.h"
 #include "components/performance_manager/public/graph/graph.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "url/gurl.h"
 
 namespace performance_manager::execution_context_priority {
-
-namespace {
-
-const execution_context::ExecutionContext* GetExecutionContext(
-    const FrameNode* frame_node) {
-  auto* registry = execution_context::ExecutionContextRegistry::GetFromGraph(
-      frame_node->GetGraph());
-  CHECK(registry);
-  return registry->GetExecutionContextForFrameNode(frame_node);
-}
-
-}  // namespace
 
 // static
 const char SidePanelLoadingVoter::kSidePanelLoadingReason[] =
@@ -38,14 +25,6 @@ void SidePanelLoadingVoter::MarkAsSidePanel(const PageNode* page_node) {
   // This is possible for a preloaded Side Panel. The navigation has already
   // committed and the page is visible.
   if (!page_node->GetMainFrameUrl().is_empty()) {
-    if (!features::IsImmersiveReadAnythingEnabled()) {
-      CHECK(page_node->IsVisible());
-      return;
-    }
-    // If the Side Panel is a Reading Mode and Immersive Reading Mode is
-    // enabled, don't CHECK if page_node->IsVisible(), because a preloaded WebUI
-    // is expected when a user is switching between Immersive Reading Mode and
-    // the Side Panel.
     if (page_node->GetMainFrameUrl() !=
         GURL(chrome::kChromeUIUntrustedReadAnythingSidePanelURL)) {
       CHECK(page_node->IsVisible());
@@ -95,7 +74,7 @@ void SidePanelLoadingVoter::OnMainFrameDocumentChanged(
 
 void SidePanelLoadingVoter::OnBeforeFrameNodeRemoved(
     const FrameNode* frame_node) {
-  voting_channel_.SetVote(GetExecutionContext(frame_node), std::nullopt);
+  voting_channel_.SetVote(frame_node, std::nullopt);
 }
 
 void SidePanelLoadingVoter::OnFrameVisibilityChanged(
@@ -103,7 +82,7 @@ void SidePanelLoadingVoter::OnFrameVisibilityChanged(
     FrameNode::Visibility previous_value) {
   // When the frame becomes visible, no longer need to increase priority.
   if (frame_node->GetVisibility() != FrameNode::Visibility::kNotVisible) {
-    voting_channel_.SetVote(GetExecutionContext(frame_node), std::nullopt);
+    voting_channel_.SetVote(frame_node, std::nullopt);
   }
 }
 
@@ -117,7 +96,7 @@ void SidePanelLoadingVoter::SetVoteForPage(const PageNode* page_node) {
   CHECK(frame_node);
 
   voting_channel_.SetVote(
-      GetExecutionContext(frame_node),
+      frame_node,
       Vote(base::Process::Priority::kUserBlocking, kSidePanelLoadingReason));
 }
 

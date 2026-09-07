@@ -9,6 +9,7 @@ import com.google.common.collect.ImmutableList;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.MutableFlagWithSafeDefault;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -20,7 +21,6 @@ import org.chromium.chrome.browser.signin.services.UnifiedConsentServiceBridge;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.user_prefs.UserPrefs;
-import org.chromium.ui.accessibility.AccessibilityFeatures;
 import org.chromium.ui.accessibility.AccessibilityFeaturesMap;
 
 import java.util.List;
@@ -52,6 +52,17 @@ public final class ReadAloudFeatures {
         if (profile.isOffTheRecord()) {
             sIneligibilityReason = IneligibilityReason.INCOGNITO_MODE;
             return false;
+        }
+
+        // When native C++ Read Aloud is enabled, bypass MSBB and Google default search engine
+        // checks.
+        // Incognito mode and enterprise policy checks remain strictly enforced.
+        if (isNativeEnabled()) {
+            if (!UserPrefs.get(profile).getBoolean(Pref.LISTEN_TO_THIS_PAGE_ENABLED)) {
+                sIneligibilityReason = IneligibilityReason.POLICY_DISABLED;
+                return false;
+            }
+            return true;
         }
 
         // Check whether the user has enabled anonymous URL-keyed data collection.
@@ -104,9 +115,17 @@ public final class ReadAloudFeatures {
         return sIneligibilityReason;
     }
 
+    public static final String READ_ALOUD_NATIVE = "ReadAloudNative";
+
+    public static final MutableFlagWithSafeDefault sReadAloudNative =
+            new MutableFlagWithSafeDefault(
+                    AccessibilityFeaturesMap.getInstance(),
+                    READ_ALOUD_NATIVE,
+                    /* defaultValue= */ false);
+
     /** Returns true if the native C++ Read Aloud implementation is enabled. */
     public static boolean isNativeEnabled() {
-        return AccessibilityFeaturesMap.isEnabled(AccessibilityFeatures.READ_ALOUD_NATIVE);
+        return sReadAloudNative.isEnabled();
     }
 
     /** Returns true if the ReadAloud CCT IPH should highlight the menu button. */

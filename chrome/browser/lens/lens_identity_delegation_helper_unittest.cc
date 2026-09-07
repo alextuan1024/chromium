@@ -74,12 +74,25 @@ TEST_F(LensIdentityDelegationHelperTest,
 }
 
 TEST_F(LensIdentityDelegationHelperTest,
+       FetchIdentityDelegationHeaders_OriginCanonicalization) {
+  base::test::TestFuture<std::vector<std::string>> future;
+  // Pass an origin with trailing slash and path.
+  FetchIdentityDelegationHeaders(
+      profile_.get(), identity_test_env_.identity_manager(),
+      "https://www.google.com/search?q=test/", std::nullopt,
+      future.GetCallback());
+
+  // Origin should be normalized and canonicalized without trailing slash or path.
+  EXPECT_THAT(future.Get(), ElementsAre("Origin", "https://www.google.com"));
+}
+
+TEST_F(LensIdentityDelegationHelperTest,
        FetchIdentityDelegationHeaders_SignedIn_NoCookie) {
   AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
       "user@gmail.com", signin::ConsentLevel::kSignin);
   // Force update cookie jar accounts in IdentityManager.
   identity_test_env_.SetCookieAccounts(
-      {{account_info.email, account_info.gaia}});
+      {{std::string(account_info.GetEmail()), account_info.GetGaiaId()}});
 
   base::test::TestFuture<std::vector<std::string>> future;
   FetchIdentityDelegationHeaders(
@@ -121,7 +134,7 @@ TEST_F(LensIdentityDelegationHelperTest,
   AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
       "user@gmail.com", signin::ConsentLevel::kSignin);
   identity_test_env_.SetCookieAccounts(
-      {{account_info.email, account_info.gaia}});
+      {{std::string(account_info.GetEmail()), account_info.GetGaiaId()}});
   SetSapisidCookie("sapisid_value");
 
   base::test::TestFuture<std::vector<std::string>> future;

@@ -123,6 +123,8 @@ class WebUILocationBar : public LocationBar,
   LocationBarTesting* GetLocationBarForTesting() override;
   bool TestContentSettingImagePressed(size_t index) override;
   bool IsContentSettingBubbleShowing(size_t index) override;
+  bool IsContentSettingImageVisible(size_t index) override;
+  views::Widget* GetContentSettingBubbleWidget(size_t index) override;
 
   // Left hand side (LHS) chip events (called from WebUIToolbarWebView)
   void OnLhsChipMousePressed(
@@ -210,6 +212,9 @@ class WebUILocationBar : public LocationBar,
   void ShowPageInfoBubble();
   void OnPageInfoBubbleClosed(views::Widget::ClosedReason closed_reason,
                               bool reload_prompt);
+
+  void HandleFocusRequestForFullPopup(
+      toolbar_ui_api::mojom::FocusRequestTarget target);
 
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   raw_ptr<LocationBarView::Delegate> delegate_ = nullptr;

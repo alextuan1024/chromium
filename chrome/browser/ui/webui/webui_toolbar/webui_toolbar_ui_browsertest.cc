@@ -11,7 +11,7 @@
 #include "base/run_loop.h"
 #include "base/values.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager_factory.h"
@@ -123,7 +123,16 @@ class MockToolbarUIDelegate
               HandleContextMenu,
               (toolbar_ui_api::mojom::ContextMenuType menu_type,
                const gfx::RectF& bounds,
-               ui::mojom::MenuSourceType source),
+               ui::mojom::MenuSourceType source,
+               std::optional<uint32_t> show_menu_token),
+              (override));
+  MOCK_METHOD(void,
+              ShowOverflowMenu,
+              (std::vector<toolbar_ui_api::mojom::OverflowMenuItemPtr> controls,
+               const gfx::RectF& bounds,
+               ui::mojom::MenuSourceType source,
+               toolbar_ui_api::mojom::ToolbarUIService::ShowOverflowMenuCallback
+                   callback),
               (override));
   MOCK_METHOD(void,
               ShowContentSettingsBubble,
@@ -139,6 +148,10 @@ class MockToolbarUIDelegate
   MOCK_METHOD(void,
               OnContentSettingImageAnimationEnded,
               (::toolbar_ui_api::mojom::ContentSettingImageType),
+              (override));
+  MOCK_METHOD(void,
+              OnPageActionPointerDown,
+              (::toolbar_ui_api::mojom::PageActionId action_id),
               (override));
   MOCK_METHOD(
       void,
@@ -312,9 +325,8 @@ class WebUIToolbarUIBrowserTest : public InProcessBrowserTest,
 
   CommandUpdater* GetCommandUpdater() override {
     return reinterpret_cast<CommandUpdater*>(
-        webui::GetBrowserWindowInterface(web_ui()->GetWebContents())
-            ->GetFeatures()
-            .browser_command_controller());
+        chrome::BrowserCommandController::From(
+            webui::GetBrowserWindowInterface(web_ui()->GetWebContents())));
   }
 
   OmniboxController* GetOmniboxController() override { return nullptr; }

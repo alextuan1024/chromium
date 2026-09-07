@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
+#include "chrome/browser/ui/webui/tab_search/search_handler.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search_page_handler.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search_sync_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -23,6 +24,8 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/tab_search_resources.h"
 #include "chrome/grit/tab_search_resources_map.h"
+#include "chrome/grit/tab_search_shared_resources.h"
+#include "chrome/grit/tab_search_shared_resources_map.h"
 #include "components/favicon_base/favicon_url_parser.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -107,11 +110,12 @@ TabSearchUI::TabSearchUI(content::WebUI* web_ui)
   source->AddBoolean("useRipples", views::PlatformStyle::kUseRipples);
   source->AddBoolean("useTabGroupColorRefresh",
                      features::IsTabGroupColorRefreshEnabled());
-  source->AddBoolean("splitViewTabRestoreEnabled",
-                     base::FeatureList::IsEnabled(tabs::kSplitViewTabRestore));
   source->AddBoolean(
       "cjkWordBoundaryEnabled",
       base::FeatureList::IsEnabled(tabs::kTabSearchCjkWordBoundary));
+  source->AddBoolean(
+      "tabSearchPerformanceImprovements",
+      base::FeatureList::IsEnabled(tabs::kTabSearchPerformanceImprovements));
 
   source->AddLocalizedString("close", IDS_CLOSE);
 
@@ -128,6 +132,7 @@ TabSearchUI::TabSearchUI(content::WebUI* web_ui)
 
   webui::SetupWebUIDataSource(source, kTabSearchResources,
                               IDR_TAB_SEARCH_TAB_SEARCH_HTML);
+  source->AddResourcePaths(kTabSearchSharedResources);
 
   content::URLDataSource::Add(
       profile, std::make_unique<FaviconSource>(
@@ -152,6 +157,11 @@ void TabSearchUI::BindInterface(
     mojo::PendingReceiver<tab_search::mojom::PageHandlerFactory> receiver) {
   page_factory_receiver_.reset();
   page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void TabSearchUI::BindInterface(
+    mojo::PendingReceiver<tab_search::mojom::SearchHandler> receiver) {
+  search_handler_ = std::make_unique<SearchHandler>(std::move(receiver));
 }
 
 void TabSearchUI::BeforeBubbleWidgetShowed() {

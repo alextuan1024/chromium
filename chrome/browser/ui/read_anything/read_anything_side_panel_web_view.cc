@@ -5,14 +5,10 @@
 #include "chrome/browser/ui/read_anything/read_anything_side_panel_web_view.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_scope.h"
-#include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/context_menu_params.h"
@@ -20,6 +16,7 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 using SidePanelWebUIViewT_ReadAnythingUntrustedUI =
@@ -28,19 +25,6 @@ BEGIN_TEMPLATE_METADATA(SidePanelWebUIViewT_ReadAnythingUntrustedUI,
                         SidePanelWebUIViewT);
 
 END_METADATA
-
-ReadAnythingSidePanelWebView::ReadAnythingSidePanelWebView(
-    Profile* profile,
-    SidePanelEntryScope& scope)
-    : SidePanelWebUIViewT(
-          scope,
-          base::RepeatingClosure(),
-          base::RepeatingClosure(),
-          std::make_unique<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>(
-              GURL(chrome::kChromeUIUntrustedReadAnythingSidePanelURL),
-              profile,
-              IDS_READING_MODE_TITLE,
-              /*esc_closes_ui=*/false)) {}
 
 ReadAnythingSidePanelWebView::ReadAnythingSidePanelWebView(
     Profile* profile,
@@ -54,11 +38,9 @@ ReadAnythingSidePanelWebView::ReadAnythingSidePanelWebView(
   // If the UI has been shown once, the reused WebUI will be available but
   // won't send a new "showUI" message. Manually call ShowUI() to unblock the
   // SidePanelEntryWaiter and make the view visible.
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    auto* controller = ReadAnythingController::From(&scope.GetTabInterface());
-    if (controller && controller->has_shown_ui()) {
-      ShowUI();
-    }
+  auto* controller = ReadAnythingController::From(&scope.GetTabInterface());
+  if (controller && controller->has_shown_ui()) {
+    ShowUI();
   }
 }
 

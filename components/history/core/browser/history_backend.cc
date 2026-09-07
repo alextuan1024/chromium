@@ -56,6 +56,7 @@
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/in_memory_history_backend.h"
+#include "components/history/core/browser/journeys/journeys_sync_bridge.h"
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/browser/keyword_search_term_util.h"
 #include "components/history/core/browser/page_usage_data.h"
@@ -435,6 +436,15 @@ void HistoryBackend::Init(
           syncer::HISTORY,
           base::BindRepeating(&syncer::ReportUnrecoverableError,
                               history_database_params.channel)));
+
+  if (base::FeatureList::IsEnabled(syncer::kSyncJourney)) {
+    journeys_sync_bridge_ = std::make_unique<journeys::JourneysSyncBridge>(
+        this, db_ ? db_->GetJourneysMetadataDB() : nullptr,
+        std::make_unique<ClientTagBasedDataTypeProcessor>(
+            syncer::JOURNEY,
+            base::BindRepeating(&syncer::ReportUnrecoverableError,
+                                history_database_params.channel)));
+  }
 
   if (db_ && db_->GetDeleteForeignVisitsUntilId() != kInvalidVisitID) {
     // A deletion of foreign visits was still ongoing during the previous
@@ -1220,14 +1230,12 @@ void HistoryBackend::AddPage(const HistoryAddPageArgs& request) {
   // works. As they are artificial they shouldn't be tracked for referral
   // chains.
   // TODO: crbug.com/439886906 - Stop excluding 404s from `VisitTracker`. 404
-  // visits are temporarily excluded until `history::kVisitedLinksOn404` is
-  // enabled by default, to avoid making a feature change to `VisitTracker` at
-  // the same time as making 404s eligible for History (404 visits were not
-  // eligible for History prior to `history::kVisitedLinksOn404` and were
-  // skipped upstream of this code).
+  //   visits were excluded to avoid making a feature change to `VisitTracker`
+  //   at the same time as the change to make 404s eligible for History (before
+  //   that change, 404 visits were skipped upstream of this code).
   // TODO(evanm): Due to http://b/1194536 we lose the referrers of a subframe
-  // navigation anyway, so last_visit_id is always zero for them.  But adding
-  // them here confuses main frame history, so we skip them for now.
+  //   navigation anyway, so last_visit_id is always zero for them. But adding
+  //   them here confuses main frame history, so we skip them for now.
   bool is_subframe_navigation =
       ui::PageTransitionCoreTypeIs(request_transition,
                                    ui::PAGE_TRANSITION_AUTO_SUBFRAME) ||
@@ -1320,6 +1328,9 @@ void HistoryBackend::InitImpl(
     }
   }
   db_->BeginExclusiveMode();  // Must be after the mem backend read the data.
+  if (!local_device_originator_cache_guid_.empty()) {
+    db_->SetLocalDeviceOriginatorCacheGuid(local_device_originator_cache_guid_);
+  }
 
   // Favicon database.
   favicon_backend_ = favicon::FaviconBackend::Create(favicon_name, this);
@@ -1353,6 +1364,7 @@ void HistoryBackend::InitImpl(
 void HistoryBackend::CloseAllDatabases() {
   // Reset to avoid dangling pointers to the database.
   history_sync_bridge_.reset();
+  journeys_sync_bridge_.reset();
   expirer_.SetDatabases(/*main_db=*/nullptr, /*favicon_db=*/nullptr);
   if (db_) {
     CommitSingletonTransactionIfItExists();
@@ -1388,12 +1400,7 @@ std::pair<URLID, VisitID> HistoryBackend::AddPageVisit(
     std::optional<VisitID> originator_opener_visit,
     bool is_known_to_sync) {
   DCHECK(url.is_valid());
-  if (!base::FeatureList::IsEnabled(history::kVisitedLinksOn404)) {
-    // 404s should not be recorded in history unless the feature
-    // `history::kVisitedLinksOn404` is enabled. If 404s are reaching this point
-    // with the flag disabled, something is broken.
-    CHECK_NE(response_code_category, VisitResponseCodeCategory::k404);
-  }
+
   // See if this URL is already in the DB.
   URLRow url_info(url);
   URLID url_id = db_->GetRowForURL(url, &url_info);
@@ -1505,13 +1512,11 @@ std::pair<URLID, VisitID> HistoryBackend::AddPageVisit(
 
   if (visit_info.visit_id) {
     // For redirect chains that end in a 404 visit, the redirect visits are
-    // saved due to the 404 visit, as with `history::kVisitedLinksOn404`
-    // disabled, the entire chain would be ineligible for History
-    // (`NavigationHandle::ShouldUpdateHistory()` would be false). Here, the
-    // `response_code_category` is always for the final navigation in the chain.
-    bool is_saved_due_to_404 =
-        response_code_category == VisitResponseCodeCategory::k404;
-    UMA_HISTOGRAM_BOOLEAN("History.VisitAddedDueTo404", is_saved_due_to_404);
+    // saved due to the 404 visit. Here, the `response_code_category` is
+    // always for the final navigation in the chain.
+    UMA_HISTOGRAM_BOOLEAN(
+        "History.VisitAddedDueTo404",
+        response_code_category == VisitResponseCodeCategory::k404);
     // Broadcast a notification of the visit.
     NotifyURLVisited(VisitedURLInfo(
         url_info, visit_info, response_code_category, local_navigation_id));
@@ -2069,11 +2074,52 @@ HistoryBackend::GetHistorySyncControllerDelegate() {
   return nullptr;
 }
 
+base::WeakPtr<syncer::DataTypeControllerDelegate>
+HistoryBackend::GetJourneysSyncControllerDelegate() {
+  if (journeys_sync_bridge_) {
+    return journeys_sync_bridge_->change_processor()->GetControllerDelegate();
+  }
+  return nullptr;
+}
+
 void HistoryBackend::SetSyncTransportState(
     syncer::SyncService::TransportState state) {
   if (history_sync_bridge_) {
     history_sync_bridge_->SetSyncTransportState(state);
   }
+}
+
+bool HistoryBackend::AddOrUpdateJourneys(
+    const std::vector<journeys::JourneyRow>& journeys) {
+  if (!db_) {
+    return false;
+  }
+  ScheduleCommit();
+  return db_->AddOrUpdateJourneys(journeys);
+}
+
+bool HistoryBackend::DeleteJourneys(
+    const std::vector<std::string>& journey_ids) {
+  if (!db_) {
+    return false;
+  }
+  ScheduleCommit();
+  return db_->DeleteJourneys(journey_ids);
+}
+
+std::vector<journeys::JourneyRow> HistoryBackend::GetAllJourneys() {
+  if (!db_) {
+    return {};
+  }
+  return db_->GetAllJourneys();
+}
+
+bool HistoryBackend::DeleteAllJourneys() {
+  if (!db_) {
+    return false;
+  }
+  ScheduleCommit();
+  return db_->DeleteAllJourneys();
 }
 
 // Statistics ------------------------------------------------------------------
@@ -2363,6 +2409,7 @@ std::vector<AnnotatedVisit> HistoryBackend::ToAnnotatedVisitsFromRows(
   VisitSourceMap sources;
   GetVisitsSource(visit_rows, &sources);
 
+  base::flat_map<VisitID, VisitRow> redirect_start_cache;
   std::vector<AnnotatedVisit> annotated_visits;
   for (const auto& visit_row : visit_rows) {
     // Add a result row for this visit, get the URL info from the DB.
@@ -2388,7 +2435,19 @@ std::vector<AnnotatedVisit> HistoryBackend::ToAnnotatedVisitsFromRows(
     VisitID referring_visit_of_redirect_chain_start = 0;
     VisitID opener_visit_of_redirect_chain_start = 0;
     if (compute_redirect_chain_start_properties) {
-      VisitRow redirect_start = GetRedirectChainStart(visit_row);
+      VisitRow redirect_start;
+      auto it = redirect_start_cache.find(visit_row.visit_id);
+      if (it != redirect_start_cache.end()) {
+        redirect_start = it->second;
+      } else {
+        VisitVector redirect_chain = GetRedirectChain(visit_row);
+        if (!redirect_chain.empty()) {
+          redirect_start = redirect_chain.front();
+          for (const auto& chain_visit : redirect_chain) {
+            redirect_start_cache[chain_visit.visit_id] = redirect_start;
+          }
+        }
+      }
       referring_visit_of_redirect_chain_start = redirect_start.referring_visit;
       opener_visit_of_redirect_chain_start = redirect_start.opener_visit;
     }
@@ -2666,7 +2725,8 @@ VisitVector HistoryBackend::GetRedirectChain(VisitRow visit) {
   result.push_back(visit);
   if (db_) {
     base::flat_set<VisitID> visit_set;
-    while (!(visit.transition & ui::PAGE_TRANSITION_CHAIN_START)) {
+    while (!(visit.transition & ui::PAGE_TRANSITION_CHAIN_START) &&
+           result.size() < kMaxRedirectChainLength) {
       visit_set.insert(visit.visit_id);
       // `GetRowForVisit()` should not return false if the DB is correct.
       VisitRow referring_visit;
@@ -3434,13 +3494,9 @@ void HistoryBackend::BeginSingletonTransaction() {
   TRACE_EVENT0("browser", "HistoryBackend::BeginSingletonTransaction");
   DCHECK(!singleton_transaction_);
 
-  DCHECK_EQ(db_->transaction_nesting(), 0);
+  DCHECK(!db_->HasActiveTransactions());
   singleton_transaction_ = db_->CreateTransaction();
-
-  bool success = singleton_transaction_->Begin();
-  if (success) {
-    DCHECK_EQ(db_->transaction_nesting(), 1);
-  } else {
+  if (!singleton_transaction_->Begin()) {
     // Failing to begin the transaction happens very occasionally in the wild,
     // at about 1 failure per million, almost exclusively on Windows. Previous
     // analysis showed SQLITE_BUSY to be the main cause, which could suggest
@@ -3460,18 +3516,17 @@ void HistoryBackend::CommitSingletonTransactionIfItExists() {
                "HistoryBackend::CommitSingletonTransactionIfItExists");
 
   if (!singleton_transaction_) {
-    DCHECK_EQ(db_->transaction_nesting(), 0)
+    DCHECK(!db_->HasActiveTransactions())
         << "There should not be any transactions other than the singleton one.";
     return;
   }
 
-  DCHECK_EQ(db_->transaction_nesting(), 1)
-      << "Someone opened multiple transactions.";
+  DCHECK(db_->HasActiveTransactions())
+      << "The global transaction should be active.";
 
   bool success = singleton_transaction_->Commit();
   if (success) {
-    DCHECK_EQ(db_->transaction_nesting(), 0)
-        << "Someone left a transaction open.";
+    DCHECK(!db_->HasActiveTransactions()) << "Someone left a transaction open.";
   }
   // The long-running transaction fails to commit about 1 per 100,000 times.
   // The crash reports are again predominantly on Windows. More discussion in
@@ -3695,10 +3750,13 @@ void HistoryBackend::KillHistoryDatabase() {
     return;
   }
 
-  // Notify the sync bridge about storage error. It'll report failures to the
+  // Notify the sync bridges about storage error. It'll report failures to the
   // sync engine and stop accepting remote updates.
   if (history_sync_bridge_) {
     history_sync_bridge_->OnDatabaseError();
+  }
+  if (journeys_sync_bridge_) {
+    journeys_sync_bridge_->OnDatabaseError();
   }
 
   // Rollback transaction because Raze() cannot be called from within a
@@ -3722,6 +3780,9 @@ void HistoryBackend::SetLocalDeviceOriginatorCacheGuid(
     std::string local_device_originator_cache_guid) {
   local_device_originator_cache_guid_ =
       std::move(local_device_originator_cache_guid);
+  if (db_) {
+    db_->SetLocalDeviceOriginatorCacheGuid(local_device_originator_cache_guid_);
+  }
 }
 
 void HistoryBackend::SetCanAddForeignVisitsToSegments(bool add_foreign_visits) {

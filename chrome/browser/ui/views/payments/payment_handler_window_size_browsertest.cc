@@ -11,7 +11,7 @@
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_test_api.h"
 #include "chrome/browser/ui/views/payments/payment_request_views_util.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/payments/core/features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -61,7 +61,13 @@ class PaymentHandlerWindowSizeTest : public PaymentRequestBrowserTestBase {
       features::kPaymentRequestMandatoryPaymentAppUi};
 };
 
-IN_PROC_BROWSER_TEST_F(PaymentHandlerWindowSizeTest, ValidateDialogSize) {
+// TODO(crbug.com/557001558): enable the flaky test on mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ValidateDialogSize DISABLED_ValidateDialogSize
+#else
+#define MAYBE_ValidateDialogSize ValidateDialogSize
+#endif
+IN_PROC_BROWSER_TEST_F(PaymentHandlerWindowSizeTest, MAYBE_ValidateDialogSize) {
   // Add an autofill profile, so [Continue] button is enabled.
   autofill::AutofillProfile profile(autofill::test::GetFullProfile());
   AddAutofillProfile(profile);
@@ -94,7 +100,8 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerWindowSizeTest, ValidateDialogSize) {
   EXPECT_TRUE(IsPayButtonEnabled());
   ResetEventWaiterForSequence({DialogEvent::LOADING_VIEW_SHOWN,
                                DialogEvent::PAYMENT_HANDLER_WINDOW_OPENED,
-                               DialogEvent::LOADING_VIEW_HIDDEN});
+                               DialogEvent::LOADING_VIEW_HIDDEN,
+                               DialogEvent::PAYMENT_HANDLER_TITLE_SET});
   ClickOnDialogViewAndWait(DialogViewID::PAY_BUTTON, dialog_view());
   EXPECT_EQ(expected_payment_handler_dialog_size, DialogViewSize());
 

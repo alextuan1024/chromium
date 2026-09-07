@@ -12,14 +12,12 @@ import androidx.test.filters.SmallTest;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.AwLayoutSizer;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwLayoutSizerTest {
     static class LayoutSizerDelegate implements AwLayoutSizer.Delegate {
         public int requestLayoutCallCount;
@@ -55,7 +53,6 @@ public class AwLayoutSizerTest {
     private static final int FIRST_CONTENT_WIDTH = 101;
     private static final int FIRST_CONTENT_HEIGHT = 389;
     private static final int SECOND_CONTENT_WIDTH = 103;
-    private static final int SECOND_CONTENT_HEIGHT = 397;
 
     private static final int SMALLER_CONTENT_SIZE = 25;
     private static final int AT_MOST_MEASURE_SIZE = 50;

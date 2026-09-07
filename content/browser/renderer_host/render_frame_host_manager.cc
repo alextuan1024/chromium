@@ -246,9 +246,8 @@ bool DoesNavigationChangeStoragePartition(SiteInstanceImpl* current_instance,
 bool IsSiteInstanceCompatibleWithErrorIsolation(
     SiteInstanceImpl* site_instance,
     const FrameTreeNode& frame_tree_node,
-    NavigationRequest::ErrorPageProcess error_page_process) {
-  if (error_page_process ==
-      NavigationRequest::ErrorPageProcess::kCurrentProcess) {
+    ErrorPageProcess error_page_process) {
+  if (error_page_process == ErrorPageProcess::kCurrentProcess) {
     // If an error page must commit in the current process, the current
     // SiteInstance must be reused.
     return site_instance ==
@@ -258,10 +257,8 @@ bool IsSiteInstanceCompatibleWithErrorIsolation(
   if (!frame_tree_node.IsErrorPageIsolationEnabled()) {
     // With no error isolation or current process requirement, all SiteInstances
     // are compatible with any |error_page_process|.
-    CHECK(error_page_process ==
-              NavigationRequest::ErrorPageProcess::kNotErrorPage ||
-          error_page_process ==
-              NavigationRequest::ErrorPageProcess::kDestinationProcess);
+    CHECK(error_page_process == ErrorPageProcess::kNotErrorPage ||
+          error_page_process == ErrorPageProcess::kDestinationProcess);
     return true;
   }
 
@@ -273,10 +270,8 @@ bool IsSiteInstanceCompatibleWithErrorIsolation(
   bool is_site_instance_for_error_page =
       site_instance->GetSiteInfo().is_error_page();
   bool should_be_error_page_isolated =
-      (error_page_process !=
-           NavigationRequest::ErrorPageProcess::kNotErrorPage &&
-       error_page_process !=
-           NavigationRequest::ErrorPageProcess::kPostCommitErrorPage);
+      (error_page_process != ErrorPageProcess::kNotErrorPage &&
+       error_page_process != ErrorPageProcess::kPostCommitErrorPage);
   return is_site_instance_for_error_page == should_be_error_page_isolated;
 }
 
@@ -826,7 +821,7 @@ void RenderFrameHostManager::InitRoot(
               false /* is_secure_context_root */,
               false /* has_active_user_gesture */,
               false /* has_received_user_gesture_before_nav */,
-              false /* is_ad_frame */),
+              blink::mojom::FrameAdStatus::kNotAd),
           frame_tree_node_->parent(),
           is_legacy_browsing_context_state_mode
               ? static_cast<std::optional<BrowsingInstanceId>>(std::nullopt)
@@ -845,8 +840,9 @@ void RenderFrameHostManager::InitRoot(
       CreateFrameCase::kInitRoot, site_instance,
       /*frame_routing_id=*/IPC::mojom::kRoutingIdNone,
       mojo::PendingAssociatedRemote<mojom::Frame>(), blink::LocalFrameToken(),
-      blink::DocumentToken(), devtools_frame_token, renderer_initiated_creation,
-      browsing_context_state,
+      blink::DocumentToken(), devtools_frame_token,
+      /*initiator_state_token=*/blink::InitiatorStateToken(),
+      renderer_initiated_creation, browsing_context_state,
       ProcessAllocationContext{ProcessAllocationSource::kRFHInitRoot}));
 
   // Creating a main RenderFrameHost also creates a new Page, so notify the
@@ -861,6 +857,7 @@ void RenderFrameHostManager::InitChild(
     const blink::LocalFrameToken& frame_token,
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_frame_token,
+    const blink::InitiatorStateToken& initiator_state_token,
     blink::FramePolicy frame_policy,
     std::string frame_name,
     std::string frame_unique_name) {
@@ -874,15 +871,15 @@ void RenderFrameHostManager::InitChild(
               url::Origin(), frame_name, frame_unique_name,
               network::ParsedPermissionsPolicy(),
               network::mojom::WebSandboxFlags::kNone, frame_policy,
-              // should enforce strict mixed content checking
+              // Inherited after RenderFrameHost creation.
               blink::mojom::InsecureRequestPolicy::kLeaveInsecureRequestsAlone,
-              // hashes of hosts for insecure request upgrades
+              // Inherited after RenderFrameHost creation.
               std::vector<uint32_t>(),
               false /* has_potentially_trustworthy_unique_origin */,
               false /* is_secure_context_root */,
               false /* has_active_user_gesture */,
               false /* has_received_user_gesture_before_nav */,
-              false /* is_ad_frame */),
+              blink::mojom::FrameAdStatus::kNotAd),
           frame_tree_node_->parent(),
           is_legacy_browsing_context_state_mode
               ? static_cast<std::optional<BrowsingInstanceId>>(std::nullopt)
@@ -891,7 +888,7 @@ void RenderFrameHostManager::InitChild(
   SetRenderFrameHost(CreateRenderFrameHost(
       CreateFrameCase::kInitChild, site_instance, frame_routing_id,
       std::move(frame_remote), frame_token, document_token,
-      devtools_frame_token,
+      devtools_frame_token, initiator_state_token,
       /*renderer_initiated_creation=*/false, browsing_context_state,
       ProcessAllocationContext{
           ProcessAllocationSource::kNoProcessCreationExpected}));
@@ -2326,8 +2323,7 @@ RenderFrameHostManager::GetFrameHostForNavigation(
   if (!process_lock.is_error_page() &&
       request->common_params().url.IsStandard() &&
       !request->IsForMhtmlSubframe() &&
-      request->ComputeErrorPageProcess() !=
-          NavigationRequest::ErrorPageProcess::kCurrentProcess) {
+      request->ComputeErrorPageProcess() != ErrorPageProcess::kCurrentProcess) {
     // Note that GetOriginToCommit() could return nullopt if the response is
     // received but does not need to be rendered, for example for a download.
     // However, that case should never need to pick a RenderFrameHost via
@@ -2775,7 +2771,7 @@ RenderFrameHostManager::ShouldSwapBrowsingInstancesForNavigation(
     const UrlInfo& destination_url_info,
     bool destination_is_view_source_mode,
     ui::PageTransition transition,
-    NavigationRequest::ErrorPageProcess error_page_process,
+    ErrorPageProcess error_page_process,
     bool is_reload,
     bool is_same_document,
     IsSameSiteGetter& is_same_site,
@@ -2974,8 +2970,7 @@ RenderFrameHostManager::ShouldSwapBrowsingInstancesForNavigation(
   // a speculative BrowsingInstance swap. It is not required for security and
   // needs to be treated after the history navigation block
   bool is_for_isolated_error_page =
-      (error_page_process ==
-       NavigationRequest::ErrorPageProcess::kIsolatedProcess);
+      (error_page_process == ErrorPageProcess::kIsolatedProcess);
   if (current_instance->HasSite() &&
       !is_same_site.Get(*render_frame_host_, destination_url_info) &&
       !CanUseSourceSiteInstance(destination_url_info, source_instance,
@@ -3147,7 +3142,7 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
     SiteInstanceImpl* dest_instance,
     SiteInstanceImpl* candidate_instance,
     ui::PageTransition transition,
-    NavigationRequest::ErrorPageProcess error_page_process,
+    ErrorPageProcess error_page_process,
     bool is_reload,
     bool is_same_document,
     IsSameSiteGetter& is_same_site,
@@ -3238,7 +3233,7 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
       new_instance.get(), dest_url_info.web_exposed_isolation_info));
   // TODO(crbug.com/395036622): Always apply this check once error pages in COI
   // subframes are committed in the isolated error process.
-  if (error_page_process != NavigationRequest::kCurrentProcess) {
+  if (error_page_process != ErrorPageProcess::kCurrentProcess) {
     CHECK(new_instance->GetSiteInfo()
               .agent_cluster_key()
               .GetCrossOriginIsolationKey() ==
@@ -3482,6 +3477,10 @@ bool RenderFrameHostManager::InitializeMainRenderFrameForImmediateUse() {
     render_frame_host_->ReinitializeDocumentAssociatedDataForReuseAfterCrash(
         /* passkey */ {});
 
+    // Similarly, we should reinitialize the initiator state token.
+    render_frame_host_->ReinitializeInitiatorStateTokenAfterCrash(
+        /* passkey */ {});
+
     // Since it's possible for the now reinitialized main frame to create new
     // sub-frames/windows we need to also reinitialize the
     // RuntimeFeatureStateDocumentData, since those new frames/windows will
@@ -3541,7 +3540,7 @@ RenderFrameHostManager::DetermineSiteInstanceForURL(
     SiteInstanceImpl* current_instance,
     SiteInstanceImpl* dest_instance,
     ui::PageTransition transition,
-    NavigationRequest::ErrorPageProcess error_page_process,
+    ErrorPageProcess error_page_process,
     IsSameSiteGetter& is_same_site,
     BrowsingContextGroupSwap browsing_context_group_swap,
     bool was_server_redirect,
@@ -3559,15 +3558,13 @@ RenderFrameHostManager::DetermineSiteInstanceForURL(
   // === Error page handling ===
   // Note that these must be the first checks to avoid picking the destination
   // instance or other instances.
-  if (error_page_process ==
-      NavigationRequest::ErrorPageProcess::kCurrentProcess) {
+  if (error_page_process == ErrorPageProcess::kCurrentProcess) {
     // If this is an error page that must reuse the current process, ensure that
     // `current_instance` is used.
     AppendReason(reason,
                  "DetermineSiteInstanceForURL => error-current-instance");
     return SiteInstanceDescriptor(current_instance);
-  } else if (error_page_process ==
-             NavigationRequest::ErrorPageProcess::kIsolatedProcess) {
+  } else if (error_page_process == ErrorPageProcess::kIsolatedProcess) {
     // If error page navigations should be isolated, ensure a dedicated
     // SiteInstance is used for them.
     CHECK(frame_tree_node_->IsErrorPageIsolationEnabled());
@@ -3878,7 +3875,7 @@ bool RenderFrameHostManager::CanUseDestinationInstance(
     const UrlInfo& dest_url_info,
     SiteInstanceImpl* current_instance,
     SiteInstanceImpl* dest_instance,
-    NavigationRequest::ErrorPageProcess error_page_process,
+    ErrorPageProcess error_page_process,
     const BrowsingContextGroupSwap& browsing_context_group_swap,
     bool was_server_redirect) {
   // Start by verifying that the dest_instance is compatible with the browsing
@@ -4090,7 +4087,7 @@ bool RenderFrameHostManager::CanUseSourceSiteInstance(
     const UrlInfo& dest_url_info,
     SiteInstanceImpl* source_instance,
     bool was_server_redirect,
-    NavigationRequest::ErrorPageProcess error_page_process,
+    ErrorPageProcess error_page_process,
     std::string* reason) {
   if (!source_instance) {
     AppendReason(reason,
@@ -4339,6 +4336,7 @@ RenderFrameHostManager::CreateRenderFrameHost(
     const blink::LocalFrameToken& frame_token,
     const blink::DocumentToken& document_token,
     base::UnguessableToken devtools_frame_token,
+    const blink::InitiatorStateToken& initiator_state_token,
     bool renderer_initiated_creation,
     scoped_refptr<BrowsingContextState> browsing_context_state,
     const ProcessAllocationContext& process_allocation_context) {
@@ -4439,8 +4437,8 @@ RenderFrameHostManager::CreateRenderFrameHost(
       site_instance, std::move(render_view_host),
       frame_tree.render_frame_delegate(), &frame_tree, frame_tree_node_,
       frame_routing_id, std::move(frame_remote), frame_token, document_token,
-      devtools_frame_token, renderer_initiated_creation, lifecycle_state,
-      std::move(browsing_context_state));
+      devtools_frame_token, initiator_state_token, renderer_initiated_creation,
+      lifecycle_state, std::move(browsing_context_state));
 }
 
 bool RenderFrameHostManager::CreateSpeculativeRenderFrameHost(
@@ -4613,6 +4611,7 @@ RenderFrameHostManager::CreateSpeculativeRenderFrame(
           mojo::PendingAssociatedRemote<mojom::Frame>(),
           blink::LocalFrameToken(), blink::DocumentToken(),
           render_frame_host_->devtools_frame_token(),
+          /*initiator_state_token=*/blink::InitiatorStateToken(),
           /*renderer_initiated_creation=*/false, browsing_context_state,
           ProcessAllocationContext{
               ProcessAllocationSource::kNoProcessCreationExpected});

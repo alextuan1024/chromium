@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <utility>
@@ -55,6 +56,32 @@ namespace pdf {
 namespace ranges = std::ranges;
 
 namespace {
+
+// Returns the character offset within the text run if `page_char_index` falls
+// within [start_char_index, start_char_index + len], or std::nullopt otherwise.
+//
+// For the beginning of the selection, chooses the node containing the indexed
+// char (half-open range [start, start + len)).
+// For the end of the selection, `page_char_index` is exclusive (the index of
+// the last character selected + 1). If the selection ends on a node boundary
+// (that is, all the text of a single node is selected and none after that), `<=
+// ` ensures the selection endpoint is attributed to this node rather than the
+// following node that `page_char_index` technically points to.
+std::optional<uint32_t> GetCharOffsetInRun(bool end_of_selection,
+                                           uint32_t page_char_index,
+                                           uint32_t start_char_index,
+                                           uint32_t len) {
+  if (page_char_index < start_char_index) {
+    return std::nullopt;
+  }
+  uint32_t page_char_offset = page_char_index - start_char_index;
+  bool contained =
+      end_of_selection ? (page_char_offset <= len) : (page_char_offset < len);
+  if (!contained) {
+    return std::nullopt;
+  }
+  return std::min(page_char_offset, len);
+}
 
 // Delay before loading all the PDF content into the accessibility tree and
 // resetting the banner and status nodes in an accessibility tree.
@@ -260,79 +287,6 @@ bool PdfAccessibilityTree::IsDataFromPluginValid(
     index += highlight.text_range.count;
     if (!index.IsValid() || index.ValueOrDie() > text_runs.size() ||
         highlight.index_in_page >= highlights.size()) {
-      return false;
-    }
-  }
-
-  const std::vector<chrome_pdf::AccessibilityTextFieldInfo>& text_fields =
-      page_objects.form_fields.text_fields;
-  if (!std::is_sorted(
-          text_fields.begin(), text_fields.end(),
-          CompareTextRuns<chrome_pdf::AccessibilityTextFieldInfo>)) {
-    return false;
-  }
-  // Text run index of an `text_field` works on the same logic as the text run
-  // index of a `link` as mentioned above.
-  // `index_in_page` of a `text_field` follows the same index validation rules
-  // as of links.
-  for (const chrome_pdf::AccessibilityTextFieldInfo& text_field : text_fields) {
-    if (text_field.text_run_index > text_runs.size() ||
-        text_field.index_in_page >= text_fields.size()) {
-      return false;
-    }
-  }
-
-  const std::vector<chrome_pdf::AccessibilityChoiceFieldInfo>& choice_fields =
-      page_objects.form_fields.choice_fields;
-  if (!std::is_sorted(
-          choice_fields.begin(), choice_fields.end(),
-          CompareTextRuns<chrome_pdf::AccessibilityChoiceFieldInfo>)) {
-    return false;
-  }
-  for (const auto& choice_field : choice_fields) {
-    // Text run index of an `choice_field` works on the same logic as the text
-    // run index of a `link` as mentioned above.
-    // `index_in_page` of a `choice_field` follows the same index validation
-    // rules as of links.
-    if (choice_field.text_run_index > text_runs.size() ||
-        choice_field.index_in_page >= choice_fields.size()) {
-      return false;
-    }
-
-    // The type should be valid.
-    if (choice_field.type < chrome_pdf::ChoiceFieldType::kMinValue ||
-        choice_field.type > chrome_pdf::ChoiceFieldType::kMaxValue) {
-      return false;
-    }
-  }
-
-  const std::vector<chrome_pdf::AccessibilityButtonInfo>& buttons =
-      page_objects.form_fields.buttons;
-  if (!std::is_sorted(buttons.begin(), buttons.end(),
-                      CompareTextRuns<chrome_pdf::AccessibilityButtonInfo>)) {
-    return false;
-  }
-  for (const chrome_pdf::AccessibilityButtonInfo& button : buttons) {
-    // Text run index of an `button` works on the same logic as the text run
-    // index of a `link` as mentioned above.
-    // `index_in_page` of a `button` follows the same index validation rules as
-    // of links.
-    if (button.text_run_index > text_runs.size() ||
-        button.index_in_page >= buttons.size()) {
-      return false;
-    }
-
-    // The type should be valid.
-    if (button.type < chrome_pdf::ButtonType::kMinValue ||
-        button.type > chrome_pdf::ButtonType::kMaxValue) {
-      return false;
-    }
-
-    // For radio button or checkbox, value of `button.control_index` should
-    // always be less than `button.control_count`.
-    if ((button.type == chrome_pdf::ButtonType::kCheckBox ||
-         button.type == chrome_pdf::ButtonType::kRadioButton) &&
-        (button.control_index >= button.control_count)) {
       return false;
     }
   }
@@ -746,41 +700,62 @@ bool PdfAccessibilityTree::RecursiveFindNodeOffset(
     uint32_t page_char_index,
     int32_t* out_node_id,
     int32_t* out_node_char_index) const {
-  if (node->GetRole() == ax::mojom::Role::kStaticText) {
-    // Look up the page-relative character index for static nodes from a map
-    // we built while the document was initially built.
-    auto iter = node_id_to_page_char_index_.find(node->id());
-    uint32_t char_index = iter->second.char_index;
-    uint32_t len = node->data()
-                       .GetStringAttribute(ax::mojom::StringAttribute::kName)
-                       .size();
-
-    // For the end of the selection, the `char_index` is the index of the last
-    // character selected + 1. If the selection ends on a node boundary, that
-    // is, all for the text of a single node is selected and none after that,
-    // return the node that contains the text, not the following node that
-    // `char_index` technically points to. For the beginning of the selection,
-    // choose the node that contains the indexed char.
-    bool contained;
-    if (end_of_selection) {
-      contained = page_char_index <= char_index + len;
-    } else {
-      contained = page_char_index < char_index + len;
+  if (node->GetRole() != ax::mojom::Role::kStaticText) {
+    // For non-static-text container nodes (such as paragraphs or headings),
+    // recursively search through child nodes to locate the target static text
+    // node.
+    for (ui::AXNode* child : node->GetAllChildren()) {
+      if (RecursiveFindNodeOffset(end_of_selection, child, page_char_index,
+                                  out_node_id, out_node_char_index)) {
+        return true;
+      }
     }
-
-    if (contained) {
-      *out_node_id = node->id();
-      *out_node_char_index = page_char_index - char_index;
-      return true;
-    }
-    // Do not need to search children of static text node.
     return false;
   }
-  for (ui::AXNode* child : node->children()) {
-    if (RecursiveFindNodeOffset(end_of_selection, child, page_char_index,
-                                out_node_id, out_node_char_index)) {
+
+  // Static text nodes concatenate text across multiple line text runs. When
+  // non-space whitespace (such as '\r\n') is collapsed into a single space
+  // or non-whitespace control characters are filtered out, the character
+  // length of the static text node string diverges from PDFium's raw
+  // character array length.
+  //
+  // If the static text node has no inline text box children, fall back to
+  // using the static text node's own registered PDFium start index.
+  if (node->GetAllChildren().empty()) {
+    auto iter = node_id_to_page_char_index_.find(node->id());
+    if (iter == node_id_to_page_char_index_.end()) {
+      return false;
+    }
+    uint32_t len = node->GetTextContentLengthUTF16();
+    if (std::optional<uint32_t> offset = GetCharOffsetInRun(
+            end_of_selection, page_char_index, iter->second.char_index, len)) {
+      *out_node_id = node->id();
+      *out_node_char_index = *offset;
       return true;
     }
+    return false;
+  }
+
+  // When inline text box children exist, iterate through each child line run
+  // to match `page_char_index` against that specific line run's PDFium start
+  // index in `node_id_to_page_char_index_`. This prevents character offset
+  // drift across lines.
+  uint32_t accumulated_static_offset = 0;
+  for (ui::AXNode* child : node->GetAllChildren()) {
+    auto iter = node_id_to_page_char_index_.find(child->id());
+    // All inline text box children created in `PdfAccessibilityTreeBuilder`
+    // are guaranteed to be registered in `node_id_to_page_char_index_`.
+    CHECK(iter != node_id_to_page_char_index_.end());
+    uint32_t child_len = child->GetTextContentLengthUTF16();
+    if (std::optional<uint32_t> offset =
+            GetCharOffsetInRun(end_of_selection, page_char_index,
+                               iter->second.char_index, child_len)) {
+      *out_node_id = node->id();
+      *out_node_char_index = accumulated_static_offset + *offset;
+      return true;
+    }
+    // Accumulate the length of this child node to compute parent offsets.
+    accumulated_static_offset += child_len;
   }
   return false;
 }
@@ -789,6 +764,38 @@ bool PdfAccessibilityTree::FindCharacterOffset(
     const ui::AXNode& node,
     uint32_t char_offset_in_node,
     chrome_pdf::PageCharacterIndex& page_char_index) const {
+  // If the target node is a static text node with inline text box children,
+  // break down `char_offset_in_node` across its child inline text box nodes.
+  // Each child inline text box has a distinct PDFium start index in
+  // `node_id_to_page_char_index_`, which avoids character offset drift when
+  // converting accessibility tree offsets back to PDFium character indices.
+  if (node.GetRole() == ax::mojom::Role::kStaticText &&
+      !node.GetAllChildren().empty()) {
+    uint32_t remaining_offset = char_offset_in_node;
+    const std::vector<raw_ptr<ui::AXNode, VectorExperimental>>& children =
+        node.GetAllChildren();
+    for (size_t i = 0; i < children.size(); ++i) {
+      ui::AXNode* child = children[i];
+      uint32_t child_len = child->GetTextContentLengthUTF16();
+      bool is_last_child = (i == children.size() - 1);
+      // Identify which child inline text box contains `remaining_offset`.
+      if (remaining_offset < child_len || is_last_child) {
+        auto iter = node_id_to_page_char_index_.find(child->id());
+        // All inline text box children created in
+        // `PdfAccessibilityTreeBuilder` are guaranteed to be registered in
+        // `node_id_to_page_char_index_`.
+        CHECK(iter != node_id_to_page_char_index_.end());
+        uint32_t offset_in_child = std::min(remaining_offset, child_len);
+        page_char_index.char_index = iter->second.char_index + offset_in_child;
+        page_char_index.page_index = iter->second.page_index;
+        return true;
+      }
+      remaining_offset -= child_len;
+    }
+  }
+
+  // Fallback for nodes directly registered in `node_id_to_page_char_index_`
+  // (e.g. inline text box nodes or static text nodes without children).
   auto iter = node_id_to_page_char_index_.find(GetId(&node));
   if (iter == node_id_to_page_char_index_.end())
     return false;

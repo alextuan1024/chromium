@@ -33,7 +33,6 @@
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/base/test_signin_client.h"
-#include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/accounts_mutator.h"
 #include "components/signin/public/identity_manager/device_accounts_synchronizer.h"
@@ -191,7 +190,6 @@ void IdentityTestEnvironment::Initialize() {
       std::make_unique<TestIdentityManagerObserver>(identity_manager());
   diagnostics_observation_.Observe(identity_manager());
   identity_manager_observation_.Observe(identity_manager());
-  AccountCapabilities::ResetSupportedAccountCapabilityNamesForTesting();
 }
 
 IdentityTestEnvironment::IdentityTestEnvironment(
@@ -390,7 +388,6 @@ IdentityTestEnvironment::~IdentityTestEnvironment() {
   if (owned_identity_manager_) {
     owned_identity_manager_->Shutdown();
   }
-  AccountCapabilities::ResetSupportedAccountCapabilityNamesForTesting();
 }
 
 IdentityManager* IdentityTestEnvironment::identity_manager() {
@@ -765,11 +762,11 @@ void IdentityTestEnvironment::SimulateSuccessfulFetchOfAccountInfo(
     const CoreAccountId& account_id,
     std::string_view email,
     const GaiaId& gaia,
-    const std::string& hosted_domain,
-    const std::string& full_name,
-    const std::string& given_name,
-    const std::string& locale,
-    const std::string& picture_url) {
+    std::string_view hosted_domain,
+    std::string_view full_name,
+    std::string_view given_name,
+    std::string_view locale,
+    std::string_view picture_url) {
   signin::SimulateSuccessfulFetchOfAccountInfo(
       identity_manager(), account_id, email, gaia, hosted_domain, full_name,
       given_name, locale, picture_url);

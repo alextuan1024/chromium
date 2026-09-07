@@ -63,6 +63,7 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.FeatureList;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TriState;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.params.BaseJUnit4RunnerDelegate;
@@ -195,7 +196,7 @@ public class ChromeContextMenuPopulatorTest {
         FeatureList.setDisableNativeForTesting(true);
         ChromeContextMenuPopulator.setIsDefaultBrowserForTesting(false);
         mAutomotiveRule.setIsAutomotive(false);
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(false);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.FALSE);
         NativeLibraryTestUtils.loadNativeLibraryNoBrowserProcess();
         ExternalAuthUtils.setInstanceForTesting(mExternalAuthUtils);
         SendTabToSelfAndroidBridgeJni.setInstanceForTesting(mSendTabToSelfAndroidBridgeNatives);
@@ -263,7 +264,7 @@ public class ChromeContextMenuPopulatorTest {
     public void tearDown() {
         IdentityServicesProvider.setInstanceForTests(null);
         DataProtectionBridge.setInstanceForTesting(null);
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(null);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.NOT_SET);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ApplicationStatus.resetActivitiesForInstrumentationTests();
@@ -661,7 +662,7 @@ public class ChromeContextMenuPopulatorTest {
     @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
     public void testHttpLinkWithDownloadBlockedByPolicy() {
         setAllMandatoryFlowsComplete();
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(true);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.TRUE);
         ContextMenuParams params =
                 new ContextMenuParams(
                         0,
@@ -1169,10 +1170,7 @@ public class ChromeContextMenuPopulatorTest {
     @Test
     @SmallTest
     @UiThreadTest
-    @EnableFeatures({
-        ChromeFeatureList.CONTEXT_MENU_COPY_VIDEO_FRAME_ANDROID,
-        ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID
-    })
+    @EnableFeatures(ChromeFeatureList.CONTEXT_MENU_COPY_VIDEO_FRAME_ANDROID)
     @DisableFeatures({
         ChromeFeatureList.CONTEXT_MENU_PICTURE_IN_PICTURE_ANDROID,
         ChromeFeatureList.CONTEXT_MENU_DOWNLOAD_VIDEO_FRAME_ANDROID
@@ -1201,10 +1199,7 @@ public class ChromeContextMenuPopulatorTest {
     @Test
     @SmallTest
     @UiThreadTest
-    @EnableFeatures({
-        ChromeFeatureList.CONTEXT_MENU_COPY_VIDEO_FRAME_ANDROID,
-        ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID
-    })
+    @EnableFeatures(ChromeFeatureList.CONTEXT_MENU_COPY_VIDEO_FRAME_ANDROID)
     @DisableFeatures({
         ChromeFeatureList.CONTEXT_MENU_PICTURE_IN_PICTURE_ANDROID,
         ChromeFeatureList.CONTEXT_MENU_DOWNLOAD_VIDEO_FRAME_ANDROID
@@ -1394,7 +1389,7 @@ public class ChromeContextMenuPopulatorTest {
     })
     public void testVideoDownloadVideoFrame_restrictedByPolicy() {
         setAllMandatoryFlowsComplete();
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(true);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.TRUE);
         ContextMenuParams params = createVideoParams(ContextMenuDataMediaFlags.MEDIA_NONE);
 
         initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
@@ -1580,7 +1575,7 @@ public class ChromeContextMenuPopulatorTest {
     })
     public void testVideoLinkWithDownloadBlockedByPolicy() {
         setAllMandatoryFlowsComplete();
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(true);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.TRUE);
         GURL sourceUrl = new GURL("http://www.blah.com/");
         GURL url = new GURL(sourceUrl.getSpec() + "I_love_mouse_video.avi");
         ContextMenuParams params =
@@ -2017,7 +2012,7 @@ public class ChromeContextMenuPopulatorTest {
     @UiThreadTest
     public void testImageWithDownloadBlockedByPolicy() {
         setAllMandatoryFlowsComplete();
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(true);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.TRUE);
         ContextMenuParams params =
                 new ContextMenuParams(
                         0,
@@ -2864,7 +2859,7 @@ public class ChromeContextMenuPopulatorTest {
     public void testPageDownloadRestricted() {
         setAllMandatoryFlowsComplete();
         ContextMenuParams params = getPageParams();
-        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(true);
+        DownloadUtils.setIsDownloadRestrictedByPolicyForTesting(TriState.TRUE);
 
         int[][] expectedPage = {
             {
@@ -3564,7 +3559,11 @@ public class ChromeContextMenuPopulatorTest {
         ContextMenuParams params = getHttpLinkParams();
         initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
         mPopulator.onItemSelected(R.id.contextmenu_open_in_new_tab_in_group);
-        verify(mItemDelegate).onOpenInNewTabInGroup(params.getUrl(), params.getReferrer());
+        verify(mItemDelegate)
+                .onOpenInNewTabInGroup(
+                        params.getUrl(),
+                        params.getReferrer(),
+                        params.getAdditionalNavigationParams());
     }
 
     @Test
@@ -3597,7 +3596,8 @@ public class ChromeContextMenuPopulatorTest {
                         params.getUrl(),
                         params.getReferrer(),
                         /* isIncognito= */ false,
-                        /* preferNew= */ false);
+                        /* preferNew= */ false,
+                        params.getAdditionalNavigationParams());
     }
 
     @Test
@@ -3612,7 +3612,8 @@ public class ChromeContextMenuPopulatorTest {
                         params.getUrl(),
                         params.getReferrer(),
                         /* isIncognito= */ false,
-                        /* preferNew= */ true);
+                        /* preferNew= */ true,
+                        params.getAdditionalNavigationParams());
     }
 
     @Test
@@ -3621,16 +3622,50 @@ public class ChromeContextMenuPopulatorTest {
         ContextMenuParams params = getHttpLinkParams();
         initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
         mPopulator.onItemSelected(R.id.contextmenu_open_in_ephemeral_tab);
-        verify(mItemDelegate).onOpenInEphemeralTab(params.getUrl(), params.getLinkText());
+        verify(mItemDelegate)
+                .onOpenInEphemeralTab(
+                        params.getUrl(),
+                        params.getLinkText(),
+                        params.getAdditionalNavigationParams());
+    }
+
+    @Test
+    @SmallTest
+    public void testOnItemSelected_openImageInEphemeralTab() {
+        ContextMenuParams params = getImageParams();
+        initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
+        mPopulator.onItemSelected(R.id.contextmenu_open_image_in_ephemeral_tab);
+        verify(mItemDelegate)
+                .onOpenInEphemeralTab(
+                        params.getSrcUrl(),
+                        params.getTitleText(),
+                        params.getAdditionalNavigationParams());
+    }
+
+    @Test
+    @SmallTest
+    public void testOnItemSelected_openImageInNewTab() {
+        ContextMenuParams params = getImageParams();
+        initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
+        mPopulator.onItemSelected(R.id.contextmenu_open_image_in_new_tab);
+        verify(mItemDelegate)
+                .onOpenImageInNewTab(
+                        params.getSrcUrl(),
+                        params.getReferrer(),
+                        params.getAdditionalNavigationParams());
     }
 
     @Test
     @SmallTest
     public void testOnItemSelected_openImage() {
-        ContextMenuParams params = getHttpLinkParams();
+        ContextMenuParams params = getImageParams();
         initializePopulator(ChromeContextMenuPopulator.ContextMenuMode.NORMAL, params);
         mPopulator.onItemSelected(R.id.contextmenu_open_image);
-        verify(mItemDelegate).onOpenImageUrl(params.getSrcUrl(), params.getReferrer());
+        verify(mItemDelegate)
+                .onOpenImageUrl(
+                        params.getSrcUrl(),
+                        params.getReferrer(),
+                        params.getAdditionalNavigationParams());
     }
 
     @Test
@@ -4018,6 +4053,7 @@ public class ChromeContextMenuPopulatorTest {
     @SmallTest
     @EnableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
     public void testSaveAsContextMenuStrings() {
+        DeviceInfo.setIsDesktopForTesting(true);
         Context context = ContextUtils.getApplicationContext();
 
         // Verify that getTitle() returns the "Save... as..." strings
@@ -4025,6 +4061,11 @@ public class ChromeContextMenuPopulatorTest {
                 context.getString(R.string.contextmenu_save_image_as),
                 ChromeContextMenuItem.getTitle(
                                 context, mProfile, ChromeContextMenuItem.Item.SAVE_IMAGE, false)
+                        .toString());
+        assertEquals(
+                context.getString(R.string.contextmenu_save_page_as),
+                ChromeContextMenuItem.getTitle(
+                                context, mProfile, ChromeContextMenuItem.Item.SAVE_PAGE, false)
                         .toString());
         assertEquals(
                 context.getString(R.string.contextmenu_save_link_as),
@@ -4043,6 +4084,34 @@ public class ChromeContextMenuPopulatorTest {
                                 mProfile,
                                 ChromeContextMenuItem.Item.DOWNLOAD_VIDEO_FRAME,
                                 false)
+                        .toString());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+    public void testSaveAsContextMenuStrings_Disabled() {
+        Context context = ContextUtils.getApplicationContext();
+
+        assertEquals(
+                context.getString(R.string.contextmenu_save_image),
+                ChromeContextMenuItem.getTitle(
+                                context, mProfile, ChromeContextMenuItem.Item.SAVE_IMAGE, false)
+                        .toString());
+        assertEquals(
+                context.getString(R.string.contextmenu_save_page),
+                ChromeContextMenuItem.getTitle(
+                                context, mProfile, ChromeContextMenuItem.Item.SAVE_PAGE, false)
+                        .toString());
+        assertEquals(
+                context.getString(R.string.contextmenu_save_link),
+                ChromeContextMenuItem.getTitle(
+                                context, mProfile, ChromeContextMenuItem.Item.SAVE_LINK_AS, false)
+                        .toString());
+        assertEquals(
+                context.getString(R.string.contextmenu_save_video),
+                ChromeContextMenuItem.getTitle(
+                                context, mProfile, ChromeContextMenuItem.Item.SAVE_VIDEO, false)
                         .toString());
     }
 

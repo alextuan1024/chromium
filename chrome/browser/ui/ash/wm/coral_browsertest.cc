@@ -27,8 +27,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/app_restore/app_restore_test_util.h"
 #include "chrome/browser/ash/app_restore/full_restore_app_launch_handler.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/birch/birch_test_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
@@ -40,6 +38,8 @@
 #include "chrome/test/base/ash/util/ash_test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/services/coral/public/mojom/coral_service.mojom.h"
 #include "components/app_restore/restore_data.h"
@@ -56,14 +56,14 @@ std::vector<GURL> CollectTabURLsFromWindows(
     const MruWindowTracker::WindowList& windows) {
   std::vector<GURL> tab_urls;
   for (aura::Window* window : windows) {
-    Browser* browser =
+    BrowserWindowInterface* browser =
         BrowserView::GetBrowserViewForNativeWindow(window)->browser();
 
     if (!browser) {
       continue;
     }
 
-    TabStripModel* tab_strip_model = browser->tab_strip_model();
+    TabStripModel* tab_strip_model = browser->GetTabStripModel();
     for (int idx = 0; idx < tab_strip_model->count(); idx++) {
       tab_urls.push_back(
           tab_strip_model->GetWebContentsAt(idx)->GetVisibleURL());

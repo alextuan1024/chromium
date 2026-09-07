@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -125,7 +126,7 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 
-  Browser* current_browser() { return current_browser_; }
+  BrowserWindowInterface* current_browser() { return current_browser_; }
 
   GURL GetDifferentOriginUrl() const { return GURL("https://test.com"); }
 
@@ -255,7 +256,8 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
 
   std::unique_ptr<device::ScopedGeolocationOverrider> geolocation_overrider_;
 
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> current_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged>
+      current_browser_ = nullptr;
 
   base::HistogramTester histograms_;
 

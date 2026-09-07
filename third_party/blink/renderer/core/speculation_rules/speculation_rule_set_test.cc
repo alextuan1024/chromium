@@ -209,19 +209,22 @@ class SpeculationRuleSetTest : public ::testing::Test {
 
   SpeculationRuleSet* CreateSpeculationRuleSetWithTargetHint(
       const char* target_hint) {
-    return CreateRuleSet(UNSAFE_TODO(String::Format(R"({
+    return CreateRuleSet(StrCat({R"({
         "prefetch": [{
           "source": "list",
           "urls": ["https://example.com/hint.html"],
-          "target_hint": "%s"
+          "target_hint": ")",
+                                 target_hint,
+                                 R"("
         }],
         "prerender": [{
           "source": "list",
           "urls": ["https://example.com/hint.html"],
-          "target_hint": "%s"
+          "target_hint": ")",
+                                 target_hint,
+                                 R"("
         }]
-      })",
-                                                    target_hint, target_hint)),
+      })"}),
                          KURL("https://example.com/"), execution_context_);
   }
 
@@ -1265,7 +1268,7 @@ TEST_F(SpeculationRuleSetTest, RemoveInMicrotask) {
       InsertSpeculationRules(page_holder.GetDocument(),
                              R"({"prefetch": [
              {"source": "list", "urls": ["https://example.com/bar"]}]})");
-  scoped_refptr<scheduler::EventLoop> event_loop =
+  scheduler::EventLoop* event_loop =
       frame.DomWindow()->GetAgent()->event_loop();
   event_loop->PerformMicrotaskCheckpoint();
   frame.View()->UpdateAllLifecyclePhasesForTest();
@@ -1621,14 +1624,16 @@ class DocumentRulesTest : public SpeculationRuleSetTest {
     // clang-format off
     auto* rule_set =
         CreateRuleSet(
-          String::Format(
+          StrCat({
             R"({
               "prefetch": [{
                 "source": "document",
-                "where": {%s}
+                "where": {)",
+            where_text,
+            R"(}
               }]
             })",
-            where_text.Latin1().c_str()),
+          }),
           base_url, execution_context());
     // clang-format on
     return rule_set;
@@ -3897,7 +3902,7 @@ TEST_F(DocumentRulesTest, RemoveForcesStyleUpdate) {
   HTMLScriptElement* to_remove = InsertSpeculationRules(doc,
                                                         R"({"prefetch": [
              {"source": "list", "urls": ["https://example.com/bar"]}]})");
-  scoped_refptr<scheduler::EventLoop> event_loop =
+  scheduler::EventLoop* event_loop =
       frame.DomWindow()->GetAgent()->event_loop();
   event_loop->PerformMicrotaskCheckpoint();
   frame.View()->UpdateAllLifecyclePhasesForTest();
@@ -3947,7 +3952,7 @@ TEST_F(DocumentRulesTest, RemoveWhileWaitingForStyle) {
   broker.SetBinderForTesting(mojom::blink::SpeculationHost::Name_,
                              BindRepeating(&StubSpeculationHost::BindUnsafe,
                                            Unretained(&speculation_host)));
-  auto event_loop = frame.DomWindow()->GetAgent()->event_loop();
+  auto* event_loop = frame.DomWindow()->GetAgent()->event_loop();
 
   // First, add the rule set and matching links. Style is not yet clean for the
   // newly added links, even after the microtask. We also add a rule set with a
@@ -4554,13 +4559,14 @@ TEST_F(SpeculationRuleSetTest, InvalidTag) {
   const char* tag =
       "Qu\xe9"
       "bec";
-  rule_set = CreateRuleSet(UNSAFE_TODO(String::Format(R"({
-        "tag": "%s",
+  rule_set = CreateRuleSet(StrCat({R"({
+        "tag": ")",
+                                   tag,
+                                   R"(",
         "prefetch": [{
           "where": {"href_matches": "/foo"}
         }]
-      })",
-                                                      tag)),
+      })"}),
                            KURL("https://example.com/"), execution_context());
   EXPECT_EQ(rule_set->error_type(),
             SpeculationRuleSetErrorType::kInvalidRulesetLevelTag);

@@ -12,6 +12,7 @@
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/icu_test_util.h"
 #include "base/time/time.h"
@@ -24,9 +25,7 @@ namespace base::i18n {
 
 class DateTimeFormatterTest : public testing::Test {
  public:
-  void SetUp() override {
-    base::i18n::InitializeICU();
-  }
+  void SetUp() override { InitializeICU(); }
 
  protected:
   // Force UTC timezone for predictable results.
@@ -794,8 +793,7 @@ TEST_F(DateTimeFormatterTest, FormatShortSpecificTimeZone) {
   std::u16string result = formatter.Format(
       time, GetKnownLanguageTag("en-US"),
       datetime_options::YMDT::Medium()
-          .with_time_zone(
-              base::i18n::TimeZone::FromString("America/Los_Angeles"))
+          .with_time_zone(TimeZone::FromString("America/Los_Angeles"))
           .with_time_zone_style(
               DateTimeFormatterOptions::TimeZoneStyle::kShortSpecific));
   EXPECT_NE(result.find(u"PDT"), std::u16string::npos)
@@ -812,8 +810,7 @@ TEST_F(DateTimeFormatterTest, FormatLongSpecificTimeZone) {
   std::u16string result = formatter.Format(
       time, GetKnownLanguageTag("en-US"),
       datetime_options::YMDT::Medium()
-          .with_time_zone(
-              base::i18n::TimeZone::FromString("America/Los_Angeles"))
+          .with_time_zone(TimeZone::FromString("America/Los_Angeles"))
           .with_time_zone_style(
               DateTimeFormatterOptions::TimeZoneStyle::kLongSpecific));
   EXPECT_NE(result.find(u"Pacific Daylight Time"), std::u16string::npos)
@@ -830,8 +827,7 @@ TEST_F(DateTimeFormatterTest, FormatShortGenericTimeZone) {
   std::u16string result = formatter.Format(
       time, GetKnownLanguageTag("en-US"),
       datetime_options::YMDT::Medium()
-          .with_time_zone(
-              base::i18n::TimeZone::FromString("America/Los_Angeles"))
+          .with_time_zone(TimeZone::FromString("America/Los_Angeles"))
           .with_time_zone_style(
               DateTimeFormatterOptions::TimeZoneStyle::kShortGeneric));
   // "PT" or "Pacific Time" depending on ICU data/version.
@@ -850,8 +846,7 @@ TEST_F(DateTimeFormatterTest, FormatLongGenericTimeZone) {
   std::u16string result = formatter.Format(
       time, GetKnownLanguageTag("en-US"),
       datetime_options::YMDT::Medium()
-          .with_time_zone(
-              base::i18n::TimeZone::FromString("America/Los_Angeles"))
+          .with_time_zone(TimeZone::FromString("America/Los_Angeles"))
           .with_time_zone_style(
               DateTimeFormatterOptions::TimeZoneStyle::kLongGeneric));
   EXPECT_NE(result.find(u"Pacific Time"), std::u16string::npos)
@@ -867,8 +862,7 @@ TEST_F(DateTimeFormatterTest, FormatWithSpecificTimeZoneObject) {
       IcuBridge::GetInstance().date_time_formatter();
 
   // Format with Los Angeles timezone object.
-  base::i18n::TimeZone la_tz =
-      base::i18n::TimeZone::FromString("America/Los_Angeles");
+  TimeZone la_tz = TimeZone::FromString("America/Los_Angeles");
 
   std::u16string result = formatter.Format(
       time, GetKnownLanguageTag("en-US"),
@@ -1604,14 +1598,14 @@ TEST_F(DateTimeFormatterTest, MD_AllChromiumPlatformLocales) {
   std::vector<ExactMatchTestEntry::Expectation> expectations = {
       {"af", {u"07-01", u"07 Jan.", u"07 Januarie"}},
       {"am", {u"07/01", u"ጃን 7", u"ጃንዋሪ 7"}},
-      {"ar", {u"7\u200f/1", u"07\u200f/01", u"7 يناير"}},
-      {"ar-XB", {u"7\u200f/1", u"07\u200f/01", u"7 يناير"}},
+      {"ar", {u"7\u200f/1", u"07 يناير", u"7 يناير"}},
+      {"ar-XB", {u"7\u200f/1", u"07 يناير", u"7 يناير"}},
       {"bg", {u"7.01", u"7.01", u"7 януари"}},
       {"bn", {u"৭/১", u"৭ জানু", u"৭ জানুয়ারি"}},
       {"ca", {u"7/1", u"7 de gen.", u"7 de gener"}},
       {"cs", {u"07. 01.", u"7. 1.", u"7. ledna"}},
       {"da", {u"07.01", u"7. jan.", u"7. januar"}},
-      {"de", {u"07.01.", u"07.01.", u"7. Januar"}},
+      {"de", {u"07.01.", u"07. Jan.", u"7. Januar"}},
       {"el", {u"7/1", u"7 Ιαν", u"7 Ιανουαρίου"}},
       {"en-GB", {u"07/01", u"7 Jan", u"7 January"}},
       {"en-US", {u"1/7", u"Jan 7", u"January 7"}},
@@ -1630,9 +1624,9 @@ TEST_F(DateTimeFormatterTest, MD_AllChromiumPlatformLocales) {
       {"hu", {u"01. 07.", u"jan. 7.", u"január 7."}},
       {"id", {u"07/01", u"7 Jan", u"7 Januari"}},
       {"it", {u"07/01", u"7 gen", u"7 gennaio"}},
-      {"ja", {u"01/07", u"01/07", u"1月7日"}},
+      {"ja", {u"01/07", u"1月07日", u"1月7日"}},
       {"kn", {u"7/1", u"7 ಜನ", u"7 ಜನವರಿ"}},
-      {"ko", {u"1. 7.", u"1. 7.", u"1월 7일"}},
+      {"ko", {u"1. 7.", u"1월 7일", u"1월 7일"}},
       {"lt", {u"01-07", u"01-07", u"sausio 7 d."}},
       {"lv", {u"07.01.", u"7. janv.", u"7. janvāris"}},
       {"ml", {u"7/1", u"ജനു 7", u"ജനുവരി 7"}},
@@ -1646,7 +1640,7 @@ TEST_F(DateTimeFormatterTest, MD_AllChromiumPlatformLocales) {
       {"ro", {u"07.01", u"7 ian.", u"7 ianuarie"}},
       {"ru", {u"07.01", u"7 янв.", u"7 января"}},
       {"sl", {u"7. 1.", u"7. jan.", u"7. januar"}},
-      {"sr", {u"7. 1.", u"7. 1.", u"7. јануар"}},
+      {"sr", {u"7. 1.", u"7. јан", u"7. јануар"}},
       {"sv", {u"07/01", u"7 jan.", u"7 januari"}},
       {"sw", {u"07/01", u"7 Jan", u"7 Januari"}},
       {"ta", {u"7/1", u"ஜன. 7", u"7 ஜனவரி"}},
@@ -1678,19 +1672,25 @@ TEST_F(DateTimeFormatterTest, GetHourClockType) {
 
   // Test zero-argument version (which checks default locale) under different
   // default locales.
-  test::ScopedRestoreICUDefaultLocale restore_locale;
+  {
+    ScopedDefaultIcuLocale scoped_locale(GetKnownLanguageTag("en-US"));
+    EXPECT_EQ(base::k12HourClock, formatter.GetHourClockType());
+  }
 
-  i18n::SetICUDefaultLocale("en-US");
-  EXPECT_EQ(base::k12HourClock, formatter.GetHourClockType());
+  {
+    ScopedDefaultIcuLocale scoped_locale(GetKnownLanguageTag("en-GB"));
+    EXPECT_EQ(base::k24HourClock, formatter.GetHourClockType());
+  }
 
-  i18n::SetICUDefaultLocale("en-GB");
-  EXPECT_EQ(base::k24HourClock, formatter.GetHourClockType());
+  {
+    ScopedDefaultIcuLocale scoped_locale(GetKnownLanguageTag("ar-EG"));
+    EXPECT_EQ(base::k12HourClock, formatter.GetHourClockType());
+  }
 
-  i18n::SetICUDefaultLocale("ar-EG");
-  EXPECT_EQ(base::k12HourClock, formatter.GetHourClockType());
-
-  i18n::SetICUDefaultLocale("fa-IR");
-  EXPECT_EQ(base::k24HourClock, formatter.GetHourClockType());
+  {
+    ScopedDefaultIcuLocale scoped_locale(GetKnownLanguageTag("fa-IR"));
+    EXPECT_EQ(base::k24HourClock, formatter.GetHourClockType());
+  }
 }
 
 TEST_F(DateTimeFormatterTest, E_AllChromiumPlatformLocales) {

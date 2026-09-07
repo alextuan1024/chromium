@@ -37,6 +37,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink-forward.h"
+#include "third_party/blink/public/web/web_window_features.h"
 #include "third_party/blink/renderer/bindings/core/v8/isolated_world_csp.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
@@ -70,7 +71,7 @@ class LocalDOMWindowTest : public PageTestBase {
         blink::WebPolicyContainerPolicies(),
         mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
     params->policy_container->policies.sandbox_flags = sandbox_flags;
-    params->initiator_state_token = base::UnguessableToken::Create();
+    params->initiator_state_token = InitiatorStateToken();
     if ((params->policy_container->policies.sandbox_flags &
          network::mojom::blink::WebSandboxFlags::kOrigin) !=
         network::mojom::blink::WebSandboxFlags::kNone) {
@@ -83,16 +84,6 @@ class LocalDOMWindowTest : public PageTestBase {
     ASSERT_EQ(url.GetString(), GetDocument().Url().GetString());
   }
 };
-
-TEST_F(LocalDOMWindowTest, AttachExecutionContext) {
-  auto* scheduler = GetFrame().GetFrameScheduler();
-  auto* window = GetFrame().DomWindow();
-  EXPECT_TRUE(
-      window->GetAgent()->event_loop()->IsSchedulerAttachedForTest(scheduler));
-  window->FrameDestroyed();
-  EXPECT_FALSE(
-      window->GetAgent()->event_loop()->IsSchedulerAttachedForTest(scheduler));
-}
 
 TEST_F(LocalDOMWindowTest, referrerPolicyParsing) {
   LocalDOMWindow* window = GetFrame().DomWindow();
@@ -361,6 +352,17 @@ TEST_F(LocalDOMWindowTest, CanExecuteScriptsDuringDetach) {
       GetFrame().DomWindow()->CanExecuteScripts(kAboutToExecuteScript));
 }
 
+TEST_F(LocalDOMWindowTest, AlwaysOnTop) {
+  LocalDOMWindow* window = GetFrame().DomWindow();
+  EXPECT_FALSE(window->alwaysOnTop());
+
+  GetFrame().GetPage()->SetAlwaysOnTop(true);
+  EXPECT_TRUE(window->alwaysOnTop());
+
+  GetFrame().GetPage()->SetAlwaysOnTop(false);
+  EXPECT_FALSE(window->alwaysOnTop());
+}
+
 TEST_F(LocalDOMWindowTest, OutgoingReferrerUrlCaching) {
   // 1. With feature enabled
   {
@@ -434,7 +436,7 @@ TEST_F(LocalDOMWindowWithSubframeTest, OutgoingReferrerUrlSrcdoc) {
   params->policy_container = std::make_unique<blink::WebPolicyContainer>(
       blink::WebPolicyContainerPolicies(),
       mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
-  params->initiator_state_token = base::UnguessableToken::Create();
+  params->initiator_state_token = InitiatorStateToken();
   child.Loader().CommitNavigation(std::move(params), /*extra_data=*/nullptr);
   test::RunPendingTasks();
 

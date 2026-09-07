@@ -52,6 +52,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kTravelInfo = {
           initWithPrefService:prefService
                      prefName:autofill::prefs::kAutofillProfileEnabled];
       _autofillProfileEnabled.observer = self;
+      self.personalContextEnabled.observer = self;
     }
   }
   return self;
@@ -67,11 +68,13 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kTravelInfo = {
     [self pushEntitiesToConsumer];
 
     [self updateConsumerToggleState];
+
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 
 - (void)disconnect {
-  [super disconnect];
+  self.personalContextEnabled.observer = nil;
   _travelInfoEnabled.observer = nil;
   [_travelInfoEnabled stop];
   _travelInfoEnabled = nil;
@@ -79,6 +82,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kTravelInfo = {
   [_autofillProfileEnabled stop];
   _autofillProfileEnabled = nil;
   _consumer = nil;
+  [super disconnect];
 }
 
 #pragma mark - BooleanObserver
@@ -87,6 +91,8 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kTravelInfo = {
   if (observableBoolean == _travelInfoEnabled ||
       observableBoolean == _autofillProfileEnabled) {
     [self updateConsumerToggleState];
+  } else if (observableBoolean == self.personalContextEnabled) {
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 

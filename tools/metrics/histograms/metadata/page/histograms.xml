@@ -22,12 +22,160 @@ chromium-metrics-reviews@google.com.
 
 <histograms>
 
+<variants name="AdsPageLoadAllByteType">
+  <variant name="" summary="all byte breakdowns"/>
+  <variant name=".AdFrames.Aggregate"
+      summary="Includes resources loaded across all ad frames on a page."/>
+  <variant name=".AdFrames.Aggregate.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network across all ad frames on a page."/>
+  <variant name=".AdFrames.Aggregate.Total2"
+      summary="The size (in KB) of the resources loaded across all ad frames
+               on a page."/>
+  <variant name=".AdFrames.PerFrame"
+      summary="Includes resources loaded for a single ad frame."/>
+  <variant name=".AdFrames.PerFrame.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network for a single ad frame."/>
+  <variant name=".AdFrames.PerFrame.Total2"
+      summary="The size (in KB) of the resources loaded for a single ad
+               frame."/>
+  <variant name=".FullPage"
+      summary="Includes all resources loaded by the page."/>
+  <variant name=".FullPage.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network by the page."/>
+  <variant name=".FullPage.Network.PercentAdFrames"
+      summary="The percentage of network bytes loaded from within ad frames."/>
+  <variant name=".FullPage.Total2"
+      summary="The size (in KB) of the resources loaded by the page."/>
+  <variant name=".FullPage.Total2.PercentAdFrames"
+      summary="The percentage of bytes loaded from within ad frames."/>
+  <variant name=".MainFrame"
+      summary="Only includes resources loaded directly in the main frame."/>
+  <variant name=".MainFrame.Ads"
+      summary="Only includes resources loaded directly in the main frame that
+               were identified to be ad resources."/>
+  <variant name=".MainFrame.Ads.Network"
+      summary="The size (in KB) of all ad resources that loaded over the
+               network directly in the main frame."/>
+  <variant name=".MainFrame.Ads.Total2"
+      summary="The size (in KB) of ad resources loaded directly in the main
+               frame."/>
+  <variant name=".MainFrame.Network"
+      summary="The size (in KB) of all resources that loaded over the network
+               directly in the main frame."/>
+  <variant name=".MainFrame.Total2"
+      summary="The size (in KB) of the resources loaded directly in the main
+               frame."/>
+  <variant name=".NonAdFrames.Aggregate.Total2"
+      summary="The size (in KB) of all of the page's resources except for
+               those loaded in ad frames."/>
+</variants>
+
+<variants name="AdsPageLoadAllCpuType">
+  <variant name="" summary="all CPU breakdowns"/>
+  <variant name=".AdFrames.Aggregate.TotalUsage2"
+      summary="The total CPU usage across all ad frames on a page in its
+               lifetime. This is measured in milliseconds. This is measured
+               whether a frame is in the foreground or not."/>
+  <variant name=".AdFrames.PerFrame.PeakWindowedPercent2"
+      summary="The peak load over all 30 second windows while the page is
+               unactivated of an ad creative. This is measured as percentage
+               of a cpu core used and capped at 100% for multicore systems.
+               This is measured whether the frame is in the foreground or
+               not."/>
+  <variant name=".AdFrames.PerFrame.TotalUsage2"
+      summary="The total load of an ad creative across the life of the page.
+               This is measured in milliseconds and capped at 10 seconds.
+               This is measured whether the frame is in the foreground or
+               not."/>
+  <variant name=".FullPage.PeakWindowedPercent2"
+      summary="The peak load over all 30 second windows during the lifetime
+               of the page. This is measured as percentage of a cpu core used
+               and capped at 100% for multicore systems. This is measured
+               whether a frame is in the foreground or not."/>
+  <variant name=".FullPage.TotalUsage2"
+      summary="The total load of the page across its lifetime. This is
+               measured in milliseconds and capped at 10 minutes. This is
+               measured whether a frame is in the foreground or not."/>
+  <variant name=".NonAdFrames.Aggregate.PeakWindowedPercent2"
+      summary="The peak load over all 30 second windows during the lifetime
+               of the page of all non-ad frame activity including that of the
+               main frame. This is measured as percentage of a cpu core used
+               and capped at 100% for multicore systems. This is measured
+               whether a frame was in the foreground or not."/>
+  <variant name=".NonAdFrames.Aggregate.TotalUsage2"
+      summary="The total load of non-ad frames on page including the main
+               frame across its lifetime. This is measured in milliseconds
+               and capped at 10 minutes. This is measured whether a frame is
+               in the foreground or not."/>
+</variants>
+
+<variants name="AdsPageLoadByteType">
+  <variant name="" summary="all byte breakdowns"/>
+  <variant name=".AdFrames.Aggregate"
+      summary="Includes resources loaded across all ad frames on a page."/>
+  <variant name=".AdFrames.Aggregate.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network across all ad frames on a page."/>
+  <variant name=".AdFrames.Aggregate.Total2"
+      summary="The size (in KB) of the resources loaded across all ad frames
+               on a page."/>
+  <variant name=".AdFrames.PerFrame"
+      summary="Includes resources loaded for a single ad frame."/>
+  <variant name=".AdFrames.PerFrame.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network for a single ad frame."/>
+  <variant name=".AdFrames.PerFrame.Total2"
+      summary="The size (in KB) of the resources loaded for a single ad
+               frame."/>
+  <variant name=".FullPage"
+      summary="Includes all resources loaded by the page."/>
+  <variant name=".FullPage.Network"
+      summary="The size (in KB) of all of resources that loaded over the
+               network by the page."/>
+  <variant name=".FullPage.Network.PercentAdFrames"
+      summary="The percentage of network bytes loaded from within ad frames."/>
+  <variant name=".FullPage.Total2"
+      summary="The size (in KB) of the resources loaded by the page."/>
+  <variant name=".FullPage.Total2.PercentAdFrames"
+      summary="The percentage of bytes loaded from within ad frames."/>
+  <variant name=".NonAdFrames.Aggregate.Total2"
+      summary="The size (in KB) of all of the page's resources except for
+               those loaded in ad frames."/>
+</variants>
+
 <variants name="AdsPageLoadMetricVisibilityType">
   <variant name="Clients.Ads" summary="Includes all ad iframes."/>
   <variant name="Clients.Ads.NonVisible"
       summary="Only includes ad frames that have a display: none style, or
                have an area less than or equal to 16 pixels."/>
   <variant name="Clients.Ads.Visible"
+      summary="Only includes ad frames that have a display != none style and
+               have an area greater than 16 pixels."/>
+</variants>
+
+<variants name="AdsPageLoadPerFrameCpuType">
+  <variant name="" summary="all CPU breakdowns"/>
+  <variant name=".AdFrames.PerFrame.PeakWindowedPercent2"
+      summary="The peak load over all 30 second windows while the page is
+               unactivated of an ad creative. This is measured as percentage
+               of a cpu core used and capped at 100% for multicore systems.
+               This is measured whether the frame is in the foreground or
+               not."/>
+  <variant name=".AdFrames.PerFrame.TotalUsage2"
+      summary="The total load of an ad creative across the life of the page.
+               This is measured in milliseconds and capped at 10 seconds.
+               This is measured whether the frame is in the foreground or
+               not."/>
+</variants>
+
+<variants name="AdsPageLoadVisibility">
+  <variant name="NonVisible"
+      summary="Only includes ad frames that have a display: none style, or
+               have an area less than or equal to 16 pixels."/>
+  <variant name="Visible"
       summary="Only includes ad frames that have a display != none style and
                have an area greater than 16 pixels."/>
 </variants>
@@ -70,6 +218,14 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//net/http/http_connection_info.cc) -->
 
+<variants name="ConnectionReuseStatus">
+  <variant name="" summary="for any case"/>
+  <variant name=".ConnectionReuse"
+      summary="for possible connection reuse cases"/>
+  <variant name=".DNSReuse" summary="for possible dns reuse cases"/>
+  <variant name=".NonConnectionReuse" summary="for non connection reuse cases"/>
+</variants>
+
 <variants name="Gap">
   <variant name="1000ms"/>
 </variants>
@@ -104,6 +260,17 @@ chromium-metrics-reviews@google.com.
   <variant name="FCP"
       summary="up to First Contentful Paint (FCP). Recorded when FCP is
                reached"/>
+</variants>
+
+<variants name="GWSPrewarmSubresourceCacheStatus">
+  <variant name="" summary="all subresources"/>
+  <variant name=".Cached"
+      summary="all cached subresources (HTTP and memory cache)"/>
+  <variant name=".HttpCached"
+      summary="subresources served from the HTTP cache"/>
+  <variant name=".MemoryCached"
+      summary="subresources served from the in-renderer memory cache"/>
+  <variant name=".NotCached" summary="subresources served from network"/>
 </variants>
 
 <variants name="HiddenSuffix">
@@ -417,6 +584,7 @@ chromium-metrics-reviews@google.com.
   <variant name=".borealis-credits"/>
   <variant name=".borealis-installer"/>
   <variant name=".borealis-motd"/>
+  <variant name=".browser-actuator-internals"/>
   <variant name=".browser-switch"/>
   <variant name=".camera-app"/>
   <variant name=".cast-feedback"/>
@@ -1069,6 +1237,42 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="PageLoad.Clients.Ads.Bytes{AdsPageLoadAllByteType}" units="KB"
+    expires_after="2027-07-26">
+  <owner>jkarlin@chromium.org</owner>
+  <owner>alexmt@chromium.org</owner>
+  <owner>chrome-ads-histograms@google.com</owner>
+  <summary>
+    Only recorded if the page has at least one identified ad frame. Recorded in
+    PageLoadMetrics when the page is destroyed. Bytes include all bytes used by
+    the network to load a resource and response body bytes for cached resources
+    (from both the HTTP and memory caches). An ad frame consists of the
+    identified ad frame and all of its children (which may also be ads, but are
+    counted as part of the ancestor ad frame). Includes resources that did not
+    finish loading. Includes all ad iframes. {AdsPageLoadAllByteType}
+  </summary>
+</histogram>
+
+<histogram name="PageLoad.Clients.Ads.Cpu{AdsPageLoadAllCpuType}" units="units"
+    expires_after="2027-07-26">
+  <owner>jkarlin@chromium.org</owner>
+  <owner>chrome-ads-histograms@google.com</owner>
+  <summary>
+    Only recorded if the page has at least one identified ad frame. Recorded in
+    PageLoadMetrics when the page is destroyed. Cpu measures the wall time of
+    tasks attributable to a frame as reported by the MainThreadTaskScheduler as
+    well as time spent servicing scripted animations by each document (not
+    attributable by the MainThreadTaskScheduler). An ad frame consists of the
+    identified ad frame and all of its children (which may also be ads, but are
+    counted as part of the ancestor ad frame). Includes resources that did not
+    finish loading. Does not consider time while a page is backgrounded.
+    Includes all ad iframes. {AdsPageLoadAllCpuType}
+
+    Warning: This metric expired around 04/2022 and was unexpired 07/2023. Data
+    may be missing.
+  </summary>
+</histogram>
+
 <histogram name="PageLoad.Clients.Ads.HeavyAds.DisallowedByBlocklist"
     enum="BooleanBlocked" expires_after="2027-07-26">
   <owner>jkarlin@chromium.org</owner>
@@ -1101,6 +1305,45 @@ chromium-metrics-reviews@google.com.
     single page over it's entire lifetime. This includes resources that did not
     finish or were canceled. Only recorded for pages with non-zero ad bytes.
   </summary>
+</histogram>
+
+<histogram name="PageLoad.Clients.Ads.{Visibility}.Bytes{AdsPageLoadByteType}"
+    units="KB" expires_after="2027-07-26">
+  <owner>jkarlin@chromium.org</owner>
+  <owner>alexmt@chromium.org</owner>
+  <owner>chrome-ads-histograms@google.com</owner>
+  <summary>
+    Only recorded if the page has at least one identified ad frame. Recorded in
+    PageLoadMetrics when the page is destroyed. Bytes include all bytes used by
+    the network to load a resource and response body bytes for cached resources
+    (from both the HTTP and memory caches). An ad frame consists of the
+    identified ad frame and all of its children (which may also be ads, but are
+    counted as part of the ancestor ad frame). Includes resources that did not
+    finish loading. {Visibility} {AdsPageLoadByteType}
+  </summary>
+  <token key="Visibility" variants="AdsPageLoadVisibility"/>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.Ads.{Visibility}.Cpu{AdsPageLoadPerFrameCpuType}"
+    units="units" expires_after="2027-07-26">
+  <owner>jkarlin@chromium.org</owner>
+  <owner>chrome-ads-histograms@google.com</owner>
+  <summary>
+    Only recorded if the page has at least one identified ad frame. Recorded in
+    PageLoadMetrics when the page is destroyed. Cpu measures the wall time of
+    tasks attributable to a frame as reported by the MainThreadTaskScheduler as
+    well as time spent servicing scripted animations by each document (not
+    attributable by the MainThreadTaskScheduler). An ad frame consists of the
+    identified ad frame and all of its children (which may also be ads, but are
+    counted as part of the ancestor ad frame). Includes resources that did not
+    finish loading. Does not consider time while a page is backgrounded.
+    {Visibility} {AdsPageLoadPerFrameCpuType}
+
+    Warning: This metric expired around 04/2022 and was unexpired 07/2023. Data
+    may be missing.
+  </summary>
+  <token key="Visibility" variants="AdsPageLoadVisibility"/>
 </histogram>
 
 <histogram
@@ -1835,7 +2078,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.ConnectTiming.FirstRequestDohDetails.ConnectionInfo"
-    enum="HttpConnectionInfoCoarse" expires_after="2026-09-06">
+    enum="HttpConnectionInfoCoarse" expires_after="2027-08-27">
   <owner>bashi@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -1848,7 +2091,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.ConnectTiming.FirstRequestDohDetails.SessionSource"
-    enum="NetworkSessionSource" expires_after="2026-09-06">
+    enum="NetworkSessionSource" expires_after="2027-08-27">
   <owner>bashi@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -1907,7 +2150,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.ConnectTiming.FirstRequestResolutionDetails.TaskCompletionDelay.{ResolutionSource}"
-    units="ms" expires_after="2026-09-06">
+    units="ms" expires_after="2027-08-27">
   <owner>bashi@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -2265,14 +2508,7 @@ chromium-metrics-reviews@google.com.
     loads. This is only recorded for Search navigations and is recorded once
     after navigation commit. This metric is recorded {ConnectionReuseStatus}.
   </summary>
-  <token key="ConnectionReuseStatus">
-    <variant name="" summary="for any case"/>
-    <variant name=".ConnectionReuse"
-        summary="for possible connection reuse cases"/>
-    <variant name=".DNSReuse" summary="for possible dns reuse cases"/>
-    <variant name=".NonConnectionReuse"
-        summary="for non connection reuse cases"/>
-  </token>
+  <token key="ConnectionReuseStatus" variants="ConnectionReuseStatus"/>
 </histogram>
 
 <histogram
@@ -2290,8 +2526,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.ConnectedCallbackDelay2"
-    units="ms" expires_after="2026-10-11">
-  <owner>hayato@chromium.org</owner>
+    units="ms" expires_after="2027-10-11">
+  <owner>chikamune@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
   <summary>
@@ -2305,7 +2541,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.CreateStreamDelay2"
     units="ms" expires_after="2027-02-14">
-  <owner>hayato@chromium.org</owner>
+  <owner>chikamune@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
   <summary>
@@ -2359,7 +2595,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.FirstFetchStartToFirstRequestStart"
     units="ms" expires_after="2027-01-03">
-  <owner>hayato@chromium.org</owner>
+  <owner>chikamune@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
   <summary>
@@ -2409,7 +2645,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.InitializeStreamDelay"
     units="ms" expires_after="2027-09-13">
-  <owner>hayato@chromium.org</owner>
+  <owner>chikamune@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
   <summary>
@@ -2423,7 +2659,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.MaxStreamLimitPendingDelay{ConnectionProtocolType}"
-    units="ms" expires_after="2026-09-06">
+    units="ms" expires_after="2027-08-27">
   <owner>bashi@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -2858,6 +3094,134 @@ chromium-metrics-reviews@google.com.
   <token key="PrerenderStatus" variants="PrerenderStatus"/>
 </histogram>
 
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.LastSubresourceLoadToCancellation"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration (headroom) between the completion of the last
+    subresource load and the cancellation of the Google Search prewarm
+    prerendered page. Recorded when the prerendered prewarm page is cancelled
+    after having loaded at least one subresource.
+  </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.LoadEventOccurredBeforeCancellation"
+    enum="Boolean" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Records whether the load event (window.onload) occurred before the Google
+    Search prewarm prerendered page was cancelled/ended. Recorded when the
+    prerendered prewarm page ends/cancels.
+  </summary>
+</histogram>
+
+<histogram name="PageLoad.Clients.GoogleSearch.Prewarm.LoadEventToCancellation"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration (headroom) between the load event (window.onload)
+    completion and the cancellation of the Google Search prewarm prerendered
+    page. Recorded when the prerendered prewarm page is cancelled after having
+    reached the load event.
+  </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.NavigationToCancellation"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration from navigation start to cancellation of the Google
+    Search prewarm prerendered page. Recorded when the prerendered prewarm page
+    is cancelled/destroyed.
+  </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.NavigationToDOMContentLoaded"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration from navigation start to DOMContentLoaded event start
+    for the Google Search prewarm prerendered page. Recorded when
+    DOMContentLoaded event occurs.
+  </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.NavigationToLastSubresourceLoad"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration from navigation start to the completion of the last
+    subresource load on the Google Search prewarm prerendered page. Recorded
+    when the prerendered prewarm page ends/cancels after having loaded at least
+    one subresource.
+  </summary>
+</histogram>
+
+<histogram name="PageLoad.Clients.GoogleSearch.Prewarm.NavigationToLoadEvent"
+    units="ms" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the duration from navigation start to the load event
+    (window.onload) start for the Google Search prewarm prerendered page.
+    Recorded when load event occurs.
+  </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.SubresourceCount{SubresourceCacheStatus}"
+    units="count" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Records the total count of {SubresourceCacheStatus} loaded successfully on
+    the Google Search prewarm prerendered page. Recorded once at session end
+    when the prerendered prewarm page ends or is cancelled without being
+    activated.
+  </summary>
+  <token key="SubresourceCacheStatus"
+      variants="GWSPrewarmSubresourceCacheStatus"/>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.Prewarm.SubresourceDestination{SubresourceCacheStatus}"
+    enum="RequestDestination" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Records the request destination (type of resource, e.g. Script, Style,
+    Image, Font) of {SubresourceCacheStatus} loaded on the Google Search prewarm
+    prerendered page. Recorded in the browser when each completed subresource
+    load notification is received from the network stack or in-renderer memory
+    cache.
+  </summary>
+  <token key="SubresourceCacheStatus"
+      variants="GWSPrewarmSubresourceCacheStatus"/>
+</histogram>
+
+<histogram name="PageLoad.Clients.GoogleSearch.Prewarm.WasActivated"
+    enum="Boolean" expires_after="2027-02-07">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Records whether a Google Search prewarm page load was unexpectedly activated
+    into a primary frame tab instead of being cancelled. Recorded once per
+    prewarm page load at session end (as true if activated, or false if
+    cancelled without activation).
+  </summary>
+</histogram>
+
 <histogram name="PageLoad.Clients.GoogleSearch.Prewarm.WasResponseCached"
     enum="Boolean" expires_after="2027-02-07">
   <owner>suzukikeita@chromium.org</owner>
@@ -2867,6 +3231,49 @@ chromium-metrics-reviews@google.com.
     cache or network. Recorded once upon navigation commit of the prerendered
     prewarm page.
   </summary>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.QuicSessionEstablishmentReason{ConnectionReuseStatus}"
+    enum="QuicSessionEstablishmentReason" expires_after="2027-08-30">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the reason for QUIC session establishment for Google Search page
+    loads. Recorded when the navigation is completed or the app is backgrounded
+    on Android after reaching LCP. This metric is recorded
+    {ConnectionReuseStatus}.
+  </summary>
+  <token key="ConnectionReuseStatus" variants="ConnectionReuseStatus"/>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.QuicSessionNonReuseReason{ConnectionReuseStatus}"
+    enum="QuicSessionNonReuseReason" expires_after="2027-08-30">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the reason why a QUIC session was not reused for Google Search page
+    loads. Recorded when the navigation is completed or the app is backgrounded
+    on Android after reaching LCP. This metric is recorded
+    {ConnectionReuseStatus}.
+  </summary>
+  <token key="ConnectionReuseStatus" variants="ConnectionReuseStatus"/>
+</histogram>
+
+<histogram
+    name="PageLoad.Clients.GoogleSearch.SessionCreationInitiator{ConnectionProtocolType}{ConnectionReuseStatus}"
+    enum="MultiplexedSessionCreationInitiator" expires_after="2027-08-30">
+  <owner>suzukikeita@chromium.org</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Measures the session creation initiator for Google Search page loads with
+    {ConnectionProtocolType}. Recorded when the navigation is completed or the
+    app is backgrounded on Android after reaching LCP. This metric is recorded
+    {ConnectionReuseStatus}.
+  </summary>
+  <token key="ConnectionProtocolType" variants="ConnectionProtocolType"/>
+  <token key="ConnectionReuseStatus" variants="ConnectionReuseStatus"/>
 </histogram>
 
 <histogram
@@ -4187,7 +4594,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Experimental.ClickInputBurst" units="count"
-    expires_after="2026-11-01">
+    expires_after="2027-02-28">
   <owner>dougarnett@chromium.org</owner>
   <owner>tbansal@chromium.org</owner>
   <owner>sullivan@chromium.org</owner>
@@ -4202,7 +4609,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Experimental.InputTiming.InputToNavigationStart"
-    units="ms" expires_after="2026-12-27">
+    units="ms" expires_after="2027-02-28">
   <owner>spelchat@chromium.org</owner>
   <owner>chrome-brapp-loading@google.com</owner>
   <summary>
@@ -4245,7 +4652,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Experimental.InputTiming.InputToNavigationStart.FromLinkClick"
-    units="ms" expires_after="2026-12-27">
+    units="ms" expires_after="2027-02-28">
   <owner>spelchat@chromium.org</owner>
   <owner>chrome-brapp-loading@google.com</owner>
   <summary>
@@ -4256,7 +4663,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Experimental.InputTiming.InputToNavigationStart.FromOmnibox"
-    units="ms" expires_after="2026-12-27">
+    units="ms" expires_after="2027-02-28">
   <owner>spelchat@chromium.org</owner>
   <owner>chrome-brapp-loading@google.com</owner>
   <summary>
@@ -4390,7 +4797,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Experimental.PageVisitFinalStatus"
-    enum="PageVisitFinalStatus" expires_after="2026-12-22">
+    enum="PageVisitFinalStatus" expires_after="2027-02-28">
   <owner>sullivan@chromium.org</owner>
   <owner>speed-metrics-dev@chromium.org</owner>
   <summary>
@@ -4426,7 +4833,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Experimental.TotalForegroundDuration" units="ms"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>npm@chromium.org</owner>
   <owner>speed-metrics-dev@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
@@ -4682,7 +5089,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Internal.ErrorCode" enum="InternalErrorLoadEvent"
-    expires_after="2026-12-20">
+    expires_after="2027-02-21">
   <owner>csharrison@chromium.org</owner>
   <owner>bmcquade@chromium.org</owner>
   <summary>
@@ -4792,7 +5199,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Internal.Prerender2.MainResourceParseStartToActivation{PreloadingTriggerType}"
-    units="ms" expires_after="2026-08-30">
+    units="ms" expires_after="2027-08-30">
   <owner>lingqi@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -4916,7 +5323,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.LayoutInstability.CumulativeShiftScoreAtFirstOnHidden"
-    units="scorex10" expires_after="2026-11-30">
+    units="scorex10" expires_after="2027-02-28">
   <owner>lanwei@chromium.org</owner>
   <owner>speed-metrics-dev@chromium.org</owner>
   <summary>
@@ -5712,42 +6119,6 @@ chromium-metrics-reviews@google.com.
     Changes to how cross-origin content is loaded (e.g., security policies,
     network prioritization) or to iframes can certainly affect this metric.
     {AdsPageLoadMetricVisibilityType}
-  </summary>
-</histogram>
-
-<histogram name="PageLoad.{AdsPageLoadMetricVisibilityType}.Bytes" units="KB"
-    expires_after="2027-07-26">
-  <owner>jkarlin@chromium.org</owner>
-  <owner>alexmt@chromium.org</owner>
-  <owner>chrome-ads-histograms@google.com</owner>
-  <summary>
-    Only recorded if the page has at least one identified ad frame. Recorded in
-    PageLoadMetrics when the page is destroyed. Bytes include all bytes used by
-    the network to load a resource and response body bytes for cached resources
-    (from both the HTTP and memory caches). An ad frame consists of the
-    identified ad frame and all of its children (which may also be ads, but are
-    counted as part of the ancestor ad frame). Includes resources that did not
-    finish loading. {AdsPageLoadMetricVisibilityType}
-  </summary>
-</histogram>
-
-<histogram name="PageLoad.{AdsPageLoadMetricVisibilityType}.Cpu" units="units"
-    expires_after="2027-07-26">
-  <owner>jkarlin@chromium.org</owner>
-  <owner>chrome-ads-histograms@google.com</owner>
-  <summary>
-    Only recorded if the page has at least one identified ad frame. Recorded in
-    PageLoadMetrics when the page is destroyed. Cpu measures the wall time of
-    tasks attributable to a frame as reported by the MainThreadTaskScheduler as
-    well as time spent servicing scripted animations by each document (not
-    attributable by the MainThreadTaskScheduler). An ad frame consists of the
-    identified ad frame and all of its children (which may also be ads, but are
-    counted as part of the ancestor ad frame). Includes resources that did not
-    finish loading. Does not consider time while a page is backgrounded.
-    {AdsPageLoadMetricVisibilityType}
-
-    Warning: This metric expired around 04/2022 and was unexpired 07/2023. Data
-    may be missing.
   </summary>
 </histogram>
 

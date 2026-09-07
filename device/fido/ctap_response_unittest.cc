@@ -12,13 +12,13 @@
 #include "components/cbor/reader.h"
 #include "components/cbor/values.h"
 #include "components/cbor/writer.h"
+#include "crypto/test_support.h"
 #include "device/fido/attestation_statement_formats.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
 #include "device/fido/device_response_converter.h"
 #include "device/fido/fido_test_data.h"
 #include "device/fido/opaque_attestation_statement.h"
-#include "device/fido/p256_public_key.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
@@ -617,7 +617,7 @@ TEST(CTAPResponseTest, TestParseRegisterResponseData) {
 // These test the parsing of the U2F raw bytes of the registration response.
 // Test that an EC public key serializes to CBOR properly.
 TEST(CTAPResponseTest, TestSerializedPublicKey) {
-  auto public_key = P256PublicKey::ExtractFromU2fRegistrationResponse(
+  auto public_key = PublicKey::FromU2fRegistrationResponse(
       static_cast<int32_t>(CoseAlgorithmIdentifier::kEs256),
       test_data::kTestU2fRegisterResponse);
   ASSERT_TRUE(public_key);
@@ -639,7 +639,7 @@ TEST(CTAPResponseTest, TestParseU2fAttestationStatementCBOR) {
 
 // Tests that well-formed attested credential data serializes properly.
 TEST(CTAPResponseTest, TestSerializeAttestedCredentialData) {
-  auto public_key = P256PublicKey::ExtractFromU2fRegistrationResponse(
+  auto public_key = PublicKey::FromU2fRegistrationResponse(
       static_cast<int32_t>(CoseAlgorithmIdentifier::kEs256),
       test_data::kTestU2fRegisterResponse);
   auto attested_data = AttestedCredentialData::CreateFromU2fRegisterResponse(
@@ -651,7 +651,7 @@ TEST(CTAPResponseTest, TestSerializeAttestedCredentialData) {
 
 // Tests that well-formed authenticator data serializes properly.
 TEST(CTAPResponseTest, TestSerializeAuthenticatorData) {
-  auto public_key = P256PublicKey::ExtractFromU2fRegistrationResponse(
+  auto public_key = PublicKey::FromU2fRegistrationResponse(
       static_cast<int32_t>(CoseAlgorithmIdentifier::kEs256),
       test_data::kTestU2fRegisterResponse);
   auto attested_data = AttestedCredentialData::CreateFromU2fRegisterResponse(
@@ -671,7 +671,7 @@ TEST(CTAPResponseTest, TestSerializeAuthenticatorData) {
 
 // Tests that a U2F attestation object serializes properly.
 TEST(CTAPResponseTest, TestSerializeU2fAttestationObject) {
-  auto public_key = P256PublicKey::ExtractFromU2fRegistrationResponse(
+  auto public_key = PublicKey::FromU2fRegistrationResponse(
       static_cast<int32_t>(CoseAlgorithmIdentifier::kEs256),
       test_data::kTestU2fRegisterResponse);
   auto attested_data = AttestedCredentialData::CreateFromU2fRegisterResponse(
@@ -1131,6 +1131,90 @@ TEST(CTAPResponseTest, AttestationObjectResponseFields) {
                      .attested_data()
                      ->IsAaguidZero());
     EXPECT_TRUE(attestation_object.attestation_statement().IsNoneAttestation());
+  }
+}
+
+TEST(CTAPResponseTest, MldsaPublicKey) {
+  static const struct {
+    CoseAlgorithmIdentifier algo;
+    crypto::keypair::PublicKey (*pubkey_fn)();
+    const base::span<const uint8_t> (*cose_fn)();
+  } kTests[] = {
+      {CoseAlgorithmIdentifier::kMlDsa44,
+       &crypto::test::FixedMldsa44PublicKeyForTesting,
+       &crypto::test::FixedMldsa44PublicKeyAsCoseForTesting},
+      {CoseAlgorithmIdentifier::kMlDsa65,
+       &crypto::test::FixedMldsa65PublicKeyForTesting,
+       &crypto::test::FixedMldsa65PublicKeyAsCoseForTesting},
+      {CoseAlgorithmIdentifier::kMlDsa87,
+       &crypto::test::FixedMldsa87PublicKeyForTesting,
+       &crypto::test::FixedMldsa87PublicKeyAsCoseForTesting},
+  };
+
+  for (const auto& test : kTests) {
+    SCOPED_TRACE(static_cast<int>(test.algo));
+    const base::span<const uint8_t> cose_bytes = test.cose_fn();
+    const std::vector<uint8_t> expected_spki =
+        test.pubkey_fn().ToSubjectPublicKeyInfo();
+
+    std::optional<cbor::Value> cose_val = cbor::Reader::Read(cose_bytes);
+    ASSERT_TRUE(cose_val && cose_val->is_map());
+
+    // Test FromCOSEKey.
+    std::unique_ptr<PublicKey> pubkey = PublicKey::FromCOSEKey(
+        static_cast<int32_t>(test.algo), cose_bytes, cose_val->GetMap());
+    ASSERT_TRUE(pubkey);
+    EXPECT_EQ(pubkey->algorithm, static_cast<int32_t>(test.algo));
+    EXPECT_EQ(pubkey->cose_key_bytes, cose_bytes);
+    ASSERT_TRUE(pubkey->der_bytes.has_value());
+    EXPECT_EQ(*pubkey->der_bytes, expected_spki);
+
+    // Test FromSpkiDer.
+    std::unique_ptr<PublicKey> pubkey_from_spki =
+        PublicKey::FromSpkiDer(static_cast<int32_t>(test.algo), expected_spki);
+    ASSERT_TRUE(pubkey_from_spki);
+    EXPECT_EQ(pubkey_from_spki->algorithm, static_cast<int32_t>(test.algo));
+    EXPECT_EQ(pubkey_from_spki->cose_key_bytes, cose_bytes);
+    ASSERT_TRUE(pubkey_from_spki->der_bytes.has_value());
+    EXPECT_EQ(*pubkey_from_spki->der_bytes, expected_spki);
+  }
+
+  // An AKP key with an unsupported algorithm (e.g. SLH-DSA) should return a
+  // PublicKey with nullopt der_bytes rather than failing.
+  {
+    cbor::Value::MapValue map;
+    map.emplace(static_cast<int64_t>(CoseKeyKey::kKty),
+                static_cast<int64_t>(CoseKeyTypes::kAKP));
+    map.emplace(static_cast<int64_t>(CoseKeyKey::kAkpPublicKey),
+                std::vector<uint8_t>{1, 2, 3, 4});
+    const std::optional<std::vector<uint8_t>> cbor_bytes =
+        cbor::Writer::Write(cbor::Value(map));
+    ASSERT_TRUE(cbor_bytes);
+
+    constexpr int32_t kUnsupportedAlgo = -46;  // SLH-DSA.
+    std::unique_ptr<PublicKey> pubkey =
+        PublicKey::FromCOSEKey(kUnsupportedAlgo, *cbor_bytes, map);
+    ASSERT_TRUE(pubkey);
+    EXPECT_EQ(pubkey->algorithm, kUnsupportedAlgo);
+    EXPECT_EQ(pubkey->cose_key_bytes, *cbor_bytes);
+    EXPECT_FALSE(pubkey->der_bytes.has_value());
+  }
+
+  // A malformed ML-DSA key (e.g. invalid key length) should return nullptr.
+  {
+    cbor::Value::MapValue map;
+    map.emplace(static_cast<int64_t>(CoseKeyKey::kKty),
+                static_cast<int64_t>(CoseKeyTypes::kAKP));
+    map.emplace(static_cast<int64_t>(CoseKeyKey::kAkpPublicKey),
+                std::vector<uint8_t>{1, 2, 3, 4});
+    const std::optional<std::vector<uint8_t>> cbor_bytes =
+        cbor::Writer::Write(cbor::Value(map));
+    ASSERT_TRUE(cbor_bytes);
+
+    std::unique_ptr<PublicKey> pubkey = PublicKey::FromCOSEKey(
+        static_cast<int32_t>(CoseAlgorithmIdentifier::kMlDsa44), *cbor_bytes,
+        map);
+    EXPECT_FALSE(pubkey);
   }
 }
 

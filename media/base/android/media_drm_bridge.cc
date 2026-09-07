@@ -208,32 +208,6 @@ KeySystemManager* GetKeySystemManager() {
   return ksm;
 }
 
-// Checks whether |key_system| is supported with |container_mime_type|. Only
-// checks |key_system| support if |container_mime_type| is empty.
-// TODO(xhwang): The |container_mime_type| is not the same as contentType in
-// the EME spec. Revisit this once the spec issue with initData type is
-// resolved.
-bool IsKeySystemSupportedWithTypeImpl(const std::string& key_system,
-                                      const std::string& container_mime_type) {
-  CHECK(!key_system.empty());
-
-  UUID scheme_uuid = GetKeySystemManager()->GetUUID(key_system);
-  if (scheme_uuid.empty()) {
-    DVLOG(1) << "Cannot get UUID for key system " << key_system;
-    return false;
-  }
-
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jbyteArray> j_scheme_uuid =
-      base::android::ToJavaByteArray(env, scheme_uuid);
-  ScopedJavaLocalRef<jstring> j_container_mime_type =
-      ConvertUTF8ToJavaString(env, container_mime_type);
-  bool supported = Java_MediaDrmBridge_isCryptoSchemeSupported(
-      env, j_scheme_uuid, j_container_mime_type);
-  DVLOG_IF(1, !supported) << "Crypto scheme not supported for " << key_system
-                          << " with " << container_mime_type;
-  return supported;
-}
 
 // Converts from String value returned from MediaDrm to an enum of HdcpVersion
 // values. Refer to http://shortn/_eFj9y8KBgR for the list of Strings that could
@@ -335,34 +309,18 @@ CdmSessionClosedReason ToCdmSessionClosedReason(
 
 // static
 bool MediaDrmBridge::IsKeySystemSupported(const std::string& key_system) {
-  return IsKeySystemSupportedWithTypeImpl(key_system, "");
-}
+  CHECK(!key_system.empty());
 
-// static
-bool MediaDrmBridge::IsPerApplicationProvisioningSupported() {
-  // Start by checking "ro.product.first_api_level", which may not exist.
-  // If it is non-zero, then it is the API level.
-  // Checking FirstApiLevel is known to be expensive (see crbug.com/1366106),
-  // and thus is cached.
-  static int first_api_level;
-  base::StringToInt(base::SysInfo::GetAndroidFirstApiLevel(), &first_api_level);
-  base::UmaHistogramSparse("Media.EME.MediaDrm.FirstApiLevel", first_api_level);
-  DVLOG(1) << "first_api_level = " << first_api_level;
-  if (first_api_level >= base::android::android_info::SDK_VERSION_OREO) {
-    return true;
+  UUID scheme_uuid = GetKeySystemManager()->GetUUID(key_system);
+  if (scheme_uuid.empty()) {
+    DVLOG(1) << "Cannot get UUID for key system " << key_system;
+    return false;
   }
 
-  if (first_api_level == 0) {
-    // If "ro.product.first_api_level" is 0, that means it is unset, and does
-    // not exist. We should then verify against the build number, as that is
-    // what seems to communicate the first api level on devices that were
-    // released before "ro.product.first_api_level" was introduced.
-    DVLOG(1) << "api_level = " << base::android::android_info::sdk_int();
-    return base::android::android_info::sdk_int() >=
-           base::android::android_info::SDK_VERSION_OREO;
-  }
-
-  return false;
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jbyteArray> j_scheme_uuid =
+      base::android::ToJavaByteArray(env, scheme_uuid);
+  return Java_MediaDrmBridge_isCryptoSchemeSupported(env, j_scheme_uuid);
 }
 
 // static
@@ -374,17 +332,9 @@ bool MediaDrmBridge::IsPersistentLicenseTypeSupported(
 }
 
 // static
-bool MediaDrmBridge::IsKeySystemSupportedWithType(
-    const std::string& key_system,
-    const std::string& container_mime_type) {
-  DCHECK(!container_mime_type.empty()) << "Call IsKeySystemSupported instead";
-
-  return IsKeySystemSupportedWithTypeImpl(key_system, container_mime_type);
-}
-
-// static
 MediaDrmBridge::SupportedContainers MediaDrmBridge::GetSupportedContainers(
-    const std::string& key_system) {
+    const std::string& key_system,
+    SecurityLevel security_level) {
   CHECK(!key_system.empty());
 
   UUID scheme_uuid = GetKeySystemManager()->GetUUID(key_system);
@@ -398,7 +348,8 @@ MediaDrmBridge::SupportedContainers MediaDrmBridge::GetSupportedContainers(
       base::android::ToJavaByteArray(env, scheme_uuid);
 
   base::android::ScopedJavaLocalRef<jobjectArray> j_containers =
-      Java_MediaDrmBridge_getSupportedContainers(env, j_scheme_uuid);
+      Java_MediaDrmBridge_getSupportedContainers(
+          env, j_scheme_uuid, static_cast<int>(security_level));
 
   std::vector<std::string> containers;
   if (!j_containers.is_null()) {
@@ -1113,8 +1064,8 @@ std::string MediaDrmBridge::GetVersionInternal() {
 }
 
 HdcpVersion MediaDrmBridge::GetCurrentHdcpLevel() {
-  if (security_level_ == SECURITY_LEVEL_SW_SECURE_CRYPTO ||
-      security_level_ == SECURITY_LEVEL_SW_SECURE_DECODE) {
+  // Software DRM (L3) cannot enforce hardware HDCP output protection.
+  if (security_level_ == SECURITY_LEVEL_SW_SECURE_CRYPTO) {
     return HdcpVersion::kHdcpVersionNone;
   }
 

@@ -108,8 +108,14 @@ bool IsAllowedToastWithNoTimeout(const base::Feature& promo_feature) {
 }
 
 bool IsAllowedLegacyPromo(const base::Feature& promo_feature) {
+  // LINT.IfChange(LegacyPromoMessage)
+  // ----------------------------------------------------------------
   // NOTE: LEGACY PROMOS ARE DEPRECATED.
   // NO NEW ITEMS SHOULD BE ADDED TO THIS LIST, EVER.
+  // ----------------------------------------------------------------
+  // LINT.ThenChange(:LegacyPromoList)
+
+  // LINT.IfChange(LegacyPromoList)
   static constexpr auto kAllowedPromoNames =
       base::MakeFixedFlatSet<std::string_view>({
           "IPH_AutofillExternalAccountProfileSuggestion",
@@ -122,6 +128,8 @@ bool IsAllowedLegacyPromo(const base::Feature& promo_feature) {
           "IPH_ReadingListInSidePanel",
           "IPH_TabSearch",
       });
+  // LINT.ThenChange(:LegacyPromoMessage)
+
   return kAllowedPromoNames.contains(promo_feature.name);
 }
 
@@ -151,9 +159,11 @@ bool IsAllowedPreconditionExemption(const base::Feature& promo_feature) {
     return true;
   }
 
-  static constexpr auto kAllowedPromoNames =
-      base::MakeFixedFlatSet<std::string_view>({"IPH_AutofillAiOptIn"});
-  return kAllowedPromoNames.contains(promo_feature.name);
+  // Add the text names of allowlisted promos here:
+  // static constexpr auto kAllowedPromoNames =
+  //     base::MakeFixedFlatSet<std::string_view>({ });
+  // return kAllowedPromoNames.contains(promo_feature.name);
+  return false;
 }
 
 // Common check logic for gating reshow-ability of promos. Generates an error if

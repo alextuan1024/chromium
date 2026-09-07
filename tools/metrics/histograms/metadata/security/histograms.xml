@@ -165,29 +165,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="OSCrypt.FreedesktopSecretKeyProvider.{InitStatus}.ErrorDetail"
-    enum="FreedesktopSecretKeyProviderErrorDetail" expires_after="2026-08-30">
-  <owner>thomasanderson@chromium.org</owner>
-  <owner>thestig@chromium.org</owner>
-  <summary>
-    The detailed error cause for each InitStatus for the org.freedesktop.secrets
-    OSCrypt Async Key Provider initialization, recorded once during browser
-    startup in case of failure (Linux only).
-  </summary>
-  <token key="InitStatus">
-    <variant name="CreateCollectionFailed"/>
-    <variant name="CreateItemFailed"/>
-    <variant name="EmptySecret"/>
-    <variant name="GetSecretFailed"/>
-    <variant name="GnomeKeyringDeadlock"/>
-    <variant name="NoService"/>
-    <variant name="ReadAliasFailed"/>
-    <variant name="SearchItemsFailed"/>
-    <variant name="SessionFailure"/>
-    <variant name="UnlockFailed"/>
-  </token>
-</histogram>
-
 <histogram name="OSCrypt.Mac.FindGenericPasswordError"
     enum="MacSecurityFrameworkOSStatus" expires_after="2027-02-14">
   <owner>avi@chromium.org</owner>
@@ -582,7 +559,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Security.iOS.KeychainMigration.Result"
-    enum="IOSKeychainMigrationResult" expires_after="2026-12-20">
+    enum="IOSKeychainMigrationResult" expires_after="2027-02-21">
   <owner>marq@chromium.org</owner>
   <owner>bling-flags@google.com</owner>
   <summary>
@@ -1166,7 +1143,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SiteIsolation.IsSitePerProcessOrStricter.AndroidDesktop"
-    enum="Boolean" expires_after="2026-11-01">
+    enum="Boolean" expires_after="2027-02-28">
   <owner>alexmos@chromium.org</owner>
   <owner>creis@chromium.org</owner>
   <owner>wenz@chromium.org</owner>
@@ -1252,7 +1229,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SiteIsolation.ProxyCount" units="proxies"
-    expires_after="2026-12-20">
+    expires_after="2027-02-21">
   <owner>alexmos@chromium.org</owner>
   <owner>creis@chromium.org</owner>
   <owner>lukasza@chromium.org</owner>
@@ -1352,7 +1329,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SiteIsolation.SiteInstancesPerBrowsingInstance" units="units"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>alexmos@chromium.org</owner>
   <owner>creis@chromium.org</owner>
   <owner>lukasza@chromium.org</owner>

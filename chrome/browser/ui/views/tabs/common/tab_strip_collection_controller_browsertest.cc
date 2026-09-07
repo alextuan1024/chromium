@@ -9,6 +9,8 @@
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_group_data.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_menu_model.h"
+#include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -98,10 +100,8 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
   TabContextMenuController context_menu_controller(
       tab->GetHandle(), vertical_tab_strip_controller());
 
-  TabMenuModelFactory menu_model_factory;
-  auto model = menu_model_factory.Create(
-      &context_menu_controller,
-      browser()->GetFeatures().tab_menu_model_delegate(),
+  auto model = std::make_unique<TabMenuModel>(
+      &context_menu_controller, TabMenuModelDelegate::From(browser()),
       browser()->GetTabStripModel(), tab_index.value());
 
   auto check_menu_has_string = [&](int message_id) {

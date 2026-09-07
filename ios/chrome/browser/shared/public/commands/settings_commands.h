@@ -82,6 +82,10 @@ enum class PushNotificationClientId;
                      shouldShowLevelUpWalkthroughIPH:
                          (BOOL)shouldShowLevelUpWalkthroughIPH;
 
+// Shows Password Settings in the settings.
+- (void)showPasswordSettingsFromViewController:
+    (UIViewController*)baseViewController;
+
 // Shows the Autofill and Passwords settings page.
 - (void)showAutofillAndPasswordsSettingsWithReferrer:
     (autofill::autofill_metrics::AutofillSettingsReferrer)referrer;
@@ -171,6 +175,10 @@ enum class PushNotificationClientId;
 
 // Shows the Autofill settings UI from an Autofill notice (no back button).
 - (void)showAutofillSettingsFromNotice;
+
+// Shows the Enhanced Autofill settings UI (no back button). `completion` is
+// executed after the UI is dismissed.
+- (void)showEnhancedAutofillSettingsWithCompletion:(ProceduralBlock)completion;
 
 @end
 

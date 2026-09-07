@@ -70,6 +70,9 @@ class TabView : public views::View,
   ~TabView() override;
 
   class LayoutManager : public views::LayoutManagerBase {
+   public:
+    virtual void OnTabClosing() {}
+
    protected:
     // views::LayoutManagerBase:
     void OnInstalled(views::View* host) override;
@@ -101,6 +104,7 @@ class TabView : public views::View,
   bool IsActive() const { return active_; }
   bool IsClosing() const { return !collection_node_; }
   bool split() const { return split_; }
+  bool pinned() const { return pinned_; }
   const tabs::TabInterface* GetTabInterface() const;
 
   GlowHoverController* GetHoverControllerForTesting() {
@@ -133,6 +137,7 @@ class TabView : public views::View,
   void OnMouseExited(const ui::MouseEvent& event) override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
+  void PaintChildren(const views::PaintInfo& info) override;
   void OnPaint(gfx::Canvas* canvas) override;
   void AddedToWidget() override;
   void RemovedFromWidget() override;
@@ -201,6 +206,8 @@ class TabView : public views::View,
 
   // Applies rounded corners to the view's layer.
   void UpdateLayerRoundedCorners();
+
+  void UpdateZOrder();
 
   raw_ptr<TabCollectionNode> collection_node_ = nullptr;
   TabStripOrientation orientation_ = TabStripOrientation::kHorizontal;

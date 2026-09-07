@@ -63,6 +63,8 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 
@@ -174,12 +176,10 @@ void SavedTabGroupUtils::UngroupSavedGroup(BrowserWindowInterface* browser,
   DeletionDialogController::DialogMetadata dialog_metadata(
       DeletionDialogController::DialogType::UngroupSingle,
       /*closing_group_count=*/1, closing_multiple_tabs);
-  browser->GetFeatures()
-      .tab_group_deletion_dialog_controller()
-      ->MaybeShowDialog(
-          dialog_metadata,
-          base::IgnoreArgs<DeletionDialogController::DeletionDialogTiming>(
-              std::move(ungroup_callback)));
+  tab_groups::DeletionDialogController::From(browser)->MaybeShowDialog(
+      dialog_metadata,
+      base::IgnoreArgs<DeletionDialogController::DeletionDialogTiming>(
+          std::move(ungroup_callback)));
 }
 
 // static
@@ -259,12 +259,10 @@ void SavedTabGroupUtils::DeleteSavedGroup(BrowserWindowInterface* browser,
   shared_dialog_metadata.title_of_closing_group = group->title();
 
   const bool is_group_shared = group.value().collaboration_id().has_value();
-  browser->GetFeatures()
-      .tab_group_deletion_dialog_controller()
-      ->MaybeShowDialog(
-          is_group_shared ? shared_dialog_metadata : saved_dialog_metadata,
-          base::IgnoreArgs<DeletionDialogController::DeletionDialogTiming>(
-              std::move(close_callback)));
+  tab_groups::DeletionDialogController::From(browser)->MaybeShowDialog(
+      is_group_shared ? shared_dialog_metadata : saved_dialog_metadata,
+      base::IgnoreArgs<DeletionDialogController::DeletionDialogTiming>(
+          std::move(close_callback)));
 }
 
 // static
@@ -325,7 +323,7 @@ void SavedTabGroupUtils::MaybeShowSavedTabGroupDeletionDialog(
   // If there's no way to show the group deletion dialog, then fallback to
   // running the callback.
   auto* const dialog_controller =
-      browser->GetFeatures().tab_group_deletion_dialog_controller();
+      tab_groups::DeletionDialogController::From(browser);
   if (!dialog_controller || !dialog_controller->CanShowDialog()) {
     std::move(callback).Run(
         DeletionDialogController::DeletionDialogTiming::Synchronous);

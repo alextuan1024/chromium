@@ -41,8 +41,10 @@ class BrowserContext;
 }  // namespace content
 
 namespace actor {
+class AggregatedJournalFileSerializer;
 namespace ui {
 class ActorUiStateManagerInterface;
+class UiEventDispatcher;
 }
 
 class EnterprisePolicyChecker;
@@ -84,16 +86,18 @@ class ActorKeyedService : public KeyedService,
 
   // Starts a new task with an execution engine and returns the new task's id.
   // `options`, when provided, contains information used to initialize the task.
-  // The provided `policy_checker` must be non-null and it must outlive the
-  // ActorTask.
+  // The provided `policy_checker` and `ui_state_manager` must be non-null and
+  // must outlive the ActorTask.
   TaskId CreateTask(const TaskSourceInfo& source_info,
                     const EnterprisePolicyChecker* policy_checker);
-  TaskId CreateTaskWithOptions(const TaskSourceInfo& source_info,
-                               const EnterprisePolicyChecker* policy_checker,
-                               webui::mojom::TaskOptionsPtr options,
-                               base::WeakPtr<ActorTaskDelegate> delegate,
-                               std::optional<glic::mojom::InvocationSource>
-                                   initial_invocation_source = std::nullopt);
+  TaskId CreateTaskWithOptions(
+      const TaskSourceInfo& source_info,
+      const EnterprisePolicyChecker* policy_checker,
+      webui::mojom::TaskOptionsPtr options,
+      base::WeakPtr<ActorTaskDelegate> delegate,
+      actor::ui::ActorUiStateManagerInterface* ui_state_manager,
+      std::optional<glic::mojom::InvocationSource> initial_invocation_source =
+          std::nullopt);
   TaskId CreateTaskForTesting(
       std::unique_ptr<actor::ui::UiEventDispatcher> ui_event_dispatcher,
       const TaskSourceInfo& source_info,
@@ -259,6 +263,7 @@ class ActorKeyedService : public KeyedService,
       const EnterprisePolicyChecker* policy_checker,
       webui::mojom::TaskOptionsPtr options,
       base::WeakPtr<ActorTaskDelegate> delegate,
+      actor::ui::ActorUiStateManagerInterface* ui_state_manager,
       std::optional<glic::mojom::InvocationSource> initial_invocation_source);
 
   // The callback used for ExecutorEngine::Act.
@@ -270,6 +275,13 @@ class ActorKeyedService : public KeyedService,
   // The jounrnal should be last in destruction order since other things like
   // ActorTask might be using a SafeRef to this object.
   AggregatedJournal journal_;
+
+  void InitializeTraceRecording(const base::FilePath& trace_path);
+  void OnTraceFilePathResolved(const base::FilePath& resolved_path);
+  void OnTraceFileInitDone(bool success);
+
+  // Serializes journal events to a file when --actor-trace-path is set.
+  std::unique_ptr<AggregatedJournalFileSerializer> trace_file_serializer_;
 
   // download notifier for metrics and the profile observer to help set up the
   // download notifier.

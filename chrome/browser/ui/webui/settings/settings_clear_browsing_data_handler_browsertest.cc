@@ -15,8 +15,8 @@
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
@@ -101,7 +101,7 @@ class ClearBrowsingDataHandlerBrowserTest : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
 
     test_web_ui_.set_web_contents(
-        browser()->tab_strip_model()->GetActiveWebContents());
+        browser()->GetTabStripModel()->GetActiveWebContents());
     test_web_ui_.ClearTrackedCalls();
 
     template_url_service_ =
@@ -203,7 +203,7 @@ IN_PROC_BROWSER_TEST_F(ClearBrowsingDataHandlerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ClearBrowsingDataHandlerBrowserTest,
                        ClearBrowsingData_ShowsToast) {
-  EXPECT_FALSE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_FALSE(ToastController::From(browser())->IsShowingToast());
 
   base::ListValue args;
   args.Append("fooCallback");
@@ -211,7 +211,7 @@ IN_PROC_BROWSER_TEST_F(ClearBrowsingDataHandlerBrowserTest,
   args.Append(1);
   test_web_ui_.HandleReceivedMessage("clearBrowsingData", args);
 
-  EXPECT_TRUE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
 }
 
 IN_PROC_BROWSER_TEST_F(ClearBrowsingDataHandlerBrowserTest,

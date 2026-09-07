@@ -10,6 +10,7 @@
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_device_button.h"
@@ -84,11 +85,7 @@ class SendTabToSelfInteractiveUiTest : public InteractiveBrowserTest {
 
   auto StopToastTimer() {
     return Do([this]() {
-      browser()
-          ->GetFeatures()
-          .toast_controller()
-          ->GetToastCloseTimerForTesting()
-          ->Stop();
+      ToastController::From(browser())->GetToastCloseTimerForTesting()->Stop();
     });
   }
 
@@ -98,7 +95,7 @@ class SendTabToSelfInteractiveUiTest : public InteractiveBrowserTest {
           toast_controller->MaybeShowToast(std::move(toast_params));
           toast_controller->GetToastCloseTimerForTesting()->Stop();
         },
-        browser()->GetFeatures().toast_controller(), std::move(params)));
+        ToastController::From(browser()), std::move(params)));
   }
 
   SendTabToSelfDevicePickerBubbleView* GetBubbleView() {

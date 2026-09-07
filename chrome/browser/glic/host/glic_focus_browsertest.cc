@@ -7,23 +7,18 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/test_support/glic_api_test.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
-#include "ui/views/view.h"
 
 namespace glic {
 namespace {
 
 class GlicFocusBrowserTest : public GlicApiBrowserTest {
  public:
-  GlicFocusBrowserTest() : GlicApiBrowserTest("./glic_focus_browsertest.js") {}
+  GlicFocusBrowserTest()
+      : GlicApiBrowserTest(GlicTestJsPath("./glic_focus_browsertest.js")) {}
 };
-
-IN_PROC_BROWSER_TEST_F(GlicFocusBrowserTest, testAllTestsAreRegistered) {
-  AssertAllTestsRegistered({"GlicFocusBrowserTest"});
-}
 
 // Regression test for b/475260887. The autofocus <input> element in the client
 // page does not receive focus on opening the side panel.
@@ -46,10 +41,7 @@ IN_PROC_BROWSER_TEST_F(GlicFocusBrowserTest, testBlurOnOmniboxFocus) {
   ASSERT_OK(OpenGlicForActiveTab());
   ExecuteJsTest();
 
-  views::View* omnibox = BrowserElementsViews::From(GetBrowserWindowInterface())
-                             ->GetView(kOmniboxElementId);
-  ASSERT_TRUE(omnibox);
-  omnibox->RequestFocus();
+  chrome::FocusLocationBar(GetBrowserWindowInterface());
 
   ContinueJsTest();
 }

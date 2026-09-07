@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
@@ -70,6 +69,7 @@
 #include "components/paint_preview/buildflags/buildflags.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
 #include "content/public/browser/file_select_listener.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -87,7 +87,10 @@
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "third_party/blink/public/mojom/picture_in_picture/picture_in_picture.mojom.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "third_party/jni_zero/default_conversions.h"
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/android/rect_jni_conversion.h"
@@ -140,12 +143,6 @@ JNI_TabWebContentsDelegateAndroidImpl_CreateJavaPictureInPictureWindowOptions(
 void ShowFramebustBlockMessageInternal(content::WebContents* web_contents,
                                        const GURL& url,
                                        const url::Origin& initiator_origin) {
-  auto intervention_outcome =
-      [](blocked_content::FramebustBlockedMessageDelegate::InterventionOutcome
-             outcome) {
-        UMA_HISTOGRAM_ENUMERATION("WebCore.Framebust.InterventionOutcome",
-                                  outcome);
-      };
   blocked_content::FramebustBlockedMessageDelegate::CreateForWebContents(
       web_contents);
   blocked_content::FramebustBlockedMessageDelegate*
@@ -156,7 +153,7 @@ void ShowFramebustBlockMessageInternal(content::WebContents* web_contents,
       url, initiator_origin,
       HostContentSettingsMapFactory::GetForProfile(
           web_contents->GetBrowserContext()),
-      base::BindOnce(intervention_outcome));
+      base::NullCallback());
 }
 
 // The amount of time to disallow repeated pointer lock calls after the user
@@ -246,22 +243,12 @@ void TabWebContentsDelegateAndroid::FindMatchRectsReply(
     const gfx::RectF& active_rect) {
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
-
-  // Create the details object.
-  ScopedJavaLocalRef<jobject> details_object =
-      Java_TabWebContentsDelegateAndroidImpl_createFindMatchRectsDetails(
-          env, version, rects.size(), active_rect);
-
-  // Add the rects
-  for (size_t i = 0; i < rects.size(); ++i) {
-    Java_TabWebContentsDelegateAndroidImpl_setMatchRectByIndex(
-        env, details_object, i, rects[i]);
   }
 
   Java_TabWebContentsDelegateAndroidImpl_onFindMatchRectsAvailable(
-      env, obj, details_object);
+      env, obj, version, rects, active_rect);
 }
 
 // TODO(b/420669167): Remove this once actor tasks don't need to suppress new
@@ -308,7 +295,7 @@ content::WebContents* TabWebContentsDelegateAndroid::CreateCustomWebContents(
     WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
-    content::SessionStorageNamespace* session_storage_namespace) {
+    content::SessionStorageNamespaceHandle* session_storage_namespace) {
   if (actor::HasActorTaskPreventingNewWebContents(opener)) {
     // If an ExecutionEngine is acting on the opener, we force the navigation
     // to happen in the same tab.
@@ -461,17 +448,9 @@ WebContents* TabWebContentsDelegateAndroid::AddNewContents(
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
   bool handled = false;
   if (!obj.is_null()) {
-    ScopedJavaLocalRef<jobject> jsource;
-    if (source)
-      jsource = source->GetJavaWebContents();
-    ScopedJavaLocalRef<jobject> jnew_contents;
-    if (new_contents)
-      jnew_contents = new_contents->GetJavaWebContents();
     ScopedJavaLocalRef<jobject> jwindow_features =
         JNI_TabWebContentsDelegateAndroidImpl_CreateJavaWindowFeatures(
             env, window_features);
-    ScopedJavaLocalRef<jobject> jurl =
-        url::GURLAndroid::FromNativeGURL(env, target_url);
 
     ScopedJavaLocalRef<jobject> jpicture_in_picture_options;
     if (new_contents->GetPictureInPictureOptions().has_value()) {
@@ -485,7 +464,7 @@ WebContents* TabWebContentsDelegateAndroid::AddNewContents(
     }
 
     handled = Java_TabWebContentsDelegateAndroidImpl_addNewContents(
-        env, obj, jsource, jnew_contents, jurl,
+        env, obj, source, new_contents.get(), target_url,
         static_cast<int32_t>(disposition), jwindow_features, user_gesture,
         jpicture_in_picture_options);
   }
@@ -566,7 +545,8 @@ TabWebContentsDelegateAndroid::GetInstalledWebappGeolocationContext() {
 void TabWebContentsDelegateAndroid::GetAIPageContent(
     content::WebContents* web_contents,
     bool include_actionable_elements,
-    base::OnceCallback<void(const std::string&)> callback) {
+    base::OnceCallback<void(base::expected<std::string, std::string>)>
+        callback) {
   auto options = include_actionable_elements
                      ? optimization_guide::ActionableAIPageContentOptions(
                            /*on_critical_path=*/false)
@@ -576,11 +556,11 @@ void TabWebContentsDelegateAndroid::GetAIPageContent(
   optimization_guide::GetAIPageContent(
       web_contents, std::move(options),
       base::BindOnce([](optimization_guide::AIPageContentResultOrError result)
-                         -> std::string {
+                         -> base::expected<std::string, std::string> {
         if (!result.has_value()) {
-          return "";
+          return base::unexpected(result.error());
         }
-        return result->proto.SerializeAsString();
+        return base::ok(result->proto.SerializeAsString());
       }).Then(std::move(callback)));
 }
 
@@ -601,20 +581,16 @@ void TabWebContentsDelegateAndroid::OnFindResultAvailable(
     WebContents* web_contents) {
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
 
   const find_in_page::FindNotificationDetails& find_result =
       find_in_page::FindTabHelper::FromWebContents(web_contents)->find_result();
 
-  // Create the details object.
-  ScopedJavaLocalRef<jobject> details_object =
-      Java_TabWebContentsDelegateAndroidImpl_createFindNotificationDetails(
-          env, find_result.number_of_matches(), find_result.selection_rect(),
-          find_result.active_match_ordinal(), find_result.final_update());
-
-  Java_TabWebContentsDelegateAndroidImpl_onFindResultAvailable(env, obj,
-                                                               details_object);
+  Java_TabWebContentsDelegateAndroidImpl_onFindResultAvailable(
+      env, obj, find_result.number_of_matches(), find_result.selection_rect(),
+      find_result.active_match_ordinal(), find_result.final_update());
 }
 
 void TabWebContentsDelegateAndroid::OnFindTabHelperDestroyed(
@@ -666,10 +642,8 @@ const GURL TabWebContentsDelegateAndroid::GetManifestScope() const {
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
   if (obj.is_null())
     return GURL();
-  const JavaRef<jstring>& scope =
-      Java_TabWebContentsDelegateAndroidImpl_getManifestScope(env, obj);
-  return scope.is_null() ? GURL()
-                         : GURL(base::android::ConvertJavaStringToUTF8(scope));
+  return GURL(
+      Java_TabWebContentsDelegateAndroidImpl_getManifestScope(env, obj));
 }
 
 bool TabWebContentsDelegateAndroid::IsCustomTab() const {
@@ -756,8 +730,7 @@ void TabWebContentsDelegateAndroid::RequestPointerLock(
     }
 
     Java_TabWebContentsDelegateAndroidImpl_requestPointerLock(
-        env, obj, web_contents->GetJavaWebContents(), user_gesture,
-        last_unlocked_by_target);
+        env, obj, web_contents, user_gesture, last_unlocked_by_target);
     return;
   }
 
@@ -813,12 +786,11 @@ void TabWebContentsDelegateAndroid::DraggableRegionsChanged(
   // need to provide a list of *undraggable* Rects.
   float dip_scale = contents->GetNativeView()->GetDipScale();
   const gfx::Rect& wco_rect = contents->GetWindowsControlsOverlayRect();
-  std::unique_ptr<SkRegion> sk_region =
-      std::make_unique<SkRegion>(SkIRect::MakeLTRB(
-          wco_rect.x() * dip_scale, wco_rect.y() * dip_scale,
-          wco_rect.right() * dip_scale, wco_rect.bottom() * dip_scale));
+  SkRegion sk_region(SkIRect::MakeLTRB(
+      wco_rect.x() * dip_scale, wco_rect.y() * dip_scale,
+      wco_rect.right() * dip_scale, wco_rect.bottom() * dip_scale));
   for (const auto& region : regions) {
-    sk_region->op(
+    sk_region.op(
         SkIRect::MakeLTRB(region->bounds.x() * dip_scale,
                           region->bounds.y() * dip_scale,
                           region->bounds.right() * dip_scale,
@@ -826,18 +798,13 @@ void TabWebContentsDelegateAndroid::DraggableRegionsChanged(
         region->draggable ? SkRegion::kDifference_Op : SkRegion::kUnion_Op);
   }
 
-  ScopedJavaLocalRef<jobject> jregions =
-      Java_TabWebContentsDelegateAndroidImpl_createRectList(env, obj);
-
-  // Convert the region to a java List<Rect>.
-  for (SkRegion::Iterator i(*sk_region); !i.done(); i.next()) {
-    Java_TabWebContentsDelegateAndroidImpl_createRectAndAddToList(
-        env, obj, jregions, i.rect().left(), i.rect().top(), i.rect().right(),
-        i.rect().bottom());
+  std::vector<gfx::Rect> non_draggable_rects;
+  for (SkRegion::Iterator i(sk_region); !i.done(); i.next()) {
+    non_draggable_rects.push_back(gfx::SkIRectToRect(i.rect()));
   }
 
-  Java_TabWebContentsDelegateAndroidImpl_nonDraggableRegionsChanged(env, obj,
-                                                                    jregions);
+  Java_TabWebContentsDelegateAndroidImpl_nonDraggableRegionsChanged(
+      env, obj, non_draggable_rects);
 }
 
 bool TabWebContentsDelegateAndroid::IsImmersivePlaybackEnabled() const {
@@ -853,14 +820,14 @@ bool TabWebContentsDelegateAndroid::IsImmersivePlaybackEnabled() const {
 }  // namespace android
 
 static void JNI_TabWebContentsDelegateAndroidImpl_OnRendererUnresponsive(
-    JNIEnv* env,
-    const JavaRef<jobject>& java_web_contents) {
+    content::WebContents* web_contents) {
   // Rate limit the number of stack dumps so we don't overwhelm our crash
   // reports.
-  content::WebContents* web_contents =
-      content::WebContents::FromJavaWebContents(java_web_contents);
-  if (base::RandDouble() < 0.01)
+  if (web_contents && web_contents->GetPrimaryMainFrame() &&
+      web_contents->GetPrimaryMainFrame()->GetProcess() &&
+      base::RandDouble() < 0.01) {
     web_contents->GetPrimaryMainFrame()->GetProcess()->DumpProcessStack();
+  }
 }
 
 DEFINE_JNI(TabWebContentsDelegateAndroidImpl)

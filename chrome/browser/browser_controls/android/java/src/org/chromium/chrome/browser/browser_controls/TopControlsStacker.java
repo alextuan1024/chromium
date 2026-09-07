@@ -121,8 +121,8 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
                 TopControlType.TOOLBAR,
                 TopControlType.BOOKMARK_BAR,
                 TopControlType.HAIRLINE,
-                TopControlType.PROGRESS_BAR,
                 TopControlType.TAB_SHARING_TOOLBAR,
+                TopControlType.PROGRESS_BAR,
             };
 
     /** Helper class used to mark state for {@link #requestLayerUpdatePost(boolean).} */
@@ -699,6 +699,23 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
             } else if (!isLayerHidden(layer) && layer.contributesToTotalHeight()) {
                 height += layer.getTopControlHeight();
             }
+        }
+
+        return INVALID_HEIGHT;
+    }
+
+    /**
+     * See {@link #getHeightFromLayerToTop(int)}. This method also includes the height of the {@code
+     * stopLayer} if it's visible.
+     */
+    public int getHeightFromLayerBottomToTop(@TopControlType int stopLayer) {
+        int height = getHeightFromLayerToTop(stopLayer);
+        if (height != INVALID_HEIGHT) {
+            TopControlLayer layer = mControls.get(stopLayer);
+            if (!isLayerHidden(layer) && layer.contributesToTotalHeight()) {
+                height += layer.getTopControlHeight();
+            }
+            return height;
         }
 
         return INVALID_HEIGHT;

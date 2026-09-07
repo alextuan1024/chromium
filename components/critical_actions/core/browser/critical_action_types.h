@@ -37,9 +37,21 @@ enum class ActionSource {
   kUnknown = 0,
   kPasswordManager = 1,
   kActor = 2,
-  kMaxValue = kActor,
+  kAutofill = 3,
+  kMaxValue = kAutofill,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/histograms.xml:ActionSource)
+
+// Result of attempting to open a conversation associated with a critical
+// action.
+// LINT.IfChange(OpenConversationResult)
+enum class OpenConversationResult {
+  kSuccess = 0,
+  kErrorInvalidActionEntry = 1,
+  kErrorInternal = 2,
+  kMaxValue = kErrorInternal,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
 
 // Represents a memory row copy of a single record in critical_actions database.
 struct CriticalActionEntry {

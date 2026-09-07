@@ -29,10 +29,10 @@
 #include "chrome/browser/glic/host/context/glic_active_instance_sharing_manager.h"
 #include "chrome/browser/glic/host/context/glic_sharing_utils.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/host.h"
-#include "chrome/browser/glic/host/webui_contents_container.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -51,6 +51,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/chrome_features.h"
 #include "components/prefs/pref_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -562,8 +563,9 @@ void GlicInstanceCoordinatorImpl::Toggle(BrowserWindowInterface* browser,
   Show(browser, source);
 }
 
-bool GlicInstanceCoordinatorImpl::MaybeStartInitialWarming() {
-  return web_contents_warming_pool_->MaybeStartInitialWarming();
+bool GlicInstanceCoordinatorImpl::MaybeStartWarming(
+    GlicWarmingTrigger trigger) {
+  return web_contents_warming_pool_->MaybeStartWarming(trigger);
 }
 
 void GlicInstanceCoordinatorImpl::Shutdown() {
@@ -657,9 +659,16 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
             std::get_if<GlicInvokeHandler::TabSurface>(&resolved_target)) {
       tab = tab_surface->tab;
       if (!tab || !GlicInstanceHelper::From(tab)) {
-        metrics->RecordError(GlicInvokeError::kTabClosed);
+        GlicInvokeError error = GlicInvokeError::kTabClosed;
+        if (const auto* tab_handle =
+                std::get_if<tabs::TabHandle>(&options.target.surface)) {
+          if (tab_handle->Get()) {
+            error = GlicInvokeError::kInvalidTab;
+          }
+        }
+        metrics->RecordError(error);
         if (options.on_error) {
-          std::move(options.on_error).Run(GlicInvokeError::kTabClosed);
+          std::move(options.on_error).Run(error);
         }
         // TODO(crbug.com/483387751): Show default toast here once implemented.
         return false;
@@ -1312,8 +1321,8 @@ void GlicInstanceCoordinatorImpl::ContextAccessIndicatorChanged(
   ComputeContentAccessIndicator();
 }
 
-std::unique_ptr<WebUIContentsContainer>
-GlicInstanceCoordinatorImpl::CreateWebUIContentsContainer() {
+std::unique_ptr<GlicWebContentsManager>
+GlicInstanceCoordinatorImpl::CreateWebContentsManager() {
   metrics_.RecordCountAwakeOnContentsCreated();
   return web_contents_warming_pool_->TakeContainer();
 }

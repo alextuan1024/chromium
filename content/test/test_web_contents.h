@@ -78,7 +78,8 @@ class TestWebContents : public WebContentsImpl, public WebContentsTester {
   // VisibleTimeRequestTrigger.
   void SetTabSwitchStartTime(base::TimeTicks start_time,
                              bool destination_is_loaded,
-                             bool had_saved_frame_at_start) final;
+                             bool had_saved_frame_at_start,
+                             bool destination_is_frozen) final;
 
   // WebContentsTester implementation.
   void CommitPendingNavigation() override;
@@ -238,7 +239,7 @@ class TestWebContents : public WebContentsImpl, public WebContentsTester {
       const mojom::CreateNewWindowParams& params,
       bool is_new_browsing_instance,
       bool has_user_gesture,
-      SessionStorageNamespace* session_storage_namespace) override;
+      SessionStorageNamespaceHandle* session_storage_namespace) override;
   RenderWidgetHostImpl* CreateNewPopupWidget(
       base::SafeRef<SiteInstanceGroup> site_instance_group,
       int32_t route_id,

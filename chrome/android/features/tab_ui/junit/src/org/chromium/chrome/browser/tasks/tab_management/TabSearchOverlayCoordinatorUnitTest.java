@@ -24,12 +24,16 @@ import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
+import android.os.SystemClock;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.TextView;
 
@@ -74,10 +78,13 @@ import org.chromium.chrome.browser.omnibox.OmniboxStub;
 import org.chromium.chrome.browser.omnibox.OverrideUrlLoadingDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.omnibox.UrlBarCoordinator;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxControls;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.searchwidget.SearchUiCoordinator;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
@@ -105,7 +112,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link TabSearchOverlayCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabSearchOverlayCoordinatorUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -121,7 +127,10 @@ public class TabSearchOverlayCoordinatorUnitTest {
     @Mock private UrlBarCoordinator mUrlBarCoordinator;
     @Mock private View mLocationBarContainerView;
     @Mock private UrlBar mUrlBar;
-    @Mock private OmniboxStub mOmniboxStub;
+
+    @Mock(extraInterfaces = {View.OnKeyListener.class})
+    private OmniboxStub mOmniboxStub;
+
     @Mock private Profile mProfile;
     @Mock private Profile mIncognitoProfile;
     @Mock private SnackbarManager mSnackbarManager;
@@ -135,6 +144,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
     @Mock private Tab mTab;
     @Mock private DesktopWindowStateManager mDesktopWindowStateManager;
     @Mock private AppHeaderState mAppHeaderState;
+    @Mock private FuseboxControls mFuseboxControls;
+    @Mock private AutocompleteCoordinator mAutocompleteCoordinator;
 
     private final OneshotSupplierImpl<TabGroupUiActionHandler> mTabGroupUiActionHandlerSupplier =
             new OneshotSupplierImpl<>();
@@ -168,6 +179,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
         when(mSearchUiCoordinator.getLocationBarCoordinator()).thenReturn(mLocationBarCoordinator);
         when(mLocationBarCoordinator.getUrlBarCoordinator()).thenReturn(mUrlBarCoordinator);
         when(mLocationBarCoordinator.getOmniboxStub()).thenReturn(mOmniboxStub);
+        when(mLocationBarCoordinator.getOmniboxSuggestionsVisualState())
+                .thenReturn(mAutocompleteCoordinator);
         when(mLocationBarCoordinator.getContainerView()).thenReturn(mLocationBarContainerView);
         when(mLocationBarContainerView.findViewById(R.id.url_bar)).thenReturn(mUrlBar);
         when(mOmniboxStub.isUrlBarFocused()).thenReturn(true);
@@ -189,7 +202,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
                         ObservableSuppliers.createNonNull(mCompositorViewHolder),
                         mTabGroupUiActionHandlerSupplier,
                         mDesktopWindowStateManager,
-                        mTabObscuringHandler);
+                        mTabObscuringHandler,
+                        mFuseboxControls);
         mCoordinator.setSearchUiCoordinatorForTesting(mSearchUiCoordinator);
 
         // Inflate the overlay and initialize member views.
@@ -235,6 +249,51 @@ public class TabSearchOverlayCoordinatorUnitTest {
         verify(mSearchUiCoordinator)
                 .beginQuery(
                         eq(IntentOrigin.HUB), eq(SearchType.TEXT), eq(null), eq(mWindowAndroid));
+    }
+
+    @Test
+    public void testShow_endsFuseboxInput() {
+        showOverlay();
+        verify(mFuseboxControls).endFuseboxInput();
+    }
+
+    @Test
+    public void testShow_nullFuseboxControls_doesNotThrow() {
+        mCoordinator.destroy();
+        clearInvocations(mSearchUiCoordinator);
+        mCoordinator =
+                new TabSearchOverlayCoordinator(
+                        mActivity,
+                        mWindowAndroid,
+                        mProfileSupplier,
+                        mSnackbarManager,
+                        ObservableSuppliers.createNonNull(mModalDialogManager),
+                        mActivityLifecycleDispatcher,
+                        mTabModelSelectorSupplier,
+                        /* edgeToEdgeSystemBarColorHelper= */ null,
+                        mBackPressManager,
+                        ObservableSuppliers.createNonNull(mCompositorViewHolder),
+                        mTabGroupUiActionHandlerSupplier,
+                        mDesktopWindowStateManager,
+                        mTabObscuringHandler,
+                        /* fuseboxControls= */ null);
+        mCoordinator.setSearchUiCoordinatorForTesting(mSearchUiCoordinator);
+        mCoordinator.ensureInitialized();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        mPanelContainer = mCoordinator.getPanelContainerForTesting();
+
+        showOverlay();
+        assertTrue(mCoordinator.isVisible());
+    }
+
+    @Test
+    public void testShow_alreadyVisible_doesNotInvokeEndFuseboxInput() {
+        showOverlay();
+        verify(mFuseboxControls, times(1)).endFuseboxInput();
+
+        // Calling show again while visible should not re-invoke endFuseboxInput.
+        mCoordinator.show(TabSearchEntryPoint.HORIZONTAL_TAB_STRIP);
+        verify(mFuseboxControls, times(1)).endFuseboxInput();
     }
 
     @Test
@@ -323,6 +382,29 @@ public class TabSearchOverlayCoordinatorUnitTest {
     }
 
     @Test
+    public void testTouchCloseButton_dismissesOnFirstTap() {
+        showOverlay();
+        var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.TabSearch.DismissalReason", TabSearchDismissalReason.CLOSE_BUTTON);
+        ImageButton closeButton = mPanelContainer.findViewById(R.id.tab_search_close_button);
+        assertNotNull(closeButton);
+
+        long now = SystemClock.uptimeMillis();
+        MotionEvent downEvent = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+        closeButton.dispatchTouchEvent(downEvent);
+        downEvent.recycle();
+
+        MotionEvent upEvent = MotionEvent.obtain(now, now, MotionEvent.ACTION_UP, 0f, 0f, 0);
+        closeButton.dispatchTouchEvent(upEvent);
+        upEvent.recycle();
+        ShadowLooper.idleMainLooper();
+
+        watcher.assertExpected();
+        assertOverlayHidden();
+    }
+
+    @Test
     public void testHide_hidesOverlayAndClearsFocus() {
         showOverlay();
         var watcher =
@@ -336,6 +418,7 @@ public class TabSearchOverlayCoordinatorUnitTest {
 
     @Test
     public void testLoadUrl_regular() {
+        when(mTabModel.getCount()).thenReturn(3);
         showOverlay();
         verifySearchUiCoordinatorInitialized();
 
@@ -360,10 +443,16 @@ public class TabSearchOverlayCoordinatorUnitTest {
         assertTrue(
                 intent.getBooleanExtra(WebappConstants.REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB, false));
         assertFalse(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
+        assertEquals(
+                3, intent.getIntExtra(IntentHandler.EXTRA_TAB_INDEX, TabModel.INVALID_TAB_INDEX));
+        assertEquals(
+                Integer.valueOf(TabLaunchType.FROM_OMNIBOX),
+                IntentHandler.getTabLaunchType(intent));
     }
 
     @Test
     public void testLoadUrl_incognito() {
+        when(mTabModel.getCount()).thenReturn(5);
         showOverlay();
         verifySearchUiCoordinatorInitialized();
 
@@ -388,6 +477,36 @@ public class TabSearchOverlayCoordinatorUnitTest {
         assertTrue(
                 intent.getBooleanExtra(WebappConstants.REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB, false));
         assertTrue(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
+        assertEquals(
+                5, intent.getIntExtra(IntentHandler.EXTRA_TAB_INDEX, TabModel.INVALID_TAB_INDEX));
+        assertEquals(
+                Integer.valueOf(TabLaunchType.FROM_OMNIBOX),
+                IntentHandler.getTabLaunchType(intent));
+    }
+
+    @Test
+    public void testLoadUrl_nullModel() {
+        when(mTabModelSelector.getModel(false)).thenReturn(null);
+        showOverlay();
+        verifySearchUiCoordinatorInitialized();
+
+        OverrideUrlLoadingDelegate delegate = mOverrideUrlLoadingDelegateCaptor.getValue();
+        OmniboxLoadUrlParams params =
+                new OmniboxLoadUrlParams.Builder(
+                                "https://www.google.com/search?q=test", PageTransition.TYPED)
+                        .build();
+        boolean handled = delegate.willHandleLoadUrlWithPostData(params, /* incognito= */ false);
+        assertTrue(handled);
+        assertFalse(mCoordinator.isVisible());
+
+        Intent intent = Shadows.shadowOf(mActivity).getNextStartedActivity();
+        assertNotNull(intent);
+        assertEquals(
+                TabModel.INVALID_TAB_INDEX,
+                intent.getIntExtra(IntentHandler.EXTRA_TAB_INDEX, TabModel.INVALID_TAB_INDEX));
+        assertEquals(
+                Integer.valueOf(TabLaunchType.FROM_OMNIBOX),
+                IntentHandler.getTabLaunchType(intent));
     }
 
     @Test
@@ -898,6 +1017,52 @@ public class TabSearchOverlayCoordinatorUnitTest {
     }
 
     @Test
+    public void testPanelTopMargin_AlignsWithControlContainer() {
+        FrameLayout controlContainer = new FrameLayout(mActivity);
+        controlContainer.setId(R.id.control_container);
+        View toolbarContainer = new View(mActivity);
+        toolbarContainer.setId(R.id.toolbar_container);
+        int tabStripHeight =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.tab_strip_height);
+        toolbarContainer.setTop(48 + tabStripHeight);
+        controlContainer.addView(toolbarContainer);
+        mActivity.setContentView(controlContainer);
+
+        // Non-caption mode (e.g. fullscreen tablet): topMargin aligns with tab strip, header
+        // visible.
+        showOverlay();
+
+        View panelView = mPanelContainer.findViewById(R.id.tab_search_overlay_panel);
+        View headerView = mPanelContainer.findViewById(R.id.tab_search_overlay_header);
+        var params = (LinearLayout.LayoutParams) panelView.getLayoutParams();
+        assertEquals(48, params.topMargin);
+        assertNotNull(headerView);
+        assertEquals(View.VISIBLE, headerView.getVisibility());
+
+        // In desktop windowing mode (freeform window, caption offset = 0): topMargin is 0,
+        // header remains visible.
+        mCoordinator.hide(TabSearchDismissalReason.CLOSE_BUTTON);
+        when(mAppHeaderState.isInDesktopWindow()).thenReturn(true);
+        when(mAppHeaderState.getAppHeaderHeight()).thenReturn(144);
+        when(mAppHeaderState.getCaptionControlsTopOffset()).thenReturn(0);
+        showOverlay();
+
+        params = (LinearLayout.LayoutParams) panelView.getLayoutParams();
+        assertEquals(0, params.topMargin);
+        assertEquals(View.VISIBLE, headerView.getVisibility());
+
+        // In desktop windowing mode with status bar offset (e.g. split-screen mode):
+        // topMargin matches caption top offset so overlay aligns below the status bar.
+        mCoordinator.hide(TabSearchDismissalReason.CLOSE_BUTTON);
+        when(mAppHeaderState.getCaptionControlsTopOffset()).thenReturn(48);
+        showOverlay();
+
+        params = (LinearLayout.LayoutParams) panelView.getLayoutParams();
+        assertEquals(48, params.topMargin);
+        assertEquals(View.VISIBLE, headerView.getVisibility());
+    }
+
+    @Test
     public void testScrimNonScrollGenericMotionEvent_ConsumedAndNotForwarded() {
         showOverlay();
         MotionEvent clickEvent =
@@ -971,7 +1136,8 @@ public class TabSearchOverlayCoordinatorUnitTest {
                         ObservableSuppliers.createNonNull(mCompositorViewHolder),
                         mTabGroupUiActionHandlerSupplier,
                         mDesktopWindowStateManager,
-                        mTabObscuringHandler);
+                        mTabObscuringHandler,
+                        mFuseboxControls);
         mCoordinator.setSearchUiCoordinatorForTesting(mSearchUiCoordinator);
         mCoordinator.ensureInitialized();
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
@@ -1091,6 +1257,7 @@ public class TabSearchOverlayCoordinatorUnitTest {
         assertTrue(popupWindow.isFocusable());
         assertTrue(popupWindow.isOutsideTouchable());
         assertFalse(popupWindow.isClippingEnabled());
+        assertTrue(popupWindow.isAttachedInDecor());
         assertEquals(PopupWindow.INPUT_METHOD_NEEDED, popupWindow.getInputMethodMode());
         assertEquals(
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
@@ -1126,10 +1293,12 @@ public class TabSearchOverlayCoordinatorUnitTest {
         ImageButton closeButton = mPanelContainer.findViewById(R.id.tab_search_close_button);
         assertNotNull(closeButton);
         assertTrue(closeButton.isFocusable());
+        assertFalse(closeButton.isFocusableInTouchMode());
         assertTrue(closeButton.isClickable());
         assertEquals(
                 View.IMPORTANT_FOR_ACCESSIBILITY_YES, closeButton.getImportantForAccessibility());
         assertEquals(R.id.search_activity_container, closeButton.getAccessibilityTraversalBefore());
+        verify(mUrlBar).setAccessibilityTraversalAfter(R.id.tab_search_close_button);
         assertEquals(
                 mActivity.getString(R.string.close),
                 closeButton.getContentDescription().toString());
@@ -1153,5 +1322,58 @@ public class TabSearchOverlayCoordinatorUnitTest {
         mCoordinator.hide(TabSearchDismissalReason.CLOSE_BUTTON);
 
         assertNull(ViewCompat.getAccessibilityPaneTitle(panel));
+    }
+
+    @Test
+    public void testKeyNavigation_betweenUrlBarAndCloseButton() {
+        ImageButton closeButton = mPanelContainer.findViewById(R.id.tab_search_close_button);
+        assertNotNull(closeButton);
+
+        ArgumentCaptor<View.OnKeyListener> urlBarKeyListenerCaptor =
+                ArgumentCaptor.forClass(View.OnKeyListener.class);
+        verify(mUrlBar).setKeyDownListener(urlBarKeyListenerCaptor.capture());
+        View.OnKeyListener urlBarKeyListener = urlBarKeyListenerCaptor.getValue();
+        assertNotNull(urlBarKeyListener);
+
+        KeyEvent shiftTabEvent =
+                new KeyEvent(
+                        /* downTime= */ 0,
+                        /* eventTime= */ 0,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_TAB,
+                        /* repeat= */ 0,
+                        KeyEvent.META_SHIFT_ON);
+        KeyEvent upEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP);
+
+        // When at the top suggestion (selectedIndex == 0), Shift+Tab and Up on UrlBar
+        // unselect the suggestion (returning focus to UrlBar) and do not focus Close button.
+        when(mAutocompleteCoordinator.getSelectedIndex()).thenReturn(0);
+        assertTrue(urlBarKeyListener.onKey(mUrlBar, KeyEvent.KEYCODE_TAB, shiftTabEvent));
+        verify(mAutocompleteCoordinator).resetSelection();
+        assertFalse(closeButton.isFocused());
+
+        // When unselected in UrlBar (selectedIndex == null), Shift+Tab and Up focus Close button.
+        when(mAutocompleteCoordinator.getSelectedIndex()).thenReturn(null);
+        assertTrue(urlBarKeyListener.onKey(mUrlBar, KeyEvent.KEYCODE_TAB, shiftTabEvent));
+        assertTrue(closeButton.isFocused());
+
+        assertTrue(urlBarKeyListener.onKey(mUrlBar, KeyEvent.KEYCODE_DPAD_UP, upEvent));
+
+        // When deeper in suggestions (selectedIndex == 1), Up delegates to omnibox stub.
+        when(mAutocompleteCoordinator.getSelectedIndex()).thenReturn(1);
+        View.OnKeyListener omniboxListener = (View.OnKeyListener) mOmniboxStub;
+        when(omniboxListener.onKey(eq(mUrlBar), eq(KeyEvent.KEYCODE_DPAD_UP), eq(upEvent)))
+                .thenReturn(true);
+        assertTrue(urlBarKeyListener.onKey(mUrlBar, KeyEvent.KEYCODE_DPAD_UP, upEvent));
+
+        // Forward Tab on Close button returns focus to UrlBar.
+        KeyEvent tabEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB);
+        closeButton.dispatchKeyEvent(tabEvent);
+        verify(mUrlBar).requestFocus();
+
+        // Down arrow on Close button returns focus to UrlBar.
+        KeyEvent downEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN);
+        closeButton.dispatchKeyEvent(downEvent);
+        verify(mUrlBar, times(2)).requestFocus();
     }
 }

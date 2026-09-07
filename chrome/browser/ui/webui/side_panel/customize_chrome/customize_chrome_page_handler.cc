@@ -62,6 +62,8 @@
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -546,7 +548,8 @@ void CustomizeChromePageHandler::OnBrowserWindowInterfaceChanged() {
     return;
   }
 
-  auto* footer_controller = browser->GetFeatures().new_tab_footer_controller();
+  auto* footer_controller =
+      new_tab_footer::NewTabFooterController::From(browser);
   CHECK(footer_controller);
   footer_controller_observation_.Observe(footer_controller);
 }

@@ -56,6 +56,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -70,7 +71,7 @@
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
@@ -120,6 +121,7 @@
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "url/gurl.h"
 
@@ -2673,14 +2675,13 @@ class RenderViewContextMenuSendTabToSelfPageTest
   }
 };
 
-// Tests Send Tab to Self page menu item presence and type across varied feature
-// flag states and target device availability reasons.
+// Tests Send Tab to Self page menu item presence, type, and localized label
+// across varied feature flag states and target device availability reasons.
 TEST_P(RenderViewContextMenuSendTabToSelfPageTest, CheckPageMenuState) {
   const SendTabToSelfPageMenuTestParam& param = GetParam();
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatureState(
-      send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2,
-      param.feature_enabled);
+      send_tab_to_self::kSendTabToSelfEnhancedDesktopUI, param.feature_enabled);
 
   auto* sync_service = static_cast<StubSendTabToSelfSyncService*>(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
@@ -2701,6 +2702,8 @@ TEST_P(RenderViewContextMenuSendTabToSelfPageTest, CheckPageMenuState) {
     ASSERT_TRUE(index.has_value());
     EXPECT_EQ(param.expected_type.value(),
               menu.menu_model().GetTypeAt(index.value()));
+    EXPECT_EQ(l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_SEND_TAB_TO_SELF),
+              menu.menu_model().GetLabelAt(index.value()));
   }
 }
 
@@ -2749,8 +2752,10 @@ class RenderViewContextMenuSendTabToSelfLinkTest
 // submenu when enhanced desktop UI v2 is enabled.
 TEST_F(RenderViewContextMenuSendTabToSelfLinkTest, SubmenuPresentForLink) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2);
+  feature_list.InitWithFeatures(
+      {send_tab_to_self::kSendTabToSelfEnhancedDesktopUI,
+       send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2},
+      {});
 
   auto* sync_service = static_cast<StubSendTabToSelfSyncService*>(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
@@ -2781,8 +2786,10 @@ TEST_F(RenderViewContextMenuSendTabToSelfLinkTest, SubmenuPresentForLink) {
 TEST_F(RenderViewContextMenuSendTabToSelfLinkTest,
        InGroupWithSaveLinkAsAndCopyLinkAddress) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2);
+  feature_list.InitWithFeatures(
+      {send_tab_to_self::kSendTabToSelfEnhancedDesktopUI,
+       send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2},
+      {});
 
   auto* sync_service = static_cast<StubSendTabToSelfSyncService*>(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
@@ -2822,8 +2829,10 @@ TEST_F(RenderViewContextMenuSendTabToSelfLinkTest,
 TEST_F(RenderViewContextMenuSendTabToSelfLinkTest,
        NoSubmenuWhenNoDevicesForLink) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2);
+  feature_list.InitWithFeatures(
+      {send_tab_to_self::kSendTabToSelfEnhancedDesktopUI,
+       send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2},
+      {});
 
   auto* sync_service = static_cast<StubSendTabToSelfSyncService*>(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
@@ -2874,4 +2883,39 @@ TEST_F(RenderViewContextMenuSendTabToSelfLinkTest,
   menu.Init();
 
   EXPECT_FALSE(menu.IsItemPresent(IDC_SEND_TAB_TO_SELF));
+}
+
+namespace {
+
+class PlatformCommandTestContextMenu : public TestRenderViewContextMenu {
+ public:
+  using TestRenderViewContextMenu::TestRenderViewContextMenu;
+
+  bool ExecPlatformCommand(int command_id, int event_flags) override {
+    if (command_id == IDC_CONTENT_CONTEXT_LOOK_UP) {
+      platform_command_executed_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  bool platform_command_executed() const { return platform_command_executed_; }
+
+ private:
+  bool platform_command_executed_ = false;
+};
+
+}  // namespace
+
+TEST_F(RenderViewContextMenuPrefsTest, ExecPlatformCommandCalledAndLogged) {
+  base::HistogramTester histogram_tester;
+  content::ContextMenuParams params = CreateParams(MenuItem::ALL);
+  PlatformCommandTestContextMenu menu(*web_contents()->GetPrimaryMainFrame(),
+                                      params);
+  menu.Init();
+
+  menu.ExecuteCommand(IDC_CONTENT_CONTEXT_LOOK_UP, 0);
+  EXPECT_TRUE(menu.platform_command_executed());
+  histogram_tester.ExpectBucketCount("RenderViewContextMenu.Used", /*98*/ 98,
+                                     1);
 }

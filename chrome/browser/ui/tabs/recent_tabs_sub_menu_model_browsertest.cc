@@ -32,7 +32,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/recent_tabs_builder_test_helper.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -69,6 +69,7 @@
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 
 using ::testing::ElementsAre;
 
@@ -353,7 +354,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
   RecentTabsSubMenuModel model(nullptr, browser());
 
   std::vector<ModelData> kData;
-  EXPECT_TRUE(browser()->GetFeatures().side_panel_ui());
+  EXPECT_TRUE(SidePanelUI::From(browser()));
   kData = {
       {ui::MenuModel::TYPE_COMMAND, true},    // History
       {ui::MenuModel::TYPE_COMMAND, true},    // History Cluster
@@ -427,17 +428,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
   VerifyModel(model.GetSubmenuModelAt(5), kGroup0Data);
 }
 
-class RecentTabsSubMenuModelSplitTest : public RecentTabsSubMenuModelTest {
- public:
-  RecentTabsSubMenuModelSplitTest() {
-    scoped_feature_list_.InitAndEnableFeature(tabs::kSplitViewTabRestore);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
+IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
                        RecentlyClosedSplitsFromCurrentSession) {
   Init();
   ASSERT_TRUE(browser()->tab_strip_model()->SupportsTabGroups());
@@ -487,7 +478,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
   VerifyModel(model.GetSubmenuModelAt(4), kSplitData);
 }
 
-IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
+IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
                        RecentlyClosedWindowWithSplit) {
   Init();
   DisableSync();
@@ -538,7 +529,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
   VerifyModel(window_submenu->GetSubmenuModelAt(2), kSplitSubmenuData);
 }
 
-IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
+IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
                        RecentlyClosedWindowWithGroupsAndSplits) {
   Init();
   DisableSync();
@@ -640,7 +631,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
   VerifyModel(window_submenu->GetSubmenuModelAt(5), kSplit2Data);
 }
 
-IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
+IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
                        RecentlyClosedWindowWithSplitAndRegularTabs) {
   Init();
   DisableSync();
@@ -697,7 +688,7 @@ IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
   VerifyModel(window_submenu->GetSubmenuModelAt(3), kSplitSubmenuData);
 }
 
-IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelSplitTest,
+IN_PROC_BROWSER_TEST_F(RecentTabsSubMenuModelTest,
                        RecentlyClosedGroupWithSplit) {
   Init();
   ASSERT_TRUE(browser()->tab_strip_model()->SupportsTabGroups());

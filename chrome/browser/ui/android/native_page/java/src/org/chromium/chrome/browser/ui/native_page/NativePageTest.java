@@ -23,7 +23,6 @@ import org.chromium.url.GURL;
 
 /** Tests public methods in NativePage. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NativePageTest {
     public static class UrlCombo {
         public String url;
@@ -137,7 +136,7 @@ public class NativePageTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     @Config(qualifiers = "sw600dp")
     public void testNativePageType_SettingsDisabled() {
         String url = "chrome://settings";

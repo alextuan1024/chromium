@@ -77,6 +77,7 @@
 #include "net/cert/caching_cert_verifier.h"
 #include "net/cert/cert_verifier.h"
 #include "net/cert/coalescing_cert_verifier.h"
+#include "net/cert/x509_util.h"
 #include "net/cookies/cookie_access_delegate.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_monster.h"
@@ -2554,11 +2555,8 @@ void NetworkContext::GetTrustAnchorIDsForTesting(
     GetTrustAnchorIDsForTestingCallback callback) {
   const net::SSLContextConfig& ssl_context_config =
       url_request_context_->ssl_config_service()->GetSSLContextConfig();
-  std::vector<std::vector<uint8_t>> all_trust_anchor_ids =
-      ssl_context_config.mtc_trust_anchor_ids;
-  base::Extend(all_trust_anchor_ids,
-               base::ToVector(ssl_context_config.trust_anchor_ids));
-  std::move(callback).Run(all_trust_anchor_ids);
+  std::move(callback).Run(net::x509_util::ParseTlsTrustAnchorIDs(
+      ssl_context_config.SelectAllTrustAnchorIDs()));
 }
 
 void NetworkContext::PreconnectSockets(
@@ -3637,7 +3635,7 @@ void NetworkContext::CreateTrustedUrlLoaderFactoryForNetworkService(
 }
 
 void NetworkContext::SetSharedDictionaryCacheMaxSize(
-    std::optional<uint64_t> cache_max_size) {
+    std::optional<base::ByteSize> cache_max_size) {
   if (!shared_dictionary_manager_) {
     return;
   }

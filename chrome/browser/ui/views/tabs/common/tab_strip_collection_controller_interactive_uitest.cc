@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
@@ -22,6 +23,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -500,7 +502,7 @@ class TabStripCollectionControllerTabGroupFocusingInteractiveUiTest
  public:
   const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
       override {
-    return {{tabs::kVerticalTabs, {}}, {features::kTabGroupsFocusing, {}}};
+    return {{features::kTabGroupsFocusing, {}}};
   }
 
   bool CheckBrowserHasColorOverride() {
@@ -735,7 +737,7 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerInteractiveUiTest,
                              CloseTabSource::kFromMouse);
 
         tab_groups::DeletionDialogController* deletion_dialog_controller =
-            browser()->GetFeatures().tab_group_deletion_dialog_controller();
+            tab_groups::DeletionDialogController::From(browser());
         if (deletion_dialog_controller &&
             deletion_dialog_controller->IsShowingDialog()) {
           deletion_dialog_controller->SimulateOkButtonForTesting();

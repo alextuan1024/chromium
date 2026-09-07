@@ -22,7 +22,6 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/test_vertical_tab_strip_state_controller_delegate.h"
 #include "chrome/common/pref_names.h"
@@ -30,7 +29,9 @@
 #include "components/metrics/daily_event.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/media_player_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -392,7 +393,6 @@ class TabStatsTrackerTest : public ChromeRenderViewHostTestHarness {
     tab_strip_modifier_ = std::make_unique<TabStripModifier>(
         tab_strip_interface_.get(), test_tab_model_.get());
 #else
-    scoped_feature_.InitWithFeatures({tabs::kVerticalTabs}, {});
     test_tab_strip_model_delegate_ =
         std::make_unique<TestTabStripModelDelegate>();
     tab_strip_model_ = std::make_unique<TabStripModel>(
@@ -550,7 +550,6 @@ class TabStatsTrackerTest : public ChromeRenderViewHostTestHarness {
 
   TestingPrefServiceSimple pref_service_;
 
-  base::test::ScopedFeatureList scoped_feature_;
 
 #if BUILDFLAG(IS_ANDROID)
   std::unique_ptr<OwningTestTabModel> test_tab_model_;

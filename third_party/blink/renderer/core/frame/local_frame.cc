@@ -425,6 +425,7 @@ LocalFrame* LocalFrame::FromFrameToken(const LocalFrameToken& frame_token) {
 void LocalFrame::Init(
     Frame* opener,
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     std::unique_ptr<PolicyContainer> policy_container,
     const StorageKey& storage_key,
     ukm::SourceId document_ukm_source_id,
@@ -442,9 +443,23 @@ void LocalFrame::Init(
   mojo_handler_ = MakeGarbageCollected<LocalFrameMojoHandler>(*this);
 
   SetOpenerDoNotNotify(opener);
-  loader_.Init(document_token, std::move(policy_container), storage_key,
-               document_ukm_source_id, creator_base_url,
-               std::move(sandbox_origin_token));
+  loader_.Init(document_token, initiator_state_token,
+               std::move(policy_container), storage_key, document_ukm_source_id,
+               creator_base_url, std::move(sandbox_origin_token));
+
+  // If this frame is created inside a same-process parent that is already
+  // hidden for media playback (e.g. a subframe inserted into a display:none
+  // iframe), inherit that hidden state directly. The parent's viewport-
+  // intersection pass that propagated the hidden bit down its subtree ran
+  // before this frame existed, and it will not re-run while the parent stays
+  // hidden (a hidden frame is render-throttled, so scheduling another pass will
+  // not reach this frame). Without this seed, media in the newly created frame
+  // would never learn that it is hidden.
+  if (LocalFrame* parent_local_frame = DynamicTo<LocalFrame>(Tree().Parent())) {
+    if (parent_local_frame->IsHiddenForMediaPlayback().value_or(false)) {
+      is_hidden_for_media_playback_ = true;
+    }
+  }
 }
 
 void LocalFrame::SetView(LocalFrameView* view) {
@@ -2093,10 +2108,6 @@ LocalFrame::LocalFrame(
       ad_tracker_ = MakeGarbageCollected<AdTracker>(
           this, GetOrCreateScriptInitiationMonitor());
     }
-    if (RuntimeEnabledFeatures::ExtensionScriptTaggingEnabled()) {
-      extension_script_tracker_ = MakeGarbageCollected<ExtensionScriptTracker>(
-          this, GetOrCreateScriptInitiationMonitor());
-    }
     if (blink::LcppScriptObserverEnabled()) {
       script_observer_ = MakeGarbageCollected<LCPScriptObserver>(this);
     }
@@ -2107,7 +2118,6 @@ LocalFrame::LocalFrame(
     UpdateInertIfPossible();
     UpdateInheritedEffectiveTouchActionIfPossible();
     ad_tracker_ = LocalFrameRoot().ad_tracker_;
-    extension_script_tracker_ = LocalFrameRoot().extension_script_tracker_;
     performance_monitor_ = LocalFrameRoot().performance_monitor_;
     script_observer_ = LocalFrameRoot().script_observer_;
   }
@@ -2504,6 +2514,41 @@ void LocalFrame::SetAdTrackerForTesting(AdTracker* ad_tracker) {
     ad_tracker_->Shutdown();
   }
   ad_tracker_ = ad_tracker;
+}
+
+ExtensionScriptTracker* LocalFrame::GetExtensionScriptTracker() {
+  return LocalFrameRoot().extension_script_tracker_.Get();
+}
+
+void LocalFrame::UpdateExtensionScriptTracking() {
+  if (!IsLocalRoot()) {
+    return;
+  }
+  bool should_track =
+      Loader().GetDocumentLoader() &&
+      Loader().GetDocumentLoader()->GetScriptInjectionPolicy() !=
+          mojom::blink::ScriptInjectionPolicy::kNone &&
+      RuntimeEnabledFeatures::ExtensionScriptTaggingEnabled();
+  if (should_track) {
+    if (!extension_script_tracker_) {
+      extension_script_tracker_ = MakeGarbageCollected<ExtensionScriptTracker>(
+          this, GetOrCreateScriptInitiationMonitor());
+    }
+  } else {
+    if (extension_script_tracker_) {
+      extension_script_tracker_->Shutdown();
+      extension_script_tracker_ = nullptr;
+    }
+  }
+}
+
+void LocalFrame::SetExtensionScriptTrackerForTesting(
+    ExtensionScriptTracker* extension_script_tracker) {
+  LocalFrame& root = LocalFrameRoot();
+  if (root.extension_script_tracker_) {
+    root.extension_script_tracker_->Shutdown();
+  }
+  root.extension_script_tracker_ = extension_script_tracker;
 }
 
 DEFINE_WEAK_IDENTIFIER_MAP(LocalFrame)
@@ -3351,7 +3396,7 @@ void LocalFrame::RequestExecuteScript(
     BackForwardCacheAware back_forward_cache_aware,
     mojom::blink::WantResultOption want_result_option,
     mojom::blink::PromiseResultOption promise_behavior,
-    bool is_injected_extension_script) {
+    const String& script_injector_id) {
   DOMWrapperWorld* world;
   ExecuteScriptPolicy execute_script_policy;
   CHECK(!IsProvisional());
@@ -3407,7 +3452,7 @@ void LocalFrame::RequestExecuteScript(
   PausableScriptExecutor::CreateAndRun(
       script_state, std::move(script_sources), execute_script_policy,
       user_gesture, evaluation_timing, blocking_option, want_result_option,
-      promise_behavior, std::move(callback), is_injected_extension_script);
+      promise_behavior, std::move(callback), script_injector_id);
 }
 
 void LocalFrame::SetEvictCachedSessionStorageOnFreezeOrUnload() {
@@ -3418,10 +3463,7 @@ LocalFrameToken LocalFrame::GetLocalFrameToken() const {
   return GetFrameToken().GetAs<LocalFrameToken>();
 }
 
-const base::UnguessableToken& LocalFrame::GetInitiatorStateToken() const {
-  // A frame's LocalDOMWindow should always have a valid
-  // `initiator_state_token`.
-  CHECK(!DomWindow()->GetInitiatorStateToken().is_empty());
+const InitiatorStateToken& LocalFrame::GetInitiatorStateToken() const {
   return DomWindow()->GetInitiatorStateToken();
 }
 
@@ -4455,7 +4497,8 @@ LocalFrame::IssueKeepAliveHandle() {
   mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
       keep_alive_remote;
   GetLocalFrameHostRemote().IssueKeepAliveHandle(
-      keep_alive_remote.InitWithNewPipeAndPassReceiver());
+      keep_alive_remote.InitWithNewPipeAndPassReceiver(),
+      GetInitiatorStateToken());
   return keep_alive_remote;
 }
 

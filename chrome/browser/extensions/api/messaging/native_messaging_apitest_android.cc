@@ -4,9 +4,12 @@
 
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/values_test_util.h"
+#include "base/values.h"
 #include "chrome/browser/extensions/chrome_content_verifier_delegate.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/install_verifier.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
@@ -33,9 +36,14 @@ constexpr char kUnauthorizedExtensionKey[] =
 
 class NativeMessagingAndroidApiTest : public ExtensionApiTest {
  public:
-  NativeMessagingAndroidApiTest()
-      : scoped_feature_list_{
-            extensions_features::kApiDesktopAndroidNativeMessaging} {}
+  NativeMessagingAndroidApiTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {extensions_features::kApiDesktopAndroidNativeMessaging,
+         extensions_features::
+             kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist},
+        /*disabled_features=*/{});
+  }
   ~NativeMessagingAndroidApiTest() override = default;
   NativeMessagingAndroidApiTest(const NativeMessagingAndroidApiTest&) = delete;
   NativeMessagingAndroidApiTest& operator=(
@@ -43,7 +51,41 @@ class NativeMessagingAndroidApiTest : public ExtensionApiTest {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+
+  // Needed to simulate installs for webstore extensions.
+  ScopedInstallVerifierBypassForTest ignore_install_verification_;
 };
+
+// Test fixture explicitly disabling the bypass flag, verifying allowlist
+// behavior.
+class NativeMessagingAndroidUnauthorizedApiTest : public ExtensionApiTest {
+ public:
+  NativeMessagingAndroidUnauthorizedApiTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{extensions_features::
+                                  kApiDesktopAndroidNativeMessaging},
+        /*disabled_features=*/
+        {extensions_features::
+             kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist});
+  }
+  ~NativeMessagingAndroidUnauthorizedApiTest() override = default;
+  NativeMessagingAndroidUnauthorizedApiTest(
+      const NativeMessagingAndroidUnauthorizedApiTest&) = delete;
+  NativeMessagingAndroidUnauthorizedApiTest& operator=(
+      const NativeMessagingAndroidUnauthorizedApiTest&) = delete;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+
+  // Needed to simulate installs for webstore extensions.
+  ScopedInstallVerifierBypassForTest ignore_install_verification_;
+};
+
+IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidUnauthorizedApiTest,
+                       UnauthorizedExtensionRejected) {
+  ASSERT_TRUE(RunExtensionTest("native_messaging_android_unauthorized"))
+      << message_;
+}
 
 IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest, NativeMessagingBasic) {
   ASSERT_TRUE(RunExtensionTest("native_messaging")) << message_;
@@ -56,6 +98,10 @@ IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest, SendNativeMessage) {
 
 IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest, ConnectNative) {
   ASSERT_TRUE(RunExtensionTest("native_messaging_connect")) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest, NativeMessagingCerts) {
+  ASSERT_TRUE(RunExtensionTest("native_messaging_certs")) << message_;
 }
 
 // Test that the remote app can reject connections based on the extension ID.
@@ -96,6 +142,126 @@ IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest,
   dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackground);
 
   ASSERT_TRUE(RunExtensionTest(dir.UnpackedPath(), {}, {}));
+}
+
+// Test that disabling an extension triggers closeConnection() on the external
+// Android service.
+IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest,
+                       ExtensionUnloadNotifiesApp) {
+  // Load an extension that just calls connectNative to keep a port open.
+  const Extension* extension =
+      LoadExtension(test_data_dir_.DirName()
+                        .AppendASCII("native_messaging")
+                        .AppendASCII("connect_native"));
+  ASSERT_TRUE(extension);
+  const auto extension_id = extension->id();
+
+  // Load an observer extension which sends a message to the app and waits for
+  // when the app has connected or disconnected with another extension.
+  constexpr char kObserverExtensionManifest[] = R"(
+      {
+        "name": "ObserverExtension",
+        "version": "1.0",
+        "manifest_version": 3,
+        "permissions": ["nativeMessaging"],
+        "background": {
+          "service_worker": "background.js"
+        }
+      })";
+
+  TestExtensionDir observer_extension_dir;
+  observer_extension_dir.WriteManifest(kObserverExtensionManifest);
+  observer_extension_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
+                                   "// Empty background script");
+  const Extension* observer_ext =
+      LoadExtension(observer_extension_dir.UnpackedPath());
+  ASSERT_TRUE(observer_ext);
+
+  // Through `observer_ext`, wait for the app to connect to `extension`.
+  {
+    std::string load_wait_script = base::StringPrintf(
+        R"(
+          chrome.runtime.sendNativeMessage(
+              'org.chromium.chrome.tests.support',
+              {request: 'waitForExtensionConnected', extensionId: '%s'},
+              (response) => {
+                chrome.test.sendScriptResult(response);
+              });
+        )",
+        extension_id);
+
+    base::Value load_result = BackgroundScriptExecutor::ExecuteScript(
+        profile(), observer_ext->id(), load_wait_script,
+        BackgroundScriptExecutor::ResultCapture::kSendScriptResult);
+    EXPECT_THAT(load_result, base::test::IsJson(base::StringPrintf(
+                                 R"({"status": "loaded", "extensionId": "%s"})",
+                                 extension_id)));
+  }
+
+  // `observer_ext` sends "waitForExtensionUnloaded" to wait for `extension`'s
+  // unload notification.
+  std::string unload_wait_script = base::StringPrintf(
+      R"(
+        chrome.runtime.sendNativeMessage(
+            'org.chromium.chrome.tests.support',
+            {request: 'waitForExtensionUnloaded', extensionId: '%s'},
+            (response) => {
+              chrome.test.sendScriptResult(response);
+            });
+      )",
+      extension_id);
+
+  BackgroundScriptExecutor unload_executor(profile());
+  unload_executor.ExecuteScriptAsync(
+      observer_ext->id(), unload_wait_script,
+      BackgroundScriptExecutor::ResultCapture::kSendScriptResult);
+
+  // Disable `extension`. This will be propagated to the app via an
+  // IExtensionNativeMessageService.closeConnection() IPC.
+  DisableExtension(extension_id);
+
+  // Wait for the app to receive the IPC and reply to the sendNativeMessage call
+  // in `unload_wait_script`.
+  base::Value unload_result = unload_executor.WaitForResult();
+  EXPECT_THAT(
+      unload_result,
+      base::test::IsJson(base::StringPrintf(
+          R"({"status": "unloaded", "extensionId": "%s"})", extension_id)));
+}
+
+// An unpacked extension can send messages to the external Android app without
+// specifying certificates.
+IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest,
+                       EmptyCertificates_Unpacked) {
+  ExtensionTestMessageListener listener;
+  const Extension* extension =
+      LoadExtension(test_data_dir_.DirName()
+                        .AppendASCII("native_messaging")
+                        .AppendASCII("send_native_message_android_no_certs"));
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(listener.WaitUntilSatisfied());
+  EXPECT_EQ("success", listener.message());
+}
+
+// A packed extension must specify certificates in order to send messages to the
+// external Android app.
+IN_PROC_BROWSER_TEST_F(NativeMessagingAndroidApiTest,
+                       EmptyCertificates_Packed) {
+  ExtensionTestMessageListener listener;
+  base::FilePath crx_path =
+      PackExtension(test_data_dir_.DirName()
+                        .AppendASCII("native_messaging")
+                        .AppendASCII("send_native_message_android_no_certs"));
+  const Extension* extension = InstallExtensionFromWebstore(crx_path, 1);
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(listener.WaitUntilSatisfied());
+  EXPECT_EQ(
+      "caught error: Error in invocation of runtime.sendNativeMessage("
+      "[string|runtime.NativeMessageTarget] application, "
+      "object message, optional function callback): Packed extensions on "
+      "Android must specify at least one expected signing certificate in "
+      "'androidCertificates'.",
+      listener.message());
 }
 
 // A sub-test which tests that the browser sends information on whether the

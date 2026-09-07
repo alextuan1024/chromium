@@ -13,13 +13,13 @@
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/i18n/win/embedded_i18n/language_selector.h"
+#include "base/i18n/win/preferred_languages.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/current_module.h"
-#include "base/win/embedded_i18n/language_selector.h"
-#include "base/win/i18n.h"
 #include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/installer/exit_code.h"
@@ -42,13 +42,13 @@ size_t GetLanguageOffset(const std::wstring& lang) {
 }  // namespace
 
 std::wstring GetPreferredLanguage() {
-  std::vector<std::wstring> languages;
-  if (!base::win::i18n::GetUserPreferredUILanguageList(&languages) ||
-      languages.size() == 0) {
+  const std::vector<base::i18n::LanguageTag> languages =
+      base::i18n::GetUserPreferredUILanguageList();
+  if (languages.empty()) {
     return L"en-us";
   }
 
-  return languages[0];
+  return base::ASCIIToWide(languages[0].tag_string());
 }
 
 std::wstring GetLocalizedString(unsigned int base_message_id,

@@ -13,7 +13,7 @@ import type {CrDialogElement} from 'chrome://settings/lazy_load.js';
 import type {CrCollapseElement} from 'chrome://settings/lazy_load.js';
 import type {CrButtonElement, CrRadioButtonElement, CrRadioGroupElement} from 'chrome://settings/settings.js';
 import {MetricsBrowserProxyImpl} from 'chrome://settings/settings.js';
-import {loadTimeData, OpenWindowProxyImpl, PageStatus, PrefService, PrefsBrowserProxy, resetRouterForTesting, Router, routes, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {loadTimeData, OpenWindowProxyImpl, PageStatus, PrefService, PrefsBrowserProxy, Router, routes, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {isChildVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -24,6 +24,12 @@ import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
 import {simulateStoredAccounts} from './sync_test_util.js';
+
+// </if>
+
+// <if expr="is_chromeos">
+import {resetRouterForTesting} from 'chrome://settings/settings.js';
+
 // </if>
 
 import {getSyncAllPrefs} from './sync_test_util.js';
@@ -115,6 +121,10 @@ suite('SyncSettings', function() {
 
   setup(async function() {
     browserProxy = new TestSyncBrowserProxy();
+    browserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
     await setupSyncPage();
@@ -819,12 +829,14 @@ suite('SyncSettings', function() {
 });
 
 suite('SyncSettingsWithReplaceSyncPromosWithSignInPromos', function() {
+  // <if expr="is_chromeos">
   suiteSetup(function() {
     loadTimeData.overrideValues({
       replaceSyncPromosWithSignInPromos: true,
     });
     resetRouterForTesting();
   });
+  // </if>
 
   setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -865,6 +877,10 @@ suite('EEAChoiceCountry', function() {
     await PrefService.getInstance().whenInitialized();
 
     browserProxy = new TestSyncBrowserProxy();
+    browserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
     metricsBrowserProxy = new TestMetricsBrowserProxy();

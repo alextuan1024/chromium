@@ -196,7 +196,7 @@ auto MakeLongTuple() {
   auto t6 = std::tuple_cat(t5, t5);
   // Ideally this would be much larger, but some configurations can't handle
   // making tuples with that many elements. They break inside std::tuple itself.
-  static_assert(std::tuple_size<decltype(t6)>::value == 32);
+  static_assert(std::tuple_size_v<decltype(t6)> == 32);
   return t6;
 }
 
@@ -342,7 +342,7 @@ namespace {
 // measurements.
 static constexpr size_t kEntropySize = 16 << 10;
 static char entropy[kEntropySize + 1024];
-ABSL_ATTRIBUTE_UNUSED static const bool kInitialized = [] {
+[[maybe_unused]] static const bool kInitialized = [] {
   absl::BitGen gen;
   static_assert(sizeof(entropy) % sizeof(uint64_t) == 0);
   for (int i = 0; i != sizeof(entropy); i += sizeof(uint64_t)) {

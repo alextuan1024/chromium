@@ -33,11 +33,9 @@
 
 #include "base/auto_reset.h"
 #include "base/containers/adapters.h"
-#include "base/feature_list.h"
 #include "base/functional/function_ref.h"
 #include "base/hash/hash.h"
 #include "base/rand_util.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/cascade_layer_map.h"
 #include "third_party/blink/renderer/core/css/cascade_layered.h"
@@ -2465,10 +2463,11 @@ void StyleEngine::InvalidateSlottedElements(
   }
 }
 
-bool StyleEngine::HasViewportDependentMediaQueries() {
+bool StyleEngine::MayHaveViewportDependentMediaQueries() {
   DCHECK(global_rule_set_);
   UpdateActiveStyle();
-  return global_rule_set_->GetRuleFeatureSet()
+  return media_query_result_flags_.is_viewport_dependent ||
+         global_rule_set_->GetRuleFeatureSet()
              .HasViewportDependentMediaQueries() ||
          functional_media_query_result_flags_.is_viewport_dependent;
 }
@@ -2681,7 +2680,7 @@ void StyleEngine::SetHttpDefaultStyle(const String& content) {
   }
 }
 
-void StyleEngine::CollectFeaturesTo(RuleFeatureSet& features) {
+void StyleEngine::CollectFeaturesTo(RuleFeatureSet& features) const {
   CollectUserStyleFeaturesTo(features);
   CollectScopedStyleFeaturesTo(features);
 }
@@ -3088,10 +3087,21 @@ void StyleEngine::ApplyRuleSetChanges(
   DCHECK(global_rule_set_);
   HeapHashSet<Member<RuleSet>> changed_rule_sets;
 
+  for (const ActiveStyleSheet& active_sheet : new_style_sheets) {
+    media_query_result_flags_.Add(
+        active_sheet.first->GetMediaQueryResultFlags());
+  }
+
   ActiveSheetsChange change = CompareActiveStyleSheets(
       old_style_sheets, new_style_sheets, diffs, changed_rule_sets);
 
   unsigned changed_rule_flags = GetRuleSetFlags(changed_rule_sets);
+  if (changed_rule_flags & kLayerRules && change == kActiveSheetsChanged) {
+    // When we have layer changes other than appended, existing layer ordering
+    // may be changed, which requires rebuilding all at-rule registries and
+    // full document style recalc.
+    changed_rule_flags = kRuleSetFlagsAll;
+  }
 
   bool invalidated_fonts = false;
   bool rebuild_font_face_cache = change == kActiveSheetsChanged &&
@@ -3111,6 +3121,20 @@ void StyleEngine::ApplyRuleSetChanges(
     return;
   }
 
+  unsigned append_start_index =
+      change == kActiveSheetsAppended ? old_style_sheets.size() : 0;
+
+  if (!new_style_sheets.empty()) {
+    // We need to add implicit scope triggers before InvalidateForRuleSetChanges
+    // because the selector matching relies on these implicit scopes both for
+    // old and new active stylesheets.
+    tree_scope.EnsureScopedStyleResolver().AddImplicitScopeTriggers(
+        append_start_index, new_style_sheets);
+  }
+
+  InvalidateForRuleSetChanges(tree_scope, changed_rule_sets, changed_rule_flags,
+                              kInvalidateCurrentScope);
+
   // With rules added or removed, we need to re-aggregate rule meta data.
   global_rule_set_->MarkDirty();
 
@@ -3122,7 +3146,6 @@ void StyleEngine::ApplyRuleSetChanges(
     MarkCounterStylesNeedUpdate();
   }
 
-  unsigned append_start_index = 0;
   bool rebuild_cascade_layer_map = changed_rule_flags & kLayerRules;
   if (scoped_resolver) {
     // - If all sheets were removed, we remove the ScopedStyleResolver
@@ -3133,9 +3156,7 @@ void StyleEngine::ApplyRuleSetChanges(
     if (new_style_sheets.empty()) {
       rebuild_cascade_layer_map = false;
       ResetAuthorStyle(tree_scope);
-    } else if (change == kActiveSheetsAppended) {
-      append_start_index = old_style_sheets.size();
-    } else {
+    } else if (change == kActiveSheetsChanged) {
       rebuild_cascade_layer_map = (changed_rule_flags & kLayerRules) ||
                                   scoped_resolver->HasCascadeLayerMap();
       scoped_resolver->ResetStyle();
@@ -3150,16 +3171,6 @@ void StyleEngine::ApplyRuleSetChanges(
   if (changed_rule_flags & kLayerRules) {
     if (resolver_) {
       resolver_->InvalidateMatchedPropertiesCache();
-    }
-
-    // When we have layer changes other than appended, existing layer ordering
-    // may be changed, which requires rebuilding all at-rule registries and
-    // full document style recalc.
-    if (change == kActiveSheetsChanged) {
-      changed_rule_flags = kRuleSetFlagsAll;
-      if (tree_scope.RootNode().IsDocumentNode()) {
-        rebuild_font_face_cache = true;
-      }
     }
   }
 
@@ -3225,12 +3236,17 @@ void StyleEngine::ApplyRuleSetChanges(
   }
 
   if (!new_style_sheets.empty()) {
-    tree_scope.EnsureScopedStyleResolver().AppendActiveStyleSheets(
-        append_start_index, new_style_sheets);
+    ScopedStyleResolver& resolver = tree_scope.EnsureScopedStyleResolver();
+    resolver.AppendActiveStyleSheets(append_start_index, new_style_sheets);
+    if (change == kActiveSheetsChanged) {
+      // If change was kActiveSheetsAdded, the implicit scope triggers were
+      // already added before InvalidateForRuleSetChanges(). If not, all scopes
+      // were removed by ResetStyle()/ResetAuthorStyle(), and we need to re-add
+      // them.
+      resolver.AddImplicitScopeTriggers(0, new_style_sheets);
+    }
   }
 
-  InvalidateForRuleSetChanges(tree_scope, changed_rule_sets, changed_rule_flags,
-                              kInvalidateCurrentScope);
   if (invalidated_fonts) {
     GetFontSelector()->FontFaceInvalidated(
         FontInvalidationReason::kGeneralInvalidation);
@@ -3372,10 +3388,8 @@ bool StyleEngine::UpdateRootRelativeUnits(const ComputedStyle* old_root_style,
   bool root_font_glyphs_changed =
       !old_root_style ||
       (UsesGlyphRelativeUnits() &&
-       (base::FeatureList::IsEnabled(blink::features::kCSSFontComparisonFix)
-            ? !base::ValuesEquivalent<Font>(old_root_style->GetFont(),
-                                            new_root_style->GetFont())
-            : old_root_style->GetFont() != new_root_style->GetFont()));
+       !base::ValuesEquivalent<Font>(old_root_style->GetFont(),
+                                     new_root_style->GetFont()));
   bool root_line_height_changed =
       !old_root_style ||
       (UsesLineHeightUnits() &&
@@ -3740,7 +3754,7 @@ bool ContainerStyleChangesAllowed(Element& container,
   // the highlight styles hangs off the originating element's ComputedStyle.
   const ComputedStyle* new_element_style = container.GetComputedStyle();
   const ComputedStyle* new_layout_style =
-      container.GetLayoutObject() ? container.GetLayoutObject()->Style()
+      container.GetLayoutObject() ? &container.GetLayoutObject()->StyleRef()
                                   : nullptr;
 
   if (!new_element_style || !old_element_style) {
@@ -3784,7 +3798,7 @@ void StyleEngine::RecalcStyleForSizeContainer(Element& container,
 #if DCHECK_IS_ON()
   const ComputedStyle* old_element_style = container.GetComputedStyle();
   const ComputedStyle* old_layout_style =
-      container.GetLayoutObject() ? container.GetLayoutObject()->Style()
+      container.GetLayoutObject() ? &container.GetLayoutObject()->StyleRef()
                                   : nullptr;
 #endif  // DCHECK_IS_ON()
 
@@ -4740,7 +4754,7 @@ void StyleEngine::UpdateViewportStyle() {
 
   const ComputedStyle* viewport_style = resolver_->StyleForViewport();
   if (ComputedStyle::ComputeDifference(
-          viewport_style, GetDocument().GetLayoutView()->Style()) !=
+          viewport_style, &GetDocument().GetLayoutView()->StyleRef()) !=
       ComputedStyle::Difference::kEqual) {
     GetDocument().GetLayoutView()->SetStyle(viewport_style);
   }

@@ -13,6 +13,7 @@ import "mojo/public/mojom/base/time.mojom";
 import "skia/public/mojom/skcolor.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
 import "ui/gfx/range/mojom/range.mojom";
+import "ui/webui/resources/js/tracked_element/tracked_element.mojom";
 
 // The context menu types that can be opened with ToolbarUIService's
 // ShowContextMenu.
@@ -209,6 +210,11 @@ struct SplitTabsControlState {
   SplitTabActiveLocation location;
   bool should_be_shown;
   bool is_context_menu_visible;
+
+  // The value of the `show_menu_token` from the most recent
+  // ShowContextMenu() call made for one of the split-tabs menus. 0 if no
+  // ShowContextMenu() calls have been received yet.
+  uint32 menu_open_token;
 };
 
 struct BackForwardControlState {
@@ -277,6 +283,7 @@ struct AppMenuControlState {
 enum AvatarToolbarButtonState {
   kGuestSession,
   kIncognitoProfile,
+  kEnterpriseIsolatedProfile,
   kExplicitTextShowing,
   kOnSignin,
   kShowIdentityName,
@@ -301,6 +308,12 @@ struct AvatarControlState {
   mojo_base.mojom.String16 accessibility_description;
   bool enabled = true;
   bool has_linear_gradient_ring = false;
+};
+
+// Current state related to and managed by the overflow button.
+struct OverflowButtonControlState {
+  // True if the overflow menu is currently open.
+  bool is_context_menu_visible;
 };
 
 // The type of the content setting image model.
@@ -370,6 +383,10 @@ struct ContentSettingImageState {
   // If true, when `explanatory_string` is displayed, it should appear via an
   // animation.
   bool should_run_animation;
+
+  // The TrackedElement id to use for the content setting icon button. Used for
+  // element tracking.
+  tracked_element.mojom.TrackedElementIdentifier identifier;
 
   // NOTE: The visual icon to display is determined by `type`
   // and `is_blocked`.
@@ -457,7 +474,20 @@ struct PageActionState {
   // Overrides background color from its usual behavior.
   skia.mojom.SkColor? background_color_override;
 
-  // TODO: crbug.com/501449027 - Add remaining fields.
+  // The TrackedElement id to use for the page action icon button. Used for
+  // element tracking.
+  tracked_element.mojom.TrackedElementIdentifier identifier;
+
+  // Whether the action is currently active, indicating there is at least one
+  // active `ScopedPageActionActivity` associated with this action in the
+  // C++ `PageActionModel` (for example, when a feature's UI like the Find bar
+  // is currently open). When true, the icon button is rendered with an active
+  // highlight state (via the `is-menu-open` attribute in WebUI).
+  bool is_active;
+
+  // Token that changes when the active tab or URL navigation changes. Used to
+  // suppress tab-switching and navigation icon animations in the WebUI.
+  uint32 icon_animation_token;
 };
 
 // Colors used by the omnibox.
@@ -701,7 +731,13 @@ enum SecurityLevel {
   kWarning,
 };
 
+enum SecurityChipRole {
+  kButton,
+  kImage,
+};
+
 struct SecurityChipAccessibilityState {
+  SecurityChipRole role;
   mojo_base.mojom.String16 label;
   mojo_base.mojom.String16 description;
 };
@@ -745,6 +781,7 @@ struct NavigationControlsState {
   PerformanceInterventionControlState performance_intervention_control_state;
   AppMenuControlState app_menu_control_state;
   AvatarControlState avatar_control_state;
+  OverflowButtonControlState overflow_button_control_state;
   bool battery_saver_button_visible;
   LocationBarState location_bar_state;
   // State of extensions.

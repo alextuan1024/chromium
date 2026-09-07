@@ -6,6 +6,9 @@ import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 
 import type {Skill} from '../skill.mojom-webui.js';
+import type {PendingEditorData} from '../skills.mojom-webui.js';
+
+import {getLoadingStageHistogramName, getPrimarySkillsOrigin, getSkillsApiAllowedOrigins, HANDSHAKE_PING_INTERVAL_MS, HANDSHAKE_TIMEOUT_MS, HISTOGRAM_HANDSHAKE_RESULT, HISTOGRAM_WRITE_LATENCY, LoadingStage, SKILLS_CLOSE_DIALOG, SKILLS_DIALOG_INFO_TYPE, SKILLS_GEMINI_PROMPT_TYPE, SKILLS_GET_PROVIDED_SKILL, SKILLS_HANDSHAKE_ACK, SKILLS_HANDSHAKE_TYPE, SKILLS_INVOKE_SKILL, SKILLS_LOG_METRIC, SKILLS_LOG_UMA_ENUM, SKILLS_OPEN_FULL_PAGE_EDITOR, SKILLS_OPEN_URL, SKILLS_PROVIDED_SKILL_INFO_TYPE, SKILLS_SEND_PROMPT, SKILLS_SEND_PROVIDED_SKILLS_TYPE, SKILLS_SHOW_TOAST, SKILLS_TOAST_CLOSED_TYPE, SKILLS_UNDO_TYPE, SKILLS_UPDATED_TYPE} from './skills_webview_bridge_constants.js';
 
 export interface SkillPreview {
   id: string;
@@ -15,11 +18,6 @@ export interface SkillPreview {
   description: string|undefined;
   category: string|undefined;
 }
-
-import type {PendingEditorData} from '../skills.mojom-webui.js';
-
-import {getLoadingStageHistogramName, getPrimarySkillsOrigin, getSkillsApiAllowedOrigins, HANDSHAKE_PING_INTERVAL_MS, HANDSHAKE_TIMEOUT_MS, HISTOGRAM_HANDSHAKE_RESULT, HISTOGRAM_WRITE_LATENCY, LoadingStage, SKILLS_CLOSE_DIALOG, SKILLS_DIALOG_INFO_TYPE, SKILLS_GEMINI_PROMPT_TYPE, SKILLS_GET_PROVIDED_SKILL, SKILLS_HANDSHAKE_ACK, SKILLS_HANDSHAKE_TYPE, SKILLS_INVOKE_SKILL, SKILLS_LOG_METRIC, SKILLS_LOG_UMA_ENUM, SKILLS_OPEN_FULL_PAGE_EDITOR, SKILLS_OPEN_URL, SKILLS_PROVIDED_SKILL_INFO_TYPE, SKILLS_SEND_PROMPT, SKILLS_SEND_PROVIDED_SKILLS_TYPE, SKILLS_SHOW_TOAST, SKILLS_TOAST_CLOSED_TYPE, SKILLS_UNDO_TYPE} from './skills_webview_bridge_constants.js';
-
 /**
  * Returns a URLPattern given an origin pattern string that has the syntax:
  * <protocol>://<hostname>[:<port>]
@@ -79,6 +77,7 @@ export interface SkillsWebviewBridgeDelegate {
   onUrlChanged(url: URL): void;
   onCloseDialog(): void;
   onCloseDialogAndOpenEditor(data: PendingEditorData): void;
+  onHandshakeStarted(): void;
   onHandshakeComplete(): void;
   onSendPrompt(prompt: string): void;
   onGetProvidedSkill(skillId: string): void;
@@ -165,6 +164,7 @@ export class SkillsWebviewBridge {
     this.isConnected_ = false;
     this.stopHandshake();
     this.handshakeStartTime_ = performance.now();
+    this.delegate_.onHandshakeStarted();
 
     // Send a handshake ping periodically.
     this.handshakeIntervalId_ = window.setInterval(() => {
@@ -218,8 +218,8 @@ export class SkillsWebviewBridge {
       if (this.isInitialHandshake_) {
         this.recordInitialHandshakeMetrics();
         this.isInitialHandshake_ = false;
-        this.delegate_.onHandshakeComplete();
       }
+      this.delegate_.onHandshakeComplete();
     }
 
     // Before we process non-handshake message, make sure we are connected.
@@ -453,6 +453,16 @@ export class SkillsWebviewBridge {
           {
             type: SKILLS_PROVIDED_SKILL_INFO_TYPE,
             payload: skill ?? null,
+          },
+          this.targetOrigin_);
+    }
+  }
+
+  sendSkillsUpdated() {
+    if (this.webview_.contentWindow && this.targetOrigin_) {
+      this.webview_.contentWindow.postMessage(
+          {
+            type: SKILLS_UPDATED_TYPE,
           },
           this.targetOrigin_);
     }

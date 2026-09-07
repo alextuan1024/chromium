@@ -17,6 +17,7 @@
 #include "chrome/browser/actor/actor_actions_runner.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/contextual_search/contextual_search_web_contents_helper.h"
 #include "chrome/browser/contextual_tasks/ai_mode_context_library_converter.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks.mojom-shared.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_context_service.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
+#include "chrome/browser/contextual_tasks/smart_tab_sharing_metrics.h"
 #include "chrome/browser/feedback/public/feedback_source.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/global_features.h"
@@ -34,6 +36,8 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -291,6 +295,9 @@ void ContextualTasksPageHandler::OnCookieSyncCompleted() {
 }
 
 void ContextualTasksPageHandler::GetThreadUrl(GetThreadUrlCallback callback) {
+  // Re-sync active tab auto-suggestion down to the WebUI for the fresh thread.
+  web_ui_controller_->SyncAutoSuggestedTabContext();
+
   std::optional<base::Uuid> task_id = web_ui_controller_->GetTaskId();
   if (task_id.has_value()) {
     std::move(callback).Run(
@@ -771,7 +778,6 @@ void ContextualTasksPageHandler::OnReceivedUpdatedThreadContextLibrary(
                 for (const auto& item : context_items) {
                   if (item->is_tab() && item->get_tab()->has_chrome_tab_data) {
                     auto tab_info = searchbox::mojom::TabInfo::New();
-                    tab_info->tab_id = item->get_tab()->tab_id;
                     tab_info->url = item->get_tab()->url;
                     tab_info->title = item->get_tab()->title;
                     int32_t handle =
@@ -779,6 +785,11 @@ void ContextualTasksPageHandler::OnReceivedUpdatedThreadContextLibrary(
                             .GetHandleForSessionId(item->get_tab()->tab_id);
                     if (handle != tabs::TabHandle::NullValue) {
                       tab_info->tab_id = handle;
+                    } else if (SessionID::IsValidValue(
+                                   item->get_tab()->tab_id)) {
+                      tab_info->tab_id = item->get_tab()->tab_id;
+                    } else {
+                      tab_info->tab_id = tabs::TabHandle::NullValue;
                     }
                     tabs.push_back(std::move(tab_info));
                   }
@@ -899,6 +910,10 @@ void ContextualTasksPageHandler::OnContextMenuOpened() {
 void ContextualTasksPageHandler::NotifySmartTabSharingTryItIphResult(
     bool accepted) {
 #if !BUILDFLAG(IS_ANDROID)
+  contextual_tasks::LogPromoInteraction(
+      accepted ? contextual_tasks::SmartTabSharingPromoAction::kPromoAccepted
+               : contextual_tasks::SmartTabSharingPromoAction::kPromoDismissed);
+
   auto* tracker = feature_engagement::TrackerFactory::GetForBrowserContext(
       web_ui_controller_->GetProfile());
   if (tracker) {
@@ -1048,6 +1063,40 @@ void ContextualTasksPageHandler::OnLogoPointerDown() {
 }
 
 void ContextualTasksPageHandler::CreateNewThread() {
+  if (contextual_tasks::IsContextualTasksSidePanelRearchitectureEnabled()) {
+    if (!panel_controller_) {
+      return;
+    }
+    content::WebContents* target_contents =
+        panel_controller_->GetActiveWebContents();
+    if (!target_contents) {
+      return;
+    }
+
+    std::optional<base::Uuid> task_id;
+    if (auto current_task = panel_controller_->GetCurrentTask()) {
+      task_id = current_task->GetTaskId();
+    } else if (auto* helper =
+                   ContextualSearchWebContentsHelper::FromWebContents(
+                       target_contents)) {
+      task_id = helper->task_id();
+    }
+
+    GURL url = task_id.has_value()
+                   ? ui_service_->GetDefaultAiPageUrlForTask(task_id.value())
+                   : ui_service_->GetDefaultAiPageUrl();
+    url = ui_service_->AddRequiredSidePanelUrlChanges(url, target_contents);
+
+    content::NavigationController::LoadURLParams params(url);
+    params.transition_type = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
+    target_contents->GetController().LoadURLWithParams(params);
+
+    if (web_ui_controller_) {
+      web_ui_controller_->SetThreadTitle(std::nullopt);
+    }
+    return;
+  }
+
   std::optional<base::Uuid> task_id = web_ui_controller_->GetTaskId();
   GURL url;
   if (task_id.has_value()) {

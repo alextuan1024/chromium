@@ -231,8 +231,8 @@ class PlatformNotificationServiceBrowserTest : public InProcessBrowserTest {
     return RunScript("RequestPermission();");
   }
 
-  content::WebContents* GetActiveWebContents(Browser* browser) {
-    return browser->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* GetActiveWebContents(BrowserWindowInterface* browser) {
+    return browser->GetTabStripModel()->GetActiveWebContents();
   }
 
   // Show a notification that sets `close_event_timeout` milliseconds in the
@@ -1015,15 +1015,10 @@ IN_PROC_BROWSER_TEST_F(PlatformNotificationServiceBrowserTest,
   // Set the other browser fullscreen
   ui_test_utils::ToggleFullscreenModeAndWait(other_browser);
 
-  ASSERT_TRUE(browser()
-                  ->GetFeatures()
-                  .exclusive_access_manager()
-                  ->context()
-                  ->IsFullscreen());
-  ASSERT_TRUE(other_browser->GetFeatures()
-                  .exclusive_access_manager()
-                  ->context()
-                  ->IsFullscreen());
+  ASSERT_TRUE(
+      ExclusiveAccessManager::From(browser())->context()->IsFullscreen());
+  ASSERT_TRUE(
+      ExclusiveAccessManager::From(other_browser)->context()->IsFullscreen());
 
   ui_test_utils::BrowserActivationWaiter(other_browser).WaitForActivation();
   ASSERT_FALSE(browser()->GetWindow()->IsActive());

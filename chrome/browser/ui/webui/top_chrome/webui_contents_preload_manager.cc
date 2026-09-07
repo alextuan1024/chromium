@@ -45,6 +45,7 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -615,7 +616,7 @@ bool WebUIContentsPreloadManager::ShouldPreloadForBrowserContext(
   }
 
   // Don't preload if under heavy memory pressure.
-  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() <= base::MemoryLimit::ModeratePressureThreshold()) {
     return false;
   }
 

@@ -777,8 +777,8 @@ TEST_P(LayerWithRealCompositorTest, DrawTree) {
   EXPECT_FALSE(d3.painted());
 }
 
-// Tests that scheduling paint on a layer with a mask updates the mask.
-TEST_P(LayerWithRealCompositorTest, SchedulePaintUpdatesMask) {
+// Tests that scheduling paint on a layer with a mask does not update the mask.
+TEST_P(LayerWithRealCompositorTest, SchedulePaintDoesNotUpdateMask) {
   std::unique_ptr<Layer> layer =
       CreateColorLayer(SK_ColorRED, gfx::Rect(20, 20, 400, 400));
   auto mask_layer = CreateLayer<LayerTextured>();
@@ -796,6 +796,14 @@ TEST_P(LayerWithRealCompositorTest, SchedulePaintUpdatesMask) {
   layer->SchedulePaint(gfx::Rect(5, 5, 5, 5));
   WaitForDraw();
   EXPECT_TRUE(d1.painted());
+  EXPECT_FALSE(d2.painted());
+
+  // Scheduling paint directly on the mask should update it.
+  d1.Reset();
+  d2.Reset();
+  mask_layer->SchedulePaint(gfx::Rect(5, 5, 5, 5));
+  WaitForDraw();
+  EXPECT_FALSE(d1.painted());
   EXPECT_TRUE(d2.painted());
 }
 
@@ -1743,7 +1751,7 @@ TEST_P(LayerWithNullDelegateTest, UpdateDamageInDeferredPaint) {
 // present, even if it shouldn't send its damaged regions itself.
 TEST_P(LayerWithNullDelegateTest, AlwaysSendsMaskDamagedRects) {
   gfx::Rect bound(gfx::Rect(2, 2));
-  std::unique_ptr<Layer> mask = CreateTextureLayer(bound);
+  auto mask = CreateTextureLayer(bound);
   std::unique_ptr<Layer> root = CreateTextureRootLayer(bound);
   root->SetMaskLayer(mask.get());
 
@@ -1772,7 +1780,7 @@ TEST_P(LayerWithNullDelegateTest, ReusedMaskLayer) {
   root->Add(l2.get());
 
   {
-    std::unique_ptr<Layer> mask = CreateTextureLayer(bound);
+    auto mask = CreateTextureLayer(bound);
     // Set `mask` to `l1`, then `l2`.
     l1->SetMaskLayer(mask.get());
     EXPECT_EQ(mask.get(), l1->layer_mask_layer());
@@ -2838,11 +2846,10 @@ TEST_P(LayerWithDelegateTest, TransferableResourceMirroring) {
       resource, base::BindOnce(ReturnMailbox, &release_callback_run),
       gfx::Size(10, 10));
   EXPECT_FALSE(release_callback_run);
-  EXPECT_TRUE(layer->HasExternalContent());
   EXPECT_TRUE(layer->HasTransferableResource());
 
   auto mirror = layer->Mirror();
-  EXPECT_TRUE(mirror->HasExternalContent());
+  ASSERT_TRUE(mirror->AsWithExternalTexture());
   EXPECT_TRUE(mirror->AsWithExternalTexture()->HasTransferableResource());
 
   // Clearing the resource on a mirror layer should not release the source layer
@@ -2851,7 +2858,7 @@ TEST_P(LayerWithDelegateTest, TransferableResourceMirroring) {
   EXPECT_FALSE(release_callback_run);
 
   mirror = layer->Mirror();
-  EXPECT_TRUE(mirror->HasExternalContent());
+  ASSERT_TRUE(mirror->AsWithExternalTexture());
 
   // Clearing the transferable resource on the source layer should clear it from
   // the mirror layer as well.
@@ -2871,8 +2878,8 @@ TEST_P(LayerWithDelegateTest, TransferableResourceMirroring) {
       resource, base::BindOnce(ReturnMailbox, &release_callback_run),
       gfx::Size(10, 10));
   EXPECT_FALSE(release_callback_run);
-  EXPECT_TRUE(layer->HasExternalContent());
-  EXPECT_TRUE(mirror->HasExternalContent());
+  EXPECT_TRUE(layer->HasTransferableResource());
+  ASSERT_TRUE(mirror->AsWithExternalTexture());
   EXPECT_TRUE(mirror->AsWithExternalTexture()->HasTransferableResource());
 
   layer.reset();

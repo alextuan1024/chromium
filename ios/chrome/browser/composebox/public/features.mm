@@ -57,8 +57,6 @@ bool ShowComposeboxAdditionalAdvancedTools() {
   return base::FeatureList::IsEnabled(kComposeboxAdditionalAdvancedTools);
 }
 
-BASE_FEATURE(kComposeboxCompactMode, base::FEATURE_ENABLED_BY_DEFAULT);
-
 bool ShowDeepSearchTool() {
   return base::FeatureList::IsEnabled(kComposeboxDeepSearch);
 }
@@ -71,15 +69,13 @@ bool EnableComposeboxServerSideState() {
 
 BASE_FEATURE(kComposeboxServerSideState, base::FEATURE_DISABLED_BY_DEFAULT);
 
-bool IsComposeboxCompactModeEnabled() {
-  return base::FeatureList::IsEnabled(kComposeboxCompactMode);
+bool IsComposeboxVerbatimSuggestionInAIMEnabled() {
+  return base::FeatureList::IsEnabled(kComposeboxVerbatimSuggestionInAIM);
 }
 
-BASE_FEATURE(kComposeboxForceTop, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxVerbatimSuggestionInAIM,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-bool IsComposeboxForceTopEnabled() {
-  return base::FeatureList::IsEnabled(kComposeboxForceTop);
-}
 
 BASE_FEATURE(kComposeboxAIMNudge, base::FEATURE_DISABLED_BY_DEFAULT);
 

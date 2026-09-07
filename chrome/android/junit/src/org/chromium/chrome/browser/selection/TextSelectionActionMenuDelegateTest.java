@@ -24,7 +24,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
@@ -55,7 +54,6 @@ import java.util.List;
 
 /** Unit tests for {@link TextSelectionActionMenuDelegate}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.COPY_LINK_TO_HIGHLIGHT)
 public class TextSelectionActionMenuDelegateTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -240,9 +238,12 @@ public class TextSelectionActionMenuDelegateTest {
 
         SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
         assertNotNull(askGemini);
-        // Placed in the secondary assist section (the default position).
-        assertTrue(askGemini.order >= ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
-        assertTrue(askGemini.order < ItemGroupOffset.TEXT_PROCESSING_ITEMS);
+        // Placed among the default items, in the gap before Web Search (the default position).
+        assertEquals(
+                ItemGroupOffset.DEFAULT_ITEMS + SelectionMenuItem.ItemOrder.ASK_GEMINI,
+                askGemini.order);
+        assertTrue(askGemini.order >= ItemGroupOffset.DEFAULT_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
         assertEquals(R.id.select_action_menu_delegate_items, askGemini.groupId);
     }
 
@@ -326,9 +327,13 @@ public class TextSelectionActionMenuDelegateTest {
         SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
         assertNotNull(askGemini);
 
-        // The default position is the secondary assist section.
-        assertTrue(askGemini.order >= ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
-        assertTrue(askGemini.order < ItemGroupOffset.TEXT_PROCESSING_ITEMS);
+        // The default position interposes "Ask Gemini" among the default items, in the gap just
+        // before Web Search.
+        assertEquals(
+                ItemGroupOffset.DEFAULT_ITEMS + SelectionMenuItem.ItemOrder.ASK_GEMINI,
+                askGemini.order);
+        assertTrue(askGemini.order >= ItemGroupOffset.DEFAULT_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
     }
 
     @Test

@@ -75,6 +75,7 @@
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -95,6 +96,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "crypto/scoped_fake_user_verifying_key_provider.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 #include "crypto/user_verifying_key.h"
 #include "device/fido/fido_request_handler_base.h"
@@ -4202,9 +4204,9 @@ GetBlockingUnexportableKeyProviderRendezvous() {
 // functions.
 class BlockingUnexportableKeyProvider : public crypto::UnexportableKeyProvider {
  public:
-  std::optional<crypto::SignatureVerifier::SignatureAlgorithm> SelectAlgorithm(
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+  std::optional<crypto::sign::SignatureKind> SelectAlgorithm(
+      base::span<const crypto::sign::SignatureKind> acceptable_algorithms)
+      override {
     CHECK(!acceptable_algorithms.empty());
 
     // This function runs in a thread-pool thread.
@@ -4213,8 +4215,8 @@ class BlockingUnexportableKeyProvider : public crypto::UnexportableKeyProvider {
   }
 
   std::unique_ptr<crypto::UnexportableSigningKey> GenerateSigningKeySlowly(
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+      base::span<const crypto::sign::SignatureKind> acceptable_algorithms)
+      override {
     NOTREACHED();
   }
 
@@ -4455,7 +4457,7 @@ class EnclaveAuthenticatorConditionalCreateBrowserTest
     saved_form.url = https_server_.GetURL("example.com",
                                           "/password/prefilled_username.html");
     saved_form.username_value = base::UTF8ToUTF16(std::string(kSyncEmail));
-    saved_form.password_value = u"hunter1";
+    saved_form.password_value = password_manager::PasswordString(u"hunter1");
     saved_form.date_last_used = last_used;
     password_store()->AddLogin(password_manager::FromPasswordForm(saved_form));
   }

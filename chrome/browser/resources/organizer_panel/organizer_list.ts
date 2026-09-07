@@ -10,6 +10,12 @@ import {getCss} from './organizer_list.css.js';
 import {getHtml} from './organizer_list.html.js';
 import type {OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
 
+export interface OrganizerListElement {
+  $: {
+    sections: HTMLElement,
+  };
+}
+
 export class OrganizerListElement extends CrLitElement {
   static get is() {
     return 'organizer-list';
@@ -26,10 +32,12 @@ export class OrganizerListElement extends CrLitElement {
   static override get properties() {
     return {
       sectionDelegates: {type: Array},
+      searchQuery: {type: String},
     };
   }
 
-  accessor sectionDelegates: OrganizerListSectionDelegate[] = [];
+  accessor sectionDelegates: Array<OrganizerListSectionDelegate<unknown>> = [];
+  accessor searchQuery: string = '';
 }
 
 declare global {

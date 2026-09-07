@@ -6,6 +6,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/password_manager/remote_actor/remote_actor_credential_sharing_impl.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/password_manager/remote_actor_credential_sharing.mojom.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -110,7 +111,7 @@ IN_PROC_BROWSER_TEST_F(RemoteActorCredentialSharingBrowserTest,
   // call
   EXPECT_EQ(false, content::EvalJs(GetWebContents(), R"(
     new Promise((resolve) => {
-      chrome.requestAgentAuthentication('gaia_id_123', 'google.com', 'actor_id_456', (success) => {
+      chrome.requestAgentAuthentication('gaia_id_123', 'google.com', 'task_id_456', (success) => {
         resolve(success);
       });
     });

@@ -56,7 +56,10 @@ source_set("internal") {
       "embedder_browser_window_features.cc",
       "global_browser_collection_platform_delegate_non_android.cc",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+    public_deps = [
+      "//chrome/browser:browser_public_dependencies",
+      "//chrome/browser/ui:browser_live_tab_context",
+    ]
 
     deps += [
       "//chrome/browser:global_features",
@@ -66,8 +69,6 @@ source_set("internal") {
       "//chrome/browser/collaboration",
       "//chrome/browser/contextual_tasks:ui",
       "//chrome/browser/devtools",
-      "//chrome/browser/geic",
-      "//chrome/browser/geic:ui",
       "//chrome/browser/glic",
       "//chrome/browser/glic/browser_ui",
       "//chrome/browser/lens/region_search",
@@ -77,6 +78,7 @@ source_set("internal") {
       "//chrome/browser/tab_group_sync:factories",
       "//chrome/browser/ui:browser_actions",
       "//chrome/browser/ui:browser_init_state",
+      "//chrome/browser/ui:ui_controller_factory",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/animation",
       "//chrome/browser/ui/bookmarks",
@@ -95,6 +97,7 @@ source_set("internal") {
       "//chrome/browser/ui/fullscreen",
       "//chrome/browser/ui/lens",
       "//chrome/browser/ui/performance_controls",
+      "//chrome/browser/ui/send_tab_to_self",
       "//chrome/browser/ui/sessions",
       "//chrome/browser/ui/sharing_hub",
       "//chrome/browser/ui/signin",
@@ -118,6 +121,7 @@ source_set("internal") {
       "//chrome/browser/ui/views/contextual_tasks",
       "//chrome/browser/ui/views/data_sharing",
       "//chrome/browser/ui/views/download",
+      "//chrome/browser/ui/views/frame:contents_border_controller",
       "//chrome/browser/ui/views/fullscreen_control",
       "//chrome/browser/ui/views/interaction:impl",
       "//chrome/browser/ui/views/location_bar:impl",
@@ -128,6 +132,8 @@ source_set("internal") {
       "//chrome/browser/ui/views/send_tab_to_self",
       "//chrome/browser/ui/views/sharing",
       "//chrome/browser/ui/views/side_panel",
+      "//chrome/browser/ui/views/tabs:tab_strip",
+      "//chrome/browser/ui/views/tabs/groups",
       "//chrome/browser/ui/views/tabs/organizer",
       "//chrome/browser/ui/views/toolbar",
       "//chrome/browser/ui/views/translate",
@@ -166,6 +172,7 @@ source_set("internal") {
     if (is_win || is_mac || is_linux) {
       deps += [
         "//chrome/browser/download/bubble",
+        "//chrome/browser/ui/views/profiles:profile_customization_bubble_sync_controller",
         "//chrome/browser/ui/views/session_restore_infobar",
       ]
     }
@@ -184,7 +191,12 @@ source_set("internal") {
       deps += [ "//chrome/browser/download/bubble" ]
     }
     if (toolkit_views) {
-      deps += [ "//chrome/browser/ui/views/extensions:extensions_views_utils" ]
+      deps += [
+        "//chrome/browser/ui/views:incognito_clear_browsing_data_dialog",
+        "//chrome/browser/ui/views:upgrade_notification_controller",
+        "//chrome/browser/ui/views/extensions:extensions_views_utils",
+        "//chrome/browser/ui/views/frame:scrim_view_controller",
+      ]
     }
 
     if (use_aura) {
@@ -266,6 +278,7 @@ if (is_android) {
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/GlobalBrowserCollectionPlatformDelegate.java",
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/IdSequencer.java",
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/PendingActionManager.java",
+      "android/java/src/org/chromium/chrome/browser/ui/browser_window/PendingTaskInfo.java",
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/WindowStateManager.java",
     ]
     deps = [

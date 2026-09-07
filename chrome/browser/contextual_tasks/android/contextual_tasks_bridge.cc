@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
@@ -78,7 +79,6 @@ ResolvedTaskInfo ResolveTaskInfoForWebContents(
 DEFINE_USER_DATA(ContextualTasksBridge);
 
 static int64_t JNI_ContextualTasksBridge_Init(
-    JNIEnv* env,
     const jni_zero::JavaRef<jobject>& caller,
     int64_t browser_window_ptr,
     Profile* profile) {
@@ -86,7 +86,7 @@ static int64_t JNI_ContextualTasksBridge_Init(
       reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
   CHECK(browser_window);
   return reinterpret_cast<intptr_t>(
-      new ContextualTasksBridge(env, caller, browser_window, profile));
+      new ContextualTasksBridge(caller, browser_window, profile));
 }
 
 // static
@@ -99,7 +99,6 @@ ContextualTasksBridge* ContextualTasksBridge::From(
 }
 
 ContextualTasksBridge::ContextualTasksBridge(
-    JNIEnv* env,
     const jni_zero::JavaRef<jobject>& obj,
     BrowserWindowInterface* browser_window,
     Profile* profile)
@@ -126,11 +125,11 @@ ContextualTasksBridge::ContextualTasksBridge(
 
 ContextualTasksBridge::~ContextualTasksBridge() = default;
 
-void ContextualTasksBridge::Destroy(JNIEnv* env) {
+void ContextualTasksBridge::Destroy() {
   delete this;
 }
 
-void ContextualTasksBridge::UndoClose(JNIEnv* env) {
+void ContextualTasksBridge::UndoClose() {
   if (controller_) {
     controller_->Show();
   }
@@ -141,8 +140,7 @@ void ContextualTasksBridge::StartPlatformVoiceRecognition() {
   Java_ContextualTasksBridge_startVoiceRecognition(env, java_obj_);
 }
 
-void ContextualTasksBridge::OnVoiceTranscribed(JNIEnv* env,
-                                               const std::string& query) {
+void ContextualTasksBridge::OnVoiceTranscribed(const std::string& query) {
   contextual_tasks_ui_service_->OnVoiceTranscribed(query);
 }
 
@@ -153,9 +151,7 @@ void ContextualTasksBridge::NotifyShowUndoSnackbar() {
 
 void ContextualTasksBridge::NotifyOpenFeedbackUi(const GURL& page_url) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_ContextualTasksBridge_openFeedbackUi(
-      env, java_obj_,
-      base::android::ConvertUTF8ToJavaString(env, page_url.spec()));
+  Java_ContextualTasksBridge_openFeedbackUi(env, java_obj_, page_url.spec());
 }
 
 // static
@@ -182,7 +178,6 @@ void ContextualTasksBridge::GetTaskTitleForTab(
 }
 
 static void JNI_ContextualTasksBridge_GetTaskTitleForTab(
-    JNIEnv* env,
     content::WebContents* web_contents,
     base::OnceCallback<void(std::string)> j_callback) {
   ContextualTasksBridge::GetTaskTitleForTab(web_contents,
@@ -190,7 +185,6 @@ static void JNI_ContextualTasksBridge_GetTaskTitleForTab(
 }
 
 static bool JNI_ContextualTasksBridge_IsPanelOpen(
-    JNIEnv* env,
     content::WebContents* web_contents) {
   if (!web_contents) {
     return false;

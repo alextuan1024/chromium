@@ -31,9 +31,9 @@
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_enums.h"
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
-#include "chrome/browser/ui/read_anything/read_anything_side_panel_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
@@ -44,6 +44,7 @@
 #include "components/dom_distiller/core/distiller_page.h"
 #include "components/dom_distiller/core/dom_distiller_service.h"
 #include "components/dom_distiller/core/task_tracker.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/language/core/browser/language_model.h"
 #include "components/language/core/browser/language_model_manager.h"
 #include "components/language/core/common/locale_util.h"
@@ -258,15 +259,13 @@ InstallationState GetInstallationStateFromStatusCode(
 #endif
 
 constexpr std::string_view kRendererLinkRequestHistogram =
-    "Accessibility.ReadAnything.RendererRequestForLinkClick.IsFromObservedTree";
+    "Accessibility.ReadAnything.RendererRequestForLinkClick.Result";
 constexpr std::string_view kRendererImageRequestHistogram =
-    "Accessibility.ReadAnything.RendererRequestForImageDataDownload."
-    "IsFromObservedTree";
+    "Accessibility.ReadAnything.RendererRequestForImageDataDownload.Result";
 constexpr std::string_view kRendererScrollRequestHistogram =
-    "Accessibility.ReadAnything.RendererRequestForScrollToTargetNode."
-    "IsFromObservedTree";
+    "Accessibility.ReadAnything.RendererRequestForScrollToTargetNode.Result";
 constexpr std::string_view kRendererSelectionRequestHistogram =
-    "Accessibility.ReadAnything.RendererRequestForSelection.IsFromObservedTree";
+    "Accessibility.ReadAnything.RendererRequestForSelection.Result";
 
 }  // namespace
 
@@ -337,9 +336,6 @@ void ReadAnythingWebContentsObserver::DidFinishNavigation(
 }
 
 void ReadAnythingUntrustedPageHandler::MaybeUpdateImmersivePinStatus() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   CHECK(pinned_toolbar_);
   const bool is_pinned_in_toolbar =
       pinned_toolbar_->Contains(kActionSidePanelShowReadAnything);
@@ -383,26 +379,15 @@ ReadAnythingUntrustedPageHandler::ReadAnythingUntrustedPageHandler(
 #else
   extension_wrapper_->ActivateSpeechEngine(profile_);
 #endif
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    read_anything_controller_ =
-        ReadAnythingControllerGlue::FromWebContents(web_ui_->GetWebContents())
-            ->controller();
-    CHECK(read_anything_controller_);
-    read_anything_controller_->AddObserver(this);
-    tab_ = read_anything_controller_->tab();
-    pinned_toolbar_ =
-        PinnedToolbarActionsModel::Get(Profile::FromWebUI(web_ui));
-    pinned_toolbar_actions_observation_.Observe(pinned_toolbar_);
-    MaybeUpdateImmersivePinStatus();
-  } else {
-    side_panel_controller_ =
-        ReadAnythingSidePanelControllerGlue::FromWebContents(
-            web_ui_->GetWebContents())
-            ->controller();
-    side_panel_controller_->AddPageHandlerAsObserver(
-        weak_factory_.GetWeakPtr());
-    tab_ = side_panel_controller_->tab();
-  }
+  read_anything_controller_ =
+      ReadAnythingControllerGlue::FromWebContents(web_ui_->GetWebContents())
+          ->controller();
+  CHECK(read_anything_controller_);
+  read_anything_controller_->AddObserver(this);
+  tab_ = read_anything_controller_->tab();
+  pinned_toolbar_ = PinnedToolbarActionsModel::Get(Profile::FromWebUI(web_ui));
+  pinned_toolbar_actions_observation_.Observe(pinned_toolbar_);
+  MaybeUpdateImmersivePinStatus();
 
   tab_discard_subscription_ = tab_->RegisterWillDiscardContents(
       base::BindRepeating(&ReadAnythingUntrustedPageHandler::OnTabDiscarded,
@@ -475,13 +460,6 @@ ReadAnythingUntrustedPageHandler::~ReadAnythingUntrustedPageHandler() {
 
   if (read_anything_controller_) {
     read_anything_controller_->RemoveObserver(this);
-  }
-  if (side_panel_controller_) {
-    // If |this| is destroyed before the |ReadAnythingSidePanelController|, then
-    // remove |this| from the observer lists. In the cases where the coordinator
-    // is destroyed first, these will have been destroyed before this call.
-    side_panel_controller_->RemovePageHandlerAsObserver(
-        weak_factory_.GetWeakPtr());
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -635,7 +613,7 @@ void ReadAnythingUntrustedPageHandler::OnUpdateLanguageStatus(
   const bool shouldSendGuestStatus =
       statusProfile->IsGuestSession() && profile_->IsGuestSession();
   if (!shouldSendGuestStatus && !profile_->IsIncognitoProfile() &&
-      statusProfile->UniqueId() != profile_->UniqueId()) {
+      statusProfile->UniqueToken() != profile_->UniqueToken()) {
     return;
   }
   auto voicePackInfo = read_anything::mojom::VoicePackInfo::New();
@@ -726,33 +704,24 @@ void ReadAnythingUntrustedPageHandler::SendNextLanguageRequest() {
 }
 #endif
 
-// Will only return a valid state if IsImmersiveReadAnythingEnabled() is true,
-// otherwise do nothing.
-// TODO(crbug.com/463728166): Remove IsImmersiveReadAnythingEnabled flag when no
-// longer flag-guarded code.
 ReadAnythingController*
 ReadAnythingUntrustedPageHandler::GetReadAnythingController() {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    content::WebContents* main_web_contents = main_observer_->web_contents();
-    CHECK(main_web_contents);
+  content::WebContents* main_web_contents = main_observer_->web_contents();
+  CHECK(main_web_contents);
 
-    tabs::TabInterface* tab =
-        tabs::TabInterface::GetFromContents(main_web_contents);
-    CHECK(tab);
+  tabs::TabInterface* tab =
+      tabs::TabInterface::GetFromContents(main_web_contents);
+  CHECK(tab);
 
-    auto* ra_controller = ReadAnythingController::From(tab);
-    return ra_controller;
-  }
-  return nullptr;
+  auto* ra_controller = ReadAnythingController::From(tab);
+  return ra_controller;
 }
 
 void ReadAnythingUntrustedPageHandler::OnGetPresentationState() {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    auto* ra_controller = GetReadAnythingController();
-    CHECK(ra_controller);
+  auto* ra_controller = GetReadAnythingController();
+  CHECK(ra_controller);
 
-    page_->OnGetPresentationState(ra_controller->GetPresentationState());
-  }
+  page_->OnGetPresentationState(ra_controller->GetPresentationState());
 }
 
 void ReadAnythingUntrustedPageHandler::GetPresentationState() {
@@ -761,31 +730,29 @@ void ReadAnythingUntrustedPageHandler::GetPresentationState() {
 
 void ReadAnythingUntrustedPageHandler::OnDistillationStateChanged(
     read_anything::mojom::ReadAnythingDistillationState new_state) {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    // Distillation state transitions to kNotAttempted are only valid during
-    // initialization (i.e. when the current state is kUndefined).
-    if (distillation_state_ !=
-            read_anything::mojom::ReadAnythingDistillationState::kUndefined &&
-        new_state == read_anything::mojom::ReadAnythingDistillationState::
-                         kNotAttempted) {
-      mojo::ReportBadMessage("Invalid distillation state transition");
-      return;
-    }
-
-    // Distillation state transitions to kUndefined are not valid, regardless of
-    // what the current state is.
-    if (new_state ==
-        read_anything::mojom::ReadAnythingDistillationState::kUndefined) {
-      mojo::ReportBadMessage("Invalid distillation state transition");
-      return;
-    }
-
-    distillation_state_ = new_state;
-    auto* ra_controller = GetReadAnythingController();
-    CHECK(ra_controller);
-
-    ra_controller->OnDistillationStateChanged(new_state);
+  // Distillation state transitions to kNotAttempted are only valid during
+  // initialization (i.e. when the current state is kUndefined).
+  if (distillation_state_ !=
+          read_anything::mojom::ReadAnythingDistillationState::kUndefined &&
+      new_state ==
+          read_anything::mojom::ReadAnythingDistillationState::kNotAttempted) {
+    mojo::ReportBadMessage("Invalid distillation state transition");
+    return;
   }
+
+  // Distillation state transitions to kUndefined are not valid, regardless of
+  // what the current state is.
+  if (new_state ==
+      read_anything::mojom::ReadAnythingDistillationState::kUndefined) {
+    mojo::ReportBadMessage("Invalid distillation state transition");
+    return;
+  }
+
+  distillation_state_ = new_state;
+  auto* ra_controller = GetReadAnythingController();
+  CHECK(ra_controller);
+
+  ra_controller->OnDistillationStateChanged(new_state);
 }
 
 void ReadAnythingUntrustedPageHandler::OnGetVoicePackInfo(
@@ -838,6 +805,11 @@ void ReadAnythingUntrustedPageHandler::UninstallVoice(
 }
 
 void ReadAnythingUntrustedPageHandler::OnCopy() {
+  if (!HasTransientUserActivation()) {
+    VLOG(1) << "OnCopy failed with no transient user activation";
+    return;
+  }
+
   if (main_observer_ && main_observer_->web_contents()) {
     main_observer_->web_contents()->Copy();
   }
@@ -886,6 +858,24 @@ bool ReadAnythingUntrustedPageHandler::IsObservingTree(
           ? pdf_frame_util::FindFullPagePdfExtensionHost(contents)
           : pdf_frame_util::FindPdfChildFrame(contents->GetPrimaryMainFrame());
   return pdf_rfh && rfh == pdf_rfh;
+}
+
+bool ReadAnythingUntrustedPageHandler::AreActionsAllowedInTree(
+    const ui::AXTreeID& tree_id) const {
+  content::RenderFrameHost* rfh =
+      content::RenderFrameHost::FromAXTreeID(tree_id);
+  if (!rfh) {
+    return false;
+  }
+
+  content::WebContents* contents = GetWebContents();
+  bool are_contents_pdf =
+      chrome_pdf::features::IsOopifPdfEnabled()
+          ? !!extensions::mime_handler::MimeHandlerStreamManager::
+                 FromWebContents(contents)
+          : !!pdf_observer_;
+
+  return are_contents_pdf || rfh->GetLastCommittedURL().SchemeIsHTTPOrHTTPS();
 }
 
 void ReadAnythingUntrustedPageHandler::OnLineSpaceChange(
@@ -1051,6 +1041,19 @@ void ReadAnythingUntrustedPageHandler::OnLineFocusChanged(
     profile_->GetPrefs()->SetInteger(
         prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
         static_cast<size_t>(last_non_disabled_line_focus));
+
+    if (current_line_focus == read_anything::mojom::LineFocus::kOff) {
+      return;
+    }
+
+    if (tab_ && tab_->GetBrowserWindowInterface()) {
+      if (auto* user_ed = BrowserUserEducationInterface::From(
+              tab_->GetBrowserWindowInterface())) {
+        user_ed->NotifyFeaturePromoFeatureUsed(
+            feature_engagement::kIPHReadingModeLineFocusFeature,
+            FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+      }
+    }
   }
 }
 
@@ -1098,13 +1101,31 @@ void ReadAnythingUntrustedPageHandler::OnReadAloudAudioStateChange(
 void ReadAnythingUntrustedPageHandler::OnLinkClicked(
     const ui::AXTreeID& target_tree_id,
     ui::AXNodeID target_node_id) {
-  bool is_observing_tree = IsObservingTree(target_tree_id);
-  base::UmaHistogramBoolean(kRendererLinkRequestHistogram, is_observing_tree);
-  if (!is_observing_tree) {
+  if (!HasTransientUserActivation()) {
+    VLOG(1) << "OnLinkClicked failed with no transient user activation";
+    return;
+  }
+
+  if (!IsObservingTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererLinkRequestHistogram,
+        ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received link click request for tree_id " << target_tree_id
             << " which is not currently being observed";
     return;
   }
+
+  if (!AreActionsAllowedInTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererLinkRequestHistogram,
+        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
+    VLOG(1) << "Ignoring link click on non-HTTP/HTTPS frame";
+    return;
+  }
+
+  base::UmaHistogramEnumeration(kRendererLinkRequestHistogram,
+                                ReadAnythingRendererRequestResult::kAllowed);
+
   if (!ui::IsValidAXNodeIDFromRenderer(target_node_id)) {
     VLOG(1) << "Received link click request with invalid target_node_id "
             << target_node_id;
@@ -1121,18 +1142,32 @@ void ReadAnythingUntrustedPageHandler::OnLinkClicked(
 void ReadAnythingUntrustedPageHandler::OnImageDataRequested(
     const ui::AXTreeID& target_tree_id,
     ui::AXNodeID target_node_id) {
-  bool is_observing_tree = IsObservingTree(target_tree_id);
-  base::UmaHistogramBoolean(kRendererImageRequestHistogram, is_observing_tree);
-  if (!is_observing_tree) {
+  if (!IsObservingTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererImageRequestHistogram,
+        ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received image data request for tree_id " << target_tree_id
             << " which is not currently being observed";
     return;
   }
+
+  if (!AreActionsAllowedInTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererImageRequestHistogram,
+        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
+    VLOG(1) << "Ignoring image data request on non-HTTP/HTTPS frame";
+    return;
+  }
+
+  base::UmaHistogramEnumeration(kRendererImageRequestHistogram,
+                                ReadAnythingRendererRequestResult::kAllowed);
+
   if (!ui::IsValidAXNodeIDFromRenderer(target_node_id)) {
     VLOG(1) << "Received image data request with invalid target_node_id "
             << target_node_id;
     return;
   }
+
   main_observer_->web_contents()->DownloadImageFromAxNode(
       target_tree_id, target_node_id,
       /*preferred_size=*/gfx::Size(),
@@ -1176,13 +1211,17 @@ void ReadAnythingUntrustedPageHandler::OnImageDataDownloaded(
 void ReadAnythingUntrustedPageHandler::ScrollToTargetNode(
     const ui::AXTreeID& target_tree_id,
     ui::AXNodeID target_node_id) {
-  bool is_observing_tree = IsObservingTree(target_tree_id);
-  base::UmaHistogramBoolean(kRendererScrollRequestHistogram, is_observing_tree);
-  if (!is_observing_tree) {
+  if (!IsObservingTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererScrollRequestHistogram,
+        ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received scroll request for tree_id " << target_tree_id
             << " which is not currently being observed";
     return;
   }
+
+  base::UmaHistogramEnumeration(kRendererScrollRequestHistogram,
+                                ReadAnythingRendererRequestResult::kAllowed);
   if (!ui::IsValidAXNodeIDFromRenderer(target_node_id)) {
     VLOG(1) << "Received scroll request with invalid target_node_id "
             << target_node_id;
@@ -1201,9 +1240,6 @@ void ReadAnythingUntrustedPageHandler::ScrollToTargetNode(
 }
 
 void ReadAnythingUntrustedPageHandler::CloseUI() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   CHECK(read_anything_controller_);
   // Because Mojo messages from the untrusted WebUI arrive asynchronously, the
   // presentation state may have already changed away from kInImmersiveOverlay
@@ -1220,9 +1256,6 @@ void ReadAnythingUntrustedPageHandler::CloseUI() {
 }
 
 void ReadAnythingUntrustedPageHandler::TogglePinState() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   CHECK(pinned_toolbar_);
   immersive_read_anything_pin_state_ = !immersive_read_anything_pin_state_;
   pinned_toolbar_->UpdatePinnedState(kActionSidePanelShowReadAnything,
@@ -1234,17 +1267,13 @@ void ReadAnythingUntrustedPageHandler::SendPinStateRequest() {
 }
 
 void ReadAnythingUntrustedPageHandler::TogglePresentation() {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    CHECK(read_anything_controller_);
-    read_anything_controller_->TogglePresentation(/*is_user_initiated=*/true);
-  }
+  CHECK(read_anything_controller_);
+  read_anything_controller_->TogglePresentation(/*is_user_initiated=*/true);
 }
 
 void ReadAnythingUntrustedPageHandler::AckReadingModeHidden() {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    ack_timed_out_for_testing_ = false;
-    reading_mode_hidden_ack_timer_.Stop();
-  }
+  ack_timed_out_for_testing_ = false;
+  reading_mode_hidden_ack_timer_.Stop();
 }
 
 void ReadAnythingUntrustedPageHandler::OnSpeechEngineStalled() {
@@ -1285,14 +1314,30 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
     int anchor_offset,
     ui::AXNodeID focus_node_id,
     int focus_offset) {
-  bool is_observing_tree = IsObservingTree(target_tree_id);
-  base::UmaHistogramBoolean(kRendererSelectionRequestHistogram,
-                            is_observing_tree);
-  if (!is_observing_tree) {
+  if (!HasTransientUserActivation()) {
+    VLOG(1) << "OnSelectionChange failed with no transient user activation";
+    return;
+  }
+
+  if (!IsObservingTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererSelectionRequestHistogram,
+        ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received selection request for tree_id " << target_tree_id
             << " which is not currently being observed";
     return;
   }
+
+  if (!AreActionsAllowedInTree(target_tree_id)) {
+    base::UmaHistogramEnumeration(
+        kRendererSelectionRequestHistogram,
+        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
+    VLOG(1) << "Ignoring selection change on non-HTTP/HTTPS frame";
+    return;
+  }
+
+  base::UmaHistogramEnumeration(kRendererSelectionRequestHistogram,
+                                ReadAnythingRendererRequestResult::kAllowed);
   if (!ui::IsValidAXNodeIDFromRenderer(anchor_node_id)) {
     VLOG(1) << "Received selection request with invalid anchor_node_id "
             << anchor_node_id;
@@ -1315,6 +1360,11 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
 }
 
 void ReadAnythingUntrustedPageHandler::OnCollapseSelection() {
+  if (!HasTransientUserActivation()) {
+    VLOG(1) << "OnCollapseSelection failed with no transient user activation";
+    return;
+  }
+
   if (main_observer_ && main_observer_->web_contents()) {
     main_observer_->web_contents()->CollapseSelection();
   }
@@ -1380,11 +1430,9 @@ void ReadAnythingUntrustedPageHandler::Activate(
         static_cast<read_anything::mojom::ReadAnythingOpenTrigger>(
             open_trigger));
     tab_will_detach_ = false;
-    if (features::IsImmersiveReadAnythingEnabled()) {
-      // Signal that reading mode has been re-opened and is no longer hidden if
-      // it was previously marked as hidden.
-      OnGetPresentationState();
-    }
+    // Signal that reading mode has been re-opened and is no longer hidden if
+    // it was previously marked as hidden.
+    OnGetPresentationState();
     RestoreSettingsFromPrefs();
   }
   if (!active && !tab_will_detach_) {
@@ -1404,21 +1452,15 @@ void ReadAnythingUntrustedPageHandler::Activate(
     // hidden because if the user notices a crash they will likely try to close
     // and reopen RM. Detecting a crash programmatically is often slower than
     // the user noticing, so this handles that case.
-    if (features::IsImmersiveReadAnythingEnabled()) {
-      reading_mode_hidden_ack_timer_.Start(
-          FROM_HERE, kReadingModeHiddenAckTimeout,
-          base::BindOnce(
-              &ReadAnythingUntrustedPageHandler::OnReadingModeHiddenAckTimeout,
-              base::Unretained(this)));
-    }
+    reading_mode_hidden_ack_timer_.Start(
+        FROM_HERE, kReadingModeHiddenAckTimeout,
+        base::BindOnce(
+            &ReadAnythingUntrustedPageHandler::OnReadingModeHiddenAckTimeout,
+            base::Unretained(this)));
   }
 }
 
 void ReadAnythingUntrustedPageHandler::OnReadingModeHiddenAckTimeout() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
-
   ack_timed_out_for_testing_ = true;
   CHECK(read_anything_controller_);
   read_anything_controller_->RecreateWebUIWrapper();
@@ -1432,9 +1474,6 @@ void ReadAnythingUntrustedPageHandler::OnReadingModePresenterChanged() {
 // the main frame.
 void ReadAnythingUntrustedPageHandler::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (!active_ && !features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   if (!navigation_handle->IsInPrimaryMainFrame() ||
       !navigation_handle->HasCommitted() ||
       !navigation_handle->IsSameDocument()) {
@@ -1464,7 +1503,6 @@ void ReadAnythingUntrustedPageHandler::OnTabDiscarded(
 }
 
 void ReadAnythingUntrustedPageHandler::OnDestroyed() {
-  side_panel_controller_ = nullptr;
   read_anything_controller_ = nullptr;
 }
 
@@ -1546,17 +1584,6 @@ void ReadAnythingUntrustedPageHandler::CheckIfActiveAXTreeChangedToPdf() {
 void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
   is_pdf_with_frame_ = false;
   is_waiting_for_pdf_frame_ = false;
-
-  // If the side panel is not active, we should not send the active tree id.
-  // This check is skipped when immersive read anything is enabled because
-  // there are times when the side panel is inactive but the Reading Mode
-  // application is still running, so we do need to send the active tree id.
-  if (!active_ && !features::IsImmersiveReadAnythingEnabled()) {
-    VLOG(1) << "Sending unknown tree because not active";
-    page_->OnActiveAXTreeIDChanged(ui::AXTreeIDUnknown(), ukm::kInvalidSourceId,
-                                   /*is_pdf=*/false);
-    return;
-  }
 
   content::WebContents* contents = !!pdf_observer_
                                        ? pdf_observer_->web_contents()
@@ -2069,3 +2096,8 @@ void ReadAnythingUntrustedPageHandler::OnLockStateChanged(bool locked) {
   }
 }
 #endif
+
+bool ReadAnythingUntrustedPageHandler::HasTransientUserActivation() const {
+  return web_ui_ && web_ui_->GetRenderFrameHost() &&
+         web_ui_->GetRenderFrameHost()->HasTransientUserActivation();
+}

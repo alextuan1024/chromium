@@ -14,13 +14,14 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/shell_dialogs/select_file_dialog_win.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 
@@ -112,7 +113,7 @@ class PdfPrinterHandlerWinTest : public InProcessBrowserTest {
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     // Create the PDF printer.
     pdf_printer_ = std::make_unique<FakePdfPrinterHandler>(
-        GetProfile(), browser()->tab_strip_model()->GetWebContentsAt(0),
+        GetProfile(), browser()->GetTabStripModel()->GetWebContentsAt(0),
         nullptr);
   }
 

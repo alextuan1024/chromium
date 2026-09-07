@@ -8,6 +8,7 @@
 #include <concepts>
 #include <utility>
 
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/interaction/interactive_browser_window_test.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -51,6 +52,13 @@ class InteractiveBrowserTestApi
       ui::ElementIdentifier id,
       AbsoluteViewSpecifier web_view,
       bool wait_for_ready = true);
+
+  // Instruments the WebContents containing `webui_element`, which should be a
+  // `TrackedElementWebUI` (i.e. a help bubble anchor or other named element in
+  // a WebUI). Otherwise functions the same as the other "instrument" verbs.
+  [[nodiscard]] StepBuilder InstrumentWebContentsContaining(
+      ui::ElementIdentifier id,
+      ElementSpecifier webui_element);
 
   // These are required so the following overloads don't hide the base class
   // variations.
@@ -105,7 +113,7 @@ class InteractiveBrowserTestMixin : public T, public InteractiveBrowserTestApi {
   void SetUpOnMainThread() override {
     T::SetUpOnMainThread();
     private_test_impl().DoTestSetUp();
-    if (Browser* browser = T::browser()) {
+    if (BrowserWindowInterface* browser = T::browser()) {
       SetContextWidget(
           BrowserView::GetBrowserViewForBrowser(browser)->GetWidget());
     }

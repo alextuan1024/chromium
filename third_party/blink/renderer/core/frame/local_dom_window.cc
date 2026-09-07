@@ -70,7 +70,6 @@
 #include "third_party/blink/renderer/core/css/style_media.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_document_state.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
-#include "third_party/blink/renderer/core/dom/events/add_event_listener_options_resolved.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
 #include "third_party/blink/renderer/core/dom/frame_request_callback_collection.h"
@@ -266,7 +265,6 @@ void LocalDOMWindow::BindContentSecurityPolicy() {
 }
 
 void LocalDOMWindow::Initialize() {
-  GetAgent()->AttachContext(this);
   network_state_observer_->Initialize();
 }
 
@@ -279,18 +277,17 @@ void LocalDOMWindow::ClearForReuse() {
           document_->DidRemoveEventListeners(count);
         });
   }
-  document_ = nullptr;
-
-  // Reset per-document metrics bookkeeping.
+  // Reset per-document metrics bookkeeping before clearing `document_`.
   if (soft_navigation_heuristics_) {
     soft_navigation_heuristics_->Shutdown();
     soft_navigation_heuristics_ = nullptr;
   }
+  document_ = nullptr;
+
   WindowPerformance::ClearForWindowReuse(*this);
 }
 
 void LocalDOMWindow::ResetWindowAgent(WindowAgent* agent) {
-  GetAgent()->DetachContext(this);
   ResetAgent(agent);
   if (document_) {
     document_->ResetAgent(*agent);
@@ -311,8 +308,6 @@ void LocalDOMWindow::ResetWindowAgent(WindowAgent* agent) {
       main_world_context->SetMicrotaskQueue(microtask_queue);
     }
   }
-
-  GetAgent()->AttachContext(this);
 }
 
 void LocalDOMWindow::AcceptLanguagesChanged() {
@@ -529,7 +524,8 @@ bool LocalDOMWindow::AllowInlineJavascriptUrl(const DOMWrapperWorld* world,
   // as per https://html.spec.whatwg.org/C/#javascript-protocol.
   return GetContentSecurityPolicyForWorld(world)->AllowInline(
       ContentSecurityPolicy::InlineType::kNavigation, element, decoded_url,
-      String() /* nonce */, Url(), OrdinalNumber::First());
+      String() /* nonce */, Url(),
+      TextPosition(OrdinalNumber::First(), OrdinalNumber::BeforeFirst()));
 }
 
 String LocalDOMWindow::CheckAndGetJavascriptUrl(
@@ -551,7 +547,8 @@ String LocalDOMWindow::CheckAndGetJavascriptUrl(
   // as per https://html.spec.whatwg.org/C/#javascript-protocol.
   if (!GetContentSecurityPolicyForWorld(world)->AllowInline(
           ContentSecurityPolicy::InlineType::kNavigation, element, decoded_url,
-          String() /* nonce */, Url(), OrdinalNumber::First())) {
+          String() /* nonce */, Url(),
+          TextPosition(OrdinalNumber::First(), OrdinalNumber::BeforeFirst()))) {
     return String();
   }
 
@@ -607,7 +604,7 @@ KURL LocalDOMWindow::OutgoingReferrerUrl() const {
 }
 
 void LocalDOMWindow::SetInitiatorStateToken(
-    const base::UnguessableToken& initiator_state_token) {
+    const InitiatorStateToken& initiator_state_token) {
   initiator_state_token_ = initiator_state_token;
 }
 
@@ -988,7 +985,7 @@ void LocalDOMWindow::DispatchLoadAndPageshowEvents() {
   // 4.5. ..., invoke the reset algorithm of each of those elements.
   // 4.6.3. Run any session history document visibility change steps ...
   if (document_) {
-    document_->GetFormController().RestoreImmediately();
+    document_->EnsureFormController().RestoreImmediately();
   }
 
   // 4.6.4. Fire an event named pageshow at the Document object's relevant
@@ -1034,7 +1031,7 @@ void LocalDOMWindow::DispatchPagehideEvent(
     return;
   }
 
-  if (RuntimeEnabledFeatures::NavigationStateEnabled()) {
+  if (RuntimeEnabledFeatures::NavigationSourcePseudoClassEnabled()) {
     // In case we come back to this document later via BFCache, there must not
     // be a dangling active navigation.
     NavigationState::AttemptFinishNavigationAndDestroy(document_);
@@ -1136,7 +1133,6 @@ void LocalDOMWindow::FrameDestroyed() {
     soft_navigation_heuristics_->Shutdown();
     soft_navigation_heuristics_ = nullptr;
   }
-  GetAgent()->DetachContext(this);
   NotifyContextDestroyed();
   RemoveAllEventListeners();
   MainThreadDebugger::Instance(GetIsolate())
@@ -1662,6 +1658,13 @@ bool LocalDOMWindow::find(const String& string,
 
 bool LocalDOMWindow::offscreenBuffering() const {
   return true;
+}
+
+bool LocalDOMWindow::alwaysOnTop() const {
+  if (!GetFrame() || !GetFrame()->GetPage()) {
+    return false;
+  }
+  return GetFrame()->GetPage()->AlwaysOnTop();
 }
 
 int LocalDOMWindow::outerHeight() const {
@@ -2271,7 +2274,7 @@ void LocalDOMWindow::AddedEventListener(
   DOMWindow::AddedEventListener(event_type, registered_listener);
   if (auto* frame = GetFrame()) {
     frame->GetEventHandlerRegistry().DidAddEventHandler(
-        *this, event_type, registered_listener.Options());
+        *this, event_type, registered_listener.Passive());
   }
 
   document()->AddListenerTypeIfNeeded(event_type, *this);
@@ -2310,7 +2313,7 @@ void LocalDOMWindow::RemovedEventListener(
   document()->DidRemoveEventListeners(/*count*/ 1);
   if (auto* frame = GetFrame()) {
     frame->GetEventHandlerRegistry().DidRemoveEventHandler(
-        *this, event_type, registered_listener.Options());
+        *this, event_type, registered_listener.Passive());
   }
 
   for (auto& it : event_listener_observers_) {
@@ -2430,7 +2433,7 @@ void LocalDOMWindow::FinishedLoading(FrameLoader::NavigationFinishState state) {
     print(nullptr);
   }
 
-  if (RuntimeEnabledFeatures::NavigationStateEnabled()) {
+  if (RuntimeEnabledFeatures::NavigationSourcePseudoClassEnabled()) {
     NavigationState::AttemptFinishNavigationAndDestroy(document_);
   }
 }

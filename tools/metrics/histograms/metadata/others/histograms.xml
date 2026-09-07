@@ -318,7 +318,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BootTime.BrowserLaunchedAfterTPMOwn-Start" units="ms"
-    expires_after="2026-10-12">
+    expires_after="2027-04-12">
   <owner>hidehiko@chromium.org</owner>
   <owner>junis@google.com</owner>
   <owner>cros-sw-perf@google.com</owner>
@@ -476,7 +476,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BootTime.OnAuthSuccessAfterLoginStarted" units="ms"
-    expires_after="2026-10-12">
+    expires_after="2027-04-12">
   <owner>hidehiko@chromium.org</owner>
   <owner>junis@google.com</owner>
   <owner>cros-sw-perf@google.com</owner>
@@ -552,7 +552,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BootTime.TPMOwn-StartAfterUserProfileGotten" units="ms"
-    expires_after="2026-10-12">
+    expires_after="2027-04-12">
   <owner>hidehiko@chromium.org</owner>
   <owner>junis@google.com</owner>
   <owner>cros-sw-perf@google.com</owner>
@@ -563,7 +563,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BootTime.UserProfileGottenAfterAuthSuccess" units="ms"
-    expires_after="2026-10-12">
+    expires_after="2027-04-12">
   <owner>hidehiko@chromium.org</owner>
   <owner>junis@google.com</owner>
   <owner>cros-sw-perf@google.com</owner>
@@ -582,7 +582,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ClientHints.AcceptCHFrame" enum="AcceptCHFrameRestart"
-    expires_after="2026-12-20">
+    expires_after="2027-02-21">
   <owner>victortan@chromium.org</owner>
   <owner>miketaylr@chromium.org</owner>
   <owner>katabolism-finch@google.com</owner>
@@ -595,7 +595,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ClientHints.CriticalCHRestart" enum="CriticalCHRestart"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>victortan@chromium.org</owner>
   <owner>miketaylr@chromium.org</owner>
   <owner>katabolism-finch@google.com</owner>
@@ -825,7 +825,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DirectSockets.TCPServerNetworkFailures" enum="NetErrorCodes"
-    expires_after="2026-09-13">
+    expires_after="2027-09-13">
   <owner>greengrape@google.com</owner>
   <owner>iwa-team@google.com</owner>
   <summary>
@@ -834,21 +834,21 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DirectSockets.TCPServerReadableStreamError"
-    enum="NetErrorCodes" expires_after="2026-09-13">
+    enum="NetErrorCodes" expires_after="2027-09-13">
   <owner>greengrape@google.com</owner>
   <owner>iwa-team@google.com</owner>
   <summary>How often tcp server socket readable stream is errored.</summary>
 </histogram>
 
 <histogram name="DirectSockets.TCPWritableStreamError" enum="NetErrorCodes"
-    expires_after="2026-09-13">
+    expires_after="2027-09-13">
   <owner>greengrape@google.com</owner>
   <owner>iwa-team@google.com</owner>
   <summary>How often tcp socket writable stream is errored.</summary>
 </histogram>
 
 <histogram name="DirectSockets.UDPNetworkFailures" enum="NetErrorCodes"
-    expires_after="2026-09-13">
+    expires_after="2027-09-13">
   <owner>greengrape@google.com</owner>
   <owner>iwa-team@google.com</owner>
   <summary>
@@ -1618,7 +1618,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Feedback.NotAllowed.RequestSource" enum="FeedbackSource"
-    expires_after="2026-12-20">
+    expires_after="2027-02-28">
   <owner>jlebel@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -2652,17 +2652,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="LoadingPredictor.IsSlowNetwork" enum="Boolean"
-    expires_after="2026-12-01">
-  <owner>chikamune@chromium.org</owner>
-  <owner>chrome-loading@google.com</owner>
-  <summary>
-    Records whether the network is considered to be slow or not. Recorded on
-    each call of LoadingPredictor::PrepareForPageLoad() function if
-    kSuppressesLoadingPredictorOnSlowNetwork feature is enabled.
-  </summary>
-</histogram>
-
 <histogram name="LoadingPredictor.LcppStatCorruptedAtLearnTime" enum="Boolean"
     expires_after="2024-05-01">
   <owner>yyanagisawa@chromium.org</owner>
@@ -2959,6 +2948,17 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
+<histogram name="Mojo.Ipcz.BufferPoolAllocateBlockFailureSize"
+    enum="IpczBlockAllocationSize" expires_after="2027-02-01">
+  <owner>pasko@chromium.org</owner>
+  <owner>nafisabedin@google.com</owner>
+  <summary>
+    Logs the block size category of a failed shared memory block allocation
+    attempt in an ipcz BufferPool. Logged on every failed block allocation
+    attempt in BufferPool::AllocateBlock. Subsampled to 1/1000.
+  </summary>
+</histogram>
+
 <histogram name="Mojo.Ipcz.BufferPoolAllocateBlockResult" enum="BooleanSuccess"
     expires_after="2027-02-01">
   <owner>pasko@chromium.org</owner>
@@ -2967,6 +2967,17 @@ chromium-metrics-reviews@google.com.
     Logs whether an ipcz BufferPool successfully allocated a fixed-size shared
     memory block from its block allocator pools. Logged on every block
     allocation attempt in BufferPool::AllocateBlock. Subsampled to 1/1000.
+  </summary>
+</histogram>
+
+<histogram name="Mojo.Ipcz.BufferPoolAllocateBlockSuccessSize"
+    enum="IpczBlockAllocationSize" expires_after="2027-02-01">
+  <owner>pasko@chromium.org</owner>
+  <owner>nafisabedin@google.com</owner>
+  <summary>
+    Logs the block size category of a successful shared memory block allocation
+    attempt in an ipcz BufferPool. Logged on every successful block allocation
+    attempt in BufferPool::AllocateBlock. Subsampled to 1/1000.
   </summary>
 </histogram>
 
@@ -3082,7 +3093,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NQE.IsPrivateHost.CacheHit" enum="BooleanCacheHit"
     expires_after="2027-04-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>bashi@chromium.org</owner>
   <owner>blink-network-stack@google.com</owner>
   <summary>
     Counts how many times the result of NetworkQualityEstimator::IsPrivateHost
@@ -3093,7 +3104,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NQE.IsPrivateHost.Duration" units="ms"
     expires_after="2027-04-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>bashi@chromium.org</owner>
   <owner>blink-network-stack@google.com</owner>
   <summary>
     The duration of NetworkQualityEstimator::IsPrivateHost. Recorded every time
@@ -3910,7 +3921,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PushMessaging.PushSubscriptionChangeForNotificationPermissionChangeFired"
-    units="count" expires_after="2026-12-27">
+    units="count" expires_after="2027-02-28">
   <owner>peter@chromium.org</owner>
   <owner>antoniosartori@chromium.org</owner>
   <summary>
@@ -4280,7 +4291,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SB2.DownloadChecks" enum="SB2DownloadChecks"
-    expires_after="2026-12-22">
+    expires_after="2027-02-28">
   <owner>xinghuilu@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
   <summary>
@@ -4994,13 +5005,14 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="SpellCheck.CheckedWords" units="words"
-    expires_after="2024-12-01">
+    expires_after="2027-08-01">
   <owner>shend@chromium.org</owner>
   <owner>essential-inputs-team@google.com</owner>
   <summary>
     The number of words checked within a session.
 
-    Warning: this histogram was expired from M83 to M107; data may be missing.
+    Warning: this histogram was expired from M83 to M107 and also from 2024-12
+    to 2026-08; data may be missing.
   </summary>
 </histogram>
 
@@ -5039,13 +5051,14 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="SpellCheck.MisspelledWords" units="words"
-    expires_after="2024-12-01">
+    expires_after="2027-08-01">
   <owner>shend@chromium.org</owner>
   <owner>essential-inputs-team@google.com</owner>
   <summary>
     The number of misspelled words within a session.
 
-    Warning: this histogram was expired from M83 to M107; data may be missing.
+    Warning: this histogram was expired from M83 to M107 and also from 2024-12
+    to 2026-08; data may be missing.
   </summary>
 </histogram>
 
@@ -5061,18 +5074,19 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="SpellCheck.ReplacedWords" units="words"
-    expires_after="2024-12-01">
+    expires_after="2027-08-01">
   <owner>shend@chromium.org</owner>
   <owner>essential-inputs-team@google.com</owner>
   <summary>
     The number of misspelled-but-replaced words within a session.
 
-    Warning: this histogram was expired from M83 to M107; data may be missing.
+    Warning: this histogram was expired from M83 to M107 and also from 2024-12
+    to 2026-08; data may be missing.
   </summary>
 </histogram>
 
 <histogram name="SpellCheck.ShownSuggestions" units="suggestions"
-    expires_after="2024-12-01">
+    expires_after="2027-08-01">
   <owner>shend@chromium.org</owner>
   <owner>essential-inputs-team@google.com</owner>
   <summary>
@@ -5080,7 +5094,8 @@ useful for Chirp alerts (go/crca-alerts). -->
     This is incremented and logged when a context menu with spelling suggestions
     is shown for a misspelled word.
 
-    Warning: this histogram was expired from M83 to M107; data may be missing.
+    Warning: this histogram was expired from M83 to M107 and also from 2024-12
+    to 2026-08; data may be missing.
   </summary>
 </histogram>
 
@@ -5115,11 +5130,14 @@ useful for Chirp alerts (go/crca-alerts). -->
 </histogram>
 
 <histogram name="SpellCheck.SuggestionHitRatio" units="%"
-    expires_after="2024-12-01">
+    expires_after="2027-08-01">
   <owner>shend@chromium.org</owner>
   <owner>essential-inputs-team@google.com</owner>
   <summary>
     The percentage of replacement executions within suggestion occurrences.
+
+    Warning: this histogram was expired from 2024-12 to 2026-08; data may be
+    missing.
   </summary>
 </histogram>
 
@@ -5255,7 +5273,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.BundleFetchErrorCode"
     enum="NetErrorCodes" expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The net error code recorded when request for a subresource web bundle was
@@ -5265,7 +5283,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.ContentLength" units="bytes"
     expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The value of content length header of a subresource web bundle, or zero if
@@ -5275,14 +5293,14 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.LoadResult"
     enum="SubresourceWebBundleLoadResult" expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>The result of loading subresource web bundles.</summary>
 </histogram>
 
 <histogram name="SubresourceWebBundles.MaxMemoryUsagePerProcess" units="bytes"
     expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The max memory usage per renderer process for subresource web bundles which
@@ -5293,7 +5311,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.OriginType"
     enum="SubresourceWebBundleOriginType" expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The counts of Web Bundles origin types requested by Subresource Loading with
@@ -5304,7 +5322,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.ReceivedSize" units="bytes"
     expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The received data size of a subresource web bundle. Recorded when received
@@ -5314,7 +5332,7 @@ useful for Chirp alerts (go/crca-alerts). -->
 
 <histogram name="SubresourceWebBundles.ResourceCount" units="resources"
     expires_after="2027-09-01">
-  <owner>hayato@chromium.org</owner>
+  <owner>horo@chromium.org</owner>
   <owner>webpackage-dev@chromium.org</owner>
   <summary>
     The number of resources contained in a web bundle. Recorded when bundle

@@ -65,9 +65,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /** Implements {@link ChromeAndroidTask}. */
@@ -283,7 +284,7 @@ final class ChromeAndroidTaskImpl
      * ChromeAndroidTask}.
      */
     private final Map<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature> mFeatures =
-            new ArrayMap<>();
+            new LinkedHashMap<>();
 
     /**
      * When the Task is PENDING, this variable is used to store the associated {@link
@@ -635,14 +636,32 @@ final class ChromeAndroidTaskImpl
         return mId;
     }
 
-    @Override
-    public @Nullable PendingTaskInfo getPendingTaskInfo() {
+    /**
+     * Returns {@link PendingTaskInfo} if {@link ChromeAndroidTask} is in the {@code PENDING_CREATE}
+     * state, otherwise {@code null}.
+     */
+    @VisibleForTesting
+    @Nullable PendingTaskInfo getPendingTaskInfo() {
         ThreadUtils.assertOnUiThread();
         return mPendingTaskInfo;
     }
 
-    @Override
-    public void addActivityScopedObjects(ActivityScopedObjects activityScopedObjects) {
+    /**
+     * Adds an instance of {@link ActivityScopedObjects}.
+     *
+     * <p>As a {@link ChromeAndroidTask} is meant to track an Android Task, but {@link
+     * ActivityScopedObjects} is associated with a {@code ChromeActivity}, this method is needed to
+     * support the difference in their lifecycles and the fact that a Task can contain multiple
+     * {@code Activities}.
+     *
+     * <p>The most recent {@link ActivityScopedObjects} added to a Task is considered as objects for
+     * the "top" {@code Activity} in the Task.
+     *
+     * @param activityScopedObjects The {@link ActivityScopedObjects} to be associated with this
+     *     {@link ChromeAndroidTask}.
+     * @see #removeActivityScopedObjects
+     */
+    void addActivityScopedObjects(ActivityScopedObjects activityScopedObjects) {
         ThreadUtils.assertOnUiThread();
         addActivityScopedObjectsInternal(activityScopedObjects);
     }
@@ -707,8 +726,19 @@ final class ChromeAndroidTaskImpl
                 : topActivityScopedObjects.mActivityWindowAndroid;
     }
 
-    @Override
-    public void removeActivityScopedObjects(ActivityWindowAndroid activityWindowAndroid) {
+    /**
+     * Removes the {@link ActivityScopedObjects} matching the given {@link ActivityWindowAndroid}.
+     *
+     * <p>This method should be called when the {@link ActivityWindowAndroid} is about to be
+     * destroyed.
+     *
+     * <p>Note that this method may not remove {@link ActivityScopedObjects} for the top {@code
+     * Activity}, as an Android Task isn't an FIFO stack. For example, the system can destroy an
+     * {@code Activity} in the background and keep the foreground {@code Activity}.
+     *
+     * @see #addActivityScopedObjects
+     */
+    void removeActivityScopedObjects(ActivityWindowAndroid activityWindowAndroid) {
         ThreadUtils.assertOnUiThread();
 
         // (1) Check whether the Activity to remove is the top Activity.
@@ -1377,10 +1407,9 @@ final class ChromeAndroidTaskImpl
             assert mId == null;
         }
 
-        // Update WindowStateManager with the initial window state, i.e., when we are about to add
-        // the first Activity to the Task.
+        // Initialize WindowStateManager when we are about to add the first Activity to the Task.
         if (mActivityScopedObjectsDeque.isEmpty()) {
-            mWindowStateManager.update(
+            mWindowStateManager.init(
                     getActivity(activityWindowAndroid), activityWindowAndroid.getDisplay());
         }
 
@@ -1650,30 +1679,39 @@ final class ChromeAndroidTaskImpl
         }
     }
 
-    private void removeAllFeaturesForActivityInternal(ActivityWindowAndroid activityWindowAndroid) {
-        Iterator<Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature>> iterator =
-                mFeatures.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature> entry = iterator.next();
+    /**
+     * Removes and destroys features matching the given filter in LIFO (Last-In-First-Out / reverse
+     * insertion) order.
+     *
+     * <p>Features added later may depend on features added earlier. Destroying features in reverse
+     * insertion order ensures that dependent features are torn down before the services they rely
+     * on.
+     *
+     * @param filter A predicate indicating which feature keys to remove.
+     */
+    private void removeFeaturesIf(Predicate<ChromeAndroidTaskFeatureKey> filter) {
+        if (mFeatures.isEmpty()) {
+            return;
+        }
+        var entries = new ArrayList<>(mFeatures.entrySet());
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            var entry = entries.get(i);
             ChromeAndroidTaskFeatureKey key = entry.getKey();
-            if (activityWindowAndroid == key.mActivityWindowAndroid) {
-                entry.getValue().onFeatureRemoved();
-                iterator.remove();
+            if (filter.test(key)) {
+                ChromeAndroidTaskFeature feature = mFeatures.remove(key);
+                if (feature != null) {
+                    feature.onFeatureRemoved();
+                }
             }
         }
     }
 
+    private void removeAllFeaturesForActivityInternal(ActivityWindowAndroid activityWindowAndroid) {
+        removeFeaturesIf(key -> activityWindowAndroid == key.mActivityWindowAndroid);
+    }
+
     private void removeAllFeaturesForTabModel(TabModel tabModel) {
-        Iterator<Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature>> iterator =
-                mFeatures.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature> entry = iterator.next();
-            ChromeAndroidTaskFeatureKey key = entry.getKey();
-            if (tabModel == key.mTabModel) {
-                entry.getValue().onFeatureRemoved();
-                iterator.remove();
-            }
-        }
+        removeFeaturesIf(key -> tabModel == key.mTabModel);
     }
 
     private void removeAllActivityScopedObjects() {
@@ -1716,22 +1754,11 @@ final class ChromeAndroidTaskImpl
     }
 
     private void removeAllFeatures() {
-        for (var feature : mFeatures.values()) {
-            feature.onFeatureRemoved();
-        }
-        mFeatures.clear();
+        removeFeaturesIf(key -> true);
     }
 
     private void removeAllFeaturesForProfile(Profile profile) {
-        var iterator = mFeatures.entrySet().iterator();
-        while (iterator.hasNext()) {
-            var entry = iterator.next();
-            ChromeAndroidTaskFeatureKey key = entry.getKey();
-            if (profile.equals(key.mProfile)) {
-                entry.getValue().onFeatureRemoved();
-                iterator.remove();
-            }
-        }
+        removeFeaturesIf(key -> profile.equals(key.mProfile));
     }
 
     private void assertAlive() {

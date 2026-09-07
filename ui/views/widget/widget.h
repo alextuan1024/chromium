@@ -18,6 +18,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
+#include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "ui/accessibility/platform/ax_mode_observer.h"
 #include "ui/base/class_property.h"
@@ -79,6 +80,7 @@ class BubbleLocking;
 namespace views {
 
 class DesktopWindowTreeHost;
+class InputProtectionEventHandler;
 class NativeWidget;
 class SublevelManager;
 class TooltipManager;
@@ -1384,9 +1386,15 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // the ShouldPaintAsActive() state.
   void NotifyPaintAsActiveChanged();
 
-  // Enables input protection. Installs standard policies (occlusion, window
+  // Enables input activation protection. Installs standard policies (window
   // activation, click-spam) if `custom_protector` is nullptr. Otherwise, the
   // caller must configure the provided protector with the desired policies.
+  //
+  // Enabling this also activates occlusion protection for non-located events
+  // (e.g. keyboard action keys like Space or Return) in
+  // `OccludedWidgetInputProtector` (whereas unprotected widgets only check
+  // located pointer events).
+  //
   // See ui/views/input_protection/README.md for details on how this works.
   void EnableInputEventActivationProtection(
       std::unique_ptr<InputEventActivationProtector> custom_protector =
@@ -1395,8 +1403,14 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // Returns true if input event activation protection is enabled.
   bool IsInputEventActivationProtectionEnabled() const;
 
-  InputEventActivationProtector* input_protector_for_testing() {
+  // Returns the input event activation protector if it exists, nullptr
+  // otherwise.
+  InputEventActivationProtector* GetInputEventActivationProtector() const {
     return input_protector_.get();
+  }
+
+  InputProtectionEventHandler* input_protection_event_handler_for_testing() {
+    return input_protection_event_handler_.get();
   }
 
   base::WeakPtr<Widget> GetWeakPtr();
@@ -1667,10 +1681,6 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
 
   ui::ColorId GetBackgroundColorId() const;
 
-  // Returns true if the event is a possibly unintended interaction.
-  bool IsPossiblyUnintendedInteraction(const ui::Event& event,
-                                       const View* target);
-
   static DisableActivationChangeHandlingType
       g_disable_activation_change_handling_;
 
@@ -1868,6 +1878,10 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
 
   // Handles input protection for this widget.
   std::unique_ptr<InputEventActivationProtector> input_protector_;
+
+  // Pre-target handler that intercepts input events on `root_view_` for input
+  // protection.
+  std::unique_ptr<InputProtectionEventHandler> input_protection_event_handler_;
 
   // True if input protection is enabled for this widget.
   bool input_event_activation_protection_enabled_ = false;

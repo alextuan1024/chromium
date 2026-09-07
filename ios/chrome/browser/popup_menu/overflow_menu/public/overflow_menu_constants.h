@@ -25,6 +25,7 @@ enum class Destination {
   PriceNotifications = 10,
   Cobalt = 11,
   LevelUp = 12,
+  DefaultBrowser = 13,
 };
 // LINT.ThenChange(
 // /ios/chrome/browser/popup_menu/overflow_menu/ui/overflow_menu_metrics.h:destination,
@@ -57,12 +58,13 @@ enum class ActionType {
   SetTabReminder,
   // TODO(crbug.com/416002705): Rename reference to BWG.
   AskBWG,
-  HideToolbars,
+  HideToolbarsDeprecated,
   TabGroupDeprecated,  // This enum is deprecated due to feature cleanup.
   ShareThisPage,
   SigninDeprecated,
   Identity,
   CustomizeHomePage,
+  DefaultBrowser,
 };
 // LINT.ThenChange(/ios/chrome/browser/popup_menu/overflow_menu/ui/overflow_menu_metrics.h:actionType)
 

@@ -68,6 +68,7 @@ class CanvasHighDynamicRangeOptions;
 class CanvasRenderingContextFactory;
 class DOMMatrix;
 class Element;
+class UpdateElementGeometryOptions;
 class ElementImage;
 class GraphicsContext;
 class HTMLCanvasAccessibilityManager;
@@ -123,6 +124,7 @@ class CORE_EXPORT HTMLCanvasElement final
   void setLayoutSubtree(bool);
   bool layoutSubtree() const;
   DEFINE_ATTRIBUTE_EVENT_LISTENER(paint, kPaint)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(elementgeometryupdate, kElementgeometryupdate)
   void requestPaint();
 
   void SetSize(gfx::Size new_size);
@@ -267,6 +269,8 @@ class CORE_EXPORT HTMLCanvasElement final
   void UpdateDrawnElementGeometry(ElementImage&,
                                   const gfx::Transform*,
                                   bool update_hit_test_order) override;
+  void ClearDrawnElementGeometry(Element&) override;
+  void ClearDrawnElementGeometry(ElementImage&) override;
 
   // ImageBitmapSource implementation
   ScriptPromise<ImageBitmap> CreateImageBitmap(
@@ -379,6 +383,8 @@ class CORE_EXPORT HTMLCanvasElement final
                                  DOMMatrix* draw_transform,
                                  ExceptionState&);
 
+  DOMMatrix* getElementTransform(Element* element, ExceptionState&) const;
+
   bool VerifyDrawElementImageEligibility(Element* element,
                                          const String& func_name,
                                          ExceptionState& exception_state) const;
@@ -389,9 +395,13 @@ class CORE_EXPORT HTMLCanvasElement final
       ExceptionState& exception_state) const;
 
   ElementImage* captureElementImage(Element* element, ExceptionState&);
+  void updateElementGeometry(const V8UnionElementOrElementImage*,
+                             const UpdateElementGeometryOptions*,
+                             ExceptionState&);
+  void clearElementGeometry(const V8UnionElementOrElementImage*);
 
   // Descendants of this canvas that have been drawn via `drawElementImage()` or
-  // added explicitly via a call to `canvas.updateCanvasGeometry(element)`, in
+  // added explicitly via a call to `canvas.updateElementGeometry(element)`, in
   // the order they were added. If an element is added twice, the second
   // invocation determines its ordering (i.e., it is moved to the back).
   const HeapLinkedHashSet<WeakMember<Element>>& HitTestableDescendants() const {

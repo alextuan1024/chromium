@@ -8,7 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,7 +21,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.omnibox.R;
@@ -31,9 +30,9 @@ import org.chromium.ui.widget.RectProvider;
 
 /** Unit tests for {@link DynamicRectProvider}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class DynamicRectProviderUnitTest {
-    @Rule public final MockitoRule mockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private RectProvider mFloatingDelegate;
     @Mock private RectProvider mBottomDelegate;
@@ -81,7 +80,7 @@ public class DynamicRectProviderUnitTest {
         mDynamicRectProvider.setPopupState(PopupState.FLOATING);
         mDynamicRectProvider.startObserving(mObserver);
         mDynamicRectProvider.startObserving(mObserver);
-        verify(mFloatingDelegate, times(1)).startObserving(any());
+        verify(mFloatingDelegate).startObserving(any());
     }
 
     @Test
@@ -89,7 +88,7 @@ public class DynamicRectProviderUnitTest {
         mDynamicRectProvider.startObserving(mObserver);
         mDynamicRectProvider.setPopupState(PopupState.FLOATING);
         mDynamicRectProvider.setPopupState(PopupState.FLOATING);
-        verify(mFloatingDelegate, times(1)).startObserving(any());
+        verify(mFloatingDelegate).startObserving(any());
     }
 
     @Test
@@ -98,7 +97,7 @@ public class DynamicRectProviderUnitTest {
         mDynamicRectProvider.startObserving(mObserver);
         mDynamicRectProvider.stopObserving();
         mDynamicRectProvider.stopObserving();
-        verify(mFloatingDelegate, times(1)).stopObserving();
+        verify(mFloatingDelegate).stopObserving();
     }
 
     @Test

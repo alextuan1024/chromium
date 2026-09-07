@@ -217,6 +217,10 @@ class RenderViewContextMenu
 #endif
   void RecordUsedItem(int id) override;
 
+  // Platform-specific subclasses can override this method to handle commands.
+  // Returns true if the command was handled.
+  virtual bool ExecPlatformCommand(int command_id, int event_flags);
+
   // Returns true if the browser is in HTML fullscreen mode, initiated by the
   // page (as opposed to the user). Used to determine which shortcut to display.
   bool IsHTML5Fullscreen() const;
@@ -456,6 +460,10 @@ class RenderViewContextMenu
   // Reading Mode side panel or immersive view, it returns the WebContents of
   // the original page being distilled.
   content::WebContents* GetWebContentsForDataControls() const;
+
+  // Returns the URL of the Indigo replacement image if the context menu was
+  // invoked on an image with an active Indigo replacement, or an empty GURL.
+  virtual GURL GetIndigoReplacementImageURL() const;
 
   // Returns a list of registered ProtocolHandlers that can handle the clicked
   // on URL.

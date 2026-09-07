@@ -5,19 +5,29 @@
 package org.chromium.chrome.browser.ui.enterprise_signals_disclaimer;
 
 import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.action.ViewActions.scrollTo;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
+import static androidx.test.espresso.action.ViewActions.swipeDown;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.isRoot;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 
+import static org.chromium.ui.test.util.ViewUtils.VIEW_GONE;
+import static org.chromium.ui.test.util.ViewUtils.VIEW_NULL;
+import static org.chromium.ui.test.util.ViewUtils.waitForVisibleView;
+import static org.chromium.ui.test.util.ViewUtils.withEventualExpectedViewState;
+
+import android.view.FocusFinder;
 import android.view.View;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.test.espresso.Espresso;
 import androidx.test.filters.LargeTest;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -30,9 +40,10 @@ import org.mockito.Mockito;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.build.annotations.Nullable;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtilsJni;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
@@ -49,7 +60,13 @@ import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.components.browser_ui.bottomsheet.TestBottomSheetContent;
+import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
+import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.test.util.AccountCapabilitiesBuilder;
+import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
@@ -69,6 +86,19 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
     @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     @Mock private ManagedBrowserUtils.Natives mManagedBrowserUtilsMock;
+
+    private static final AccountInfo MANAGED_ACCOUNT_2 =
+            new AccountInfo.Builder(
+                            "test2@example.com",
+                            FakeAccountManagerFacade.toGaiaId("test2@example.com"))
+                    .fullName("Managed2 Full")
+                    .givenName("Managed2 Given")
+                    .hostedDomain("example.com")
+                    .accountCapabilities(
+                            new AccountCapabilitiesBuilder()
+                                    .setIsSubjectToEnterpriseFeatures(true)
+                                    .build())
+                    .build();
 
     @Before
     public void setUp() {
@@ -95,6 +125,7 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
         mManagedBrowserUtilsMock = null;
         ManagedBrowserUtilsJni.setInstanceForTesting(null);
         mSigninTestRule.forceSignOut();
+        waitForSignout();
         mSigninTestRule.removeAccount(TestAccounts.MANAGED_ACCOUNT.getId());
     }
 
@@ -115,11 +146,13 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
         return instance;
     }
 
-    private void verifyActivityShowingSignalsDisclaimer() {
-        onView(withId(R.id.disclaimer_title)).check(matches(isDisplayed()));
-        onView(withId(R.id.disclaimer_description)).check(matches(isDisplayed()));
+    private void waitForDisclaimerVisible() {
+        waitForVisibleView(withId(R.id.disclaimer_scroll_view));
 
-        // On smaller devices the buttons might not fit on the screen.
+        onView(withId(R.id.disclaimer_title)).perform(scrollTo()).check(matches(isDisplayed()));
+        onView(withId(R.id.disclaimer_description))
+                .perform(scrollTo())
+                .check(matches(isDisplayed()));
         onView(withId(R.id.disclaimer_accept_button))
                 .perform(scrollTo())
                 .check(matches(isDisplayed()));
@@ -128,16 +161,34 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
                 .check(matches(isDisplayed()));
     }
 
-    private @Nullable EnterpriseSignalsDisclaimerController createController() {
+    private void waitForDisclaimerNotShowing() {
+        onView(isRoot())
+                .check(
+                        withEventualExpectedViewState(
+                                withId(R.id.disclaimer_scroll_view), VIEW_GONE | VIEW_NULL));
+    }
+
+    private EnterpriseSignalsDisclaimerController createController() {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    return EnterpriseSignalsDisclaimerController.maybeCreateForProfile(
-                            ProfileManager.getLastUsedRegularProfile(),
+                    final var profile = ProfileManager.getLastUsedRegularProfile();
+                    return new EnterpriseSignalsDisclaimerController(
+                            IdentityServicesProvider.get().getSigninManager(profile),
                             bottomSheetController(),
                             modalDialogManager(),
                             activity(),
-                            url -> {});
+                            profile,
+                            url -> {},
+                            EnterpriseSignalsDisclaimerCoordinator::new);
                 });
+    }
+
+    private EnterpriseSignalsDisclaimerController createControllerAndShowDisclaimer() {
+        final EnterpriseSignalsDisclaimerController controller = createController();
+        Assert.assertNotNull(controller);
+        Assert.assertTrue(ThreadUtils.runOnUiThreadBlocking(controller::maybeShow));
+        waitForDisclaimerVisible();
+        return controller;
     }
 
     /** Abstraction combining fake bottom sheet and modal dialogs. */
@@ -235,10 +286,35 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
         }
     }
 
+    private void waitForSignout() {
+        CriteriaHelper.pollUiThread(() -> Assert.assertNull(mSigninTestRule.getPrimaryAccount()));
+    }
+
+    private View getDialogView() {
+        final boolean isTablet = DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity());
+        if (isTablet) {
+            AppModalPresenter presenter =
+                    (AppModalPresenter) modalDialogManager().getCurrentPresenterForTest();
+            assert presenter != null;
+            View dialogView = presenter.getDialogViewForTesting();
+            assert dialogView != null;
+            return dialogView;
+        } else {
+            return activity().getWindow().getDecorView();
+        }
+    }
+
+    private boolean hasAccountAcknowledgedSignalsDisclaimer(CoreAccountInfo account) {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        EnterpriseSignalsDisclaimerBridge.hasAccountAcknowledgedSignalsDisclaimer(
+                                account.getGaiaId()));
+    }
+
     @Test
     @LargeTest
     public void disclaimerShowsOnStartup() {
-        verifyActivityShowingSignalsDisclaimer();
+        waitForDisclaimerVisible();
         final boolean isTablet = DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity());
         // Verify that on phones the bottom sheet is used, while on large form factor the modal
         // dialog is used.
@@ -267,7 +343,7 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
         // Close the currently open dialog, this should cause our disclaimer dialog to be shown.
         ThreadUtils.runOnUiThreadBlocking(fakeDialog::close);
 
-        verifyActivityShowingSignalsDisclaimer();
+        waitForDisclaimerVisible();
 
         ThreadUtils.runOnUiThreadBlocking(controller::destroy);
     }
@@ -275,12 +351,12 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
     @Test
     @LargeTest
     public void disclaimerCannotBeSuppressed() {
-        verifyActivityShowingSignalsDisclaimer();
+        waitForDisclaimerVisible();
 
         final FakeDialog fakeDialog = showFakeDialog();
         Assert.assertFalse(ThreadUtils.runOnUiThreadBlocking(fakeDialog::isShowing));
 
-        verifyActivityShowingSignalsDisclaimer();
+        waitForDisclaimerVisible();
     }
 
     @Test
@@ -305,13 +381,244 @@ public class EnterpriseSignalsDisclaimerInstrumentationTest {
     @LargeTest
     @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
     public void destroyingControllerHidesDialog() {
-        final EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-        Assert.assertTrue(ThreadUtils.runOnUiThreadBlocking(controller::maybeShow));
-        verifyActivityShowingSignalsDisclaimer();
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
 
         // Destroy the controller and verify that the dialog is not being shown anymore.
         ThreadUtils.runOnUiThreadBlocking(controller::destroy);
-        onView(withId(R.id.disclaimer_title)).check(doesNotExist());
+        waitForDisclaimerNotShowing();
+
+        Assert.assertNotNull(mSigninTestRule.getPrimaryAccount());
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void clickingAcceptHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+
+        onView(withId(R.id.disclaimer_accept_button)).perform(scrollTo(), click());
+
+        waitForDisclaimerNotShowing();
+        Assert.assertNotNull(mSigninTestRule.getPrimaryAccount());
+        Assert.assertTrue(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void clickingSignOutSignsOutAndHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        onView(withId(R.id.disclaimer_cancel_button)).perform(scrollTo(), click());
+
+        waitForDisclaimerNotShowing();
+        waitForSignout();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void swipingBottomSheetSignsOutAndHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        // Scroll to the top of the disclaimer so the swipe does not scroll instead of closing the
+        // dialog.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> activity().findViewById(R.id.disclaimer_scroll_view).scrollTo(0, 0));
+        onView(withId(R.id.disclaimer_scroll_view)).perform(swipeDown());
+
+        waitForDisclaimerNotShowing();
+        waitForSignout();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void clickingOutsideSheetSignsOutAndHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        new BottomSheetTestSupport(bottomSheetController())
+                                .forceClickOutsideTheSheet());
+
+        waitForDisclaimerNotShowing();
+        waitForSignout();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void clickingOutsideModalDialogSignsOutAndHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    PropertyModel model =
+                            modalDialogManager().getCurrentPresenterForTest().getDialogModel();
+                    modalDialogManager()
+                            .dismissDialog(
+                                    model, DialogDismissalCause.NAVIGATE_BACK_OR_TOUCH_OUTSIDE);
+                });
+
+        waitForDisclaimerNotShowing();
+        waitForSignout();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void backPressSignsOutAndHidesDialog() {
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        Espresso.pressBack();
+
+        waitForDisclaimerNotShowing();
+        waitForSignout();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_STARTUP_PROMOS)
+    public void disclaimerShownOnSignin() {
+        mSigninTestRule.forceSignOut();
+        waitForSignout();
+
+        mSigninTestRule.addAccountThenSignin(TestAccounts.MANAGED_ACCOUNT);
+
+        waitForDisclaimerVisible();
+    }
+
+    @Test
+    @LargeTest
+    public void signoutHidesDisclaimer() {
+        waitForDisclaimerVisible();
+
+        mSigninTestRule.signOut();
+        waitForSignout();
+
+        waitForDisclaimerNotShowing();
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_STARTUP_PROMOS)
+    public void anotherDialogShownOnSignin() {
+        mSigninTestRule.forceSignOut();
+        waitForSignout();
+
+        final FakeDialog fakeDialog = showFakeDialog();
+        Assert.assertTrue(ThreadUtils.runOnUiThreadBlocking(fakeDialog::isShowing));
+        mSigninTestRule.addAccountThenSignin(TestAccounts.MANAGED_ACCOUNT);
+        ThreadUtils.runOnUiThreadBlocking(fakeDialog::close);
+
+        waitForDisclaimerVisible();
+    }
+
+    @Test
+    @LargeTest
+    @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+    public void focusSearchConfinesFocusToDisclaimer() {
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(false);
+        final EnterpriseSignalsDisclaimerController controller =
+                createControllerAndShowDisclaimer();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    View acceptButton = getDialogView().findViewById(R.id.disclaimer_accept_button);
+                    Assert.assertNotNull(acceptButton);
+
+                    View scrollView = getDialogView().findViewById(R.id.disclaimer_scroll_view);
+                    Assert.assertNotNull(scrollView);
+                    EnterpriseSignalsDisclaimerView disclaimerView =
+                            (EnterpriseSignalsDisclaimerView) scrollView.getParent();
+
+                    View firstFocusable =
+                            FocusFinder.getInstance()
+                                    .findNextFocus(disclaimerView, null, View.FOCUS_FORWARD);
+                    View lastFocusable =
+                            FocusFinder.getInstance()
+                                    .findNextFocus(disclaimerView, null, View.FOCUS_BACKWARD);
+                    Assert.assertNotNull(firstFocusable);
+                    Assert.assertNotNull(lastFocusable);
+
+                    // Forward focus from the last focusable element should wrap to the first
+                    // focusable element.
+                    View nextAfterLast =
+                            disclaimerView.focusSearch(lastFocusable, View.FOCUS_FORWARD);
+                    Assert.assertEquals(firstFocusable, nextAfterLast);
+
+                    // Backward focus from the first focusable element should wrap to the last
+                    // focusable element.
+                    View prevBeforeFirst =
+                            disclaimerView.focusSearch(firstFocusable, View.FOCUS_BACKWARD);
+                    Assert.assertEquals(lastFocusable, prevBeforeFirst);
+                });
+
+        waitForDisclaimerVisible();
+        ThreadUtils.runOnUiThreadBlocking(controller::destroy);
+    }
+
+    @Test
+    @LargeTest
+    public void acknowledgmentPersistsAcrossSignouts() {
+        waitForDisclaimerVisible();
+
+        onView(withId(R.id.disclaimer_accept_button)).perform(scrollTo(), click());
+        waitForDisclaimerNotShowing();
+
+        mSigninTestRule.signOut();
+        waitForSignout();
+
+        mSigninTestRule.addAccountThenSignin(TestAccounts.MANAGED_ACCOUNT);
+        Assert.assertTrue(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+        waitForDisclaimerNotShowing();
+    }
+
+    @Test
+    @LargeTest
+    public void acknowledgmentIsPerAccount() {
+        waitForDisclaimerVisible();
+
+        onView(withId(R.id.disclaimer_accept_button)).perform(scrollTo(), click());
+        waitForDisclaimerNotShowing();
+        Assert.assertTrue(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+
+        mSigninTestRule.signOut();
+        waitForSignout();
+
+        mSigninTestRule.addAccountThenSignin(MANAGED_ACCOUNT_2);
+
+        waitForDisclaimerVisible();
+        Assert.assertFalse(hasAccountAcknowledgedSignalsDisclaimer(MANAGED_ACCOUNT_2));
+        Assert.assertTrue(hasAccountAcknowledgedSignalsDisclaimer(TestAccounts.MANAGED_ACCOUNT));
+
+        mSigninTestRule.forceSignOut();
+        waitForSignout();
+        mSigninTestRule.removeAccount(MANAGED_ACCOUNT_2.getId());
     }
 }

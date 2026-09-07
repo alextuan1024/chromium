@@ -128,7 +128,17 @@ class ExecutionEngine : public ToolDelegate,
     kBlockByContainerConfig = 5,
     // The navigation was blocked due to a dangerous MIME type in the response.
     kBlockByDangerousMimeType = 6,
-    kMaxValue = kBlockByDangerousMimeType,
+    // Blocked by the Lookalike URL service.
+    kBlockByLookalikeUrl = 7,
+    // Blocked by SafeBrowsing.
+    kBlockBySafeBrowsing = 8,
+    // Allowed because safety checks are disabled.
+    kAllowBySafetyChecksDisabled = 9,
+    // Blocked because the destination was an error document.
+    kBlockByTabErrorDocument = 10,
+    // Blocked by SafeBrowsing tab observer.
+    kBlockByTabSafeBrowsingObserver = 11,
+    kMaxValue = kBlockByTabSafeBrowsingObserver,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:GatingDecision)
 
@@ -152,7 +162,7 @@ class ExecutionEngine : public ToolDelegate,
     kRejected = 2,
     kMaxValue = kRejected
   };
-  // LINT.ThenChange(//tools/metrics/histograms/actor/enums.xml:ActorServerConfirmationResult)
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorServerConfirmationResult)
 
   // Tests can provide a factory function which will be used to create
   // test-instrumented ExecutionEngine instances. See the
@@ -162,17 +172,11 @@ class ExecutionEngine : public ToolDelegate,
   static FactoryFunction& GetFactoryFunctionForTesting();
 
   static std::unique_ptr<ExecutionEngine> Create(ActorTask& owner_task);
-  static std::unique_ptr<ExecutionEngine> CreateForTesting(
-      ActorTask& owner_task,
-      std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher);
 
-  // Constructors public for std::make_unique but only usable via static Create
+  // Constructor public for std::make_unique but only usable via static Create
   // method.
   explicit ExecutionEngine(base::PassKey<ExecutionEngine>,
                            ActorTask& owner_task);
-  ExecutionEngine(base::PassKey<ExecutionEngine>,
-                  ActorTask& owner_task,
-                  std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher);
 
   ExecutionEngine(const ExecutionEngine&) = delete;
   ExecutionEngine& operator=(const ExecutionEngine&) = delete;
@@ -255,18 +259,16 @@ class ExecutionEngine : public ToolDelegate,
       std::unique_ptr<actor_login::ActorLoginService> actor_login_service);
 
   // Callback invoked when ConfirmCrossOriginNavigation, which spawns an IPC to
-  // the web client, receives its response. This callback gets a boolean
-  // indicating if navigation should continue.
+  // the web client, receives its response.
   using NavigationDecisionCallback =
-      base::OnceCallback<void(bool may_continue)>;
+      base::OnceCallback<void(MayActOnUrlBlockReason)>;
 
-  // Returns a value indicating how the given navigation should be handled
-  // (proceed, cancel and ignore, defer, etc.). This method must only be called
-  // on the primary main frame or a prerendered main frame. `callback` will be
-  // invoked iff this function returns `content::NavigationThrottle::DEFER`.
-  content::NavigationThrottle::ThrottleAction ShouldDeferNavigation(
-      content::NavigationHandle& navigation_handle,
-      NavigationDecisionCallback callback);
+  // Invokes `callback` with a value indicating how the given navigation should
+  // be handled (proceed, cancel and ignore). This method must only be called on
+  // the primary main frame or a prerendered main frame. `callback` will be
+  // invoked after this function returns.
+  void ShouldNavigationCommit(content::NavigationHandle& navigation_handle,
+                              NavigationDecisionCallback callback);
 
   // Cancels all pending navigation gating checks, resolving their callbacks
   // with a negative decision (e.g., false or kTaskWentAway).
@@ -438,7 +440,7 @@ class ExecutionEngine : public ToolDelegate,
       ukm::SourceId ukm_source_id,
       base::ScopedUmaHistogramTimer timer,
       State engine_state,
-      NavigationDecisionCallback callback,
+      base::OnceCallback<void(bool)> callback,
       webui::mojom::NavigationConfirmationResponsePtr response);
 
   // Makes the web client confirm with the user that the actor is allowed to
@@ -450,8 +452,10 @@ class ExecutionEngine : public ToolDelegate,
       base::OnceCallback<void(NoVerdictResult)> callback);
   void OnPromptUserToConfirmNavigationDecision(
       const url::Origin& destination,
-      NavigationDecisionCallback callback,
+      base::OnceCallback<void(bool)> callback,
       webui::mojom::UserConfirmationDialogResponsePtr response);
+
+  ui::UiEventDispatcher& GetUiEventDispatcher();
 
   State state_ = State::kInit;
 
@@ -470,7 +474,6 @@ class ExecutionEngine : public ToolDelegate,
       actor_form_filling_service_;
   std::unique_ptr<autofill::ActorOneTimeTokenFillingService>
       actor_one_time_token_filling_service_;
-  std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher_;
 
   base::flat_map<url::Origin, url::Origin> affiliated_origin_map_;
 

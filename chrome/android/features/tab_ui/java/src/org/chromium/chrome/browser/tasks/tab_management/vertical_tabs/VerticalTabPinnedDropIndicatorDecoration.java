@@ -15,7 +15,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.chromium.base.MathUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalExternalViewDragDropReorderStrategy.DropTargetResult;
-import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.ui.base.LocalizationUtils;
 
@@ -26,6 +25,8 @@ import org.chromium.ui.base.LocalizationUtils;
 @NullMarked
 public class VerticalTabPinnedDropIndicatorDecoration
         extends BaseVerticalTabDropIndicatorDecoration {
+    static final float INDICATOR_DIVISOR = 2.0f;
+
     private final int mItemGap;
     private final int mItemHeight;
 
@@ -36,22 +37,39 @@ public class VerticalTabPinnedDropIndicatorDecoration
         super(context);
         Resources res = context.getResources();
         mItemGap = res.getDimensionPixelSize(R.dimen.vertical_tab_pinned_item_gap);
-        boolean isTablet = VerticalTabUtils.isTablet(context);
-        mItemHeight =
-                res.getDimensionPixelSize(
-                        isTablet
-                                ? R.dimen.vertical_tab_pinned_item_height_tablet
-                                : R.dimen.vertical_tab_pinned_item_height);
+        mItemHeight = TabVerticalViewBinder.getPinnedItemHeight(context);
     }
 
     @Override
     protected boolean shouldDraw(DropTargetResult result) {
-        return result.targetType == DropTargetResult.TargetType.PINNED_GRID
-                && !result.isZeroPinnedState;
+        if (result.targetType == DropTargetResult.TargetType.PINNED_GRID
+                && !result.isZeroPinnedState) {
+            return true;
+        }
+        return result.targetType == DropTargetResult.TargetType.MAIN_LIST
+                && result.isZeroNormalTabsState;
     }
 
     @Override
     protected boolean calculateBounds(RectF outRect, RecyclerView parent, DropTargetResult result) {
+        if (result.targetType == DropTargetResult.TargetType.MAIN_LIST
+                && result.isZeroNormalTabsState) {
+            int parentPaddingLeft = parent.getPaddingLeft();
+            int parentPaddingRight = parent.getPaddingRight();
+            int parentWidth = parent.getWidth();
+
+            float left = parentPaddingLeft;
+            float right = parentWidth - parentPaddingRight;
+            if (right <= left) return false;
+
+            float centerY = parent.getHeight() - mIndicatorThickness / INDICATOR_DIVISOR;
+            float top = centerY - mIndicatorThickness / INDICATOR_DIVISOR;
+            float bottom = centerY + mIndicatorThickness / INDICATOR_DIVISOR;
+
+            outRect.set(left, top, right, bottom);
+            return true;
+        }
+
         View targetView = getAttachedTargetView(result, parent);
 
         float itemLeft;

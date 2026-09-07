@@ -9,10 +9,12 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
@@ -23,6 +25,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/skills/features.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skill.mojom.h"
@@ -33,8 +36,10 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/button_test_api.h"
 
@@ -94,7 +99,7 @@ class SkillsUiWindowControllerBrowserTest : public InProcessBrowserTest {
   }
 
   void ClickToastActionButton() {
-    auto* toast_controller = browser()->GetFeatures().toast_controller();
+    auto* toast_controller = ToastController::From(browser());
     ASSERT_TRUE(toast_controller->IsShowingToast());
     auto* toast_view = toast_controller->GetToastViewForTesting();
     ASSERT_TRUE(toast_view);
@@ -131,7 +136,7 @@ class SkillsUiWindowControllerBrowserTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
                        OnSkillSavedShowToast) {
   // Ensure no toast is initially showing.
-  const auto* toast_controller = browser()->GetFeatures().toast_controller();
+  const auto* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
 
   // Call OnSkillSaved with an empty skill ID.
@@ -149,7 +154,7 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   const skills::Skill* skill = skills_service->AddSkill(
       /*source_skill_id=*/"", "Test Skill", "test-icon", "Test Prompt");
 
-  const auto* toast_controller = browser()->GetFeatures().toast_controller();
+  const auto* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
 
   window_controller()->OnSkillDeleted(skill->id);
@@ -199,7 +204,7 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   std::string skill_id = skill->id;
   window_controller()->OnSkillDeleted(skill_id);
 
-  auto* toast_controller = browser()->GetFeatures().toast_controller();
+  auto* toast_controller = ToastController::From(browser());
   EXPECT_TRUE(toast_controller->IsShowingToast());
 
   // Close the toast widget directly to simulate it being dismissed.
@@ -222,16 +227,15 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   // Save skill on active tab.
   window_controller()->OnSkillSaved(kSkillId);
   // Verify Toast is visible
-  EXPECT_TRUE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
   // Enable Glic late to avoid a crash in GlicTabIndicatorHelper during tab
   // creation.
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   // Click toast "Try It".
   ClickToastActionButton();
   // Verify Result
   EXPECT_EQ(tab_controller()->GetLastInvokedSkillIdForTesting(), kSkillId);
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(false);
 }
 
 IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
@@ -239,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   NavigateParams params(browser(), GURL(chrome::kChromeUISkillsURL),
                         ui::PAGE_TRANSITION_TYPED);
   ui_test_utils::NavigateToURL(&params);
-  const auto* toast_controller = browser()->GetFeatures().toast_controller();
+  const auto* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
   tab_controller()->OnSkillSaved("");
   EXPECT_TRUE(toast_controller->IsShowingToast());
@@ -251,7 +255,7 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
                        UserFlow_CreateSkill_ThenInvoke) {
   // Enable Glic late to avoid a crash in GlicTabIndicatorHelper during tab
   // creation.
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   // Open Dialog.
   skills::Skill initial_skill(/*id=*/"",
@@ -318,7 +322,6 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   // Verify the Invoke happened by checking that some ID is pending (since the
   // ID was auto-generated by the service)
   EXPECT_FALSE(tab_controller()->GetLastInvokedSkillIdForTesting().empty());
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(false);
 
   histogram_tester_.ExpectBucketCount(
       "Toast.TriggeredToShow", static_cast<int>(ToastId::kSkillSaved), 1);
@@ -339,23 +342,22 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   window_controller()->StoreLastSavedSkillMetadata(kSkillId, kSkillName,
                                                    kSkillIcon);
   window_controller()->ShowToast(ToastId::kSkillSaved);
-  EXPECT_TRUE(browser()->GetFeatures().toast_controller()->IsShowingToast());
+  EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
 
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   // Click toast action button ("Try It").
   ClickToastActionButton();
 
   // Verify that the skill was invoked with name and icon parameters.
   EXPECT_EQ(tab_controller()->GetLastInvokedSkillIdForTesting(), kSkillId);
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(false);
 }
 
 IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
                        UserFlow_CreateSkill_DisableSkills_ThenInvoke) {
   // Enable Glic late to avoid a crash in GlicTabIndicatorHelper during tab
   // creation.
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   // Open Dialog.
   skills::Skill initial_skill(/*id=*/"",
@@ -425,7 +427,6 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
 
   // Verify that nothing was invoked because skills are disabled.
   EXPECT_TRUE(tab_controller()->GetLastInvokedSkillIdForTesting().empty());
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(false);
 }
 
 IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
@@ -450,6 +451,70 @@ IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
   content::TestNavigationObserver reload_observer(web_contents);
   browser()->GetProfile()->GetPrefs()->SetBoolean(
       skills::prefs::kChromeSkillsEnabled, false);
+  reload_observer.Wait();
+  EXPECT_FALSE(tab_controller()->IsShowing());
+  EXPECT_TRUE(reload_observer.last_navigation_succeeded());
+}
+
+IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
+                       PrimaryAccountChanged_ClosesDialogAndReloadsPage) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(identity_manager);
+
+  // 1. Open chrome://skills page in the active tab.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+                                           GURL(chrome::kChromeUISkillsURL)));
+  content::WebContents* web_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  ASSERT_TRUE(web_contents);
+
+  // 2. Open a skills dialog on the active tab.
+  skills::Skill initial_skill(/*id=*/"", /*name=*/"", /*icon=*/"",
+                              /*prompt=*/"Test Prompt");
+  tab_controller()->ShowDialog(std::move(initial_skill),
+                               SkillsDialogEntryPoint::kWebClientPrefilled,
+                               mojom::SkillsDialogType::kAdd, nullptr);
+  EXPECT_TRUE(tab_controller()->IsShowing());
+
+  // 3. User signs in, which fires OnPrimaryAccountChanged.
+  content::TestNavigationObserver reload_observer(web_contents);
+  signin::MakePrimaryAccountAvailable(identity_manager, "test@example.com",
+                                      signin::ConsentLevel::kSignin);
+  reload_observer.Wait();
+  EXPECT_FALSE(tab_controller()->IsShowing());
+  EXPECT_TRUE(reload_observer.last_navigation_succeeded());
+}
+
+IN_PROC_BROWSER_TEST_F(SkillsUiWindowControllerBrowserTest,
+                       AccountPaused_ClosesDialogAndReloadsPage) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(identity_manager);
+
+  CoreAccountInfo account_info = signin::MakePrimaryAccountAvailable(
+      identity_manager, "test@example.com", signin::ConsentLevel::kSignin);
+
+  // 1. Open chrome://skills page in the active tab.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+                                           GURL(chrome::kChromeUISkillsURL)));
+  content::WebContents* web_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  ASSERT_TRUE(web_contents);
+
+  // 2. Open a skills dialog on the active tab.
+  skills::Skill initial_skill(/*id=*/"", /*name=*/"", /*icon=*/"",
+                              /*prompt=*/"Test Prompt");
+  tab_controller()->ShowDialog(std::move(initial_skill),
+                               SkillsDialogEntryPoint::kWebClientPrefilled,
+                               mojom::SkillsDialogType::kAdd, nullptr);
+  EXPECT_TRUE(tab_controller()->IsShowing());
+
+  // 3. Invalidate refresh token for the account (account paused), which fires
+  // OnErrorStateOfRefreshTokenUpdatedForAccount.
+  content::TestNavigationObserver reload_observer(web_contents);
+  signin::SetInvalidRefreshTokenForAccount(identity_manager,
+                                           account_info.account_id);
   reload_observer.Wait();
   EXPECT_FALSE(tab_controller()->IsShowing());
   EXPECT_TRUE(reload_observer.last_navigation_succeeded());

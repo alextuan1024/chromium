@@ -22,7 +22,6 @@ import android.graphics.drawable.Drawable;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.DrawableRes;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -33,7 +32,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -75,7 +74,6 @@ import java.util.function.Supplier;
 
 /** Tests for {@link BasicSuggestionProcessor}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BasicSuggestionProcessorUnitTest {
     private static final @DrawableRes int ICON_BOOKMARK = R.drawable.ic_star_24dp;
     private static final @DrawableRes int ICON_GLOBE = R.drawable.ic_globe_24dp;
@@ -126,7 +124,8 @@ public class BasicSuggestionProcessorUnitTest {
         SUGGESTION_TYPE_NAMES = map;
     }
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private Bitmap mBitmap;
@@ -245,7 +244,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForSearch_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_MAGNIFIER},
@@ -276,7 +274,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForUrl_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_GLOBE},
@@ -307,7 +304,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForBookmarks_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_BOOKMARK},
@@ -340,7 +336,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForTrendingQueries() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_TRENDS},
@@ -363,17 +358,56 @@ public class BasicSuggestionProcessorUnitTest {
 
     @Test
     public void getFallbackIconFromIconType_validIconForEachType() {
+        var resourceMap =
+                Map.ofEntries(
+                        Map.entry(SuggestTemplateInfo.IconType.ICON_TYPE_UNSPECIFIED, 0),
+                        Map.entry(SuggestTemplateInfo.IconType.HISTORY, R.drawable.ic_history_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.SEARCH_LOOP,
+                                R.drawable.ic_suggestion_magnifier),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.SEARCH_LOOP_WITH_SPARKLE,
+                                R.drawable.search_spark_black_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.TRENDING,
+                                R.drawable.trending_up_black_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.SUB_ARROW_RIGHT,
+                                R.drawable.ic_suggestion_magnifier),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.GLOBE_WITH_SEARCH_LOOP,
+                                R.drawable.travel_explore_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.BANANA, R.drawable.create_image_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.FAVICON, R.drawable.ic_globe_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.NOTES_SPARK, R.drawable.notes_spark),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.DRAFT_SPARK,
+                                R.drawable.draft_spark_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.LIGHTBULB,
+                                R.drawable.ic_lightbulb_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.ATTACH_FILE,
+                                R.drawable.ic_attach_file_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.SCHOOL, R.drawable.ic_school_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.INK_PEN, R.drawable.ic_ink_pen_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.TAB, R.drawable.tab),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.PHOTO_SPARK,
+                                R.drawable.ic_photo_spark_24dp),
+                        Map.entry(SuggestTemplateInfo.IconType.BOLT, R.drawable.bolt_24dp));
+
         for (var iconType : SuggestTemplateInfo.IconType.values()) {
-            if (iconType == SuggestTemplateInfo.IconType.ICON_TYPE_UNSPECIFIED) {
-                assertEquals(0, mProcessor.getFallbackIconFromIconType(iconType.getNumber()));
-            } else {
-                assertNotEquals(0, mProcessor.getFallbackIconFromIconType(iconType.getNumber()));
-            }
+            assertTrue(iconType.toString(), resourceMap.containsKey(iconType));
+            assertEquals(
+                    iconType.toString(),
+                    (int) resourceMap.get(iconType),
+                    mProcessor.getFallbackIconFromIconType(iconType.getNumber()));
         }
     }
 
     @Test
-    @SmallTest
     public void refineIconNotShownForWhatYouTypedSuggestions() {
         final String typed = "Typed content";
         createSearchSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, typed);
@@ -387,7 +421,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void refineIconShownForRefineSuggestions() {
         final String typed = "Typed content";
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, typed);
@@ -404,7 +437,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void refineIcon_notShownForQueryTiles() {
         createSearchSuggestion(OmniboxSuggestionType.TILE_SUGGESTION, "Music");
         PropertyModel model = mProcessor.createModel();
@@ -413,7 +445,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void switchTabIcon_shownForSwitchToTabSuggestions() {
         mInput.setPageClassification(PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS);
 
@@ -431,7 +462,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_showFaviconWhenAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         mProcessor.onNativeInitialized();
@@ -452,7 +482,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotFetchForSearchSuggestions() {
         mProcessor.onNativeInitialized();
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED, "");
@@ -461,7 +490,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotFetchForBookmarked() {
         mProcessor.onNativeInitialized();
         mIsBookmarked.mState = true;
@@ -471,7 +499,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionIcons_documentSuggestionBrandingIcons() {
         mProcessor.onNativeInitialized();
         int[][] testCases = {
@@ -503,7 +530,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotReplaceFallbackIconWhenNoFaviconIsAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         mProcessor.onNativeInitialized();
@@ -520,7 +546,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void searchSuggestions_searchQueriesCanWrapAroundWithFeatureEnabled() {
         mProcessor.onNativeInitialized();
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED, "");
@@ -531,7 +556,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void internalUrlSuggestions_doNotPresentInternalScheme() {
         mProcessor.onNativeInitialized();
         // URLs that are rejected by UrlBarData should not be presented to the User.
@@ -541,7 +565,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void starterPackSuggestions_fallbackIcons() {
         mProcessor.onNativeInitialized();
 
@@ -587,14 +610,12 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void topPaddingDefaultZero() {
         createUrlSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "");
         assertEquals(0, mModel.get(BaseSuggestionViewProperties.TOP_PADDING));
     }
 
     @Test
-    @SmallTest
     public void accessibilityAnnouncements_groupedSearchSuggestions() {
         mProcessor.onNativeInitialized();
         mSuggestion =
@@ -619,7 +640,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void accessibilityAnnouncements_groupedAiModeSuggestions() {
         mProcessor.onNativeInitialized();
         mSuggestion =
@@ -644,7 +664,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void desktopLayoutExemption_TabSearch() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
 

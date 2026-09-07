@@ -8,6 +8,8 @@ source_set("model") {
     "actor_browser_agent.mm",
     "actor_engine.h",
     "actor_engine.mm",
+    "actor_origin_gating_checker_delegate_ios.h",
+    "actor_origin_gating_checker_delegate_ios.mm",
     "actor_service.h",
     "actor_service.mm",
     "actor_service_factory.h",
@@ -22,15 +24,15 @@ source_set("model") {
     ":intervention_handler",
     ":tab_helper",
     "//base",
+    "//components/actor/core",
     "//components/actor/core:journal",
     "//components/keyed_service/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
-    "//components/password_manager/core/browser/actor_login:actor_login_service_impl",
+    "//components/origin_gating/core",
     "//ios/chrome/browser/intelligence/actor/public:actor_task_ui_protocols",
     "//ios/chrome/browser/intelligence/actor/public:actor_types",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_factory",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_interface",
-    "//ios/chrome/browser/intelligence/actor/tools/model:page_stability",
     "//ios/chrome/browser/intelligence/actor/tools/model:tool_controller",
     "//ios/chrome/browser/intelligence/actor/tools/public",
     "//ios/chrome/browser/intelligence/actor/tools/utils:actor_browser_utils",
@@ -45,7 +47,6 @@ source_set("model") {
     "//ios/chrome/browser/shared/model/web_state_list:utils",
     "//ios/chrome/browser/tab_insertion/model",
     "//ios/web/public",
-    "//third_party/perfetto:libperfetto",
 
     # TODO(crbug.com/512521102): Remove these deps once the snackbar prototype
     # is removed.
@@ -53,6 +54,7 @@ source_set("model") {
     "//ios/chrome/browser/shared/model/browser:utils",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/public/snackbar",
+    "//url",
   ]
 }
 
@@ -85,6 +87,7 @@ source_set("unit_tests") {
   sources = [
     "actor_browser_agent_unittest.mm",
     "actor_engine_unittest.mm",
+    "actor_origin_gating_checker_delegate_ios_unittest.mm",
     "actor_service_unittest.mm",
     "actor_tab_helper_unittest.mm",
     "actor_task_unittest.mm",
@@ -94,8 +97,10 @@ source_set("unit_tests") {
     ":model",
     ":tab_helper",
     "//base/test:test_support",
+    "//components/actor/core",
     "//components/actor/core:journal",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/origin_gating/core",
     "//ios/chrome/browser/intelligence/actor/public:actor_task_ui_protocols",
     "//ios/chrome/browser/intelligence/actor/public:actor_types",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_factory",

@@ -145,9 +145,14 @@ void MaybeSetFetchHandlerBypassOptionForsyntheticResponse(
 }
 
 void RecordAutoPreloadDispatchResult(
-    ServiceWorkerAutoPreloadDispatchResult result) {
+    ServiceWorkerAutoPreloadDispatchResult result,
+    bool is_outermost_main_frame = false) {
   base::UmaHistogramEnumeration("ServiceWorker.AutoPreload.DispatchResult",
                                 result);
+  if (is_outermost_main_frame) {
+    base::UmaHistogramEnumeration(
+        "ServiceWorker.AutoPreload.MainFrame.DispatchResult", result);
+  }
 }
 
 }  // namespace
@@ -256,10 +261,11 @@ void ServiceWorkerMainResourceLoader::StartRequest(
   // Downloads ("Save link as", <a download>) arrive here with destination
   // kEmpty per the Fetch spec — they are main resources even though they
   // aren't frames/workers. See crbug.com/40410035.
-  DCHECK(blink::ServiceWorkerLoaderHelpers::IsMainRequestDestination(
-             request.destination) ||
-         request.destination == network::mojom::RequestDestination::kEmpty);
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(blink::ServiceWorkerLoaderHelpers::IsMainRequestDestination(
+            request.destination) ||
+            request.destination == network::mojom::RequestDestination::kEmpty,
+        base::NotFatalUntil::M159);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   request_id_ = request_id;
   options_ = options;
@@ -272,8 +278,8 @@ void ServiceWorkerMainResourceLoader::StartRequest(
         std::make_optional(service_worker_client_->fetch_request_window_id());
   }
 
-  DCHECK(!receiver_.is_bound());
-  DCHECK(!url_loader_client_.is_bound());
+  CHECK(!receiver_.is_bound(), base::NotFatalUntil::M159);
+  CHECK(!url_loader_client_.is_bound(), base::NotFatalUntil::M159);
   receiver_.Bind(std::move(loader));
   receiver_.set_disconnect_handler(
       base::BindOnce(&ServiceWorkerMainResourceLoader::OnConnectionClosed,
@@ -303,7 +309,7 @@ void ServiceWorkerMainResourceLoader::StartRequest(
     return;
   }
   scoped_refptr<ServiceWorkerContextWrapper> context = core->wrapper();
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M159);
 
   if (MaybeStartSyntheticNetworkRequest(context, active_worker)) {
     return;
@@ -478,6 +484,11 @@ void ServiceWorkerMainResourceLoader::MaybeDispatchPreload(
             MaybeStartAutoPreload(context_wrapper, version);
         base::UmaHistogramBoolean("ServiceWorker.AutoPreload.Dispatched",
                                   auto_preload_dispatched);
+        if (resource_request_.is_outermost_main_frame) {
+          base::UmaHistogramBoolean(
+              "ServiceWorker.AutoPreload.MainFrame.Dispatched",
+              auto_preload_dispatched);
+        }
         if (auto_preload_dispatched) {
           return;
         }
@@ -501,21 +512,24 @@ bool ServiceWorkerMainResourceLoader::MaybeStartAutoPreload(
 
   if (!base::FeatureList::IsEnabled(features::kServiceWorkerAutoPreload)) {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kFeatureDisabled);
+        ServiceWorkerAutoPreloadDispatchResult::kFeatureDisabled,
+        resource_request_.is_outermost_main_frame);
     return false;
   }
 
   if (!GetContentClient()->browser()->IsServiceWorkerAutoPreloadAllowed(
           context->browser_context())) {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kNotAllowedByBrowser);
+        ServiceWorkerAutoPreloadDispatchResult::kNotAllowedByBrowser,
+        resource_request_.is_outermost_main_frame);
     return false;
   }
 
   // AutoPreload is triggered only in a main frame.
   if (!resource_request_.is_outermost_main_frame) {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kNotOutermostMainFrame);
+        ServiceWorkerAutoPreloadDispatchResult::kNotOutermostMainFrame,
+        /*is_outermost_main_frame=*/false);
     return false;
   }
 
@@ -525,7 +539,8 @@ bool ServiceWorkerMainResourceLoader::MaybeStartAutoPreload(
           features::kOptimizeWebRequestProxyForServiceWorkerAutoPreload) &&
       context->storage_partition()->is_guest()) {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kGuestStoragePartition);
+        ServiceWorkerAutoPreloadDispatchResult::kGuestStoragePartition,
+        /*is_outermost_main_frame=*/true);
     return false;
   }
 
@@ -536,7 +551,8 @@ bool ServiceWorkerMainResourceLoader::MaybeStartAutoPreload(
   if (GetContentClient()->browser()->HasWebRequestAPIProxy(
           context->browser_context())) {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kWebRequestAPIProxy);
+        ServiceWorkerAutoPreloadDispatchResult::kWebRequestAPIProxy,
+        /*is_outermost_main_frame=*/true);
     return false;
   }
 
@@ -555,10 +571,12 @@ bool ServiceWorkerMainResourceLoader::MaybeStartAutoPreload(
     // receiving the fetch handler result.
     SetCommitResponsibility(FetchResponseFrom::kServiceWorker);
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kDispatched);
+        ServiceWorkerAutoPreloadDispatchResult::kDispatched,
+        /*is_outermost_main_frame=*/true);
   } else {
     RecordAutoPreloadDispatchResult(
-        ServiceWorkerAutoPreloadDispatchResult::kStartFailed);
+        ServiceWorkerAutoPreloadDispatchResult::kStartFailed,
+        /*is_outermost_main_frame=*/true);
   }
 
   return result;
@@ -732,7 +750,7 @@ void ServiceWorkerMainResourceLoader::CommitCompleted(int error_code,
               perfetto::Flow::FromPointer(this), "error_code",
               net::ErrorToString(error_code), "reason", TRACE_STR_COPY(reason));
 
-  DCHECK(url_loader_client_.is_bound());
+  CHECK(url_loader_client_.is_bound(), base::NotFatalUntil::M159);
   TransitionToStatus(Status::kCompleted);
   if (error_code == net::OK) {
     switch (commit_responsibility()) {
@@ -778,7 +796,7 @@ void ServiceWorkerMainResourceLoader::DidDispatchFetchEvent(
     blink::mojom::ServiceWorkerFetchEventTimingPtr timing,
     blink::mojom::ServiceWorkerFetchHandlerErrorsPtr errors,
     scoped_refptr<ServiceWorkerVersion> version) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   TRACE_EVENT("ServiceWorker",
               "ServiceWorkerMainResourceLoader::DidDispatchFetchEvent",
@@ -914,7 +932,7 @@ void ServiceWorkerMainResourceLoader::DidDispatchFetchEvent(
   }
   RecordFetchResponseFrom();
 
-  DCHECK_EQ(status_, Status::kStarted);
+  CHECK_EQ(status_, Status::kStarted, base::NotFatalUntil::M159);
 
   ServiceWorkerMetrics::RecordFetchEventStatus(true /* is_main_resource */,
                                                status);
@@ -1017,8 +1035,9 @@ void ServiceWorkerMainResourceLoader::DidDispatchFetchEvent(
     return;
   }
 
-  DCHECK_EQ(fetch_result,
-            ServiceWorkerFetchDispatcher::FetchEventResult::kGotResponse);
+  CHECK_EQ(fetch_result,
+           ServiceWorkerFetchDispatcher::FetchEventResult::kGotResponse,
+           base::NotFatalUntil::M159);
 
   // A response with status code 0 is Blink telling us to respond with
   // network error.
@@ -1305,8 +1324,8 @@ void ServiceWorkerMainResourceLoader::StartResponse(
     blink::mojom::FetchAPIResponsePtr response,
     scoped_refptr<ServiceWorkerVersion> version,
     blink::mojom::ServiceWorkerStreamHandlePtr body_as_stream) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK_EQ(status_, Status::kStarted);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK_EQ(status_, Status::kStarted, base::NotFatalUntil::M159);
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
@@ -1335,9 +1354,18 @@ void ServiceWorkerMainResourceLoader::StartResponse(
         fetch_event_timing_->respond_with_settled_time;
   }
 
-  if (resource_request_.request_initiator && response_head_->parsed_headers &&
-      (resource_request_.request_initiator->IsSameOriginWith(
-           resource_request_.url) ||
+  // Synthetic and same-origin responses are same-origin to the requesting
+  // client if the request initiator is same-origin with the request URL, so
+  // the timing allow check trivially passes. Filtered responses wrap a
+  // cross-origin response for which the timing allow check must not be
+  // assumed to have passed unless the Timing-Allow-Origin check passes.
+  if (resource_request_.request_initiator &&
+      ((resource_request_.request_initiator->IsSameOriginWith(
+            resource_request_.url) &&
+        (response_head_->response_type ==
+             network::mojom::FetchResponseType::kBasic ||
+         response_head_->response_type ==
+             network::mojom::FetchResponseType::kDefault)) ||
        (response_head_->parsed_headers &&
         network::TimingAllowOriginCheck(
             response_head_->parsed_headers->timing_allow_origin,
@@ -1350,7 +1378,7 @@ void ServiceWorkerMainResourceLoader::StartResponse(
   // browser. See https://crbug.com/392409 for details about this design.
   // TODO(horo): When we support mixed-content (HTTP) no-cors requests from a
   // ServiceWorker, we have to check the security level of the responses.
-  DCHECK(version->GetMainScriptResponse());
+  CHECK(version->GetMainScriptResponse(), base::NotFatalUntil::M159);
   response_head_->ssl_info = version->GetMainScriptResponse()->ssl_info;
 
 #ifndef NDEBUG
@@ -1396,7 +1424,7 @@ void ServiceWorkerMainResourceLoader::StartResponse(
 
   // Handle a blob response body.
   if (response->blob) {
-    DCHECK(response->blob->blob.is_valid());
+    CHECK(response->blob->blob.is_valid(), base::NotFatalUntil::M159);
     body_as_blob_.Bind(std::move(response->blob->blob));
     mojo::ScopedDataPipeConsumerHandle data_pipe;
     int error = blink::ServiceWorkerLoaderHelpers::ReadBlobResponseBody(
@@ -1661,7 +1689,7 @@ void ServiceWorkerMainResourceLoader::
 
 void ServiceWorkerMainResourceLoader::
     RecordTimingMetricsForRaceNetworkRequestCase() {
-  DCHECK(race_network_request_url_loader_client_);
+  CHECK(race_network_request_url_loader_client_, base::NotFatalUntil::M159);
   if (!IsEligibleForRecordingTimingMetrics()) {
     return;
   }
@@ -1711,7 +1739,7 @@ bool ServiceWorkerMainResourceLoader::IsEligibleForRecordingTimingMetrics() {
     return false;
   }
 
-  DCHECK(!completion_time_.is_null());
+  CHECK(!completion_time_.is_null(), base::NotFatalUntil::M159);
 
   return true;
 }
@@ -1831,7 +1859,7 @@ void ServiceWorkerMainResourceLoader::
 
 void ServiceWorkerMainResourceLoader::
     RecordWorkerReadyToFetchHandlerStartTiming() {
-  DCHECK(fetch_event_timing_);
+  CHECK(fetch_event_timing_, base::NotFatalUntil::M159);
   const net::LoadTimingInfo& load_timing = response_head_->load_timing;
   base::UmaHistogramTimes(
       base::StrCat({kHistogramLoadTiming, ".WorkerReadyToFetchHandlerStart"}),
@@ -1851,7 +1879,7 @@ void ServiceWorkerMainResourceLoader::
 
 void ServiceWorkerMainResourceLoader::
     RecordFetchHandlerStartToFetchHandlerEndTiming() {
-  DCHECK(fetch_event_timing_);
+  CHECK(fetch_event_timing_, base::NotFatalUntil::M159);
   base::UmaHistogramTimes(base::StrCat({kHistogramLoadTiming,
                                         ".FetchHandlerStartToFetchHandlerEnd"}),
                           fetch_event_timing_->respond_with_settled_time -
@@ -1870,7 +1898,7 @@ void ServiceWorkerMainResourceLoader::
 
 void ServiceWorkerMainResourceLoader::
     RecordFetchHandlerEndToResponseReceivedTiming() {
-  DCHECK(fetch_event_timing_);
+  CHECK(fetch_event_timing_, base::NotFatalUntil::M159);
   const net::LoadTimingInfo& load_timing = response_head_->load_timing;
   base::UmaHistogramTimes(base::StrCat({kHistogramLoadTiming,
                                         ".FetchHandlerEndToResponseReceived"}),
@@ -1967,7 +1995,7 @@ void ServiceWorkerMainResourceLoader::RecordStartToFallbackNetworkTiming() {
 
 void ServiceWorkerMainResourceLoader::
     RecordFetchHandlerEndToFallbackNetworkTiming() {
-  DCHECK(fetch_event_timing_);
+  CHECK(fetch_event_timing_, base::NotFatalUntil::M159);
   base::UmaHistogramTimes(
       base::StrCat({kHistogramLoadTiming, ".FetchHandlerEndToFallbackNetwork"}),
       completion_time_ - fetch_event_timing_->respond_with_settled_time);
@@ -2045,10 +2073,10 @@ void ServiceWorkerMainResourceLoader::TransitionToStatus(Status new_status) {
     case Status::kNotStarted:
       NOTREACHED();
     case Status::kStarted:
-      DCHECK_EQ(status_, Status::kNotStarted);
+      CHECK_EQ(status_, Status::kNotStarted, base::NotFatalUntil::M159);
       break;
     case Status::kSentBody:
-      DCHECK_EQ(status_, Status::kStarted);
+      CHECK_EQ(status_, Status::kStarted, base::NotFatalUntil::M159);
       break;
     case Status::kCompleted:
       DCHECK(

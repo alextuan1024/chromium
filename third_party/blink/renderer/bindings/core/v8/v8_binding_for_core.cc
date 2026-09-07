@@ -58,9 +58,11 @@
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worklet_global_scope.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_object_constructor.h"
+#include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/traced_value.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
@@ -849,7 +851,7 @@ v8::MicrotaskQueue* ToMicrotaskQueue(ScriptState* script_state) {
 
 scheduler::EventLoop& ToEventLoop(ExecutionContext* execution_context) {
   DCHECK(execution_context);
-  return *execution_context->GetAgent()->event_loop().get();
+  return *execution_context->GetAgent()->event_loop();
 }
 
 scheduler::EventLoop& ToEventLoop(ScriptState* script_state) {
@@ -880,12 +882,23 @@ void ApplyContextToException(ScriptState* script_state,
                              v8::ExceptionContext type,
                              const char* class_name,
                              const String& property_name) {
-  v8::Isolate* isolate = script_state->GetIsolate();
+  ApplyContextToException(script_state->GetIsolate(),
+                          script_state->GetContext(), exception, type,
+                          class_name, property_name);
+}
+
+void ApplyContextToException(v8::Isolate* isolate,
+                             v8::Local<v8::Context> context,
+                             v8::Local<v8::Value> exception,
+                             v8::ExceptionContext type,
+                             const char* class_name,
+                             const String& property_name) {
+  ExceptionCode code = 0;
   if (auto* dom_exception = V8DOMException::ToWrappable(isolate, exception)) {
     dom_exception->AddContextToMessages(type, class_name, property_name);
+    code = dom_exception->code();
   } else if (exception->IsObject()) {
     v8::TryCatch try_catch(isolate);
-    v8::Local<v8::Context> context = script_state->GetContext();
     v8::Local<v8::String> message_key = V8String(isolate, "message");
     auto exception_object = exception.As<v8::Object>();
     String updated_message = ExceptionMessages::AddContextToMessage(
@@ -897,6 +910,8 @@ void ApplyContextToException(ScriptState* script_state,
     std::ignore = exception_object->CreateDataProperty(
         context, message_key, V8String(isolate, updated_message));
   }
+  V8PerIsolateData::From(isolate)->SetLastExceptionInfo(type, class_name,
+                                                        property_name, code);
 }
 
 }  // namespace blink

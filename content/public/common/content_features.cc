@@ -85,6 +85,10 @@ BASE_FEATURE(kAndroidPkAutocorrectUnderlineV2,
 BASE_FEATURE(kAndroidRemoveSetLocalFocusWorkaroundOnBaklava,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Replay captured KEYCODE_DEL key down events when the IME deletes surrounding
+// text.
+BASE_FEATURE(kAndroidReplayDelKeyEvent, base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Blocks the misspelling suggestion span in composition mode.
 BASE_FEATURE(kAndroidBlockMisspellingSuggestionSpanInCompositionMode,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -931,6 +935,10 @@ BASE_FEATURE(kSpareRendererProcessPriority, base::FEATURE_DISABLED_BY_DEFAULT);
 // Adams' book. 1GB is a carve-out for integrated GPU VRAM.
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kRendererProcessLimitOnAndroid, base::FEATURE_DISABLED_BY_DEFAULT);
+// Only active if the one above is. Used to lift the limit based on memory, on
+// systems where large process counts are supported.
+BASE_FEATURE(kHigherRendererProcessLimitOnAndroid,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(size_t,
                    kRendererProcessLimitOnAndroidCount,
@@ -1021,6 +1029,10 @@ BASE_FEATURE(kServiceWorkerAutoPreload, base::FEATURE_ENABLED_BY_DEFAULT);
 // enabled.
 BASE_FEATURE(kOptimizeWebRequestProxyForServiceWorkerAutoPreload,
              base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<bool>
+    kOptimizeWebRequestProxyForServiceWorkerAutoPreloadAllowDeclarativeNetRequest{
+        &kOptimizeWebRequestProxyForServiceWorkerAutoPreload,
+        "allow_declarative_net_request", false};
 
 // crbug.com/40410035: When enabled, download requests ("Save link as",
 // "Save image as", <a download>) are intercepted by service workers, allowing
@@ -1392,6 +1404,11 @@ BASE_FEATURE(kAccessibilityImeGetFormattedText,
 BASE_FEATURE(kAccessibilityImproveLiveRegionAnnounce,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, allows Android to fire WINDOW_CONTENT_CHANGED events for value
+// changes made to slider controls.
+BASE_FEATURE(kAccessibilitySliderStateDescription,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When this feature is enabled, the accessibility tree will be requested to
 // layout based on the actions that are performed on the renderer side. In
 // particular this will be used to determine whether or not a node is clickable
@@ -1441,9 +1458,6 @@ BASE_FEATURE(kAccessibilitySequentialFocus, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAccessibilitySetSelectableOnAllNodesWithText,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Enables the use of a unified code path for AXTree snapshots.
-BASE_FEATURE(kAccessibilityUnifiedSnapshots, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enables posting registering, unregistering the broadcast receiver to the
 // background thread.
 BASE_FEATURE(kAccessibilityManageBroadcastReceiverOnBackground,
@@ -1488,10 +1502,6 @@ const base::FeatureParam<int> kTextClassifierTimeoutMs{&kTextClassifierTimeout,
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_MAC)
-// Enables backgrounding hidden renderers on Mac.
-BASE_FEATURE(kMacAllowBackgroundingRenderProcesses,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Changes how Chrome responds to accessibility activation signals on macOS
 // Sonoma, to avoid unnecessary changes to the screen reader state.
 BASE_FEATURE(kSonomaAccessibilityActivationRefinements,
@@ -1500,11 +1510,13 @@ BASE_FEATURE(kSonomaAccessibilityActivationRefinements,
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_ANDROID)
-// Disables WebAuthn on Android Auto. Default enabled in M137, remove in or
-// after M140.
+// Kill switch for WebAuthn on Android Auto. WebAuthn was disabled in M137 due
+// to missing platform support causing crashes (crbug.com/408118757), and
+// re-enabled in M154 now that platform support is in place
+// (crbug.com/540089011). Remove in or after M157.
 BASE_FEATURE(kWebauthnDisabledOnAuto,
              "WebAuthenticationDisabledOnAuto",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Enables Exclusive Access Manager on Android platform

@@ -8,6 +8,7 @@
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -19,6 +20,7 @@
 #include "content/public/test/browser_test.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/polling_state_observer.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/interaction/element_tracker_views.h"
 
 class ReloadButtonBrowserTest : public InteractiveBrowserTest,

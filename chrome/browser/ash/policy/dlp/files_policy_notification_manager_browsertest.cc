@@ -20,7 +20,6 @@
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router_factory.h"
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
@@ -53,6 +52,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/enterprise/data_controls/core/browser/dlp_histogram_helper.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/test/browser_test.h"
@@ -227,12 +227,11 @@ class FilesPolicyNotificationManagerBrowserTest : public InProcessBrowserTest {
   FilesPolicyDialogFactory* factory() { return factory_.get(); }
 
   // Returns the last active Files app window, or nullptr when none are found.
-  Browser* FindFilesApp() {
+  BrowserWindowInterface* FindFilesApp() {
     ash::BrowserDelegate* delegate = FindSystemWebAppBrowser(
         browser()->GetProfile(), ash::SystemWebAppType::FILE_MANAGER,
         ash::BrowserType::kApp);
-    return delegate ? delegate->GetBrowser().GetBrowserForMigrationOnly()
-                    : nullptr;
+    return delegate ? &delegate->GetBrowser() : nullptr;
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -1187,7 +1186,7 @@ IN_PROC_BROWSER_TEST_P(IOTaskBrowserTest,
   ASSERT_TRUE(bridge_->GetDisplayedNotification(kNotificationId1).has_value());
   bridge_->Click(kNotificationId1, NotificationButton::OK);
 
-  Browser* first_app;
+  BrowserWindowInterface* first_app;
 
   // If a modal parent was present, assert a new Files App was opened.
   bool first_call_has_modal_parent = modal_parent_present_future.Take();
@@ -1411,7 +1410,7 @@ IN_PROC_BROWSER_TEST_P(IOTaskBrowserTest,
   bridge_->Click(kNotificationId1, NotificationButton::OK);
 
   // Check that a new Files app is opened.
-  Browser* first_app = ui_test_utils::WaitForBrowserToOpen();
+  BrowserWindowInterface* first_app = ui_test_utils::WaitForBrowserToOpen();
   ASSERT_TRUE(first_app);
   ASSERT_EQ(first_app, FindFilesApp());
   // Task info is removed after the dialog is shown.

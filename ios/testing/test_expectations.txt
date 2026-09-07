@@ -72,6 +72,7 @@ crbug.com/508127830 [ iOS27 Device ] MultitaskingWindowTestCase/testStatusBarTap
 crbug.com/508127830 [ iOS27 Device ] MultitaskingWindowTestCase/testStatusBarTapToWindowedModeAndResize [ Pass Failure ]
 crbug.com/508127830 [ iOS27 Device ] MultitaskingWindowTestCase/testStatusBarTapToWindowedModeAndReturnToFullscreen [ Pass Failure ]
 crbug.com/508127830 [ iOS27 Device ] SearchEngineTestCase/testOpenSecondWindow [ Pass Failure ]
+crbug.com/508127830 [ iOS27 Device ] AssistantSidePanelTestCase/testMultitaskingTransitionBetweenSheetAndSidePanel [ Pass Failure ]
 
 # Gardening suppression 2026-07-31
 crbug.com/541234788 [ iPhone Simulator ] SaveToDriveTestCase/testDownloadToDriveAppUninstalledUpdatesButton [ Pass Failure ]
@@ -88,10 +89,10 @@ crbug.com/545123760 [ iPad Simulator ] TabGroupsTestCase/testReopenGroupFromAnot
 crbug.com/545122908 [ iPad Simulator ] MailtoHandlerTestCase/testDefaultAppsInMultiWindow [ Pass Failure ]
 
 # Gardening suppression 2026-08-12
-crbug.com/437843552 [ Simulator ] HistorySystemEGTest/testSearchSyncedHistory [ Pass Failure ]
-crbug.com/545634498 [ iPad Device ] HistorySystemEGTest/testSearchSyncedHistory [ Pass Failure ]
-crbug.com/545633687 [ Simulator ] TabGroupsEGTest/testReopenGroupFromAnotherWindow [ Pass Failure ]
-crbug.com/545633687 [ iPad Device ] TabGroupsEGTest/testReopenGroupFromAnotherWindow [ Pass Failure ]
+crbug.com/437843552 [ Simulator ] HistorySystemTestCase/testSearchSyncedHistory [ Pass Failure ]
+crbug.com/545634498 [ iPad Device ] HistorySystemTestCase/testSearchSyncedHistory [ Pass Failure ]
+crbug.com/545633687 [ Simulator ] TabGroupsTestCase/testReopenGroupFromAnotherWindow [ Pass Failure ]
+crbug.com/545633687 [ iPad Device ] TabGroupsTestCase/testReopenGroupFromAnotherWindow [ Pass Failure ]
 
 # Gardening suppression 2026-08-20
 crbug.com/549761710 InternalDiscoverFeedTestCase/testFeedAblationHidesFeed [ Pass Failure ]
@@ -102,3 +103,21 @@ crbug.com/550305489 [ iPad Device ] TabStripSharedGroupTestCase/testTabStripShar
 
 # Gardening suppression 2026-08-24
 crbug.com/552121965 [ iOS26.5 iPad ] ChildWindowOpenByDOMTestCase/testWindowClosedWithoutName [ Failure ]
+
+# Gardening suppression 2026-08-27
+crbug.com/553554439 [ iOS26.5 iPad Simulator ] ReadingListTestCase/testMarkMixedEntriesRead [ Pass Failure ]
+
+# Gardening suppression 2026-08-28
+crbug.com/554049961 GeminiMultiTabTestCase/testActiveTabNotBlockedOnTabGridWhenSharedTabExists [ Pass Failure ]
+
+# Gardening suppression 2026-09-04
+crbug.com/557277868 [ Simulator ] ContentSuggestionsTestCase/testMostVisitedPinnedSiteDragAndDrop [ Pass Failure ]
+crbug.com/557277111 [ Simulator ] TranslateInfobarTestCase/testTranslateManualTrigger [ Pass Failure ]
+crbug.com/557276943 [ iPhone Simulator ] SnapshotTestCase/testSnapshotWithScrollDown [ Pass Failure ]
+crbug.com/557277287 [ iPhone Simulator ] ComposeboxEligiblityTestCase/testNoTabAttachmentsInImageGeneration [ Pass Failure ]
+crbug.com/557278120 [ iPad Simulator ] InfobarTestCase/testInfobarTopMostVisible [ Pass Failure ]
+crbug.com/557278184 [ iPad Simulator ] SaveToDriveTestCase/testSaveToDriveAccountRemoved [ Pass Failure ]
+crbug.com/557277880 [ iPad Simulator ] FeatureEngagementTestCase/testRequestDesktopTip [ Pass Failure ]
+crbug.com/557278187 [ iPad Simulator ] TabStripGroupTestCase/testDragLastTabOutOfGroupCancel [ Pass Failure ]
+crbug.com/557278123 [ iPhone Simulator ] PinnedTabsDragDropTestCase/testDragRegularTabInPinnedView [ Pass Failure ]
+crbug.com/557276970 [ iPhone Simulator ] PinnedTabsGenericConsistencyTestCase/testCloseAllPinnedThenRegularTabs [ Pass Failure ]

@@ -106,6 +106,39 @@ void AddTestAccountToFakeAccountManagerFacade(const std::string& email,
 }  // namespace
 #endif
 
+namespace {
+
+void ServeGlicFiles(net::test_server::EmbeddedTestServer* server,
+                    std::string_view server_name) {
+  if (!server) {
+    return;
+  }
+  if (server->Started()) {
+    LOG(WARNING) << server_name
+                 << " was already started; unable to serve Glic test files.";
+    return;
+  }
+  // On Desktop, tests serve test files directly from the repository source
+  // directory. However, on Android automated testing bots and devices, the
+  // host repository checkout path does not exist on the device filesystem;
+  // test files are packaged under DIR_ASSETS/chrome/test/data/webui/glic/.
+  // Both gen/ and source asset paths must be served to prevent 404 errors
+  // when loading scripts and initializing Mojo connection in test
+  // environments.
+  server->ServeFilesFromDirectory(
+      base::PathService::CheckedGet(base::DIR_ASSETS)
+          .AppendASCII("gen/chrome/test/data/webui/glic/"));
+#if BUILDFLAG(IS_ANDROID)
+  server->ServeFilesFromDirectory(
+      base::PathService::CheckedGet(base::DIR_ASSETS)
+          .AppendASCII("chrome/test/data/webui/glic/"));
+#else
+  server->ServeFilesFromSourceDirectory("chrome/test/data/webui/glic/");
+#endif
+}
+
+}  // namespace
+
 namespace glic {
 
 namespace internal {
@@ -120,12 +153,15 @@ class TestCookieSynchronizer : public glic::GlicCookieSynchronizer {
   static TestCookieSynchronizer* InjectForProfile(Profile* profile) {
     GlicKeyedService* service =
         GlicKeyedServiceFactory::GetGlicKeyedService(profile, true);
+    auto* auth_controller = service->GetAuthController();
+    if (!auth_controller) {
+      return nullptr;
+    }
     auto cookie_synchronizer = std::make_unique<TestCookieSynchronizer>(
         profile, IdentityManagerFactory::GetForProfile(profile));
     TestCookieSynchronizer* ptr = cookie_synchronizer.get();
-    service->GetAuthController().SetCookieSynchronizerForTesting(
+    auth_controller->SetCookieSynchronizerForTesting(
         std::move(cookie_synchronizer));
-
     return ptr;
   }
 
@@ -280,42 +316,26 @@ void GlicTestEnvironment::OnProfileInitializationComplete(Profile* profile) {
   GetService(profile, true);
 }
 
+bool GlicTestEnvironment::StartTestServerIfNeeded(
+    net::test_server::EmbeddedTestServer* http_server) {
+  if (http_server->Started()) {
+    return true;
+  }
+
+  test_server_handle_ = http_server->StartAndReturnHandle();
+  return static_cast<bool>(test_server_handle_);
+}
+
 bool GlicTestEnvironment::SetupEmbeddedTestServers(
     net::test_server::EmbeddedTestServer* http_server,
     net::test_server::EmbeddedTestServer* https_server) {
   CHECK(guest_url_.is_empty()) << "SetupEmbeddedTestServers called twice";
+  CHECK(http_server);
 
-  // On Desktop, tests serve test files directly from the repository source
-  // directory. However, on Android automated testing bots and devices, the
-  // host repository checkout path does not exist on the device filesystem; test
-  // files are packaged under DIR_ASSETS/chrome/test/data/webui/glic/. Both gen/
-  // and source asset paths must be served to prevent 404 errors when loading
-  // scripts and initializing Mojo connection in test environments.
-  http_server->ServeFilesFromDirectory(
-      base::PathService::CheckedGet(base::DIR_ASSETS)
-          .AppendASCII("gen/chrome/test/data/webui/glic/"));
-#if BUILDFLAG(IS_ANDROID)
-  http_server->ServeFilesFromDirectory(
-      base::PathService::CheckedGet(base::DIR_ASSETS)
-          .AppendASCII("chrome/test/data/webui/glic/"));
-#else
-  http_server->ServeFilesFromSourceDirectory("chrome/test/data/webui/glic/");
-#endif
-  if (https_server) {
-    https_server->ServeFilesFromDirectory(
-        base::PathService::CheckedGet(base::DIR_ASSETS)
-            .AppendASCII("gen/chrome/test/data/webui/glic/"));
-#if BUILDFLAG(IS_ANDROID)
-    https_server->ServeFilesFromDirectory(
-        base::PathService::CheckedGet(base::DIR_ASSETS)
-            .AppendASCII("chrome/test/data/webui/glic/"));
-#else
-    https_server->ServeFilesFromSourceDirectory("chrome/test/data/webui/glic/");
-#endif
-  }
+  ServeGlicFiles(http_server, "HTTP test server");
+  ServeGlicFiles(https_server, "HTTPS test server");
 
-  test_server_handle_ = http_server->StartAndReturnHandle();
-  if (!test_server_handle_) {
+  if (!StartTestServerIfNeeded(http_server)) {
     return false;
   }
 
@@ -367,7 +387,9 @@ GlicTestEnvironmentService::GlicTestEnvironmentService(Profile* profile)
   internal::TestCookieSynchronizer* cookie_synchronizer =
       internal::TestCookieSynchronizer::InjectForProfile(profile);
 
-  cookie_synchronizer_ = cookie_synchronizer->GetWeakPtr();
+  if (cookie_synchronizer) {
+    cookie_synchronizer_ = cookie_synchronizer->GetWeakPtr();
+  }
   const GlicTestEnvironmentConfig& config = internal::GetConfig();
   if (config.fre_status) {
     SetFRECompletion(*config.fre_status);
@@ -425,7 +447,9 @@ GlicKeyedService* GlicTestEnvironmentService::GetService() {
 }
 
 void GlicTestEnvironmentService::SetResultForFutureCookieSync(bool result) {
-  cookie_synchronizer_->set_copy_cookies_result(result);
+  if (cookie_synchronizer_) {
+    cookie_synchronizer_->set_copy_cookies_result(result);
+  }
 }
 
 void GlicTestEnvironmentService::SetFRECompletion(prefs::FreStatus fre_status) {

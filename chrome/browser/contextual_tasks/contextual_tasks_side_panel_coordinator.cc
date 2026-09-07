@@ -41,6 +41,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "components/sessions/core/session_id.h"
+#include "extensions/buildflags/buildflags.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_specification.h"
@@ -50,7 +52,6 @@
 #include "ui/webui/tracked_element/tracked_element_handler.h"
 #include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #endif
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
@@ -369,7 +370,7 @@ void ContextualTasksSidePanelCoordinator::Show(
 #if !BUILDFLAG(IS_ANDROID)
   // Hide the GLIC nudge when the panel is opened.
   if (auto* glic_nudge_controller =
-          browser_window_->GetFeatures().glic_nudge_controller()) {
+          glic::GlicNudgeController::From(browser_window_)) {
     glic_nudge_controller->UpdateNudgeLabel(
         active_tab_interface->GetContents(), "", std::nullopt,
         glic::GlicNudgeActivity::kNudgeIgnoredOpenedContextualTasksSidePanel,
@@ -706,6 +707,13 @@ void ContextualTasksSidePanelCoordinator::OnTabAdded(TabListInterface& tab_list,
                                                      tabs::TabInterface* tab,
                                                      int index) {
   content::WebContents* content = tab->GetContents();
+
+  // Background tabs opened via hotkey commands (e.g. Ctrl+Click, middle-click)
+  // or context menus should not inherit task association from the opener.
+  if (tab_list.GetActiveTab() != tab) {
+    return;
+  }
+
   // If the new tab is already associated with a task, do nothing.
   if (contextual_tasks_service_->GetContextualTaskForTab(
           sessions::SessionTabHelper::IdForTab(content))) {
@@ -1388,6 +1396,10 @@ bool ContextualTasksSidePanelCoordinator::CanExpandToFullTab() const {
 void ContextualTasksSidePanelCoordinator::ShowPageInfoBubble(
     bool is_pointer_interaction) {
 #if !BUILDFLAG(IS_ANDROID)
+  if (!IsContextualTasksSidePanelRearchitectureEnabled()) {
+    return;
+  }
+
   if (page_info_bubble_suppressor_.ShouldSuppressBubbleShow(
           is_pointer_interaction)) {
     return;
@@ -1434,6 +1446,8 @@ void ContextualTasksSidePanelCoordinator::ShowPageInfoBubble(
       PageInfoBubbleSpecification::Builder(
           specification_anchor, browser_view->GetWidget()->GetNativeWindow(),
           contents, contents->GetVisibleURL())
+          .SetShowExtensionsMenu(
+              IsContextualTasksSidePanelRearchitectureEnabled())
           .Build();
 
   views::BubbleDialogDelegateView* const bubble =
@@ -1450,6 +1464,10 @@ void ContextualTasksSidePanelCoordinator::ShowPageInfoBubble(
 
 void ContextualTasksSidePanelCoordinator::OnLogoPointerDown() {
 #if !BUILDFLAG(IS_ANDROID)
+  if (!IsContextualTasksSidePanelRearchitectureEnabled()) {
+    return;
+  }
+
   page_info_bubble_suppressor_.OnMousePressed();
 #endif
 }

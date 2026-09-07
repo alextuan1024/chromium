@@ -39,6 +39,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -88,6 +89,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -380,8 +382,8 @@ class DiceBrowsingDataRemoverBrowserTest
     }
     auto account_info =
         signin::MakeAccountAvailable(identity_manager, account_id);
-    DCHECK(
-        identity_manager->HasAccountWithRefreshToken(account_info.account_id));
+    DCHECK(identity_manager->HasAccountWithRefreshToken(
+        account_info.GetAccountId()));
     return account_info;
   }
 };
@@ -457,14 +459,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncToken) {
   // Check that the primary account was not removed and has valid auth.
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
   EXPECT_FALSE(
       identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
-          primary_account.account_id));
+          primary_account.GetAccountId()));
   // Check that the secondary token was revoked.
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 
 // Test that Sync is not paused when cookies are cleared.
@@ -484,14 +486,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest,
   RemoveAndWait(content::BrowsingDataRemover::DATA_TYPE_COOKIES);
   // Check that the Sync token was not revoked.
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
   EXPECT_FALSE(
       identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
-          primary_account.account_id));
+          primary_account.GetAccountId()));
   // Check that the secondary token was revoked.
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 
 // Test that Sync is left in error when cookies are cleared.
@@ -506,7 +508,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncTokenError) {
       AddAccountToProfile(kAccountId, profile, /*is_primary=*/true);
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
-      identity_manager, primary_account.account_id,
+      identity_manager, primary_account.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::
               CREDENTIALS_REJECTED_BY_SERVER));
@@ -514,14 +516,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncTokenError) {
   // Clear cookies.
   RemoveAndWait(content::BrowsingDataRemover::DATA_TYPE_COOKIES);
   // Check that the account was not removed and Sync was paused.
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
-  EXPECT_EQ(
-      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
-          CREDENTIALS_REJECTED_BY_SERVER,
-      identity_manager
-          ->GetErrorStateOfRefreshTokenForAccount(primary_account.account_id)
-          .GetInvalidGaiaCredentialsReason());
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
+  EXPECT_EQ(GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                CREDENTIALS_REJECTED_BY_SERVER,
+            identity_manager
+                ->GetErrorStateOfRefreshTokenForAccount(
+                    primary_account.GetAccountId())
+                .GetInvalidGaiaCredentialsReason());
 }
 
 // Test that the tokens are revoked when cookies are cleared when there is no
@@ -539,7 +541,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, NoSync) {
   // Check that the account was removed.
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 #endif
 
@@ -1460,8 +1462,9 @@ IN_PROC_BROWSER_TEST_P(BrowsingDataHistoryRemoverBrowserTest,
 // disk.
 // TODO(crbug.com/522179929): Flaky on ASAN/LSAN/MSAN. Re-enable this test.
 // TODO(crbug.com/515997680): Flaky on Linux Debug. Re-enable this test.
-#if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) || \
-    defined(MEMORY_SANITIZER) || (BUILDFLAG(IS_LINUX) && !defined(NDEBUG))
+#if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) ||                  \
+    defined(MEMORY_SANITIZER) || (BUILDFLAG(IS_LINUX) && !defined(NDEBUG)) || \
+    BUILDFLAG(IS_MAC)
 #define MAYBE_StorageRemovedFromDisk DISABLED_StorageRemovedFromDisk
 #else
 #define MAYBE_StorageRemovedFromDisk StorageRemovedFromDisk

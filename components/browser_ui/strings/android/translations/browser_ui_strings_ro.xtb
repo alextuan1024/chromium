@@ -7,6 +7,7 @@
 <translation id="1046742265332833834">Temă albastră</translation>
 <translation id="1070329623210597193">Fișierele pe care le poate vedea sau modifica acest site</translation>
 <translation id="1074758928858737435">Poți solicita să vezi versiunea pentru computer a site-urilor</translation>
+<translation id="1089791933924803646">Primește sugestii Chrome în alte aplicații</translation>
 <translation id="1109482864356262001">Funcțiile care au nevoie de senzori de mișcare sau de lumină nu vor funcționa.</translation>
 <translation id="1126523729897810826">Finalizează mai jos aceste acțiuni sugerate, pentru a profita din plin de Chrome</translation>
 <translation id="113098737392899175">Navighează în pagini folosind cursorul pentru text când este conectată o tastatură</translation>
@@ -83,6 +84,7 @@
 <translation id="1818308510395330587">Pentru a permite aplicației <ph name="APP_NAME" /> să folosească RA, activează camera foto și în <ph name="BEGIN_LINK" />Setările Android<ph name="END_LINK" />.</translation>
 <translation id="1822318649925991542">Schimbă poziția pentru a-ți personaliza experiența de navigare.</translation>
 <translation id="1848033246551405023">Font Sans Serif</translation>
+<translation id="1861244985839668297">Când opțiunea este activată, site-urile pot solicita permisiunea de a folosi dispozitive HID. Când opțiunea este dezactivată, site-urile nu pot folosi dispozitive HID.</translation>
 <translation id="1861262398884155592">Acest dosar este gol</translation>
 <translation id="1881806992065048905">Foaia din partea de jos cu aspectul paginii Filă nouă</translation>
 <translation id="1887786770086287077">Accesul la locație este dezactivat pentru acest dispozitiv. Activează-l în <ph name="BEGIN_LINK" />Setări Android<ph name="END_LINK" />.</translation>
@@ -452,6 +454,7 @@
 <translation id="5668404140385795438">Ignoră solicitarea unui site de a împiedica mărirea</translation>
 <translation id="5668843533782548925">Site-urile sunt mai lente, dar mai sigure</translation>
 <translation id="5677928146339483299">Blocat</translation>
+<translation id="5679089750838794164">De acum, Chrome îți poate afișa sugestii în alte aplicații pe baza datelor de navigare, cum ar fi istoricul de navigare recent. Aceste date sunt prelucrate în siguranță pe dispozitivul tău. Poți dezactiva oricând această opțiune din setările Chrome.</translation>
 <translation id="5689516760719285838">Locație</translation>
 <translation id="5690795753582697420">Camera foto este dezactivată în setările Android</translation>
 <translation id="5700761515355162635">Sunt permise cookie-urile terță parte</translation>
@@ -506,6 +509,7 @@
 <translation id="6085954183010297841">Elimini permisiunea de editare a fișierului? <ph name="FILE" /></translation>
 <translation id="6104860901391833523">Când opțiunea este activată, site-urile pot intra automat în modul picture-in-picture. Când opțiunea este dezactivată, site-urile nu pot intra automat în modul picture-in-picture.</translation>
 <translation id="6120483543004435978">Când opțiunea este activată, site-urile pot solicita permisiunea de a afla când folosești activ dispozitivul. Când opțiunea este dezactivată, site-urile nu pot afla când folosești activ dispozitivul.</translation>
+<translation id="612871598708395517">Ascunde sugestiile de descărcare a browserului Chrome în alte aplicații</translation>
 <translation id="6132075343662013154">Chrome îți va oferi salvarea parolei</translation>
 <translation id="615886654739818377">Nu permite site-urilor să gestioneze ferestre de pe toate ecranele</translation>
 <translation id="6165508094623778733">Află mai multe</translation>

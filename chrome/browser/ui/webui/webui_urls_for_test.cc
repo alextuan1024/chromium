@@ -40,8 +40,8 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 
       "chrome://bookmarks",
       "chrome://bookmarks-side-panel.top-chrome",
+      "chrome://browser-actuator-internals",
       "chrome://certificate-manager",
-      "chrome://chrome-finds-internals",
       "chrome://chrome-urls",
       "chrome://color-pipeline-internals",
       "chrome://comments-side-panel.top-chrome",
@@ -133,6 +133,7 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://optimization-guide-internals",
 #if !BUILDFLAG(IS_ANDROID)
       "chrome://organizer-panel.top-chrome",
+      "chrome://page-action-internals",
 #endif
       "chrome://password-manager",
       "chrome://password-manager-internals",
@@ -197,6 +198,7 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+      "chrome://chrome-finds-internals",
       "chrome://explore-sites-internals",
       "chrome://internals/notifications",
       "chrome://internals/query-tiles",
@@ -322,8 +324,6 @@ base::span<const std::string_view> GetUntestedChromeUrlsForTest() {
       "chrome://internals",
       // Note: Disabled because a DCHECK fires when directly visiting the URL.
       "chrome://managed-user-profile-notice",
-      // TODO(crbug.com/40185163): DCHECK failure
-      "chrome://memory-internals",
       "chrome://omnibox-everywhere.top-chrome",
       "chrome://omnibox-popup.top-chrome",
       "chrome://profile-customization",

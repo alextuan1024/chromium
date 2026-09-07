@@ -96,9 +96,23 @@ class CORE_EXPORT DevToolsEmulator final
  private:
   class ScopedGlobalOverrides;
 
+  enum class ViewportEmulationMode {
+    kEmbedder,
+    kDesktopViewport,
+    kMobile,
+  };
+
+  ViewportEmulationMode GetViewportEmulationMode() const;
+  bool ApplyViewportStyleForMode(ViewportEmulationMode mode);
+  bool ApplyPageScaleLimitsForMode(ViewportEmulationMode mode);
+  // Returns whether the device-emulation caller should synchronously update
+  // lifecycle after applying the profile.
+  bool ApplyViewportEmulationMode(ViewportEmulationMode previous_mode);
   void EnableMobileEmulation();
   void DisableMobileEmulation();
+  void UpdateLifecycleAfterEmulationProfileChange();
   void SetForceAndroidOverlayScrollbar(bool);
+  void SetForceViewportMeta(bool);
 
   // Enables viewport override and returns the emulation transform to be used.
   // The |position| is in CSS pixels, and |scale| is relative to a page scale of
@@ -160,6 +174,7 @@ class CORE_EXPORT DevToolsEmulator final
   bool embedder_hide_scrollbars_;
   bool scrollbars_hidden_;
   bool force_android_overlay_scrollbar_;
+  bool force_viewport_meta_=false;
 
   bool embedder_cookie_enabled_;
   bool document_cookie_disabled_;

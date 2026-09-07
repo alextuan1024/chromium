@@ -107,9 +107,7 @@ id<GREYMatcher> PasswordDetailPassword() {
 }
 
 id<GREYMatcher> NavigationBarEditButton() {
-  return grey_allOf(chrome_test_util::ButtonWithAccessibilityLabelId(
-                        IDS_IOS_NAVIGATION_BAR_EDIT_BUTTON),
-                    grey_userInteractionEnabled(), nil);
+  return chrome_test_util::NavigationBarEditButton();
 }
 
 id<GREYMatcher> EditDoneButton() {
@@ -276,6 +274,8 @@ void OpenPasswordManager() {
     [ChromeEarlGreyUI
         tapSettingsMenuButton:grey_accessibilityID(
                                   @"kSettingsAutofillAndPasswordsCellId")];
+    [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                        chrome_test_util::SettingsMenuPasswordsButton()];
     [[EarlGrey selectElementWithMatcher:chrome_test_util::
                                             SettingsMenuPasswordsButton()]
         performAction:grey_tap()];
@@ -292,6 +292,8 @@ void OpenPasswordManager() {
 }
 
 void TapNavigationBarEditButton() {
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:NavigationBarEditButton()];
   [[EarlGrey selectElementWithMatcher:NavigationBarEditButton()]
       performAction:grey_tap()];
 }

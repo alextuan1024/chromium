@@ -88,6 +88,11 @@ public class OmniboxFeatures {
                     OmniboxFeatureList.OMNIBOX_TOUCH_DOWN_TRIGGER_FOR_PREFETCH,
                     FeatureState.ENABLED_IN_PROD);
 
+    public static final CachedFlag sPrefetchSelectedSuggestionsOmtAndroid =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_PREFETCH_SELECTED_SUGGESTIONS_OMT_ANDROID,
+                    FeatureState.DISABLED);
+
     public static final CachedFlag sOmniboxSearchPrefetchOnEnterKeyDown =
             newFlag(
                     OmniboxFeatureList.OMNIBOX_SEARCH_PREFETCH_ON_ENTER_KEY_DOWN,
@@ -116,7 +121,7 @@ public class OmniboxFeatures {
             newFlag(OmniboxFeatureList.INLINE_LOCATION_SIGNALING, FeatureState.ENABLED_IN_TEST);
 
     public static final CachedFlag sAsyncViewInflation =
-            newFlag(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION, FeatureState.ENABLED_IN_TEST);
+            newFlag(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION, FeatureState.ENABLED_IN_PROD);
 
     public static final CachedFlag sFuseboxAsyncInflation =
             newFlag(
@@ -147,6 +152,11 @@ public class OmniboxFeatures {
     public static final CachedFlag sOmniboxSessionlessVoiceSearch =
             newFlag(
                     OmniboxFeatureList.OMNIBOX_SESSIONLESS_VOICE_SEARCH,
+                    FeatureState.ENABLED_IN_PROD);
+
+    public static final CachedFlag sSuppressStatusIconDuringHttpNavigation =
+            newFlag(
+                    OmniboxFeatureList.SUPPRESS_STATUS_ICON_DURING_HTTP_NAVIGATION,
                     FeatureState.ENABLED_IN_PROD);
 
     private static final CachedFlag sOmniboxMultimodalInput =
@@ -198,7 +208,7 @@ public class OmniboxFeatures {
     // Shows the preview match's favicon in the status view. Originally and incorrectly called exact
     // match. The feature string remains exact, but java code should be updated to the right name.
     public static final CachedFlag sPreviewMatchFavicons =
-            newFlag(OmniboxFeatureList.EXACT_MATCH_FAVICONS, FeatureState.ENABLED_IN_TEST);
+            newFlag(OmniboxFeatureList.EXACT_MATCH_FAVICONS, FeatureState.ENABLED_IN_PROD);
 
     public static final CachedFlag sServeJavaCachedZeroSuggest =
             newFlag(
@@ -207,6 +217,11 @@ public class OmniboxFeatures {
 
     public static final CachedFlag sResetSuggestionsScroll =
             newFlag(OmniboxFeatureList.RESET_SUGGESTIONS_SCROLL, FeatureState.DISABLED);
+
+    public static final CachedFlag sOmniboxDisableTabsForCanvas =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_DISABLE_TABS_FOR_CANVAS,
+                    FeatureState.ENABLED_IN_PROD);
 
     public static final IntCachedFeatureParam sGeolocationRequestTimeoutMinutes =
             newIntParam(
@@ -339,6 +354,14 @@ public class OmniboxFeatures {
      */
     public static boolean isTouchDownTriggerForPrefetchEnabled() {
         return sTouchDownTriggerForPrefetch.isEnabled();
+    }
+
+    /**
+     * Returns whether off-main-thread (OMT) prefetch of search suggestions upon touch down is
+     * enabled on Android.
+     */
+    public static boolean isPrefetchSelectedSuggestionsOmtAndroidEnabled() {
+        return sPrefetchSelectedSuggestionsOmtAndroid.isEnabled();
     }
 
     private static @Nullable Boolean sDebounceKeyboardVisibilityForTesting;

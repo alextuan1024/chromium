@@ -90,7 +90,8 @@ HistoryDatabase::HistoryDatabase(
 #endif  // !BUILDFLAG(IS_FUCHSIA)
               ,
           /*tag=*/"History"),
-      history_metadata_db_(&db_, &meta_table_) {
+      history_metadata_db_(&db_, &meta_table_),
+      journeys_metadata_db_(&db_, &meta_table_) {
 }
 
 HistoryDatabase::~HistoryDatabase() = default;
@@ -161,7 +162,8 @@ sql::InitStatus HistoryDatabase::Init(const base::FilePath& history_name) {
   if (!CreateURLTable(false) || !InitVisitTable() ||
       !InitKeywordSearchTermsTable() || !InitDownloadTable() ||
       !InitSegmentTables() || !InitVisitAnnotationsTables() ||
-      !CreateVisitedLinkTable() || !history_metadata_db_.Init()) {
+      !CreateVisitedLinkTable() || !history_metadata_db_.Init() ||
+      !InitJourneysTables() || !journeys_metadata_db_.Init()) {
     return LogInitFailure(InitStep::CREATE_TABLES);
   }
   CreateMainURLIndex();
@@ -447,13 +449,20 @@ bool HistoryDatabase::RecreateAllTablesButURL() {
   if (!InitVisitAnnotationsTables())
     return false;
 
+  if (!DropJourneysTables()) {
+    return false;
+  }
+  if (!InitJourneysTables()) {
+    return false;
+  }
+
   return true;
 }
 
 void HistoryDatabase::Vacuum() {
-  DCHECK_EQ(0, db_.transaction_nesting()) <<
-      "Can not have a transaction when vacuuming.";
-  std::ignore = db_.Execute("VACUUM");
+  DCHECK(!db_.HasActiveTransactions())
+      << "Can not have a transaction when vacuuming.";
+  std::ignore = db_.Vacuum();
 }
 
 bool HistoryDatabase::Raze() {
@@ -546,6 +555,11 @@ void HistoryDatabase::SetKnownToSyncVisitsExist(bool exist) {
 
 HistorySyncMetadataDatabase* HistoryDatabase::GetHistoryMetadataDB() {
   return &history_metadata_db_;
+}
+
+journeys::JourneysSyncMetadataDatabase*
+HistoryDatabase::GetJourneysMetadataDB() {
+  return &journeys_metadata_db_;
 }
 
 sql::Database& HistoryDatabase::GetDBForTesting() {

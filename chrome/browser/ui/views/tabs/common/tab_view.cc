@@ -12,6 +12,7 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/time/time.h"
+#include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -23,6 +24,7 @@
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
@@ -35,6 +37,7 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
+#include "chrome/browser/ui/views/tabs/common/tab_collection_z_order_manager.h"
 #include "chrome/browser/ui/views/tabs/common/tab_drag_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
@@ -42,6 +45,7 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view_horizontal_layout.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.h"
+#include "chrome/browser/ui/views/tabs/common/vertical_tab_style_views.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab/alert_indicator_button.h"
 #include "chrome/browser/ui/views/tabs/tab/glow_hover_controller.h"
@@ -50,15 +54,16 @@
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_title.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
-#include "chrome/browser/ui/views/tabs/vertical_tab_style_views.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkRRect.h"
@@ -68,6 +73,7 @@
 #include "ui/base/models/list_selection_model.h"
 #include "ui/base/theme_provider.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/compositor/clip_recorder.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/events/types/event_type.h"
@@ -157,6 +163,7 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   bool IsHovering() const override { return tab_view_->IsMouseHovered(); }
 
   bool IsClosing() const override { return tab_view_->IsClosing(); }
+  bool IsDragging() const override { return tab_view_->IsDragging(); }
 
   std::optional<tab_groups::TabGroupId> GetGroup() const override {
     const tabs::TabInterface* tab_interface = tab_view_->GetTabInterface();
@@ -180,6 +187,17 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
                                  ? tab_view_->collection_node()->GetController()
                                  : nullptr;
     return controller && controller->GetFocusedGroup() == group;
+  }
+
+  bool IsGroupCollapsed() const override {
+    const std::optional<tab_groups::TabGroupId> group = GetGroup();
+    if (!group.has_value()) {
+      return false;
+    }
+    const auto* controller = tab_view_->collection_node()
+                                 ? tab_view_->collection_node()->GetController()
+                                 : nullptr;
+    return controller && controller->IsGroupCollapsed(group.value());
   }
 
   bool IsSplit() const override { return tab_view_->split(); }
@@ -316,9 +334,17 @@ TabView::TabView(TabCollectionNode* collection_node)
                             : nullptr) {
   tabs::TabInterface* tab = const_cast<tabs::TabInterface*>(GetTabInterface());
   BrowserWindowInterface* browser_window = tab->GetBrowserWindowInterface();
-  if (browser_window &&
-      (glic::GlicEnabling::IsProfileEligible(browser_window->GetProfile()) ||
-       contextual_tasks::IsContextualTasksUIEnabled())) {
+
+  bool should_create_underline = false;
+  if (browser_window) {
+    Profile* profile = browser_window->GetProfile();
+    should_create_underline =
+        (glic::GlicEnabling::IsProfileEligible(profile) ||
+         contextual_tasks::IsContextualTasksUIEnabled() ||
+         (dictation::DictationKeyedService::Get(profile)));
+  }
+
+  if (should_create_underline) {
     glic_tab_underline_view_ =
         AddChildView(views::Builder<glic::TabUnderlineView>(
                          glic::TabUnderlineView::Factory::Create(
@@ -472,6 +498,7 @@ void TabView::UpdateHovered(bool hovered) {
   }
 
   UpdateColors();
+  UpdateZOrder();
   InvalidateLayout();
 }
 
@@ -732,6 +759,19 @@ void TabView::OnGestureEvent(ui::GestureEvent* event) {
   }
 }
 
+void TabView::PaintChildren(const views::PaintInfo& info) {
+  ui::ClipRecorder clip_recorder(info.context());
+  // The paint recording scale for tabs is consistent along the x and y axis.
+  const float paint_recording_scale = info.paint_recording_scale_x();
+
+  if (const std::optional<SkPath> clip_path =
+          tab_styling()->GetChildClipPath(paint_recording_scale)) {
+    clip_recorder.ClipPathWithAntiAliasing(clip_path.value());
+  }
+
+  View::PaintChildren(info);
+}
+
 void TabView::OnPaint(gfx::Canvas* canvas) {
   // Split pinned tabs have a merged background that is rendered in
   // `SplitTabView`.
@@ -769,6 +809,8 @@ void TabView::RemovedFromWidget() {
 void TabView::OnFocus() {
   views::View::OnFocus();
 
+  UpdateZOrder();
+
   if (collection_node_ && collection_node_->GetController()) {
     collection_node_->GetController()->TabKeyboardFocusChangedTo(
         GetTabInterface());
@@ -784,6 +826,8 @@ void TabView::OnFocus() {
 
 void TabView::OnBlur() {
   views::View::OnBlur();
+
+  UpdateZOrder();
 
   if (collection_node_ && collection_node_->GetController()) {
     collection_node_->GetController()->TabKeyboardFocusChangedTo(nullptr);
@@ -957,10 +1001,13 @@ void TabView::ResetCollectionNode() {
   // background.
   active_ = false;
   selected_ = false;
+  UpdateZOrder();
 
   // Update the callbacks for the buttons so that we don't call anything that
   // needs the node.
   close_button_->SetCallback(base::RepeatingClosure(base::DoNothing()));
+
+  static_cast<TabView::LayoutManager*>(GetLayoutManager())->OnTabClosing();
 }
 
 void TabView::UpdateAccessibleName() {
@@ -1013,7 +1060,29 @@ void TabView::OnTabStateChanged() {
   UpdateFocusFreezing();
 
   UpdateColors();
+  UpdateZOrder();
   InvalidateLayout();
+}
+
+void TabView::UpdateZOrder() {
+  using ZOrderLevel = TabCollectionZOrderManager::ZOrderLevel;
+  ZOrderLevel target_z = ZOrderLevel::kDefault;
+
+  if (active_) {
+    target_z = ZOrderLevel::kActive;
+  } else if (selected_) {
+    target_z = ZOrderLevel::kSelected;
+  } else if (hovered_ || HasFocus()) {
+    target_z = ZOrderLevel::kHovered;
+  }
+
+  if (GetProperty(kTabZOrderKey) != target_z) {
+    SetProperty(kTabZOrderKey, target_z);
+    if (auto* container =
+            views::AsViewClass<TabCollectionZOrderManager>(parent())) {
+      container->OnChildZOrderChanged(this);
+    }
+  }
 }
 
 void TabView::OnTabDataChanged(TabChangeType change_type,
@@ -1217,9 +1286,20 @@ TabStyle::TabSelectionState TabView::GetSelectionState() const {
 }
 
 bool TabView::IsDragging() const {
-  return collection_node_ && collection_node_->GetController() &&
-         collection_node_->GetController()->GetDragHandler().IsViewDragging(
-             *this);
+  if (!collection_node_ || !collection_node_->GetController()) {
+    return false;
+  }
+  const auto& drag_handler =
+      collection_node_->GetController()->GetDragHandler();
+  if (drag_handler.IsViewDragging(*this)) {
+    return true;
+  }
+  for (const views::View* v = parent(); v; v = v->parent()) {
+    if (drag_handler.IsViewDragging(*v)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // static

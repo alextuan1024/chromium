@@ -10,11 +10,13 @@ import androidx.annotation.VisibleForTesting;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.metrics.ChangeMetricsReportingStateCalledFrom;
 import org.chromium.chrome.browser.metrics.UmaSessionStats;
+import org.chromium.chrome.browser.safety_promo.SafetyPromoItem;
 import org.chromium.ui.accessibility.AccessibilityState;
 
 import java.lang.annotation.Retention;
@@ -44,28 +46,28 @@ public class FirstRunUtils {
     private static final int DEFAULT_SKIP_TOS_EXIT_DELAY_MS = 1000;
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    static final List<SafetyPromoCard> ARM_1_CARDS =
+    static final List<SafetyPromoItem> ARM_1_ITEMS =
             List.of(
-                    SafetyPromoCard.PASSWORD_MANAGER,
-                    SafetyPromoCard.ENHANCED_SAFE_BROWSING,
-                    SafetyPromoCard.INCOGNITO);
+                    SafetyPromoItem.PASSWORD_MANAGER,
+                    SafetyPromoItem.ENHANCED_SAFE_BROWSING,
+                    SafetyPromoItem.INCOGNITO);
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    static final List<SafetyPromoCard> ARM_2_CARDS =
+    static final List<SafetyPromoItem> ARM_2_ITEMS =
             List.of(
-                    SafetyPromoCard.HISTORY_QUICK_DELETE,
-                    SafetyPromoCard.ENHANCED_SAFE_BROWSING,
-                    SafetyPromoCard.INCOGNITO);
+                    SafetyPromoItem.HISTORY_QUICK_DELETE,
+                    SafetyPromoItem.ENHANCED_SAFE_BROWSING,
+                    SafetyPromoItem.INCOGNITO);
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    static final List<SafetyPromoCard> ARM_3_CARDS =
+    static final List<SafetyPromoItem> ARM_3_ITEMS =
             List.of(
-                    SafetyPromoCard.PASSWORD_MANAGER,
-                    SafetyPromoCard.HISTORY_QUICK_DELETE,
-                    SafetyPromoCard.ENHANCED_SAFE_BROWSING);
+                    SafetyPromoItem.PASSWORD_MANAGER,
+                    SafetyPromoItem.HISTORY_QUICK_DELETE,
+                    SafetyPromoItem.ENHANCED_SAFE_BROWSING);
 
     private static boolean sDisableDelayOnExitFreForTest;
-    private static @Nullable Boolean sCctTosDialogEnabledForTesting;
+    private static @TriState int sCctTosDialogEnabledForTesting;
 
     /**
      * Synchronizes first run native and Java preferences. Must be called after native
@@ -109,15 +111,15 @@ public class FirstRunUtils {
      * @return Whether the ToS should be shown during the first-run for CCTs/PWAs.
      */
     public static boolean isCctTosDialogEnabled() {
-        if (sCctTosDialogEnabledForTesting != null) {
-            return sCctTosDialogEnabledForTesting;
+        if (sCctTosDialogEnabledForTesting != TriState.NOT_SET) {
+            return sCctTosDialogEnabledForTesting == TriState.TRUE;
         }
         return FirstRunUtilsJni.get().getCctTosDialogEnabled();
     }
 
     public static void setCctTosDialogEnabledForTesting(boolean isEnabled) {
-        sCctTosDialogEnabledForTesting = isEnabled;
-        ResettersForTesting.register(() -> sCctTosDialogEnabledForTesting = null);
+        sCctTosDialogEnabledForTesting = TriStateUtils.from(isEnabled);
+        ResettersForTesting.register(() -> sCctTosDialogEnabledForTesting = TriState.NOT_SET);
     }
 
     /**
@@ -153,14 +155,20 @@ public class FirstRunUtils {
                 && arm <= SafetyFrePromoArm.PASSWORD_MANAGER_AND_HISTORY_QUICK_DELETE;
     }
 
-    public static List<SafetyPromoCard> getCardsForSafetyFrePromoArm(@SafetyFrePromoArm int arm) {
+    /** Returns whether the Safety FRE promo carousel should be shown. */
+    public static boolean shouldShowSafetyFrePromoCarousel() {
+        return shouldShowSafetyFrePromo()
+                && isCardBasedPromoArm(ChromeFeatureList.sSafetyFrePromoArm.getValue());
+    }
+
+    public static List<SafetyPromoItem> getItemsForSafetyFrePromoArm(@SafetyFrePromoArm int arm) {
         switch (arm) {
             case SafetyFrePromoArm.PASSWORD_MANAGER:
-                return ARM_1_CARDS;
+                return ARM_1_ITEMS;
             case SafetyFrePromoArm.HISTORY_QUICK_DELETE:
-                return ARM_2_CARDS;
+                return ARM_2_ITEMS;
             case SafetyFrePromoArm.PASSWORD_MANAGER_AND_HISTORY_QUICK_DELETE:
-                return ARM_3_CARDS;
+                return ARM_3_ITEMS;
             default:
                 return List.of();
         }

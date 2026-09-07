@@ -47,6 +47,9 @@ NET_EXPORT BASE_DECLARE_FEATURE(kOptimisticDnsForTcp);
 NET_EXPORT extern const base::FeatureParam<bool>
     kUseStaleConnectorsForOptimisticDns;
 
+// Enables optimistic DNS for QUIC.
+NET_EXPORT BASE_DECLARE_FEATURE(kOptimisticDnsForQuic);
+
 // Caches UDP connect() results in AddressSorterPosix.
 NET_EXPORT BASE_DECLARE_FEATURE(kAddressSorterConnectCache);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
@@ -77,6 +80,11 @@ NET_EXPORT extern const base::FeatureParam<bool>
 // and may be used to affect connection behavior. Whether or not those results
 // are used (e.g. to connect via ECH) may be controlled by separate features.
 NET_EXPORT BASE_DECLARE_FEATURE(kUseDnsHttpsSvcb);
+
+// If enabled, HostResolver carries address hints (ipv4hint/ipv6hint) from
+// HTTPS DNS records in its results for consumption by the
+// ServiceEndpointRequest path.
+NET_EXPORT BASE_DECLARE_FEATURE(kUseDnsHttpsSvcbAddressHints);
 
 // Enables partial support for Structured DNS Errors
 // (draft-ietf-dnsop-structured-dns-error). When enabled, the Chrome DNS
@@ -149,6 +157,9 @@ NET_EXPORT BASE_DECLARE_FEATURE(kHappyEyeballsV3);
 // Note: If kHappyEyeballsV3 is enabled, this behavior is automatically active
 // regardless of this flag's state.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnableIntermediateDnsResults);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kEnableIntermediateDnsResultsSortTransactionsIndividually);
 
 // Feature to control the Happy Eyeballs slow timer (IPv6 fallback time).
 NET_EXPORT BASE_DECLARE_FEATURE(kAdjustIPv6FallbackTime);
@@ -250,15 +261,6 @@ NET_EXPORT extern const base::FeatureParam<int> kObservationBufferSize;
 // connection type. Set to non-zero value as a performance optimization.
 NET_EXPORT extern const base::FeatureParam<base::TimeDelta>
     kEffectiveConnectionTypeRecomputationInterval;
-
-// When disabled, HttpContentDisposition incorrectly handles multiple
-// comma-delimited Content-Disposition lines, treating them all as a single
-// Content-Disposition string.
-//
-// This is a temporary escape valve in case the fix for
-// https://crbug.com/517466133 causes issues.
-// TODO(crbug.com/519218483): Remove this in late Q3/Q4 2026.
-NET_EXPORT BASE_DECLARE_FEATURE(kOnlyParseFirstContentDisposition);
 
 // Splits cache entries by the request's includeCredentials.
 NET_EXPORT BASE_DECLARE_FEATURE(kSplitCacheByIncludeCredentials);
@@ -418,8 +420,11 @@ NET_EXPORT BASE_DECLARE_FEATURE(kDeferConnectionTypeAtStartup);
 NET_EXPORT BASE_DECLARE_FEATURE(kTcpPortRandomizationMac);
 // How long (in seconds) to avoid reusing a recently-used ephemeral port for
 // the same peer. Defaults to 120 to match common NAT timeout values.
-NET_EXPORT extern const base::FeatureParam<int>
-    kTcpPortRandomizationReuseDelaySec;
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kTcpPortRandomizationReuseDelaySec);
+// If enabled, port randomization applies even where the remote address is
+// the loopback address. See https://crbug.com/546919930 for context.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                      kTcpPortRandomizationMacForLoopback);
 #endif
 
 // Avoid creating cache entries for transactions that are most likely no-store.
@@ -434,11 +439,24 @@ NET_EXPORT BASE_DECLARE_FEATURE(kAsyncQuicSession);
 // HostResolver::ServiceEndpointRequest, for direct QUIC sessions.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncDnsQuicJob);
 
-// How long AsyncDnsJob waits before it starts a second connection attempt
-// next to the one it already has in flight. Zero or a negative value means
-// AsyncDnsJob never runs two attempts at once.
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
-                                      kAsyncDnsQuicJobSlowTimerDelay);
+// Whether AsyncDnsJob notifies waiting requests immediately on the first
+// attempt's session creation failure instead of holding the error.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kAsyncDnsQuicJobFastFail);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kAsyncDnsQuicJobSortTransactionsIndividually);
+
+// Makes the QUIC slow timer delay configurable.
+// How long to wait before starting a second connection attempt
+// if one is already in flight.
+NET_EXPORT BASE_DECLARE_FEATURE(kAdjustQuicSlowTimerDelay);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerDelay);
+
+// Feature to base the QUIC slow timer on the network RTT.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicSlowTimerBasedOnRTT);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(double, kQuicSlowTimerRTTMultiplier);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerMin);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerMax);
 
 // A flag to make multiport context creation asynchronous.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncMultiPortPath);
@@ -453,13 +471,6 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kMaxReportBodySizeKB);
 // false. This is needed as a workaround to set this value to true on Android
 // but not on WebView (until crbug.com/1430082 has been fixed).
 NET_EXPORT BASE_DECLARE_FEATURE(kMigrateSessionsOnNetworkChangeV2);
-
-#if BUILDFLAG(IS_LINUX)
-// AddressTrackerLinux will not run inside the network service in this
-// configuration, which will improve the Linux network service sandbox.
-// TODO(crbug.com/40220507): remove this.
-NET_EXPORT BASE_DECLARE_FEATURE(kAddressTrackerLinuxIsProxied);
-#endif  // BUILDFLAG(IS_LINUX)
 
 // Enables binding of cookies to the port that originally set them by default.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnablePortBoundCookies);

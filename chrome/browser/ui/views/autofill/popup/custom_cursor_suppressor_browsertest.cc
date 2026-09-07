@@ -7,13 +7,12 @@
 #include <vector>
 
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/extensions/extension_side_panel_manager.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/global_routing_id.h"
@@ -26,6 +25,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace {
@@ -56,19 +56,21 @@ class CustomCursorSuppressorBrowserTest : public InProcessBrowserTest {
     return embedded_test_server()->GetURL("c.com", "/title3.html");
   }
 
-  [[nodiscard]] bool AddTab(Browser* browser, const GURL& url) {
+  [[nodiscard]] bool AddTab(BrowserWindowInterface* browser, const GURL& url) {
     return ui_test_utils::NavigateToURLWithDisposition(
         browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
-  [[nodiscard]] bool AddBackgroundTab(Browser* browser, const GURL& url) {
+  [[nodiscard]] bool AddBackgroundTab(BrowserWindowInterface* browser,
+                                      const GURL& url) {
     return ui_test_utils::NavigateToURLWithDisposition(
         browser, url, WindowOpenDisposition::NEW_BACKGROUND_TAB,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
-  GlobalRenderFrameHostId GetRfhIdOfActiveWebContents(Browser& browser) {
+  GlobalRenderFrameHostId GetRfhIdOfActiveWebContents(
+      BrowserWindowInterface& browser) {
     return browser.GetTabStripModel()
         ->GetActiveWebContents()
         ->GetPrimaryMainFrame()
@@ -215,7 +217,7 @@ IN_PROC_BROWSER_TEST_F(CustomCursorSuppressorBrowserTest, MultipleBrowsers) {
   ASSERT_TRUE(AddTab(browser(), GetUrl2()));
 
   // Set up a second browser window with a loaded tab.
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   ASSERT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   ASSERT_TRUE(AddTab(browser2, GetUrl3()));
 
@@ -241,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(CustomCursorSuppressorBrowserTest, BrowserAddition) {
               UnorderedElementsAre(GetRfhIdOfActiveWebContents(*browser())));
 
   // Open a second browser window while the suppression is already on.
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   ASSERT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   ASSERT_TRUE(AddTab(browser2, GetUrl2()));
   EXPECT_TRUE(suppressor.IsSuppressing(
@@ -271,7 +273,7 @@ class CustomCursorSuppressorExtensionBrowserTest
     CHECK(entry);
 
     ExtensionTestMessageListener default_path_listener("default_path");
-    SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+    SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
     side_panel_ui->Show(extension_key);
     CHECK(default_path_listener.WaitUntilSatisfied());
     CHECK(side_panel_ui->IsSidePanelShowing());
@@ -287,9 +289,7 @@ IN_PROC_BROWSER_TEST_F(CustomCursorSuppressorExtensionBrowserTest,
   scoped_refptr<const extensions::Extension> extension =
       LoadExtensionInSidePanel();
   auto* extension_coordinator =
-      browser()
-          ->GetFeatures()
-          .extension_side_panel_manager()
+      extensions::ExtensionSidePanelManager::From(browser())
           ->GetExtensionCoordinatorForTesting(extension->id());
   content::WebContents* host_contents =
       extension_coordinator->GetHostWebContentsForTesting();
@@ -312,9 +312,7 @@ IN_PROC_BROWSER_TEST_F(
   scoped_refptr<const extensions::Extension> extension =
       LoadExtensionInSidePanel();
   auto* extension_coordinator =
-      browser()
-          ->GetFeatures()
-          .extension_side_panel_manager()
+      extensions::ExtensionSidePanelManager::From(browser())
           ->GetExtensionCoordinatorForTesting(extension->id());
   content::WebContents* host_contents =
       extension_coordinator->GetHostWebContentsForTesting();

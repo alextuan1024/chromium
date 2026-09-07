@@ -185,25 +185,18 @@ class MockLocalMediaStreamAudioSource : public blink::MediaStreamAudioSource {
   }
   std::optional<AudioProcessingProperties> GetAudioProcessingProperties()
       const override;
-  void SetAudioProcessingProperties(
-      const AudioProcessingProperties& properties) override {
-    audio_properties_ = properties;
-    if (MediaStreamSource* source = Owner()) {
-      source->SetAudioProcessingProperties(
-          properties.echo_cancellation_mode, properties.auto_gain_control,
-          properties.noise_suppression,
-          properties.voice_isolation ==
-              AudioProcessingProperties::VoiceIsolationType::
-                  kVoiceIsolationEnabled);
-    }
-  }
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  void SetVoiceIsolation(bool enabled) override;
+#endif
   bool IsProcessedSource() const override { return is_processed_; }
   bool IsApmProcessedSource() const override { return is_processed_; }
   void SetIsProcessed(bool is_processed) { is_processed_ = is_processed; }
 
  private:
   AudioPropertiesCallback properties_cb_;
-  std::optional<AudioProcessingProperties> audio_properties_;
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  std::optional<bool> voice_isolation_enabled_;
+#endif
   bool is_processed_ = false;
 };
 
@@ -635,10 +628,6 @@ class UserMediaProcessorUnderTest : public UserMediaProcessor {
                     return std::nullopt;
                   },
                   WrapWeakPersistent(this)));
-      auto props = GetActiveAudioProperties();
-      if (props.has_value()) {
-        local_audio_source_->SetAudioProcessingProperties(*props);
-      }
       if (AudioSettings().HasValue()) {
         const auto& settings = AudioSettings();
         const auto& properties = settings.audio_processing_properties();
@@ -744,17 +733,29 @@ MockLocalMediaStreamAudioSource::MockLocalMediaStreamAudioSource(
           true /* is_local_source */),
       properties_cb_(std::move(properties_cb)) {}
 
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+void MockLocalMediaStreamAudioSource::SetVoiceIsolation(bool enabled) {
+  voice_isolation_enabled_ = enabled;
+}
+#endif
+
 std::optional<AudioProcessingProperties>
 MockLocalMediaStreamAudioSource::GetAudioProcessingProperties() const {
   if (properties_cb_) {
     auto props = properties_cb_.Run();
-    if (props.has_value()) {
-      const_cast<MockLocalMediaStreamAudioSource*>(this)->audio_properties_ =
-          props;
-      return props;
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+    if (props && voice_isolation_enabled_.has_value()) {
+      props->voice_isolation =
+          *voice_isolation_enabled_
+              ? AudioProcessingProperties::VoiceIsolationType::
+                    kVoiceIsolationEnabled
+              : AudioProcessingProperties::VoiceIsolationType::
+                    kVoiceIsolationDisabled;
     }
+#endif
+    return props;
   }
-  return audio_properties_;
+  return std::nullopt;
 }
 
 class UserMediaClientUnderTest : public UserMediaClient {
@@ -2253,7 +2254,75 @@ TEST_F(UserMediaClientTest, RestrictOwnAudioTrackCapabilities) {
             media::IsRestrictOwnAudioSupported());
 }
 
+TEST_F(UserMediaClientTest,
+       VoiceIsolationCapabilitiesContainsOnlyFalseWhenNotSupported) {
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(media::kWebRtcVoiceIsolationDenoiser);
+#endif
+
+  blink::MockConstraintFactory constraint_factory;
+  constraint_factory.basic().device_id.SetExact(fake_ids_->audio_input_1);
+  UserMediaRequest* user_media_request = UserMediaRequest::CreateForTesting(
+      constraint_factory.CreateMediaConstraints(), MediaConstraints());
+  user_media_client_impl_->RequestUserMediaForTest(user_media_request);
+  ASSERT_EQ(kRequestSucceeded, request_state());
+  MediaStreamDescriptor* desc =
+      user_media_processor_->last_generated_descriptor();
+  MediaStreamTrack* track = MakeGarbageCollected<MediaStreamTrackImpl>(
+      /*execution_context=*/nullptr, desc->AudioComponents()[0]);
+
+  EXPECT_TRUE(track->getCapabilities()->hasVoiceIsolation());
+  Vector<bool> voice_isolation_capabilities =
+      track->getCapabilities()->voiceIsolation();
+  EXPECT_TRUE(std::ranges::contains(voice_isolation_capabilities, false));
+  EXPECT_FALSE(std::ranges::contains(voice_isolation_capabilities, true));
+
+  blink::MediaStreamTrackPlatform::GetTrack(
+      WebMediaStreamTrack(desc->AudioComponents()[0]))
+      ->Stop();
+  blink::WebHeap::CollectGarbageForTesting();
+}
+
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+TEST_F(UserMediaClientTest,
+       VoiceIsolationCapabilitiesContainsTrueAndFalseWhenSupported) {
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(media::kWebRtcVoiceIsolationDenoiser);
+#endif
+  // Configure both the media devices dispatcher (used during capability
+  // selection) and the mock dispatcher host (used when opening the device)
+  // to support voice isolation.
+  media_devices_dispatcher_.AudioParameters().set_effects(
+      media_devices_dispatcher_.AudioParameters().effects() |
+      media::AudioParameters::VOICE_ISOLATION_SUPPORTED);
+  mock_dispatcher_host_.SetAudioDeviceEffects(
+      media::AudioParameters::VOICE_ISOLATION_SUPPORTED);
+
+  blink::MockConstraintFactory constraint_factory;
+  constraint_factory.basic().device_id.SetExact(fake_ids_->audio_input_1);
+  UserMediaRequest* user_media_request = UserMediaRequest::CreateForTesting(
+      constraint_factory.CreateMediaConstraints(), MediaConstraints());
+  user_media_client_impl_->RequestUserMediaForTest(user_media_request);
+  ASSERT_EQ(kRequestSucceeded, request_state());
+  MediaStreamDescriptor* desc =
+      user_media_processor_->last_generated_descriptor();
+  MediaStreamTrack* track = MakeGarbageCollected<MediaStreamTrackImpl>(
+      /*execution_context=*/nullptr, desc->AudioComponents()[0]);
+
+  EXPECT_TRUE(track->getCapabilities()->hasVoiceIsolation());
+  Vector<bool> voice_isolation_capabilities =
+      track->getCapabilities()->voiceIsolation();
+  EXPECT_TRUE(std::ranges::contains(voice_isolation_capabilities, false));
+  EXPECT_TRUE(std::ranges::contains(voice_isolation_capabilities, true));
+
+  blink::MediaStreamTrackPlatform::GetTrack(
+      WebMediaStreamTrack(desc->AudioComponents()[0]))
+      ->Stop();
+  blink::WebHeap::CollectGarbageForTesting();
+}
+
 TEST_F(UserMediaClientTest,
        ApplyConstraintsAudioDeviceClonedTrackVoiceIsolation) {
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
@@ -2381,6 +2450,8 @@ TEST_F(UserMediaClientTest,
   MediaStreamComponent* component2 = track2->Component();
   MediaStreamAudioTrack* platform_track2 =
       MediaStreamAudioTrack::From(component2);
+  EXPECT_TRUE(track2->getSettings()->hasVoiceIsolation());
+  EXPECT_EQ(track2->getSettings()->voiceIsolation(), true);
   {
     blink::MockConstraintFactory factory;
     factory.basic().device_id.SetExact(fake_ids_->audio_input_1);
@@ -2393,10 +2464,12 @@ TEST_F(UserMediaClientTest,
   }
   EXPECT_EQ(platform_track2->VoiceIsolationExactConstraint(), false);
 
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
   EXPECT_TRUE(track1->getSettings()->hasVoiceIsolation());
   EXPECT_EQ(track1->getSettings()->voiceIsolation(), false);
   EXPECT_TRUE(track2->getSettings()->hasVoiceIsolation());
   EXPECT_EQ(track2->getSettings()->voiceIsolation(), false);
+#endif
   EXPECT_TRUE(track1->getCapabilities()->hasVoiceIsolation());
   Vector<bool> voice_isolation_capabilities1 =
       track1->getCapabilities()->voiceIsolation();
@@ -2407,6 +2480,26 @@ TEST_F(UserMediaClientTest,
       track2->getCapabilities()->voiceIsolation();
   EXPECT_TRUE(std::ranges::contains(voice_isolation_capabilities2, false));
   EXPECT_TRUE(std::ranges::contains(voice_isolation_capabilities2, true));
+
+  // 3. Apply "true" exact to cloned track.
+  // This should SUCCEED and re-enable voice isolation for both tracks.
+  {
+    blink::MockConstraintFactory factory;
+    factory.basic().device_id.SetExact(fake_ids_->audio_input_1);
+    factory.basic().voice_isolation.SetExact(true);
+    auto* apply_constraints_request =
+        MakeGarbageCollected<ApplyConstraintsRequest>(
+            track2, factory.CreateMediaConstraints(), nullptr);
+    user_media_client_impl_->ApplyConstraints(apply_constraints_request);
+    test::RunPendingTasks();
+  }
+  EXPECT_EQ(platform_track2->VoiceIsolationExactConstraint(), true);
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  EXPECT_TRUE(track1->getSettings()->hasVoiceIsolation());
+  EXPECT_EQ(track1->getSettings()->voiceIsolation(), true);
+  EXPECT_TRUE(track2->getSettings()->hasVoiceIsolation());
+  EXPECT_EQ(track2->getSettings()->voiceIsolation(), true);
+#endif
 
   // Stop tracks and GC to ensure a clean slate.
   blink::MediaStreamTrackPlatform::GetTrack(WebMediaStreamTrack(component1))
@@ -2438,6 +2531,7 @@ TEST_F(UserMediaClientTest,
   MediaStreamAudioTrack* platform_track =
       MediaStreamAudioTrack::From(component);
   EXPECT_EQ(platform_track->VoiceIsolationExactConstraint(), true);
+  EXPECT_TRUE(track->getSettings()->hasVoiceIsolation());
   EXPECT_EQ(track->getSettings()->voiceIsolation(), true);
 
   // 2. Change constraint to false exact. This should SUCCEED.
@@ -2452,7 +2546,25 @@ TEST_F(UserMediaClientTest,
     test::RunPendingTasks();
   }
   EXPECT_EQ(platform_track->VoiceIsolationExactConstraint(), false);
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
   EXPECT_EQ(track->getSettings()->voiceIsolation(), false);
+#endif
+
+  // 3. Change constraint back to true exact. This should SUCCEED.
+  {
+    blink::MockConstraintFactory factory;
+    factory.basic().device_id.SetExact(fake_ids_->audio_input_1);
+    factory.basic().voice_isolation.SetExact(true);
+    auto* apply_constraints_request =
+        MakeGarbageCollected<ApplyConstraintsRequest>(
+            track, factory.CreateMediaConstraints(), nullptr);
+    user_media_client_impl_->ApplyConstraints(apply_constraints_request);
+    test::RunPendingTasks();
+  }
+  EXPECT_EQ(platform_track->VoiceIsolationExactConstraint(), true);
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  EXPECT_EQ(track->getSettings()->voiceIsolation(), true);
+#endif
 
   // Stop tracks and GC to ensure a clean slate.
   blink::MediaStreamTrackPlatform::GetTrack(WebMediaStreamTrack(component))

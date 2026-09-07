@@ -36,7 +36,7 @@ WalletReminderNoticeBubbleView::WalletReminderNoticeBubbleView(
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  l10n_util::GetStringUTF16(
                      IDS_AUTOFILL_WALLET_REMINDER_NOTICE_CONFIRM_BUTTON_LABEL));
-  SetShowCloseButton(false);
+  SetShowCloseButton(true);
   SetAcceptCallback(base::BindOnce(
       &WalletReminderNoticeBubbleController::OnAcceptButton, controller_));
 
@@ -98,11 +98,12 @@ void WalletReminderNoticeBubbleView::Init() {
     return;
   }
 
-  // TODO(crbug.com/543948117): Handle legal message line link clicked.
-  AddChildView(CreateLegalMessageView(legal_message_lines,
-                                      /*user_email=*/std::u16string(),
-                                      /*user_avatar=*/ui::ImageModel(),
-                                      /*callback=*/base::DoNothing()));
+  AddChildView(CreateLegalMessageView(
+      legal_message_lines,
+      /*user_email=*/std::u16string(),
+      /*user_avatar=*/ui::ImageModel(),
+      base::BindRepeating(&WalletReminderNoticeBubbleController::OnLinkClicked,
+                          controller_)));
 }
 
 BEGIN_METADATA(WalletReminderNoticeBubbleView)

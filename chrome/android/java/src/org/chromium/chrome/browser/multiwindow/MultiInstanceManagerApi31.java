@@ -886,8 +886,7 @@ class MultiInstanceManagerApi31 extends MultiInstanceManagerImpl
                     MultiWindowUtils.getPersistedInstanceIds(PersistedInstanceType.ACTIVE);
             if (!activeInstanceIds.isEmpty() && instanceIds.containsAll(activeInstanceIds)) {
                 TabbedStartupWindowPolicyDelegate.getInstance()
-                        .maybeSaveWindowStateOnSessionTermination(
-                                LastSessionExitType.LAST_WINDOW_CLOSED_BY_APP);
+                        .maybeSaveSessionStateOnTermination(SessionStartupPolicy.CREATE_NEW);
             }
         }
         boolean shouldCloseCurrentInstance = false;
@@ -1081,15 +1080,10 @@ class MultiInstanceManagerApi31 extends MultiInstanceManagerImpl
         if (!isPermanentDeletion) {
             ChromeMultiInstancePersistentStore.writeClosureTime(mInstanceId);
         }
-        if (mActivity.isFinishing()) {
-            boolean isQuitInProgress = isAppQuitInProgress();
-            if (!isQuitInProgress || MultiWindowUtils.hasNoNormalTabs(mInstanceId)) {
-                ChromeMultiInstancePersistentStore.writeIsRecoverable(mInstanceId, false);
-            }
-            if (!isQuitInProgress) {
-                // Notify Recent Tabs page that the instance is closing.
-                notifyInstancesClosed(Collections.singletonList(mInstanceId), isPermanentDeletion);
-            }
+        if (!shouldKeepInstanceRecoverable(mInstanceId)) {
+            ChromeMultiInstancePersistentStore.writeIsRecoverable(mInstanceId, false);
+            // Notify Recent Tabs page that the instance is closing.
+            notifyInstancesClosed(Collections.singletonList(mInstanceId), isPermanentDeletion);
         }
 
         if (mInstanceId != INVALID_WINDOW_ID) {
@@ -1128,8 +1122,7 @@ class MultiInstanceManagerApi31 extends MultiInstanceManagerImpl
         // We persist last closed time when the activity is stopped as a fallback for when
         // #onDestroy() is not called for a finishing activity.
         ChromeMultiInstancePersistentStore.writeClosureTime(mInstanceId);
-        if (mActivity.isFinishing()
-                && (!isAppQuitInProgress() || MultiWindowUtils.hasNoNormalTabs(mInstanceId))) {
+        if (!shouldKeepInstanceRecoverable(mInstanceId)) {
             ChromeMultiInstancePersistentStore.writeIsRecoverable(mInstanceId, false);
         }
     }
@@ -1154,10 +1147,7 @@ class MultiInstanceManagerApi31 extends MultiInstanceManagerImpl
         // which can cause ANRs. Use a sequenced task runner to ensure serial execution and
         // prevent concurrent read-modify-write races on daily max counters.
         sMetricsTaskRunner.postDelayedTask(
-                () -> {
-                    recordInstanceCountMetrics();
-                },
-                0);
+                MultiInstanceManagerApi31::recordInstanceCountMetrics, 0);
     }
 
     /** Collect instance count metrics on a background thread to avoid ANR from Binder IPC. */
@@ -1298,10 +1288,18 @@ class MultiInstanceManagerApi31 extends MultiInstanceManagerImpl
         return Objects.requireNonNullElse(MultiWindowUtils.sMaxInstancesForTesting, mMaxInstances);
     }
 
-    private static boolean isAppQuitInProgress() {
+    private boolean shouldKeepInstanceRecoverable(int instanceId) {
+        // If the activity is destroyed by the system in the background while keeping its task
+        // alive (!isFinishing()), the instance remains active and recoverable.
+        if (!mActivity.isFinishing()) return true;
+
+        // SessionStartupPolicy.RESTORE_ALL signifies that the session is terminating in bulk
+        // (e.g. app quit), requiring non-empty instances to be preserved for recovery on next
+        // launch.
         return MultiWindowUtils.isNewStartupWindowPolicyEnabled()
-                && ChromeMultiInstancePersistentStore.readLastSessionExitType()
-                        == LastSessionExitType.QUIT;
+                && ChromeMultiInstancePersistentStore.readSessionStartupPolicy()
+                        == SessionStartupPolicy.RESTORE_ALL
+                && !MultiWindowUtils.hasNoNormalTabs(instanceId);
     }
 
     @Override

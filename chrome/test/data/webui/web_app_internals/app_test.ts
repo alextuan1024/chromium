@@ -4,7 +4,7 @@
 
 import 'chrome://web-app-internals/app.js';
 
-import {assertNotReached} from 'chrome://resources/js/assert.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {WebAppInternalsAppElement} from 'chrome://web-app-internals/app.js';
 import {browserProxyFactory} from 'chrome://web-app-internals/web_app_internals.mojom-webui.js';
 import type {WebAppInternalsHandlerInterface} from 'chrome://web-app-internals/web_app_internals.mojom-webui.js';
@@ -28,62 +28,6 @@ class TestWebAppInternalsHandler extends TestBrowserProxy implements
     this.methodCalled('getDebugInfoAsJsonString');
     return Promise.resolve({result: this.debugInfoJson_});
   }
-
-  installIsolatedWebAppFromDevProxy() {
-    return assertNotReached();
-  }
-
-  selectFileAndInstallIsolatedWebAppFromDevBundle() {
-    return assertNotReached();
-  }
-
-  parseUpdateManifestFromUrl() {
-    return assertNotReached();
-  }
-
-  installIsolatedWebAppFromBundleUrl() {
-    return assertNotReached();
-  }
-
-  updateDevProxyIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  selectFileAndUpdateIsolatedWebAppFromDevBundle() {
-    return assertNotReached();
-  }
-
-  updateManifestInstalledIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  deleteIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  setUpdateChannelForIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  setPinnedVersionForIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  resetPinnedVersionForIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  setAllowDowngradesForIsolatedWebApp() {
-    return assertNotReached();
-  }
-
-  searchForIsolatedWebAppUpdates() {
-    return assertNotReached();
-  }
-
-  getIsolatedWebAppDevModeAppInfo() {
-    return assertNotReached();
-  }
 }
 
 suite('WebAppInternalsAppElementTest', function() {
@@ -98,6 +42,9 @@ suite('WebAppInternalsAppElementTest', function() {
   };
 
   setup(async function() {
+    loadTimeData.resetForTesting({
+      isIwaPolicyInstallEnabled: true,
+    });
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     window.location.hash = '';
 
@@ -132,4 +79,28 @@ suite('WebAppInternalsAppElementTest', function() {
     assertTrue(links[1]!.classList.contains('active'));
     assertFalse(links[2]!.classList.contains('active'));
   });
+
+  test(
+      'renders iwa-dev notice and does not render iwa-container',
+      async function() {
+        const iwaContainer = element.shadowRoot.querySelector('#iwa-container');
+        assertEquals(null, iwaContainer);
+
+        const iwaDevLink = element.shadowRoot.querySelector<HTMLAnchorElement>(
+            'a[href="chrome://iwa-dev"]');
+        assertTrue(!!iwaDevLink);
+        const p = iwaDevLink.parentElement as HTMLParagraphElement;
+        assertFalse(p.hidden);
+
+        loadTimeData.resetForTesting({
+          isIwaPolicyInstallEnabled: false,
+        });
+        const elementDisabled = document.createElement('web-app-internals-app');
+        document.body.appendChild(elementDisabled);
+        await microtasksFinished();
+
+        const disabledP = elementDisabled.shadowRoot.querySelector('p');
+        assertTrue(!!disabledP);
+        assertTrue(disabledP.hidden);
+      });
 });

@@ -15,6 +15,7 @@
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "components/variations/client_filterable_state.h"
+#include "components/variations/experiment_group_ids.h"
 #include "components/variations/limited_layer_entropy_cost_tracker.h"
 #include "components/variations/proto/layer.pb.h"
 #include "components/variations/proto/study.pb.h"
@@ -150,24 +151,6 @@ bool IsLowEntropyLayer(const Layer& layer) {
   return layer.entropy_mode() == Layer::LOW;
 }
 
-// Returns true if the study consumes entropy. This is true if the study has
-// permanent consistency and uses experiment ids.
-bool ConsumesEntropy(const Study& study) {
-  if (study.consistency() != Study::PERMANENT) {
-    return false;
-  }
-  for (const auto& experiment : study.experiment()) {
-    if (experiment.probability_weight() == 0) {
-      continue;
-    }
-    if (experiment.has_google_web_experiment_id() ||
-        experiment.has_google_web_trigger_experiment_id() ||
-        experiment.has_google_app_experiment_id()) {
-      return true;
-    }
-  }
-  return false;
-}
 // Returns true if the study applies to the client's platform.
 bool AppliesToClientPlatform(const Study& study,
                              const ClientFilterableState& client_state) {
@@ -206,6 +189,8 @@ double GetMaxLimitedEntropyInBits(Study::Platform platform) {
     case Study::PLATFORM_CHROMEOS:
       return 16.0;
     default:
+      // TODO(crbug.com/546673601): Return 13 bits for Android WebView once
+      // limited entropy experimentation (with just 1 bit) has concluded.
       return 1.0;
   }
 }
@@ -295,8 +280,14 @@ MisconfiguredEntropyResult SeedHasMisconfiguredEntropy(
 #undef LOOP_SCOPED_CRASH_KEYS
   }
 
-  // Limited and low entropy systems should not be active at the same time.
-  if (active_limited_layer && (active_low_layer || num_legacy_studies > 0)) {
+  // Entropy-consuming studies can be randomized with low entropy or limited
+  // entropy on only Android WebView while experimentation is underway.
+  //
+  // TODO(crbug.com/546673601): Disallow entropy-consuming Android WebView
+  // studies from using low entropy when the seed has limited-layer-constrained
+  // studies.
+  if (client_state.platform != Study::PLATFORM_ANDROID_WEBVIEW &&
+      active_limited_layer && (active_low_layer || num_legacy_studies > 0)) {
     SCOPED_CRASH_KEY_NUMBER(SR_CRASH_KEY, "legacy_studies", num_legacy_studies);
     LogSeedRejectionReason(SeedRejectionReason::kActiveLowAndLimitedEntropy,
                            /*study=*/nullptr, active_limited_layer,

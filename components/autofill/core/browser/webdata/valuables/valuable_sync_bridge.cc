@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "base/check.h"
-#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -27,7 +26,7 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
-#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_utils.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_sync_util.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
@@ -108,13 +107,16 @@ bool AreAutofillAiSpecificsValid(
           features::kAutofillAiImportConstraintsForSync)) {
     return true;
   }
-  EntityInstance entity =
-      CHECK_DEREF(CreateEntityInstanceFromSpecifics(specifics));
+  std::optional<EntityInstance> entity =
+      CreateEntityInstanceFromSpecifics(specifics);
+  if (!entity) {
+    return false;
+  }
   const bool meets_import_constraints = AttributesMeetImportConstraints(
-      entity.type(), DenseSet(entity.attributes(), &AttributeInstance::type));
+      entity->type(), DenseSet(entity->attributes(), &AttributeInstance::type));
   base::UmaHistogramBoolean(
       base::StrCat({"Autofill.Ai.ImportConstraintsMet.WalletSync.",
-                    EntityTypeToMetricsString(entity.type())}),
+                    EntityTypeToMetricsString(entity->type())}),
       meets_import_constraints);
   return meets_import_constraints;
 }

@@ -26,7 +26,9 @@ namespace partition_alloc {
 namespace {
 
 template <bool thread_bound>
-internal::SchedulerLoopQuarantineBranch<thread_bound>*
+internal::SchedulerLoopQuarantineBranch<
+    thread_bound,
+    internal::QuarantineTarget::kMiracleObjects>*
 GetBranchFromAllocatorRoot(PartitionRoot* root);
 
 template <>
@@ -87,7 +89,7 @@ class SchedulerLoopQuarantineTest : public testing::Test {
   QuarantineBranch* GetQuarantineBranch() { return branch_; }
 
   void Quarantine(void* object) {
-    internal::SlotStart slot_start = internal::SlotStart::Unchecked(object);
+    SlotStart slot_start = SlotStart::Unchecked(object);
     auto* slot_span = internal::SlotSpanMetadata::FromSlotStart(
         slot_start.Untag(), GetPartitionRoot());
     auto size_details =
@@ -96,7 +98,7 @@ class SchedulerLoopQuarantineTest : public testing::Test {
   }
 
   size_t GetObjectSize(void* object) {
-    internal::SlotStart slot_start = internal::SlotStart::Unchecked(object);
+    SlotStart slot_start = SlotStart::Unchecked(object);
     auto* entry_slot_span = internal::SlotSpanMetadata::FromSlotStart(
         slot_start.Untag(), GetPartitionRoot());
     return entry_slot_span->bucket->slot_size;
@@ -251,8 +253,7 @@ TEST(SchedulerLoopQuarantineTest, ExclusionWithInvalidFirstPartition) {
     GTEST_SKIP() << "Test requires kNumPartitions >= 2";
   }
 #if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
-  auto* root1 = allocator_shim::internal::PartitionAllocMalloc::Allocator(
-      allocator_shim::AllocToken(1));
+  auto* root1 = allocator_shim::internal::PartitionAllocMalloc::Allocator(1);
   if (!root1) {
     GTEST_SKIP() << "Partition 1 is not initialized";
   }
@@ -271,7 +272,7 @@ TEST(SchedulerLoopQuarantineTest, ExclusionWithInvalidFirstPartition) {
     branch.Configure(
         qroot, {.branch_capacity_in_bytes = 1024, .enable_quarantine = true});
 
-    internal::SlotStart slot_start = internal::SlotStart::Unchecked(ptr);
+    SlotStart slot_start = SlotStart::Unchecked(ptr);
     auto* slot_span =
         internal::SlotSpanMetadata::FromSlotStart(slot_start.Untag(), root1);
     auto size_details = root1->SlotSpanToBucketSizeDetails(slot_span);

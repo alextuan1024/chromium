@@ -35,8 +35,11 @@ component("cpp") {
     "range.h",
     "supported_data_types.h",
     "supported_tensors.h",
+    "webgpu_context_properties.h",
     "webnn_errors.cc",
     "webnn_errors.h",
+    "webnn_sandbox_init.cc",
+    "webnn_sandbox_init.h",
     "webnn_trace.cc",
     "webnn_trace.h",
     "webnn_types.h",
@@ -45,6 +48,7 @@ component("cpp") {
   public_deps = [
     ":buildflags",
     "//base",
+    "//services/webnn/public/mojom:features",
   ]
 
   deps = [
@@ -56,13 +60,6 @@ component("cpp") {
     sources += [
       "coreml_initializer.cc",
       "coreml_initializer.h",
-    ]
-  }
-
-  if (is_win || is_linux) {
-    sources += [
-      "webnn_sandbox_init.cc",
-      "webnn_sandbox_init.h",
     ]
   }
 
@@ -80,6 +77,7 @@ source_set("in_process_context_provider") {
   ]
 
   public_deps = [
+    ":cpp",
     "//base",
     "//mojo/public/cpp/system",
   ]

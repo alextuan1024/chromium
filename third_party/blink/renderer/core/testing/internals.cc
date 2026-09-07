@@ -2811,7 +2811,7 @@ void Internals::disableReferencedFilePathsVerification() const {
     return;
   GetFrame()
       ->GetDocument()
-      ->GetFormController()
+      ->EnsureFormController()
       .SetDropReferencedFilePathsForTesting();
 }
 
@@ -3909,12 +3909,11 @@ ScriptPromise<IDLString> Internals::LCPPrediction(ScriptState* script_state,
   return promise;
 }
 
-bool Internals::isExtensionScriptInStack() const {
-  if (!GetFrame()) {
-    return false;
+String Internals::extensionScriptInStack() const {
+  if (!GetFrame() || !GetFrame()->GetExtensionScriptTracker()) {
+    return String();
   }
-  return GetFrame()->GetExtensionScriptTracker() &&
-         GetFrame()->GetExtensionScriptTracker()->IsExtensionScriptInStack();
+  return GetFrame()->GetExtensionScriptTracker()->ExtensionScriptInStack();
 }
 
 bool Internals::isExtensionScriptUrl(const String& url) const {

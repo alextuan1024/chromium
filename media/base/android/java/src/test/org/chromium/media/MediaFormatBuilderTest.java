@@ -14,7 +14,6 @@ import android.media.MediaFormat;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
@@ -22,7 +21,6 @@ import java.nio.ByteBuffer;
 
 /** Tests for MediaFormatBuilder. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MediaFormatBuilderTest {
     private static final String VIDEO_DECODER_MIME = MediaFormat.MIMETYPE_VIDEO_AVC;
     private static final int VIDEO_WIDTH = 640;
@@ -34,8 +32,6 @@ public class MediaFormatBuilderTest {
     private static final byte[] AVC_PPS_EXAMPLE = {
         0x00, 0x00, 0x00, 0x01, 0x68, (byte) 0xce, 0x38, (byte) 0x80
     };
-
-    private static final int BITRATE_MODE_CBR = 2;
 
     private static final String AUDIO_DECODER_MIME = MediaFormat.MIMETYPE_AUDIO_OPUS;
     private static final int AUDIO_DECODER_SAMPLE_RATE = 48000;

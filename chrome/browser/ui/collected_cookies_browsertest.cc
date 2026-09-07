@@ -7,7 +7,6 @@
 #include "base/command_line.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tab_dialogs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
@@ -42,7 +41,7 @@ class CollectedCookiesTest : public DialogBrowserTest {
         browser(), embedded_test_server()->GetURL("/cookie1.html")));
 
     content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     TabDialogs::FromWebContents(web_contents)->ShowCollectedCookies();
   }
 };
@@ -58,7 +57,7 @@ IN_PROC_BROWSER_TEST_F(CollectedCookiesTest, DoubleDisplay) {
 
   // Click on the info link a second time.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   TabDialogs::FromWebContents(web_contents)->ShowCollectedCookies();
 }
 

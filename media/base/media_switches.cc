@@ -620,7 +620,7 @@ BASE_FEATURE(kGlobalMediaControlsAutoDismiss, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables the "Save Video Frame" button in Global Media Controls.
 BASE_FEATURE(kGlobalMediaControlsSaveVideoFrame,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enable selection of audio output device in Global Media Controls.
 BASE_FEATURE(kGlobalMediaControlsSeamlessTransfer,
@@ -1001,6 +1001,13 @@ BASE_FEATURE(kUseSequencedTaskRunnerForMojoVEAProvider,
 BASE_FEATURE(kUseTaskRunnerForMojoAudioDecoderService,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, determines whether a VideoFrame requires copying before display
+// based on whether the SharedImage usage includes
+// SHARED_IMAGE_USAGE_DISPLAY_READ, rather than using
+// VideoFrameMetadata::copy_required.
+BASE_FEATURE(kUseSharedImageUsageForVideoFrameCopy,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Safety switch to allow us to revert to the previous behavior of using the
 // restored bounds for PiP windows, rather than the window bounds.  If this
 // feature is enabled (the default), then we'll use the window bounds.
@@ -1228,9 +1235,9 @@ BASE_FEATURE(kPlatformHEVCEncoderSupport, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_APPLE)
-// Enables HEVC Main10 (10-bit) hardware accelerated encoding on macOS.
-BASE_FEATURE(kPlatformHEVCMain10EncoderSupport,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+// Enables HEVC high-bit-depth hardware accelerated encoding on macOS. Covers
+// Main10 (10-bit 4:2:0) and RExt 8/10-bit 4:2:2 and 4:4:4.
+BASE_FEATURE(kPlatformHEVCHbdEncoderSupport, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_APPLE)
 
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
@@ -1245,6 +1252,20 @@ BASE_FEATURE(kSymphoniaMp3Decoding, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSymphoniaPcmDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kSymphoniaVorbisDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_SYMPHONIA)
+
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+// Enables the use of Symphonia for container demuxing.
+// Owner: jophba@chromium.org
+// TODO(crbug.com/550619039, jophba): Consider for removal in M177.
+BASE_FEATURE(kSymphoniaDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaAacDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaFlacDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaIsomDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaMkvDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaMp3Demuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaOggDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaRiffDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
 
 #if BUILDFLAG(IS_ANDROID)
 // Allows audio playback capture on Android.
@@ -1297,9 +1318,9 @@ BASE_FEATURE(kContextMenuPictureInPictureAndroid,
 BASE_FEATURE(kFullscreenVideoPictureInPicture,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables block model (LinearBlock) on supported devices.
-// TODO(crbug.com/327625558): Currently block model is buggy and can't be
-// enabled, we need to test it again when Android 17 is released.
+// Enables block model on supported devices.
+// Block model is only supported on Android 17 26Q4+ where the feature is
+// properly supported by the framework.
 BASE_FEATURE(kMediaCodecBlockModel, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables output-side block model (OutputFrame) on supported devices.
@@ -1514,11 +1535,6 @@ BASE_FEATURE(kCastStreamingMacHardwareH264, base::FEATURE_ENABLED_BY_DEFAULT);
 // Enables system audio loopback capture using the macOS CoreAudio tap API for
 // Cast.
 BASE_FEATURE(kMacCatapLoopbackAudioForCast, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables system audio loopback capture using the macOS CoreAudio tap API for
-// screen share.
-BASE_FEATURE(kMacCatapLoopbackAudioForScreenShare,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Use the built-in MacOS screen-sharing picker (SCContentSharingPicker). This
 // flag will only use the built-in picker on MacOS 15 Sequoia and later where it
@@ -1801,8 +1817,6 @@ bool IsApplicationLoopbackCaptureSupported() {
          IsWindowsProcessLoopbackCaptureSupported();
 #elif BUILDFLAG(IS_MAC)
   return base::FeatureList::IsEnabled(kApplicationAudioCaptureMac) &&
-         base::FeatureList::IsEnabled(
-             media::kMacCatapLoopbackAudioForScreenShare) &&
          media::IsMacCatapSystemLoopbackCaptureSupported();
 #else
   return false;
@@ -1865,8 +1879,7 @@ bool IsLiveTranslateEnabled() {
 
 bool IsRestrictOwnAudioSupported() {
 #if BUILDFLAG(IS_MAC)
-  return IsMacCatapSystemLoopbackCaptureSupported() &&
-         base::FeatureList::IsEnabled(kMacCatapLoopbackAudioForScreenShare);
+  return IsMacCatapSystemLoopbackCaptureSupported();
 #elif BUILDFLAG(IS_WIN)
   return IsWindowsProcessLoopbackCaptureSupported();
 #else

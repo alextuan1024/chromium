@@ -87,6 +87,7 @@ GlicFloatingUi::GlicFloatingUi(Profile* profile,
       PictureInPictureWindowManager::GetInstance()->GetOcclusionTracker();
   tracker->OnPictureInPictureWidgetOpened(glic_widget_.get());
   browser_attach_observation_ = ObserveBrowserForAttachment(profile_, this);
+  host_observation_.Observe(&delegate_->host());
 }
 
 GlicFloatingUi::~GlicFloatingUi() {
@@ -146,8 +147,9 @@ void GlicFloatingUi::CreateAndSetupWidget(gfx::Rect initial_bounds) {
         if (!panel) {
           return;
         }
-        panel->Zoom(zoom_in ? mojom::ZoomAction::kZoomIn
-                            : mojom::ZoomAction::kZoomOut);
+        panel->Zoom(
+            zoom_in ? mojom::ZoomAction::kZoomIn : mojom::ZoomAction::kZoomOut,
+            ZoomSource::kScroll);
       },
       weak_ptr_factory_.GetWeakPtr()));
 
@@ -206,8 +208,8 @@ bool GlicFloatingUi::ActivateBrowser() {
   return false;
 }
 
-void GlicFloatingUi::Zoom(mojom::ZoomAction zoom_action) {
-  delegate_->host().Zoom(zoom_action);
+void GlicFloatingUi::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
+  delegate_->host().Zoom(zoom_action, source);
 }
 
 void GlicFloatingUi::ShowTitleBarContextMenuAt(gfx::Point event_loc) {
@@ -248,6 +250,13 @@ void GlicFloatingUi::CloseSelectionOverlay() {
   selection_overlay_controller->Close();
 }
 #endif
+
+void GlicFloatingUi::ActiveWebContentsChanged(
+    content::WebContents* new_contents) {
+  if (auto* glic_view = GetGlicView()) {
+    glic_view->SetWebContents(new_contents);
+  }
+}
 
 void GlicFloatingUi::EnableDragResize(bool enabled) {
   user_resizable_ = enabled;

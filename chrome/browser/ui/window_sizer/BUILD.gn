@@ -34,6 +34,7 @@ source_set("impl") {
     "//chrome/browser:browser_process",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:browser_init_state",
+    "//chrome/browser/ui:browser_window_state",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/web_applications",
     "//chrome/common:non_code_constants",
@@ -52,6 +53,7 @@ source_set("impl") {
     if (is_chromeos) {
       sources += [ "window_sizer_chromeos.cc" ]
       deps += [
+        "//chrome/browser/ui/window_feature_controller",
         "//chrome/common:constants",
         "//ui/aura",
       ]
@@ -73,7 +75,6 @@ source_set("unit_tests") {
   ]
   deps = [
     "//base",
-    "//chrome/browser/ui",
     "//chrome/common:non_code_constants",
     "//testing/gtest",
     "//ui/base/mojom:ui_base_types",

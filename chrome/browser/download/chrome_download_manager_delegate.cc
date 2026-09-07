@@ -12,6 +12,7 @@
 
 #include "base/check_deref.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -100,6 +101,8 @@
 #include "net/base/mime_util.h"
 #include "net/base/network_change_notifier.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/content_uri_utils.h"
@@ -231,6 +234,25 @@ base::FilePath CreateLocalTempFile() {
 
 #if BUILDFLAG(IS_ANDROID)
 const char kPdfDirName[] = "pdfs";
+constexpr char kDownloadContentUri[] =
+    "content://com.android.externalstorage.documents/document/"
+    "primary%3ADownload";
+
+bool IsDownloadSaveAsContextMenuEnabled() {
+  return base::FeatureList::IsEnabled(
+             download::features::kEnableDownloadSaveAsContextMenu) &&
+         base::android::device_info::is_desktop();
+}
+
+base::FilePath GetTargetContentUri(const base::FilePath& suggested_path) {
+  if (suggested_path.IsContentUri()) {
+    return suggested_path;
+  }
+  if (suggested_path.empty()) {
+    return base::FilePath(kDownloadContentUri).AsEndingWithSeparator();
+  }
+  return base::FilePath(kDownloadContentUri).Append(suggested_path.BaseName());
+}
 #endif
 
 // Used with GetPlatformDownloadPath() to indicate which platform path to
@@ -425,15 +447,33 @@ bool ShouldOpenPdfInlineInternal(bool incognito) {
   return Java_PdfUtils_shouldOpenPdfInline(env, incognito);
 }
 
-void OnDetermineSavePackagePathDone(
+void OnSavePackageDownloadDialogClosed(
+    const GURL& url,
     content::SavePackagePathPickedCallback callback,
-    const base::FilePath& file_path,
-    const base::FilePath& display_name) {
-  content::SavePackagePathPickedParams param;
-  param.file_path = file_path;
-  param.save_type = content::SavePageType::SAVE_PAGE_TYPE_AS_MHTML;
-  param.display_name = display_name;
-  std::move(callback).Run(param, base::DoNothing());
+    DownloadDialogResult result) {
+  switch (result.location_result) {
+    case DownloadLocationDialogResult::USER_CONFIRMED:
+    case DownloadLocationDialogResult::CONFIRMED_WITHOUT_USER_INPUT:
+    case DownloadLocationDialogResult::DUPLICATE_DIALOG: {
+      download::DetermineSavePackagePath(
+          url, result.file_path,
+          base::BindOnce(
+              [](content::SavePackagePathPickedCallback callback,
+                 const base::FilePath& file_path,
+                 const base::FilePath& display_name) {
+                content::SavePackagePathPickedParams param;
+                param.file_path = file_path;
+                param.save_type =
+                    content::SavePageType::SAVE_PAGE_TYPE_AS_MHTML;
+                param.display_name = display_name;
+                std::move(callback).Run(param, base::DoNothing());
+              },
+              std::move(callback)));
+      break;
+    }
+    case DownloadLocationDialogResult::USER_CANCELED:
+      break;
+  }
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -1223,7 +1263,7 @@ bool ChromeDownloadManagerDelegate::InterceptDownloadIfApplicable(
       offline_pages::OfflinePageUtils::CanDownloadAsOfflinePage(url,
                                                                 mime_type)) {
 #if BUILDFLAG(IS_ANDROID)
-    if (profile_->IsOffTheRecord()) {
+    if (profile_->IsOffTheRecord() || IsDownloadSaveAsContextMenuEnabled()) {
       return false;
     }
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -1294,10 +1334,19 @@ void ChromeDownloadManagerDelegate::ChooseSavePath(
     return;
   }
 
+  if (IsDownloadSaveAsContextMenuEnabled() &&
+      base::FeatureList::IsEnabled(
+          download::features::kEnableDownloadSaveAsSystemFileDialog)) {
+    new SavePackageFilePicker(web_contents, GetTargetContentUri(suggested_path),
+                              default_extension, can_save_as_complete,
+                              download_prefs_.get(), std::move(callback));
+    return;
+  }
+
   base::OnceCallback<void(bool)> confirm_callback =
       base::BindOnce(&ChromeDownloadManagerDelegate::
                          RequestIncognitoSavePackageConfirmationDone,
-                     weak_ptr_factory_.GetWeakPtr(), web_contents->GetURL(),
+                     weak_ptr_factory_.GetWeakPtr(), web_contents,
                      suggested_path, std::move(callback));
   if (profile_->IsOffTheRecord()) {
     RequestIncognitoWarningConfirmation(web_contents,
@@ -1310,7 +1359,7 @@ void ChromeDownloadManagerDelegate::ChooseSavePath(
   new SavePackageFilePicker(web_contents, suggested_path, default_extension,
                             can_save_as_complete, download_prefs_.get(),
                             std::move(callback));
-#endif
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void ChromeDownloadManagerDelegate::SanitizeSavePackageResourceName(
@@ -1551,13 +1600,20 @@ void ChromeDownloadManagerDelegate::RequestConfirmation(
   content::WebContents* web_contents =
       content::DownloadItemUtils::GetWebContents(download);
 
-  bool is_save_as_enabled = base::FeatureList::IsEnabled(
-      download::features::kEnableDownloadSaveAsContextMenu);
+  bool is_save_as_enabled = IsDownloadSaveAsContextMenuEnabled();
   if (reason == DownloadConfirmationReason::SAVE_AS && !is_save_as_enabled) {
     // If this is a 'Save As' download, just run without confirmation.
     std::move(callback).Run(
         DownloadConfirmationResult::CONTINUE_WITHOUT_CONFIRMATION,
         ui::SelectedFileInfo(suggested_path));
+    return;
+  }
+
+  if (reason == DownloadConfirmationReason::SAVE_AS && is_save_as_enabled &&
+      base::FeatureList::IsEnabled(
+          download::features::kEnableDownloadSaveAsSystemFileDialog)) {
+    ShowFilePickerWithUserTakeover(
+        download, GetTargetContentUri(suggested_path), std::move(callback));
     return;
   }
 
@@ -1607,8 +1663,7 @@ void ChromeDownloadManagerDelegate::RequestConfirmation(
     bool is_save_as_prompt =
         (download->GetTargetDisposition() ==
          download::DownloadItem::TARGET_DISPOSITION_PROMPT) &&
-        base::FeatureList::IsEnabled(
-            download::features::kEnableDownloadSaveAsContextMenu);
+        IsDownloadSaveAsContextMenuEnabled();
     if (!download_prefs_->PromptForDownload() && !is_save_as_prompt) {
       DuplicateDownloadDialogBridgeDelegate::GetInstance()->CreateDialog(
           download, suggested_path, web_contents, std::move(callback));
@@ -1658,11 +1713,22 @@ void ChromeDownloadManagerDelegate::RequestConfirmation(
   return;
 
 #else   // BUILDFLAG(IS_ANDROID)
+  ShowFilePickerWithUserTakeover(download, suggested_path, std::move(callback));
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+
+void ChromeDownloadManagerDelegate::ShowFilePickerWithUserTakeover(
+    DownloadItem* download,
+    const base::FilePath& suggested_path,
+    DownloadTargetDeterminerDelegate::ConfirmationCallback callback) {
   auto trigger_user_takeover = base::BindOnce(
       [](base::WeakPtr<ChromeDownloadManagerDelegate> download_manager_delegate,
          const std::string& guid, const base::FilePath& suggested_path,
          DownloadTargetDeterminerDelegate::ConfirmationCallback callback,
          bool should_cancel) {
+        if (!download_manager_delegate) {
+          return;
+        }
         if (should_cancel) {
           download_manager_delegate->OnConfirmationCallbackComplete(
               std::move(callback), DownloadConfirmationResult::CANCELED,
@@ -1685,6 +1751,7 @@ void ChromeDownloadManagerDelegate::RequestConfirmation(
       },
       weak_ptr_factory_.GetWeakPtr(), download->GetGuid(), suggested_path);
 
+#if !BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(
           actor::kGlicDeferDownloadFilePickerToUserTakeover)) {
     if (actor::ExecutionEngine* execution_engine =
@@ -1700,10 +1767,10 @@ void ChromeDownloadManagerDelegate::RequestConfirmation(
       return;
     }
   }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   std::move(trigger_user_takeover)
       .Run(std::move(callback), /*should_cancel=*/false);
-#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void ChromeDownloadManagerDelegate::OnConfirmationCallbackComplete(
@@ -1762,8 +1829,7 @@ void ChromeDownloadManagerDelegate::GenerateUniqueFileNameDone(
         download &&
         (download->GetTargetDisposition() ==
          download::DownloadItem::TARGET_DISPOSITION_PROMPT) &&
-        base::FeatureList::IsEnabled(
-            download::features::kEnableDownloadSaveAsContextMenu);
+        IsDownloadSaveAsContextMenuEnabled();
     if (download_prefs_->PromptForDownload() || is_save_as_enabled) {
       content::WebContents* web_contents =
           download ? content::DownloadItemUtils::GetWebContents(download)
@@ -2668,16 +2734,48 @@ void ChromeDownloadManagerDelegate::CancelAllEphemeralWarnings() {
 
 #if BUILDFLAG(IS_ANDROID)
 void ChromeDownloadManagerDelegate::RequestIncognitoSavePackageConfirmationDone(
-    const GURL& url,
+    content::WebContents* web_contents,
     const base::FilePath& suggested_path,
     content::SavePackagePathPickedCallback callback,
     bool accept) {
-  if (!accept) {
+  if (!accept || !web_contents) {
     return;
   }
+
+  bool is_save_as_enabled = IsDownloadSaveAsContextMenuEnabled();
+  if (is_save_as_enabled) {
+    gfx::NativeWindow native_window = web_contents->GetTopLevelNativeWindow();
+    base::FilePath mhtml_path = suggested_path.ReplaceExtension("mhtml");
+    ShowDownloadDialog(
+        native_window, 0 /* total_bytes */,
+        DownloadLocationDialogType::FORCE_PROMPT, mhtml_path,
+        base::BindOnce(&OnSavePackageDownloadDialogClosed,
+                       web_contents->GetURL(), std::move(callback)));
+    return;
+  }
+
   download::DetermineSavePackagePath(
-      url, suggested_path,
-      base::BindOnce(&OnDetermineSavePackagePathDone, std::move(callback)));
+      web_contents->GetURL(), suggested_path,
+      base::BindOnce(
+          &ChromeDownloadManagerDelegate::OnDetermineSavePackagePathDone,
+          weak_ptr_factory_.GetWeakPtr(), web_contents->GetWeakPtr(),
+          std::move(callback)));
+}
+
+void ChromeDownloadManagerDelegate::OnDetermineSavePackagePathDone(
+    base::WeakPtr<content::WebContents> web_contents,
+    content::SavePackagePathPickedCallback callback,
+    const base::FilePath& file_path,
+    const base::FilePath& display_name) {
+  if (!web_contents) {
+    return;
+  }
+
+  content::SavePackagePathPickedParams param;
+  param.file_path = file_path;
+  param.save_type = content::SavePageType::SAVE_PAGE_TYPE_AS_MHTML;
+  param.display_name = display_name;
+  std::move(callback).Run(param, base::DoNothing());
 }
 #endif
 

@@ -17,15 +17,19 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#include "components/autofill/core/browser/data_model/data_model_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h"
 #include "components/autofill/core/browser/manual_testing_import.h"
 #include "components/autofill/core/browser/network/autofill_ai/personal_context_conversion_util.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/personal_context/core/context_memory_error.h"
@@ -72,11 +76,11 @@ bool IsPersonalContextEligible(
 }
 
 personal_context::proto::ContextMemoryAmbientAutofillRequest
-CreateAmbientAutofillRequest(base::span<const EntityType> types,
+CreateAmbientAutofillRequest(DenseSet<EntityType> types,
                              bool return_spii_presence,
                              std::string client_id) {
   personal_context::proto::ContextMemoryAmbientAutofillRequest request;
-  for (const EntityType& type : types) {
+  for (EntityType type : types) {
     request.add_requested_types(
         AutofillEntityTypeToPersonalContextEntityType(type));
   }
@@ -93,6 +97,77 @@ bool IsPersonalContextSpiiType(EntityType type) {
   return GetPersonalContextSpiiType(
              type, EntityInstance::RecordType::kPersonalContext) ==
          EntityInstance::PersonalContextSpiiType::kSpii;
+}
+
+bool IsValidDateWithinTtl(const EntityInstance& entity,
+                          AttributeTypeName type_name,
+                          base::TimeDelta ttl) {
+  base::optional_ref<const AttributeInstance> attr =
+      entity.attribute(AttributeType(type_name));
+  if (!attr) {
+    return false;
+  }
+
+  data_util::Date date;
+  if (!data_util::ParseDate(attr->GetCompleteRawInfo(), u"YYYY-MM-DD", date) ||
+      !data_util::IsValidDateForFormat(date, u"YYYY-MM-DD")) {
+    return false;
+  }
+
+  // Set the time to the end of the day so the date remains valid throughout the
+  // whole day.
+  base::Time::Exploded exploded = {
+      .year = date.year,
+      .month = date.month,
+      .day_of_month = date.day,
+      .hour = 23,
+      .minute = 59,
+      .second = 59,
+      .millisecond = 999,
+  };
+  base::Time time;
+  return base::Time::FromLocalExploded(exploded, &time) &&
+         time + ttl >= base::Time::Now();
+}
+
+bool ValidateTtl(const EntityInstance& entity) {
+  switch (entity.type().name()) {
+    case EntityTypeName::kPassport:
+      return IsValidDateWithinTtl(
+          entity, AttributeTypeName::kPassportExpirationDate, base::Days(0));
+    case EntityTypeName::kDriversLicense:
+      return IsValidDateWithinTtl(
+          entity, AttributeTypeName::kDriversLicenseExpirationDate,
+          base::Days(0));
+    case EntityTypeName::kNationalIdCard:
+      return IsValidDateWithinTtl(
+          entity, AttributeTypeName::kNationalIdCardExpirationDate,
+          base::Days(0));
+    case EntityTypeName::kOrder:
+      return IsValidDateWithinTtl(entity, AttributeTypeName::kOrderDate,
+                                  base::Days(90));
+    case EntityTypeName::kShipment:
+      return IsValidDateWithinTtl(
+          entity, AttributeTypeName::kShipmentShippedDate, base::Days(30));
+    case EntityTypeName::kFlightReservation:
+      return IsValidDateWithinTtl(
+          entity, AttributeTypeName::kFlightReservationDepartureDate,
+          base::Days(90));
+    case EntityTypeName::kVehicle:
+      return true;
+    case EntityTypeName::kKnownTravelerNumber:
+    case EntityTypeName::kRedressNumber:
+      // Unsupported by Ambient Autofill.
+      return false;
+  }
+  NOTREACHED();
+}
+
+bool IsValidAmbientAutofillEntity(const EntityInstance& entity) {
+  return AttributesMeetImportConstraints(
+             entity.type(),
+             DenseSet(entity.attributes(), &AttributeInstance::type)) &&
+         ValidateTtl(entity);
 }
 
 // Logs the request latency of a personal context network request.
@@ -146,7 +221,8 @@ AutofillAiPersonalContextAccessManagerImpl::
         subscription_eligibility::SubscriptionEligibilityService*
             subscription_eligibility_service,
         PrefService* pref_service,
-        syncer::DeviceInfoSyncService* device_info_sync_service)
+        syncer::DeviceInfoSyncService* device_info_sync_service,
+        EntitySuppressionManager* suppression_manager)
     : personal_context_service_(CHECK_DEREF(personal_context_service)),
       personal_context_eligibility_service_(
           CHECK_DEREF(personal_context_eligibility_service)),
@@ -157,6 +233,9 @@ AutofillAiPersonalContextAccessManagerImpl::
   if (subscription_eligibility_service) {
     subscription_eligibility_observation_.Observe(
         subscription_eligibility_service);
+  }
+  if (suppression_manager) {
+    suppression_observation_.Observe(suppression_manager);
   }
   if (pref_service_) {
     pref_registrar_.Init(pref_service_);
@@ -188,28 +267,26 @@ AutofillAiPersonalContextAccessManagerImpl::
     ~AutofillAiPersonalContextAccessManagerImpl() = default;
 
 void AutofillAiPersonalContextAccessManagerImpl::PrefetchContext(
-    base::span<const EntityType> requested_types) {
+    DenseSet<EntityType> requested_types) {
   // Types to request in Request 1 (which includes all non-SPII types and any
   // SPII types for which we want to check presence signals).
-  std::vector<EntityType> non_spii_and_presence_to_request;
-  non_spii_and_presence_to_request.reserve(requested_types.size());
+  DenseSet<EntityType> non_spii_and_presence_to_request;
   // SPII types for which we want to fetch the actual masked entity data in
   // Request 2.
-  std::vector<EntityType> spii_to_request;
-  spii_to_request.reserve(requested_types.size());
+  DenseSet<EntityType> spii_to_request;
 
   DenseSet<PersonalContextPrefetchTriggerResult> unique_trigger_results;
-  for (const EntityType& type : requested_types) {
+  for (EntityType type : requested_types) {
     PersonalContextPrefetchTriggerResult trigger_result =
         DeterminePrefetchTriggerResult(type);
     unique_trigger_results.insert(trigger_result);
 
     if (trigger_result == PersonalContextPrefetchTriggerResult::kInitiated) {
-      non_spii_and_presence_to_request.push_back(type);
+      non_spii_and_presence_to_request.insert(type);
       SetTypeStatus(type, RequestStatus::kPending);
 
       if (IsPersonalContextSpiiType(type)) {
-        spii_to_request.push_back(type);
+        spii_to_request.insert(type);
       }
     }
   }
@@ -237,12 +314,11 @@ void AutofillAiPersonalContextAccessManagerImpl::PrefetchContext(
         personal_context::proto::CONTEXT_MEMORY_FEATURE_AMBIENT_AUTOFILL,
         request,
         /*options=*/{},
-        base::BindOnce(&AutofillAiPersonalContextAccessManagerImpl::
-                           OnPrefetchContextRequestComplete,
-                       weak_factory_.GetWeakPtr(),
-                       std::move(non_spii_and_presence_to_request),
-                       RequestType::kNonSpiiAndPresence,
-                       base::TimeTicks::Now()));
+        base::BindOnce(
+            &AutofillAiPersonalContextAccessManagerImpl::
+                OnPrefetchContextRequestComplete,
+            weak_factory_.GetWeakPtr(), non_spii_and_presence_to_request,
+            RequestType::kNonSpiiAndPresence, base::TimeTicks::Now()));
   }
 
   // Request 2: collects spii entities without asking for spii presence.
@@ -259,14 +335,14 @@ void AutofillAiPersonalContextAccessManagerImpl::PrefetchContext(
         /*options=*/{},
         base::BindOnce(&AutofillAiPersonalContextAccessManagerImpl::
                            OnPrefetchContextRequestComplete,
-                       weak_factory_.GetWeakPtr(), std::move(spii_to_request),
+                       weak_factory_.GetWeakPtr(), spii_to_request,
                        RequestType::kSpiiMasked, base::TimeTicks::Now()));
   }
 }
 
 void AutofillAiPersonalContextAccessManagerImpl::
     OnPrefetchContextRequestComplete(
-        std::vector<EntityType> requested_types,
+        DenseSet<EntityType> requested_types,
         RequestType request_type,
         base::TimeTicks request_start_time,
         personal_context::FetchContextResult result) {
@@ -286,18 +362,17 @@ void AutofillAiPersonalContextAccessManagerImpl::
     return;
   }
 
-  std::vector<EntityType> prefetched_types;
-  for (const EntityType& type : requested_types) {
+  DenseSet<EntityType> prefetched_types;
+  for (EntityType type : requested_types) {
     if (base::FeatureList::IsEnabled(
             features::kAutofillAmbientAutofillSpiiCache) ||
         request_type == RequestType::kSpiiMasked ||
         !IsPersonalContextSpiiType(type)) {
-      prefetched_types.push_back(type);
+      prefetched_types.insert(type);
     }
   }
 
-  ProcessPrefetchedEntities(std::move(prefetched_types),
-                            std::move(requested_types),
+  ProcessPrefetchedEntities(prefetched_types, requested_types,
                             std::move(*parsed_entities));
 }
 
@@ -323,28 +398,38 @@ AutofillAiPersonalContextAccessManagerImpl::ExtractEntitiesFromResponse(
               ToEntityType(entity.sensitive_pii_presence().type())) {
         entities.push_back({*type, entity});
       }
-    }
-    if (base::FeatureList::IsEnabled(
-            features::kAutofillAmbientAutofillSpiiCache) &&
-        entity.entity_case() ==
-            personal_context::proto::Entity::kEncryptedEntity) {
-      if (std::optional<personal_context::proto::Entity> decrypted_entity =
-              personal_context_service_->DecryptEntity(entity)) {
-        // TODO(crbug.com/548257908): Mask the decrypted entity.
-        if (std::optional<EntityInstance> converted =
-                PersonalContextEntityToEntityInstance(*decrypted_entity)) {
-          // Cache only the encrypted `entity`.
-          entities.push_back({std::move(*converted), entity});
-        }
-      }
-    } else {
-      if (std::optional<EntityInstance> converted =
-              PersonalContextEntityToEntityInstance(entity)) {
+    } else if (std::optional<EntityInstance> converted =
+                   ConvertProtoToEntityInstance(entity, /*mask_spii=*/true)) {
+      // TODO(crbug.com/501037715): Record metrics for
+      // `IsValidAmbientAutofillEntity`.
+      if (IsValidAmbientAutofillEntity(*converted)) {
         entities.push_back({std::move(*converted), entity});
       }
     }
   }
   return entities;
+}
+
+std::optional<EntityInstance>
+AutofillAiPersonalContextAccessManagerImpl::ConvertProtoToEntityInstance(
+    const personal_context::proto::Entity& entity,
+    bool mask_spii) const {
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAmbientAutofillSpiiCache) &&
+      entity.entity_case() ==
+          personal_context::proto::Entity::kEncryptedEntity) {
+    return personal_context_service_->DecryptEntity(entity).and_then(
+        [mask_spii](personal_context::proto::Entity decrypted) {
+          if (mask_spii) {
+            MaskSpiiEntityFields(decrypted);
+          }
+          return PersonalContextEntityToEntityInstance(decrypted,
+                                                       /*is_masked=*/mask_spii);
+        });
+  }
+
+  return PersonalContextEntityToEntityInstance(entity,
+                                               /*is_masked=*/mask_spii);
 }
 
 void AutofillAiPersonalContextAccessManagerImpl::GetUnmaskedSpiiEntity(
@@ -368,20 +453,17 @@ void AutofillAiPersonalContextAccessManagerImpl::GetUnmaskedSpiiEntity(
 
   if (base::FeatureList::IsEnabled(
           features::kAutofillAmbientAutofillSpiiCache)) {
-    if (std::optional<personal_context::proto::Entity> decrypted_entity =
-            personal_context_service_->DecryptEntity(*proto_entity)) {
-      if (std::optional<EntityInstance> unmasked_entity =
-              PersonalContextEntityToEntityInstance(*decrypted_entity,
-                                                    /*is_masked=*/false)) {
-        EntityInstance final_entity = unmasked_entity->CopyWithNewEntityId(id);
-        CacheUnmaskedSpiiEntity(final_entity);
-        LogUnmaskResult(EntityInstance::RecordType::kPersonalContext,
-                        AutofillAiUnmaskResult::kSuccess);
-        LogRequestLatency(RequestType::kSpiiUnmasking,
-                          base::TimeTicks::Now() - request_start_time);
-        std::move(callback).Run(std::move(final_entity));
-        return;
-      }
+    if (std::optional<EntityInstance> unmasked_entity =
+            ConvertProtoToEntityInstance(*proto_entity,
+                                         /*mask_spii=*/false)) {
+      EntityInstance final_entity = unmasked_entity->CopyWithNewEntityId(id);
+      CacheUnmaskedSpiiEntity(final_entity);
+      LogUnmaskResult(EntityInstance::RecordType::kPersonalContext,
+                      AutofillAiUnmaskResult::kSuccess);
+      LogRequestLatency(RequestType::kSpiiUnmasking,
+                        base::TimeTicks::Now() - request_start_time);
+      std::move(callback).Run(std::move(final_entity));
+      return;
     }
     LogUnmaskResult(EntityInstance::RecordType::kPersonalContext,
                     AutofillAiUnmaskResult::kDecryptionFailed);
@@ -494,11 +576,11 @@ void AutofillAiPersonalContextAccessManagerImpl::ResetStateForType(
 }
 
 void AutofillAiPersonalContextAccessManagerImpl::ProcessPrefetchedEntities(
-    std::vector<EntityType> prefetched_types,
-    std::vector<EntityType> requested_types,
+    DenseSet<EntityType> prefetched_types,
+    DenseSet<EntityType> requested_types,
     std::vector<ParsedEntity> parsed_entities) {
   // Evict existing entities for the `prefetched_types`.
-  for (const EntityType& type : prefetched_types) {
+  for (EntityType type : prefetched_types) {
     LogPrefetchTotalLatency(type);
     ResetStateForType(type);
     SetTypeStatus(type, RequestStatus::kSuccess);
@@ -515,20 +597,25 @@ void AutofillAiPersonalContextAccessManagerImpl::ProcessPrefetchedEntities(
   // Also cache presence signals.
   std::vector<EntityInstance> entities;
   entities.reserve(parsed_entities.size());
+  const EntitySuppressionManager* suppression_manager =
+      suppression_observation_.GetSource();
   for (ParsedEntity& entity : parsed_entities) {
-    if (const EntityInstance* e_instance =
-            std::get_if<EntityInstance>(&entity.instance)) {
-      if (std::ranges::contains(requested_types, e_instance->type())) {
-        prefetched_proto_cache_.emplace(e_instance->guid(),
-                                        std::move(entity.proto));
-        entities.push_back(std::move(*e_instance));
+    if (const auto* signal =
+            std::get_if<SpiiEntityPresenceSignal>(&entity.instance)) {
+      if (requested_types.contains(*signal)) {
+        CachePresenceSignal(*signal);
       }
-    } else {
-      const SpiiEntityPresenceSignal signal =
-          std::get<SpiiEntityPresenceSignal>(entity.instance);
-      if (std::ranges::contains(requested_types, signal)) {
-        CachePresenceSignal(signal);
-      }
+      continue;
+    }
+
+    EntityInstance& instance = std::get<EntityInstance>(entity.instance);
+    if (!requested_types.contains(instance.type())) {
+      continue;
+    }
+
+    prefetched_proto_cache_.emplace(instance.guid(), std::move(entity.proto));
+    if (!suppression_manager || !suppression_manager->IsSuppressed(instance)) {
+      entities.push_back(std::move(instance));
     }
   }
 
@@ -715,9 +802,9 @@ void AutofillAiPersonalContextAccessManagerImpl::SetTypeStatus(
 }
 
 void AutofillAiPersonalContextAccessManagerImpl::HandleFailedResponse(
-    base::span<const EntityType> requested_types,
+    DenseSet<EntityType> requested_types,
     RequestType request_type) {
-  for (const EntityType& type : requested_types) {
+  for (EntityType type : requested_types) {
     if (request_type == RequestType::kNonSpiiAndPresence &&
         IsPersonalContextSpiiType(type)) {
       continue;
@@ -743,6 +830,37 @@ void AutofillAiPersonalContextAccessManagerImpl::NotifyPrefetchStatusObservers(
   observers_.Notify(&AutofillAiPersonalContextAccessManager::Observer::
                         OnPrefetchContextComplete,
                     *this, entities);
+}
+
+void AutofillAiPersonalContextAccessManagerImpl::OnEntitySuppressionsChanged() {
+  if (prefetched_proto_cache_.empty()) {
+    return;
+  }
+
+  DenseSet<EntityType> cached_types;
+  std::vector<EntityInstance> unsuppressed_entities;
+  const EntitySuppressionManager* suppression_manager =
+      suppression_observation_.GetSource();
+  for (const auto& [id, proto] : prefetched_proto_cache_) {
+    std::optional<EntityInstance> converted =
+        ConvertProtoToEntityInstance(proto, /*mask_spii=*/true);
+    if (!converted) {
+      continue;
+    }
+    EntityInstance entity = converted->CopyWithNewEntityId(id);
+    cached_types.insert(entity.type());
+    if (!suppression_manager || !suppression_manager->IsSuppressed(entity)) {
+      unsuppressed_entities.push_back(std::move(entity));
+    }
+  }
+
+  for (EntityType type : cached_types) {
+    observers_.Notify(&AutofillAiPersonalContextAccessManager::Observer::
+                          OnMaskedEntityTypeEvicted,
+                      *this, type);
+  }
+
+  NotifyPrefetchStatusObservers(unsuppressed_entities);
 }
 
 }  // namespace autofill

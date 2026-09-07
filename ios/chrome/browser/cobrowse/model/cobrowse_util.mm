@@ -20,11 +20,7 @@ bool IsAimCobrowseEligible(ProfileIOS* profile) {
     return false;
   }
 
-  if (IsComposeboxAIMDisabled()) {
-    return false;
-  }
-
-  if (!profile) {
+  if (!profile || profile->IsOffTheRecord()) {
     return false;
   }
 

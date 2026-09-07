@@ -18,6 +18,7 @@
 #include "base/notreached.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
@@ -126,10 +127,7 @@ class TestBufferCollection {
 };
 #endif
 
-TestSharedImageInterface::TestSharedImageInterface() {
-  InitializeSharedImageCapabilities();
-}
-
+TestSharedImageInterface::TestSharedImageInterface() = default;
 TestSharedImageInterface::~TestSharedImageInterface() = default;
 
 // static
@@ -400,6 +398,13 @@ void TestSharedImageInterface::WaitSyncToken(const SyncToken& sync_token) {
   NOTREACHED();
 }
 
+void TestSharedImageInterface::SignalSyncToken(
+    std::vector<SyncToken> sync_tokens,
+    base::OnceClosure callback) {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, std::move(callback));
+}
+
 bool TestSharedImageInterface::CanVerifySyncToken(
     const gpu::SyncToken& sync_token) {
   return true;
@@ -474,21 +479,6 @@ TestSharedImageInterface::GetCapabilities() {
 void TestSharedImageInterface::SetCapabilities(
     const SharedImageCapabilities& caps) {
   shared_image_capabilities_ = caps;
-  InitializeSharedImageCapabilities();
-}
-
-void TestSharedImageInterface::InitializeSharedImageCapabilities() {
-#if BUILDFLAG(IS_MAC)
-  // Initialize `texture_target_for_io_surfaces` to a value that is valid for
-  // ClientSharedImage to use, as unittests broadly create and use
-  // SharedImageCapabilities instances without initializing this field. The
-  // specific value is chosen to match the historical default value that was
-  // used when this state was accessed via a global variable.
-  if (!shared_image_capabilities_.texture_target_for_io_surfaces) {
-    shared_image_capabilities_.texture_target_for_io_surfaces =
-        GL_TEXTURE_RECTANGLE_ARB;
-  }
-#endif
 }
 
 }  // namespace gpu

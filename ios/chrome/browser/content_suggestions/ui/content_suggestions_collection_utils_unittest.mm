@@ -234,22 +234,6 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, heightForLogoHeaderIPhone) {
                                 IPhonePortraitTraitCollection()));
 }
 
-TEST_F(ContentSuggestionsCollectionUtilsTest, NearestAncestor) {
-  // Setup.
-  // The types of the view has no meaning.
-  UILabel* rootView = [[UILabel alloc] init];
-  UIView* intermediaryView = [[UIView alloc] init];
-  UIScrollView* leafView = [[UIScrollView alloc] init];
-  [rootView addSubview:intermediaryView];
-  [intermediaryView addSubview:leafView];
-
-  // Tests.
-  EXPECT_EQ(leafView, NearestAncestor(leafView, [UIScrollView class]));
-  EXPECT_EQ(leafView, NearestAncestor(leafView, [UIView class]));
-  EXPECT_EQ(rootView, NearestAncestor(leafView, [UILabel class]));
-  EXPECT_EQ(nil, NearestAncestor(leafView, [UITextView class]));
-}
-
 TEST_F(ContentSuggestionsCollectionUtilsTest, fakeOmniboxHeight) {
   ScopedBlockSwizzler preferredContentSizeSwizzler(
       [UIApplication class], @selector(preferredContentSizeCategory), ^{
@@ -336,7 +320,7 @@ TEST_F(ContentSuggestionsCollectionUtilsTest,
 TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
   // Control (Disabled).
   EXPECT_FALSE(IsNewTabPageUICleanupEnabled());
-  EXPECT_FALSE(IsNewTabPageUICleanupFakeboxOnlyEnabled());
+  EXPECT_FALSE(ShouldApplyFakeboxBackgroundAndShadow());
   EXPECT_EQ(DoodleTopMargin(SearchEngineLogoState::kLogo,
                             IPhonePortraitTraitCollection()),
             LogoTopPadding(SearchEngineLogoState::kLogo,
@@ -359,7 +343,7 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPageUICleanup, {{kNewTabPageUICleanupArmParam, "1"}});
     EXPECT_TRUE(IsNewTabPageUICleanupEnabled());
-    EXPECT_FALSE(IsNewTabPageUICleanupFakeboxOnlyEnabled());
+    EXPECT_TRUE(ShouldApplyFakeboxBackgroundAndShadow());
     EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingTight,
               LogoTopPadding(SearchEngineLogoState::kLogo,
                              IPhonePortraitTraitCollection()));
@@ -383,7 +367,7 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPageUICleanup, {{kNewTabPageUICleanupArmParam, "2"}});
     EXPECT_TRUE(IsNewTabPageUICleanupEnabled());
-    EXPECT_FALSE(IsNewTabPageUICleanupFakeboxOnlyEnabled());
+    EXPECT_TRUE(ShouldApplyFakeboxBackgroundAndShadow());
     EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingMedium,
               LogoTopPadding(SearchEngineLogoState::kLogo,
                              IPhonePortraitTraitCollection()));
@@ -407,7 +391,7 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPageUICleanup, {{kNewTabPageUICleanupArmParam, "3"}});
     EXPECT_TRUE(IsNewTabPageUICleanupEnabled());
-    EXPECT_FALSE(IsNewTabPageUICleanupFakeboxOnlyEnabled());
+    EXPECT_TRUE(ShouldApplyFakeboxBackgroundAndShadow());
     EXPECT_EQ(FakeToolbarHeight() + kLogoTopPaddingPreferred,
               LogoTopPadding(SearchEngineLogoState::kLogo,
                              IPhonePortraitTraitCollection()));
@@ -431,7 +415,7 @@ TEST_F(ContentSuggestionsCollectionUtilsTest, NTPPaddingExperimentHelpers) {
     scoped_feature_list.InitAndEnableFeatureWithParameters(
         kNewTabPageUICleanup, {{kNewTabPageUICleanupArmParam, "4"}});
     EXPECT_FALSE(IsNewTabPageUICleanupEnabled());
-    EXPECT_TRUE(IsNewTabPageUICleanupFakeboxOnlyEnabled());
+    EXPECT_TRUE(ShouldApplyFakeboxBackgroundAndShadow());
     EXPECT_EQ(DoodleTopMargin(SearchEngineLogoState::kLogo,
                               IPhonePortraitTraitCollection()),
               LogoTopPadding(SearchEngineLogoState::kLogo,

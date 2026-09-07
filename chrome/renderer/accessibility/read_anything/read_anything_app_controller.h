@@ -51,8 +51,10 @@ class MojoUkmRecorder;
 
 class AXTreeDistiller;
 class DependencyParserModel;
-class ReadAnythingAppControllerTest;
+struct DistillationResult;
 class ReadAnythingAppControllerReadabilityTest;
+class ReadAnythingAppControllerTest;
+class ReadAnythingDistiller;
 
 ///////////////////////////////////////////////////////////////////////////////
 // ReadAnythingAppController
@@ -295,7 +297,6 @@ class ReadAnythingAppController
   std::string GetDomDistillerContentHtml() const;
   // Serializes accessibility tree anchors into a V8 object for the frontend.
   v8::Local<v8::Value> GetDomDistillerAnchors() const;
-  // Will only return a state if IsImmersiveReadAnythingEnabled() is true.
   // Returns the presentation through the OnGetPresentationState callback.
   void SendGetPresentationStateRequest() const;
   // The results of these are sent back via UntrustedPage::OnGetVoicePackInfo.
@@ -327,7 +328,6 @@ class ReadAnythingAppController
   v8::Local<v8::Value> GetAXMapping(int index);
   bool IsGoogleDocs() const;
   bool IsPdf() const;
-  bool IsImmersiveEnabled() const;
   bool IsImprovedReadAloudEnabled() const;
   bool IsReadAnythingImprovedUiEnabled() const;
   bool IsReadAnythingTranslateEntryPointEnabled() const;
@@ -411,6 +411,9 @@ class ReadAnythingAppController
   void OnAXTreeDistilled(const ui::AXTreeID& tree_id,
                          const std::vector<ui::AXNodeID>& content_node_ids);
 
+  // Called when distillation completes from the active ReadAnythingDistiller.
+  void OnDistillationComplete(const DistillationResult& result);
+
   // Inits the AXPosition with a starting node.
   // TODO(crbug.com/40927698): We should be able to use AXPosition in a way
   // where this isn't needed.
@@ -433,27 +436,6 @@ class ReadAnythingAppController
 
   void Draw(bool recompute_display_nodes);
 
-  // Snapshot_lite is a data structure which resembles an
-  // AXTreeUpdate. E.g.:
-  //   const axTree = {
-  //     root_id: 1,
-  //     nodes: [
-  //       {
-  //         id: 1,
-  //         role: 'rootWebArea',
-  //         child_ids: [2],
-  //       },
-  //       {
-  //         id: 2,
-  //         role: 'staticText',
-  //         name: 'Some text.',
-  //       },
-  //     ],
-  //   };
-  void SetContentForTesting(v8::Local<v8::Value> v8_snapshot_lite,
-                            std::vector<ui::AXNodeID> content_node_ids);
-  void SetAnchorsForTesting(v8::Local<v8::Value> v8_snapshot_lite,
-                            std::vector<ui::AXNodeID> content_node_ids);
   void SetLanguageForTesting(const std::string& language_code);
   void set_forced_distillation_method_for_testing(
       ReadAnythingAppModel::DistillationMethod method) {
@@ -592,6 +574,8 @@ class ReadAnythingAppController
 
   bool IsHidden() const;
 
+  // TODO(crbug.com/554114724): Remove `distiller_` once the
+  // ReadAnythingDistiller refactoring is complete and enabled by default.
   std::unique_ptr<AXTreeDistiller> distiller_;
   mojo::Remote<read_anything::mojom::UntrustedPageHandlerFactory>
       page_handler_factory_;
@@ -627,6 +611,8 @@ class ReadAnythingAppController
   base::ScopedObservation<ReadAnythingAppModel,
                           ReadAnythingAppModel::ModelObserver>
       model_observer_{this};
+
+  std::unique_ptr<ReadAnythingDistiller> active_distiller_;
 
   // Observers of AXTrees, which are added / removed  as the `model_` changes
   // state.

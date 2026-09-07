@@ -104,10 +104,6 @@ std::unique_ptr<Layer> LayerWithExternalTexture::CreateMirror(
   return mirror;
 }
 
-bool LayerWithExternalTexture::HasExternalContent() const {
-  return true;
-}
-
 void LayerWithExternalTexture::RecomputeDrawsContentAndUVRect() {
   gfx::Size size(bounds_.size());
   if (texture_layer_.get()) {
@@ -131,13 +127,8 @@ bool LayerWithExternalTexture::ShouldSchedulePaint() const {
 }
 
 void LayerWithExternalTexture::OnPaintScheduled() {
+  CHECK(HasTransferableResource());
   ScheduleDraw();
-}
-
-bool LayerWithExternalTexture::ShouldCommitDamage() const {
-  // A layer with an external texture needs to commit damage when it has a
-  // transferable resource to display.
-  return HasTransferableResource();
 }
 
 bool LayerWithExternalTexture::PrepareTransferableResource(

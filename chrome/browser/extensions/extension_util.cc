@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
 #include "chrome/common/extensions/sync_helper.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -28,8 +29,6 @@
 #include "components/variations/variations_associated_data.h"
 #include "content/public/browser/site_instance.h"
 #include "extensions/browser/disable_reason.h"
-#include "extensions/browser/extension_mojo_binder_registry.h"
-#include "extensions/browser/extension_mojo_binder_registry_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
@@ -46,16 +45,11 @@
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/features/feature_developer_mode_only.h"
 #include "extensions/common/icons/extension_icon_set.h"
+#include "extensions/common/manifest_handlers/chrome_url_overrides_handler.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
-#include "net/base/url_util.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
-#include "extensions/common/manifest_handlers/chrome_url_overrides_handler.h"
-#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -378,30 +372,6 @@ GURL GetExtensionsPageUrl(const ExtensionId& extension_id) {
   return url;
 }
 
-bool IsMojoJsEnabledForExtension(const Extension* extension,
-                                 content::BrowserContext* context) {
-  auto* registry =
-      ExtensionMojoBinderRegistryFactory::GetForBrowserContext(context);
-  return registry && registry->IsMojoJsEnabled(extension);
-}
-
-bool IsJsErrorReportingEnabledForExtension(const Extension* extension,
-                                           content::BrowserContext* context) {
-  auto* registry =
-      ExtensionMojoBinderRegistryFactory::GetForBrowserContext(context);
-  return registry && registry->IsJsErrorReportingEnabled(extension);
-}
-
-bool ShouldCrashOnExtensionJsErrorInDevelopmentBuild(
-    const Extension* extension,
-    content::BrowserContext* context) {
-  auto* registry =
-      ExtensionMojoBinderRegistryFactory::GetForBrowserContext(context);
-  return registry &&
-         registry->ShouldCrashOnJsErrorInDevelopmentBuild(extension);
-}
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 DseNtpOverrideType GetDseNtpOverrideType(const Extension& extension) {
   enum Flags {
     kNone = 0,
@@ -435,7 +405,6 @@ DseNtpOverrideType GetDseNtpOverrideType(const Extension& extension) {
       return DseNtpOverrideType::kNone;
   }
 }
-#endif
 
 GURL GetCWSWritingReviewUrl(const ExtensionId& extension_id,
                             CWSReviewSource source) {
@@ -444,20 +413,19 @@ GURL GetCWSWritingReviewUrl(const ExtensionId& extension_id,
   const char* source_str = nullptr;
   switch (source) {
     case CWSReviewSource::kExtensionsMenu:
-      source_str = "extensions_menu";
+      source_str = extension_urls::kReviewExtensionsMenuUtmSource;
       break;
     case CWSReviewSource::kExtensionsPage:
-      source_str = "extensions_page";
+      source_str = extension_urls::kReviewExtensionsPageUtmSource;
       break;
     case CWSReviewSource::kContextMenu:
-      source_str = "context_menu";
+      source_str = extension_urls::kReviewContextMenuUtmSource;
       break;
   }
 
   GURL review_url = extension_urls::GetNewWebstoreLaunchURL().Resolve(
-      base::StrCat({"detail/", extension_id, "/reviews"}));
-  review_url = net::AppendQueryParameter(review_url, "action", "write");
-  return net::AppendQueryParameter(review_url, "source", source_str);
+      base::StrCat({"detail/", extension_id, "/reviews/my-review"}));
+  return extension_urls::AppendUtmSource(review_url, source_str);
 }
 
-} // namespace extensions::util
+}  // namespace extensions::util

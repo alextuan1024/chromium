@@ -87,7 +87,6 @@
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/sandbox_type.h"
 #include "sandbox/policy/switches.h"
-#include "services/webnn/buildflags.h"
 #include "services/webnn/webnn_switches.h"
 #include "skia/buildflags.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -113,11 +112,9 @@
 #include "base/win/security_descriptor.h"
 #include "base/win/win_util.h"
 #include "components/app_launch_prefetch/app_launch_prefetch.h"
-#include "content/browser/webnn/webnn_compiler_process_host.h"
 #include "sandbox/policy/win/sandbox_win.h"
 #include "sandbox/win/src/sandbox_policy.h"
 #include "sandbox/win/src/window.h"
-#include "services/webnn/public/cpp/ep_device_info.h"
 #include "ui/gfx/win/rendering_window_manager.h"
 #endif
 
@@ -377,7 +374,8 @@ static void RunCallbackOnUI(
 }
 
 void OnGpuProcessHostDestroyedOnUI(int host_id, const std::string& message) {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI),
+        base::NotFatalUntil::M159);
   GpuDataManagerImpl::GetInstance()->AddLogMessage(logging::LOGGING_ERROR,
                                                    "GpuProcessHost", message);
 #if BUILDFLAG(IS_OZONE)
@@ -410,7 +408,7 @@ class GpuSandboxedProcessLauncherDelegate
   // backend. Note that the GPU process is connected to the interactive
   // desktop.
   bool InitializeConfig(sandbox::TargetConfig* config) override {
-    DCHECK(!config->IsConfigured());
+    CHECK(!config->IsConfigured(), base::NotFatalUntil::M159);
 
     sandbox::ResultCode result = config->SetTokenLevel(
         sandbox::USER_RESTRICTED_SAME_ACCESS, sandbox::USER_LIMITED);
@@ -534,14 +532,14 @@ void BindDiscardableMemoryReceiverOnIO(
     mojo::PendingReceiver<
         discardable_memory::mojom::DiscardableSharedMemoryManager> receiver,
     discardable_memory::DiscardableSharedMemoryManager* manager) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   manager->Bind(std::move(receiver));
 }
 
 void BindDiscardableMemoryReceiverOnUI(
     mojo::PendingReceiver<
         discardable_memory::mojom::DiscardableSharedMemoryManager> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -603,7 +601,7 @@ bool GpuProcessHost::ValidateHost(GpuProcessHost* host) {
 
 // static
 GpuProcessHost* GpuProcessHost::Get(GpuProcessKind kind, bool force_create) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   // Do not launch the unsandboxed GPU info collection process if GPU is
   // disabled
@@ -680,7 +678,7 @@ void GpuProcessHost::CallOnUI(
     bool force_create,
     base::OnceCallback<void(GpuProcessHost*)> callback) {
 #if !BUILDFLAG(IS_WIN)
-  DCHECK_NE(kind, GPU_PROCESS_KIND_INFO_COLLECTION);
+  CHECK_NE(kind, GPU_PROCESS_KIND_INFO_COLLECTION, base::NotFatalUntil::M159);
 #endif
   GetUIThreadTaskRunner({})->PostTask(
       location, base::BindOnce(&RunCallbackOnUI, kind, force_create,
@@ -712,38 +710,9 @@ void GpuProcessHost::TerminateGpuProcess(const std::string& message) {
 }
 #endif  // BUILDFLAG(IS_OZONE)
 
-#if BUILDFLAG(IS_WIN)
-void GpuProcessHost::RequestWebNNCompilerContext(
-    webnn::mojom::CreateContextOptionsPtr context_options,
-    const webnn::ContextProperties& context_properties,
-    const webnn::EpDeviceInfo& target_device,
-    mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
-        compiler_context_receiver,
-    mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-    RequestWebNNCompilerContextResultCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  if (!gpu_service()) {
-    LOG(ERROR) << "[WebNN] RequestWebNNCompilerContext() failed: GPU process "
-                  "is not available.";
-    std::move(callback).Run(false);
-    return;
-  }
-
-  if (!webnn_compiler_process_host_) {
-    webnn_compiler_process_host_ = std::make_unique<WebNNCompilerProcessHost>();
-  }
-
-  webnn_compiler_process_host_->RequestCompilerContext(
-      std::move(context_options), context_properties, target_device,
-      std::move(compiler_context_receiver), std::move(model_loader_remote),
-      std::move(callback));
-}
-#endif  // BUILDFLAG(IS_WIN)
-
 // static
 GpuProcessHost* GpuProcessHost::FromID(int host_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   for (int i = 0; i < GPU_PROCESS_KIND_COUNT; ++i) {
     GpuProcessHost* host = g_gpu_process_hosts[i];
@@ -762,7 +731,7 @@ int GpuProcessHost::GetGpuCrashCount() {
 // static
 void GpuProcessHost::IncrementCrashCount(gpu::GpuMode gpu_mode) {
   int forgive_minutes = GetForgiveMinutes(gpu_mode);
-  DCHECK_GT(forgive_minutes, 0);
+  CHECK_GT(forgive_minutes, 0, base::NotFatalUntil::M159);
 
   // Last time the process crashed.
   static base::TimeTicks last_crash_time;
@@ -803,7 +772,8 @@ GpuProcessHost::GpuProcessHost(int host_id, GpuProcessKind kind)
 
   // If the 'single GPU process' policy ever changes, we still want to maintain
   // it for 'gpu thread' mode and only create one instance of host and thread.
-  DCHECK(!in_process_ || g_gpu_process_hosts[kind] == nullptr);
+  CHECK(!in_process_ || g_gpu_process_hosts[kind] == nullptr,
+        base::NotFatalUntil::M159);
 
   g_gpu_process_hosts[kind] = this;
 
@@ -812,9 +782,9 @@ GpuProcessHost::GpuProcessHost(int host_id, GpuProcessKind kind)
 }
 
 GpuProcessHost::~GpuProcessHost() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (in_process_gpu_thread_)
-    DCHECK(process_);
+    CHECK(process_, base::NotFatalUntil::M159);
 
   if (!process_start_time_.is_null() &&
       kind_ != GPU_PROCESS_KIND_INFO_COLLECTION) {
@@ -973,8 +943,8 @@ bool GpuProcessHost::Init() {
   mode_ = GpuDataManagerImpl::GetInstance()->GetGpuMode();
 
   if (in_process_) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(GetGpuMainThreadFactory());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    CHECK(GetGpuMainThreadFactory(), base::NotFatalUntil::M159);
     gpu::GpuPreferences gpu_preferences = GetGpuPreferencesFromCommandLine();
     GpuDataManagerImpl::GetInstance()->UpdateGpuPreferences(
         &gpu_preferences, GPU_PROCESS_KIND_SANDBOXED);
@@ -1027,13 +997,13 @@ void GpuProcessHost::OnProcessLaunched() {
   process_start_time_ = base::TimeTicks::Now();
   UMA_HISTOGRAM_TIMES("GPU.GPUProcessLaunchTime",
                       process_start_time_ - init_start_time_);
-  DCHECK(gpu_host_);
+  CHECK(gpu_host_, base::NotFatalUntil::M159);
   if (in_process_) {
     // Don't set |process_id_| as it is publicly available through process_id().
     gpu_host_->SetProcessId(base::GetCurrentProcId());
   } else {
     process_id_ = process_->GetProcess().Pid();
-    DCHECK_NE(base::kNullProcessId, process_id_);
+    CHECK_NE(base::kNullProcessId, process_id_, base::NotFatalUntil::M159);
     gpu_host_->SetProcessId(process_id_);
 
 #if BUILDFLAG(IS_MAC)
@@ -1298,7 +1268,7 @@ GpuProcessKind GpuProcessHost::kind() {
 
 // Atomically shut down the GPU process with a normal termination status.
 void GpuProcessHost::ForceShutdown() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   // This is only called on the UI thread so no race against the constructor
   // for another GpuProcessHost.
@@ -1540,14 +1510,14 @@ void GpuProcessHost::RecordProcessCrash() {
 }
 
 viz::mojom::GpuService* GpuProcessHost::gpu_service() {
-  DCHECK(gpu_host_);
+  CHECK(gpu_host_, base::NotFatalUntil::M159);
   return gpu_host_->gpu_service();
 }
 
 #if BUILDFLAG(IS_WIN)
 viz::mojom::InfoCollectionGpuService*
 GpuProcessHost::info_collection_gpu_service() {
-  DCHECK(gpu_host_);
+  CHECK(gpu_host_, base::NotFatalUntil::M159);
   return gpu_host_->info_collection_gpu_service();
 }
 #endif

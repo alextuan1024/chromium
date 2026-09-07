@@ -22,7 +22,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "chrome/android/chrome_jni_headers/TabSharingUIBridge_jni.h"
+#include "chrome/android/chrome_jni_headers/TabSharingUiBridge_jni.h"
 
 namespace {
 // The MediaStreamUI interface specifies returning 0 if no window ID is
@@ -32,15 +32,19 @@ constexpr gfx::NativeViewId kNoWindowId = 0;
 
 TabSharingUIAndroid::TabSharingUIAndroid(
     content::WebContents* capturer_web_contents,
-    const content::DesktopMediaID& media_id)
-    : capturer_web_contents_(capturer_web_contents->GetWeakPtr()),
-      media_id_(media_id) {}
+    const content::DesktopMediaID& media_id,
+    bool app_preferred_current_tab)
+    : capturer_web_contents_(capturer_web_contents
+                                 ? capturer_web_contents->GetWeakPtr()
+                                 : nullptr),
+      media_id_(media_id),
+      app_preferred_current_tab_(app_preferred_current_tab) {}
 
 TabSharingUIAndroid::~TabSharingUIAndroid() {
   StopSharing();
   if (java_bridge_) {
     JNIEnv* env = base::android::AttachCurrentThread();
-    Java_TabSharingUIBridge_destroy(env, java_bridge_);
+    Java_TabSharingUiBridge_destroy(env, java_bridge_);
     java_bridge_.Reset();
   }
 }
@@ -120,9 +124,10 @@ gfx::NativeViewId TabSharingUIAndroid::OnStarted(
         base::FeatureList::IsEnabled(
             chrome::android::kTabSharingToolbarAndroid)) {
       JNIEnv* env = base::android::AttachCurrentThread();
-      java_bridge_ = Java_TabSharingUIBridge_create(
+      java_bridge_ = Java_TabSharingUiBridge_create(
           env, reinterpret_cast<intptr_t>(this), capturer_web_contents_.get(),
-          web_contents);
+          web_contents, !source_callback_.is_null(),
+          app_preferred_current_tab_);
     }
   } else {
     StopSharing();
@@ -131,4 +136,4 @@ gfx::NativeViewId TabSharingUIAndroid::OnStarted(
   return kNoWindowId;
 }
 
-DEFINE_JNI(TabSharingUIBridge)
+DEFINE_JNI(TabSharingUiBridge)

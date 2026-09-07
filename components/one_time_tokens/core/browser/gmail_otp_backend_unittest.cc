@@ -11,12 +11,15 @@
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/one_time_tokens/core/browser/fetch_email_one_time_token_response.pb.h"
 #include "components/one_time_tokens/core/browser/fetch_user_data_processing_consent_response.pb.h"
+#include "components/one_time_tokens/core/browser/one_time_token_service_constants.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
+#include "components/one_time_tokens/core/common/one_time_token_features.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/net_errors.h"
@@ -481,6 +484,165 @@ TEST_F(GmailOtpBackendImplTest,
   EXPECT_EQ(result_2->google_apps, ConsentState::kDisabled);
 
   EXPECT_EQ(test_url_loader_factory_.total_requests(), 1u);
+}
+
+TEST_F(GmailOtpBackendImplTest, SubscribeToTicklesAndReceiveNotification) {
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<void> future;
+  ExpiringSubscription subscription = backend_.SubscribeToTickles(
+      base::Time::Now() + base::Minutes(1), future.GetRepeatingCallback());
+
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("encrypted_reference")));
+
+  EXPECT_TRUE(future.WaitAndClear());
+  // Ensure no network requests were made for payload fetching.
+  EXPECT_EQ(test_url_loader_factory_.total_requests(), 0u);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.OneTimeTokens.Backend.Gmail.HasActiveSubscription", true, 1);
+}
+
+TEST_F(GmailOtpBackendImplTest, SubscribeToTicklesWithPreCachedNotification) {
+  base::HistogramTester histogram_tester;
+  // Push arrives BEFORE subscription.
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("encrypted_reference")));
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.OneTimeTokens.Backend.Gmail.HasActiveSubscription", false, 1);
+
+  // Now subscribe to tickles: it should immediately fire for the cached
+  // notification.
+  base::test::TestFuture<void> future;
+  ExpiringSubscription subscription = backend_.SubscribeToTickles(
+      base::Time::Now() + base::Minutes(1), future.GetRepeatingCallback());
+
+  EXPECT_TRUE(future.WaitAndClear());
+  EXPECT_EQ(test_url_loader_factory_.total_requests(), 0u);
+}
+
+TEST_F(GmailOtpBackendImplTest, SubscribeToTicklesExpiration) {
+  base::test::TestFuture<void> future;
+  ExpiringSubscription subscription = backend_.SubscribeToTickles(
+      base::Time::Now() + base::Seconds(30), future.GetRepeatingCallback());
+
+  EXPECT_TRUE(subscription.IsAlive());
+  task_environment_.FastForwardBy(base::Seconds(31));
+  EXPECT_FALSE(subscription.IsAlive());
+
+  // Further notifications should not reach the expired subscription.
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("encrypted_reference")));
+  EXPECT_FALSE(future.IsReady());
+}
+
+TEST_F(GmailOtpBackendImplTest, HasPendingRequests) {
+  EXPECT_FALSE(backend_.HasPendingRequests());
+
+  // Incoming notification adds to notification_cache_, HasPendingRequests is
+  // true.
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("encrypted_reference")));
+  EXPECT_TRUE(backend_.HasPendingRequests());
+
+  FetchEmailOneTimeTokenResponse response;
+  response.mutable_one_time_password()->set_one_time_password("123456");
+  response.set_sender_address("noreply@example.com");
+  test_url_loader_factory_.AddResponse(
+      GetExpectedUrl(/*unencoded_reference=*/"encrypted_reference"),
+      response.SerializeAsString());
+
+  // Subscribe starts the fetch; HasPendingRequests is still true.
+  base::test::TestFuture<
+      base::expected<OneTimeToken, OneTimeTokenRetrievalError>>
+      future;
+  ExpiringSubscription subscription = backend_.Subscribe(
+      base::Time::Now() + base::Minutes(1), future.GetRepeatingCallback());
+  EXPECT_TRUE(backend_.HasPendingRequests());
+
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "access_token", base::Time::Now() + base::Hours(1));
+
+  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_FALSE(backend_.HasPendingRequests());
+}
+
+TEST_F(GmailOtpBackendImplTest,
+       ProcessCachedNotifications_ProcessesNewestFirst) {
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("old_reference")));
+  task_environment_.FastForwardBy(base::Seconds(1));
+  backend_.OnIncomingOneTimeTokenBackendNotification(
+      OneTimeTokenBackendNotification(
+          EncryptedMessageReference("new_reference")));
+
+  base::test::TestFuture<
+      base::expected<OneTimeToken, OneTimeTokenRetrievalError>>
+      future;
+  ExpiringSubscription subscription = backend_.Subscribe(
+      base::Time::Now() + base::Minutes(1), future.GetRepeatingCallback());
+
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "access_token", base::Time::Now() + base::Hours(1));
+
+  EXPECT_EQ(test_url_loader_factory_.NumPending(), 2);
+  EXPECT_EQ(test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
+            GetExpectedUrl(/*unencoded_reference=*/"new_reference"));
+  EXPECT_EQ(test_url_loader_factory_.GetPendingRequest(1)->request.url.spec(),
+            GetExpectedUrl(/*unencoded_reference=*/"old_reference"));
+
+  // Complete requests to avoid dangling pointers.
+  test_url_loader_factory_.AddResponse(
+      GetExpectedUrl(/*unencoded_reference=*/"new_reference"), "");
+  test_url_loader_factory_.AddResponse(
+      GetExpectedUrl(/*unencoded_reference=*/"old_reference"), "");
+}
+
+TEST_F(GmailOtpBackendImplTest, ExpiredOnArrivalLogsTickleArrivalMetric) {
+  base::test::ScopedFeatureList feature_list{
+      features::kGmailOtpRetrievalService};
+  base::HistogramTester histogram_tester;
+  base::TimeTicks old_timestamp = base::TimeTicks::Now() -
+                                  kNotificationExpirationDuration -
+                                  base::Seconds(1);
+  OneTimeTokenBackendNotification notification(
+      EncryptedMessageReference("ref1"),
+      /*otp_created_timestamp=*/base::Time::Now(),
+      /*email_received_timestamp=*/base::Time::Now(),
+      /*notification_sent_timestamp=*/base::Time::Now(),
+      /*notification_received_timestamp=*/base::Time::Now(),
+      /*notification_received_timeticks=*/old_timestamp);
+
+  backend_.OnIncomingOneTimeTokenBackendNotification(notification);
+
+  histogram_tester.ExpectUniqueSample(kTickleArrivalHistogram,
+                                      TickleArrival::kExpiredOnArrival, 1);
+}
+
+TEST_F(GmailOtpBackendImplTest, ExpiredOnArrival_NotLoggedIfFeatureDisabled) {
+  base::test::ScopedFeatureList disabled_feature_list;
+  disabled_feature_list.InitAndDisableFeature(
+      features::kGmailOtpRetrievalService);
+  base::HistogramTester histogram_tester;
+  base::TimeTicks old_timestamp = base::TimeTicks::Now() -
+                                  kNotificationExpirationDuration -
+                                  base::Seconds(1);
+  OneTimeTokenBackendNotification notification(
+      EncryptedMessageReference("ref1"),
+      /*otp_created_timestamp=*/base::Time::Now(),
+      /*email_received_timestamp=*/base::Time::Now(),
+      /*notification_sent_timestamp=*/base::Time::Now(),
+      /*notification_received_timestamp=*/base::Time::Now(),
+      /*notification_received_timeticks=*/old_timestamp);
+
+  backend_.OnIncomingOneTimeTokenBackendNotification(notification);
+
+  histogram_tester.ExpectTotalCount(kTickleArrivalHistogram, 0);
 }
 
 }  // namespace one_time_tokens

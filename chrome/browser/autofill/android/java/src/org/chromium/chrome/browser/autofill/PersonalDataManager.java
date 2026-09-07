@@ -24,6 +24,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.components.autofill.AutofillPolicyDataCategory;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.components.autofill.IbanRecordType;
 import org.chromium.components.autofill.VirtualCardEnrollmentState;
@@ -114,7 +115,7 @@ public class PersonalDataManager implements Destroyable {
         private final String mObfuscatedLastFourDigits;
 
         @CalledByNative
-        public static CreditCard create(
+        private static CreditCard create(
                 @JniType("std::string") String guid,
                 boolean isUserConfirmed,
                 boolean isLocal,
@@ -131,7 +132,7 @@ public class PersonalDataManager implements Destroyable {
                 long instrumentId,
                 @JniType("std::u16string") String cardLabel,
                 @JniType("std::u16string") String nickname,
-                GURL cardArtUrl,
+                @JniType("GURL") GURL cardArtUrl,
                 @VirtualCardEnrollmentState.EnumType int virtualCardEnrollmentState,
                 @JniType("std::u16string") String productDescription,
                 @JniType("std::u16string") String cardNameForAutofillDisplay,
@@ -139,7 +140,7 @@ public class PersonalDataManager implements Destroyable {
                 @JniType("std::u16string") String cvc,
                 @JniType("std::string") String issuerId,
                 @JniType("std::string") String benefitSource,
-                GURL productTermsUrl) {
+                @JniType("GURL") GURL productTermsUrl) {
             return new CreditCard(
                     guid,
                     isUserConfirmed,
@@ -370,7 +371,7 @@ public class PersonalDataManager implements Destroyable {
         }
 
         @CalledByNative
-        public @Nullable GURL getCardArtUrl() {
+        public @JniType("GURL") @Nullable GURL getCardArtUrl() {
             return mCardArtUrl;
         }
 
@@ -390,17 +391,17 @@ public class PersonalDataManager implements Destroyable {
         }
 
         @CalledByNative
-        public String getIssuerId() {
+        public @JniType("std::string") String getIssuerId() {
             return mIssuerId;
         }
 
         @CalledByNative
-        public String getBenefitSource() {
+        public @JniType("std::string") String getBenefitSource() {
             return mBenefitSource;
         }
 
         @CalledByNative
-        public @Nullable GURL getProductTermsUrl() {
+        public @JniType("GURL") @Nullable GURL getProductTermsUrl() {
             return mProductTermsUrl;
         }
 
@@ -557,7 +558,7 @@ public class PersonalDataManager implements Destroyable {
         }
 
         @CalledByNative
-        public @Nullable @JniType("std::string") String getGuid() {
+        public @JniType("std::string") @Nullable String getGuid() {
             assert mRecordType != IbanRecordType.SERVER_IBAN;
             return mGuid;
         }
@@ -584,7 +585,7 @@ public class PersonalDataManager implements Destroyable {
         }
 
         @CalledByNative
-        public @Nullable @JniType("std::u16string") String getValue() {
+        public @JniType("std::u16string") @Nullable String getValue() {
             return mValue;
         }
 
@@ -997,18 +998,32 @@ public class PersonalDataManager implements Destroyable {
     }
 
     /**
-     * @return Whether the Autofill feature for Profiles (addresses) is enabled.
+     * This checks both the underlying user setting ({@link Pref#AUTOFILL_PROFILE_ENABLED}) and
+     * whether address / contact info autofill is blocked by the {@code AutofillSettings} enterprise
+     * policy ({@code autofill.types_blocked}).
+     *
+     * @return True if profile autofill is enabled and not blocked by policy, false otherwise.
      */
     public boolean isAutofillProfileEnabled() {
-        return mPrefService.getBoolean(Pref.AUTOFILL_PROFILE_ENABLED);
+        return mPrefService.getBoolean(Pref.AUTOFILL_PROFILE_ENABLED)
+                && !isAutofillTypeDisabledByEnterprisePolicy(
+                        AutofillPolicyDataCategory.CONTACT_INFO);
     }
 
     /**
-     * @return Whether the Autofill feature for Payment Methods is enabled.
+     * This checks both the underlying user setting ({@link Pref#AUTOFILL_CREDIT_CARD_ENABLED}) and
+     * whether payments autofill is blocked by the {@code AutofillSettings} enterprise policy
+     * ({@code autofill.types_blocked}). If an enterprise policy disables payments, this will return
+     * {@code false} so that payment autofill operations are suppressed and the setting is treated
+     * as disabled.
+     *
+     * @return True if payment methods autofill is enabled and not blocked by policy, false
+     *     otherwise.
      */
     public boolean isAutofillPaymentMethodsEnabled() {
         // TODO(crbug.com/40903277): Rename pref to AUTOFILL_PAYMENT_METHODS_ENABLED.
-        return mPrefService.getBoolean(Pref.AUTOFILL_CREDIT_CARD_ENABLED);
+        return mPrefService.getBoolean(Pref.AUTOFILL_CREDIT_CARD_ENABLED)
+                && !isAutofillTypeDisabledByEnterprisePolicy(AutofillPolicyDataCategory.PAYMENTS);
     }
 
     /**
@@ -1147,6 +1162,17 @@ public class PersonalDataManager implements Destroyable {
     }
 
     /**
+     * @param category The category of Autofill data.
+     * @return Whether the specified Autofill data category is blocked by the AutofillSettings
+     *     enterprise policy.
+     */
+    public boolean isAutofillTypeDisabledByEnterprisePolicy(
+            @AutofillPolicyDataCategory int category) {
+        return PersonalDataManagerJni.get()
+                .isAutofillTypeDisabledByEnterprisePolicy(mPersonalDataManagerAndroid, category);
+    }
+
+    /**
      * @return Whether the Autofill feature for Credit Cards is managed.
      */
     public boolean isAutofillCreditCardManaged() {
@@ -1238,16 +1264,20 @@ public class PersonalDataManager implements Destroyable {
 
         boolean isDataLoaded(long nativePersonalDataManagerAndroid);
 
+        @JniType("std::vector<std::string>")
         String[] getProfileGUIDsForSettings(long nativePersonalDataManagerAndroid);
 
+        @JniType("std::vector<std::string>")
         String[] getProfileGUIDsToSuggest(long nativePersonalDataManagerAndroid);
 
+        @JniType("std::vector<std::u16string>")
         String[] getProfileLabelsForSettings(long nativePersonalDataManagerAndroid);
 
         @JniType("std::u16string")
         String getProfileDescriptionForEditor(
                 long nativePersonalDataManagerAndroid, @JniType("std::string") String guid);
 
+        @JniType("std::vector<std::u16string>")
         String[] getProfileLabelsToSuggest(long nativePersonalDataManagerAndroid);
 
         AutofillProfile getProfileByGUID(
@@ -1277,8 +1307,10 @@ public class PersonalDataManager implements Destroyable {
                 @JniType("std::string") String guid,
                 boolean includeCountry);
 
+        @JniType("std::vector<std::string>")
         String[] getCreditCardGUIDsForSettings(long nativePersonalDataManagerAndroid);
 
+        @JniType("std::vector<std::string>")
         String[] getCreditCardGUIDsToSuggest(long nativePersonalDataManagerAndroid);
 
         CreditCard getCreditCardByGUID(
@@ -1312,6 +1344,9 @@ public class PersonalDataManager implements Destroyable {
                 long nativePersonalDataManagerAndroid, @JniType("std::string") String guid);
 
         boolean isAutofillProfileManaged(long nativePersonalDataManagerAndroid);
+
+        boolean isAutofillTypeDisabledByEnterprisePolicy(
+                long nativePersonalDataManagerAndroid, @AutofillPolicyDataCategory int category);
 
         boolean isAutofillCreditCardManaged(long nativePersonalDataManagerAndroid);
 

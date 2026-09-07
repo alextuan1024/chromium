@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.omnibox.suggestions.tail;
 
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.content.Context;
@@ -14,8 +13,12 @@ import android.view.ContextThemeWrapper;
 import androidx.annotation.ColorInt;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -31,6 +34,9 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 /** Tests for {@link TailSuggestionViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class TailSuggestionViewBinderUnitTest {
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
     private PropertyModel mModel;
     private Context mContext;
 
@@ -56,7 +62,7 @@ public class TailSuggestionViewBinderUnitTest {
         AlignmentManager alignmentManager = new AlignmentManager();
 
         mModel.set(TailSuggestionViewProperties.ALIGNMENT_MANAGER, alignmentManager);
-        verify(mTailSuggestionView, times(1)).setAlignmentManager(alignmentManager);
+        verify(mTailSuggestionView).setAlignmentManager(alignmentManager);
     }
 
     @Test
@@ -64,7 +70,7 @@ public class TailSuggestionViewBinderUnitTest {
         final SuggestionSpannable span = new SuggestionSpannable("test");
 
         mModel.set(TailSuggestionViewProperties.TEXT, span);
-        verify(mTailSuggestionView, times(1)).setTailText(span);
+        verify(mTailSuggestionView).setTailText(span);
     }
 
     @Test
@@ -72,7 +78,7 @@ public class TailSuggestionViewBinderUnitTest {
         final String test = "test";
 
         mModel.set(TailSuggestionViewProperties.FILL_INTO_EDIT, test);
-        verify(mTailSuggestionView, times(1)).setFullText(test);
+        verify(mTailSuggestionView).setFullText(test);
     }
 
     @Test
@@ -82,6 +88,6 @@ public class TailSuggestionViewBinderUnitTest {
         final @ColorInt int color = mResourceProvider.getSuggestionPrimaryTextColor();
 
         mModel.set(SuggestionCommonProperties.COLOR_SCHEME, colorScheme);
-        verify(mTailSuggestionView, times(1)).setTextColor(color);
+        verify(mTailSuggestionView).setTextColor(color);
     }
 }

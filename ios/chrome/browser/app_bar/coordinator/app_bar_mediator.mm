@@ -12,20 +12,15 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/strings/string_util.h"
-#import "components/country_codes/country_codes.h"
 #import "components/omnibox/browser/aim_eligibility_service.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
-#import "components/regional_capabilities/regional_capabilities_service.h"
 #import "components/search/search.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
-#import "components/signin/public/identity_manager/tribool.h"
-#import "components/variations/service/variations_service.h"
 #import "ios/chrome/browser/aim/model/aim_util.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_consumer.h"
@@ -41,9 +36,9 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent_observer_bridge.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_observer_bridge.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_entry_flow_result.h"
-#import "ios/chrome/browser/intelligence/bwg/utils/gemini_prefs.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_availability.h"
@@ -197,6 +192,7 @@ inline LayoutStateAssistantPassKey PassKey() {
   raw_ptr<AimEligibilityService> _AIMEligibilityService;
   base::CallbackListSubscription _aimEligibilitySubscription;
   std::unique_ptr<NetworkChangeObserverBridge> _networkChangeObserver;
+  raw_ptr<ProfileIOS> _profile;
 }
 
 - (instancetype)
@@ -213,6 +209,7 @@ inline LayoutStateAssistantPassKey PassKey() {
                regularActionFactory:(BrowserActionFactory*)regularActionFactory
              incognitoActionFactory:
                  (BrowserActionFactory*)incognitoActionFactory
+                            profile:(ProfileIOS*)profile
                         prefService:(PrefService*)prefService
                  templateURLService:(TemplateURLService*)templateURLService
               authenticationService:
@@ -240,6 +237,7 @@ inline LayoutStateAssistantPassKey PassKey() {
     _incognitoFullscreenBrowserAgent = incognitoFullscreenBrowserAgent;
 
     _URLLoader = URLLoader;
+    _profile = profile;
     _prefService = prefService;
     _templateURLService = templateURLService;
     _searchEngineObserver =
@@ -431,6 +429,7 @@ inline LayoutStateAssistantPassKey PassKey() {
   _observerBridge.reset();
   _regularWebStateList = nullptr;
   _incognitoWebStateList = nullptr;
+  _profile = nullptr;
   _prefService = nullptr;
   _prefChangeRegistrar.reset();
   _prefObserverBridge.reset();
@@ -901,86 +900,15 @@ inline LayoutStateAssistantPassKey PassKey() {
   [self.consumer setIncognito:isIncognitoContentVisible];
 }
 
-// Returns YES if the user is in the EEA or Japan region.
-- (BOOL)isEEAOrJapan {
-  variations::VariationsService* variationsService =
-      GetApplicationContext()->GetVariationsService();
-  if (variationsService) {
-    country_codes::CountryId countryId(
-        base::ToUpperASCII(variationsService->GetStoredPermanentCountry()));
-    return regional_capabilities::RegionalCapabilitiesService::
-               IsInAnySearchEngineChoiceScreenRegion(countryId) ||
-           countryId == country_codes::CountryId("JP");
-  }
-  return NO;
-}
-
-// Returns YES if the primary identity is in an unverified state requiring
-// re-authentication / managing account approval.
-- (BOOL)isPrimaryIdentityUnverified {
-  if (!_authenticationService ||
-      !_authenticationService->HasPrimaryIdentity() || !_identityManager) {
-    return NO;
-  }
-  CoreAccountId accountId =
-      _identityManager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
-  if (accountId.empty()) {
-    return NO;
-  }
-  return _identityManager->HasAccountWithRefreshTokenInPersistentErrorState(
-      accountId);
-}
-
 // Returns YES if Gemini is eligible to be shown in the App Bar.
 - (BOOL)isGeminiEligible {
-  if (!IsPageActionMenuEnabled() || [self isEEAOrJapan] || !_geminiService) {
-    return NO;
-  }
-
-  bool geminiAllowed = _geminiService->IsProfileEligibleForGemini();
-  if (!geminiAllowed && _authenticationService &&
-      gemini::GeminiAllowedByPolicy(_prefService)) {
-    BOOL isSignedOut = !_authenticationService->HasPrimaryIdentity();
-    BOOL isUnverified = [self isPrimaryIdentityUnverified];
-    if (isSignedOut || isUnverified) {
-      // If the profile is ineligible, it might be because the user is
-      // signed out or in an unverified sign-in state. We still want to show
-      // the Gemini button for these users to encourage sign-in/verification,
-      // unless a local enterprise policy explicitly disables it or sign-in is
-      // disabled.
-      geminiAllowed = _authenticationService->SigninEnabled();
-    } else if (_identityManager) {
-      // Optimistically allow signed-in users while eligibility checks
-      // (account capabilities or workspace policy) are pending, or when
-      // offline, unless cached capabilities explicitly mark them as
-      // ineligible (e.g. child account) or the workspace policy check has
-      // already completed and disabled Gemini.
-      AccountInfo accountInfo = _identityManager->FindExtendedAccountInfo(
-          _identityManager->GetPrimaryAccountInfo(
-              signin::ConsentLevel::kSignin));
-      AccountCapabilities capabilities = accountInfo.GetAccountCapabilities();
-      bool explicitlyIneligible =
-          (capabilities.can_use_gemini_in_chrome() ==
-           signin::Tribool::kFalse) ||
-          (capabilities.can_use_model_execution_features() ==
-           signin::Tribool::kFalse);
-
-      bool isOffline = net::NetworkChangeNotifier::IsOffline();
-      bool isWorkspaceCheckPending =
-          _geminiService->IsWorkspacePolicyCheckPending();
-      std::optional<gemini::IneligibilityReasons> ineligibilityReasons =
-          _geminiService->GeminiIneligibilityForProfile();
-      bool disabledByWorkspacePolicy = !isOffline && !isWorkspaceCheckPending &&
-                                       ineligibilityReasons &&
-                                       ineligibilityReasons->workspace;
-
-      if (!explicitlyIneligible && !disabledByWorkspacePolicy) {
-        geminiAllowed = YES;
-      }
-    }
-  }
-
-  return geminiAllowed;
+  web::WebState* activeWebState =
+      self.currentWebStateList ? self.currentWebStateList->GetActiveWebState()
+                               : nullptr;
+  return gemini::IsGeminiAvailable(gemini::EntryPoint::AppBar, _profile,
+                                   activeWebState, _authenticationService,
+                                   _prefService)
+      .visible;
 }
 
 // Returns YES if AIM is eligible to be shown in the App Bar.
@@ -1060,11 +988,8 @@ inline LayoutStateAssistantPassKey PassKey() {
   UIImage* avatar = nil;
   switch (state) {
     case AppBarAssistantButtonState::kAsk:
-      enabled = (_geminiBrowserAgent &&
-                 _geminiBrowserAgent->IsGeminiAvailableForActiveWebState()) ||
-                [self isPrimaryIdentityUnverified];
-      highlighted = enabled && _geminiBrowserAgent &&
-                    _geminiBrowserAgent->is_floaty_invoked();
+      highlighted =
+          _geminiBrowserAgent && _geminiBrowserAgent->is_floaty_invoked();
       break;
     case AppBarAssistantButtonState::kAccount:
       if (_authenticationService && !_authenticationService->SigninEnabled()) {

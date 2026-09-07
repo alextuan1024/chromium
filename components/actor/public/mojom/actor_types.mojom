@@ -163,6 +163,10 @@ enum ActionResultCode {
   // inspections for sensitive data.
   kActionBlockedByEnterpriseContentScan = 51,
 
+  // The action or tool targeted a tab, window, or resource belonging to a
+  // different profile than the active task.
+  kActionTargetCrossProfile = 52,
+
   // Please see the comment above about adding new values.
 
   ///////////////////////////////////////////////////////////////////////
@@ -550,6 +554,20 @@ enum ActionResultCode {
 
   // The BookmarkModel was not loaded or not available.
   kBookmarkModelNotLoaded = 1600,
+
+  // Codes 1700-1799: Errors for find and highlight tool.
+
+  // The requested text could not be found or highlighted on the page.
+  kFindAndHighlightTextNotFound = 1700,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 1800-1899: Action results for file upload.
+
+  // The file was not authorized in the session allowlist.
+  kFileUploadUnauthorizedFile = 1800,
+
+  // No files were provided for the file upload action.
+  kFileUploadEmptyFileList = 1801,
 
   // Please see the comment above about adding new values.
 };

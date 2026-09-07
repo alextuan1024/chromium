@@ -37,7 +37,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/extension_ui_util.h"
 #include "extensions/common/constants.h"
 #endif
@@ -50,7 +50,7 @@ namespace {
 
 bool IsExtensionPageInfoBubble(const GURL& url,
                                content::WebContents* web_contents) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // The chrome-extension:// scheme is checked unconditionally, not via
   // `GetEnabledExtensionNameForUrl()`, because the latter returns empty for an
   // extension that is not currently enabled (or not installed). Such URLs still
@@ -186,7 +186,8 @@ PageInfoBubbleView::PageInfoBubbleView(
     base::OnceClosure initialized_callback,
     PageInfoClosingCallback closing_callback,
     bool allow_extended_site_info,
-    ChromePageInfoDelegate::GetBrowserCallback get_browser_callback)
+    ChromePageInfoDelegate::GetBrowserCallback get_browser_callback,
+    bool show_extensions_menu)
     : PageInfoBubbleViewBase(anchor,
                              anchor_rect,
                              parent_window,
@@ -209,7 +210,8 @@ PageInfoBubbleView::PageInfoBubbleView(
                                                std::move(get_browser_callback)),
       web_contents(), url);
   view_factory_ = std::make_unique<PageInfoViewFactory>(
-      presenter_.get(), ui_delegate_.get(), this, allow_extended_site_info);
+      presenter_.get(), ui_delegate_.get(), this, allow_extended_site_info,
+      show_extensions_menu);
 
   SetShowTitle(false);
   SetShowCloseButton(false);
@@ -259,7 +261,8 @@ views::BubbleDialogDelegateView* PageInfoBubbleView::CreatePageInfoBubble(
                              url, specification->initialized_callback(),
                              specification->page_info_closing_callback(),
                              specification->show_extended_site_info(),
-                             specification->get_browser_callback());
+                             specification->get_browser_callback(),
+                             specification->show_extensions_menu());
   if (specification->permission_page_type().has_value()) {
     bubble->OpenPermissionPage(specification->permission_page_type().value());
   }

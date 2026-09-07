@@ -19,6 +19,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
@@ -93,6 +94,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/native_theme/native_theme.h"
@@ -3805,29 +3807,78 @@ TEST_F(WebContentsImplTest, OnColorProviderChangedTriggersPageBroadcast) {
   testing::NiceMock<MockPageBroadcast> mock_page_broadcast(
       broadcast_remote.BindNewEndpointAndPassDedicatedReceiver());
   contents()->GetRenderViewHost()->BindPageBroadcast(broadcast_remote.Unbind());
-  blink::ColorProviderColorMaps color_maps =
-      contents()->GetColorProviderColorMaps();
-  mock_page_broadcast.FlushForTesting();
 
-  // Set a new source, which should broadcast a change.
-  color_maps.light_colors_map = color_provider_source.GetRendererColorMap(
-      ui::ColorProviderKey::ColorMode::kLight,
-      ui::ColorProviderKey::ForcedColors::kNone);
-  color_maps.dark_colors_map = color_provider_source.GetRendererColorMap(
-      ui::ColorProviderKey::ColorMode::kDark,
-      ui::ColorProviderKey::ForcedColors::kNone);
-  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(color_maps));
+  blink::ColorProviderColorMaps expected_color_maps{
+      color_provider_source.GetRendererColorMap(
+          ui::ColorProviderKey::ColorMode::kLight,
+          ui::ColorProviderKey::ForcedColors::kNone),
+      color_provider_source.GetRendererColorMap(
+          ui::ColorProviderKey::ColorMode::kDark,
+          ui::ColorProviderKey::ForcedColors::kNone),
+      contents()->GetColorProviderColorMaps().forced_colors_map};
+
+  // Setting a new source should broadcast a change.
+  base::test::TestFuture<blink::ColorProviderColorMaps> setup_future;
+  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(::testing::_))
+      .WillOnce([&](const blink::ColorProviderColorMaps& maps) {
+        setup_future.SetValue(maps);
+      });
   contents()->SetColorProviderSource(&color_provider_source);
-  mock_page_broadcast.FlushForTesting();
+  EXPECT_EQ(setup_future.Take(), expected_color_maps);
   ::testing::Mock::VerifyAndClearExpectations(&mock_page_broadcast);
 
   // Change something, then notify, which should broadcast another change. (If
   // nothing has changed, the broadcast won't occur.)
-  color_maps.light_colors_map.swap(color_maps.dark_colors_map);
-  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(color_maps));
+  expected_color_maps.light_colors_map.swap(
+      expected_color_maps.dark_colors_map);
+  base::test::TestFuture<blink::ColorProviderColorMaps> run_future;
+  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(::testing::_))
+      .WillOnce([&](const blink::ColorProviderColorMaps& maps) {
+        run_future.SetValue(maps);
+      });
   color_provider_source.SwapMaps();
   color_provider_source.NotifyColorProviderChanged();
+  EXPECT_EQ(run_future.Take(), expected_color_maps);
+}
+
+TEST_F(WebContentsImplTest, ColorRelatedStateChangesCoalesced) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(features::kThemeChangeOptimization);
+
+  TestColorProviderSource color_provider_source;
+  mojo::AssociatedRemote<blink::mojom::PageBroadcast> broadcast_remote;
+  testing::NiceMock<MockPageBroadcast> mock_page_broadcast(
+      broadcast_remote.BindNewEndpointAndPassDedicatedReceiver());
+  contents()->GetRenderViewHost()->BindPageBroadcast(broadcast_remote.Unbind());
+
+  base::RunLoop setup_run_loop;
+  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(::testing::_))
+      .WillOnce(
+          [&](const blink::ColorProviderColorMaps&) { setup_run_loop.Quit(); });
+  contents()->SetColorProviderSource(&color_provider_source);
+  setup_run_loop.Run();
   mock_page_broadcast.FlushForTesting();
+  ::testing::Mock::VerifyAndClearExpectations(&mock_page_broadcast);
+
+  blink::ColorProviderColorMaps color_maps =
+      contents()->GetColorProviderColorMaps();
+  color_maps.light_colors_map.swap(color_maps.dark_colors_map);
+
+  // Expect exactly one broadcast call despite multiple rapid notifications.
+  base::RunLoop run_loop;
+  EXPECT_CALL(mock_page_broadcast, UpdateColorProviders(color_maps))
+      .WillOnce([&](const blink::ColorProviderColorMaps&) { run_loop.Quit(); });
+
+  color_provider_source.SwapMaps();
+  // Fire multiple notifications in the same task cycle.
+  color_provider_source.NotifyColorProviderChanged();
+  contents()->OnNativeThemeUpdated(ui::NativeTheme::GetInstanceForWeb());
+  color_provider_source.NotifyColorProviderChanged();
+
+  // Run the event loop until the single coalesced scheduled update executes.
+  run_loop.Run();
+  mock_page_broadcast.FlushForTesting();
+  ::testing::Mock::VerifyAndClearExpectations(&mock_page_broadcast);
 }
 
 // Regression test: a re-entrant OnColorProviderChanged() during teardown must
@@ -4114,7 +4165,7 @@ TEST_F(WebContentsImplTest, IsLoadingExcludingAdFrames) {
                   .root()
                   ->child_at(0)
                   ->current_frame_host();
-  child_rfh->UpdateIsAdFrame(/*is_ad_frame=*/true);
+  child_rfh->UpdateToAdFrame();
 
   // Start the navigation again for the ad frame.
   auto ad_frame_navigation =

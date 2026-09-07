@@ -28,12 +28,14 @@ source_set("coordinator") {
   ]
 
   deps = [
+    ":promo",
     ":view_models",
     "//base",
     "//components/prefs/ios",
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
     "//components/signin/public/identity_manager/objc",
+    "//components/strings",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/bubble/ui_bundled",
     "//ios/chrome/browser/bubble/ui_bundled:bubble_view",
@@ -60,5 +62,24 @@ source_set("coordinator") {
     "//ios/chrome/browser/signin/model:authentication_service_factory",
     "//ios/chrome/browser/signin/model:system_identity",
     "//ios/chrome/browser/signin/model/avatar",
+    "//ios/chrome/common/ui/button_stack",
+    "//ios/chrome/common/ui/colors",
+    "//ios/chrome/common/ui/confirmation_alert",
+    "//ios/chrome/common/ui/util",
+  ]
+}
+
+source_set("promo") {
+  sources = [
+    "level_up_promo_coordinator.h",
+    "level_up_promo_coordinator.mm",
+    "level_up_promo_coordinator_delegate.h",
+  ]
+
+  deps = [
+    "//base",
+    "//ios/chrome/browser/level_up/ui:promo",
+    "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
+    "//ios/chrome/common/ui/promo_style",
   ]
 }

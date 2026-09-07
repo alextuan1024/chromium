@@ -136,6 +136,19 @@ struct HistoryEntry {
   array<CriticalAction> critical_actions;
 };
 
+// LINT.IfChange(CriticalActionType)
+enum CriticalActionType {
+  kUnknown = 0,
+  kFormFill = 1,
+  kDownload = 2,
+  kSettingChange = 3,
+  kCredentialAccess = 4,
+  kGooglePasswordManager = 5,
+  kFederatedLogin = 6,
+  kCredentialsOtp = 7,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:CriticalActionType)
+
 // Represents a critical action performed on a visit.
 struct CriticalAction {
   // Unique identifier for the action.
@@ -149,6 +162,9 @@ struct CriticalAction {
 
   // Destination management URL for the action.
   string linkout_url;
+
+  // Category type of the critical action.
+  CriticalActionType action_type;
 };
 
 
@@ -178,6 +194,14 @@ struct AccountInfo {
   string name;
   string email;
 };
+
+// LINT.IfChange(OpenConversationResult)
+enum OpenConversationResult {
+  kSuccess = 0,
+  kErrorInvalidActionEntry = 1,
+  kErrorInternal = 2,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
 
 // Browser-side handler for requests from WebUI page.
 interface PageHandler {
@@ -219,6 +243,11 @@ interface PageHandler {
 
   // The user turns on the history sync by clicking the "Sync history" button.
   TurnOnHistorySync();
+
+  // Opens the conversation associated with the given critical action in
+  // split view.
+  OpenCriticalActionConversation(string critical_action_id)
+      => (OpenConversationResult result);
 
   // Checks if the history sync promo should be shown on the history page.
   [EnableIfNot=is_chromeos]

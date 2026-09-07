@@ -7,8 +7,12 @@ package org.chromium.chrome.browser.actor;
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.layouts.LayoutManager;
+import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
@@ -16,11 +20,13 @@ import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.tab.TabIdManager;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
+import org.chromium.chrome.browser.tab.TabStateAttributes;
 import org.chromium.chrome.browser.tab.TabStateExtractor;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.ui.base.WindowAndroid;
@@ -29,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Manages tab detachment and transitions from physical activities to offscreen background
@@ -257,6 +264,146 @@ public class ActorTabStateHelper {
                 if (wasActive) {
                     TabModelUtils.setIndex(model, model.indexOf(originalTab));
                 }
+            }
+        }
+    }
+
+    /**
+     * Selects the tab if it is already present in the TabModelSelector and ensures the browsing
+     * layout is shown.
+     *
+     * @param selector The {@link TabModelSelector} to act on.
+     * @param layoutManager The {@link LayoutManager} for switching layouts.
+     * @param tabId The ID of the tab to select.
+     * @return The selected {@link Tab}, or null if not found.
+     */
+    public static @Nullable Tab selectTabAndShow(
+            @Nullable TabModelSelector selector, @Nullable LayoutManager layoutManager, int tabId) {
+        if (selector == null) return null;
+        Tab target = selector.getTabById(tabId);
+        if (target == null) return null;
+        selector.selectModel(target.isIncognito());
+        TabModel model = selector.getModel(target.isIncognito());
+        if (model != null) {
+            TabModelUtils.setIndex(model, model.indexOf(target));
+        }
+        if (layoutManager != null && layoutManager.isLayoutVisible(LayoutType.HUB)) {
+            layoutManager.showLayout(LayoutType.BROWSING, /* animate= */ false);
+        }
+        return target;
+    }
+
+    /**
+     * Listens for the tab with the specified ID to be added to the {@link TabModelSelector}, and
+     * selects it once added. Automatically cleans up the observer when the tab is added or when tab
+     * state initialization completes.
+     *
+     * @param selector The {@link TabModelSelector} to act on.
+     * @param layoutManager The {@link LayoutManager} for switching layouts.
+     * @param tabId The ID of the tab to select when added.
+     */
+    public static void listenAndSelectTabOnAdded(
+            @Nullable TabModelSelector selector, @Nullable LayoutManager layoutManager, int tabId) {
+        listenAndSelectTabOnAdded(selector, layoutManager, tabId, null);
+    }
+
+    /**
+     * Listens for the tab with the specified ID to be added to the {@link TabModelSelector}, and
+     * selects it once added. Automatically cleans up the observer when the tab is added or when tab
+     * state initialization completes.
+     *
+     * @param selector The {@link TabModelSelector} to act on.
+     * @param layoutManager The {@link LayoutManager} for switching layouts.
+     * @param tabId The ID of the tab to select when added.
+     * @param onTabSelected Optional callback invoked with the selected tab once added and shown, or
+     *     with null if initialization completes and the tab was not found.
+     */
+    public static void listenAndSelectTabOnAdded(
+            @Nullable TabModelSelector selector,
+            @Nullable LayoutManager layoutManager,
+            int tabId,
+            @Nullable Callback<@Nullable Tab> onTabSelected) {
+        if (selector == null || tabId == Tab.INVALID_TAB_ID) {
+            if (onTabSelected != null) {
+                onTabSelected.onResult(null);
+            }
+            return;
+        }
+        if (selector.getTabById(tabId) != null) {
+            Tab target = selectTabAndShow(selector, layoutManager, tabId);
+            if (onTabSelected != null) {
+                onTabSelected.onResult(target);
+            }
+            return;
+        }
+        AtomicBoolean isCompleted = new AtomicBoolean(false);
+        Callback<@Nullable Tab> completeOnce =
+                (selected) -> {
+                    if (isCompleted.getAndSet(true)) return;
+                    if (onTabSelected != null) {
+                        onTabSelected.onResult(selected);
+                    }
+                };
+        TabModelSelectorTabModelObserver observer =
+                new TabModelSelectorTabModelObserver(selector) {
+                    @Override
+                    public void didAddTab(
+                            Tab tab,
+                            @TabLaunchType int type,
+                            @TabCreationState int creationState,
+                            boolean markedForSelection) {
+                        if (isCompleted.get()) return;
+                        if (tab.getId() == tabId) {
+                            Tab selected = selectTabAndShow(selector, layoutManager, tabId);
+                            destroy();
+                            completeOnce.onResult(selected);
+                        }
+                    }
+                };
+        TabModelUtils.runOnTabStateInitialized(
+                selector,
+                (unused) -> {
+                    if (isCompleted.get()) return;
+                    if (selector.getTabById(tabId) != null) {
+                        Tab selected = selectTabAndShow(selector, layoutManager, tabId);
+                        observer.destroy();
+                        completeOnce.onResult(selected);
+                        return;
+                    }
+                    // Background tab restoration runs on tab state initialized as well. Post a task
+                    // to allow background restoration callbacks to finish adding the tab before
+                    // destroying this observer.
+                    PostTask.postTask(
+                            TaskTraits.UI_DEFAULT,
+                            () -> {
+                                if (isCompleted.get()) return;
+                                Tab selected = null;
+                                if (selector.getTabById(tabId) != null) {
+                                    selected = selectTabAndShow(selector, layoutManager, tabId);
+                                }
+                                observer.destroy();
+                                completeOnce.onResult(selected);
+                            });
+                });
+    }
+
+    /**
+     * Marks all tabs in the completed task's background session as dirty so they are asynchronously
+     * saved to disk by BackgroundTabPool.
+     *
+     * @param sessions The list of active background sessions.
+     * @param taskId The ID of the completed task.
+     */
+    public static void persistTabsForCompletedTask(List<BackgroundSession> sessions, int taskId) {
+        ThreadUtils.assertOnUiThread();
+        BackgroundSession session = BackgroundSession.getSessionForTask(sessions, taskId);
+        if (session == null) {
+            return;
+        }
+
+        for (Tab tab : session.getTabs()) {
+            if (tab != null) {
+                TabStateAttributes.setDirty(tab);
             }
         }
     }

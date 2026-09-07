@@ -14,6 +14,7 @@
 #include "google_apis/google_api_keys.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace safe_browsing::v5_search_hashes_util {
@@ -468,9 +469,6 @@ TEST_F(V5SearchHashesUtilTest,
       V5::ThreatType::BETTER_ADS_VIOLATION, {V5::ThreatAttribute::CANARY});
   V5::FullHash::FullHashDetail abs_enforce =
       CreateHashDetail(V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION);
-  V5::FullHash::FullHashDetail abs_warn =
-      CreateHashDetail(V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION,
-                       {V5::ThreatAttribute::CANARY});
   V5::FullHash::FullHashDetail soceng =
       CreateHashDetail(V5::ThreatType::SOCIAL_ENGINEERING);
 
@@ -480,13 +478,12 @@ TEST_F(V5SearchHashesUtilTest,
         DetermineMostSevereThreat({&bas_enforce, &abs_enforce});
     EXPECT_EQ(result.threat_type,
               SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER);
-    EXPECT_EQ(result.metadata.subresource_filter_match.size(), 2u);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::BETTER_ADS],
-              SubresourceFilterLevel::ENFORCE);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::ABUSIVE],
-              SubresourceFilterLevel::ENFORCE);
+    EXPECT_THAT(result.metadata.subresource_filter_match,
+                testing::UnorderedElementsAre(
+                    std::make_pair(SubresourceFilterType::BETTER_ADS,
+                                   SubresourceFilterLevel::ENFORCE),
+                    std::make_pair(SubresourceFilterType::ABUSIVE,
+                                   SubresourceFilterLevel::ENFORCE)));
   }
 
   // 2. BETTER_ADS WARN and ABUSIVE ENFORCE -> both present.
@@ -494,13 +491,12 @@ TEST_F(V5SearchHashesUtilTest,
     ThreatResult result = DetermineMostSevereThreat({&bas_warn, &abs_enforce});
     EXPECT_EQ(result.threat_type,
               SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER);
-    EXPECT_EQ(result.metadata.subresource_filter_match.size(), 2u);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::BETTER_ADS],
-              SubresourceFilterLevel::WARN);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::ABUSIVE],
-              SubresourceFilterLevel::ENFORCE);
+    EXPECT_THAT(result.metadata.subresource_filter_match,
+                testing::UnorderedElementsAre(
+                    std::make_pair(SubresourceFilterType::BETTER_ADS,
+                                   SubresourceFilterLevel::WARN),
+                    std::make_pair(SubresourceFilterType::ABUSIVE,
+                                   SubresourceFilterLevel::ENFORCE)));
   }
 
   // 3. Same threat type with different levels -> ENFORCE replaces WARN.
@@ -508,10 +504,10 @@ TEST_F(V5SearchHashesUtilTest,
     ThreatResult result = DetermineMostSevereThreat({&bas_warn, &bas_enforce});
     EXPECT_EQ(result.threat_type,
               SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER);
-    EXPECT_EQ(result.metadata.subresource_filter_match.size(), 1u);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::BETTER_ADS],
-              SubresourceFilterLevel::ENFORCE);
+    EXPECT_THAT(result.metadata.subresource_filter_match,
+                testing::UnorderedElementsAre(
+                    std::make_pair(SubresourceFilterType::BETTER_ADS,
+                                   SubresourceFilterLevel::ENFORCE)));
   }
 
   // 4. Same as #3 above but opposite call order.
@@ -519,10 +515,10 @@ TEST_F(V5SearchHashesUtilTest,
     ThreatResult result = DetermineMostSevereThreat({&bas_enforce, &bas_warn});
     EXPECT_EQ(result.threat_type,
               SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER);
-    EXPECT_EQ(result.metadata.subresource_filter_match.size(), 1u);
-    EXPECT_EQ(result.metadata
-                  .subresource_filter_match[SubresourceFilterType::BETTER_ADS],
-              SubresourceFilterLevel::ENFORCE);
+    EXPECT_THAT(result.metadata.subresource_filter_match,
+                testing::UnorderedElementsAre(
+                    std::make_pair(SubresourceFilterType::BETTER_ADS,
+                                   SubresourceFilterLevel::ENFORCE)));
   }
 
   // 5. Subresource filter and higher-severity threat (SOCIAL_ENGINEERING) ->

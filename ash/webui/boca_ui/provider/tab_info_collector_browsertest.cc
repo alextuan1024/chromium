@@ -14,7 +14,7 @@
 #include "base/functional/bind.h"
 #include "base/test/bind.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -52,11 +52,10 @@ class TabInfoCollectorTest : public InProcessBrowserTest {
   TabInfoCollectorTest operator=(const TabInfoCollectorTest&) = delete;
   ~TabInfoCollectorTest() override = default;
 
-  Browser* CreateBrowser(const std::vector<GURL>& urls) {
+  BrowserWindowInterface* CreateBrowser(const std::vector<GURL>& urls) {
     BrowserWindowCreateParams params(ProfileManager::GetActiveUserProfile(),
                                      /*from_user_gesture=*/false);
-    Browser* browser =
-        CreateBrowserWindow(std::move(params))->GetBrowserForMigrationOnly();
+    BrowserWindowInterface* browser = CreateBrowserWindow(std::move(params));
     // Create a new tab and make sure the urls have loaded.
     for (const auto& url : urls) {
       ui_test_utils::NavigateToURLWithDisposition(
@@ -65,7 +64,6 @@ class TabInfoCollectorTest : public InProcessBrowserTest {
     }
     return browser;
   }
-
 
   void TearDown() override {
     tab_info_collector_.reset();

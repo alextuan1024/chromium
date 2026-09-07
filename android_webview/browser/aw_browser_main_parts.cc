@@ -51,13 +51,11 @@
 #include "components/heap_profiling/in_process/browser_process_snapshot_controller.h"
 #include "components/heap_profiling/in_process/heap_profiler_controller.h"
 #include "components/heap_profiling/in_process/mojom/snapshot_controller.mojom.h"
-#include "components/heap_profiling/multi_process/supervisor.h"
 #include "components/metrics/android_metrics_helper.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/metrics_service.h"
 #include "components/performance_manager/embedder/graph_features.h"
 #include "components/performance_manager/embedder/performance_manager_lifetime.h"
-#include "components/services/heap_profiling/public/cpp/settings.h"
 #include "components/tracing/common/background_tracing_utils.h"
 #include "components/user_prefs/user_prefs.h"
 #include "components/variations/synthetic_trials.h"
@@ -85,7 +83,6 @@
 #include "ui/gl/gl_surface.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "android_webview/browser_jni_headers/AwBrowserMainParts_jni.h"
 #include "android_webview/browser_jni_headers/AwInterfaceRegistrar_jni.h"
 
 namespace {
@@ -372,18 +369,7 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
         std::string(PRODUCT_VERSION) + "_" + trial_group,
         variations::SyntheticTrialAnnotationMode::kCurrentLog);
   }
-  JNIEnv* env = base::android::AttachCurrentThread();
-  bool use_webview_context = Java_AwBrowserMainParts_getUseWebViewContext(env);
-  bool partitioned_cookies_enablement_state =
-      Java_AwBrowserMainParts_getPartitionedCookiesDefaultState(env);
-  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      metrics, "WebViewSeparateResourceContextMetrics",
-      use_webview_context ? "Enabled" : "Control",
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
-  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      metrics, "WebViewPartitionedCookiesMetrics",
-      partitioned_cookies_enablement_state ? "Control" : "Disabled",
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
+  AwMetricsServiceClient::GetInstance()->FlushPendingSyntheticTrialsFromJava();
 
   bool in_seed_experiment =
       android_webview::CachedFlags::IsCachedFeatureOverridden(
@@ -456,7 +442,7 @@ void AwBrowserMainParts::WillRunMainMessageLoop(
   NOTREACHED();
 }
 
-void AwBrowserMainParts::PostCreateThreads() {
+int AwBrowserMainParts::PostCreateThreads() {
   if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
     if (auto* snapshot_controller =
             heap_profiling::BrowserProcessSnapshotController::GetInstance()) {
@@ -464,10 +450,6 @@ void AwBrowserMainParts::PostCreateThreads() {
           base::BindRepeating(&BindHeapSnapshotControllerToProcessHost));
     }
   }
-
-  heap_profiling::Mode mode = heap_profiling::GetModeForStartup();
-  if (mode != heap_profiling::Mode::kNone)
-    heap_profiling::Supervisor::GetInstance()->Start(base::NullCallback());
 
   // TODO(crbug.com/524981399): Enable standard graph features.
   performance_manager_lifetime_ =
@@ -479,9 +461,9 @@ void AwBrowserMainParts::PostCreateThreads() {
   tracing::SetupPresetTracingFromFieldTrial();
   base::trace_event::EmitNamedTrigger(
       base::trace_event::kStartupTracingTriggerName);
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 }  // namespace android_webview
 
-DEFINE_JNI(AwBrowserMainParts)
 DEFINE_JNI(AwInterfaceRegistrar)

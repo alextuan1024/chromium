@@ -250,7 +250,7 @@ GetPrefetchResponseCompletedCallbackForTesting() {
 
 void RecordPrefetchProxyPrefetchMainframeTotalTime(
     network::mojom::URLResponseHead* head) {
-  DCHECK(head);
+  CHECK(head, base::NotFatalUntil::M159);
 
   base::Time start = head->request_time;
   base::Time end = head->response_time;
@@ -266,7 +266,7 @@ void RecordPrefetchProxyPrefetchMainframeTotalTime(
 
 void RecordPrefetchProxyPrefetchMainframeConnectTime(
     network::mojom::URLResponseHead* head) {
-  DCHECK(head);
+  CHECK(head, base::NotFatalUntil::M159);
 
   base::TimeTicks start = head->load_timing.connect_timing.connect_start;
   base::TimeTicks end = head->load_timing.connect_timing.connect_end;
@@ -622,6 +622,8 @@ PrefetchContainer::~PrefetchContainer() {
   // https://chromium-review.googlesource.com/c/chromium/src/+/5657659/comments/0cfb14c0_3050963e
   //
   // TODO(crbug.com/356314759): Do it.
+
+  OnStale();
   NotifyObservers(&PrefetchContainerObserver::OnWillBeDestroyed);
 
   CancelStreamingURLLoaderIfNotServing();
@@ -898,7 +900,7 @@ void PrefetchContainer::SetPrefetchStatus(PrefetchStatus prefetch_status) {
 }
 
 PrefetchStatus PrefetchContainer::GetPrefetchStatus() const {
-  DCHECK(prefetch_status_);
+  CHECK(prefetch_status_, base::NotFatalUntil::M159);
   return prefetch_status_.value();
 }
 
@@ -1070,6 +1072,10 @@ void PrefetchContainer::SetLoadState(LoadState new_load_state) {
            << new_load_state;
 
   load_state_ = new_load_state;
+
+  if (IsPrefetchStale()) {
+    OnStale();
+  }
 }
 
 PrefetchContainer::LoadState PrefetchContainer::GetLoadState() const {
@@ -1441,7 +1447,7 @@ void PrefetchContainer::OnPrefetchCompleteInternal() {
   // Updates the prefetch's status if it hasn't been updated since the request
   // first started. For the prefetch to reach the network stack, it must have
   // `PrefetchStatus::kPrefetchNotStarted` or beyond.
-  DCHECK(HasPrefetchStatus());
+  CHECK(HasPrefetchStatus(), base::NotFatalUntil::M159);
   if (GetPrefetchStatus() == PrefetchStatus::kPrefetchNotFinishedInTime) {
     SetPrefetchStatus(net_error == net::OK
                           ? PrefetchStatus::kPrefetchSuccessful
@@ -1945,11 +1951,38 @@ void PrefetchContainer::NotifyPrefetchRequestWillBeSent(
   }
 }
 
+void PrefetchContainer::NotifyPrefetchRedirectResponseReceived(
+    const network::mojom::URLResponseHead& redirect_head) {
+  // Ensured by the caller `PrefetchService::OnPrefetchRedirect()`.
+  CHECK(!IsDecoy());
+
+  // Populate `time_first_url_request_started` on the first response hop.
+  //
+  // When a redirect occurs, `net::URLRequest::PrepareToRestart()` in
+  // `net/url_request/url_request.cc` resets `load_timing_info_.request_start`
+  // for the subsequent redirect hop. Thus, the final non-redirect response's
+  // `load_timing.request_start` only reflects the start time of the latest
+  // redirect hop. To capture the timestamp when the initial URLRequest was
+  // started in //net (before any redirects), we record
+  // `load_timing.request_start` from the first response hop received.
+  if (!prefetch_container_metrics_.time_first_url_request_started.has_value()) {
+    prefetch_container_metrics_.time_first_url_request_started =
+        redirect_head.load_timing.request_start;
+  }
+}
+
 void PrefetchContainer::NotifyPrefetchResponseReceived(
     const network::mojom::URLResponseHead& head) {
   // Ensured by the caller
   // `PrefetchContainer::OnPrefetchResponseStartedInternal()`.
   CHECK(!IsDecoy());
+
+  // Populate `time_first_url_request_started` on the first response hop if
+  // there were no redirects.
+  if (!prefetch_container_metrics_.time_first_url_request_started.has_value()) {
+    prefetch_container_metrics_.time_first_url_request_started =
+        head.load_timing.request_start;
+  }
 
   prefetch_container_metrics_.time_url_request_started =
       head.load_timing.request_start;
@@ -2096,6 +2129,27 @@ void PrefetchContainer::RecordPrefetchDurationHistogram() {
       }),
       prefetch_container_metrics_.time_prefetch_started.value() -
           prefetch_container_metrics_.time_initial_eligibility_got.value());
+
+  if (!prefetch_container_metrics_.time_first_url_request_started.has_value()) {
+    return;
+  }
+
+  base::UmaHistogramTimes(
+      base::StrCat({
+          "Prefetch.PrefetchContainer.AddedToFirstURLRequestStarted.",
+          GetMetricsSuffix(),
+      }),
+      prefetch_container_metrics_.time_first_url_request_started.value() -
+          prefetch_container_metrics_.time_added_to_prefetch_service.value());
+
+  base::UmaHistogramTimes(
+      base::StrCat({
+          "Prefetch.PrefetchContainer."
+          "PrefetchStartedToFirstURLRequestStarted.",
+          GetMetricsSuffix(),
+      }),
+      prefetch_container_metrics_.time_first_url_request_started.value() -
+          prefetch_container_metrics_.time_prefetch_started.value());
 
   if (!prefetch_container_metrics_.time_url_request_started.has_value()) {
     return;
@@ -2263,6 +2317,23 @@ void PrefetchContainer::RecordPrefetchContainerServedCountHistogram() {
       base::StrCat(
           {"Prefetch.PrefetchContainer.ServedCount.", GetMetricsSuffix()}),
       served_count_);
+}
+
+// Called when `this` is stale.
+// TODO(crbug.com/551306029): Currently, expiration of
+// `PrefetchCacheableDuration()` does not trigger `OnStale`
+// reactively. Support staleness notifications upon cache expiration.
+// For WebView Prefetch, this is no-op, because `PrefetchCacheableDuration()` is
+// longer than TTL so `PrefetchContainer` is destroyed before that.
+void PrefetchContainer::OnStale() {
+  if (!base::FeatureList::IsEnabled(features::kPrefetchOffTheMainThread)) {
+    return;
+  }
+  if (is_stale_notified_) {
+    return;
+  }
+  is_stale_notified_ = true;
+  NotifyObservers(&PrefetchContainerObserver::OnPrefetchStale);
 }
 
 }  // namespace content

@@ -104,7 +104,11 @@ export class TopToolbarElement extends TopToolbarElementBase {
       contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow_:
           {type: Boolean},
       overflowMenuOpen_: {type: Boolean},
-      isSidePanelRearchitectureEnabled_: {type: Boolean},
+      isSidePanelRearchitectureEnabled_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-side-panel-rearchitecture-enabled',
+      },
       webuiRoundedIconsEnabled_: {type: Boolean},
       permissionDashboardState: {type: Object},
     };
@@ -130,7 +134,7 @@ export class TopToolbarElement extends TopToolbarElementBase {
   private listenerIds_: number[] = [];
   protected accessor isExpandButtonEnabled: boolean =
       loadTimeData.getBoolean('expandButtonEnabled');
-  protected accessor isPinButtonEnabled: boolean =
+  accessor isPinButtonEnabled: boolean =
       loadTimeData.getBoolean('enablePinButton');
   private hideOverflowMenuOnAiPageEnabled_: boolean =
       loadTimeData.getBoolean('hideMenuOnAiPageEnabled');

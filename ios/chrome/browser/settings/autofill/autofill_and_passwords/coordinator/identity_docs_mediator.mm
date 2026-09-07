@@ -51,6 +51,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
           initWithPrefService:prefService
                      prefName:autofill::prefs::kAutofillProfileEnabled];
       _autofillProfileEnabled.observer = self;
+      self.personalContextEnabled.observer = self;
     }
   }
   return self;
@@ -66,11 +67,13 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
     [self pushEntitiesToConsumer];
 
     [self updateConsumerToggleState];
+
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 
 - (void)disconnect {
-  [super disconnect];
+  self.personalContextEnabled.observer = nil;
   _identityDocsEnabled.observer = nil;
   [_identityDocsEnabled stop];
   _identityDocsEnabled = nil;
@@ -78,6 +81,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
   [_autofillProfileEnabled stop];
   _autofillProfileEnabled = nil;
   _consumer = nil;
+  [super disconnect];
 }
 
 #pragma mark - BooleanObserver
@@ -86,6 +90,8 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
   if (observableBoolean == _identityDocsEnabled ||
       observableBoolean == _autofillProfileEnabled) {
     [self updateConsumerToggleState];
+  } else if (observableBoolean == self.personalContextEnabled) {
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 

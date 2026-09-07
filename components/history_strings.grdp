@@ -122,22 +122,20 @@
   <message name="IDS_HISTORY_SEARCH_EMBEDDINGS_MATCH_RESULTS" desc="Used when plural/multiple results are found by history search powered by AI." translateable="false">
     best matches
   </message>
-  <if expr="not use_titlecase">
-    <message name="IDS_HISTORY_SHOW_HISTORY" desc="The show history menu in the app menu">
-      &amp;Open history page
-    </message>
-  </if>
-  <if expr="use_titlecase">
-    <message name="IDS_HISTORY_SHOW_HISTORY" desc="In Title Case: The show history menu in the app menu">
-      &amp;Open History Page
-    </message>
-  </if>
+  <message name="IDS_HISTORY_SHOW_HISTORY" desc="The show history menu in the app menu">
+    &amp;Open history page
+  </message>
   <message name="IDS_HISTORY_SHOW_SIDE_PANEL" desc="Label of the item in drop-down menu that allows user to open the history in the side panel.">
     History
   </message>
   <message name="IDS_HISTORY_SHOWFULLHISTORY_LINK" desc="The label of the Show Full History link at the bottom of the back/forward menu.">
-    Show Full History
+    Show full history
   </message>
+  <if expr="use_titlecase">
+    <message name="IDS_HISTORY_SHOWFULLHISTORY_MAC" desc="In Title Case: The label of the Show Full History item in the main menu.">
+      Show Full History
+    </message>
+  </if>
   <message name="IDS_HISTORY_SOURCE_FILTER_CHIPS_ARIA_LABEL" desc="This string is the ARIA label of the filter chips that filter the history results when the user selects them; they sit next to each other on top of the Chrome history page, where users can see their browsing history.">
     Auto browse filters
   </message>
@@ -318,6 +316,12 @@
   </message>
   <message name="IDS_HISTORY_REVIEW_GEMINI_ACTIVITY" desc="Command in the history entry drop-down menu. Opens Gemini Apps Activity page." translateable="false">
     Review Gemini activity
+  </message>
+  <message name="IDS_HISTORY_GO_TO_GEMINI_CHAT" desc="Command in the history entry drop-down menu. Opens the Gemini conversation in split view." translateable="false">
+    Go to Gemini chat
+  </message>
+  <message name="IDS_HISTORY_GO_TO_GEMINI_CHAT_ERROR" desc="Toast notification shown when opening Gemini chat fails." translateable="false">
+    Couldn't open Gemini chat
   </message>
   <message name="IDS_HISTORY_OTHER_FORMS_OF_HISTORY_GMA_AND_GAA_CRITICAL_ACTIONS" desc="The notification at the bottom of the history page indicating that deleting Chrome browsing history will not delete other forms of history stored at Google My Activity and Gemini Apps Activity, shown when critical actions are enabled." translateable="false">
     Your Google Account may have other forms of browsing history at <ph name="BEGIN_LINK_GMA">&lt;a target="_blank" id="footerGoogleMyActivityLink" href="$1"&gt;</ph>myactivity.google.com<ph name="END_LINK_GMA">&lt;/a&gt;</ph>, such as auto browse visits in your <ph name="BEGIN_LINK_GAA">&lt;a target="_blank" id="footerGeminiAppsActivityLink" href="$2"&gt;</ph>Gemini Apps Activity<ph name="END_LINK_GAA">&lt;/a&gt;</ph>

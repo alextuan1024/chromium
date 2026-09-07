@@ -142,6 +142,10 @@ mojom("mojom") {
     enabled_features += [ "enable_cast_renderer" ]
   }
 
+  if (enable_cdm_provision_fetcher) {
+    enabled_features += [ "enable_cdm_provision_fetcher" ]
+  }
+
   shared_typemaps = [
     {
       types = [
@@ -782,6 +786,10 @@ mojom("media_types") {
         {
           mojom = "media.mojom.SVCScalabilityMode"
           cpp = "::media::SVCScalabilityMode"
+        },
+        {
+          mojom = "media.mojom.VideoChromaSampling"
+          cpp = "::media::VideoChromaSampling"
         },
         {
           mojom = "media.mojom.VideoRotation"

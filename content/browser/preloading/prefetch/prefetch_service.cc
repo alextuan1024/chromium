@@ -390,7 +390,7 @@ PrefetchService::~PrefetchService() {  // NOLINT(modernize-use-equals-default)
 
 void PrefetchService::SetPrefetchServiceDelegateForTesting(
     std::unique_ptr<PrefetchServiceDelegate> delegate) {
-  DCHECK(!delegate_);
+  CHECK(!delegate_, base::NotFatalUntil::M159);
   delegate_ = std::move(delegate);
 }
 
@@ -503,7 +503,7 @@ base::WeakPtr<PrefetchContainer> PrefetchService::AddPrefetchRequestInternal(
 base::WeakPtr<PrefetchContainer>
 PrefetchService::CreatePrefetchContainerFromPrePrefetchForTesting(  // IN-TEST
     std::unique_ptr<const PrefetchRequest> prefetch_request) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(base::FeatureList::IsEnabled(
       features::kPrefetchOffTheMainThreadForceForTesting));
   CHECK(GetBrowserContext());
@@ -1820,6 +1820,11 @@ void PrefetchService::OnPrefetchRedirect(
   }
 
   CHECK(scheduler_->IsInActiveSet(*prefetch_container));
+  CHECK(redirect_head);
+
+  if (!prefetch_container->IsDecoy()) {
+    prefetch_container->NotifyPrefetchRedirectResponseReceived(*redirect_head);
+  }
 
   std::optional<PrefetchRedirectResult> failure;
   if (redirect_info.new_method != "GET") {

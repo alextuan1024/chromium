@@ -20,7 +20,6 @@
 #include "components/live_caption/pref_names.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_broker_state.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/model_broker_state.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -54,7 +53,7 @@ bool IsLiveCaptionEnabled(Profile* profile) {
   if (!profile) {
     return false;
   }
-  PrefService* prefs = profile->GetOriginalProfile()->GetPrefs();
+  PrefService* prefs = profile->GetPrefs();
   return prefs && (prefs->GetBoolean(prefs::kLiveCaptionEnabled) ||
                    (captions::IsHeadlessCaptionFeatureSupported() &&
                     prefs->GetBoolean(prefs::kHeadlessCaptionEnabled)));
@@ -118,7 +117,7 @@ void SpeechRecognitionSmallExpertModelInstaller::
       OptimizationGuideKeyedServiceFactory::GetForProfile(
           profile->GetOriginalProfile());
   if (!opt_guide) {
-    HandleSpeechRecognitionSmallExpertModelError();
+    SetState(State::kNotInstalled);
     return;
   }
 
@@ -213,17 +212,10 @@ void SpeechRecognitionSmallExpertModelInstaller::
       optimization_guide::OptimizationGuideGlobalState::CreateOrGet();
   if (global_state) {
     const std::string use_case = optimization_guide::ToUseCaseName(kFeature);
-    if (global_state->model_broker_state()) {
-      global_state->model_broker_state()->SetUseCaseRequested(use_case, false);
-    } else if (base::FeatureList::IsEnabled(
-                   optimization_guide::kOptimizationGuideManifestBroker)) {
-      // When kOptimizationGuideManifestBroker is enabled, the capability is
-      // guaranteed to be ManifestBrokerState.
-      auto& capability = global_state->on_device_capability();
-      auto* manifest_state =
-          static_cast<optimization_guide::ManifestBrokerState*>(&capability);
-      manifest_state->SetUseCaseRequested(use_case, false);
-    }
+    auto& capability = global_state->on_device_capability();
+    auto* manifest_state =
+        static_cast<optimization_guide::ManifestBrokerState*>(&capability);
+    manifest_state->SetUseCaseRequested(use_case, false);
   }
 #endif
 

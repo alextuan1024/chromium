@@ -17,8 +17,10 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/accessibility/page_colors_controller.h"
 #include "chrome/browser/accessibility/page_colors_controller_factory.h"
@@ -39,7 +41,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/search/instant_test_base.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -92,11 +94,13 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/frame_test_utils.h"
+#include "content/public/test/scoped_page_focus_override.h"
 #include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "extensions/browser/api/extensions_api_client.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
@@ -110,6 +114,8 @@
 #include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/color/color_provider_manager.h"
@@ -590,7 +596,7 @@ IN_PROC_BROWSER_TEST_P(PrefersColorSchemeTest, PrefersColorSchemeGlic) {
 // browser theme.
 IN_PROC_BROWSER_TEST_P(PrefersColorSchemeTest, ChromeSearchTheme) {
   // Open an incognito browser and navigate to search scheme.
-  Browser* incognito_browser =
+  BrowserWindowInterface* incognito_browser =
       CreateIncognitoBrowser(GetBrowser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       incognito_browser, GURL("chrome-search://most-visited/title.html")));
@@ -688,7 +694,9 @@ class PreferredRootScrollbarColorSchemeChromeClientTest
     if (!UsesCustomTheme()) {
       return !root_scrollbar_pref.has_value();
     }
-    EXPECT_TRUE(root_scrollbar_pref.has_value());
+    if (!root_scrollbar_pref.has_value()) {
+      return false;
+    }
     const SkColor root_scrollbar_color = root_scrollbar_pref.value();
     // `root_scrollbar_theme_color` is set based off the toolbar color, which is
     // generated using the theme's color. Because of this, we can't directly
@@ -724,9 +732,10 @@ IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
                        ScrollbarFollowsPreferredColorScheme) {
   auto* const web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_EQ(web_contents->GetOrCreateWebPreferences()
-                .preferred_root_scrollbar_color_scheme,
-            ExpectedColorScheme());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return web_contents->GetOrCreateWebPreferences()
+               .preferred_root_scrollbar_color_scheme == ExpectedColorScheme();
+  }));
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
@@ -734,7 +743,7 @@ IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
 // when using a custom theme.
 IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
                        VerifyRootScrollbarColorTheme) {
-  EXPECT_TRUE(ThemeColorMatches());
+  ASSERT_TRUE(base::test::RunUntil([&]() { return ThemeColorMatches(); }));
 }
 #endif  //  BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 
@@ -1965,6 +1974,66 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
   EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
 }
 
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       PasteAllowedByPermission_FocusEmulation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/iframe.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::RenderFrameHost* parent_rfh = web_contents->GetPrimaryMainFrame();
+  content::RenderFrameHost* child_rfh = content::ChildFrameAt(parent_rfh, 0);
+  ASSERT_TRUE(child_rfh);
+
+  SetPermission(test_url, ContentSettingsType::CLIPBOARD_READ_WRITE,
+                CONTENT_SETTING_ALLOW);
+  parent_rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(IsClipboardPasteAllowed(parent_rfh));
+
+  {
+    content::ScopedPageFocusOverride focus_override(web_contents);
+    EXPECT_TRUE(parent_rfh->IsFocused());
+    EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
+    EXPECT_FALSE(child_rfh->IsFocused());
+  }
+
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(IsClipboardPasteAllowed(parent_rfh));
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       FocusEmulationDoesNotPropagateToCrossProcessFrame) {
+  content::RenderFrameHost* parent_rfh = nullptr;
+  content::RenderFrameHost* child_rfh = nullptr;
+  ASSERT_NO_FATAL_FAILURE(
+      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  parent_rfh->GetRenderWidgetHost()->Focus();
+  ASSERT_TRUE(content::ExecJs(parent_rfh,
+                              "document.querySelector('iframe').focus();",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_NE(parent_rfh->GetRenderWidgetHost(),
+            child_rfh->GetRenderWidgetHost());
+  ASSERT_TRUE(child_rfh->IsFocused());
+
+  parent_rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(child_rfh->IsFocused());
+
+  {
+    content::ScopedPageFocusOverride focus_override(web_contents);
+    EXPECT_TRUE(parent_rfh->IsFocused());
+    EXPECT_FALSE(child_rfh->IsFocused());
+  }
+
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(child_rfh->IsFocused());
+}
+
 // Verifies that IsClipboardPasteAllowed mirrors Blink's Document::hasFocus()
 // for subframes:
 // - Unfocused child iframes are blocked from reading the clipboard.
@@ -2154,7 +2223,7 @@ class DevToolsOverridesThirdPartyCookiesBrowserTest
   GURL GetURL(std::string_view host) { return https_server_.GetURL(host, "/"); }
 
   void NavigateToPageWithFrame(std::string_view host,
-                               Browser* browser_ptr = nullptr) {
+                               BrowserWindowInterface* browser_ptr = nullptr) {
     GURL main_url(https_server_.GetURL(host, "/iframe.html"));
     ASSERT_TRUE(ui_test_utils::NavigateToURL(
         browser_ptr ? browser_ptr : browser(), main_url));

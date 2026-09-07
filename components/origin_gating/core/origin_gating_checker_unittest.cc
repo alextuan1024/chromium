@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/origin_gating/core/actor_container_config.h"
@@ -33,6 +34,28 @@ namespace {
 
 using DecisionWithMetadata =
     OriginGatingChecker::Delegate::DecisionWithMetadata;
+
+enum class TestCustomPredicate {
+  kCustom1,
+  kCustom2,
+};
+
+enum class OtherTestCustomPredicate {
+  kOtherCustom1,
+  kOtherCustom2,
+};
+
+}  // namespace
+
+template <>
+const CustomPredicateDomain
+    CustomPredicateDomain::kInstance<TestCustomPredicate>{};
+
+template <>
+const CustomPredicateDomain&
+    CustomPredicateDomain::kInstance<OtherTestCustomPredicate>{};
+
+namespace {
 
 class MockDelegate : public OriginGatingChecker::Delegate {
  public:
@@ -259,14 +282,16 @@ TEST_F(OriginGatingCheckerTest,
   EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
 }
 
-TEST_F(OriginGatingCheckerTest, BuiltInPredicate_ForbidIpAddress_Blocked) {
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_ForbidNonLocalhostIpAddress_Blocked) {
   OriginGatingChecker checker(
-      delegate_, OriginGatingConfiguration({{DecisionSource::kForbidIpAddress,
-                                             GateableEventSet::All()}},
-                                           /*use_site_keyed_cache=*/false));
+      delegate_,
+      OriginGatingConfiguration({{DecisionSource::kForbidNonLocalhostIpAddress,
+                                  GateableEventSet::All()}},
+                                /*use_site_keyed_cache=*/false));
 
   GURL source("https://example.com");
-  GURL destination("https://127.0.0.1/page");
+  GURL destination("https://192.168.1.1/page");
 
   EXPECT_CALL(delegate_, DoesOriginRequireUserConfirmation(_, _, _, _, _))
       .Times(0);
@@ -276,15 +301,62 @@ TEST_F(OriginGatingCheckerTest, BuiltInPredicate_ForbidIpAddress_Blocked) {
       checker, nullptr, source, destination);
 
   EXPECT_FALSE(decision.is_allowed);
-  EXPECT_EQ(decision.attribution, DecisionSource::kForbidIpAddress);
+  EXPECT_EQ(decision.attribution, DecisionSource::kForbidNonLocalhostIpAddress);
 }
 
 TEST_F(OriginGatingCheckerTest,
-       BuiltInPredicate_ForbidIpAddress_NoDecision_FallsBack) {
+       BuiltInPredicate_ForbidNonLocalhostIpAddress_Ipv4LocalhostFallsBack) {
   OriginGatingChecker checker(
-      delegate_, OriginGatingConfiguration({{DecisionSource::kForbidIpAddress,
-                                             GateableEventSet::All()}},
-                                           /*use_site_keyed_cache=*/false));
+      delegate_,
+      OriginGatingConfiguration({{DecisionSource::kForbidNonLocalhostIpAddress,
+                                  GateableEventSet::All()}},
+                                /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("https://127.0.0.1/page");
+
+  SetUpDelegateExpectations(source, destination,
+                            /*requires_user_confirmation=*/false,
+                            /*is_allowed=*/true,
+                            /*did_prompt_user=*/false);
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_ForbidNonLocalhostIpAddress_Ipv6LocalhostFallsBack) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration({{DecisionSource::kForbidNonLocalhostIpAddress,
+                                  GateableEventSet::All()}},
+                                /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("https://[::1]/page");
+
+  SetUpDelegateExpectations(source, destination,
+                            /*requires_user_confirmation=*/false,
+                            /*is_allowed=*/true,
+                            /*did_prompt_user=*/false);
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_ForbidNonLocalhostIpAddress_NoDecision_FallsBack) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration({{DecisionSource::kForbidNonLocalhostIpAddress,
+                                  GateableEventSet::All()}},
+                                /*use_site_keyed_cache=*/false));
 
   GURL source("https://example.com");
   GURL destination("https://foo.com");
@@ -301,11 +373,13 @@ TEST_F(OriginGatingCheckerTest,
   EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
 }
 
-TEST_F(OriginGatingCheckerTest, BuiltInPredicate_RequireHttps_HttpsFallsBack) {
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_HttpsFallsBack) {
   OriginGatingChecker checker(
-      delegate_, OriginGatingConfiguration(
-                     {{DecisionSource::kRequireHttps, GateableEventSet::All()}},
-                     /*use_site_keyed_cache=*/false));
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
 
   GURL source("https://example.com");
   GURL destination("https://foo.com");
@@ -322,11 +396,13 @@ TEST_F(OriginGatingCheckerTest, BuiltInPredicate_RequireHttps_HttpsFallsBack) {
   EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
 }
 
-TEST_F(OriginGatingCheckerTest, BuiltInPredicate_RequireHttps_HttpBlocked) {
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_HttpBlocked) {
   OriginGatingChecker checker(
-      delegate_, OriginGatingConfiguration(
-                     {{DecisionSource::kRequireHttps, GateableEventSet::All()}},
-                     /*use_site_keyed_cache=*/false));
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
 
   GURL source("https://example.com");
   GURL destination("http://foo.com");
@@ -339,7 +415,94 @@ TEST_F(OriginGatingCheckerTest, BuiltInPredicate_RequireHttps_HttpBlocked) {
       checker, nullptr, source, destination);
 
   EXPECT_FALSE(decision.is_allowed);
-  EXPECT_EQ(decision.attribution, DecisionSource::kRequireHttps);
+  EXPECT_EQ(decision.attribution, DecisionSource::kRequireHttpsOrLocalhost);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_DomainLocalhostFallsBack) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("http://localhost/page");
+
+  SetUpDelegateExpectations(source, destination,
+                            /*requires_user_confirmation=*/false,
+                            /*is_allowed=*/true,
+                            /*did_prompt_user=*/false);
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_Ipv4LocalhostFallsBack) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("http://127.0.0.1/page");
+
+  SetUpDelegateExpectations(source, destination,
+                            /*requires_user_confirmation=*/false,
+                            /*is_allowed=*/true,
+                            /*did_prompt_user=*/false);
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_Ipv6LocalhostFallsBack) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("http://[::1]/page");
+
+  SetUpDelegateExpectations(source, destination,
+                            /*requires_user_confirmation=*/false,
+                            /*is_allowed=*/true,
+                            /*did_prompt_user=*/false);
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kNoVerdict);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       BuiltInPredicate_RequireHttpsOrLocalhost_NonHttpLocalhostBlocked) {
+  OriginGatingChecker checker(
+      delegate_,
+      OriginGatingConfiguration(
+          {{DecisionSource::kRequireHttpsOrLocalhost, GateableEventSet::All()}},
+          /*use_site_keyed_cache=*/false));
+
+  GURL source("https://example.com");
+  GURL destination("file://localhost/tmp");
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, source, destination);
+
+  EXPECT_FALSE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, DecisionSource::kRequireHttpsOrLocalhost);
 }
 
 TEST_F(OriginGatingCheckerTest,
@@ -776,7 +939,7 @@ TEST_F(OriginGatingCheckerTest, AsyncCustomPredicate_Allowed_ShortCircuits) {
         EXPECT_EQ(destination, GURL("https://foo.com"));
         std::move(callback).Run(Decision::kAllowed);
       }),
-      "my_custom_predicate");
+      TestCustomPredicate::kCustom1);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration({{custom, GateableEventSet::All()}},
@@ -793,7 +956,32 @@ TEST_F(OriginGatingCheckerTest, AsyncCustomPredicate_Allowed_ShortCircuits) {
       checker, nullptr, source, destination);
 
   EXPECT_TRUE(decision.is_allowed);
-  EXPECT_EQ(decision.attribution, "my_custom_predicate");
+  EXPECT_EQ(decision.attribution, TestCustomPredicate::kCustom1);
+}
+
+TEST_F(OriginGatingCheckerTest,
+       CustomPredicate_AttributionDoesNotMatchDifferentEnumTypeWithSameValue) {
+  CustomPredicate custom(
+      base::BindRepeating([](GatingDecisionContext*, const GURL&, const GURL&) {
+        return Decision::kAllowed;
+      }),
+      TestCustomPredicate::kCustom1);
+
+  OriginGatingChecker checker(
+      delegate_, OriginGatingConfiguration({{custom, GateableEventSet::All()}},
+                                           /*use_site_keyed_cache=*/false));
+
+  GatingDecision decision = ComputeGatingDecisionAndVerifyAsynchrony(
+      checker, nullptr, GURL("https://example.com"), GURL("https://foo.com"));
+
+  EXPECT_TRUE(decision.is_allowed);
+  EXPECT_EQ(decision.attribution, TestCustomPredicate::kCustom1);
+  EXPECT_EQ(decision.attribution.CustomPredicateId<TestCustomPredicate>(),
+            TestCustomPredicate::kCustom1);
+
+  EXPECT_NE(decision.attribution, OtherTestCustomPredicate::kOtherCustom1);
+  EXPECT_CHECK_DEATH(
+      decision.attribution.CustomPredicateId<OtherTestCustomPredicate>());
 }
 
 TEST_F(OriginGatingCheckerTest,
@@ -804,7 +992,7 @@ TEST_F(OriginGatingCheckerTest,
                              base::OnceCallback<void(Decision)> callback) {
         std::move(callback).Run(Decision::kNoDecision);
       }),
-      "my_custom_predicate");
+      TestCustomPredicate::kCustom1);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration({{custom, GateableEventSet::All()}},
@@ -833,7 +1021,7 @@ TEST_F(OriginGatingCheckerTest, SyncCustomPredicate_Allowed_ShortCircuits) {
         EXPECT_EQ(destination, GURL("https://foo.com"));
         return Decision::kAllowed;
       }),
-      "my_custom_predicate");
+      TestCustomPredicate::kCustom2);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration({{custom, GateableEventSet::All()}},
@@ -850,7 +1038,7 @@ TEST_F(OriginGatingCheckerTest, SyncCustomPredicate_Allowed_ShortCircuits) {
       checker, nullptr, source, destination);
 
   EXPECT_TRUE(decision.is_allowed);
-  EXPECT_EQ(decision.attribution, "my_custom_predicate");
+  EXPECT_EQ(decision.attribution, TestCustomPredicate::kCustom2);
 }
 
 TEST_F(OriginGatingCheckerTest,
@@ -859,7 +1047,7 @@ TEST_F(OriginGatingCheckerTest,
       base::BindRepeating([](GatingDecisionContext*, const GURL&, const GURL&) {
         return Decision::kNoDecision;
       }),
-      "my_custom_predicate");
+      TestCustomPredicate::kCustom2);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration({{custom, GateableEventSet::All()}},
@@ -978,7 +1166,7 @@ TEST_F(OriginGatingCheckerTest, PredicateSkipped_WhenEventNotApplicable) {
                              base::OnceCallback<void(Decision)> callback) {
         std::move(callback).Run(Decision::kAllowed);
       }),
-      "page_action_only");
+      TestCustomPredicate::kCustom2);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration(
@@ -1016,7 +1204,7 @@ TEST_F(OriginGatingCheckerTest, PredicateRuns_WhenEventApplicable) {
                              base::OnceCallback<void(Decision)> callback) {
         std::move(callback).Run(Decision::kAllowed);
       }),
-      "page_action_only");
+      TestCustomPredicate::kCustom2);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration(
@@ -1038,7 +1226,7 @@ TEST_F(OriginGatingCheckerTest, PredicateRuns_WhenEventApplicable) {
                                 destination, future.GetCallback());
   GatingDecision decision = future.Get<1>();
   EXPECT_TRUE(decision.is_allowed);
-  EXPECT_EQ(decision.attribution, "page_action_only");
+  EXPECT_EQ(decision.attribution, TestCustomPredicate::kCustom2);
 }
 
 TEST_F(OriginGatingCheckerTest, EventReachesPredicateAndDelegate) {
@@ -1050,7 +1238,7 @@ TEST_F(OriginGatingCheckerTest, EventReachesPredicateAndDelegate) {
                              base::OnceCallback<void(Decision)> callback) {
         std::move(callback).Run(Decision::kNoDecision);
       }),
-      "observing_predicate");
+      TestCustomPredicate::kCustom2);
 
   OriginGatingChecker checker(
       delegate_, OriginGatingConfiguration(

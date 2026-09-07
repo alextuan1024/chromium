@@ -26,6 +26,7 @@
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
 #include "components/page_load_metrics/browser/page_load_type.h"
 #include "components/ukm/gmock_matchers.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_switches.h"
@@ -620,6 +621,43 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, TextLargestContentfulPaint) {
   EXPECT_TRUE(lcp_type_2 == flag_set || lcp_type_2 == flag_set_with_mouseover);
 }
 
+// This test verifies that soft navigation LCP is still reported even if the
+// tab was previously backgrounded and foregrounded before the soft navigation.
+IN_PROC_BROWSER_TEST_P(SoftNavigationTest,
+                       SoftLcpRecordedAfterPreviousBackground) {
+  Start();
+  PageLoadMetricsTestWaiter waiter(web_contents());
+  waiter.AddPageExpectation(PageLoadMetricsTestWaiter::TimingField::kLoadEvent);
+  waiter.AddPageExpectation(
+      PageLoadMetricsTestWaiter::TimingField::kFirstContentfulPaint);
+  waiter.AddPageExpectation(
+      PageLoadMetricsTestWaiter::TimingField::kLargestContentfulPaint);
+  Load("/soft_navigation.html#text");
+  waiter.Wait();
+
+  // Background and then foreground the page before performing soft navigations.
+  web_contents()->WasHidden();
+  web_contents()->WasShown();
+
+  // 1st soft navigation: click on the next page button and wait for soft
+  // navigation count and text lcp.
+  TriggerSoftNavigationAndWait(web_contents(), &waiter, 1,
+                               /*element_id=*/"next-page");
+
+  // 2nd soft navigation: click on the next page button and wait for soft
+  // navigation count and text lcp.
+  TriggerSoftNavigationAndWait(web_contents(), &waiter, 2,
+                               /*element_id=*/"next-page");
+
+  // Navigate to about:blank to ensure all UKMs are recorded.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+
+  // Verify LCP is recorded for both soft navigations.
+  auto source_id_to_lcp = GetSoftNavigationMetrics(
+      ukm_recorder(), SoftNavigation::kPaintTiming_LargestContentfulPaintName);
+  EXPECT_EQ(source_id_to_lcp.size(), 2u);
+}
+
 // This test verifies that we support soft navs triggered by the browser's
 // back button, including recording to UKM. While other soft navs have
 // underlying same-document navigations that originate in the renderer,
@@ -865,9 +903,7 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, INP_ClickWithPresentation) {
     num_interactions_before_softnavs = GetMetricFromUkmEntry(
         page_load_entry,
         PageLoad::kInteractiveTimingBeforeSoftNavigation_NumInteractionsName);
-    // TODO(crbug.com/515874398): This should be exactly 2, but due to a race,
-    // sometimes it's counted toward the first softnav.
-    EXPECT_THAT(num_interactions_before_softnavs, testing::AnyOf(1, 2));
+    EXPECT_THAT(num_interactions_before_softnavs, testing::Eq(2));
     EXPECT_THAT(
         page_load_entry,
         HasMetric(

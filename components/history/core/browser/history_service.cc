@@ -677,11 +677,9 @@ void HistoryService::AddPartitionedVisitedLinks(
       VisitedLink link = {redirect, net::SchemefulSite(*args.top_level_url),
                           url::Origin::Create(*args.frame_url)};
       visit_delegate_->AddVisitedLink(link);
-      // Redirects for chains ending in a 404 are only saved to History if
-      // `history::kVisitedLinksOn404` is enabled, because the final visit is
-      // only saved to History if the flag is enabled. Therefore, VisitedLink
-      // hashtable entries for redirects in chains ending in a 404 are caused by
-      // the 404 visit.
+      // Redirects for chains ending in a 404 are saved to History because the
+      // final 404 visit is saved. Therefore, VisitedLink hashtable entries
+      // for redirects in chains ending in a 404 are caused by the 404 visit.
       EmitVisitedLinksAdditionCausedBy404Uma(
           /*was_addition_caused_by_404=*/args.response_code_category ==
           VisitResponseCodeCategory::k404);
@@ -1470,7 +1468,7 @@ void HistoryService::Cleanup() {
   device_info_tracker_ = nullptr;
 }
 
-bool HistoryService::Init(
+void HistoryService::Init(
     bool no_db,
     const HistoryDatabaseParams& history_database_params) {
   TRACE_EVENT0("browser,startup", "HistoryService::Init");
@@ -1539,8 +1537,6 @@ bool HistoryService::Init(
   if (history_client_) {
     history_client_->OnHistoryServiceCreated(this);
   }
-
-  return true;
 }
 
 void HistoryService::ScheduleTask(SchedulePriority priority,
@@ -1586,6 +1582,15 @@ HistoryService::GetHistorySyncControllerDelegate() {
   return std::make_unique<syncer::ProxyDataTypeControllerDelegate>(
       backend_task_runner_,
       base::BindRepeating(&HistoryBackend::GetHistorySyncControllerDelegate,
+                          base::Unretained(history_backend_.get())));
+}
+
+std::unique_ptr<syncer::DataTypeControllerDelegate>
+HistoryService::GetJourneysSyncControllerDelegate() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return std::make_unique<syncer::ProxyDataTypeControllerDelegate>(
+      backend_task_runner_,
+      base::BindRepeating(&HistoryBackend::GetJourneysSyncControllerDelegate,
                           base::Unretained(history_backend_.get())));
 }
 

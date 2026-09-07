@@ -48,6 +48,8 @@ class FormDataAndroid {
   // changed by direct user input. If they differ, the form has changed enough
   // (e.g. by adding or removing fields) to warrant starting a new Autofill
   // session.
+  // TODO(crbug.com/542493825): Remove when
+  // `AutofillAndroidUseGlobalIdForFormComparison` launches.
   bool SimilarFormAs(const FormData& form) const;
 
   // Is invoked when the form field specified by `index` is changed to a new
@@ -78,6 +80,14 @@ class FormDataAndroid {
   // Returns whether the fields of `this` are similar to the fields of `form`.
   // Returns `false` if the number of fields differs.
   bool SimilarFieldsAs(const FormData& form) const;
+
+  // Updates the field visibilities by matching fields by `FieldGlobalId`.
+  std::vector<int> UpdateFieldVisibilitiesByGlobalId(const FormData& form);
+
+  // Updates the field visibilities by matching fields by index.
+  // TODO(crbug.com/542493825): Remove when
+  // `AutofillAndroidUseGlobalIdForFormComparison` launches.
+  std::vector<int> UpdateFieldVisibilitiesByIndex(const FormData& form);
 
   // The session id of this form. It is used to generate virtual view ids for
   // the `ViewStructure` shared with the Android AutofillManager framework.

@@ -4,10 +4,7 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import android.content.Context;
 import android.text.TextUtils;
-
-import androidx.annotation.ColorInt;
 
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
@@ -16,8 +13,6 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.components.tab_groups.TabGroupColorId;
-import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,7 +22,7 @@ import java.util.List;
  * TabGroupHoverCardView}.
  */
 @NullMarked
-class TabGroupHoverCardPresenter {
+public class TabGroupHoverCardPresenter {
     private static final String BULLET_PREFIX = "• ";
 
     private final TabModelSelector mTabModelSelector;
@@ -37,25 +32,20 @@ class TabGroupHoverCardPresenter {
      *
      * @param tabModelSelector The {@link TabModelSelector} to query tab group state from.
      */
-    TabGroupHoverCardPresenter(TabModelSelector tabModelSelector) {
+    public TabGroupHoverCardPresenter(TabModelSelector tabModelSelector) {
         mTabModelSelector = tabModelSelector;
     }
 
     /**
-     * Resolves group metadata and displays the hover card view at the specified coordinates.
+     * Resolves group metadata and binds the data to the hover card view.
      *
-     * @param hoverCardView The {@link TabGroupHoverCardView} to update and show.
+     * @param hoverCardView The {@link TabGroupHoverCardView} to populate.
      * @param groupHeaderTabId The tab ID of the group header.
      * @param tabGroupId The stable tab group ID (Token).
-     * @param x The target x-coordinate in px.
-     * @param y The target y-coordinate in px.
+     * @return True if data was successfully bound, false if group is invalid.
      */
-    void show(
-            TabGroupHoverCardView hoverCardView,
-            int groupHeaderTabId,
-            @Nullable Token tabGroupId,
-            float x,
-            float y) {
+    public boolean bindData(
+            TabGroupHoverCardView hoverCardView, int groupHeaderTabId, @Nullable Token tabGroupId) {
         TabModel currentModel = mTabModelSelector.getCurrentModel();
         boolean isIncognito = currentModel.isIncognitoBranded();
 
@@ -67,14 +57,12 @@ class TabGroupHoverCardPresenter {
             }
         }
         if (resolvedGroupId == null) {
-            hoverCardView.hide();
-            return;
+            return false;
         }
 
         List<Tab> rawTabs = currentModel.getTabsInGroup(resolvedGroupId);
         if (rawTabs.isEmpty()) {
-            hoverCardView.hide();
-            return;
+            return false;
         }
 
         List<Tab> relatedTabs = new ArrayList<>(rawTabs.size());
@@ -84,42 +72,28 @@ class TabGroupHoverCardPresenter {
             }
         }
         if (relatedTabs.isEmpty()) {
-            hoverCardView.hide();
-            return;
+            return false;
         }
         int totalTabsCount = relatedTabs.size();
 
-        Context context = hoverCardView.getContext();
-
         // Group Title.
-        // TODO(crbug.com/509226293): Show number of tabs in brackets when a custom title is set
-        // instead of the default title (e.g. "My Group (3 Tabs)").
         String title = currentModel.getTabGroupTitle(resolvedGroupId);
         if (TextUtils.isEmpty(title)) {
-            title = TabGroupTitleUtils.getDefaultTitle(context, totalTabsCount);
+            title = TabGroupTitleUtils.getDefaultTitle(hoverCardView.getContext(), totalTabsCount);
         }
-
-        // Group Color.
-        @TabGroupColorId int colorId = currentModel.getTabGroupColorWithFallback(resolvedGroupId);
-        @ColorInt
-        int groupColor =
-                TabGroupColorPickerUtils.getTabGroupColorPickerItemColor(
-                        context, colorId, isIncognito);
 
         // Child Tab Titles (up to MAX_PREVIEW_TABS).
         int previewCount = Math.min(totalTabsCount, TabGroupHoverCardView.MAX_PREVIEW_TABS);
         List<String> childTabTitles = new ArrayList<>(previewCount);
-        StringBuilder sb = new StringBuilder();
         for (int i = 0; i < previewCount; i++) {
             Tab childTab = relatedTabs.get(i);
-            sb.setLength(0);
-            sb.append(BULLET_PREFIX).append(childTab.getTitle());
-            childTabTitles.add(sb.toString());
+            childTabTitles.add(BULLET_PREFIX + childTab.getTitle());
         }
 
         // Excess Tabs Counter.
         int excessCount = totalTabsCount - previewCount;
 
-        hoverCardView.show(title, groupColor, childTabTitles, excessCount, isIncognito, x, y);
+        hoverCardView.bindData(title, childTabTitles, excessCount, isIncognito);
+        return true;
     }
 }

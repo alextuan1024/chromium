@@ -29,6 +29,7 @@
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/common/content_switches.h"
@@ -40,6 +41,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 
 using content::BrowserThread;
 using content::RenderViewHost;
@@ -409,7 +411,7 @@ void PrerenderInProcessBrowserTest::TearDownInProcessBrowserTestFixture() {
   safe_browsing::SafeBrowsingService::RegisterFactory(nullptr);
 }
 
-content::SessionStorageNamespace*
+content::SessionStorageNamespaceHandle*
 PrerenderInProcessBrowserTest::GetSessionStorageNamespace() const {
   content::WebContents* web_contents = GetActiveWebContents();
   if (!web_contents) {

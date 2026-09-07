@@ -37,6 +37,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/accessibility/dump_accessibility_events_views_browsertest_base.h"
@@ -66,6 +67,7 @@
 #include "components/security_interstitials/core/omnibox_https_upgrade_metrics.h"
 #include "components/unified_consent/pref_names.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
@@ -74,6 +76,7 @@
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "ui/accessibility/ax_action_data.h"
@@ -155,7 +158,7 @@ class OmniboxViewViewsTest : public InProcessBrowserTest {
     return &triggered_feature_service_;
   }
 
-  static void GetOmniboxViewForBrowser(Browser* browser,
+  static void GetOmniboxViewForBrowser(BrowserWindowInterface* browser,
                                        OmniboxView** omnibox_view) {
     BrowserWindow* window = BrowserWindow::FromBrowser(browser);
     ASSERT_TRUE(window);
@@ -1208,7 +1211,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsIMETest, TextInputTypeInitRespectsIME) {
   OmniboxMockInputMethod* input_method = new OmniboxMockInputMethod();
   ui::SetUpInputMethodForTesting(input_method);
   input_method->SetInputLocaleCJK(/*is_cjk=*/true);
-  Browser* browser_2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser_2 = CreateBrowser(browser()->GetProfile());
   OmniboxView* view = nullptr;
   ASSERT_NO_FATAL_FAILURE(GetOmniboxViewForBrowser(browser_2, &view));
   OmniboxViewViews* omnibox_view_views = static_cast<OmniboxViewViews*>(view);

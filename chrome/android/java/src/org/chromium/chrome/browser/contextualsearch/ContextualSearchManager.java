@@ -696,7 +696,7 @@ public class ContextualSearchManager
             assert mContext != null;
             // Sometimes Blink returns empty surroundings and 0 offsets so reset in that case.
             // See crbug.com/40374299.
-            if (surroundingText.length() == 0) {
+            if (surroundingText.isEmpty()) {
                 mInternalStateController.reset(StateChangeReason.UNKNOWN);
             } else {
                 mContext.setSurroundingText(encoding, surroundingText, startOffset, endOffset);
@@ -1803,10 +1803,11 @@ public class ContextualSearchManager
                 mInternalStateController.notifyStartingWorkOn(InternalState.RESOLVING);
 
                 String selection = mSelectionController.getSelectedText();
-                assert !TextUtils.isEmpty(selection);
-
                 WebContents baseWebContents = getBaseWebContents();
-                if (baseWebContents != null && mContext != null && mContext.canResolve()) {
+                if (!TextUtils.isEmpty(selection)
+                        && baseWebContents != null
+                        && mContext != null
+                        && mContext.canResolve()) {
                     issueResolveRequest();
                 } else {
                     // Something went wrong and we couldn't resolve.
@@ -1814,7 +1815,7 @@ public class ContextualSearchManager
                     return;
                 }
 
-                // If the we were unable to start the resolve, we've hidden the UI and set the
+                // If we were unable to start the resolve, we've hidden the UI and set the
                 // context to null.
                 if (mContext == null || mSearchPanel == null) return;
 
@@ -1901,7 +1902,7 @@ public class ContextualSearchManager
      */
     private @Nullable List<String> buildRelatedSearches(String defaultSearch) {
         List<String> queries = assumeNonNull(mRelatedSearches).getQueries();
-        if (queries.size() == 0) {
+        if (queries.isEmpty()) {
             return queries;
         }
 

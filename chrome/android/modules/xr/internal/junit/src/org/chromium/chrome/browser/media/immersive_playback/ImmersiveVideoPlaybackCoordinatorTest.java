@@ -40,7 +40,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ResettersForTesting;
@@ -79,7 +78,6 @@ import java.util.function.Consumer;
 
 /** Tests for {@link ImmersiveVideoPlaybackCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @SuppressWarnings("unchecked")
 public class ImmersiveVideoPlaybackCoordinatorTest {
     static {
@@ -237,7 +235,7 @@ public class ImmersiveVideoPlaybackCoordinatorTest {
                 ImmersiveStereoMode.TOP_BOTTOM, ImmersiveProjectionType.SPHERE);
         ShadowLooper.idleMainLooper();
 
-        verify(mSurfaceEntityHolder).setSurfaceShape(XrSurfaceEntityShape.SPHERE);
+        verify(mSurfaceEntityHolder).setSurfaceShape(XrSurfaceEntityShape.SEAMLESS_SPHERE);
         verify(mSurfaceEntityHolder).setSurfaceStereoMode(XrSurfaceEntityStereoMode.TOP_BOTTOM);
 
         verify(mSurfaceMovableComponent).setMovable(false, false);
@@ -250,7 +248,7 @@ public class ImmersiveVideoPlaybackCoordinatorTest {
         mCoordinator.onFormatSelected(ImmersiveStereoMode.MONO, ImmersiveProjectionType.QUAD);
         ShadowLooper.idleMainLooper();
 
-        verify(mSurfaceEntityHolder).setSurfaceShape(XrSurfaceEntityShape.QUAD);
+        verify(mSurfaceEntityHolder).setSurfaceShape(XrSurfaceEntityShape.ROUNDED_QUAD);
         verify(mSurfaceEntityHolder).setSurfaceStereoMode(XrSurfaceEntityStereoMode.MONO);
 
         verify(mSurfaceMovableComponent).setMovable(true, false);
@@ -621,11 +619,11 @@ public class ImmersiveVideoPlaybackCoordinatorTest {
         ShadowLooper.idleMainLooper();
 
         ArgumentCaptor<XrPose> playerPoseCaptor = ArgumentCaptor.forClass(XrPose.class);
-        verify(mSurfaceEntityHolder).setEntityPose(playerPoseCaptor.capture(), eq(XrSpace.ACTIVITY));
+        verify(mSurfaceEntityHolder)
+                .setEntityPose(playerPoseCaptor.capture(), eq(XrSpace.ACTIVITY));
         XrPose expectedPlayerPose =
                 XrPose.create(
-                        ANCHOR_POSE.transformPoint(
-                                XrVector3.create(0f, 0f, -1.5f)),
+                        ANCHOR_POSE.transformPoint(XrVector3.create(0f, 0f, -1.5f)),
                         ANCHOR_POSE.getRotation());
         assertPoseEquals(expectedPlayerPose, playerPoseCaptor.getValue());
     }
@@ -661,7 +659,8 @@ public class ImmersiveVideoPlaybackCoordinatorTest {
 
         verify(mXrSceneCoreSessionManager).getHeadPoseInActivitySpace();
         ArgumentCaptor<XrPose> playerPoseCaptor = ArgumentCaptor.forClass(XrPose.class);
-        verify(mSurfaceEntityHolder).setEntityPose(playerPoseCaptor.capture(), eq(XrSpace.ACTIVITY));
+        verify(mSurfaceEntityHolder)
+                .setEntityPose(playerPoseCaptor.capture(), eq(XrSpace.ACTIVITY));
         assertEquals(ANCHOR_POSE.getTranslation(), playerPoseCaptor.getValue().getTranslation());
     }
 

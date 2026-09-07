@@ -25,6 +25,7 @@ import org.chromium.chrome.browser.tabmodel.PersistentStoreMigrationManager;
 import org.chromium.chrome.browser.tabmodel.PersistentStoreMigrationManager.StoreType;
 import org.chromium.chrome.browser.tabmodel.RecordingTabCreator;
 import org.chromium.chrome.browser.tabmodel.RecordingTabCreator.TabCreationData;
+import org.chromium.chrome.browser.tabmodel.TabOrchestratorType;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore.TabPersistentStoreObserver;
 
@@ -67,7 +68,7 @@ public class ShadowTabStoreValidatorUnitTest {
                 mShadowTabCreator,
                 mPersistentStoreMigrationManager,
                 "window_1",
-                ShadowTabStoreValidator.TABBED_TAG);
+                TabOrchestratorType.TABBED);
 
         verify(mAuthoritativeStore).addObserver(mAuthoritativeObserverCaptor.capture());
         verify(mShadowStore).addObserver(mShadowObserverCaptor.capture());
@@ -85,7 +86,8 @@ public class ShadowTabStoreValidatorUnitTest {
                 HistogramWatcher.newBuilder()
                         .expectNoRecords(
                                 "Tabs.TabStateStore.TabCountDelta.AuthoritativeHigher."
-                                        + ShadowTabStoreValidator.TABBED_TAG)
+                                        + TabStoreMetricsService.toHistogramTag(
+                                                TabOrchestratorType.TABBED))
                         .build();
 
         // Trigger completion for both stores.
@@ -107,7 +109,7 @@ public class ShadowTabStoreValidatorUnitTest {
                 mShadowTabCreator,
                 mPersistentStoreMigrationManager,
                 "window_1",
-                ShadowTabStoreValidator.TABBED_TAG);
+                TabOrchestratorType.TABBED);
 
         verify(mAuthoritativeStore).addObserver(mAuthoritativeObserverCaptor.capture());
         verify(mShadowStore).addObserver(mShadowObserverCaptor.capture());
@@ -119,7 +121,7 @@ public class ShadowTabStoreValidatorUnitTest {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Tabs.TabStateStore.TabCountDelta.AuthoritativeHigher."
-                                + ShadowTabStoreValidator.TABBED_TAG,
+                                + TabStoreMetricsService.toHistogramTag(TabOrchestratorType.TABBED),
                         1);
 
         mAuthoritativeObserverCaptor.getValue().onStateLoaded();

@@ -474,6 +474,33 @@ bool ui::HasNonEmptyGroupSemantics(const ui::AXNodeData& data) {
   return false;
 }
 
+namespace {
+
+bool UsesShowMenuForDefaultAction(const ui::BrowserAccessibility& node) {
+  // TODO(accessibility): Add a primary-menu action so macOS pop-up buttons and
+  // select comboboxes can serialize AXShowMenu directly.
+  return !node.manager()->IsWebContentSource() && node.HasDefaultAction() &&
+         !node.HasAction(ax::mojom::Action::kShowContextMenu) &&
+         (node.GetRole() == ax::mojom::Role::kPopUpButton ||
+          node.GetRole() == ax::mojom::Role::kComboBoxSelect);
+}
+
+bool SupportsShowMenuAction(const ui::BrowserAccessibility& node) {
+  return node.manager()->IsWebContentSource() ||
+         node.HasAction(ax::mojom::Action::kShowContextMenu) ||
+         UsesShowMenuForDefaultAction(node);
+}
+
+void PerformShowMenuAction(ui::BrowserAccessibility& node) {
+  if (UsesShowMenuForDefaultAction(node)) {
+    node.manager()->DoDefaultAction(node);
+  } else {
+    node.manager()->ShowContextMenu(node);
+  }
+}
+
+}  // namespace
+
 namespace ui {
 void EnableAXCustomActionNamesForTestingProjection() {
   g_enable_ax_custom_action_names_for_testing_projection = true;
@@ -1024,6 +1051,9 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
 // LINT.IfChange
 - (NSInteger)accessibilityInsertionPointLineNumber {
+  // TODO(crbug.com/548552911): In a textarea created using `contenteditable`,
+  // this algorithm returns the wrong value.
+
   if (![self instanceActive]) {
     return NSNotFound;
   }
@@ -1067,6 +1097,9 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
 // LINT.IfChange
 - (NSNumber*)AXInsertionPointLineNumber {
+  // TODO(crbug.com/548552911): In a textarea created using `contenteditable`,
+  // this algorithm returns the wrong value.
+
   if (![self instanceActive])
     return nil;
   if (!_owner->HasVisibleCaretOrSelection())
@@ -2524,7 +2557,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     //
     // Note that hard line breaks are on a line of their own.
     AXPosition startPosition = position->CreatePreviousLineStartPosition(
-        ui::AXMovementOptions(ui::AXBoundaryBehavior::kStopAtAnchorBoundary,
+        ui::AXMovementOptions(ui::AXBoundaryBehavior::kStopAtLastAnchorBoundary,
                               ui::AXBoundaryDetection::kCheckInitialPosition));
     AXPosition endPosition =
         startPosition->CreateNextLineStartPosition(ui::AXMovementOptions(
@@ -2967,16 +3000,29 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return [NSMutableArray array];
   }
 
-  NSMutableArray* actions = [NSMutableArray
-      arrayWithObjects:NSAccessibilityShowMenuAction,
-                       NSAccessibilityScrollToVisibleAction, nil];
+  NSMutableArray* actions = [NSMutableArray array];
 
   // VoiceOver expects the "press" action to be first.
-  if (_owner->IsClickable())
+  if (_owner->HasDefaultAction()) {
     [actions insertObject:NSAccessibilityPressAction atIndex:0];
+  }
 
-  if (ui::IsMenuRelated(_owner->GetRole()))
+  if (SupportsShowMenuAction(*_owner)) {
+    [actions addObject:NSAccessibilityShowMenuAction];
+  }
+
+  // TODO(accessibility): Should Views descendants of a scroll area support
+  // AXScrollToVisible?
+  if (_owner->manager()->IsWebContentSource()) {
+    [actions addObject:NSAccessibilityScrollToVisibleAction];
+  }
+
+  // TODO(accessibility): Views should probably support this action to dismiss
+  // a menu too.
+  if (_owner->manager()->IsWebContentSource() &&
+      ui::IsMenuRelated(_owner->GetRole())) {
     [actions addObject:NSAccessibilityCancelAction];
+  }
 
   if ([self internalRole] == ax::mojom::Role::kSlider ||
       [self internalRole] == ax::mojom::Role::kSpinButton) {
@@ -3254,40 +3300,15 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   BrowserAccessibility* actionTarget = [self actionTarget];
   BrowserAccessibilityManager* manager = actionTarget->manager();
   if ([action isEqualToString:NSAccessibilityPressAction]) {
-    // LINT.IfChange(NSAccessibilityPressAction)
-    ui::AXNode* node = actionTarget->node();
-    if (!node || !actionTarget->HasDefaultAction()) {
-      return;
-    }
-
-    manager->DoDefaultAction(*actionTarget);
-    if (actionTarget->GetData().GetRestriction() !=
-            ax::mojom::Restriction::kNone ||
-        ![self isCheckable]) {
-      return;
-    }
-
-    // Hack: preemptively set the checked state to what it should become,
-    // otherwise VoiceOver will very likely report the old, incorrect state to
-    // the user as it requests the value too quickly.
-    AXNodeData data(node->TakeData());  // Temporarily take data.
-    if (data.role == ax::mojom::Role::kRadioButton) {
-      data.SetCheckedState(ax::mojom::CheckedState::kTrue);
-    } else if (data.role == ax::mojom::Role::kCheckBox ||
-               data.role == ax::mojom::Role::kSwitch ||
-               data.role == ax::mojom::Role::kToggleButton) {
-      ax::mojom::CheckedState checkedState = data.GetCheckedState();
-      ax::mojom::CheckedState newCheckedState =
-          checkedState == ax::mojom::CheckedState::kFalse
-              ? ax::mojom::CheckedState::kTrue
-              : ax::mojom::CheckedState::kFalse;
-      data.SetCheckedState(newCheckedState);
-    }
-    node->SetData(data);  // Set the data back in the node.
-    // LINT.ThenChange(accessibilityPerformPress)
+    [self accessibilityPerformPress];
   } else if ([action isEqualToString:NSAccessibilityShowMenuAction]) {
-    manager->ShowContextMenu(*actionTarget);
+    if (SupportsShowMenuAction(*actionTarget)) {
+      PerformShowMenuAction(*actionTarget);
+    }
   } else if ([action isEqualToString:NSAccessibilityScrollToVisibleAction]) {
+    if (!actionTarget->manager()->IsWebContentSource()) {
+      return;
+    }
     ui::AXPlatformNodeBase* mac_obj =
         [ObjCCastStrict<BrowserAccessibilityCocoa>(
             actionTarget->GetNativeViewAccessible().Get()) node];
@@ -3299,7 +3320,6 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   }
 }
 
-// LINT.IfChange(accessibilityPerformPress)
 - (BOOL)accessibilityPerformPress {
   if (![self instanceActive]) {
     return NO;
@@ -3314,9 +3334,11 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   BrowserAccessibilityManager* manager = actionTarget->manager();
   manager->DoDefaultAction(*actionTarget);
   if (actionTarget->GetData().GetRestriction() !=
-          ax::mojom::Restriction::kNone ||
-      ![self isCheckable]) {
+      ax::mojom::Restriction::kNone) {
     return NO;
+  }
+  if (![self isCheckable]) {
+    return YES;
   }
 
   // Hack: preemptively set the checked state to what it should become,
@@ -3344,8 +3366,10 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return NO;
   }
   BrowserAccessibility* actionTarget = [self actionTarget];
-  BrowserAccessibilityManager* manager = actionTarget->manager();
-  manager->ShowContextMenu(*actionTarget);
+  if (!SupportsShowMenuAction(*actionTarget)) {
+    return NO;
+  }
+  PerformShowMenuAction(*actionTarget);
   return YES;
 }
 
@@ -3360,7 +3384,6 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
   return NSAccessibilityActionDescription(action);
 }
-// LINT.ThenChange(NSAccessibilityPressAction)
 
 - (NSArray<NSAccessibilityCustomAction*>*)accessibilityCustomActions {
   if (![self instanceActive]) {

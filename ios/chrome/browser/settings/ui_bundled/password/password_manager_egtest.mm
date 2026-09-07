@@ -248,8 +248,8 @@ id<GREYMatcher> HidePasswordButton() {
 id<GREYMatcher> DeleteButton() {
   return grey_allOf(
       ButtonWithAccessibilityLabelId(IDS_IOS_SETTINGS_TOOLBAR_DELETE),
-      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)),
-      nullptr);
+      grey_userInteractionEnabled(),
+      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
 // Matcher for the Delete button in Confirmation Alert for password
@@ -2371,10 +2371,10 @@ void OpenPasswordManagerWidgetPromoInstructions() {
       assertWithMatcher:grey_notVisible()];
 
   // Successful auth should remove blocking view and Password Manager should be
-  // visible visible.
+  // visible.
   [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
-  [[EarlGrey selectElementWithMatcher:PasswordsTableViewMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordsTableViewMatcher()];
 
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]
       performAction:grey_tap()];
@@ -2912,8 +2912,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
   [GetInteractionForPasswordEntry(@"example1.com, 2 accounts")
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:NavigationBarEditButton()]
-      performAction:grey_tap()];
+  TapNavigationBarEditButton();
 
   // Delete first password.
   DeleteCredential(@"user1", @"https://example1.com/");

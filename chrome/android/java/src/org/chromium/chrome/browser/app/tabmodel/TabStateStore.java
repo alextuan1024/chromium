@@ -36,6 +36,7 @@ import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabRegistrationObserver;
+import org.chromium.chrome.browser.tabmodel.TabOrchestratorType;
 import org.chromium.chrome.browser.tabmodel.TabPersistencePolicy;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
@@ -50,6 +51,7 @@ public class TabStateStore implements TabPersistentStore {
             "Tabs.TabStateStore.InternalTabCountDelta.";
 
     private @MonotonicNonNull TabStateStorageService mTabStateStorageService;
+    private final @TabOrchestratorType int mOrchestratorType;
     private final PersistentStoreMigrationManager mMigrationManager;
     private final TabCreatorManager mTabCreatorManager;
     private final TabModelSelector mTabModelSelector;
@@ -72,6 +74,7 @@ public class TabStateStore implements TabPersistentStore {
     private @Nullable CombinedTabRestorer mMergeCombinedTabRestorer;
     private int mRestoredTabCount;
     private boolean mIsDestroyed;
+    private boolean mHasLoadWarnings;
 
     private final TabModelObserver mTabModelObserver =
             new TabModelObserver() {
@@ -92,8 +95,7 @@ public class TabStateStore implements TabPersistentStore {
                 }
 
                 @Override
-                public void willCloseTabs(
-                        List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
+                public void willCloseTabs(List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                     if (!isAllTabs) return;
                     cancelLoadingTabs(tabs.get(0).isOffTheRecord());
                 }
@@ -166,6 +168,9 @@ public class TabStateStore implements TabPersistentStore {
             };
 
     /**
+     * Creates an instance of {@link TabStateStore}.
+     *
+     * @param orchestratorType The orchestrator type for this store.
      * @param tabModelSelector The {@link TabModelSelector} to observe changes in. Regardless of the
      *     mode this store is in, this will be the real selector with real models. This should be
      *     treated as a read only object, no modifications should go through it.
@@ -184,6 +189,7 @@ public class TabStateStore implements TabPersistentStore {
      * @param isFromRecreating Whether the current activity is launched from recreating.
      */
     public TabStateStore(
+            @TabOrchestratorType int orchestratorType,
             TabModelSelector tabModelSelector,
             String windowTag,
             TabCreatorManager tabCreatorManager,
@@ -195,6 +201,7 @@ public class TabStateStore implements TabPersistentStore {
             ActiveTabCache.Factory activeTabCacheFactory,
             boolean isAuthoritative,
             boolean isFromRecreating) {
+        mOrchestratorType = orchestratorType;
         mTabModelSelector = tabModelSelector;
         mWindowTag = windowTag;
         mTabCreatorManager = tabCreatorManager;
@@ -299,6 +306,7 @@ public class TabStateStore implements TabPersistentStore {
         assert mCombinedTabRestorer == null;
         mCombinedTabRestorer =
                 new CombinedTabRestorer(
+                        mOrchestratorType,
                         !ignoreIncognitoFiles,
                         !ignoreRegularFiles,
                         mCombinedTabRestorerDelegate,
@@ -362,6 +370,7 @@ public class TabStateStore implements TabPersistentStore {
         assertOtrOperationSafe(/* isOtrOperation= */ true);
         mMergeCombinedTabRestorer =
                 new CombinedTabRestorer(
+                        mOrchestratorType,
                         /* restoreIncognitoTabs= */ true,
                         /* restoreRegularTabs= */ true,
                         delegate,
@@ -503,6 +512,11 @@ public class TabStateStore implements TabPersistentStore {
         }
     }
 
+    /** Returns whether any {@link StorageLoadWarning}s occurred during data loading. */
+    public boolean hasLoadWarnings() {
+        return mHasLoadWarnings;
+    }
+
     @Override
     public void addObserver(TabPersistentStoreObserver observer) {
         mObservers.addObserver(observer);
@@ -598,6 +612,9 @@ public class TabStateStore implements TabPersistentStore {
         StorageLoadWarning[] warnings = data.getWarnings();
         RecordHistogram.recordCount1000Histogram(
                 "Tabs.TabStateStore.LoadWarningCount", warnings.length);
+        if (warnings.length > 0) {
+            mHasLoadWarnings = true;
+        }
         if (!mIsAuthoritative && warnings.length > 0) {
             mTabStateStorageService.clearUnusedNodesForWindow(
                     mWindowTag, incognito, /* tabStripCollection= */ null);

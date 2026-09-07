@@ -25,8 +25,6 @@ BASE_FEATURE(kFeedSwipeInProductHelp, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseFeedEligibilityService, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableNTPBackgroundImageCache, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kConsistentLogoDoodleHeight, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kNewTabPageRedesign, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -66,14 +64,6 @@ BASE_FEATURE_PARAM(int,
                    &kNewTabPageUICleanup,
                    kNewTabPageUICleanupArmParam,
                    static_cast<int>(NTPUICleanupVariation::kTightPadding));
-
-const char kNewTabPageRedesignStaticFakeboxParam[] = "static-fakebox";
-
-BASE_FEATURE_PARAM(bool,
-                   kNewTabPageRedesignStaticFakeboxParamFeature,
-                   &kNewTabPageRedesign,
-                   kNewTabPageRedesignStaticFakeboxParam,
-                   false);
 
 const char kAimButtonRefactorArmParam[] = "aim-button-refactor-arm";
 
@@ -132,10 +122,6 @@ bool IsAimEnabledInNtp() {
   return YES;
 }
 
-bool IsNTPBackgroundImageCacheEnabled() {
-  return base::FeatureList::IsEnabled(kEnableNTPBackgroundImageCache);
-}
-
 bool IsConsistentLogoDoodleHeightEnabled() {
   return base::FeatureList::IsEnabled(kConsistentLogoDoodleHeight);
 }
@@ -147,11 +133,6 @@ bool IsNTPHeaderTransformsForAnimationsEnabled() {
 bool IsNTPRedesignEnabled() {
   return base::FeatureList::IsEnabled(kNewTabPageRedesign) &&
          ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET;
-}
-
-bool IsNTPRedesignStaticFakeboxEnabled() {
-  return IsNTPRedesignEnabled() &&
-         kNewTabPageRedesignStaticFakeboxParamFeature.Get();
 }
 
 NTPUICleanupVariation GetNewTabPageUICleanupVariation() {
@@ -169,7 +150,8 @@ bool IsNewTabPageUICleanupEnabled() {
          variation == NTPUICleanupVariation::kPreferredPadding;
 }
 
-bool IsNewTabPageUICleanupFakeboxOnlyEnabled() {
-  return GetNewTabPageUICleanupVariation() ==
-         NTPUICleanupVariation::kFakeboxBackgroundAndShadow;
+bool ShouldApplyFakeboxBackgroundAndShadow() {
+  return IsNewTabPageUICleanupEnabled() ||
+         GetNewTabPageUICleanupVariation() ==
+             NTPUICleanupVariation::kFakeboxBackgroundAndShadow;
 }

@@ -14,6 +14,7 @@ import android.text.style.SuperscriptSpan;
 import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -303,7 +304,8 @@ class ChromeContextMenuItem {
     }
 
     private static boolean isSaveAsEnabled() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU);
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+                && DeviceInfo.isDesktop();
     }
 
     /**
@@ -319,6 +321,11 @@ class ChromeContextMenuItem {
     public static CharSequence getTitle(
             Context context, Profile profile, @Item int item, boolean showInProductHelp) {
         switch (item) {
+            case Item.SAVE_PAGE:
+                if (isSaveAsEnabled()) {
+                    return context.getString(R.string.contextmenu_save_page_as);
+                }
+                break;
             case Item.SAVE_LINK_AS:
                 if (isSaveAsEnabled()) {
                     return context.getString(R.string.contextmenu_save_link_as);

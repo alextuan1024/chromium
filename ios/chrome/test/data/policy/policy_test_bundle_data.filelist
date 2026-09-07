@@ -12,6 +12,7 @@
 //ios/chrome/test/data/policy/pref_mapping/AutofillCreditCardEnabled.json
 //ios/chrome/test/data/policy/pref_mapping/AutofillPredictionSettings.json
 //ios/chrome/test/data/policy/pref_mapping/AutofillSettings.json
+//ios/chrome/test/data/policy/pref_mapping/BrowserContextAwareAccessSignalsAllowlist.json
 //ios/chrome/test/data/policy/pref_mapping/BrowserSignin.json
 //ios/chrome/test/data/policy/pref_mapping/BrowserThemeColor.json
 //ios/chrome/test/data/policy/pref_mapping/ChromeDataRegionSetting.json
@@ -87,6 +88,8 @@
 //ios/chrome/test/data/policy/pref_mapping/ProvisionalNotificationsAllowed.json
 //ios/chrome/test/data/policy/pref_mapping/ProxyProvisioningDomains.json
 //ios/chrome/test/data/policy/pref_mapping/RestrictAccountsToPatterns.json
+//ios/chrome/test/data/policy/pref_mapping/SaasUsageReportingDomainUrlsForBrowsers.json
+//ios/chrome/test/data/policy/pref_mapping/SaasUsageReportingDomainUrlsForProfiles.json
 //ios/chrome/test/data/policy/pref_mapping/SafeBrowsingEnabled.json
 //ios/chrome/test/data/policy/pref_mapping/SafeBrowsingProtectionLevel.json
 //ios/chrome/test/data/policy/pref_mapping/SafeBrowsingProxiedRealTimeChecksAllowed.json
@@ -104,6 +107,7 @@
 //ios/chrome/test/data/policy/pref_mapping/URLBlocklist.json
 //ios/chrome/test/data/policy/pref_mapping/UrlKeyedAnonymizedDataCollectionEnabled.json
 //ios/chrome/test/data/policy/pref_mapping/UrlKeyedMetricsAllowed.json
+//ios/chrome/test/data/policy/pref_mapping/UserContextAwareAccessSignalsAllowlist.json
 //ios/chrome/test/data/policy/pref_mapping/UserSecurityAuthenticatedReporting.json
 //ios/chrome/test/data/policy/pref_mapping/UserSecuritySignalsReporting.json
 //ios/chrome/test/data/policy/pref_mapping/WatermarkStyle.json

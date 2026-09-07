@@ -52,6 +52,8 @@
 #include "chrome/browser/ui/passwords/settings/mock_password_import_controller.h"
 #include "chrome/browser/ui/passwords/settings/password_import_controller_interface.h"
 #include "chrome/browser/ui/safety_hub/password_status_check_service_factory.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -80,6 +82,7 @@
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/sharing/mock_password_sender_service.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
@@ -98,10 +101,13 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 using device_reauth::ReauthResult;
 using password_manager::PasswordForm;
 using password_manager::PasswordRecipient;
+using password_manager::PasswordString;
 using password_manager::TestPasswordStore;
 using ::testing::_;
 using ::testing::AllOf;
@@ -163,7 +169,7 @@ PasswordForm CreateSampleForm(
   form.signon_realm = "https://abc1.com";
   form.url = GURL("https://abc1.com");
   form.username_value = username;
-  form.password_value = u"test";
+  form.password_value = PasswordString(u"test");
   form.in_store = store;
   return form;
 }
@@ -421,7 +427,7 @@ IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplTest,
       events.find(api::passwords_private::
                       OnPasswordManagerActionableErrorChanged::kEventName);
   ASSERT_TRUE(it != events.end());
-  base::Value args = base::Value(it->second->event_args.Clone());
+  base::Value args = base::Value(it->second->args().Clone());
 
   ASSERT_TRUE(args.is_list());
   ASSERT_EQ(1u, args.GetList().size());

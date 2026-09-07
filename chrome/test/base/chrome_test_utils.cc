@@ -5,7 +5,6 @@
 #include "chrome/test/base/chrome_test_utils.h"
 
 #include "build/build_config.h"
-#include "chrome/test/base/testing_browser_process.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 
@@ -14,6 +13,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #else
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
@@ -28,7 +28,7 @@ content::WebContents* GetActiveWebContents(
   }
   NOTREACHED() << "No active TabModel??";
 #else
-  return browser_test->browser()->tab_strip_model()->GetActiveWebContents();
+  return browser_test->browser()->GetTabStripModel()->GetActiveWebContents();
 #endif
 }
 
@@ -41,7 +41,7 @@ tabs::TabInterface* GetActiveTab(const PlatformBrowserTest* browser_test) {
   }
   NOTREACHED() << "No active TabModel??";
 #else
-  return browser_test->browser()->tab_strip_model()->GetActiveTab();
+  return browser_test->browser()->GetTabStripModel()->GetActiveTab();
 #endif
 }
 
@@ -55,7 +55,7 @@ content::WebContents* GetWebContentsAt(const PlatformBrowserTest* browser_test,
   }
   NOTREACHED() << "No active TabModel??";
 #else
-  return browser_test->browser()->tab_strip_model()->GetWebContentsAt(index);
+  return browser_test->browser()->GetTabStripModel()->GetWebContentsAt(index);
 #endif
 }
 
@@ -79,12 +79,6 @@ bool NavigateToURL(content::WebContents* web_contents, const GURL& url) {
   // Wait for load to stop.
   observer.Wait();
   return observer.last_navigation_succeeded();
-}
-
-TestingBrowserProcessDeathTestMixin::TestingBrowserProcessDeathTestMixin() {
-  if (!TestingBrowserProcess::GetGlobal()) {
-    TestingBrowserProcess::CreateInstance();
-  }
 }
 
 }  // namespace chrome_test_utils

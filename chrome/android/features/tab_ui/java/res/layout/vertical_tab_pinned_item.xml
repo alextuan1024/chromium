@@ -8,7 +8,7 @@ found in the LICENSE file.
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/pinned_tab_item_container"
-    android:layout_width="@dimen/vertical_tab_pinned_item_width"
+    android:layout_width="@dimen/vertical_tab_pinned_item_min_width"
     android:layout_height="@dimen/vertical_tab_pinned_item_height"
     android:background="@drawable/vertical_tab_pinned_item_background"
     android:foreground="@drawable/vertical_tab_focus_ring"
@@ -73,9 +73,9 @@ found in the LICENSE file.
         android:importantForAccessibility="no"
         app:tint="@macro/default_icon_color_accent1" />
 
-    <!-- Media Indicator (e.g., speaker icon when playing audio). -->
+    <!-- Alert Indicator (e.g., speaker icon when playing audio). -->
     <ImageView
-        android:id="@+id/media_indicator_icon"
+        android:id="@+id/alert_indicator_icon"
         android:layout_width="@dimen/vertical_tab_item_icon_size"
         android:layout_height="@dimen/vertical_tab_item_icon_size"
         android:layout_gravity="center"

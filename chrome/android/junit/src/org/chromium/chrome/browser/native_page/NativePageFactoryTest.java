@@ -40,7 +40,6 @@ import org.chromium.components.embedder_support.util.UrlConstants;
 
 /** Tests public methods in NativePageFactory. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NativePageFactoryTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private PdfPage mPdfPage;
@@ -231,7 +230,7 @@ public class NativePageFactoryTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     @Config(qualifiers = "sw600dp")
     public void testCreateSettingsPage_SettingsInTabDisabled() {
         MockNativePage page =

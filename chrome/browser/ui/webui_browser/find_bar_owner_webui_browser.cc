@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/webui_browser/find_bar_owner_webui_browser.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
@@ -19,8 +18,10 @@
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
-FindBarOwnerWebUIBrowser::FindBarOwnerWebUIBrowser(WebUIBrowserWindow* window)
-    : window_(window) {}
+FindBarOwnerWebUIBrowser::FindBarOwnerWebUIBrowser(
+    WebUIBrowserWindow* window,
+    ui::UnownedUserDataHost& host)
+    : FindBarOwner(host), window_(window) {}
 
 FindBarOwnerWebUIBrowser::~FindBarOwnerWebUIBrowser() = default;
 

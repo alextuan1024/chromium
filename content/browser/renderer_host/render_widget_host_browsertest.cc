@@ -21,6 +21,7 @@
 #include "components/input/touch_action_filter.h"
 #include "content/browser/permissions/permission_controller_impl.h"
 #include "content/browser/renderer_host/input/touch_emulator_impl.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -1082,8 +1083,14 @@ IN_PROC_BROWSER_TEST_F(
       1);
 }
 
+// TODO(crbug.com/554213904): Re-enable this test
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_FoldablesCSSWithReload DISABLED_FoldablesCSSWithReload
+#else
+#define MAYBE_FoldablesCSSWithReload FoldablesCSSWithReload
+#endif
 IN_PROC_BROWSER_TEST_F(RenderWidgetHostFoldableCSSTest,
-                       FoldablesCSSWithReload) {
+                       MAYBE_FoldablesCSSWithReload) {
   const char kTestPageURL[] =
       R"HTML(data:text/html,<!DOCTYPE html>
       <style>

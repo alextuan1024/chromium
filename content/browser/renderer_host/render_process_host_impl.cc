@@ -486,8 +486,19 @@ class RenderProcessHostIsReadyObserver : public RenderProcessHostObserver {
   base::WeakPtrFactory<RenderProcessHostIsReadyObserver> weak_factory_{this};
 };
 
+// Context in which process reuse eligibility is being checked.
+enum class ProcessReuseContext {
+  // Evaluated during actual process allocation/reuse for navigation.
+  kProcessAllocation,
+  // Evaluated during warm process queries (e.g., checking if a warm process
+  // exists for SiteInstance swap decisions) where side-effects like UMA logging
+  // should be avoided.
+  kWarmProcessQuery,
+};
+
 bool HasEnoughMemoryForAnotherMainFrame(RenderProcessHost* host,
-                                        size_t main_frame_count) {
+                                        size_t main_frame_count,
+                                        ProcessReuseContext context) {
   // Grab the current memory footprint and determine if we can fit the size
   // of another main frame into the memory space that is set as an upper limit.
   //
@@ -544,11 +555,10 @@ bool HasEnoughMemoryForAnotherMainFrame(RenderProcessHost* host,
     return true;
   }
 
-  // Only log the histogram once per RenderProcessHost. Since the
-  // RenderProcessHost can enter and exit this condition because of the dynamic
-  // nature of memory allocation we don't want to over-record it so we only
-  // record it on the first time we determine we are over the limit.
-  if (!host->GetUserData(kProcessPerSiteUmaLoggedKey)) {
+  // Only log the histogram once per RenderProcessHost during actual allocation.
+  // Speculative queries should not trigger UMA side-effects.
+  if (context == ProcessReuseContext::kProcessAllocation &&
+      !host->GetUserData(kProcessPerSiteUmaLoggedKey)) {
     base::UmaHistogramCounts1000(
         "BrowserRenderProcessHost.ProcessPerSiteMainFrameLimit",
         main_frame_count);
@@ -559,7 +569,8 @@ bool HasEnoughMemoryForAnotherMainFrame(RenderProcessHost* host,
 }
 
 bool IsBelowReuseResourceThresholds(RenderProcessHost* host,
-                                    ProcessReusePolicy process_reuse_policy) {
+                                    ProcessReusePolicy process_reuse_policy,
+                                    ProcessReuseContext context) {
   if (process_reuse_policy !=
           ProcessReusePolicy::
               kReusePendingOrCommittedSiteWithMainFrameThreshold &&
@@ -606,7 +617,7 @@ bool IsBelowReuseResourceThresholds(RenderProcessHost* host,
       return false;
     }
 
-    return HasEnoughMemoryForAnotherMainFrame(host, main_frame_count);
+    return HasEnoughMemoryForAnotherMainFrame(host, main_frame_count, context);
   }
 
   CHECK_EQ(process_reuse_policy,
@@ -770,7 +781,8 @@ class SiteProcessCountTracker : public base::SupportsUserData::Data,
 
       if (!IsEligibleForProcessReuse(host, site_instance->GetIsolationContext(),
                                      site_instance->GetSiteInfo(),
-                                     process_reuse_policy)) {
+                                     process_reuse_policy,
+                                     ProcessReuseContext::kProcessAllocation)) {
         continue;
       }
 
@@ -807,7 +819,8 @@ class SiteProcessCountTracker : public base::SupportsUserData::Data,
       if (host->GetProcessLock().IsLockedToSite() &&
           host->GetProcessLock() == ProcessLock::FromSiteInfo(site_info) &&
           IsEligibleForProcessReuse(host, isolation_context, site_info,
-                                    process_reuse_policy)) {
+                                    process_reuse_policy,
+                                    ProcessReuseContext::kWarmProcessQuery)) {
         return true;
       }
     }
@@ -912,7 +925,8 @@ class SiteProcessCountTracker : public base::SupportsUserData::Data,
       RenderProcessHost* host,
       const IsolationContext& isolation_context,
       const SiteInfo& site_info,
-      ProcessReusePolicy process_reuse_policy) {
+      ProcessReusePolicy process_reuse_policy,
+      ProcessReuseContext context) {
     // It's possible that |host| has become unsuitable for hosting
     // |site_info|, for example if it was reused by a navigation to a
     // different site, and |site_info| requires a dedicated process. Do
@@ -923,7 +937,7 @@ class SiteProcessCountTracker : public base::SupportsUserData::Data,
     }
 
     // Don't reuse processes that have high resource usage already.
-    if (!IsBelowReuseResourceThresholds(host, process_reuse_policy)) {
+    if (!IsBelowReuseResourceThresholds(host, process_reuse_policy, context)) {
       return false;
     }
 
@@ -1501,6 +1515,15 @@ size_t RenderProcessHost::GetMaxRendererProcessCount() {
   // This has shown to have adversarial effects, so we fall back to desktop
   // behavior for desktop-like form factors.
   if (base::FeatureList::IsEnabled(features::kRendererProcessLimitOnAndroid)) {
+    if (base::SysInfo::HasLargeProcessCountSupport() &&
+        base::FeatureList::IsEnabled(
+            features::kHigherRendererProcessLimitOnAndroid)) {
+      size_t memory_mib = base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
+      // Arbitrary, 200 for a 16GiB machine is not implausible for actual
+      // workloads.
+      return std::max(memory_mib / 80,
+                      features::kRendererProcessLimitOnAndroidCount.Get());
+    }
     return features::kRendererProcessLimitOnAndroidCount.Get();
   } else {
     return std::numeric_limits<size_t>::max();
@@ -1847,6 +1870,8 @@ RenderProcessHostImpl::~RenderProcessHostImpl() {
   // "Browser.RenderProcessHostImpl"
   TRACE_EVENT_END("shutdown", tracing_track_,
                   ChromeTrackEvent::kRenderProcessHost, *this);
+
+  ClearAllUserData();
 }
 
 bool RenderProcessHostImpl::Init() {
@@ -1908,8 +1933,9 @@ bool RenderProcessHostImpl::Init() {
 #endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  int flags = renderer_prefix.empty() ? ChildProcessHost::CHILD_ALLOW_SELF
-                                      : ChildProcessHost::CHILD_NORMAL;
+  int flags = renderer_prefix.empty() ? (ChildProcessHost::CHILD_ALLOW_SELF |
+                                         ChildProcessHost::CHILD_RENDERER)
+                                      : ChildProcessHost::CHILD_RENDERER;
 #elif BUILDFLAG(IS_MAC)
   int flags = ChildProcessHost::CHILD_RENDERER;
 #else
@@ -1993,7 +2019,8 @@ bool RenderProcessHostImpl::Init() {
   if (std::optional<int> override =
           GetContentClient()->browser()->GetCpuPerformanceTierOverride(
               GetBrowserContext())) {
-    cpu_tier = content::cpu_performance::TierFromInt(*override);
+    cpu_tier = content::cpu_performance::TierFromInt(*override).value_or(
+        content::cpu_performance::Tier::kUnknown);
   } else {
     cpu_tier = content::cpu_performance::GetTier();
   }
@@ -2281,7 +2308,7 @@ void RenderProcessHostImpl::CreateMessageFilters() {
   // TODO(crbug.com/40169214): Move this initialization out of
   // CreateMessageFilters().
   p2p_socket_dispatcher_host_ =
-      std::make_unique<P2PSocketDispatcherHost>(GetDeprecatedID());
+      std::make_unique<P2PSocketDispatcherHost>(GetID());
 #endif  // BUILDFLAG(IS_P2P_ENABLED)
 }
 
@@ -2349,7 +2376,8 @@ void RenderProcessHostImpl::BindBucketManagerHost(
       mojo::GetBadMessageCallback());
 }
 
-void RenderProcessHostImpl::ForceCrash() {
+void RenderProcessHostImpl::CrashHungProcess() {
+  shutdown_exit_code_ = RESULT_CODE_HUNG;
   child_process_->CrashHungProcess();
 }
 
@@ -2390,7 +2418,7 @@ void RenderProcessHostImpl::BindFileBackedBlobFactory(
   if (!file_backed_blob_factory_) {
     file_backed_blob_factory_ =
         std::make_unique<FileBackedBlobFactoryWorkerImpl>(browser_context_,
-                                                          GetDeprecatedID());
+                                                          GetID());
   }
   file_backed_blob_factory_->BindReceiver(std::move(receiver), origin.GetURL());
 }
@@ -6005,14 +6033,7 @@ void RenderProcessHostImpl::UpdateProcessPriority() {
         process_priority == base::Process::Priority::kUserVisible) {
       process_priority = base::Process::Priority::kUserBlocking;
     }
-#if BUILDFLAG(IS_MAC)
-    if (base::FeatureList::IsEnabled(
-            features::kMacAllowBackgroundingRenderProcesses)) {
-      child_process_launcher_->SetProcessPriority(process_priority);
-    }
-#else   // !BUILDFLAG(IS_MAC)
     child_process_launcher_->SetProcessPriority(process_priority);
-#endif  // BUILDFLAG(IS_MAC)
 #endif  // BUILDFLAG(IS_ANDROID)
   }
 
@@ -6197,10 +6218,12 @@ void RenderProcessHostImpl::OnProcessLaunched() {
   aec_dump_manager_.set_pid(GetProcess().Pid());
   aec_dump_manager_.AutoStart();
 
-  tracing_registration_ = TracingServiceController::Get().RegisterClient(
-      GetProcess().Pid(),
-      base::BindRepeating(&RenderProcessHostImpl::BindTracedProcess,
-                          instance_weak_factory_.GetWeakPtr()));
+  if (!run_renderer_in_process()) {
+    tracing_registration_ = TracingServiceController::Get().RegisterClient(
+        GetProcess().Pid(),
+        base::BindRepeating(&RenderProcessHostImpl::BindTracedProcess,
+                            instance_weak_factory_.GetWeakPtr()));
+  }
 
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
   system_tracing_service_ = std::make_unique<tracing::SystemTracingService>();

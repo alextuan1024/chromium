@@ -22,9 +22,9 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
@@ -32,17 +32,21 @@
 #include "components/strings/grit/components_strings.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/table_model.h"
 #include "ui/base/models/table_model_observer.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/table/table_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/dialog_client_view.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
@@ -81,8 +85,8 @@ class CertificateSelector::CertificateTableModel : public ui::TableModel {
   CertificateTableModel& operator=(const CertificateTableModel&) = delete;
 
   // ui::TableModel:
-  size_t RowCount() override;
-  std::u16string GetText(size_t index, int column_id) override;
+  size_t RowCount() const override;
+  std::u16string GetText(size_t index, int column_id) const override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
  private:
@@ -112,13 +116,13 @@ CertificateSelector::CertificateTableModel::CertificateTableModel(
   }
 }
 
-size_t CertificateSelector::CertificateTableModel::RowCount() {
+size_t CertificateSelector::CertificateTableModel::RowCount() const {
   return rows_.size();
 }
 
 std::u16string CertificateSelector::CertificateTableModel::GetText(
     size_t index,
-    int column_id) {
+    int column_id) const {
   DCHECK_LT(index, rows_.size());
 
   const Row& row = rows_[index];
@@ -343,9 +347,23 @@ void CertificateSelector::OnSelectionChanged() {
 }
 
 void CertificateSelector::OnDoubleClick() {
-  if (GetSelectedCert()) {
-    AcceptDialog();
+  if (!GetSelectedCert()) {
+    return;
   }
+
+  views::DialogClientView* const client_view = GetDialogClientView();
+  if (client_view) {
+    const ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                               gfx::Point(), ui::EventTimeForNow(),
+                               ui::EF_LEFT_MOUSE_BUTTON,
+                               ui::EF_LEFT_MOUSE_BUTTON);
+    if (client_view->IsPossiblyUnintendedInteraction(
+            event, ShouldAllowKeyEventsDuringInputProtection())) {
+      return;
+    }
+  }
+
+  AcceptDialog();
 }
 
 BEGIN_METADATA(CertificateSelector)

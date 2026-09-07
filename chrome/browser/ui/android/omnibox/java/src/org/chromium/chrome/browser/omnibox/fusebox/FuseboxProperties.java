@@ -104,22 +104,6 @@ class FuseboxProperties {
         }
     }
 
-    /** Action to perform when the user clicks the activation chip. */
-    public static final WritableObjectPropertyKey<Runnable> ACTIVATION_CHIP_CLICKED =
-            new WritableObjectPropertyKey<>();
-
-    /** Whether the activation chip should be compact (displaying only the icon). */
-    public static final WritableBooleanPropertyKey ACTIVATION_CHIP_COMPACT =
-            new WritableBooleanPropertyKey();
-
-    /** Whether the activation chip should be selected. */
-    public static final WritableBooleanPropertyKey ACTIVATION_CHIP_SELECTED =
-            new WritableBooleanPropertyKey();
-
-    /** Whether the activation chip should be visible. */
-    public static final WritableBooleanPropertyKey ACTIVATION_CHIP_VISIBLE =
-            new WritableBooleanPropertyKey();
-
     /** The adapter for the attachments RecyclerView. */
     public static final WritableObjectPropertyKey<SimpleRecyclerViewAdapter> ADAPTER =
             new WritableObjectPropertyKey<>();
@@ -140,6 +124,10 @@ class FuseboxProperties {
     public static final WritableIntDefPropertyKey<FuseboxState> FUSEBOX_STATE =
             new WritableIntDefPropertyKey<>(FuseboxState.DISABLED);
 
+    /** The style of the background for the plus button. */
+    public static final WritableIntDefPropertyKey<BackgroundStyle> PLUS_BUTTON_BACKGROUND_STYLE =
+            new WritableIntDefPropertyKey<>(BackgroundStyle.INTERACT_ONLY_SMALL);
+
     /** Action to perform when the user clicks the Plus button. */
     public static final WritableObjectPropertyKey<Runnable> PLUS_BUTTON_CLICKED =
             new WritableObjectPropertyKey<>();
@@ -147,10 +135,6 @@ class FuseboxProperties {
     /** Whether the plus button is visible. */
     public static final WritableBooleanPropertyKey PLUS_BUTTON_VISIBLE =
             new WritableBooleanPropertyKey();
-
-    /** The style of the background for the plus button. */
-    public static final WritableIntDefPropertyKey<BackgroundStyle> PLUS_BUTTON_BACKGROUND_STYLE =
-            new WritableIntDefPropertyKey<>(BackgroundStyle.INTERACT_ONLY_SMALL);
 
     /** Action to perform when the user clicks the Camera button in the popup. */
     public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_CAMERA_CLICKED =
@@ -164,7 +148,7 @@ class FuseboxProperties {
     public static final WritableBooleanPropertyKey POPUP_ATTACH_CAMERA_VISIBLE =
             new WritableBooleanPropertyKey();
 
-    /** Action to perform when the user clicks the "add current tab" button */
+    /** Action to perform when the user clicks the "add current tab" button. */
     public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_CURRENT_TAB_CLICKED =
             new WritableObjectPropertyKey<>();
 
@@ -296,10 +280,6 @@ class FuseboxProperties {
 
     public static final PropertyKey[] ALL_KEYS = {
         // go/keep-sorted start
-        ACTIVATION_CHIP_CLICKED,
-        ACTIVATION_CHIP_COMPACT,
-        ACTIVATION_CHIP_SELECTED,
-        ACTIVATION_CHIP_VISIBLE,
         ADAPTER,
         ATTACHMENTS_VISIBLE,
         COLOR_SCHEME,

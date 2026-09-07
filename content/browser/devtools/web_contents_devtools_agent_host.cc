@@ -15,6 +15,7 @@
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/preloading/prerender/prerender_host_registry.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/common/content_features.h"
 
@@ -420,8 +421,8 @@ bool WebContentsDevToolsAgentHost::AttachSession(DevToolsSession* session) {
   DevToolsSession* root_session = session->GetRootSession();
   CHECK(root_session);
   session->CreateAndAddHandler<protocol::IOHandler>(GetIOContext());
-  session->CreateAndAddHandler<protocol::TracingHandler>(this, GetIOContext(),
-                                                         root_session);
+  session->CreateAndAddHandler<protocol::TracingHandler>(
+      this, GetIOContext(), root_session, session->GetClient()->IsTrusted());
   return true;
 }
 

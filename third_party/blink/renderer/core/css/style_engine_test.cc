@@ -773,6 +773,45 @@ TEST_F(StyleEngineTest, AnalyzedInject) {
       t11->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 }
 
+TEST_F(StyleEngineTest, HoverActiveNotMatchedWhilePrinting) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #target { color: rgb(0, 0, 0); }
+      #target:hover { color: rgb(255, 0, 0); }
+      #target:active { color: rgb(0, 255, 0); }
+    </style>
+    <div id="target"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+
+  target->SetHovered(true);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      Color::FromRGB(255, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+
+  gfx::SizeF page_size(400, 400);
+  GetDocument().GetFrame()->StartPrinting(WebPrintParams(page_size));
+  EXPECT_EQ(
+      Color::FromRGB(0, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+  GetDocument().GetFrame()->EndPrinting();
+
+  target->SetHovered(false);
+  target->SetActive(true);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      Color::FromRGB(0, 255, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+
+  GetDocument().GetFrame()->StartPrinting(WebPrintParams(page_size));
+  EXPECT_EQ(
+      Color::FromRGB(0, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+  GetDocument().GetFrame()->EndPrinting();
+}
+
 TEST_F(StyleEngineTest, InjectedUserNoAuthorFontFace) {
   UpdateAllLifecyclePhases();
 
@@ -1061,29 +1100,112 @@ TEST_F(StyleEngineTest, RuleSetInvalidationHostContext) {
   EXPECT_EQ(1u, after_count - before_count);
 }
 
-TEST_F(StyleEngineTest, HasViewportDependentMediaQueries) {
+TEST_F(StyleEngineTest, MayHaveViewportDependentMediaQueries) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>div {}</style>
     <style id='sheet' media='(min-width: 200px)'>
       div {}
     </style>
   )HTML");
+  UpdateAllLifecyclePhases();
 
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // The dependency is sticky for the lifetime of the StyleEngine: removing
+  // the stylesheet that introduced it does not clear the flag.
   Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
-
-  for (unsigned i = 0; i < 10; i++) {
-    GetDocument().body()->RemoveChild(style_element);
-    UpdateAllLifecyclePhases();
-    GetDocument().body()->AppendChild(style_element);
-    UpdateAllLifecyclePhases();
-  }
-
-  EXPECT_TRUE(GetStyleEngine().HasViewportDependentMediaQueries());
-
   GetDocument().body()->RemoveChild(style_element);
   UpdateAllLifecyclePhases();
 
-  EXPECT_FALSE(GetStyleEngine().HasViewportDependentMediaQueries());
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest,
+       NonMatchingMediaMutationStaysStickyAfterUnrelatedRebuild) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="(min-width: 9000px)">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // Mutating the non-matching stylesheet's media attribute to another
+  // non-matching, but no longer viewport-dependent, query does not clear the
+  // sticky dependency recorded on the StyleEngine.
+  Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
+  style_element->setAttribute(html_names::kMediaAttr, AtomicString("print"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // An unrelated change to the active style sheets forces a CSSGlobalRuleSet
+  // rebuild. The sticky dependency must survive the rebuild rather than being
+  // recomputed from the (now non-viewport-dependent) live style sheets.
+  Element* unrelated_style =
+      GetDocument().CreateElementForBinding(AtomicString("style"));
+  unrelated_style->SetInnerHTMLWithoutTrustedTypes("span {}");
+  GetDocument().body()->appendChild(unrelated_style);
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest, NonMatchingMediaMutationAddsViewportDependency) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="print">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_FALSE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
+  style_element->setAttribute(html_names::kMediaAttr,
+                              AtomicString("(min-width: 9000px)"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest, ShadowTreeNonMatchingMediaQuerySetsStickyDependency) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<div id=host></div>");
+  Element* host = GetDocument().getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="print">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_FALSE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // Mutating the shadow tree's stylesheet media attribute to a
+  // viewport-dependent, still non-matching query sets the sticky flag on the
+  // StyleEngine, even though the TreeScope's active RuleSets don't change
+  // (the media query doesn't match either before or after).
+  Element* style_element = shadow_root.getElementById(AtomicString("sheet"));
+  ASSERT_TRUE(style_element);
+  style_element->setAttribute(html_names::kMediaAttr,
+                              AtomicString("(min-width: 9000px)"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // The dependency stays sticky across an unrelated CSSGlobalRuleSet rebuild
+  // and after the stylesheet that introduced it is removed.
+  Element* unrelated_style =
+      GetDocument().CreateElementForBinding(AtomicString("style"));
+  unrelated_style->SetInnerHTMLWithoutTrustedTypes("span {}");
+  GetDocument().body()->appendChild(unrelated_style);
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  style_element->remove();
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
 }
 
 TEST_F(StyleEngineTest, StyleMediaAttributeStyleChange) {
@@ -7903,6 +8025,63 @@ TEST_F(StyleEngineTest, StyleSheetCacheNullAndInvalidContexts) {
   EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
   // Subsequent find confirms entry was erased from the cache.
   EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
+}
+
+TEST_F(StyleEngineTest, NoThrowawayMarkerStyleForListStyleNone) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ul { list-style: none; }
+      .green { color: green; }
+      .with-content::marker { content: "+"; }
+      #str { list-style-type: "*"; }
+    </style>
+    <ul>
+      <li id="none"><span id="child"></span></li>
+      <li id="str"></li>
+      <li id="content" class="with-content"></li>
+    </ul>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* none = GetDocument().getElementById(AtomicString("none"));
+  Element* child = GetDocument().getElementById(AtomicString("child"));
+  Element* str = GetDocument().getElementById(AtomicString("str"));
+  Element* content = GetDocument().getElementById(AtomicString("content"));
+
+  // A list item with neither a list-style nor ::marker rules has no marker;
+  // a list-style-type or ::marker 'content' alone is enough to generate one.
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(str->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(content->GetPseudoElement(kPseudoIdMarker));
+
+  // Restyling a descendant of the markerless list item must not compute (and
+  // throw away) a ::marker style for the list item; only #child is resolved.
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  child->classList().Add(AtomicString("green"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+
+  // A (non-independent) inherited change on the list item recalculates the
+  // list item and its child, but still no ::marker.
+  start_count = GetStyleEngine().StyleForElementCount();
+  none->SetInlineStyleProperty(CSSPropertyID::kFontSize, "20px");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(2u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+
+  // Giving it a list-style-type generates the marker as usual ...
+  none->SetInlineStyleProperty(CSSPropertyID::kListStyleType, "disc");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(none->GetPseudoElement(kPseudoIdMarker)->GetLayoutObject());
+
+  // ... and so does a ::marker rule with 'content', even with no list-style.
+  none->RemoveInlineStyleProperty(CSSPropertyID::kListStyleType);
+  none->classList().Add(AtomicString("with-content"));
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(none->GetPseudoElement(kPseudoIdMarker)->GetLayoutObject());
 }
 
 }  // namespace blink

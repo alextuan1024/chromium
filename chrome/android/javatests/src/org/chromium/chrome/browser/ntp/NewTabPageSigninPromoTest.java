@@ -13,6 +13,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
+import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.not;
@@ -29,6 +30,7 @@ import android.text.format.DateUtils;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import androidx.annotation.IdRes;
 import androidx.test.espresso.ViewAction;
 import androidx.test.espresso.action.GeneralLocation;
 import androidx.test.espresso.action.GeneralSwipeAction;
@@ -314,11 +316,29 @@ public class NewTabPageSigninPromoTest {
     @EnableFeatures({
         "EnableSeamlessSignin"
                 + ":seamless-signin-promo-type/twoButtons"
-                + "/seamless-signin-string-type/signinButton"
+                + "/seamless-signin-string-type/continueButton"
     })
     // TODO(crbug.com/483105856): Test is flaky on desktop bots.
     @DisableIf.Device(DeviceFormFactor.DESKTOP)
-    public void testSigninPromoLoadingState() {
+    public void testSigninPromoLoadingState_twoButtonsPromo() {
+        testSigninPromoLoadingState(R.id.signin_promo_secondary_button);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"FeedNewTabPage"})
+    @EnableFeatures({
+        "EnableSeamlessSignin"
+                + ":seamless-signin-promo-type/compact"
+                + "/seamless-signin-string-type/continueButton"
+    })
+    // TODO(crbug.com/483105856): Test is flaky on desktop bots.
+    @DisableIf.Device(DeviceFormFactor.DESKTOP)
+    public void testSigninPromoLoadingState_compactPromo() {
+        testSigninPromoLoadingState(R.id.account_picker_selected_account);
+    }
+
+    private void testSigninPromoLoadingState(@IdRes int secondaryCtaId) {
         openNewTabPage();
         // An account with an unknown hosted domain emulates a long sign-in. This way the loading
         // state will be shown for a longer time.
@@ -333,11 +353,36 @@ public class NewTabPageSigninPromoTest {
 
         onView(withId(R.id.signin_promo_primary_button)).perform(scrollTo());
         waitForVisibleView(withId(R.id.signin_promo_primary_button));
+
+        // Before click: primary button, secondary CTA, and dismiss button are enabled.
+        onView(withId(R.id.signin_promo_primary_button))
+                .check(
+                        matches(
+                                allOf(
+                                        isDisplayed(),
+                                        isEnabled(),
+                                        withText(R.string.sync_promo_continue))));
+        onView(withId(secondaryCtaId)).check(matches(allOf(isDisplayed(), isEnabled())));
+        onView(withId(R.id.signin_promo_dismiss_button))
+                .check(matches(allOf(isDisplayed(), isEnabled())));
+
         onView(withId(R.id.signin_promo_primary_button)).perform(click());
         onView(withId(R.id.signin_promo_primary_button))
-                .check(matches(allOf(isDisplayed(), not(isEnabled()))));
+                .check(
+                        matches(
+                                allOf(
+                                        isDisplayed(),
+                                        not(isEnabled()),
+                                        withText(
+                                                R.string
+                                                        .signin_account_picker_bottom_sheet_signin_title))));
+        onView(withId(secondaryCtaId)).check(matches(not(isEnabled())));
         onView(withId(R.id.signin_promo_dismiss_button))
-                .check(matches(withEffectiveVisibility(Visibility.INVISIBLE)));
+                .check(
+                        matches(
+                                allOf(
+                                        not(isEnabled()),
+                                        withEffectiveVisibility(Visibility.INVISIBLE))));
     }
 
     @Test
@@ -481,6 +526,33 @@ public class NewTabPageSigninPromoTest {
         // Open a new tab, the promo should still be shown.
         openNewTabPage();
         verifySigninPromoShown();
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"FeedNewTabPage"})
+    @EnableFeatures({
+        "EnableSeamlessSignin"
+                + ":seamless-signin-promo-type/compact"
+                + "/seamless-signin-string-type/continueButton"
+    })
+    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
+    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
+    public void
+            testSignInPromo_hiddenIfTimeElapsedSinceFirstShownExceedsFirstShownLimitButNotResetThreshold() {
+        // Show the promo for the first time.
+        openNewTabPage();
+        verifySigninPromoShown();
+
+        // Advance time beyond the first time shown limit, but not beyond the last time shown reset
+        // period.
+        mFakeTimeTestRule.advanceMillis(
+                (NtpSigninPromoDelegate.NTP_SYNC_PROMO_RESET_AFTER_DAYS - 1)
+                        * DateUtils.DAY_IN_MILLIS);
+
+        // Open a new tab, the promo should not be shown.
+        openNewTabPage();
+        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
     }
 
     @Test

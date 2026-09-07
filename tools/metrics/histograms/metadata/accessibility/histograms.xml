@@ -247,7 +247,7 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.IfChange(KeyboardShortcutsSemanticMeaning) -->
 
-<histogram name="Accessibility.Android.KeyboardShortcut.{ScreenReaderState}7"
+<histogram name="Accessibility.Android.KeyboardShortcut.{ScreenReaderState}8"
     enum="KeyboardShortcutsSemanticMeaning" expires_after="2027-06-01">
   <owner>mschillaci@google.com</owner>
   <owner>katie@chromium.org</owner>
@@ -579,7 +579,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Accessibility.Android.RunningAccessibilityTools"
-    enum="AccessibilityAndroidAccessibilityTools" expires_after="2026-12-20">
+    enum="AccessibilityAndroidAccessibilityTools" expires_after="2027-02-28">
   <owner>aaronmoss@google.com</owner>
   <owner>davidsegovia@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -1224,7 +1224,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Accessibility.CrosDisableTouchpad" enum="BooleanEnabled"
-    expires_after="2026-12-06">
+    expires_after="2027-02-28">
   <owner>lkupo@chromium.org</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
@@ -2240,7 +2240,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.LiveTranslate.GetTranslation.TargetLanguage"
-    enum="LocaleCodeBCP47" expires_after="2026-12-27">
+    enum="LocaleCodeBCP47" expires_after="2027-02-28">
   <owner>danft@google.com</owner>
   <owner>evliu@google.com</owner>
   <owner>chrome-media-ux@google.com</owner>
@@ -2433,6 +2433,39 @@ recorded in the same way, even if they fit the naming pattern. -->
     <variant name="SelectToSpeak"
         summary="Select-to-speak enabed (on ChromeOS only)"/>
   </token>
+</histogram>
+
+<histogram name="Accessibility.PdfHeuristics.HeadingClassifier"
+    enum="PdfAccessibilityHeadingClassifier" expires_after="2027-08-01">
+  <owner>kristislee@google.com</owner>
+  <owner>komo-eng@google.com</owner>
+  <owner>chrome-a11y-core@google.com</owner>
+  <summary>
+    Records the heuristic classification rule used to identify a text block as a
+    heading in an untagged PDF document.
+  </summary>
+</histogram>
+
+<histogram name="Accessibility.PdfHeuristics.HeadingToBodySizeRatioMax"
+    units="ratio * 100" expires_after="2027-08-01">
+  <owner>kristislee@google.com</owner>
+  <owner>komo-eng@google.com</owner>
+  <owner>chrome-a11y-core@google.com</owner>
+  <summary>
+    Records the maximum font-size ratio (heading size divided by body baseline)
+    observed on an individual page.
+  </summary>
+</histogram>
+
+<histogram name="Accessibility.PdfHeuristics.HeadingToBodySizeRatioMin"
+    units="ratio * 100" expires_after="2027-08-01">
+  <owner>kristislee@google.com</owner>
+  <owner>komo-eng@google.com</owner>
+  <owner>chrome-a11y-core@google.com</owner>
+  <summary>
+    Records the minimum font-size ratio (heading size divided by body baseline)
+    observed on an individual page.
+  </summary>
 </histogram>
 
 <histogram name="Accessibility.PdfOcr.CrosSelectToSpeak.PagesOcred"
@@ -3135,7 +3168,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.EntryPointAfterOmnibox"
-    enum="ReadAnythingOpenTrigger" expires_after="2026-12-20">
+    enum="ReadAnythingOpenTrigger" expires_after="2027-02-28">
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
   <summary>
@@ -3594,16 +3627,15 @@ recorded in the same way, even if they fit the naming pattern. -->
   </token>
 </histogram>
 
-<histogram
-    name="Accessibility.ReadAnything.RendererRequestFor{Action}.IsFromObservedTree"
-    enum="Boolean" expires_after="2027-02-07">
+<histogram name="Accessibility.ReadAnything.RendererRequestFor{Action}.Result"
+    enum="ReadAnythingRendererRequestResult" expires_after="2027-02-07">
+  <owner>lwinston@google.com</owner>
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
   <summary>
-    Records whether action requests received by the
-    ReadAnythingUntrustedPageHandler (e.g. link click or image download
-    requests) are from the currently observed tree. If not, this may be a
-    malicious request.
+    Records the validation result of action requests ({Action}) received by the
+    ReadAnythingUntrustedPageHandler. If not allowed, this may be a malicious
+    request.
   </summary>
   <token key="Action">
     <variant name="ImageDataDownload" summary="requested to download an image"/>
@@ -3693,7 +3725,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.SpeechError"
-    enum="ReadAnythingSpeechError" expires_after="2026-12-27">
+    enum="ReadAnythingSpeechError" expires_after="2027-02-28">
   <owner>lwinston@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
@@ -3871,7 +3903,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.WordsHeard" units="words"
-    expires_after="2026-12-27">
+    expires_after="2027-02-28">
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
   <summary>

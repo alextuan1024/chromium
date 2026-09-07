@@ -5,6 +5,7 @@
 package org.chromium.content.browser.selection;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -29,7 +30,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.SelectionActionMenuClientWrapper.DefaultItem;
@@ -47,7 +47,6 @@ import java.util.List;
 
 /** Unit tests for {@link SelectActionMenuHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SelectActionMenuHelperTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private SelectActionMenuHelper.TextSelectionCapabilitiesDelegate mDelegate;
@@ -137,9 +136,75 @@ public class SelectActionMenuHelperTest {
         assertEquals(R.id.select_action_menu_web_search, menuItems.get(5).id);
         assertEquals(R.id.select_action_menu_share, menuItems.get(6).id);
         assertEquals(
-                SelectionMenuItem.ItemGroupOffset.DEFAULT_ITEMS,
-                pendingMenu.determineGroup(menuItems.get(6))
-                        * SelectionMenuItem.ItemGroupOffset.DEFAULT_ITEMS);
+                PendingSelectionMenu.LogicalGroup.DEFAULT_ITEMS,
+                pendingMenu.determineGroup(menuItems.get(6)));
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    public void testDefaultMenuItemsAreSpacedForInterposition_floating() {
+        PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
+        pendingMenu.addAll(
+                SelectActionMenuHelper.getDefaultItems(
+                        mContext,
+                        mDelegate,
+                        MenuType.FLOATING,
+                        /* isSelectionReadOnly= */ false,
+                        "test",
+                        null));
+        List<SelectionMenuItem> menuItems = pendingMenu.getMenuItemsForTesting();
+        assertEquals(7, menuItems.size());
+        // Consecutive default items are spaced out (rather than assigned consecutive integers) so
+        // that embedders can interpose their own items in the gaps between two default items at
+        // stable positions. A spacing > 1 guarantees at least one free order slot per gap.
+        for (int i = 1; i < menuItems.size(); i++) {
+            int gap = menuItems.get(i).order - menuItems.get(i - 1).order;
+            assertEquals(SelectActionMenuHelper.DEFAULT_ITEM_ORDER_SPACING, gap);
+        }
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    public void testDefaultMenuItemsAreSpacedForInterposition_dropdown() {
+        PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
+        pendingMenu.addAll(
+                SelectActionMenuHelper.getDefaultItems(
+                        mContext,
+                        mDelegate,
+                        MenuType.DROPDOWN,
+                        /* isSelectionReadOnly= */ false,
+                        "test",
+                        null));
+        List<SelectionMenuItem> menuItems = pendingMenu.getMenuItemsForTesting();
+        assertEquals(7, menuItems.size());
+
+        // Verify that menuItems[0..4] (cut, copy, paste, paste as plain text, select all) belong
+        // to DEFAULT_ITEMS, while menuItems[5] (web search) and menuItems[6] (share) are placed in
+        // SECONDARY_ASSIST_ITEMS for editable dropdown menus.
+        List<SelectionMenuItem> defaultGroupItems = new ArrayList<>();
+        List<SelectionMenuItem> nonDefaultGroupItems = new ArrayList<>();
+        for (SelectionMenuItem item : menuItems) {
+            if (pendingMenu.determineGroup(item)
+                    == PendingSelectionMenu.LogicalGroup.DEFAULT_ITEMS) {
+                defaultGroupItems.add(item);
+            } else {
+                nonDefaultGroupItems.add(item);
+            }
+        }
+        assertEquals(5, defaultGroupItems.size());
+        assertEquals(2, nonDefaultGroupItems.size());
+        for (SelectionMenuItem item : nonDefaultGroupItems) {
+            assertEquals(
+                    PendingSelectionMenu.LogicalGroup.SECONDARY_ASSIST_ITEMS,
+                    pendingMenu.determineGroup(item));
+        }
+
+        // In the default items section, consecutive items are spaced out (see
+        // DEFAULT_ITEM_ORDER_SPACING) to leave order slots for interposition.
+        for (int i = 1; i < defaultGroupItems.size(); i++) {
+            int gap = defaultGroupItems.get(i).order - defaultGroupItems.get(i - 1).order;
+            assertEquals(SelectActionMenuHelper.DEFAULT_ITEM_ORDER_SPACING, gap);
+        }
     }
 
     @Test
@@ -155,19 +220,15 @@ public class SelectActionMenuHelperTest {
                         "test",
                         null));
         List<SelectionMenuItem> menuItems = pendingMenu.getMenuItemsForTesting();
-        assertEquals(7, menuItems.size());
-        assertEquals(R.id.select_action_menu_cut, menuItems.get(0).id);
-        assertEquals(R.id.select_action_menu_copy, menuItems.get(1).id);
-        assertEquals(android.R.id.paste, menuItems.get(2).id);
-        assertEquals(android.R.id.pasteAsPlainText, menuItems.get(3).id);
-        assertEquals(R.id.select_action_menu_select_all, menuItems.get(4).id);
-        assertEquals(R.id.select_action_menu_web_search, menuItems.get(5).id);
-        assertEquals(R.id.select_action_menu_share, menuItems.get(6).id);
+        assertEquals(3, menuItems.size());
+        assertEquals(R.id.select_action_menu_copy, menuItems.get(0).id);
+        assertEquals(R.id.select_action_menu_web_search, menuItems.get(1).id);
+        assertEquals(R.id.select_action_menu_share, menuItems.get(2).id);
     }
 
     @Test
     @Feature({"TextInput"})
-    public void testDefaultMenuItemsOrder_dropdown_cannotSelectAll() {
+    public void testDefaultMenuItemsOrder_editable_cannotSelectAll() {
         when(mDelegate.canSelectAll(MenuType.DROPDOWN)).thenReturn(false);
         PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
         pendingMenu.addAll(
@@ -175,17 +236,19 @@ public class SelectActionMenuHelperTest {
                         mContext,
                         mDelegate,
                         MenuType.DROPDOWN,
-                        /* isSelectionReadOnly= */ true,
+                        /* isSelectionReadOnly= */ false,
                         "test",
                         null));
         List<SelectionMenuItem> menuItems = pendingMenu.getMenuItemsForTesting();
-        assertEquals(6, menuItems.size());
+        assertEquals(7, menuItems.size());
         assertEquals(R.id.select_action_menu_cut, menuItems.get(0).id);
         assertEquals(R.id.select_action_menu_copy, menuItems.get(1).id);
         assertEquals(android.R.id.paste, menuItems.get(2).id);
         assertEquals(android.R.id.pasteAsPlainText, menuItems.get(3).id);
-        assertEquals(R.id.select_action_menu_web_search, menuItems.get(4).id);
-        assertEquals(R.id.select_action_menu_share, menuItems.get(5).id);
+        assertEquals(R.id.select_action_menu_select_all, menuItems.get(4).id);
+        assertFalse(menuItems.get(4).isEnabled);
+        assertEquals(R.id.select_action_menu_web_search, menuItems.get(5).id);
+        assertEquals(R.id.select_action_menu_share, menuItems.get(6).id);
     }
 
     @Test
@@ -203,14 +266,10 @@ public class SelectActionMenuHelperTest {
                         "test",
                         selectionActionMenuDelegate));
         List<SelectionMenuItem> menuItems = pendingMenu.getMenuItemsForTesting();
-        assertEquals(7, menuItems.size());
-        assertEquals(R.id.select_action_menu_cut, menuItems.get(0).id);
-        assertEquals(R.id.select_action_menu_copy, menuItems.get(1).id);
-        assertEquals(android.R.id.paste, menuItems.get(2).id);
-        assertEquals(android.R.id.pasteAsPlainText, menuItems.get(3).id);
-        assertEquals(R.id.select_action_menu_select_all, menuItems.get(4).id);
-        assertEquals(R.id.select_action_menu_share, menuItems.get(5).id);
-        assertEquals(R.id.select_action_menu_web_search, menuItems.get(6).id);
+        assertEquals(3, menuItems.size());
+        assertEquals(R.id.select_action_menu_copy, menuItems.get(0).id);
+        assertEquals(R.id.select_action_menu_share, menuItems.get(1).id);
+        assertEquals(R.id.select_action_menu_web_search, menuItems.get(2).id);
     }
 
     @Test
@@ -259,8 +318,12 @@ public class SelectActionMenuHelperTest {
         assertEquals(R.id.select_action_menu_select_all, menuItems.get(4).id);
         assertEquals(R.id.select_action_menu_web_search, menuItems.get(5).id);
         assertEquals(R.id.select_action_menu_share, menuItems.get(6).id);
-        assertEquals(2, pendingMenu.determineGroup(menuItems.get(5)));
-        assertEquals(2, pendingMenu.determineGroup(menuItems.get(6)));
+        assertEquals(
+                PendingSelectionMenu.LogicalGroup.SECONDARY_ASSIST_ITEMS,
+                pendingMenu.determineGroup(menuItems.get(5)));
+        assertEquals(
+                PendingSelectionMenu.LogicalGroup.SECONDARY_ASSIST_ITEMS,
+                pendingMenu.determineGroup(menuItems.get(6)));
     }
 
     @Test

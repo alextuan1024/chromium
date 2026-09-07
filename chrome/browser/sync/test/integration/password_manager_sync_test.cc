@@ -43,6 +43,7 @@
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_store_results_observer.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -262,7 +263,7 @@ class PasswordManagerSyncTest : public SyncTest {
   void SetupSyncTransportWithPasswordAccountStorage() {
     SignIn(SyncTestAccount::kDefaultAccount);
 
-    PasswordSyncActiveChecker(GetSyncService(0)).Wait();
+    ASSERT_TRUE(PasswordSyncActiveChecker(GetSyncService(0)).Wait());
     ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));
   }
 
@@ -296,7 +297,8 @@ class PasswordManagerSyncTest : public SyncTest {
     form.signon_realm = origin.spec();
     form.url = origin;
     form.username_value = base::UTF8ToUTF16(username);
-    form.password_value = base::UTF8ToUTF16(password);
+    form.password_value =
+        password_manager::PasswordString(base::UTF8ToUTF16(password));
     form.date_created = base::Time::Now();
     return form;
   }
@@ -797,13 +799,13 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, false);
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 
   SignOut();
 
   // The disabling should be remembered.
   SignIn();
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -946,7 +948,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTestWithPolicy,
                base::Value(std::move(disabled_types)), nullptr);
   policy_provider()->UpdateChromePolicy(policies);
 
-  SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -965,7 +967,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
   presenter.Init();
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 1);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
@@ -973,7 +975,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 0);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 }
 

@@ -185,8 +185,7 @@ std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
                   [](base::WeakPtr<BrowserWindowInterface> weak_browser,
                      bool is_source_accelerator) {
                     if (weak_browser) {
-                      weak_browser->GetFeatures()
-                          .signin_view_controller()
+                      SigninViewController::From(weak_browser.get())
                           ->CloseBubbleSignin();
                     }
                   },
@@ -240,10 +239,6 @@ std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
       std::move(dialog_model), anchor_view, arrow);
   bubble->set_margins(gfx::Insets());
   bubble->set_fixed_width(kDialogWidth);
-
-  if (browser_view && browser_view->GetWidget()) {
-    bubble->set_parent_window(browser_view->GetWidget()->GetNativeView());
-  }
 
   return bubble;
 }

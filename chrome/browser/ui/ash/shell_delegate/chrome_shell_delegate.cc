@@ -12,6 +12,7 @@
 #include "ash/accelerators/accelerator_prefs_delegate.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/game_dashboard/game_dashboard_delegate.h"
 #include "ash/public/cpp/app_types_util.h"
 #include "ash/public/cpp/new_window_delegate.h"
@@ -36,8 +37,6 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/locked_fullscreen/arc_locked_fullscreen_manager.h"
 #include "chrome/browser/ash/arc/session/arc_service_launcher.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_service_factory.h"
 #include "chrome/browser/ash/scanner/chrome_scanner_delegate.h"
@@ -70,9 +69,10 @@
 #include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/audio/system_sounds_delegate_impl.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/specialized_features/feedback.h"
 #include "chromeos/ash/experiences/clipboard/clipboard_history_controller_delegate_impl.h"
@@ -414,7 +414,7 @@ bool ChromeShellDelegate::IsLoggingRedirectDisabled() const {
   }
 
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kDisableLoggingRedirect);
+      ash::switches::kDisableLoggingRedirect);
 }
 
 base::FilePath ChromeShellDelegate::GetPrimaryUserDownloadsFolder() const {
@@ -619,5 +619,5 @@ void ChromeShellDelegate::OpenMultitaskingSettings() {
 
 bool ChromeShellDelegate::IsNoFirstRunSwitchOn() const {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      ::switches::kNoFirstRun);
+      ash::chrome_switches::kNoFirstRun);
 }

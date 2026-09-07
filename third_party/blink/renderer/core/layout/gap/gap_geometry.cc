@@ -138,82 +138,154 @@ bool GapGeometry::HasRowGapFragmentation(
   return false;
 }
 
-bool GapGeometry::HasNonIdentityDecorationOrder(
+bool GapGeometry::NeedsDecorationValueAssignmentMapping(
     GridTrackSizingDirection track_direction) const {
-  if (!flex_gap_placement_reversal_) {
+  // Grid-lanes `CrossGap`s use lane-local assignment slots, so each lane must
+  // map its first geometric gap back to slot zero, even without reversal.
+  if (GetContainerType() == kGridLanes && !IsMainDirection(track_direction)) {
+    return true;
+  }
+  if (!gap_placement_reversal_) {
     return false;
   }
   return !IsMainDirection(track_direction) ||
-         flex_gap_placement_reversal_->reverse_lines;
+         gap_placement_reversal_->reverse_main_assignment_order;
 }
 
-std::pair<wtf_size_t, wtf_size_t> GapGeometry::GetFlexLineCrossGapStartAndCount(
-    wtf_size_t owning_main_gap_index) const {
-  CHECK(flex_gap_placement_reversal_.has_value());
+GapGeometry::DecorationValueAssignment
+GapGeometry::DecorationValueAssignmentForGap(
+    GridTrackSizingDirection track_direction,
+    wtf_size_t fragment_relative_gap_index,
+    wtf_size_t stitched_gap_index,
+    wtf_size_t gap_slot_count,
+    std::optional<wtf_size_t> cross_gap_owner_index) const {
+  CHECK_LT(stitched_gap_index, gap_slot_count);
 
+  // Each entry in `fragmented_flex_cross_gap_decoration_indices_` stores the
+  // `CrossGap`'s index in the complete decoration value sequence after flex
+  // reversals are applied. This can differ from `stitched_gap_index`, which
+  // remains in geometric paint order. Use the entry keyed by
+  // `fragment_relative_gap_index` because fragmentation can change the gap's
+  // fragment-relative geometric index.
+  if (!IsMainDirection(track_direction) &&
+      HasFragmentedFlexCrossGapDecorationIndices()) {
+    CHECK_EQ(gap_slot_count, FragmentedFlexCrossGapCount());
+    return {FragmentedFlexCrossGapDecorationValueIndexAt(
+                fragment_relative_gap_index),
+            gap_slot_count};
+  }
+
+  if (IsMainDirection(track_direction)) {
+    // Main gaps use one container-wide assignment sequence for their color,
+    // style, and width lists. If placement reverses their order, mirror the
+    // stitched gap index before selecting values from those lists.
+    const wtf_size_t decoration_value_index =
+        NeedsDecorationValueAssignmentMapping(track_direction)
+            ? DecorationValueIndexForReversedMainGap(stitched_gap_index,
+                                                     gap_slot_count)
+            : stitched_gap_index;
+    return {decoration_value_index, gap_slot_count};
+  }
+
+  // Grid-lanes assigns gap-decoration values to `CrossGap`s independently per
+  // lane. Rules never continue across lanes, so the owning lane's `CrossGap`
+  // count replaces the container-wide `gap_slot_count`.
+  if (GetContainerType() == kGridLanes) {
+    CHECK(cross_gap_owner_index.has_value());
+    const GapIndexRange owner_range =
+        CrossGapRangeForOwner(*cross_gap_owner_index);
+
+    CHECK_GE(stitched_gap_index, owner_range.start);
+    wtf_size_t local_decoration_value_index =
+        stitched_gap_index - owner_range.start;
+    CHECK_LT(local_decoration_value_index, owner_range.count);
+
+    if (gap_placement_reversal_ &&
+        gap_placement_reversal_->reverse_within_owner) {
+      // `fill-reverse` starts assignment at the opposite end of each lane, so
+      // mirror the lane-local index within that lane's slot sequence.
+      local_decoration_value_index =
+          owner_range.count - 1 - local_decoration_value_index;
+    }
+    return {local_decoration_value_index, owner_range.count};
+  }
+
+  // Flex `CrossGap`s are assigned from one sequence spanning the whole
+  // container.
+  if (!NeedsDecorationValueAssignmentMapping(track_direction)) {
+    return {stitched_gap_index, gap_slot_count};
+  }
+  CHECK(cross_gap_owner_index.has_value());
+  return {DecorationValueIndexForCrossGap(
+              stitched_gap_index, CrossGapRangeForOwner(*cross_gap_owner_index),
+              gap_slot_count),
+          gap_slot_count};
+}
+
+GapGeometry::GapIndexRange GapGeometry::CrossGapRangeForOwner(
+    wtf_size_t owner_index) const {
   if (main_gaps_.empty()) {
-    CHECK_EQ(owning_main_gap_index, 0u);
+    CHECK_EQ(owner_index, 0u);
     CHECK(!cross_gaps_.empty());
     return {0, cross_gaps_.size()};
   }
 
-  if (owning_main_gap_index < main_gaps_.size()) {
-    const MainGap& main_gap = main_gaps_[owning_main_gap_index];
+  if (owner_index < main_gaps_.size()) {
+    const MainGap& main_gap = main_gaps_[owner_index];
     CHECK(main_gap.HasCrossGapsBefore());
     return {main_gap.GetCrossGapBeforeStart(),
             main_gap.GetCrossGapBeforeCount()};
   }
 
-  CHECK_EQ(owning_main_gap_index, main_gaps_.size());
+  CHECK_EQ(owner_index, main_gaps_.size());
   const MainGap& last_main_gap = main_gaps_.back();
   CHECK(last_main_gap.HasCrossGapsAfter());
   return {last_main_gap.GetCrossGapAfterStart(),
           last_main_gap.GetCrossGapAfterCount()};
 }
 
-wtf_size_t GapGeometry::DecorationIndexForGap(
-    GridTrackSizingDirection track_direction,
-    wtf_size_t geometric_index,
-    std::optional<wtf_size_t> owning_main_gap_index,
-    wtf_size_t total_gap_count) const {
-  CHECK(HasNonIdentityDecorationOrder(track_direction));
-  CHECK_LT(geometric_index, total_gap_count);
+wtf_size_t GapGeometry::DecorationValueIndexForReversedMainGap(
+    wtf_size_t stitched_gap_index,
+    wtf_size_t gap_slot_count) const {
+  CHECK(gap_placement_reversal_);
+  CHECK(gap_placement_reversal_->reverse_main_assignment_order);
+  CHECK_LT(stitched_gap_index, gap_slot_count);
+  // Mirror the zero-based geometric index within the assignment sequence, so
+  // the first geometric gap uses the last slot and vice versa.
+  return gap_slot_count - 1 - stitched_gap_index;
+}
 
-  if (IsMainDirection(track_direction)) {
-    return total_gap_count - 1 - geometric_index;
-  }
+wtf_size_t GapGeometry::DecorationValueIndexForCrossGap(
+    wtf_size_t stitched_gap_index,
+    GapIndexRange line_range,
+    wtf_size_t gap_slot_count) const {
+  CHECK(gap_placement_reversal_);
+  CHECK_LT(stitched_gap_index, gap_slot_count);
+  CHECK_GE(stitched_gap_index, line_range.start);
+  CHECK_LE(line_range.count, gap_slot_count - line_range.start);
 
-  CHECK(owning_main_gap_index.has_value());
-
-  // TODO(javiercon): For fragmented flex containers, use the first fragment's
-  // break-token data to map fragment-local indices into the global decoration
-  // pattern. We'll need to pass the first fragment's data here.
-  const auto [line_start, line_gap_count] =
-      GetFlexLineCrossGapStartAndCount(*owning_main_gap_index);
-
-  CHECK_GE(geometric_index, line_start);
   // Geometric order is the order in which gaps are stored and painted, based
   // on their logical positions in the container.
-  const wtf_size_t geometric_index_in_line = geometric_index - line_start;
-  CHECK_LT(geometric_index_in_line, line_gap_count);
+  const wtf_size_t geometric_index_in_line =
+      stitched_gap_index - line_range.start;
+  CHECK_LT(geometric_index_in_line, line_range.count);
 
   // Next, reverse the gap's index within its line for a reversed
   // `flex-direction`.
   wtf_size_t placement_index_in_line = geometric_index_in_line;
-  if (flex_gap_placement_reversal_->reverse_items_in_line) {
-    CHECK_LE(placement_index_in_line, line_gap_count - 1);
-    placement_index_in_line = line_gap_count - 1 - placement_index_in_line;
+  if (gap_placement_reversal_->reverse_within_owner) {
+    placement_index_in_line = line_range.count - 1 - placement_index_in_line;
   }
 
   // Finally, move the complete line group to its placement-order position for
   // `wrap-reverse`.
-  CHECK_LE(line_start, total_gap_count);
-  CHECK_LE(line_gap_count, total_gap_count - line_start);
   const wtf_size_t line_start_in_placement_order =
-      flex_gap_placement_reversal_->reverse_lines
-          ? total_gap_count - line_start - line_gap_count
-          : line_start;
-  return line_start_in_placement_order + placement_index_in_line;
+      gap_placement_reversal_->reverse_main_assignment_order
+          ? gap_slot_count - line_range.start - line_range.count
+          : line_range.start;
+  const wtf_size_t decoration_value_index =
+      line_start_in_placement_order + placement_index_in_line;
+  return decoration_value_index;
 }
 
 PhysicalRect GapGeometry::ComputeInkOverflowForGaps(
@@ -289,9 +361,6 @@ bool GapGeometry::IsMultiColSpanner(wtf_size_t gap_index,
 
 LayoutUnit GapGeometry::ComputeInsetEnd(
     const ComputedStyle& style,
-    wtf_size_t gap_index,
-    wtf_size_t intersection_index,
-    const Vector<GapIntersection>& intersections,
     bool is_cap_intersection,
     bool is_column_gap,
     bool is_main,
@@ -317,9 +386,6 @@ LayoutUnit GapGeometry::ComputeInsetEnd(
 
 LayoutUnit GapGeometry::ComputeInsetStart(
     const ComputedStyle& style,
-    wtf_size_t gap_index,
-    wtf_size_t intersection_index,
-    const Vector<GapIntersection>& intersections,
     bool is_cap_intersection,
     bool is_column_gap,
     bool is_main,
@@ -806,17 +872,6 @@ void GapGeometry::GenerateCrossIntersectionListForMulticol(
   for (const auto& main_gap : GetMainGaps()) {
     intersections.emplace_back(main_gap.GetGapOffset(),
                                cursor.GetNextGapSegmentState());
-
-    // We mark intersections that are adjacent to spanner main gaps as an
-    // "edge". This is so that the inset applies correctly to these
-    // intersections. This is because at least right now, percentage insets in
-    // grid with spanners apply that percentage to the crossing gap width.
-    // Intersections with spanners in multicol dont have a crossing gap, and as
-    // such need to be treated as "edge" intersections which also share that
-    // same property.
-    if (main_gap.IsSpannerMainGap()) {
-      multicol_spanner_adjacent_intersections_.insert(intersections.size() - 1);
-    }
   }
 
   intersections.emplace_back(content_block_end_,
@@ -900,9 +955,10 @@ bool GapGeometry::IsIntersectionAtContainerEdge(
     const Vector<GapIntersection>& intersections) const {
   CHECK_GT(intersection_count, 0u);
   const wtf_size_t last_intersection_index = intersection_count - 1;
-  // For flex and multicol main-axis gaps, and for grid in general, the first
+  // For main-axis gaps, and for grid and multicol cross-axis gaps, the first
   // and last intersections are considered edges.
-  if (is_main_gap || GetContainerType() == ContainerType::kGrid) {
+  if (is_main_gap || GetContainerType() == ContainerType::kGrid ||
+      GetContainerType() == ContainerType::kMultiColumn) {
     return intersection_index == 0 ||
            intersection_index == last_intersection_index;
   }
@@ -940,17 +996,18 @@ bool GapGeometry::IsIntersectionAtContainerEdge(
     }
   }
 
-  if (GetContainerType() == ContainerType::kMultiColumn) {
-    CHECK(!is_main_gap);
-    // For multicol cross gaps, we may have additional edge intersections.
-    // These occur when the cross gap intersects with a spanner main gap.
-    return intersection_index == 0 ||
-           intersection_index == last_intersection_index ||
-           multicol_spanner_adjacent_intersections_.Contains(
-               intersection_index);
+  return false;
+}
+
+bool GapGeometry::IsMulticolSpannerBoundaryIntersection(
+    wtf_size_t intersection_index,
+    bool is_main_gap) const {
+  if (GetContainerType() != ContainerType::kMultiColumn || is_main_gap ||
+      intersection_index == 0 || intersection_index > main_gaps_.size()) {
+    return false;
   }
 
-  return false;
+  return main_gaps_[intersection_index - 1].IsSpannerMainGap();
 }
 
 bool GapGeometry::IsCapIntersection(
@@ -964,6 +1021,8 @@ bool GapGeometry::IsCapIntersection(
   return IsIntersectionAtContainerEdge(gap_index, intersection_index,
                                        intersections.size(), is_main_gap,
                                        intersections) ||
+         IsMulticolSpannerBoundaryIntersection(intersection_index,
+                                               is_main_gap) ||
          !CSSGapDecorationUtils::HasCrossGapSegment(
              cross_direction, gap_index, intersection_index, rule_visibility,
              cross_rule_visibility, *this, intersections);
@@ -1056,7 +1115,8 @@ LayoutUnit GapGeometry::GetCrossWidthForIntersection(
     const Vector<GapIntersection>& intersections) const {
   if (IsIntersectionAtContainerEdge(gap_index, intersection_index,
                                     intersections.size(), is_main_gap,
-                                    intersections)) {
+                                    intersections) ||
+      IsMulticolSpannerBoundaryIntersection(intersection_index, is_main_gap)) {
     return LayoutUnit();
   }
 
@@ -1080,21 +1140,8 @@ GapSegmentState GapGeometry::GetIntersectionGapSegmentState(
     GridTrackSizingDirection track_direction,
     wtf_size_t primary_index,
     wtf_size_t secondary_index) const {
-  const GapSegmentStateRanges* gap_segment_state_ranges = nullptr;
-
-  if (IsMainDirection(track_direction)) {
-    CHECK(primary_index < main_gaps_.size());
-    if (main_gaps_[primary_index].HasGapSegmentStateRanges()) {
-      gap_segment_state_ranges =
-          &main_gaps_[primary_index].GetGapSegmentStateRanges();
-    }
-  } else {
-    CHECK(primary_index < cross_gaps_.size());
-    if (cross_gaps_[primary_index].HasGapSegmentStateRanges()) {
-      gap_segment_state_ranges =
-          &cross_gaps_[primary_index].GetGapSegmentStateRanges();
-    }
-  }
+  const GapSegmentStateRanges* gap_segment_state_ranges =
+      GetGapSegmentStateRangesForGap(track_direction, primary_index);
 
   // If no ranges exist for this gap, assume `kNone` (both sides
   // occupied).

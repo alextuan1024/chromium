@@ -119,6 +119,8 @@ ci.builder(
             "has_native_resultdb_integration",
         ],
     ),
+    cores = 16,
+    ssd = True,
     free_space = builders.free_space.high,
     tree_closing = True,
     console_view_entry = consoles.console_view_entry(
@@ -2526,6 +2528,9 @@ ci.builder(
                     "--disable-field-trial-config",
                     "--skia-gold-consider-unsupported",
                 ],
+                # Remove from CQ to save test resource. More details can be
+                # found in https://crbug.com/548722074
+                ci_only = True,
                 swarming = targets.swarming(
                     dimensions = {
                         # use 8-core to shorten runtime

@@ -34,6 +34,7 @@ fuzzer_test("ini_parser_fuzzer") {
   # Large ini files can cause test cases to timeout
   libfuzzer_options = [ "max_len=100000" ]
 }
+
 grit("resources") {
   source = "common_resources.grd"
   inputs = [
@@ -324,6 +325,10 @@ static_library("common_lib") {
         "//services/device/public/cpp/usb",
       ]
     }
+    if (is_chromeos) {
+      assert(enable_extensions)
+      deps += [ "//chromeos/ash/experiences/extensions" ]
+    }
   }
 
   if (is_mac) {
@@ -462,7 +467,6 @@ static_library("non_code_constants") {
   sources = [
     "chrome_constants.cc",
     "chrome_constants.h",
-    "chrome_switches.cc",
     "chrome_switches.h",
     "env_vars.h",
   ]
@@ -484,6 +488,10 @@ static_library("non_code_constants") {
 
   if (is_win) {
     sources += [ "chrome_icon_resources_win.h" ]
+  }
+
+  if (is_chromeos) {
+    deps += [ "//ash/constants" ]
   }
 }
 
@@ -694,6 +702,7 @@ mojom("mojo_bindings") {
     "plugin.mojom",
     "readaloud/read_aloud.mojom",
     "renderer_configuration.mojom",
+    "tab_context_decryption_token_extension.mojom",
     "trusted_vault_encryption_keys_extension.mojom",
   ]
 
@@ -748,6 +757,7 @@ mojom("mojo_bindings") {
     "//sandbox/policy/mojom",
     "//third_party/blink/public/mojom:mojom_core",
     "//third_party/blink/public/mojom:mojom_platform",
+    "//ui/accessibility:ax_features_mojo",
     "//ui/gfx/geometry/mojom",
     "//ui/gfx/image/mojom",
     "//url/mojom:url_mojom_gurl",

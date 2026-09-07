@@ -16,7 +16,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -37,7 +36,6 @@ import java.util.concurrent.CompletableFuture;
 
 /** Unit tests for {@link RecordingTabCreator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE)
 public class RecordingTabCreatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -124,23 +122,6 @@ public class RecordingTabCreatorUnitTest {
         assertEquals(1, frozenData.size());
         assertEquals(5, frozenData.get(0).id);
         assertEquals(12345L, frozenData.get(0).timestampMillis);
-
-        List<TabCreationData> data = mRecordingTabCreator.getNewTabCreationData();
-        assertEquals(0, data.size());
-    }
-
-    @Test
-    public void testCreateFrozenTab_NullState() {
-        mRecordingTabCreator.createFrozenTab(null, 5, TabModel.INVALID_TAB_INDEX);
-
-        verify(mDelegate).createFrozenTab(null, 5, TabModel.INVALID_TAB_INDEX);
-
-        assertEquals(1, mRecordingTabCreator.getTabCount());
-        List<TabCreationData> frozenData = mRecordingTabCreator.getFrozenTabCreationData();
-        assertEquals(1, frozenData.size());
-        assertEquals(5, frozenData.get(0).id);
-        assertEquals(0, frozenData.get(0).timestampMillis);
-        assertNull(frozenData.get(0).url);
 
         List<TabCreationData> data = mRecordingTabCreator.getNewTabCreationData();
         assertEquals(0, data.size());

@@ -86,7 +86,6 @@ public class CronetUrlRequestContextTest {
     private static final String TAG = "CronetUrlReqCtxTest";
     // URLs used for tests.
     private static final String MOCK_CRONET_TEST_FAILED_URL = "http://mock.failed.request/-2";
-    private static final String MOCK_CRONET_TEST_SUCCESS_URL = "http://mock.http/success.txt";
     private static final int MAX_FILE_SIZE = 1000000000;
 
     private NativeTestServer mNativeTestServer;
@@ -2229,10 +2228,11 @@ public class CronetUrlRequestContextTest {
         builder.setExperimentalOptions("");
         builder.setStoragePath(getTestStorage(mTestRule.getTestFramework().getContext()));
         builder.enablePublicKeyPinningBypassForLocalTrustAnchors(false);
+        CronetEngineBuilderImpl builderImpl = CronetTestUtil.getCronetEngineBuilderImpl(builder);
         CronetUrlRequestContextTestJni.get()
                 .verifyUrlRequestContextConfig(
                         CronetUrlRequestContext.createNativeUrlRequestContextConfig(
-                                CronetTestUtil.getCronetEngineBuilderImpl(builder)),
+                                builderImpl, builderImpl.experimentalOptions()),
                         getTestStorage(mTestRule.getTestFramework().getContext()));
     }
 
@@ -2258,10 +2258,12 @@ public class CronetUrlRequestContextTest {
         builder.setUserAgent("efgh");
         builder.setStoragePath(getTestStorage(mTestRule.getTestFramework().getContext()));
         builder.enablePublicKeyPinningBypassForLocalTrustAnchors(false);
+        CronetEngineBuilderImpl quicOffBuilderImpl =
+                CronetTestUtil.getCronetEngineBuilderImpl(builder);
         CronetUrlRequestContextTestJni.get()
                 .verifyUrlRequestContextQuicOffConfig(
                         CronetUrlRequestContext.createNativeUrlRequestContextConfig(
-                                CronetTestUtil.getCronetEngineBuilderImpl(builder)),
+                                quicOffBuilderImpl, quicOffBuilderImpl.experimentalOptions()),
                         getTestStorage(mTestRule.getTestFramework().getContext()));
     }
 

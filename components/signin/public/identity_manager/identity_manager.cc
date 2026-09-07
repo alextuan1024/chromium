@@ -278,8 +278,7 @@ bool IdentityManager::HasAccountWithRefreshTokenInPersistentErrorState(
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 bool IdentityManager::GenerateBindingKeyRegistrationToken(
-    base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-        supported_algorithms,
+    base::span<const crypto::sign::SignatureKind> supported_algorithms,
     std::string_view auth_code,
     base::OnceCallback<void(
         std::optional<signin::BindingKeyRegistrationTokenResult>)> callback) {
@@ -364,8 +363,9 @@ AccountInfo IdentityManager::FindExtendedAccountInfoByEmailAddress(
   // AccountTrackerService always returns an AccountInfo, even on failure. In
   // case of failure, the AccountInfo will be unpopulated, thus we should not
   // be able to find a valid refresh token.
-  return HasAccountWithRefreshToken(account_info.account_id) ? account_info
-                                                             : AccountInfo();
+  return HasAccountWithRefreshToken(account_info.GetAccountId())
+             ? account_info
+             : AccountInfo();
 }
 
 AccountInfo IdentityManager::FindExtendedAccountInfoByGaiaId(
@@ -381,8 +381,9 @@ AccountInfo IdentityManager::FindExtendedAccountInfoByGaiaId(
   // AccountTrackerService always returns an AccountInfo, even on failure. In
   // case of failure, the AccountInfo will be unpopulated, thus we should not
   // be able to find a valid refresh token.
-  return HasAccountWithRefreshToken(account_info.account_id) ? account_info
-                                                             : AccountInfo();
+  return HasAccountWithRefreshToken(account_info.GetAccountId())
+             ? account_info
+             : AccountInfo();
 }
 
 AccountsInCookieJarInfo IdentityManager::GetAccountsInCookieJar() const {
@@ -811,7 +812,7 @@ void IdentityManager::OnAccountUpdated(const AccountInfo& info) {
   if (HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     const CoreAccountId primary_account_id =
         GetPrimaryAccountId(ConsentLevel::kSignin);
-    if (primary_account_id == info.account_id) {
+    if (primary_account_id == info.GetAccountId()) {
       primary_account_manager_->UpdatePrimaryAccountInfo();
     }
   }
@@ -830,7 +831,7 @@ void IdentityManager::OnAccountUpdated(const AccountInfo& info) {
 
 void IdentityManager::OnAccountRemoved(const AccountInfo& info) {
 #if (BUILDFLAG(IS_ANDROID))
-  account_fetcher_service_->DestroyFetchers(info.account_id);
+  account_fetcher_service_->DestroyFetchers(info.GetAccountId());
 #endif
   for (auto& observer : observer_list_) {
     observer.OnExtendedAccountInfoRemoved(info);

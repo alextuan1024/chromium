@@ -94,8 +94,7 @@ class DevToolsScriptToolTest : public actor::ActorToolsTest,
  public:
   DevToolsScriptToolTest() {
     std::vector<base::test::FeatureRef> enabled_features = {
-        blink::features::kWebMCP, blink::features::kDevToolsWebMCPSupport,
-        actor::kGlicActorEnableScriptTools};
+        blink::features::kWebMCP, actor::kGlicActorEnableScriptTools};
     std::vector<base::test::FeatureRef> disabled_features;
 
     if (GetParam()) {
@@ -141,7 +140,8 @@ class DevToolsScriptToolTest : public actor::ActorToolsTest,
 }  // namespace
 
 IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEvents) {
-  const GURL url = embedded_test_server()->GetURL("/actor/script_tool.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   TestDevToolsClient client;
@@ -187,7 +187,8 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEvents) {
 }
 
 IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsOnFailure) {
-  const GURL url = embedded_test_server()->GetURL("/actor/script_tool.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   TestDevToolsClient client;
@@ -238,8 +239,8 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsOnFailure) {
 }
 
 IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsDeclarativeTool) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/declarative_script_tool.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/declarative_script_tool.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   TestDevToolsClient client;
@@ -297,8 +298,8 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsDeclarativeTool) {
 
 IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest,
                        EmitsCdpEventsDeclarativeToolCrossDocument) {
-  const GURL url = embedded_test_server()->GetURL(
-      "/actor/declarative_script_tool_cross_document.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/declarative_script_tool_cross_document.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   TestDevToolsClient client;

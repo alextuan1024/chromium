@@ -22,10 +22,12 @@
 #include "components/autofill/core/browser/logging/log_router.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/http_auth_manager.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
@@ -48,6 +50,7 @@ using content::BrowserThread;
 using content::NavigationController;
 using content::WebContents;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 
 namespace {
 
@@ -134,7 +137,11 @@ void LoginHandler::SetAuth(std::u16string_view username,
   if (password_manager::HttpAuthManager* httpauth_manager =
           GetHttpAuthManagerForLogin()) {
     password_form_.username_value = credentials.username();
-    password_form_.password_value = credentials.password();
+    // TODO(crbug.com/513276101): Explicit construction of std::u16string
+    // R-Value to be removed once AuthCredentials converted to use
+    // PasswordString
+    password_form_.password_value =
+        PasswordString(std::u16string(credentials.password()));
     httpauth_manager->OnPasswordFormSubmitted(password_form_);
     if (logger) {
       logger->LogPasswordForm(

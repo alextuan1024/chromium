@@ -605,14 +605,20 @@ RenderFrameHostImpl* RenderWidgetHostViewAura::GetFocusedFrame() const {
 }
 
 void RenderWidgetHostViewAura::HandleBoundsInRootChanged() {
+  const gfx::Rect bounds_in_root = window_->GetBoundsInRootWindow();
+  // `bounds_in_root` can be empty when it has been removed from the window tree
+  // or is in a transient state during reparenting across root windows before
+  // its layer is attached
+  if (bounds_in_root.IsEmpty()) {
+    return;
+  }
 #if BUILDFLAG(IS_WIN)
   if (legacy_render_widget_host_HWND_) {
     // `SetBounds()` calls ::SetWindowPos which can spin a nested message loop
     // on Windows, potentially destroying `this`.
     base::WeakPtr<RenderWidgetHostViewAura> weak_this(
         weak_ptr_factory_.GetWeakPtr());
-    legacy_render_widget_host_HWND_->SetBounds(
-        window_->GetBoundsInRootWindow());
+    legacy_render_widget_host_HWND_->SetBounds(bounds_in_root);
     if (!weak_this) {
       return;
     }
@@ -678,7 +684,8 @@ bool RenderWidgetHostViewAura::IsSurfaceAvailableForCopy() {
 }
 
 bool RenderWidgetHostViewAura::IsShowing() {
-  return window_->IsVisible();
+  // window_ may be null for popup widgets during initialization.
+  return window_ && window_->IsVisible();
 }
 
 void RenderWidgetHostViewAura::ShowImpl(PageVisibilityState page_visibility) {
@@ -2567,6 +2574,12 @@ bool RenderWidgetHostViewAura::HasSavedCompositorFrame() const {
   return delegated_frame_host_ && delegated_frame_host_->HasSavedFrame();
 }
 
+void RenderWidgetHostViewAura::SetEvictOnHide(bool evict_on_hide) {
+  if (delegated_frame_host_) {
+    delegated_frame_host_->SetEvictOnHide(evict_on_hide);
+  }
+}
+
 void RenderWidgetHostViewAura::FocusedNodeChanged(
     bool editable,
     const gfx::Rect& node_bounds_in_screen) {
@@ -2837,7 +2850,11 @@ void RenderWidgetHostViewAura::OnWindowFocused(aura::Window* gained_focus,
   UpdateActiveState(false);
   host()->LostFocus();
 
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   DetachFromInputMethod(false);
+  if (!weak_this) {
+    return;
+  }
 
   // TODO(wjmaclean): Do we need to let TouchSelectionControllerClientAura
   // handle this, just in case it stomps on a new highlight in another view
@@ -3055,7 +3072,7 @@ void RenderWidgetHostViewAura::OnDidUpdateVisualPropertiesComplete(
 
   if (host()->delegate()) {
     host()->delegate()->SetTopControlsShownRatio(
-        host(), metadata.top_controls_shown_ratio);
+        host(), metadata.browser_controls_metadata.top_controls_shown_ratio);
   }
 
   if (host()->IsHidden()) {

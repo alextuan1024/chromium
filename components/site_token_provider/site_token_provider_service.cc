@@ -4,8 +4,13 @@
 
 #include "components/site_token_provider/site_token_provider_service.h"
 
+#include <utility>
+
+#include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
+#include "components/site_token_provider/features.h"
 #include "components/site_token_provider/site_token_provider.h"
 
 namespace site_token_provider {
@@ -13,7 +18,10 @@ namespace site_token_provider {
 SiteTokenProviderService::SiteTokenProviderService(
     signin::IdentityManager* identity_manager,
     std::unique_ptr<SiteTokenProvider> provider)
-    : provider_(std::move(provider)), identity_manager_(identity_manager) {
+    : provider_(std::move(provider)),
+      identity_manager_(identity_manager),
+      allowed_domains_(
+          ParseAllowlistedDomains(features::kSiteTokenAllowlist.Get())) {
   CHECK(identity_manager_);
   CHECK(provider_);
 
@@ -44,6 +52,21 @@ std::string SiteTokenProviderService::GetTokenForDomain(
     std::string_view domain) const {
   auto it = token_cache_.find(NormalizeDomain(domain));
   return it != token_cache_.end() ? it->second : "";
+}
+
+bool SiteTokenProviderService::IsDomainAllowlisted(
+    std::string_view domain) const {
+  return allowed_domains_.contains(NormalizeDomain(domain));
+}
+
+void SiteTokenProviderService::SetTokenForTesting(  // IN-TEST
+    std::string_view domain,
+    std::string token) {
+  token_cache_[NormalizeDomain(domain)] = std::move(token);
+}
+
+base::WeakPtr<SiteTokenProviderService> SiteTokenProviderService::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
 }
 
 void SiteTokenProviderService::OnPrimaryAccountChanged(

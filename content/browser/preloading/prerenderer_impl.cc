@@ -98,7 +98,7 @@ PrerendererImpl::PrerenderInfo::PrerenderInfo(
 PrerendererImpl::PrerendererImpl(RenderFrameHost& render_frame_host)
     : WebContentsObserver(WebContents::FromRenderFrameHost(&render_frame_host)),
       render_frame_host_(render_frame_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   auto& rfhi = static_cast<RenderFrameHostImpl&>(render_frame_host);
   registry_ = rfhi.delegate()->GetPrerenderHostRegistry()->GetWeakPtr();
   if (registry_) {
@@ -112,7 +112,7 @@ PrerendererImpl::PrerendererImpl(RenderFrameHost& render_frame_host)
 }
 
 PrerendererImpl::~PrerendererImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CancelStartedPrerenders();
   RecordReceivedPrerendersCountToMetrics();
   ResetReceivedPrerendersCountForMetrics();
@@ -127,7 +127,7 @@ void PrerendererImpl::PrimaryPageChanged(Page& page) {
   // deleted asynchronously, but we want to make sure to cancel prerendering
   // before the next primary page swaps in so that the next page can trigger a
   // new prerender without hitting the max number of running prerenders.
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CancelStartedPrerenders();
   RecordReceivedPrerendersCountToMetrics();
   ResetReceivedPrerendersCountForMetrics();
@@ -475,6 +475,16 @@ bool PrerendererImpl::MaybePrerender(
       IsImmediateSpeculationEagerness(candidate->eagerness)
           ? features::kPrerender2WarmUpCompositorForImmediate
           : features::kPrerender2WarmUpCompositorForNonImmediate);
+
+  // `SpeculationCandidate::tags` must never be empty: rules that specify no
+  // tags carry a single null tag instead (see blink.mojom).
+  // Candidates arriving over IPC are checked by SpeculationHostImpl's
+  // CandidatesAreValid(), and PreloadingDecider only ever overwrites `tags`
+  // with a non-empty merge, so an empty list here means a browser-side bug
+  // rather than a misbehaving renderer. This is where crbug.com/550345163
+  // crashed; the equivalent guard for prefetch lives in
+  // PrefetchDocumentManager's TagsFromCandidate().
+  CHECK(!candidate->tags.empty());
 
   PrerenderAttributes attributes(
       candidate->url,

@@ -27,7 +27,7 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -376,6 +376,53 @@ TEST_F(ManualTestingImportTest, LoadEntitiesFromFile_RecordType) {
             EntityInstance::RecordType::kServerWallet);
   EXPECT_EQ(entities->at(3).record_type(),
             EntityInstance::RecordType::kPersonalContext);
+}
+
+// Tests that personalContext sources are parsed correctly.
+TEST_F(ManualTestingImportTest, LoadEntitiesFromFile_PersonalContext_Sources) {
+  base::FilePath file_path = GetFilePath();
+  base::WriteFile(file_path, R"({
+    "entities" : [
+      {
+        "entity_type" : "Passport",
+        "record_type" : "personalContext",
+        "sources" : [
+          {
+            "type" : "photos",
+            "url" : "https://photos.google.com/sample"
+          },
+          {
+            "type" : "gmail",
+            "url" : "https://mail.google.com/sample"
+          }
+        ],
+        "attributes" : {
+          "Number" : "12345"
+        }
+      }
+    ]
+  })");
+
+  std::optional<std::vector<EntityInstance>> entities =
+      LoadEntitiesFromFile(file_path);
+  ASSERT_TRUE(entities.has_value());
+  ASSERT_EQ(entities->size(), 1u);
+
+  using Source = EntityInstance::PersonalContextRecordTypePayload::Source;
+  using PersonalContextRecordTypePayload =
+      EntityInstance::PersonalContextRecordTypePayload;
+  const EntityInstance& entity = entities->front();
+  ASSERT_EQ(entity.record_type(), EntityInstance::RecordType::kPersonalContext);
+  const auto* payload =
+      std::get_if<PersonalContextRecordTypePayload>(&entity.record_type_data());
+  ASSERT_TRUE(payload);
+  EXPECT_EQ(*payload, (PersonalContextRecordTypePayload{
+                          .sources = {
+                              {.type = Source::Type::kPhotos,
+                               .url = "https://photos.google.com/sample"},
+                              {.type = Source::Type::kGmail,
+                               .url = "https://mail.google.com/sample"},
+                          }}));
 }
 
 // Tests that invalid entity record_type fails import.

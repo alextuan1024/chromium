@@ -35,6 +35,7 @@
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/protocol/password_specifics.pb.h"
 #include "components/sync/test/mock_sync_service.h"
@@ -53,6 +54,13 @@
 namespace password_manager {
 
 namespace {
+
+using testing::_;
+using testing::AllOf;
+using testing::Field;
+using testing::IsEmpty;
+using testing::Not;
+using testing::Property;
 
 class MockBadMessageHelper {
  public:
@@ -338,7 +346,7 @@ class RemoteActorCredentialSharingImplTest
     form.signon_realm = "https://google.com/";
     form.url = GURL("https://google.com");
     form.username_value = u"user";
-    form.password_value = u"pass";
+    form.password_value = PasswordString(u"pass");
     form.in_store = PasswordForm::Store::kProfileStore;
     profile_store_->AddLogin(FromPasswordForm(form));
 
@@ -437,7 +445,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   base::test::TestFuture<bool> result;
   remote->RequestAgentAuthentication(/*gaia_id=*/"123456789",
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor_id",
+                                     /*task_id=*/"actor_id",
                                      result.GetCallback());
   EXPECT_FALSE(result.Get());
 }
@@ -463,7 +471,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   base::test::TestFuture<bool> result;
   remote->RequestAgentAuthentication(/*gaia_id=*/"123456789",
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor_id",
+                                     /*task_id=*/"actor_id",
                                      result.GetCallback());
   EXPECT_FALSE(result.Get());
 }
@@ -486,7 +494,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   content::RenderFrameHostTester::For(main_rfh())->SimulateUserActivation();
   base::test::TestFuture<bool> result;
   remote->RequestAgentAuthentication(/*gaia_id=*/"", /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor_id",
+                                     /*task_id=*/"actor_id",
                                      result.GetCallback());
   EXPECT_FALSE(result.Get());
 }
@@ -518,7 +526,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
 
   remote->RequestAgentAuthentication(/*gaia_id=*/long_string,
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/long_string,
+                                     /*task_id=*/long_string,
                                      base::DoNothing());
   EXPECT_THAT(
       bad_message_future.Get(),
@@ -544,7 +552,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, RequestWithSpecialCharacters) {
   base::test::TestFuture<bool> result;
   remote->RequestAgentAuthentication(/*gaia_id=*/"gaia\0id",
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor\nhack",
+                                     /*task_id=*/"actor\nhack",
                                      result.GetCallback());
   EXPECT_FALSE(result.Get());
 }
@@ -583,8 +591,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
 
   remote->RequestAgentAuthentication(/*gaia_id=*/"123456789",
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor_id",
-                                     base::DoNothing());
+                                     /*task_id=*/"actor_id", base::DoNothing());
   EXPECT_THAT(bad_message_future.Get(),
               testing::HasSubstr(
                   "RemoteActorCredentialSharing: Request from subframe"));
@@ -615,8 +622,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
 
   remote->RequestAgentAuthentication(/*gaia_id=*/"123456789",
                                      /*domain=*/"google.com",
-                                     /*remote_actor_id=*/"actor_id",
-                                     base::DoNothing());
+                                     /*task_id=*/"actor_id", base::DoNothing());
   EXPECT_THAT(
       bad_message_future.Get(),
       testing::HasSubstr(
@@ -643,7 +649,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, SuccessFlow_SelectCredential) {
   form.signon_realm = "https://google.com/";
   form.url = GURL("https://google.com");
   form.username_value = u"user";
-  form.password_value = u"pass";
+  form.password_value = PasswordString(u"pass");
   form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(form));
 
@@ -653,8 +659,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, SuccessFlow_SelectCredential) {
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"google.com", /*task_id=*/"actor_id", result.GetCallback());
 
   // Wait for the dialog to be shown (factory called).
   dialog_shown_future.Get();
@@ -663,34 +668,29 @@ TEST_F(RemoteActorCredentialSharingImplTest, SuccessFlow_SelectCredential) {
   EXPECT_EQ(last_dialog_credentials_[0]->username_value, u"user");
   EXPECT_EQ(last_dialog_credential_domain_, "https://google.com");
 
-  using ::testing::_;
-  using ::testing::AllOf;
-  using ::testing::Field;
-  using ::testing::IsEmpty;
-  using ::testing::Not;
-
   EXPECT_CALL(
       *mock_sharing_service_,
       SharePassword(
           AllOf(Field(&RemoteActorCredentialSharingService::ShareParameters::
                           password_data,
-                      ::testing::Property(
+                      Property(
                           &sync_pb::PasswordSpecificsData::username_value,
                           "user")),
                 Field(&RemoteActorCredentialSharingService::ShareParameters::
                           password_data,
-                      ::testing::Property(
+                      Property(
                           &sync_pb::PasswordSpecificsData::password_value,
                           "pass")),
                 Field(&RemoteActorCredentialSharingService::ShareParameters::
                           web_origin,
                       "https://google.com"),
                 Field(&RemoteActorCredentialSharingService::ShareParameters::
-                          agent_oauth_client_id,
+                          task_id,
                       "actor_id"),
-                Field(&RemoteActorCredentialSharingService::ShareParameters::
-                          password_client_tag_hash,
-                      Not(IsEmpty()))),
+                Property(
+                    &RemoteActorCredentialSharingService::ShareParameters::
+                        password_client_tag_hash,
+                    Not(IsEmpty()))),
           _))
       .WillOnce(base::test::RunOnceCallback<1>(true));
 
@@ -724,7 +724,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, FailureFlow_SharingFailed) {
   form.signon_realm = "https://google.com/";
   form.url = GURL("https://google.com");
   form.username_value = u"user";
-  form.password_value = u"pass";
+  form.password_value = PasswordString(u"pass");
   form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(form));
 
@@ -734,8 +734,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, FailureFlow_SharingFailed) {
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"google.com", /*task_id=*/"actor_id", result.GetCallback());
 
   dialog_shown_future.Get();
 
@@ -772,7 +771,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, SuccessFlow_CancelDialog) {
   form.signon_realm = "https://google.com/";
   form.url = GURL("https://google.com");
   form.username_value = u"user";
-  form.password_value = u"pass";
+  form.password_value = PasswordString(u"pass");
   form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(form));
 
@@ -782,8 +781,7 @@ TEST_F(RemoteActorCredentialSharingImplTest, SuccessFlow_CancelDialog) {
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"google.com", /*task_id=*/"actor_id", result.GetCallback());
 
   dialog_shown_future.Get();
 
@@ -819,7 +817,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   profile_form.signon_realm = "https://google.com/";
   profile_form.url = GURL("https://google.com");
   profile_form.username_value = u"profile_user";
-  profile_form.password_value = u"pass";
+  profile_form.password_value = PasswordString(u"pass");
   profile_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(profile_form));
 
@@ -828,7 +826,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   account_form.signon_realm = "https://google.com/";
   account_form.url = GURL("https://google.com");
   account_form.username_value = u"account_user";
-  account_form.password_value = u"pass";
+  account_form.password_value = PasswordString(u"pass");
   account_form.in_store = PasswordForm::Store::kAccountStore;
   account_store_->AddLogin(FromPasswordForm(account_form));
 
@@ -838,8 +836,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"google.com", /*task_id=*/"actor_id", result.GetCallback());
 
   dialog_shown_future.Get();
 
@@ -870,7 +867,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   profile_form.signon_realm = "https://google.com/";
   profile_form.url = GURL("https://google.com");
   profile_form.username_value = u"profile_user";
-  profile_form.password_value = u"pass";
+  profile_form.password_value = PasswordString(u"pass");
   profile_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(profile_form));
 
@@ -880,7 +877,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   account_form.signon_realm = "https://google.com/";
   account_form.url = GURL("https://google.com");
   account_form.username_value = u"account_user";
-  account_form.password_value = u"pass";
+  account_form.password_value = PasswordString(u"pass");
   account_form.in_store = PasswordForm::Store::kAccountStore;
   account_store_->AddLogin(FromPasswordForm(account_form));
 
@@ -890,8 +887,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"google.com", /*task_id=*/"actor_id", result.GetCallback());
 
   dialog_shown_future.Get();
 
@@ -945,7 +941,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
 }
 
 TEST_F(RemoteActorCredentialSharingImplTest,
-       ExactAndStrongAffiliationsAllowed_PSLAndWeakIgnored) {
+       ExactAffiliatedAndPSLAllowed_GroupedIgnored) {
   mojo::AssociatedRemote<chrome::mojom::RemoteActorCredentialSharing> remote =
       SetUpAndBindFlow();
 
@@ -953,7 +949,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   exact_form.signon_realm = "https://example.com/";
   exact_form.url = GURL("https://example.com");
   exact_form.username_value = u"exact_user";
-  exact_form.password_value = u"pass";
+  exact_form.password_value = PasswordString(u"pass");
   exact_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(exact_form));
 
@@ -961,15 +957,15 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   affiliated_form.signon_realm = "https://affiliated.com/";
   affiliated_form.url = GURL("https://affiliated.com");
   affiliated_form.username_value = u"affiliated_user";
-  affiliated_form.password_value = u"pass";
+  affiliated_form.password_value = PasswordString(u"pass");
   affiliated_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(affiliated_form));
 
   PasswordForm psl_form;
-  psl_form.signon_realm = "https://m.example.com/";
-  psl_form.url = GURL("https://m.example.com");
+  psl_form.signon_realm = "https://www.example.com/";
+  psl_form.url = GURL("https://www.example.com");
   psl_form.username_value = u"psl_user";
-  psl_form.password_value = u"pass";
+  psl_form.password_value = PasswordString(u"pass");
   psl_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(psl_form));
 
@@ -977,7 +973,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   grouped_form.signon_realm = "https://grouped.com/";
   grouped_form.url = GURL("https://grouped.com");
   grouped_form.username_value = u"grouped_user";
-  grouped_form.password_value = u"pass";
+  grouped_form.password_value = PasswordString(u"pass");
   grouped_form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(grouped_form));
 
@@ -993,19 +989,20 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"example.com", /*remote_actor_id=*/"actor_id",
-      result.GetCallback());
+      /*domain=*/"example.com", /*task_id=*/"actor_id", result.GetCallback());
 
   dialog_shown_future.Get();
 
-  // Only exact_user and affiliated_user should be included in the dialog;
-  // psl_user and grouped_user must be ignored.
+  // exact_user, affiliated_user, and psl_user should be included in the dialog;
+  // grouped_user must be ignored.
   EXPECT_THAT(last_dialog_credentials_,
               testing::UnorderedElementsAre(
                   testing::Pointee(testing::Field(&PasswordForm::username_value,
                                                   u"exact_user")),
                   testing::Pointee(testing::Field(&PasswordForm::username_value,
-                                                  u"affiliated_user"))));
+                                                  u"affiliated_user")),
+                  testing::Pointee(testing::Field(&PasswordForm::username_value,
+                                                  u"psl_user"))));
 
   SimulateDialogSelection(std::nullopt);
 }
@@ -1030,7 +1027,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   form.signon_realm = "https://google.com/";
   form.url = GURL("https://google.com");
   form.username_value = u"user";
-  form.password_value = u"pass";
+  form.password_value = PasswordString(u"pass");
   form.in_store = PasswordForm::Store::kProfileStore;
   profile_store_->AddLogin(FromPasswordForm(form));
 
@@ -1040,7 +1037,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   dialog_shown_quit_closure_ = dialog_shown_future.GetCallback();
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id",
+      /*domain=*/"google.com", /*task_id=*/"actor_id",
       first_result.GetCallback());
 
   dialog_shown_future.Get();
@@ -1051,7 +1048,7 @@ TEST_F(RemoteActorCredentialSharingImplTest,
   base::test::TestFuture<bool> second_result;
   remote->RequestAgentAuthentication(
       /*gaia_id=*/account_info_.GetGaiaId().ToString(),
-      /*domain=*/"google.com", /*remote_actor_id=*/"actor_id_2",
+      /*domain=*/"google.com", /*task_id=*/"actor_id_2",
       second_result.GetCallback());
 
   EXPECT_FALSE(second_result.Get());

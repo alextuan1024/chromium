@@ -113,9 +113,8 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         }
         if (menuType == MenuType.DROPDOWN
                 && ChromeFeatureList.isEnabled(ChromeFeatureList.COPY_LINK_TO_HIGHLIGHT)
-                && !selectedText.isEmpty()
-                && !isSelectionPassword
                 && isSelectionReadOnly) {
+            boolean isCopyLinkEnabled = !selectedText.isEmpty() && !isSelectionPassword;
             SelectionMenuItem copyLinkItem =
                     new SelectionMenuItem.Builder(R.string.contextmenu_copy_link_to_highlight)
                             .setId(R.id.contextmenu_copy_link_to_highlight)
@@ -123,6 +122,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                             .setOrderAndCategory(
                                     SelectionMenuItem.ItemOrder.COPY_LINK_TO_HIGHLIGHT,
                                     ItemGroupOffset.DEFAULT_ITEMS)
+                            .setIsEnabled(isCopyLinkEnabled)
                             .build();
 
             items.add(copyLinkItem);
@@ -144,6 +144,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
     @Override
     public boolean handleMenuItemClick(
             SelectionMenuItem item, WebContents webContents, @Nullable View containerView) {
+        if (!item.isEnabled) return false;
         if (item.id == R.id.contextmenu_open_in_reading_mode) {
             ReaderModeManager readerModeManager =
                     mTab.getUserDataHost().getUserData(ReaderModeManager.class);
@@ -277,12 +278,17 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                 ChromeFeatureList.getFieldTrialParamByFeature(
                         ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
                         PARAM_ASK_GEMINI_SELECTION_MENU_POSITION);
-        // Defaults to the secondary assist section; the field trial can opt into the assist
-        // section instead.
+        // By default "Ask Gemini" is interposed among the default items, in the gap just before
+        // Web Search (see SelectionMenuItem.ItemOrder.ASK_GEMINI). The field trial can opt into
+        // the primary assist slot ("assist", shown first) or the secondary assist section
+        // ("secondary", shown after Web Search) instead.
         if (ASK_GEMINI_POSITION_ASSIST.equals(position)) {
             builder.setOrderAndCategory(0, ItemGroupOffset.ASSIST_ITEMS);
-        } else {
+        } else if (ASK_GEMINI_POSITION_SECONDARY.equals(position)) {
             builder.setOrderAndCategory(0, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+        } else {
+            builder.setOrderAndCategory(
+                    SelectionMenuItem.ItemOrder.ASK_GEMINI, ItemGroupOffset.DEFAULT_ITEMS);
         }
     }
 

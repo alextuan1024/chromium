@@ -6,17 +6,13 @@
 
 #include "ash/system/privacy_hub/camera_privacy_switch_controller.h"
 #include "ash/wm/window_pin_util.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ash/boca/on_task/locked_session_window_tracker_factory.h"
-#include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_session_window_tracker.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -25,20 +21,38 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/boca/on_task/activity/active_tab_tracker.h"
 #include "chromeos/ash/components/boca/on_task/on_task_blocklist.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/services/app_service/public/cpp/launch_result.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/common/url_constants.h"
 #include "ui/aura/window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "url/gurl.h"
 
 namespace ash::boca {
 namespace {
+
+bool IsBocaHomePageTab(content::WebContents* tab) {
+  if (!tab) {
+    return false;
+  }
+  const GURL tab_url = tab->GetLastCommittedURL().is_empty()
+                           ? tab->GetVisibleURL()
+                           : tab->GetLastCommittedURL();
+  return tab_url.SchemeIs(content::kChromeUIUntrustedScheme) &&
+         tab_url.host() == ash::boca::kChromeBocaAppHost;
+}
 
 // Returns a pointer to the browser window with the specified id. Returns
 // nullptr if there is no match.
@@ -73,14 +87,13 @@ OnTaskSystemWebAppManagerImpl::OnTaskSystemWebAppManagerImpl(Profile* profile)
 OnTaskSystemWebAppManagerImpl::~OnTaskSystemWebAppManagerImpl() = default;
 
 void OnTaskSystemWebAppManagerImpl::LaunchSystemWebAppAsync(
-    base::OnceCallback<void(bool)> callback,
-    const GURL& url) {
+    base::OnceCallback<void(bool)> callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // Include Boca URL in the SWA launch params so the downstream helper triggers
   // the specified callback on launch.
   SystemAppLaunchParams launch_params;
-  launch_params.url = url;
+  launch_params.url = GURL(kChromeBocaAppUntrustedIndexURL);
   ash::LaunchSystemWebAppAsync(
       profile_, SystemWebAppType::BOCA, launch_params,
       /*window_info=*/nullptr,
@@ -137,15 +150,15 @@ void OnTaskSystemWebAppManagerImpl::SetPinStateForSystemWebAppWindow(
     return;
   }
 
-  const bool currently_pinned = browser->IsLockedFullscreen();
+  const bool currently_pinned =
+      browser->IsOnTaskState(ash::BrowserDelegate::OnTaskState::kLocked);
 
   // If the window is not pinned, and we don't want it pinned, check if we need
   // to exit standard fullscreen mode (e.g. after a session restore).
   if (!currently_pinned && !pinned) {
-    auto* const fullscreen_controller = browser->GetBrowser()
-                                            .GetFeatures()
-                                            .exclusive_access_manager()
-                                            ->fullscreen_controller();
+    auto* const fullscreen_controller =
+        ExclusiveAccessManager::From(&browser->GetBrowser())
+            ->fullscreen_controller();
     if (fullscreen_controller->IsFullscreenForBrowser()) {
       fullscreen_controller->ToggleBrowserFullscreenMode(
           /*user_initiated=*/false);
@@ -162,12 +175,9 @@ void OnTaskSystemWebAppManagerImpl::SetPinStateForSystemWebAppWindow(
   // unpinning it. This fixes a bug on tablets that results in no content being
   // rendered on pinning.
   browser->Show();
-  if (pinned) {
-    browser->EnterLockedFullscreen(/*focus_toolbar=*/true);
-  } else {
-    browser->LeaveLockedFullscreen();
-    browser->SetDevToolsCommandsEnabled(false);
-  }
+  browser->SetOnTaskState(pinned
+                              ? ash::BrowserDelegate::OnTaskState::kLocked
+                              : ash::BrowserDelegate::OnTaskState::kPrepared);
 }
 
 void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
@@ -181,7 +191,15 @@ void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
 
   if (paused) {
     // Focus on the boca homepage in pause mode.
-    browser->ActivateWebContentsAt(0);
+    DCHECK_GT(browser->GetWebContentsCount(), 0u);
+    size_t activation_index = 0;
+    for (size_t idx = 0; idx < browser->GetWebContentsCount(); ++idx) {
+      if (IsBocaHomePageTab(browser->GetWebContentsAt(idx))) {
+        activation_index = idx;
+        break;
+      }
+    }
+    browser->ActivateWebContentsAt(activation_index);
 
     // Cache current camera and microphone states before pausing, only if not
     // already cached.
@@ -201,6 +219,9 @@ void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
     // Force pause camera and microphone inputs.
     PauseCameraInput(true);
     PauseMicrophoneInput(true);
+    if (browser->IsOnTaskState(ash::BrowserDelegate::OnTaskState::kLocked)) {
+      browser->SetOnTaskState(ash::BrowserDelegate::OnTaskState::kPaused);
+    }
   } else {
     // Restore inputs to their cached states only if previous states were
     // cached.
@@ -214,8 +235,10 @@ void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
     // Clear the cached states.
     was_camera_disabled_ = std::nullopt;
     was_microphone_disabled_ = std::nullopt;
+    if (browser->IsOnTaskState(ash::BrowserDelegate::OnTaskState::kPaused)) {
+      browser->SetOnTaskState(ash::BrowserDelegate::OnTaskState::kLocked);
+    }
   }
-  browser->SetTabSwitchCommandsEnabled(!paused);
 
   // Configure SWA window and the OnTask pod for paused mode. This needs to be
   // done after switching tabs to ensure the pod is not visible when in paused
@@ -345,13 +368,10 @@ void OnTaskSystemWebAppManagerImpl::PrepareSystemWebAppWindowForOnTask(
   if (!browser) {
     return;
   }
-  browser->SetDevToolsCommandsEnabled(false);
-
   // Configure the browser window for OnTask. This is required to ensure
   // downstream components (especially UI controls) are setup for locked mode
   // transitions.
-  OnTaskLockedController::From(&browser->GetBrowser())
-      ->set_locked_for_on_task(true);
+  browser->SetOnTaskState(ash::BrowserDelegate::OnTaskState::kPrepared);
   MakeWindowResizable(browser->GetNativeWindow());
   browser->SetSkipWarningUserOnClose(true);
 
@@ -363,11 +383,14 @@ void OnTaskSystemWebAppManagerImpl::PrepareSystemWebAppWindowForOnTask(
   // de-dupe content and ensure that the tabs are set up for locked mode.
   if (close_bundle_content) {
     std::set<SessionID> tab_ids_to_remove;
-    for (size_t idx = browser->GetWebContentsCount(); idx-- > 1;) {
+    for (size_t idx = 0; idx < browser->GetWebContentsCount(); ++idx) {
       content::WebContents* const tab = browser->GetWebContentsAt(idx);
-      const SessionID tab_id = sessions::SessionTabHelper::IdForTab(tab);
-      tab_ids_to_remove.insert(tab_id);
+      if (!IsBocaHomePageTab(tab)) {
+        const SessionID tab_id = sessions::SessionTabHelper::IdForTab(tab);
+        tab_ids_to_remove.insert(tab_id);
+      }
     }
+    DCHECK_NE(tab_ids_to_remove.size(), browser->GetWebContentsCount());
     RemoveTabsWithTabIds(window_id, tab_ids_to_remove);
   }
 }
@@ -423,7 +446,8 @@ void OnTaskSystemWebAppManagerImpl::SetAllChromeTabsMuted(bool muted) {
 
 bool OnTaskSystemWebAppManagerImpl::IsWindowPinned(SessionID window_id) {
   BrowserDelegate* const browser = GetBrowserWindowWithID(window_id);
-  return browser ? browser->IsLockedFullscreen() : false;
+  return browser &&
+         browser->IsOnTaskState(ash::BrowserDelegate::OnTaskState::kLocked);
 }
 
 void OnTaskSystemWebAppManagerImpl::SetWindowTrackerForTesting(

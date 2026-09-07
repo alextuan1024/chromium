@@ -79,6 +79,8 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
             "https://tasks.googleapis.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.googleapis.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement-pa.googleapis.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.google.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_kid_signup_url().spec(),
@@ -125,9 +127,6 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities-pa.googleapis.com/v1/"
             "accountcapabilities:batchGet");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities-pa.googleapis.com/v1/"
-            "accountcapabilities:getAllVisible");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.google.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),
@@ -285,6 +284,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://tasks.will-be-overridden.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.will-be-overridden.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement.will-be-overridden.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.example.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_kid_signup_url().spec(),
@@ -329,9 +330,6 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://accounts.example.com/embedded/xreauth/chrome");
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities.exampleapis.com/v1/capabilities");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities.exampleapis.com/v1/"
-            "getAllVisibleCapabilities");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.example.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),
@@ -368,6 +366,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
             "https://tasks.exampleapis.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.exampleapis.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement.exampleapis.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.example.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_windows_url().spec(),
@@ -407,9 +407,6 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities.exampleapis.com/v1/"
             "accountcapabilities:batchGet");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities.exampleapis.com/v1/"
-            "accountcapabilities:getAllVisible");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.example.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),

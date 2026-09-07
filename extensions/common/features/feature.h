@@ -9,9 +9,12 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -28,6 +31,30 @@ namespace extensions {
 inline constexpr int kUnspecifiedContextId = -1;
 
 class Extension;
+
+// A retained pointer to immutable descriptor data. Its consteval constructor
+// enforces static storage and compile-time-readable contents.
+template <typename T>
+class StaticFeatureData {
+ public:
+  template <typename U>
+    requires std::is_same_v<U, const T>
+  explicit consteval StaticFeatureData(U& data) : data_(&data) {
+    // Read the complete descriptor during constant evaluation to reject
+    // statically stored data whose contents are dynamically initialized.
+    [[maybe_unused]] T validated_data = data;
+  }
+
+  constexpr const T* get() const { return data_; }
+  constexpr const T* operator->() const { return data_; }
+
+ private:
+  // Safe because construction requires static storage.
+  RAW_PTR_EXCLUSION const T* data_;
+};
+
+template <typename T>
+StaticFeatureData(T&) -> StaticFeatureData<std::remove_const_t<T>>;
 
 // A pointer to a static NUL-terminated string. Half the size of a
 // std::string_view, which matters because a handful of features set these
@@ -61,20 +88,16 @@ class StaticCString {
   RAW_PTR_EXCLUSION const char* data_ = nullptr;
 };
 
-// A view of a static NUL-terminated string that retains its length. This is a
-// construction-time wrapper for values stored as std::string_view.
-// base::cstring_view also retains the length, but permits non-static backing.
-class StaticStringView {
- public:
-  template <size_t N>
-  explicit consteval StaticStringView(const char (&string)[N])
-      ENABLE_IF_ATTR(string[N - 1u] == '\0', "requires a NUL-terminated string")
-      : view_(string) {}
-
-  constexpr std::string_view string_view() const { return view_; }
-
- private:
-  std::string_view view_;
+// Immutable identity shared by every feature. Generated descriptors initialize
+// this with designated initializers, so the member order must match
+// FEATURE_DATA_FIELD_ORDER in tools/json_schema_compiler/feature_compiler.py.
+struct FeatureData {
+  std::string_view name;
+  // Set by a handful of features, so these hold only a pointer rather than
+  // pay for a length in every descriptor. Both are read on cold paths.
+  StaticCString alias;
+  StaticCString source;
+  bool no_parent = false;
 };
 
 // Represents a single feature accessible to an extension developer, such as a
@@ -143,8 +166,8 @@ class Feature {
   // message in cases where the feature is not available.
   class Availability {
    public:
-    Availability(AvailabilityResult result, const std::string& message)
-        : result_(result), message_(message) {}
+    Availability(AvailabilityResult result, std::string message)
+        : result_(result), message_(std::move(message)) {}
 
     AvailabilityResult result() const { return result_; }
     // Used by V8ContextNativeHandler::GetAvailability().
@@ -158,20 +181,25 @@ class Feature {
     friend class SimpleFeature;
     friend class Feature;
 
-    const AvailabilityResult result_;
-    const std::string message_;
+    // Deliberately non-const. A const `message_` cannot transfer its buffer
+    // during move construction, and either const member would delete the
+    // assignment operators. Availability values are returned, stored, and
+    // propagated, so const would force copies or prevent moves. constexpr is
+    // not an alternative because the values are produced at runtime. The class
+    // is still effectively immutable, since the members are private and
+    // exposed only through const accessors.
+    AvailabilityResult result_;
+    std::string message_;
   };
 
-  Feature();
   virtual ~Feature();
 
-  std::string_view name() const { return name_; }
-  void set_name(StaticStringView name);
-  std::string_view alias() const { return alias_.string_view(); }
-  void set_alias(StaticCString alias);
-  std::string_view source() const { return source_.string_view(); }
-  void set_source(StaticCString source);
-  bool no_parent() const { return no_parent_; }
+  std::string_view name() const { return feature_data_->name; }
+  std::string_view alias() const { return feature_data_->alias.string_view(); }
+  std::string_view source() const {
+    return feature_data_->source.string_view();
+  }
+  bool no_parent() const { return feature_data_->no_parent; }
 
   // Gets the platform the code is currently running on.
   static Platform GetCurrentPlatform();
@@ -259,6 +287,8 @@ class Feature {
   friend class SimpleFeature;
   friend class ComplexFeature;
 
+  explicit Feature(const FeatureData* feature_data);
+
   // These parameters should be kept in sync with
   // DelegatedAvailabilityCheckHandler.
   virtual Availability IsAvailableToContextImpl(
@@ -273,10 +303,9 @@ class Feature {
   // Gets whether a feature availability override handler has been set.
   virtual bool HasDelegatedAvailabilityCheckHandler() const = 0;
 
-  std::string_view name_;
-  StaticCString alias_;
-  StaticCString source_;
-  bool no_parent_ = false;
+  // Immutable configuration, owned by whoever constructed this feature. For
+  // generated features this is static storage; tests own their own copy.
+  RAW_PTR_EXCLUSION const FeatureData* feature_data_;
 };
 
 }  // namespace extensions

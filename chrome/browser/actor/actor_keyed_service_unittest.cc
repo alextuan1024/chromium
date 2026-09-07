@@ -7,8 +7,13 @@
 #include <memory>
 #include <optional>
 
+#include "base/command_line.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_command_line.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
@@ -21,8 +26,10 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/actor/core/actor_features.h"
+#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/task_source_info.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -67,6 +74,14 @@ class ActorKeyedServiceTest : public testing::Test {
 
   TestingProfile* profile() { return profile_.get(); }
 
+  std::unique_ptr<tabs::MockTabInterface> CreateMockTab() {
+    auto mock_tab = std::make_unique<tabs::MockTabInterface>();
+    ON_CALL(*mock_tab, GetProfile).WillByDefault(testing::Return(profile()));
+    return mock_tab;
+  }
+
+  void RunTasksUntilIdle() { task_environment_.RunUntilIdle(); }
+
  protected:
   base::CallbackListSubscription user_confirmation_dialog_subscription_;
   base::CallbackListSubscription confirm_navigation_subscription_;
@@ -94,9 +109,11 @@ TEST_F(ActorKeyedServiceTest, StopActiveTask) {
                                         NoEnterprisePolicyChecker());
 
   // Add a tab to the task
+  auto mock_tab = CreateMockTab();
+  const tabs::TabHandle tab_handle = mock_tab->GetHandle();
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   base::RunLoop loop;
-  task->AddTab(tabs::TabHandle(123),
+  task->AddTab(tab_handle,
                /*stop_task_on_detach=*/true,
                base::BindLambdaForTesting([&](mojom::ActionResultPtr result) {
                  EXPECT_TRUE(IsOk(*result));
@@ -104,8 +121,8 @@ TEST_F(ActorKeyedServiceTest, StopActiveTask) {
                }));
   loop.Run();
 
-  EXPECT_TRUE(task->IsActingOnTab(tabs::TabHandle(123)));
-  EXPECT_TRUE(task->HasTab(tabs::TabHandle(123)));
+  EXPECT_TRUE(task->IsActingOnTab(tab_handle));
+  EXPECT_TRUE(task->HasTab(tab_handle));
   actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
 
   // Tasks are deleted asynchronously.
@@ -142,7 +159,8 @@ TEST_F(ActorKeyedServiceTest, AddTabToPausedOrStoppedTask) {
 
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   ASSERT_TRUE(task);
-  const tabs::TabHandle tab_handle(123);
+  auto mock_tab = CreateMockTab();
+  const tabs::TabHandle tab_handle = mock_tab->GetHandle();
 
   // Pause the task and try to add a tab.
   task->Pause(/*from_actor=*/true);
@@ -176,7 +194,8 @@ TEST_F(ActorKeyedServiceTest, PausedTaskTabs) {
 
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   ASSERT_TRUE(task);
-  const tabs::TabHandle tab_handle(123);
+  auto mock_tab = CreateMockTab();
+  const tabs::TabHandle tab_handle = mock_tab->GetHandle();
 
   {
     base::test::TestFuture<mojom::ActionResultPtr> future;
@@ -269,13 +288,14 @@ TEST_F(ActorKeyedServiceTest, GetActiveTasksDuringStateChangeCallback) {
 
 TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  const tabs::TabHandle tab_handle(123);
+  auto mock_tab = CreateMockTab();
+  const tabs::TabHandle tab_handle = mock_tab->GetHandle();
   auto options = webui::mojom::TaskOptions::New();
   options->actuation_tab_id = tab_handle.raw_value();
 
   TaskId id = actor_service->CreateTaskWithOptions(
       TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
-      /*delegate=*/nullptr);
+      /*delegate=*/nullptr, actor_service->GetActorUiStateManager());
 
   ActorTask* task = actor_service->GetTask(id);
   ASSERT_TRUE(task);
@@ -283,6 +303,66 @@ TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   EXPECT_TRUE(task->IsActingOnTab(tab_handle));
   EXPECT_EQ(task->GetTabs().size(), 1u);
   EXPECT_TRUE(task->GetTabs().contains(tab_handle));
+}
+
+TEST_F(ActorKeyedServiceTest, TraceRecordingToFile) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath trace_file = temp_dir.GetPath().AppendASCII("test_trace.pb");
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchPath(
+      switches::kActorTracePath, trace_file);
+
+  TestingProfile* test_profile =
+      testing_profile_manager()->CreateTestingProfile("trace_profile");
+  auto* actor_service = ActorKeyedService::Get(test_profile);
+  ASSERT_TRUE(actor_service);
+  actor_service->SetActorUiStateManagerForTesting(BuildUiStateManagerMock());
+
+  RunTasksUntilIdle();
+
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
+  actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
+  testing_profile_manager()->DeleteTestingProfile("trace_profile");
+
+  RunTasksUntilIdle();
+
+  std::optional<int64_t> file_size = base::GetFileSize(trace_file);
+  ASSERT_TRUE(file_size.has_value());
+  EXPECT_GT(*file_size, 0);
+}
+
+TEST_F(ActorKeyedServiceTest, TraceRecordingToDirectory) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchPath(
+      switches::kActorTracePath, temp_dir.GetPath());
+
+  TestingProfile* test_profile =
+      testing_profile_manager()->CreateTestingProfile("trace_profile_dir");
+  auto* actor_service = ActorKeyedService::Get(test_profile);
+  ASSERT_TRUE(actor_service);
+  actor_service->SetActorUiStateManagerForTesting(BuildUiStateManagerMock());
+
+  RunTasksUntilIdle();
+
+  base::FilePath expected_trace_file =
+      temp_dir.GetPath().AppendASCII("actor_trace.pb");
+
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
+  actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
+  testing_profile_manager()->DeleteTestingProfile("trace_profile_dir");
+
+  RunTasksUntilIdle();
+
+  std::optional<int64_t> file_size = base::GetFileSize(expected_trace_file);
+  ASSERT_TRUE(file_size.has_value());
+  EXPECT_GT(*file_size, 0);
 }
 
 }  // namespace

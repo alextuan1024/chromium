@@ -47,6 +47,7 @@
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/geometry/size.h"
+#include "url/origin.h"
 #include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -426,6 +427,7 @@ void MediaSessionImpl::RenderFrameHostStateChanged(
       RemovePlayer(player.first.observer, player.first.player_id);
       hidden_players_.insert(player.first);
     }
+    UpdateRoutedService();
     return;
   }
 
@@ -446,12 +448,18 @@ void MediaSessionImpl::RenderFrameHostStateChanged(
     if (added_players)
       OnSuspendInternal(SuspendType::kSystem, State::SUSPENDED);
 
+    UpdateRoutedService();
     return;
   }
 }
 
 bool MediaSessionImpl::AddPlayer(MediaSessionPlayerObserver* observer,
                                  int player_id) {
+  RenderFrameHost* rfh = observer->render_frame_host();
+  if (rfh && !rfh->IsActive()) {
+    return false;
+  }
+
   media::MediaContentType media_content_type = observer->GetMediaContentType();
 
   if (media_content_type == media::MediaContentType::kOneShot) {
@@ -1719,14 +1727,17 @@ void MediaSessionImpl::DidReceiveAction(
     }
   }
 
-  if (!routed_service_)
+  if (!routed_service_ || !routed_service_->GetRenderFrameHost() ||
+      !routed_service_->GetRenderFrameHost()->IsActive()) {
     return;
+  }
 
   routed_service_->GetClient()->DidReceiveAction(action, std::move(details));
 }
 
 bool MediaSessionImpl::IsServiceActiveForRenderFrameHost(RenderFrameHost* rfh) {
-  return services_.find(rfh->GetGlobalId()) != services_.end();
+  return rfh && rfh->IsActive() &&
+         services_.find(rfh->GetGlobalId()) != services_.end();
 }
 
 void MediaSessionImpl::UpdateRoutedService() {
@@ -1755,13 +1766,13 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   std::set<RenderFrameHost*> frames;
   for (const auto& player : normal_players_) {
     RenderFrameHost* frame = player.first.observer->render_frame_host();
-    if (frame) {
+    if (frame && frame->IsActive()) {
       frames.insert(frame);
     }
   }
   for (const auto& player : one_shot_players_) {
     RenderFrameHost* frame = player.observer->render_frame_host();
-    if (frame) {
+    if (frame && frame->IsActive()) {
       frames.insert(frame);
     }
   }
@@ -1771,8 +1782,18 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   size_t min_depth = std::numeric_limits<size_t>::max();
   std::map<RenderFrameHost*, size_t> map_rfh_to_depth;
 
+  std::set<url::Origin> highest_player_origins;
+  size_t min_player_depth = std::numeric_limits<size_t>::max();
+
   for (RenderFrameHost* frame : frames) {
     size_t depth = ComputeFrameDepth(frame, &map_rfh_to_depth);
+    if (depth < min_player_depth) {
+      highest_player_origins.clear();
+      min_player_depth = depth;
+    }
+    if (depth == min_player_depth) {
+      highest_player_origins.insert(frame->GetLastCommittedOrigin());
+    }
     if (depth >= min_depth) {
       continue;
     }
@@ -1784,7 +1805,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   }
 
   // If we cannot find a suitable frame, take the top-most frame with an active
-  // MediaSessionService.
+  // MediaSessionService (and same-origin with the highest-level active player
+  // if one exists).
   if (!best_frame) {
     // `FrameTree::Nodes()` iterates in breadth-first order, so this is
     // guaranteed to find the topmost (or tied topmost) frame with an active
@@ -1793,6 +1815,10 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
                                    ->GetPrimaryFrameTree()
                                    .Nodes()) {
       RenderFrameHost* rfh = node->current_frame_host();
+      if (!highest_player_origins.empty() &&
+          !highest_player_origins.contains(rfh->GetLastCommittedOrigin())) {
+        continue;
+      }
       if (IsServiceActiveForRenderFrameHost(rfh)) {
         best_frame = rfh;
         break;

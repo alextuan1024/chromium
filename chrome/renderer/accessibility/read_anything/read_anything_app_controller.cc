@@ -35,7 +35,9 @@
 #include "chrome/renderer/accessibility/phrase_segmentation/dependency_parser_model.h"
 #include "chrome/renderer/accessibility/read_anything/read_aloud_traversal_utils.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_app_model.h"
+#include "chrome/renderer/accessibility/read_anything/read_anything_distiller.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_node_utils.h"
+#include "chrome/renderer/accessibility/read_anything/screen2x_distiller.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/translate/core/common/translate_constants.h"
 #include "content/public/renderer/chrome_object_extensions_utils.h"
@@ -93,285 +95,6 @@ const double kPostInputDistillSeconds = 1.5;
 
 // The amount of time after a distillation for a PDF to wait before drawing.
 const int kPdfDrawDebounceMs = 500;
-
-// The following methods convert v8::Value types to an AXTreeUpdate. This is not
-// a complete conversion (thus way gin::Converter<ui::AXTreeUpdate> is not used
-// or implemented) but just converting the bare minimum data types needed for
-// the ReadAnythingAppTest.
-
-void SetAXNodeDataChildIds(v8::Isolate* isolate,
-                           gin::Dictionary* v8_dict,
-                           ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_child_ids;
-  v8_dict->Get("childIds", &v8_child_ids);
-  std::vector<int32_t> child_ids;
-  if (!gin::ConvertFromV8(isolate, v8_child_ids, &child_ids)) {
-    return;
-  }
-  ax_node_data->child_ids = std::move(child_ids);
-}
-
-void SetAXNodeDataId(v8::Isolate* isolate,
-                     gin::Dictionary* v8_dict,
-                     ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_id;
-  v8_dict->Get("id", &v8_id);
-  ui::AXNodeID id;
-  if (!gin::ConvertFromV8(isolate, v8_id, &id)) {
-    return;
-  }
-  ax_node_data->id = id;
-}
-
-void SetAXNodeDataLanguage(v8::Isolate* isolate,
-                           gin::Dictionary* v8_dict,
-                           ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_language;
-  v8_dict->Get("language", &v8_language);
-  std::string language;
-  if (!gin::ConvertFromV8(isolate, v8_language, &language)) {
-    return;
-  }
-  ax_node_data->AddStringAttribute(ax::mojom::StringAttribute::kLanguage,
-                                   language);
-}
-
-void SetAXNodeDataName(v8::Isolate* isolate,
-                       gin::Dictionary* v8_dict,
-                       ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_name;
-  v8_dict->Get("name", &v8_name);
-  std::string name;
-  if (!gin::ConvertFromV8(isolate, v8_name, &name)) {
-    return;
-  }
-  ax_node_data->SetName(name);
-  ax_node_data->SetNameFrom(ax::mojom::NameFrom::kContents);
-}
-
-void SetAXNodeDataRole(v8::Isolate* isolate,
-                       gin::Dictionary* v8_dict,
-                       ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_role;
-  v8_dict->Get("role", &v8_role);
-  std::string role_name;
-  if (!gin::ConvertFromV8(isolate, v8_role, &role_name)) {
-    return;
-  }
-  if (role_name == "rootWebArea") {
-    ax_node_data->role = ax::mojom::Role::kRootWebArea;
-  } else if (role_name == "heading") {
-    ax_node_data->role = ax::mojom::Role::kHeading;
-  } else if (role_name == "link") {
-    ax_node_data->role = ax::mojom::Role::kLink;
-  } else if (role_name == "paragraph") {
-    ax_node_data->role = ax::mojom::Role::kParagraph;
-  } else if (role_name == "staticText") {
-    ax_node_data->role = ax::mojom::Role::kStaticText;
-  } else if (role_name == "button") {
-    ax_node_data->role = ax::mojom::Role::kButton;
-  }
-}
-
-void SetAXNodeDataHtmlTag(v8::Isolate* isolate,
-                          gin::Dictionary* v8_dict,
-                          ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_html_tag;
-  v8_dict->Get("htmlTag", &v8_html_tag);
-  std::string html_tag;
-  if (!gin::Converter<std::string>::FromV8(isolate, v8_html_tag, &html_tag)) {
-    return;
-  }
-  ax_node_data->AddStringAttribute(ax::mojom::StringAttribute::kHtmlTag,
-                                   html_tag);
-}
-
-void SetAXNodeDataDisplay(v8::Isolate* isolate,
-                          gin::Dictionary* v8_dict,
-                          ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_display;
-  v8_dict->Get("display", &v8_display);
-  std::string display;
-  if (!gin::Converter<std::string>::FromV8(isolate, v8_display, &display)) {
-    return;
-  }
-  ax_node_data->AddStringAttribute(ax::mojom::StringAttribute::kDisplay,
-                                   display);
-}
-
-void SetAXNodeDataTextDirection(v8::Isolate* isolate,
-                                gin::Dictionary* v8_dict,
-                                ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_direction;
-  v8_dict->Get("direction", &v8_direction);
-  int direction;
-  if (!gin::ConvertFromV8(isolate, v8_direction, &direction)) {
-    return;
-  }
-  ax_node_data->AddIntAttribute(ax::mojom::IntAttribute::kTextDirection,
-                                direction);
-}
-
-void SetAXNodeDataTextStyle(v8::Isolate* isolate,
-                            gin::Dictionary* v8_dict,
-                            ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_text_style;
-  v8_dict->Get("textStyle", &v8_text_style);
-  std::string text_style;
-  if (!gin::ConvertFromV8(isolate, v8_text_style, &text_style)) {
-    return;
-  }
-  if (text_style.find("underline") != std::string::npos) {
-    ax_node_data->AddTextStyle(ax::mojom::TextStyle::kUnderline);
-  }
-  if (text_style.find("overline") != std::string::npos) {
-    ax_node_data->AddTextStyle(ax::mojom::TextStyle::kOverline);
-  }
-  if (text_style.find("italic") != std::string::npos) {
-    ax_node_data->AddTextStyle(ax::mojom::TextStyle::kItalic);
-  }
-  if (text_style.find("bold") != std::string::npos) {
-    ax_node_data->AddTextStyle(ax::mojom::TextStyle::kBold);
-  }
-}
-
-void SetAXNodeDataUrl(v8::Isolate* isolate,
-                      gin::Dictionary* v8_dict,
-                      ui::AXNodeData* ax_node_data) {
-  v8::Local<v8::Value> v8_url;
-  v8_dict->Get("url", &v8_url);
-  std::string url;
-  if (!gin::ConvertFromV8(isolate, v8_url, &url)) {
-    return;
-  }
-  ax_node_data->AddStringAttribute(ax::mojom::StringAttribute::kUrl, url);
-}
-
-void SetSelectionAnchorObjectId(v8::Isolate* isolate,
-                                gin::Dictionary* v8_dict,
-                                ui::AXTreeData* ax_tree_data) {
-  v8::Local<v8::Value> v8_anchor_object_id;
-  v8_dict->Get("anchor_object_id", &v8_anchor_object_id);
-  ui::AXNodeID sel_anchor_object_id;
-  if (!gin::ConvertFromV8(isolate, v8_anchor_object_id,
-                          &sel_anchor_object_id)) {
-    return;
-  }
-  ax_tree_data->sel_anchor_object_id = sel_anchor_object_id;
-}
-
-void SetSelectionFocusObjectId(v8::Isolate* isolate,
-                               gin::Dictionary* v8_dict,
-                               ui::AXTreeData* ax_tree_data) {
-  v8::Local<v8::Value> v8_focus_object_id;
-  v8_dict->Get("focus_object_id", &v8_focus_object_id);
-  ui::AXNodeID sel_focus_object_id;
-  if (!gin::ConvertFromV8(isolate, v8_focus_object_id, &sel_focus_object_id)) {
-    return;
-  }
-  ax_tree_data->sel_focus_object_id = sel_focus_object_id;
-}
-
-void SetSelectionAnchorOffset(v8::Isolate* isolate,
-                              gin::Dictionary* v8_dict,
-                              ui::AXTreeData* ax_tree_data) {
-  v8::Local<v8::Value> v8_anchor_offset;
-  v8_dict->Get("anchor_offset", &v8_anchor_offset);
-  int32_t sel_anchor_offset;
-  if (!gin::ConvertFromV8(isolate, v8_anchor_offset, &sel_anchor_offset)) {
-    return;
-  }
-  ax_tree_data->sel_anchor_offset = sel_anchor_offset;
-}
-
-void SetSelectionFocusOffset(v8::Isolate* isolate,
-                             gin::Dictionary* v8_dict,
-                             ui::AXTreeData* ax_tree_data) {
-  v8::Local<v8::Value> v8_focus_offset;
-  v8_dict->Get("focus_offset", &v8_focus_offset);
-  int32_t sel_focus_offset;
-  if (!gin::ConvertFromV8(isolate, v8_focus_offset, &sel_focus_offset)) {
-    return;
-  }
-  ax_tree_data->sel_focus_offset = sel_focus_offset;
-}
-
-void SetSelectionIsBackward(v8::Isolate* isolate,
-                            gin::Dictionary* v8_dict,
-                            ui::AXTreeData* ax_tree_data) {
-  v8::Local<v8::Value> v8_sel_is_backward;
-  v8_dict->Get("is_backward", &v8_sel_is_backward);
-  bool sel_is_backward;
-  if (!gin::ConvertFromV8(isolate, v8_sel_is_backward, &sel_is_backward)) {
-    return;
-  }
-  ax_tree_data->sel_is_backward = sel_is_backward;
-}
-
-void SetAXTreeUpdateRootId(v8::Isolate* isolate,
-                           gin::Dictionary* v8_dict,
-                           ui::AXTreeUpdate* snapshot) {
-  v8::Local<v8::Value> v8_root_id;
-  v8_dict->Get("rootId", &v8_root_id);
-  ui::AXNodeID root_id;
-  if (!gin::ConvertFromV8(isolate, v8_root_id, &root_id)) {
-    return;
-  }
-  snapshot->root_id = root_id;
-}
-
-ui::AXTreeUpdate GetSnapshotFromV8SnapshotLite(
-    v8::Isolate* isolate,
-    v8::Local<v8::Value> v8_snapshot_lite) {
-  ui::AXTreeUpdate snapshot;
-  ui::AXTreeData ax_tree_data;
-  ax_tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
-  snapshot.has_tree_data = true;
-  snapshot.tree_data = ax_tree_data;
-  gin::Dictionary v8_snapshot_dict(isolate);
-  if (!gin::ConvertFromV8(isolate, v8_snapshot_lite, &v8_snapshot_dict)) {
-    return snapshot;
-  }
-  SetAXTreeUpdateRootId(isolate, &v8_snapshot_dict, &snapshot);
-
-  v8::Local<v8::Value> v8_nodes;
-  v8_snapshot_dict.Get("nodes", &v8_nodes);
-  v8::LocalVector<v8::Value> v8_nodes_vector(isolate);
-  if (!gin::ConvertFromV8(isolate, v8_nodes, &v8_nodes_vector)) {
-    return snapshot;
-  }
-  for (v8::Local<v8::Value> v8_node : v8_nodes_vector) {
-    gin::Dictionary v8_node_dict(isolate);
-    if (!gin::ConvertFromV8(isolate, v8_node, &v8_node_dict)) {
-      continue;
-    }
-    ui::AXNodeData ax_node_data;
-    SetAXNodeDataId(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataRole(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataName(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataChildIds(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataHtmlTag(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataLanguage(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataTextDirection(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataTextStyle(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataUrl(isolate, &v8_node_dict, &ax_node_data);
-    SetAXNodeDataDisplay(isolate, &v8_node_dict, &ax_node_data);
-    snapshot.nodes.push_back(ax_node_data);
-  }
-
-  v8::Local<v8::Value> v8_selection;
-  v8_snapshot_dict.Get("selection", &v8_selection);
-  gin::Dictionary v8_selection_dict(isolate);
-  if (!gin::ConvertFromV8(isolate, v8_selection, &v8_selection_dict)) {
-    return snapshot;
-  }
-  SetSelectionAnchorObjectId(isolate, &v8_selection_dict, &snapshot.tree_data);
-  SetSelectionFocusObjectId(isolate, &v8_selection_dict, &snapshot.tree_data);
-  SetSelectionAnchorOffset(isolate, &v8_selection_dict, &snapshot.tree_data);
-  SetSelectionFocusOffset(isolate, &v8_selection_dict, &snapshot.tree_data);
-  SetSelectionIsBackward(isolate, &v8_selection_dict, &snapshot.tree_data);
-  return snapshot;
-}
 
 SkBitmap CorrectColorOfBitMap(SkBitmap& originalBitmap) {
   SkBitmap converted;
@@ -450,10 +173,19 @@ ReadAnythingAppController::ReadAnythingAppController(
       base::BindRepeating(&ReadAnythingAppController::OnPdfDebounceFinished,
                           weak_ptr_factory_.GetWeakPtr()));
   renderer_load_triggered_time_ms_ = base::TimeTicks::Now();
-  distiller_ = std::make_unique<AXTreeDistiller>(
-      render_frame,
-      base::BindRepeating(&ReadAnythingAppController::OnAXTreeDistilled,
-                          weak_ptr_factory_.GetWeakPtr()));
+  if (features::IsReadAnythingDistillerRefactorEnabled()) {
+    active_distiller_ = std::make_unique<Screen2xDistiller>(
+        render_frame,
+        base::BindRepeating(&ReadAnythingAppModel::is_screen_ai_service_ready,
+                            base::Unretained(&model_)),
+        base::BindRepeating(&ReadAnythingAppController::OnDistillationComplete,
+                            weak_ptr_factory_.GetWeakPtr()));
+  } else {
+    distiller_ = std::make_unique<AXTreeDistiller>(
+        render_frame,
+        base::BindRepeating(&ReadAnythingAppController::OnAXTreeDistilled,
+                            weak_ptr_factory_.GetWeakPtr()));
+  }
   // TODO(crbug.com/40915547): Use a global ukm recorder instance instead.
   mojo::Remote<ukm::mojom::UkmRecorderFactory> factory;
   content::RenderThread::Get()->BindHostReceiver(
@@ -953,10 +685,8 @@ void ReadAnythingAppController::DistillNewTree() {
           &ReadAnythingAppController::RecordScreen2xDistillationStatus,
           base::Unretained(this), /*just_hidden=*/false));
 
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
-                             kDistillationInProgress);
-  }
+  SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                           kDistillationInProgress);
 
   // When the UI first constructs, this function may be called before tree_id
   // has been added to the tree list in AccessibilityEventReceived. In that
@@ -1083,13 +813,6 @@ void ReadAnythingAppController::Distill() {
     waiting_for_tree_id_ = true;
     return;
   }
-  std::unique_ptr<
-      ui::AXTreeSource<const ui::AXNode*, ui::AXTreeData*, ui::AXNodeData>>
-      tree_source(tree->CreateTreeSource());
-  ui::AXTreeSerializer<const ui::AXNode*, std::vector<const ui::AXNode*>,
-                       ui::AXTreeUpdate*, ui::AXTreeData*, ui::AXNodeData>
-      serializer(tree_source.get());
-  ui::AXTreeUpdate snapshot;
   if (!tree->root()) {
     return;
   }
@@ -1101,15 +824,29 @@ void ReadAnythingAppController::Distill() {
                         ? read_aloud_model_.default_language_code()
                         : tree_lang);
   }
-  CHECK(serializer.SerializeChanges(tree->root(), &snapshot));
+
   distillation_attempts_++;
   model_.set_screen2x_distiller_running(true);
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
-                             kDistillationInProgress);
-  }
+  SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                           kDistillationInProgress);
   VLOG(1) << "Distilling tree with ID: " << tree->GetAXTreeID();
-  distiller_->Distill(*tree, snapshot, model_.GetUkmSourceId());
+
+  if (features::IsReadAnythingDistillerRefactorEnabled()) {
+    DistillationRequest request;
+    request.tree = tree;
+    request.ukm_source_id = model_.GetUkmSourceId();
+    active_distiller_->Distill(request);
+  } else {
+    std::unique_ptr<
+        ui::AXTreeSource<const ui::AXNode*, ui::AXTreeData*, ui::AXNodeData>>
+        tree_source(tree->CreateTreeSource());
+    ui::AXTreeSerializer<const ui::AXNode*, std::vector<const ui::AXNode*>,
+                         ui::AXTreeUpdate*, ui::AXTreeData*, ui::AXNodeData>
+        serializer(tree_source.get());
+    ui::AXTreeUpdate snapshot;
+    CHECK(serializer.SerializeChanges(tree->root(), &snapshot));
+    distiller_->Distill(*tree, snapshot, model_.GetUkmSourceId());
+  }
 
   if (!has_logged_distillation_status_ &&
       !distillation_status_logging_delay_timer_.IsRunning()) {
@@ -1118,6 +855,19 @@ void ReadAnythingAppController::Distill() {
         base::BindOnce(
             &ReadAnythingAppController::RecordScreen2xDistillationStatus,
             base::Unretained(this), /*just_hidden=*/false));
+  }
+}
+
+void ReadAnythingAppController::OnDistillationComplete(
+    const DistillationResult& result) {
+  CHECK(features::IsReadAnythingDistillerRefactorEnabled());
+  switch (result.type) {
+    case DistillationResult::Type::kAXNodeIds:
+      OnAXTreeDistilled(result.tree_id, result.node_ids);
+      break;
+    case DistillationResult::Type::kHTML:
+      // TODO(b/543987370): Implement readability distiller.
+      break;
   }
 }
 
@@ -1149,11 +899,6 @@ void ReadAnythingAppController::OnAXTreeDistilled(
     VLOG(1) << "Distillation terminated because update processing is paused";
     return;
   }
-  // Reset state, including the current side panel selection so we can update
-  // it based on the new main panel selection in PostProcessSelection below.
-  model_.Reset(content_node_ids);
-  read_aloud_model_.ResetReadAloudState();
-
   // Return early if any of the following scenarios occurred while waiting for
   // distillation to complete:
   // 1. tree_id != model_.active_tree_id(): The active tree was changed.
@@ -1182,6 +927,11 @@ void ReadAnythingAppController::OnAXTreeDistilled(
     }
     return;
   }
+
+  // Reset state, including the current side panel selection so we can update
+  // it based on the new main panel selection in PostProcessSelection below.
+  model_.Reset(content_node_ids);
+  read_aloud_model_.ResetReadAloudState();
 
   if (!model_.content_node_ids().empty()) {
     // If there are content_node_ids, this means the AXTree was successfully
@@ -1231,18 +981,13 @@ void ReadAnythingAppController::OnAXTreeDistilled(
     // wait for the page to finish loading.
     if (!pdf_draw_debouncer_->IsRunning() &&
         (!IsGoogleDocs() || model_.page_finished_loading())) {
-      if (features::IsImmersiveReadAnythingEnabled()) {
-        SetDistillationState(
-            read_anything::mojom::ReadAnythingDistillationState::
-                kDistillationEmpty);
-      }
+      SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                               kDistillationEmpty);
       DrawEmptyState();
     }
   } else if (!model_.is_pdf() || !pdf_draw_debouncer_->IsRunning()) {
-    if (features::IsImmersiveReadAnythingEnabled()) {
-      SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
-                               kDistillationWithContent);
-    }
+    SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                             kDistillationWithContent);
   }
 
   // AXNode's language code is BCP 47. Only the base language is needed to
@@ -1273,14 +1018,11 @@ void ReadAnythingAppController::OnPdfDebounceFinished() {
     Draw(/*recompute_display_nodes=*/false);
   }
 
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    SetDistillationState(
-        model_.is_empty()
-            ? read_anything::mojom::ReadAnythingDistillationState::
-                  kDistillationEmpty
-            : read_anything::mojom::ReadAnythingDistillationState::
-                  kDistillationWithContent);
-  }
+  SetDistillationState(
+      model_.is_empty() ? read_anything::mojom::ReadAnythingDistillationState::
+                              kDistillationEmpty
+                        : read_anything::mojom::ReadAnythingDistillationState::
+                              kDistillationWithContent);
 }
 
 bool ReadAnythingAppController::PostProcessSelection() {
@@ -1430,7 +1172,10 @@ void ReadAnythingAppController::OnSettingsRestoredFromPrefs(
 }
 
 void ReadAnythingAppController::ScreenAIServiceReady() {
-  distiller_->ScreenAIServiceReady();
+  model_.set_is_screen_ai_service_ready(true);
+  if (!features::IsReadAnythingDistillerRefactorEnabled() && distiller_) {
+    distiller_->ScreenAIServiceReady();
+  }
 }
 
 void ReadAnythingAppController::TogglePinState() {
@@ -1541,8 +1286,6 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
       .SetProperty("speechRate", &ReadAnythingAppController::SpeechRate)
       .SetProperty("isGoogleDocs", &ReadAnythingAppController::IsGoogleDocs)
       .SetProperty("isPdf", &ReadAnythingAppController::IsPdf)
-      .SetProperty("isImmersiveEnabled",
-                   &ReadAnythingAppController::IsImmersiveEnabled)
       .SetProperty("isImprovedReadAloudEnabled",
                    &ReadAnythingAppController::IsImprovedReadAloudEnabled)
       .SetProperty("isReadAnythingImprovedUiEnabled",
@@ -1604,6 +1347,8 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
       .SetMethod("onFontSizeChanged",
                  &ReadAnythingAppController::OnFontSizeChanged)
       .SetMethod("onFontSizeReset", &ReadAnythingAppController::OnFontSizeReset)
+      .SetMethod("onImagesEnabledToggled",
+                 &ReadAnythingAppController::OnImagesEnabledToggled)
       .SetMethod("onLinksEnabledToggled",
                  &ReadAnythingAppController::OnLinksEnabledToggled)
       .SetMethod("onTranslationRequested",
@@ -1642,12 +1387,6 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
       .SetProperty("supportedFonts",
                    &ReadAnythingAppController::GetSupportedFonts)
       .SetProperty("allFonts", &ReadAnythingAppController::GetAllFonts)
-      .SetMethod("setContentForTesting",
-                 &ReadAnythingAppController::SetContentForTesting)
-      .SetMethod("setAnchorsForTesting",
-                 &ReadAnythingAppController::SetAnchorsForTesting)
-      .SetMethod("setLanguageForTesting",
-                 &ReadAnythingAppController::SetLanguageForTesting)
       .SetMethod("initAxPositionWithNode",
                  &ReadAnythingAppController::InitAXPositionWithNode)
       .SetMethod("resetGranularityIndex",
@@ -2140,12 +1879,8 @@ std::string ReadAnythingAppController::GetHtmlId(
   return ax_node->GetStringAttribute(ax::mojom::StringAttribute::kHtmlId);
 }
 
-// TODO(crbug.com/463728166): Remove IsImmersiveReadAnythingEnabled flag when no
-// longer flag-guarded code.
 void ReadAnythingAppController::SendGetPresentationStateRequest() const {
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    page_handler_->GetPresentationState();
-  }
+  page_handler_->GetPresentationState();
 }
 
 void ReadAnythingAppController::OnGetPresentationState(
@@ -2272,10 +2007,6 @@ bool ReadAnythingAppController::IsLeafNode(ui::AXNodeID ax_node_id) const {
     return false;
   }
   return ax_node->IsLeaf();
-}
-
-bool ReadAnythingAppController::IsImmersiveEnabled() const {
-  return features::IsImmersiveReadAnythingEnabled();
 }
 
 bool ReadAnythingAppController::IsImprovedReadAloudEnabled() const {
@@ -2916,26 +2647,14 @@ void ReadAnythingAppController::OnTabWillDetach() {
 }
 
 void ReadAnythingAppController::ReadingModeWillClose() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
-
   ExecuteJavaScript("chrome.readingMode.readingModeWillClose();");
 }
 
 void ReadAnythingAppController::CloseUI() {
-  // This CloseUI() method is only used for the immersive UI, so skip if flag is
-  // not enabled
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   page_handler_->CloseUI();
 }
 
 void ReadAnythingAppController::TogglePresentation() {
-  if (!features::IsImmersiveReadAnythingEnabled()) {
-    return;
-  }
   page_handler_->TogglePresentation();
 }
 
@@ -2954,42 +2673,6 @@ void ReadAnythingAppController::SetDefaultLanguageCode(
   }
 }
 
-void ReadAnythingAppController::SetContentForTesting(
-    v8::Local<v8::Value> v8_snapshot_lite,
-    std::vector<ui::AXNodeID> content_node_ids) {
-  v8::Isolate* isolate =
-      render_frame()->GetWebFrame()->GetAgentGroupScheduler()->Isolate();
-  ui::AXTreeUpdate snapshot =
-      GetSnapshotFromV8SnapshotLite(isolate, v8_snapshot_lite);
-  ui::AXEvent selection_event;
-  selection_event.event_type = ax::mojom::Event::kDocumentSelectionChanged;
-  selection_event.event_from = ax::mojom::EventFrom::kUser;
-  AccessibilityEventReceived(snapshot.tree_data.tree_id, {snapshot}, {});
-  OnActiveAXTreeIDChanged(snapshot.tree_data.tree_id, ukm::kInvalidSourceId,
-                          false);
-
-  // Set the distillation method to Screen2x before calling OnAXTreeDistilled.
-  // This satisfies the DCHECK in Draw().
-  model_.set_next_distillation_method(
-      ReadAnythingAppModel::DistillationMethod::kScreen2x);
-  model_.set_current_content_distillation_method(
-      ReadAnythingAppModel::DistillationMethod::kScreen2x);
-
-  OnAXTreeDistilled(snapshot.tree_data.tree_id, content_node_ids);
-
-  // Trigger a selection event (for testing selections).
-  AccessibilityEventReceived(snapshot.tree_data.tree_id, {snapshot},
-                             {selection_event});
-}
-
-void ReadAnythingAppController::SetAnchorsForTesting(
-    v8::Local<v8::Value> v8_snapshot_lite,
-    std::vector<ui::AXNodeID> content_node_ids) {
-  SetContentForTesting(v8_snapshot_lite, content_node_ids);
-  model_.set_should_extract_anchors_from_tree_for_readability(true);
-  model_.ProcessAXTreeAnchors();
-}
-
 void ReadAnythingAppController::ShouldShowUI() {
   page_handler_factory_->ShouldShowUI();
 }
@@ -3000,7 +2683,7 @@ void ReadAnythingAppController::OnIsSpeechActiveChanged(bool is_speech_active) {
   if (read_aloud_model_.speech_playing() == is_speech_active) {
     return;
   }
-  if (is_speech_active && IsImmersiveEnabled()) {
+  if (is_speech_active) {
     read_aloud_model_.LogPlaybackContext(
         model_.active_presentation_state() ==
                 read_anything::mojom::ReadAnythingPresentationState::
@@ -3556,5 +3239,5 @@ void ReadAnythingAppController::AttemptLogEarlySelection(bool from_side_panel) {
 }
 
 bool ReadAnythingAppController::IsHidden() const {
-  return IsImmersiveEnabled() && !model_.is_active_presentation_state_opened();
+  return !model_.is_active_presentation_state_opened();
 }

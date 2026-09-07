@@ -16,7 +16,6 @@
 #include "base/containers/to_vector.h"
 #include "base/containers/transparent_hash.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "crypto/signature_verifier.h"
 #include "crypto/unexportable_key.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
@@ -39,14 +38,12 @@ class MockTrackingUnexportableKeyProvider
   }
 
   // UnexportableKeyProvider:
-  std::optional<SignatureVerifier::SignatureAlgorithm> SelectAlgorithm(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+  std::optional<sign::SignatureKind> SelectAlgorithm(
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     return key_provider_->SelectAlgorithm(acceptable_algorithms);
   }
   std::unique_ptr<UnexportableSigningKey> GenerateSigningKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     std::unique_ptr<UnexportableSigningKey> key =
         key_provider_->GenerateSigningKeySlowly(acceptable_algorithms);
     if (key) {
@@ -62,8 +59,7 @@ class MockTrackingUnexportableKeyProvider
   }
 
   std::unique_ptr<UnexportableAttestationKey> GenerateAttestationKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     std::unique_ptr<UnexportableAttestationKey> key =
         key_provider_->GenerateAttestationKeySlowly(acceptable_algorithms);
     if (key) {
@@ -157,6 +153,8 @@ TEST_F(UnexportableKeyMetricTest, GatherAllMetrics) {
   histogram_tester.ExpectTotalCount("Crypto.TPMDuration.MessageSigningECDSA",
                                     0);
   histogram_tester.ExpectTotalCount(
+      "Crypto.TPMDuration.RestrictedMessageSigningECDSA", 0);
+  histogram_tester.ExpectTotalCount(
       "Crypto.TPMDuration.NewAttestationKeyCreationECDSA", 0);
   histogram_tester.ExpectTotalCount(
       "Crypto.TPMDuration.WrappedAttestationKeyCreationECDSA", 0);
@@ -169,6 +167,10 @@ TEST_F(UnexportableKeyMetricTest, GatherAllMetrics) {
                                     0);
   histogram_tester.ExpectTotalCount("Crypto.TPMOperation.KeyCertification", 0);
   histogram_tester.ExpectTotalCount("Crypto.TPMOperation.MessageSigning", 0);
+  histogram_tester.ExpectTotalCount(
+      "Crypto.TPMOperation.RestrictedMessageSigning", 0);
+  histogram_tester.ExpectTotalCount(
+      "Crypto.TPMOperation.RestrictedMessageVerify", 0);
   histogram_tester.ExpectTotalCount("Crypto.TPMOperation.MessageVerify", 0);
 
   internal::MeasureTpmOperationsInternalForTesting();
@@ -183,6 +185,8 @@ TEST_F(UnexportableKeyMetricTest, GatherAllMetrics) {
                                     1);
   histogram_tester.ExpectTotalCount("Crypto.TPMDuration.MessageSigningECDSA",
                                     1);
+  histogram_tester.ExpectTotalCount(
+      "Crypto.TPMDuration.RestrictedMessageSigningECDSA", 1);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Crypto.TPMOperation.NewKeyCreationECDSA"),
       BucketsAre(base::Bucket(true, 1)));
@@ -195,6 +199,12 @@ TEST_F(UnexportableKeyMetricTest, GatherAllMetrics) {
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Crypto.TPMOperation.MessageSigningECDSA"),
       BucketsAre(base::Bucket(true, 1)));
+  EXPECT_THAT(histogram_tester.GetAllSamples(
+                  "Crypto.TPMOperation.RestrictedMessageSigningECDSA"),
+              BucketsAre(base::Bucket(true, 1)));
+  EXPECT_THAT(histogram_tester.GetAllSamples(
+                  "Crypto.TPMOperation.RestrictedMessageVerifyECDSA"),
+              BucketsAre(base::Bucket(true, 1)));
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Crypto.TPMOperation.MessageVerifyECDSA"),
       BucketsAre(base::Bucket(true, 1)));

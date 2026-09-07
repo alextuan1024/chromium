@@ -227,7 +227,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
-#include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
+#include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/page_dismissal_scope.h"
 #include "third_party/blink/renderer/core/frame/performance_monitor.h"
@@ -2365,7 +2365,7 @@ String Document::nodeName() const {
   return "#document";
 }
 
-FormController& Document::GetFormController() {
+FormController& Document::EnsureFormController() {
   if (!form_controller_) {
     form_controller_ = MakeGarbageCollected<FormController>(*this);
     HistoryItem* history_item = Loader() ? Loader()->GetHistoryItem() : nullptr;
@@ -2384,7 +2384,7 @@ DocumentState* Document::GetDocumentState() const {
 void Document::SetStateForNewControls(const Vector<String>& state_vector) {
   if (!state_vector.size() && !form_controller_)
     return;
-  GetFormController().SetStateForNewControls(state_vector);
+  EnsureFormController().SetStateForNewControls(state_vector);
 }
 
 LocalFrameView* Document::View() const {
@@ -2720,8 +2720,8 @@ void Document::UpdateStyleAndLayoutTreeForThisDocument() {
     }
   }
 
-  SCOPED_UMA_AND_UKM_TIMER(View()->GetUkmAggregator(),
-                           LocalFrameUkmAggregator::kStyle);
+  SCOPED_UMA_AND_UKM_TIMER(View()->GetMetricsAggregator(),
+                           LocalFrameMetricsAggregator::kStyle);
   FontPerformance::StyleScope font_performance_scope;
   ENTER_EMBEDDER_STATE(GetAgent().isolate(), GetFrame(), BlinkState::STYLE);
 
@@ -3131,8 +3131,12 @@ void Document::UpdateStyleAndLayout(DocumentUpdateReason reason) {
   TRACE_EVENT("blink", "Document::UpdateStyleAndLayout");
   LocalFrameView* frame_view = View();
 
+  bool is_potentially_clean =
+      (Lifecycle().GetState() >= DocumentLifecycle::kLayoutClean) &&
+      !NeedsLayoutTreeUpdate() && (!frame_view || !frame_view->NeedsLayout());
+
   if (reason != DocumentUpdateReason::kBeginMainFrame && frame_view)
-    frame_view->WillStartForcedLayout(reason);
+    frame_view->WillStartForcedLayout(reason, is_potentially_clean);
 
   HTMLFrameOwnerElement::PluginDisposeSuspendScope suspend_plugin_dispose;
   ScriptForbiddenScope forbid_script;
@@ -4571,8 +4575,13 @@ bool Document::DispatchBeforeUnloadEvent(
     dom_window_->DispatchEvent(before_unload_event, this);
   }
 
-  if (!before_unload_event.defaultPrevented())
-    DefaultEventHandler(before_unload_event);
+  if (!before_unload_event.defaultPrevented()) {
+    if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+      DefaultBeforeUnloadEventHandler(before_unload_event);
+    } else {
+      DefaultEventHandler(before_unload_event);
+    }
+  }
 
   bool cancelled_by_script = !before_unload_event.returnValue().empty() ||
                              before_unload_event.defaultPrevented();
@@ -4638,7 +4647,11 @@ bool Document::DispatchBeforeUnloadEvent(
   return false;
 }
 
-void Document::DispatchUnloadEvents(UnloadEventTimingInfo* unload_timing_info) {
+void Document::DefaultBeforeUnloadEventHandler(BeforeUnloadEvent&) {}
+
+void Document::DispatchUnloadEvents(
+    UnloadEventTimingInfo* unload_timing_info,
+    bool will_commit_new_document_in_this_frame) {
   TRACE_EVENT("blink", "Document::DispatchUnloadEvents",
               perfetto::Flow::FromPointer(this));
   base::ScopedUmaHistogramTimer histogram_timer(
@@ -4660,6 +4673,13 @@ void Document::DispatchUnloadEvents(UnloadEventTimingInfo* unload_timing_info) {
   Element* current_focused_element = FocusedElement();
   if (auto* input = DynamicTo<HTMLInputElement>(current_focused_element))
     input->EndEditing();
+
+  if (!will_commit_new_document_in_this_frame && GetFrame() &&
+      !GetFrame()->IsMainFrame() &&
+      RuntimeEnabledFeatures::OmitSubframeDetachmentEventsOnRemovalEnabled()) {
+    load_event_progress_ = kUnloadEventHandled;
+    return;
+  }
 
   // Since we do not allow registering the unload event handlers in
   // fenced frames, it should not be fired by fencedframes.
@@ -5592,8 +5612,8 @@ bool Document::CanAcceptChild(const Node* new_child,
   if (num_elements > 1 || num_doctypes > 1) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kHierarchyRequestError,
-        UNSAFE_TODO(String::Format("Only one %s on document allowed.",
-                                   num_elements > 1 ? "element" : "doctype")));
+        StrCat({"Only one ", num_elements > 1 ? "element" : "doctype",
+                " on document allowed."}));
     return false;
   }
 
@@ -5816,9 +5836,11 @@ void Document::RemoveFocusedElementOfSubtree(Node& node,
       // up with the new node's position in the DOM.
       SetShouldUpdateSelectionAfterLayout(true);
     } else {
-      bool omit_blur_events =
-          RuntimeEnabledFeatures::OmitBlurEventOnElementRemovalEnabled();
-      ClearFocusedElement(omit_blur_events);
+      BlurEventBehavior blur_event_behavior =
+          RuntimeEnabledFeatures::OmitBlurEventOnElementRemovalEnabled()
+              ? BlurEventBehavior::kDropWhenRemoving
+              : BlurEventBehavior::kFire;
+      ClearFocusedElement(blur_event_behavior);
     }
   }
 }
@@ -5929,7 +5951,8 @@ bool Document::SetFocusedElement(Element* new_focused_element,
 
   // Remove focus from the existing focus node (if any)
   if (old_focused_element) {
-    old_focused_element->SetFocused(false, params.type);
+    old_focused_element->SetFocused(false, params.type,
+                                    params.blur_event_behavior);
     old_focused_element->SetHasFocusWithinUpToAncestor(
         false, ancestor, /*need_snap_container_search=*/true);
 
@@ -5938,7 +5961,7 @@ bool Document::SetFocusedElement(Element* new_focused_element,
     // Dispatch the blur event and let the node do any other blur related
     // activities (important for text fields)
     // If page lost focus, blur event will have already been dispatched
-    if (!params.omit_blur_events && GetPage() &&
+    if (params.blur_event_behavior == BlurEventBehavior::kFire && GetPage() &&
         (GetPage()->GetFocusController().IsFocused())) {
       old_focused_element->DispatchBlurEvent(new_focused_element, params.type,
                                              params.source_capabilities);
@@ -6119,10 +6142,10 @@ bool Document::SetFocusedElement(Element* new_focused_element,
   return !focus_change_blocked;
 }
 
-void Document::ClearFocusedElement(bool omit_blur_events) {
+void Document::ClearFocusedElement(BlurEventBehavior blur_event_behavior) {
   FocusParams params(SelectionBehaviorOnFocus::kNone,
                      mojom::blink::FocusType::kNone, nullptr);
-  params.omit_blur_events = omit_blur_events;
+  params.blur_event_behavior = blur_event_behavior;
   SetFocusedElement(nullptr, params);
 }
 
@@ -8499,7 +8522,7 @@ ukm::SourceId Document::UkmSourceID() const {
 bool Document::AllowInlineEventHandler(Node* node,
                                        EventListener* listener,
                                        const String& context_url,
-                                       const OrdinalNumber& context_line) {
+                                       const TextPosition& context_position) {
   auto* element = DynamicTo<Element>(node);
   // HTML says that inline script needs browsing context to create its execution
   // environment.
@@ -8518,15 +8541,17 @@ bool Document::AllowInlineEventHandler(Node* node,
   if (!window->GetContentSecurityPolicyForCurrentWorld()->AllowInline(
           ContentSecurityPolicy::InlineType::kScriptAttribute, element,
           listener->ScriptBody(), String() /* nonce */, context_url,
-          context_line))
+          context_position)) {
     return false;
+  }
 
   if (!window->CanExecuteScripts(kNotAboutToExecuteScript))
     return false;
   if (node && node->GetDocument() != this &&
       !node->GetDocument().AllowInlineEventHandler(node, listener, context_url,
-                                                   context_line))
+                                                   context_position)) {
     return false;
+  }
 
   return true;
 }

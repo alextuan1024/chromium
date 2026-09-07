@@ -46,7 +46,6 @@
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/grit/browser_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/biod/constants.pb.h"
@@ -113,11 +112,17 @@ ScreenLocker::ScreenLocker(
     const ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock,
     const user_manager::UserList& users)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       shared_url_loader_factory_(std::move(shared_url_loader_factory)),
       browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      multi_user_sign_in_policy_controller_(
+          CHECK_DEREF(multi_user_sign_in_policy_controller)),
+      system_clock_(CHECK_DEREF(system_clock)),
       users_(users),
       challenge_response_auth_keys_loader_(&local_state_.get()) {
   CHECK(shared_url_loader_factory_);
@@ -140,11 +145,6 @@ ScreenLocker::ScreenLocker(
   }
 }
 
-// static
-ScreenLocker* ScreenLocker::default_screen_locker() {
-  return ScreenLockerController::Get().screen_locker();
-}
-
 void ScreenLocker::Init() {
   VLOG(1) << "ScreenLocker::Init()";
   input_method::InputMethodManager* imm =
@@ -163,7 +163,8 @@ void ScreenLocker::Init() {
   // mojo.
   views_screen_locker_ = std::make_unique<ViewsScreenLocker>(
       &local_state_.get(), &application_locale_storage_.get(),
-      shared_url_loader_factory_, &browser_policy_connector_ash_.get());
+      shared_url_loader_factory_, &browser_policy_connector_ash_.get(),
+      &multi_user_sign_in_policy_controller_.get(), &system_clock_.get());
 
   // Create and display lock screen.
   CHECK(LoginScreenClientImpl::HasInstance());
@@ -514,7 +515,7 @@ void ScreenLocker::SetClocksForTesting(const base::Clock* clock,
   // Testing clocks should be already set at timer's initialization,
   // which happens in ScreenLocker's constructor.
   CHECK(base::CurrentUIThread::IsSet());
-  CHECK(!default_screen_locker());
+  CHECK(!ScreenLockerController::Get().screen_locker());
   g_clock_for_testing_ = clock;
   g_tick_clock_for_testing_ = tick_clock;
 }

@@ -9,13 +9,14 @@
 #include "base/check_deref.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/ash/app_restore/full_restore_app_launch_handler.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -97,7 +98,7 @@ IN_PROC_BROWSER_TEST_F(OverviewWindowPropertiesBrowserTest,
   // Open a new browser window that completely covers the first window.
   Profile* profile = ProfileManager::GetActiveUserProfile();
   ASSERT_TRUE(profile);
-  Browser* covering_browser = CreateBrowser(profile);
+  BrowserWindowInterface* covering_browser = CreateBrowser(profile);
   ASSERT_TRUE(covering_browser);
   ash::BrowserDelegate* covering_delegate = controller->GetLastUsedBrowser();
   ASSERT_TRUE(covering_delegate);

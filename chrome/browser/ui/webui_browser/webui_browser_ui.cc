@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/webui_browser/webui_browser_ui.h"
 
+#include <array>
+
+#include "base/containers/to_vector.h"
 #include "base/notimplemented.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
@@ -160,7 +163,7 @@ WebUIBrowserUI::WebUIBrowserUI(content::WebUI* web_ui)
     ui::TrackedElementHandlerDocumentSingleton::Register(
         this, GetKnownElementIdentifiers(),
         base::BindRepeating(
-            [](Browser* browser) {
+            [](BrowserWindowInterface* browser) {
               return BrowserElements::From(browser)->GetContext();
             },
             base::Unretained(browser_)));
@@ -230,8 +233,7 @@ void WebUIBrowserUI::BindInterface(
 
 void WebUIBrowserUI::BindInterface(
     mojo::PendingReceiver<tabs_api::mojom::TabStripService> receiver) {
-  auto* tab_strip_service_feature =
-      browser_->GetFeatures().tab_strip_service_feature();
+  auto* tab_strip_service_feature = TabStripServiceFeature::From(browser_);
   CHECK(tab_strip_service_feature) << "Browser missing TabStripService";
   tab_strip_service_feature->Accept(std::move(receiver));
 }
@@ -239,8 +241,7 @@ void WebUIBrowserUI::BindInterface(
 void WebUIBrowserUI::BindInterface(
     mojo::PendingReceiver<tabs_api::mojom::TabStripExperimentService>
         receiver) {
-  auto* tab_strip_service_feature =
-      browser_->GetFeatures().tab_strip_service_feature();
+  auto* tab_strip_service_feature = TabStripServiceFeature::From(browser_);
   CHECK(tab_strip_service_feature) << "Browser missing TabStripService";
   tab_strip_service_feature->AcceptExperimental(std::move(receiver));
 }
@@ -292,15 +293,16 @@ void WebUIBrowserUI::CreatePageHandler(
       ->Bind(std::move(page), std::move(receiver));
 }
 
-const std::vector<ui::ElementIdentifier>&
-WebUIBrowserUI::GetKnownElementIdentifiers() const {
-  static const std::vector<ui::ElementIdentifier> kKnownElementIdentifiers{
-      kContentsContainerViewElementId, kExtensionsMenuButtonElementId,
-      kToolbarActionViewElementId,     kLocationBarElementId,
-      kLocationIconElementId,          kToolbarAppMenuButtonElementId,
-      kToolbarAvatarButtonElementId,   kToolbarBackButtonElementId,
-      kToolbarForwardButtonElementId};
-  return kKnownElementIdentifiers;
+std::vector<ui::ElementIdentifier> WebUIBrowserUI::GetKnownElementIdentifiers()
+    const {
+  static constexpr auto kKnownElementIdentifiers =
+      std::to_array<ui::ElementIdentifier>(
+          {kContentsContainerViewElementId, kExtensionsMenuButtonElementId,
+           kToolbarActionViewElementId, kLocationBarElementId,
+           kLocationIconElementId, kToolbarAppMenuButtonElementId,
+           kToolbarAvatarButtonElementId, kToolbarBackButtonElementId,
+           kToolbarForwardButtonElementId});
+  return base::ToVector(kKnownElementIdentifiers);
 }
 
 void WebUIBrowserUI::BookmarkBarStateChanged(

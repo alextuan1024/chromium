@@ -321,7 +321,10 @@ void SyncEngineBackend::DoInitialize(
   args.cache_guid = restored_local_transport_data.cache_guid;
   args.birthday = restored_local_transport_data.birthday;
   args.bag_of_chips = restored_local_transport_data.bag_of_chips;
-  if (base::FeatureList::IsEnabled(kSyncUsePropagatedAccessToken)) {
+  // Local sync communicates with a loopback server on disk and does not need
+  // an access token.
+  if (base::FeatureList::IsEnabled(kSyncUsePropagatedAccessToken) &&
+      !params.enable_local_sync_backend) {
     args.sync_access_token_fetcher = this;
   }
   args.account_email = params.authenticated_account_info.email;
@@ -361,6 +364,15 @@ void SyncEngineBackend::DoInvalidateCredentials() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (sync_manager_) {
     sync_manager_->InvalidateCredentials();
+  }
+}
+
+void SyncEngineBackend::DoOnCredentialsChanged() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // DoOnCredentialsChanged can be called when backend initialization has failed
+  // or after shutdown has started, in which case `sync_manager_` may be null.
+  if (sync_manager_) {
+    sync_manager_->OnCredentialsChanged();
   }
 }
 

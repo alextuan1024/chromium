@@ -439,6 +439,7 @@ android_library("unit_device_javatests") {
     "java/src/org/chromium/components/browser_ui/widget/promo/PromoCardImpressionTest.java",
     "java/src/org/chromium/components/browser_ui/widget/promo/PromoCardViewRenderTest.java",
     "java/src/org/chromium/components/browser_ui/widget/scrim/ScrimTest.java",
+    "java/src/org/chromium/components/browser_ui/widget/search/SearchBoxViewRenderTest.java",
   ]
   deps = [
     ":java",
@@ -533,6 +534,7 @@ robolectric_library("junit") {
     "java/src/org/chromium/components/browser_ui/widget/RoundedCornerOutlineProviderUnitTest.java",
     "java/src/org/chromium/components/browser_ui/widget/StrictButtonPressControllerUnitTest.java",
     "java/src/org/chromium/components/browser_ui/widget/chips/ChipViewTest.java",
+    "java/src/org/chromium/components/browser_ui/widget/containment/ContainmentItemDecorationUnitTest.java",
     "java/src/org/chromium/components/browser_ui/widget/displaystyle/UiConfigTest.java",
     "java/src/org/chromium/components/browser_ui/widget/displaystyle/ViewResizerUtilTest.java",
     "java/src/org/chromium/components/browser_ui/widget/gesture/SwipeGestureListenerTest.java",

@@ -13,8 +13,8 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/constants/web_app_id_constants.h"
-#include "ash/glanceables/post_login_glanceables_metrics_recorder.h"
 #include "ash/public/cpp/session/session_controller.h"
 #include "ash/shell.h"
 #include "ash/wm/desks/templates/saved_desk_controller.h"
@@ -41,7 +41,6 @@
 #include "chrome/browser/sessions/app_session_service_factory.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "components/account_id/account_id.h"
 #include "components/app_constants/constants.h"
@@ -54,10 +53,12 @@
 #include "components/app_restore/restore_data.h"
 #include "components/app_restore/window_info.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/common/url_constants.h"
 
 // Enable VLOG level 1.
@@ -528,12 +529,6 @@ void FullRestoreService::MaybeShowRestoreDialog(
     crashed_lock_ = exit_type_service->CreateCrashedLock();
   }
 
-  if (Shell::HasInstance()) {
-    Shell::Get()
-        ->post_login_glanceables_metrics_reporter()
-        ->RecordPostLoginFullRestoreShown();
-  }
-
   CHECK(delegate_);
 
   InitInformedRestoreContentsData(dialog_type);
@@ -773,7 +768,7 @@ void FullRestoreService::MaybeShowInformedRestoreOnboarding(bool restore_on) {
   }
 
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ::switches::kNoFirstRun)) {
+          ash::chrome_switches::kNoFirstRun)) {
     return;
   }
 

@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/paint/paint_property_tree_builder_test.h"
 
-#include "base/compiler_specific.h"
+#include <string_view>
+
 #include "cc/test/fake_layer_tree_host_delegate.h"
 #include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_host.h"
@@ -3774,7 +3775,7 @@ TEST_P(PaintPropertyTreeBuilderTest, ContainPaintOrStyleLayoutTreeState) {
     // properties effect.
     EXPECT_EQ(clip_properties->EffectIsolationNode()->Parent(),
               &clip_local_properties.Effect());
-    if (UNSAFE_TODO(strcmp(containment, "paint")) == 0) {
+    if (std::string_view(containment) == "paint") {
       // If we contain paint, then clip isolation node is parented to the
       // overflow clip, which is in turn parented to the local border box
       // properties clip.
@@ -5021,6 +5022,55 @@ TEST_P(PaintPropertyTreeBuilderTest, TransformOriginWithAndWithoutMotionPath) {
   EXPECT_EQ(will_change_properties->Offset(), nullptr);
   EXPECT_TRUE(will_change_properties->Transform()->IsIdentity());
   EXPECT_EQ(gfx::Point3F(), will_change_properties->Transform()->Origin());
+}
+
+TEST_P(PaintPropertyTreeBuilderTest, MotionPathCoordBoxFollowsCornerShape) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0 }
+      .container {
+        position: absolute;
+        width: 100px;
+        height: 100px;
+        border-radius: 50px;
+      }
+      #bevel { corner-shape: bevel; }
+      #square { corner-shape: square; }
+      .child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 10px;
+        height: 10px;
+        offset-path: border-box;
+        offset-distance: 12.5%;
+        offset-rotate: 0deg;
+      }
+    </style>
+    <div id='bevel' class='container'>
+      <div id='bevel-child' class='child'></div>
+    </div>
+    <div id='square' class='container'>
+      <div id='square-child' class='child'></div>
+    </div>
+  )HTML");
+
+  // The 50px border-radius combined with corner-shape: bevel turns the
+  // 100x100 border box into a diamond with vertices at the edge midpoints.
+  // The offset path starts at (50, 0), and 12.5% along the perimeter leads to
+  // (75, 25). Accounting for the child's transform-origin yields (70, 20).
+  const auto bevel_translation =
+      PaintPropertiesForElement("bevel-child")->Offset()->Get2dTranslation();
+  EXPECT_NEAR(70.f, bevel_translation.x(), 0.1f);
+  EXPECT_NEAR(20.f, bevel_translation.y(), 0.1f);
+
+  // corner-shape: square produces a plain 100x100 rect. The path starts at
+  // (0, 0), and 12.5% along the perimeter leads to (50, 0). Accounting for
+  // the child's transform-origin yields (45, -5).
+  const auto square_translation =
+      PaintPropertiesForElement("square-child")->Offset()->Get2dTranslation();
+  EXPECT_NEAR(45.f, square_translation.x(), 0.1f);
+  EXPECT_NEAR(-5.f, square_translation.y(), 0.1f);
 }
 
 TEST_P(PaintPropertyTreeBuilderTest, ChangePositionUpdateDescendantProperties) {
@@ -8012,6 +8062,45 @@ TEST_P(SingleAxisPaintPropertyTest, NestedStickyShiftingStickyBox) {
   EXPECT_EQ(gfx::Vector2dF(0, 0), grandchild_sticky->Get2dTranslation());
 }
 
+TEST_P(SingleAxisPaintPropertyTest, StickyBlockUnderStickyInline) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scroller {
+        width: 200px;
+        height: 200px;
+        overflow-x: clip;
+        overflow-y: scroll;
+      }
+      #contents { height: 500px; }
+      #before { height: 100px; }
+      #container { height: 300px; }
+      #outer { display: inline; position: sticky; top: 50px; }
+      #inner {
+        display: block;
+        position: sticky;
+        top: 60px;
+        width: 100px;
+        height: 50px;
+      }
+    </style>
+    <div id="scroller">
+      <div id="contents">
+        <div id="before"></div>
+        <div id="container">
+          <span id="outer"><span id="inner"></span></span>
+        </div>
+      </div>
+    </div>
+  )HTML");
+
+  const auto* outer_translation = StickyTranslation("outer");
+  ASSERT_TRUE(outer_translation);
+  const auto* inner_constraint = StickyConstraint("inner");
+  ASSERT_TRUE(inner_constraint);
+  EXPECT_EQ(outer_translation->GetCompositorElementId(),
+            inner_constraint->nearest_element_shifting_sticky_box);
+}
+
 TEST_P(SingleAxisPaintPropertyTest, NestedStickyShiftingContainingBlock) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -8157,8 +8246,7 @@ TEST_P(PaintPropertyTreeBuilderTest, ElementCanvasTransformPropertyTree) {
   )HTML");
 
   auto* target_element = GetDocument().getElementById(AtomicString("target"));
-  target_element->SetCanvasTransformInternal(
-      gfx::Transform::MakeTranslation(50, 60));
+  target_element->SetCanvasTransform(gfx::Transform::MakeTranslation(50, 60));
   UpdateAllLifecyclePhasesForTest();
 
   const auto* properties = PaintPropertiesForElement("target");

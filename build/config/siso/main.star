@@ -91,21 +91,13 @@ def init(ctx):
         "rules": [],
         # Allowlist for fail-on-bad-deps feature.
         "bad_deps": {
+            "./gen/third_party/devtools-frontend/src/front_end/panels/application/application.js": "crbug.com/556413211",
+            "./gen/third_party/devtools-frontend/src/front_end/panels/sources/sources.js": "crbug.com/556926446",
+            "./gen/third_party/devtools-frontend/src/front_end/panels/timeline/timeline.js": "crbug.com/556600964",
+            "./gen/third_party/devtools-frontend/src/front_end/ui/legacy/components/cookie_table/cookie_table.js": "crbug.com/556881890",
             "./obj/ash/quick_pair/repository/repository/device_address_map.o": "crbug.com/546524333",
             "./obj/ash/quick_pair/repository/repository/device_image_store.o": "crbug.com/546524333",
-            "./obj/chrome/browser/ash/smb_client/smb_client/smbfs_share.o": "crbug.com/548936578",
-            "./obj/chrome/browser/speech/impl/cros_speech_recognition_service.o": "crbug.com/548939103",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_controller.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_entry_point_controller.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_hats_survey_controller.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_immersive_overlay_view.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_immersive_web_view.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_omnibox_controller.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_side_panel_controller.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_side_panel_web_view.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/read_anything/read_anything/read_anything_soft_navigation_observer.o": "crbug.com/551512262",
-            "./obj/chrome/browser/ui/tabs/impl/tab_features.o": "crbug.com/551670232",
-            "./obj/components/exo/wayland/client_version_test/client_version_test.o": "crbug.com/548936502",
+            "./obj/chrome/browser/ui/views/upgrade_notification_controller/upgrade_notification_controller.o": "crbug.com/555387059",
         },
         # Executables sent from Windows host to Linux workers need to set executable bit explicitly.
         # This is necessary for cross platform build actions. e.g. node binary for typescript

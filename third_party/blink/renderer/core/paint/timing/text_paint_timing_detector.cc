@@ -44,37 +44,19 @@ void TextPaintTimingDetector::SendRectsToHud() {
     return;
   }
 
-  bool is_recording_lcp = IsRecordingLargestTextPaint();
-
   for (const auto& record : texts_queued_for_paint_time_) {
-    if (record->FrameIndex() == frame_index_) {
-      cc::WebVitalMetricType type;
-      if (record->GetSoftNavigationContext()) {
-        type = cc::WebVitalMetricType::kInteractionContentfulPaint;
-      } else if (is_recording_lcp) {
-        type = cc::WebVitalMetricType::kNavigationContentfulPaint;
-      } else {
-        continue;
-      }
-      hud_layer->AddWebVitalsDebugRect(
-          {type, gfx::ToEnclosedRect(
-                     widget->DIPsToBlinkSpace(record->RootVisualRect()))});
+    cc::WebVitalMetricType type;
+    if (record->GetSoftNavigationContext()) {
+      type = cc::WebVitalMetricType::kInteractionContentfulPaint;
+    } else if (record->IsNeededForLargestContentfulPaint()) {
+      type = cc::WebVitalMetricType::kNavigationContentfulPaint;
+    } else {
+      continue;
     }
+    hud_layer->AddWebVitalsDebugRect(
+        {type, gfx::ToEnclosedRect(
+                   widget->DIPsToBlinkSpace(record->RootVisualRect()))});
   }
-}
-
-OptionalPaintTimingDetectorCallback<TextRecord>
-TextPaintTimingDetector::TakePaintTimingCallback() {
-  if (!added_entry_in_latest_frame_)
-    return std::nullopt;
-
-  // Do this before incrementing frame_index_;
-  SendRectsToHud();
-
-  added_entry_in_latest_frame_ = false;
-  return blink::BindOnce(
-      &TextPaintTimingDetector::AssignPaintTimeToQueuedRecords,
-      WrapWeakPersistent(this), frame_index_++);
 }
 
 void TextPaintTimingDetector::ResetPaintTrackingOnInteraction(
@@ -131,31 +113,18 @@ void TextPaintTimingDetector::RecordAggregatedText(
     return;
   }
 
+  bool was_previously_reported = recorded_set_.Contains(&aggregator);
   // Mark the text as recorded regardless of if this is needed for any
   // PaintTiming clients so the text isn't reconsidered as a candidate.
-  auto result = recorded_set_.Set(&aggregator, TextPaintStatus::kPainted);
-  bool is_repaint = !result.is_new_entry;
+  recorded_set_.Set(&aggregator, TextPaintStatus::kPainted);
 
-  if (auto* manager = GetLargestContentfulPaintManager()) {
-    manager->InitializePaintTracking(record);
-  }
-  LocalDOMWindow* window = aggregator.GetDocument().domWindow();
-  CHECK(window);
-  if (SoftNavigationHeuristics* heuristics =
-          window->GetSoftNavigationHeuristics()) {
-    heuristics->InitializePaintTracking(record);
-    if (auto* context = record->GetSoftNavigationContext()) {
-      context->AddPaintedArea(record);
-    }
-  }
-  record->SetIsNeededForElementTiming(
-      !is_repaint && TextElementTiming::NeededForTiming(*record->GetNode()));
-
-  // If any client needs this `record`, register for presentation time.
-  if (record->IsNeededForLargestContentfulPaint() ||
-      record->IsNeededForInteractionContentfulPaint() ||
-      record->IsNeededForElementTiming()) {
-    QueueToMeasurePaintTime(record);
+  // If any client needs this `record`, notify them of the paint and register
+  // for presentation time.
+  ForEachPaintTimingClient([&](PaintTimingClient* client) {
+    client->OnElementLastContentfulPaint(record, was_previously_reported);
+  });
+  if (record->IsNeededForPaintTiming()) {
+    texts_queued_for_paint_time_.push_back(record);
   }
 
   // TODO(crbug.com/503691215): This is done before the opacity check for
@@ -164,10 +133,6 @@ void TextPaintTimingDetector::RecordAggregatedText(
           paint_timing_detector_->Visualizer()) {
     visualizer->DumpTextDebuggingRect(aggregator, mapped_visual_rect);
   }
-}
-
-bool TextPaintTimingDetector::IsRecordingLargestTextPaint() const {
-  return !!GetLargestContentfulPaintManager();
 }
 
 void TextPaintTimingDetector::ReportLargestIgnoredText() {
@@ -183,36 +148,20 @@ void TextPaintTimingDetector::ReportLargestIgnoredText() {
   // Trigger FCP if it's not already set.
   paint_timing_detector_->GetPaintTiming().MarkFirstContentfulPaint();
 
+  // Notify clients of the contentful paint and set up presentation feedback.
+  ForEachPaintTimingClient([&](PaintTimingClient* client) {
+    client->OnElementLastContentfulPaint(record,
+                                         /*was_previously_reported=*/false);
+  });
   recorded_set_.insert(record->GetNode()->GetLayoutObject(),
                        TextPaintStatus::kPainted);
-  QueueToMeasurePaintTime(record);
+  texts_queued_for_paint_time_.push_back(record);
 }
 
 void TextPaintTimingDetector::Trace(Visitor* visitor) const {
   visitor->Trace(recorded_set_);
   visitor->Trace(texts_queued_for_paint_time_);
   visitor->Trace(paint_timing_detector_);
-}
-
-void TextPaintTimingDetector::AssignPaintTimeToQueuedRecords(
-    uint32_t frame_index,
-    const base::TimeTicks& timestamp,
-    const DOMPaintTimingInfo& paint_timing_info,
-    HeapVector<Member<TextRecord>>& settled_records) {
-  while (!texts_queued_for_paint_time_.empty()) {
-    TextRecord* record = texts_queued_for_paint_time_.front().Get();
-    // `texts_queued_for_paint_time_` is in frame index order, so we're done
-    // when we find an entry for a later frame.
-    if (record->FrameIndex() > frame_index) {
-      break;
-    }
-    texts_queued_for_paint_time_.pop_front();
-
-    CHECK(!record->HasPaintTime());
-    record->SetPaintTime(timestamp, paint_timing_info);
-
-    settled_records.push_back(record);
-  }
 }
 
 TextRecord* TextPaintTimingDetector::CreateTextRecord(
@@ -240,6 +189,19 @@ LargestContentfulPaintManager*
 TextPaintTimingDetector::GetLargestContentfulPaintManager() const {
   return paint_timing_detector_->GetPaintTiming()
       .GetLargestContentfulPaintManager();
+}
+
+void TextPaintTimingDetector::ForEachPaintTimingClient(
+    base::FunctionRef<void(PaintTimingClient*)> callback) {
+  paint_timing_detector_->GetPaintTiming().ForEachClient(std::move(callback));
+}
+
+HeapVector<Member<TextRecord>>
+TextPaintTimingDetector::TakeTextRecordsOnPaintFinished() {
+  if (!texts_queued_for_paint_time_.empty()) {
+    SendRectsToHud();
+  }
+  return std::move(texts_queued_for_paint_time_);
 }
 
 }  // namespace blink

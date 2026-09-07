@@ -5,7 +5,6 @@
 #include "gpu/command_buffer/service/shared_context_state.h"
 
 #include "base/compiler_specific.h"
-#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/immediate_crash.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
@@ -63,7 +62,7 @@
 #undef Status
 #undef Success
 
-#include "components/viz/common/gpu/vulkan_context_provider.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/vulkan/vulkan_device_queue.h"
 #include "gpu/vulkan/vulkan_implementation.h"
 #include "gpu/vulkan/vulkan_util.h"
@@ -88,6 +87,9 @@
 
 namespace gpu {
 namespace {
+
+constinit thread_local SharedContextState* g_current_shared_context_state =
+    nullptr;
 
 static constexpr size_t kInitialScratchDeserializationBufferSize = 1024;
 
@@ -265,7 +267,7 @@ SharedContextState::SharedContextState(
     bool use_virtualized_gl_contexts,
     ContextLostCallback context_lost_callback,
     GrContextType gr_context_type,
-    viz::VulkanContextProvider* vulkan_context_provider,
+    VulkanContextProvider* vulkan_context_provider,
     DawnContextProvider* dawn_context_provider,
     scoped_refptr<gpu::MemoryTracker::Observer> peak_memory_monitor,
     bool direct_rendering_display_compositor_enabled,
@@ -374,6 +376,11 @@ SharedContextState::~SharedContextState() {
 
   if (context_->IsCurrent(nullptr))
     context_->ReleaseCurrent(nullptr);
+
+  // Thread-local pointer must be explicitly cleared by the caller before
+  // destruction.
+  CHECK_NE(GetForCurrentThread(), this);
+
   base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
       this);
 }
@@ -423,6 +430,15 @@ bool SharedContextState::IsGraphiteDawnD3D11() const {
 #if BUILDFLAG(SKIA_USE_DAWN)
   return IsGraphiteDawn() &&
          dawn_context_provider()->backend_type() == wgpu::BackendType::D3D11;
+#else
+  return false;
+#endif
+}
+
+bool SharedContextState::IsGraphiteDawnD3D12() const {
+#if BUILDFLAG(SKIA_USE_DAWN)
+  return IsGraphiteDawn() &&
+         dawn_context_provider()->backend_type() == wgpu::BackendType::D3D12;
 #else
   return false;
 #endif
@@ -910,8 +926,6 @@ bool SharedContextState::SubmitIfNecessary(
   // AddVulkanCleanupTaskForSkiaFlush() on gpu main thread and do skia flush.
   // This will ensure that vulkan memory allocated on gpu main thread will be
   // cleaned up.
-  SCOPED_CRASH_KEY_BOOL("gpu", "DrDcEnabled", is_drdc_enabled_);
-  SCOPED_CRASH_KEY_NUMBER("gpu", "SignalSemaphores", signal_semaphores.size());
   if (!signal_semaphores.empty() || is_drdc_enabled_) {
     GrFlushInfo flush_info = {
         .fNumSemaphores = signal_semaphores.size(),
@@ -920,13 +934,11 @@ bool SharedContextState::SubmitIfNecessary(
     gpu::AddVulkanCleanupTaskForSkiaFlush(vk_context_provider(), &flush_info);
 
     if (gr_context()->flush(flush_info) != GrSemaphoresSubmitted::kYes) {
-      base::debug::DumpWithoutCrashing();
       return false;
     }
   }
 
   bool sync_cpu = gpu::ShouldVulkanSyncCpuForSkiaSubmit(vk_context_provider());
-  SCOPED_CRASH_KEY_BOOL("gpu", "SubmitSyncCpu", sync_cpu);
 
   // If DrDc is enabled, submit the gr_context() to ensure correct ordering
   // of vulkan commands between raster and display compositor.
@@ -940,10 +952,24 @@ bool SharedContextState::SubmitIfNecessary(
 
   if (need_submit &&
       !gr_context()->submit(sync_cpu ? GrSyncCpu::kYes : GrSyncCpu::kNo)) {
-    base::debug::DumpWithoutCrashing();
     return false;
   }
   return true;
+}
+
+// static
+void SharedContextState::SetForCurrentThread(SharedContextState* state) {
+  g_current_shared_context_state = state;
+}
+
+// static
+SharedContextState* SharedContextState::GetForCurrentThread() {
+  return g_current_shared_context_state;
+}
+
+// static
+void SharedContextState::ClearForCurrentThread() {
+  g_current_shared_context_state = nullptr;
 }
 
 bool SharedContextState::MakeCurrent(gl::GLSurface* surface, bool needs_gl) {
@@ -1457,6 +1483,16 @@ Microsoft::WRL::ComPtr<ID3D11Device> SharedContextState::GetD3D11Device()
     default:
       NOTREACHED();
   }
+}
+
+Microsoft::WRL::ComPtr<ID3D12CommandQueue>
+SharedContextState::GetD3D12CommandQueue() const {
+#if BUILDFLAG(SKIA_USE_DAWN)
+  if (IsGraphiteDawnD3D12()) {
+    return dawn_context_provider_->GetD3D12CommandQueue();
+  }
+#endif
+  return nullptr;
 }
 #endif
 

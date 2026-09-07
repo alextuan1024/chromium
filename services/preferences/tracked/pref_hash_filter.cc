@@ -73,7 +73,7 @@ void CleanupDeprecatedTrackedPreferences(
     PrefHashStoreTransaction* hash_store_transaction) {
   for (const char* key : *GetDeprecatedPrefs()) {
     pref_store_contents.RemoveByDottedPath(key);
-    hash_store_transaction->ClearHash(key);
+    hash_store_transaction->ClearAuthenticators(key);
   }
 }
 
@@ -240,15 +240,12 @@ void PrefHashFilter::Initialize(base::DictValue& pref_store_contents) {
   DictionaryHashStoreContents dictionary_contents(pref_store_contents);
   std::unique_ptr<PrefHashStoreTransaction> hash_store_transaction(
       pref_hash_store_->BeginTransaction(&dictionary_contents));
-  for (auto it = tracked_paths_.begin(); it != tracked_paths_.end(); ++it) {
-    const std::string& initialized_path = it->first;
-    const TrackedPreference* initialized_preference = it->second.get();
-    const base::Value* value =
-        pref_store_contents.FindByDottedPath(initialized_path);
+  for (const auto& [path, pref] : tracked_paths_) {
+    const base::Value* value = pref_store_contents.FindByDottedPath(path);
     // Initialize calls the 2-arg compatibility overload of
     // TrackedPreference::OnNewValue. Because at this point, the encryptor is
     // highly likely not ready yet.
-    initialized_preference->OnNewValue(value, hash_store_transaction.get());
+    pref->OnNewValue(value, hash_store_transaction.get());
   }
 }
 
@@ -307,8 +304,8 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::FilterSerializeData(
     } else {
       // If the feature is disabled/encryptor is not available, clear any
       // existing encrypted hashes.
-      for (const auto& tracked_path : tracked_paths_) {
-        hash_store_transaction->ClearEncryptedHash(tracked_path.first);
+      for (const auto& [tracked_path, _] : tracked_paths_) {
+        hash_store_transaction->ClearEncryptedHash(tracked_path);
       }
       // If the encryptor isn't available, fall back to the old behavior of only
       // processing paths that have changed.
@@ -358,16 +355,16 @@ void PrefHashFilter::FinalizeFilterOnLoad(
     CleanupDeprecatedTrackedPreferences(pref_store_contents,
                                         hash_store_transaction.get());
 
-    for (auto it = tracked_paths_.begin(); it != tracked_paths_.end(); ++it) {
-      if (it->second->EnforceAndReport(
+    for (const auto& [path, pref] : tracked_paths_) {
+      if (pref->EnforceAndReport(
               pref_store_contents, hash_store_transaction.get(),
               external_validation_hash_store_transaction.get())) {
         did_reset = true;
-        reset_paths.insert(it->first);
+        reset_paths.insert(path);
         prefs_altered = true;
       }
     }
-    if (hash_store_transaction->StampSuperMac()) {
+    if (hash_store_transaction->StampSuperHmac()) {
       prefs_altered = true;
     }
   }
@@ -534,8 +531,8 @@ void PrefHashFilter::ClearFromExternalStore(
   DCHECK(changed_paths_and_macs);
   DCHECK(!changed_paths_and_macs->empty());
 
-  for (const auto item : *changed_paths_and_macs) {
-    external_validation_hash_store_contents->RemoveEntry(item.first);
+  for (const auto [changed_path, _] : *changed_paths_and_macs) {
+    external_validation_hash_store_contents->RemoveAuthenticator(changed_path);
   }
 }
 
@@ -551,23 +548,22 @@ void PrefHashFilter::FlushToExternalStore(
     return;
   }
 
-  for (const auto item : *changed_paths_and_macs) {
-    const std::string& changed_path = item.first;
-
-    if (item.second.is_dict()) {
-      const base::DictValue& split_values = item.second.GetDict();
-      for (const auto inner_item : split_values) {
-        const std::string* mac = inner_item.second.GetIfString();
-        bool is_string = !!mac;
+  for (const auto [changed_path, auth_data] : *changed_paths_and_macs) {
+    if (auth_data.is_dict()) {
+      const base::DictValue& split_values = auth_data.GetDict();
+      for (const auto [split_path, split_authenticator_value] : split_values) {
+        const std::string* split_authenticator =
+            split_authenticator_value.GetIfString();
+        bool is_string = !!split_authenticator;
         DCHECK(is_string);
 
-        external_validation_hash_store_contents->SetSplitMac(
-            changed_path, inner_item.first, *mac);
+        external_validation_hash_store_contents->SetSplitPrefAuthenticator(
+            changed_path, split_path, *split_authenticator);
       }
     } else {
-      DCHECK(item.second.is_string());
-      external_validation_hash_store_contents->SetMac(changed_path,
-                                                      item.second.GetString());
+      DCHECK(auth_data.is_string());
+      external_validation_hash_store_contents->SetAtomicPrefAuthenticator(
+          changed_path, auth_data.GetString());
     }
   }
 }
@@ -582,18 +578,14 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::GetOnWriteSynchronousCallbacks(
 
   auto changed_paths_macs = std::make_unique<base::DictValue>();
 
-  for (ChangedPathsMap::const_iterator it = changed_paths_.begin();
-       it != changed_paths_.end(); ++it) {
-    const std::string& changed_path = it->first;
-    const TrackedPreference* changed_preference = it->second;
-
+  for (const auto& [changed_path, changed_preference] : changed_paths_) {
     switch (changed_preference->GetType()) {
       case TrackedPreferenceType::ATOMIC: {
         const base::Value* new_value =
             pref_store_contents.FindByDottedPath(changed_path);
         changed_paths_macs->Set(
             changed_path,
-            external_validation_hash_store_pair_->first->ComputeMac(
+            external_validation_hash_store_pair_->first->ComputeHmac(
                 changed_path, new_value));
         break;
       }
@@ -602,7 +594,7 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::GetOnWriteSynchronousCallbacks(
             pref_store_contents.FindDictByDottedPath(changed_path);
         changed_paths_macs->Set(
             changed_path,
-            external_validation_hash_store_pair_->first->ComputeSplitMacs(
+            external_validation_hash_store_pair_->first->ComputeSplitHmacs(
                 changed_path, dict));
         break;
       }

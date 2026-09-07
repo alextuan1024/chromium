@@ -36,7 +36,6 @@
 #import "components/handoff/handoff_manager.h"
 #import "components/history/core/common/pref_names.h"
 #import "components/image_fetcher/core/cache/image_cache.h"
-#import "components/invalidation/impl/per_user_topic_subscription_manager.h"
 #import "components/language/core/browser/language_prefs.h"
 #import "components/language/core/browser/pref_names.h"
 #import "components/lens/lens_overlay_permission_utils.h"
@@ -146,6 +145,7 @@
 #import "ios/chrome/browser/voice/model/voice_search_prefs_registration.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_tab_helper.h"
 #import "ios/chrome/browser/welcome_back/model/welcome_back_prefs.h"
+#import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/components/cookie_util/cookie_constants.h"
 #import "ios/web/common/features.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -155,7 +155,6 @@
 #endif  // !BUILDFLAG(IS_IOS_MACCATALYST)
 
 namespace {
-
 
 // Deprecated 10/2025
 inline constexpr char kSessionStorageFormatPref[] =
@@ -241,6 +240,16 @@ constexpr char kMetricsReportingMigrationDone[] =
     "user_experience_metrics.consent_migration_done";
 constexpr char kMetricsConsentRestructureFeatureState[] =
     "user_experience_metrics.consent_restructure_feature_state";
+
+// Deprecated 08/2026.
+inline constexpr char kWaitingForMultiProfileForcedMigrationTimestamp[] =
+    "ios.waiting_for_multi_profile_forced_migration_timestamp";
+
+// Deprecated 09/2026.
+constexpr char kInvalidationPerSenderRegisteredForInvalidation[] =
+    "invalidation.per_sender_registered_for_invalidation";
+constexpr char kInvalidationPerSenderActiveRegistrationTokens[] =
+    "invalidation.per_sender_active_registration_tokens";
 
 // Renames a boolean pref within a PrefService.
 void RenameBooleanPref(std::string_view target_pref_name,
@@ -336,6 +345,8 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
       enterprise_reporting::kLastUploadSucceededTimestamp, base::Time());
   registry->RegisterTimeDeltaPref(
       enterprise_reporting::kCloudReportingUploadFrequency, base::Hours(24));
+  registry->RegisterListPref(
+      enterprise_reporting::kSaasUsageDomainUrlsForBrowser);
 
   registry->RegisterDictionaryPref(prefs::kOverflowMenuDestinationUsageHistory,
                                    PrefRegistry::LOSSY_PREF);
@@ -458,9 +469,7 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
 
   registry->RegisterBooleanPref(prefs::kHasSwitchedAccountsViaWebFlow, false);
 
-  // Prefs used to force multi-profile migration.
-  registry->RegisterTimePref(
-      prefs::kWaitingForMultiProfileForcedMigrationTimestamp, base::Time());
+  // Pref used to force multi-profile migration.
   registry->RegisterBooleanPref(prefs::kMultiProfileForcedMigrationDone, false);
 
   // Deprecated 05/2026.
@@ -494,9 +503,6 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
 
   registry->RegisterBooleanPref(prefs::kWidgetsForMultiProfile, false);
 
-  // Deprecated 09/2025.
-  registry->RegisterBooleanPref(prefs::kBottomOmnibox, false);
-
   // Deprecated 01/2026.
   registry->RegisterListPref(kMagicStackSafetyCheckNotificationsShown);
   registry->RegisterListPref(kBottomOmniboxByDefault);
@@ -506,6 +512,10 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(kMetricsReportingMigrationDone, false);
   registry->RegisterBooleanPref(kMetricsConsentRestructureFeatureState, false);
   registry->RegisterTimePref(kObsoleteManagementPlatformLastLogTime,
+                             base::Time());
+
+  // Deprecated 08/2026.
+  registry->RegisterTimePref(kWaitingForMultiProfileForcedMigrationTimestamp,
                              base::Time());
 }
 
@@ -528,7 +538,6 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   FirstRun::RegisterProfilePrefs(registry);
   FontSizeTabHelper::RegisterProfilePrefs(registry);
   HostContentSettingsMap::RegisterProfilePrefs(registry);
-  invalidation::PerUserTopicSubscriptionManager::RegisterProfilePrefs(registry);
   image_fetcher::ImageCache::RegisterProfilePrefs(registry);
   language::LanguagePrefs::RegisterProfilePrefs(registry);
   LevelUpService::RegisterProfilePrefs(registry);
@@ -741,6 +750,10 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
       enterprise_reporting::kLastSignalsUploadSucceededTimestamp, base::Time());
   registry->RegisterStringPref(
       enterprise_reporting::kLastSignalsUploadSucceededConfig, std::string());
+  registry->RegisterListPref(
+      enterprise_reporting::kSecuritySignalsClientCertificatesSelectors);
+  registry->RegisterListPref(
+      enterprise_reporting::kSaasUsageDomainUrlsForProfile);
 
   // Register prefs related to Enterprise Isolated Mode.
   enterprise_isolated_mode::RegisterProfilePrefs(registry);
@@ -999,6 +1012,12 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref("autofill.wallet_import_enabled", true);
   registry->RegisterBooleanPref("sync.autofill_wallet_import_enabled_migrated",
                                 false);
+
+  // Deprecated 09/2026.
+  registry->RegisterDictionaryPref(
+      kInvalidationPerSenderRegisteredForInvalidation);
+  registry->RegisterDictionaryPref(
+      kInvalidationPerSenderActiveRegistrationTokens);
 }
 
 // This method should be periodically pruned of year+ old migrations.
@@ -1010,9 +1029,6 @@ void MigrateObsoleteLocalStatePrefs(PrefService* prefs) {
   prefs->ClearPref(
       prefs::kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness);
 
-  // Added 09/2025.
-  RenameBooleanPref(omnibox::kIsOmniboxInBottomPosition, prefs::kBottomOmnibox,
-                    prefs);
   // Added 01/2026.
   prefs->ClearPref(kMagicStackSafetyCheckNotificationsShown);
   prefs->ClearPref(kBottomOmniboxByDefault);
@@ -1030,6 +1046,9 @@ void MigrateObsoleteLocalStatePrefs(PrefService* prefs) {
 
   // Added 07/2026.
   prefs->ClearPref(kObsoleteManagementPlatformLastLogTime);
+
+  // Added 08/2026.
+  prefs->ClearPref(kWaitingForMultiProfileForcedMigrationTimestamp);
 }
 
 // This method should be periodically pruned of year+ old migrations.
@@ -1042,7 +1061,6 @@ void MigrateObsoleteProfilePrefs(PrefService* prefs) {
 
   // Added 09/2024.
   browsing_data::prefs::MaybeMigrateToQuickDeletePrefValues(prefs);
-
 
   // Added 10/2025.
   prefs->ClearPref(kSessionStorageFormatPref);
@@ -1105,6 +1123,10 @@ void MigrateObsoleteProfilePrefs(PrefService* prefs) {
   // Added 08/2026.
   prefs->ClearPref("autofill.wallet_import_enabled");
   prefs->ClearPref("sync.autofill_wallet_import_enabled_migrated");
+
+  // Added 09/2026.
+  prefs->ClearPref(kInvalidationPerSenderRegisteredForInvalidation);
+  prefs->ClearPref(kInvalidationPerSenderActiveRegistrationTokens);
 }
 
 void MigrateObsoleteUserDefault() {
@@ -1137,4 +1159,9 @@ void MigrateObsoleteUserDefault() {
   [defaults removeObjectForKey:@"userHasInteractedWithTailoredFullscreenPromo"];
   [defaults removeObjectForKey:@"userHasInteractedWithFirstRunPromo"];
   [defaults removeObjectForKey:@"lastTimeUserInteractedWithFullscreenPromo"];
+
+  // Added 06/2026.
+  NSUserDefaults* shared_defaults = app_group::GetGroupUserDefaults();
+  [shared_defaults removeObjectForKey:@"SuggestedItems"];
+  [shared_defaults removeObjectForKey:@"SuggestedItemsLastModificationDate"];
 }

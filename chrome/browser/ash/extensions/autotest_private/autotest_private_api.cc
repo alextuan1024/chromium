@@ -79,8 +79,6 @@
 #include "base/timer/timer.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/arc/arc_util.h"
@@ -91,7 +89,6 @@
 #include "chrome/browser/ash/borealis/borealis_service.h"
 #include "chrome/browser/ash/borealis/borealis_service_factory.h"
 #include "chrome/browser/ash/borealis/borealis_types.mojom.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_installer.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_service.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_service_factory.h"
@@ -112,6 +109,7 @@
 #include "chrome/browser/ash/lobster/lobster_service.h"
 #include "chrome/browser/ash/lobster/lobster_service_provider.h"
 #include "chrome/browser/ash/login/lock/screen_locker.h"
+#include "chrome/browser/ash/login/lock/screen_locker_controller.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
@@ -148,6 +146,7 @@
 #include "chrome/common/extensions/api/autotest_private.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/default_pinned_apps/default_pinned_apps.h"
@@ -182,12 +181,17 @@
 #include "components/policy/core/common/remote_commands/remote_commands_fetch_reason.h"
 #include "components/policy/core/common/remote_commands/remote_commands_service.h"
 #include "components/prefs/pref_service.h"
+#include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/services/app_service/public/cpp/app_service.h"
+#include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/app_update.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/update_client/update_client_errors.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -1341,11 +1345,12 @@ ExtensionFunction::ResponseAction AutotestPrivateLoginStatusFunction::Run() {
   const user_manager::UserManager* user_manager =
       user_manager::UserManager::Get();
 
-  // default_screen_locker()->locked() is set when the UI is ready, so this
-  // tells us both views based lockscreen UI and screenlocker are ready.
+  // ScreenLockerController::Get().screen_locker()->locked() is set when the
+  // UI is ready, so this tells us both views based lockscreen UI and
+  // screenlocker are ready.
   const bool is_screen_locked =
-      !!ash::ScreenLocker::default_screen_locker() &&
-      ash::ScreenLocker::default_screen_locker()->locked();
+      !!ash::ScreenLockerController::Get().screen_locker() &&
+      ash::ScreenLockerController::Get().screen_locker()->locked();
 
   if (user_manager) {
     result.Set("isLoggedIn", user_manager->IsUserLoggedIn());
@@ -3263,43 +3268,48 @@ AutotestPrivateGetAllInstalledAppsFunction::Run() {
   DVLOG(1) << "AutotestPrivateGetAllInstalledAppsFunction";
 
   Profile* const profile = Profile::FromBrowserContext(browser_context());
-  apps::AppServiceProxy* proxy =
-      apps::AppServiceProxyFactory::GetForProfile(profile);
+  const AccountId* account_id =
+      ash::AnnotatedAccountId::Get(profile->GetOriginalProfile());
+  apps::AppService* app_service =
+      account_id ? apps::AppServiceRegistry::Get()->Find(*account_id) : nullptr;
 
   std::vector<api::autotest_private::App> installed_apps;
-  proxy->AppRegistryCache().ForEachApp(
-      [&installed_apps](const apps::AppUpdate& update) {
-        if (!apps_util::IsInstalled(update.Readiness())) {
-          return;
-        }
+  if (app_service) {
+    app_service->AppRegistryCache().ForEachApp(
+        [&installed_apps](const apps::AppUpdate& update) {
+          if (!apps_util::IsInstalled(update.Readiness())) {
+            return;
+          }
 
-        api::autotest_private::App app;
-        app.app_id = update.AppId();
+          api::autotest_private::App app;
+          app.app_id = update.AppId();
 
-        // Assume that when `switches::kForceDirectionRTL` is enabled, the
-        // system language still follows the left-to-right fashion. Because the
-        // app names carried by `update` are adapted to RTL by inserting extra
-        // characters that indicate the text direction, we should recover the
-        // original app names before returning them as the result.
-        if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-                switches::kForceUIDirection) == switches::kForceDirectionRTL) {
-          std::u16string name = base::UTF8ToUTF16(update.Name());
-          base::i18n::UnadjustStringForLocaleDirection(&name);
-          app.name = base::UTF16ToUTF8(name);
-        } else {
-          app.name = update.Name();
-        }
+          // Assume that when `switches::kForceDirectionRTL` is enabled, the
+          // system language still follows the left-to-right fashion. Because
+          // the app names carried by `update` are adapted to RTL by inserting
+          // extra characters that indicate the text direction, we should
+          // recover the original app names before returning them as the result.
+          if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+                  switches::kForceUIDirection) ==
+              switches::kForceDirectionRTL) {
+            std::u16string name = base::UTF8ToUTF16(update.Name());
+            base::i18n::UnadjustStringForLocaleDirection(&name);
+            app.name = base::UTF16ToUTF8(name);
+          } else {
+            app.name = update.Name();
+          }
 
-        app.short_name = update.ShortName();
-        app.publisher_id = update.PublisherId();
-        app.additional_search_terms = update.AdditionalSearchTerms();
-        app.type = GetAppType(update.AppType());
-        app.install_source = GetAppInstallSource(update.InstallReason());
-        app.readiness = GetAppReadiness(update.Readiness());
-        app.show_in_launcher = update.ShowInLauncher();
-        app.show_in_search = update.ShowInSearch();
-        installed_apps.emplace_back(std::move(app));
-      });
+          app.short_name = update.ShortName();
+          app.publisher_id = update.PublisherId();
+          app.additional_search_terms = update.AdditionalSearchTerms();
+          app.type = GetAppType(update.AppType());
+          app.install_source = GetAppInstallSource(update.InstallReason());
+          app.readiness = GetAppReadiness(update.Readiness());
+          app.show_in_launcher = update.ShowInLauncher();
+          app.show_in_search = update.ShowInSearch();
+          installed_apps.emplace_back(std::move(app));
+        });
+  }
 
   return RespondNow(
       ArgumentList(api::autotest_private::GetAllInstalledApps::Results::Create(
@@ -4186,10 +4196,25 @@ class AutotestPrivateInstallPWAForCurrentURLFunction::PWABannerObserver
     : public webapps::AppBannerManager::Observer {
  public:
   PWABannerObserver(webapps::AppBannerManager* manager,
+                    content::WebContents* web_contents,
                     base::OnceCallback<void()> callback)
       : callback_(std::move(callback)), app_banner_manager_(manager) {
     DCHECK(manager);
     observation_.Observe(manager);
+    // The manager's lifetime is tied to the tab, which can be destroyed (or
+    // its contents discarded) while this observer waits; detach then to
+    // avoid observing a destroyed manager.
+    tabs::TabInterface* tab =
+        tabs::TabInterface::MaybeGetFromContents(web_contents);
+    if (tab) {
+      tab_will_detach_subscription_ =
+          tab->RegisterWillDetach(base::BindRepeating(
+              &PWABannerObserver::OnTabWillDetach, base::Unretained(this)));
+      tab_will_discard_contents_subscription_ =
+          tab->RegisterWillDiscardContents(
+              base::BindRepeating(&PWABannerObserver::OnTabWillDiscardContents,
+                                  base::Unretained(this)));
+    }
 
     // If PWA is already loaded, call callback immediately.
     Installable installable =
@@ -4231,11 +4256,26 @@ class AutotestPrivateInstallPWAForCurrentURLFunction::PWABannerObserver
  private:
   using Installable = webapps::InstallableWebAppCheckResult;
 
+  void OnTabWillDetach(tabs::TabInterface* tab,
+                       tabs::TabInterface::DetachReason reason) {
+    observation_.Reset();
+    app_banner_manager_ = nullptr;
+  }
+
+  void OnTabWillDiscardContents(tabs::TabInterface* tab,
+                                content::WebContents* old_contents,
+                                content::WebContents* new_contents) {
+    observation_.Reset();
+    app_banner_manager_ = nullptr;
+  }
+
   base::ScopedObservation<webapps::AppBannerManager,
                           webapps::AppBannerManager::Observer>
       observation_{this};
   base::OnceCallback<void()> callback_;
   raw_ptr<webapps::AppBannerManager> app_banner_manager_;
+  base::CallbackListSubscription tab_will_detach_subscription_;
+  base::CallbackListSubscription tab_will_discard_contents_subscription_;
 };
 
 // Used to notify when a PWA is installed.
@@ -4314,7 +4354,7 @@ AutotestPrivateInstallPWAForCurrentURLFunction::Run() {
   }
 
   banner_observer_ = std::make_unique<PWABannerObserver>(
-      app_banner_manager,
+      app_banner_manager, web_contents,
       base::BindOnce(&AutotestPrivateInstallPWAForCurrentURLFunction::PWALoaded,
                      this));
 
@@ -5754,7 +5794,7 @@ ExtensionFunction::ResponseAction AutotestPrivateGetAccessTokenFunction::Run() {
           identity_manager
               ->FindExtendedAccountInfoByEmailAddress(
                   params->access_token_params.email)
-              .account_id,
+              .GetAccountId(),
           signin::OAuthConsumerId::kAshAutotestPrivateApi, scopes,
           base::BindOnce(&AutotestPrivateGetAccessTokenFunction::OnAccessToken,
                          this),

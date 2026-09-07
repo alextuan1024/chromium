@@ -5,9 +5,10 @@
 #include "chrome/browser/glic/host/glic_guest_navigation_throttle.h"
 
 #include "base/feature_list.h"
+#include "chrome/browser/glic/host/glic_web_client_manager.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/guest_util_internal.h"
-#include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
@@ -49,9 +50,9 @@ const char* GlicGuestNavigationThrottle::GetNameForLogging() {
 
 content::NavigationThrottle::ThrottleCheckResult
 GlicGuestNavigationThrottle::HandleRequest() {
-  content::WebContents* guest_contents = navigation_handle()->GetWebContents();
-  Host* host = GetGlicHostForGuest(guest_contents);
-  if (!host) {
+  GlicWebClientManager* manager =
+      GetWebClientManagerForWebContents(navigation_handle()->GetWebContents());
+  if (!manager) {
     return PROCEED;
   }
 
@@ -62,12 +63,12 @@ GlicGuestNavigationThrottle::HandleRequest() {
   }
 
   if (IsAdminBlockedUrl(url)) {
-    host->OnGuestNavigationBlocked(mojom::GuestPageType::kDisabledByAdmin);
+    manager->OnGuestNavigationBlocked(mojom::GuestPageType::kDisabledByAdmin);
     return CANCEL;
   }
 
   if (!IsGuestOriginAllowed(url::Origin::Create(url))) {
-    host->OnGuestNavigationBlocked(mojom::GuestPageType::kLoadError);
+    manager->OnGuestNavigationBlocked(mojom::GuestPageType::kLoadError);
     return CANCEL;
   }
 

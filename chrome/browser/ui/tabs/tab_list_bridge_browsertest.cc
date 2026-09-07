@@ -15,12 +15,15 @@
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -388,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetIndexOfTab) {
   EXPECT_EQ(1, tab_list_interface->GetIndexOfTab(tab1->GetHandle()));
   EXPECT_EQ(2, tab_list_interface->GetIndexOfTab(tab2->GetHandle()));
 
-  Browser* new_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
   TabListInterface* new_tab_list_interface = TabListBridge::From(new_browser);
   ASSERT_TRUE(new_tab_list_interface);
 
@@ -524,7 +527,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTabToWindow) {
   ASSERT_TRUE(source_list_interface);
 
   // Create a second browser.
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   TabListInterface* destination_list_interface =
       TabListInterface::From(second_browser);
   ASSERT_TRUE(destination_list_interface);
@@ -1056,6 +1060,27 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Unsplit) {
   EXPECT_FALSE(tab_list_interface->GetTab(1)->GetSplit().has_value());
 }
 
+IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, ListSplits) {
+  SetupTabs(browser(), 4);
+
+  TabListInterface* tab_list_interface = TabListInterface::From(browser());
+  ASSERT_TRUE(tab_list_interface);
+  EXPECT_TRUE(tab_list_interface->ListSplits().empty());
+
+  std::optional<split_tabs::SplitTabId> split_id =
+      tab_list_interface->CreateSplit(
+          {tab_list_interface->GetTab(0)->GetHandle(),
+           tab_list_interface->GetTab(1)->GetHandle()});
+  ASSERT_TRUE(split_id.has_value());
+
+  std::set<split_tabs::SplitTabId> splits = tab_list_interface->ListSplits();
+  ASSERT_EQ(1u, splits.size());
+  EXPECT_EQ(*split_id, *splits.begin());
+
+  tab_list_interface->Unsplit(*split_id);
+  EXPECT_TRUE(tab_list_interface->ListSplits().empty());
+}
+
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, OpenTab) {
   const GURL url1("about:blank?q=1");
   const GURL url2("about:blank?q=2");
@@ -1164,9 +1189,10 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTabGroupToWindow) {
   ASSERT_EQ("0 1 2",
             GetTabStripStateString(source_model, /*annotate_groups=*/true));
 
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   SetupTabs(second_browser, 3, /*offset=*/3);
-  TabStripModel* destination_model = second_browser->tab_strip_model();
+  TabStripModel* destination_model = second_browser->GetTabStripModel();
   ASSERT_TRUE(destination_model);
 
   ASSERT_EQ("3 4 5", GetTabStripStateString(destination_model,
@@ -1201,7 +1227,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest,
   // WebContents ID.
   SetupTabs(browser(), 3);
 
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   SetupTabs(second_browser, 3, /*offset=*/3);
 
   TabListInterface* source_list_interface = TabListInterface::From(browser());

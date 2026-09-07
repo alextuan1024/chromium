@@ -10,6 +10,7 @@
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
+#include "chrome/browser/ui/views/tabs/common/tab_collection_z_order_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/view.h"
 
@@ -22,10 +23,10 @@ class UnpinnedTabContainerViewLayout;
 // for unpinned tabs which aren't grouped. Layout is managed by
 // UnpinnedTabContainerViewLayout.
 class UnpinnedTabContainerView
-    : public views::View,
+    : public TabCollectionZOrderManager,
       public DraggedTabsContainer,
       public TabCollectionAnimatingLayoutManager::Delegate {
-  METADATA_HEADER(UnpinnedTabContainerView, views::View)
+  METADATA_HEADER(UnpinnedTabContainerView, TabCollectionZOrderManager)
   friend class UnpinnedTabContainerViewLayout;
 
  public:
@@ -54,9 +55,14 @@ class UnpinnedTabContainerView
   // occupy once current animations complete.
   gfx::Size GetTargetPreferredSize() const;
 
+  // Returns the total preferred width of all visible children at standard size,
+  // ignoring any active tab closing mode override.
+  int GetUnconstrainedPreferredWidth() const;
+
   // Sets the main-axis space allocated for this container during TabStripView
   // layout passes.
   void SetAvailableSpace(views::SizeBound space) { available_space_ = space; }
+  views::SizeBound available_space() const { return available_space_; }
 
  private:
   // DraggedTabsContainer:

@@ -551,15 +551,6 @@ class PDFExtensionAccessibilityTextExtractionTest
     RunTest(pdf_path, "pdf/accessibility", expected_subtext);
   }
 
- protected:
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    std::vector<base::test::FeatureRefAndParams> enabled =
-        PDFExtensionAccessibilityTestWithOopifOverride::GetEnabledFeatures();
-    enabled.push_back({chrome_pdf::features::kAccessiblePDFForm, {}});
-    return enabled;
-  }
-
  private:
   // The test waits until the tree dump includes `expected_subtext`.
   void RunTest(const base::FilePath& test_file_path,
@@ -739,13 +730,6 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
                         /*expected_subtext=*/"Page 1");
 }
 
-// Test data of inline text boxes for PDF with text fields.
-IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
-                       TextFields) {
-  RunTextExtractionTest(FILE_PATH_LITERAL("text_fields.pdf"),
-                        /*expected_subtext=*/"Page 1");
-}
-
 // Test data of inline text boxes for PDF with multi-line and various font-sized
 // text.
 IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
@@ -790,14 +774,6 @@ class PDFExtensionAccessibilityTreeDumpTest
   }
 
   bool UseOopif() const override { return std::get<1>(GetParam()); }
-
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    std::vector<base::test::FeatureRefAndParams> enabled =
-        PDFExtensionAccessibilityTest::GetEnabledFeatures();
-    enabled.push_back({chrome_pdf::features::kAccessiblePDFForm, {}});
-    return enabled;
-  }
 
  protected:
   void RunPDFTest(const base::FilePath::CharType* pdf_file,
@@ -1052,11 +1028,6 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, Highlights) {
              /*expected_subtext=*/"Page 1");
 }
 
-IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, TextFields) {
-  RunPDFTest(FILE_PATH_LITERAL("text_fields.pdf"),
-             /*expected_subtext=*/"Page 1");
-}
-
 IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, Images) {
   RunPDFTest(FILE_PATH_LITERAL("image_alt_text.pdf"),
              /*expected_subtext=*/"Page 1");
@@ -1154,6 +1125,18 @@ INSTANTIATE_TEST_SUITE_P(All,
 IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
                        HeadingHeuristics) {
   RunPDFTest(FILE_PATH_LITERAL("heading-heuristics.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       HeadingHeuristicsVariableSize) {
+  RunPDFTest(FILE_PATH_LITERAL("heading-heuristics-variable-size.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       HeadingHeuristicsTextColor) {
+  RunPDFTest(FILE_PATH_LITERAL("heading-heuristics-text-color.pdf"),
              /*expected_subtext=*/"Page 1");
 }
 

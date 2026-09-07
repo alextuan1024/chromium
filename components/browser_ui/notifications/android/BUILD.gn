@@ -29,6 +29,7 @@ android_library("java") {
     "java/src/org/chromium/components/browser_ui/notifications/NotificationMetadata.java",
     "java/src/org/chromium/components/browser_ui/notifications/NotificationWrapper.java",
     "java/src/org/chromium/components/browser_ui/notifications/NotificationWrapperBuilder.java",
+    "java/src/org/chromium/components/browser_ui/notifications/NotificationWrapperCompatBuilder.java",
     "java/src/org/chromium/components/browser_ui/notifications/PendingIntentProvider.java",
     "java/src/org/chromium/components/browser_ui/notifications/PendingNotificationTask.java",
     "java/src/org/chromium/components/browser_ui/notifications/StatusBarNotificationAdaptor.java",
@@ -42,6 +43,7 @@ android_library("java") {
     "//base:base_java",
     "//build/android:build_java",
     "//components/browser_ui/util/android:java",
+    "//components/cached_flags:java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_core_core_java",
     "//third_party/androidx:androidx_media_media_java",
@@ -63,6 +65,7 @@ android_library("utils_java") {
   deps = [
     "//base:base_java",
     "//build/android:build_java",
+    "//components/cached_flags:java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_core_core_java",
     "//third_party/jni_zero:jni_zero_java",

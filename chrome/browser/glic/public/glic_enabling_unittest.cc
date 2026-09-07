@@ -48,6 +48,7 @@
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
@@ -639,6 +640,30 @@ TEST_F(GlicEnablingProfileEligibilityTest,
                                                          account_info));
   EXPECT_TRUE(GlicEnabling::IsEnabledForFirstRunProfile(profile(), "us", "us",
                                                         account_info));
+}
+
+TEST_F(GlicEnablingProfileEligibilityTest, IsEnabledForFirstRunProfileU18) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      switches::kGlicEligibilitySeparateAccountCapability);
+
+  auto* identity_test_env = identity_test_env_adaptor_->identity_test_env();
+  AccountInfo account_info = identity_test_env->MakePrimaryAccountAvailable(
+      /*email=*/"test@example.com", signin::ConsentLevel::kSignin);
+  AccountCapabilitiesTestMutator mutator(&account_info);
+  // User is eligible for Gemini in Chrome, but is U18 (cannot use adult
+  // features).
+  mutator.set_can_use_gemini_in_chrome(true);
+  mutator.set_can_use_model_execution_features(false);
+  signin::UpdateAccountInfoForAccount(identity_test_env->identity_manager(),
+                                      account_info);
+
+  // Overall profile is enabled for Gemini in Chrome.
+  EXPECT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
+  // But FRE should NOT be enabled for U18 users.
+  EXPECT_FALSE(GlicEnabling::IsEnabledForFirstRunProfile(
+      profile(), /*permanent_country=*/"us", /*session_country=*/"us",
+      account_info));
 }
 
 class GlicEnablingProfileReadyStateTestBase
@@ -2032,6 +2057,84 @@ TEST_F(GlicEnablingWebActuationToggleTest, ManagedProfile_CanActOnWeb) {
   EXPECT_TRUE(glic_service->enabling().ShouldShowWebActuationToggle());
 }
 
+// Tests for ShouldShowExperimentalTriggeringToggle(), which gates the
+// "Gemini Spark" (experimental triggering) settings toggle shared by the
+// desktop and Android settings UIs.
+TEST_F(GlicEnablingWebActuationToggleTest,
+       ExperimentalTriggeringToggle_FeatureDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(features::kGlicExperimentalTriggering);
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+      switches::kGlicAlwaysShowWebActuationToggle);
+
+  auto* glic_service = GlicKeyedService::Get(profile());
+  EXPECT_FALSE(
+      glic_service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
+TEST_F(GlicEnablingWebActuationToggleTest,
+       ExperimentalTriggeringToggle_HiddenWhenWebActuationToggleHidden) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{features::kGlicExperimentalTriggering},
+      /*disabled_features=*/{features::kGlicWebActuationSetting});
+
+  auto* glic_service = GlicKeyedService::Get(profile());
+  // Precondition: the web-actuation toggle is hidden.
+  ASSERT_FALSE(glic_service->enabling().ShouldShowWebActuationToggle());
+  EXPECT_FALSE(
+      glic_service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
+TEST_F(GlicEnablingWebActuationToggleTest,
+       ExperimentalTriggeringToggle_HiddenWhenPrefIsDefault) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+      switches::kGlicAlwaysShowWebActuationToggle);
+
+  auto* glic_service = GlicKeyedService::Get(profile());
+  ASSERT_TRUE(glic_service->enabling().ShouldShowWebActuationToggle());
+  // The pref is at its default value, so the user has not opted in.
+  EXPECT_FALSE(
+      glic_service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
+TEST_F(GlicEnablingWebActuationToggleTest,
+       ExperimentalTriggeringToggle_HiddenWhenManaged) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+      switches::kGlicAlwaysShowWebActuationToggle);
+
+  // A managed (policy-enforced) pref is not user-controlled.
+  static_cast<TestingProfile*>(profile())
+      ->GetTestingPrefService()
+      ->SetManagedPref(prefs::kGlicExperimentalTriggeringEnabled,
+                       std::make_unique<base::Value>(true));
+
+  auto* glic_service = GlicKeyedService::Get(profile());
+  ASSERT_TRUE(glic_service->enabling().ShouldShowWebActuationToggle());
+  EXPECT_FALSE(
+      glic_service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
+TEST_F(GlicEnablingWebActuationToggleTest,
+       ExperimentalTriggeringToggle_ShownWhenUserOptedIn) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+      switches::kGlicAlwaysShowWebActuationToggle);
+
+  auto* glic_service = GlicKeyedService::Get(profile());
+  // User explicitly set the pref (user-controlled and non-default).
+  glic_service->enabling().SetExperimentalTriggeringEnabled(true);
+
+  ASSERT_TRUE(glic_service->enabling().ShouldShowWebActuationToggle());
+  EXPECT_TRUE(
+      glic_service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
 class GlicEnablingAnchorEntryPointCountryTest
     : public GlicEnablingAnchorEntryPointTestBase {
  public:
@@ -2558,6 +2661,24 @@ TEST_F(GlicEnablingRecoveryMetricsTest, RecoveryFromDisabledByAdmin) {
   service->enabling().MaybeRecordRecoveryOnInteraction();
   histogram_tester.ExpectTotalCount("Glic.ProfileEnablement.RecoveredFromState",
                                     1);
+}
+
+TEST_F(GlicEnablingProfileEligibilityTest, IsAnyEntryPointEnabled) {
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, false);
+  TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+      prefs::kGlicLauncherEnabled, false);
+  EXPECT_FALSE(IsAnyEntryPointEnabled(profile()));
+
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_TRUE(IsAnyEntryPointEnabled(profile()));
+
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, false);
+  TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+      prefs::kGlicLauncherEnabled, true);
+  EXPECT_TRUE(IsAnyEntryPointEnabled(profile()));
+
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_TRUE(IsAnyEntryPointEnabled(profile()));
 }
 }  // namespace
 }  // namespace glic

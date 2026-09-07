@@ -21,8 +21,13 @@
 #include "build/chromecast_buildflags.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
+#include "services/tracing/public/cpp/trace_startup_config.h"
 #include "third_party/perfetto/protos/perfetto/config/chrome/histogram_samples.gen.h"
 #include "third_party/perfetto/protos/perfetto/config/track_event/track_event_config.gen.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "components/tracing/common/etw_stack_sampling_win.h"
+#endif
 
 namespace tracing {
 
@@ -240,14 +245,19 @@ void AdaptDataSourceConfig(
     AdaptTrackEventConfig(&track_event_config, privacy_filtering_enabled);
     config->set_track_event_config_raw(track_event_config.SerializeAsString());
   }
+
+#if BUILDFLAG(IS_WIN)
+  if (config->name() == "org.chromium.etw_system") {
+    AddEtwStackSamplingDebugIds(config);
+  }
+#endif
 }
 
 }  // namespace
 
 base::ByteSize GetDefaultTraceBufferSize() {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  std::string switch_value = command_line->GetSwitchValueASCII(
-      switches::kDefaultTraceBufferSizeLimitInKb);
+  std::string_view switch_value =
+      TraceStartupConfig::GetInstance().GetDefaultTraceBufferSizeLimitInKb();
   size_t switch_kilobytes;
   if (!switch_value.empty() &&
       base::StringToSizeT(switch_value, &switch_kilobytes)) {

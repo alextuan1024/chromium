@@ -357,9 +357,6 @@ source_set("browser_sources") {
     "process_selection_user_data.cc",
     "process_selection_user_data.h",
     "process_visibility_util.h",
-    "provision_fetcher_factory.h",
-    "provision_fetcher_impl.cc",
-    "provision_fetcher_impl.h",
     "push_messaging_service.cc",
     "push_messaging_service.h",
     "reduce_accept_language_controller_delegate.h",
@@ -420,8 +417,8 @@ source_set("browser_sources") {
     "service_worker_running_info.h",
     "service_worker_version_base_info.cc",
     "service_worker_version_base_info.h",
-    "session_storage_namespace.cc",
-    "session_storage_namespace.h",
+    "session_storage_namespace_handle.cc",
+    "session_storage_namespace_handle.h",
     "session_storage_usage_info.h",
     "shape_detection_service.h",
     "shared_cors_origin_access_list.h",
@@ -544,11 +541,11 @@ source_set("browser_sources") {
     "webid/native_idp_fetcher.h",
     "webnn_introspection_manager.cc",
     "webnn_introspection_manager.h",
+    "webrtc_diagnostics.h",
     "webrtc_event_logger.cc",
     "webrtc_event_logger.h",
     "webrtc_log.cc",
     "webrtc_log.h",
-    "webrtc_recording.h",
     "websocket_handshake_request_info.h",
     "webui_config.cc",
     "webui_config.h",
@@ -564,6 +561,14 @@ source_set("browser_sources") {
 
   if (is_android) {
     sources += [ "color_chooser.h" ]
+  }
+
+  if (enable_cdm_provision_fetcher) {
+    sources += [
+      "provision_fetcher_factory.h",
+      "provision_fetcher_impl.cc",
+      "provision_fetcher_impl.h",
+    ]
   }
 
   if (is_linux || is_mac) {

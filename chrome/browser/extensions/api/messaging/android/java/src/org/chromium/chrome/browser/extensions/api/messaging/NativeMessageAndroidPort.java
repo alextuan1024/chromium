@@ -4,20 +4,25 @@
 
 package org.chromium.chrome.browser.extensions.api.messaging;
 
+import android.os.Bundle;
 import android.os.RemoteException;
+import android.os.TransactionTooLargeException;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,6 +35,9 @@ import java.util.List;
 @JNINamespace("extensions")
 @NullMarked
 public class NativeMessageAndroidPort {
+    private static final int MAX_SUCCESS_MESSAGE_SIZE_BYTES = 1024 * 1024; // 1 MB
+    private static final int MAX_TOO_LARGE_MESSAGE_SIZE_BYTES = 64 * 1024 * 1024; // 64 MB
+
     // An observer interface for classes which keep a reference to this class
     // but do not own it, like ExtensionSession.
     public interface Observer {
@@ -86,13 +94,18 @@ public class NativeMessageAndroidPort {
     }
 
     // Initiates connecting this port (which is owned by the extension with the given `extensionId`)
-    // to the external app. Returns an error message if the connection immediately fails, or null on
-    // success.
+    // to the external app whose identity is specified by its package name and optionally, its
+    // signing certificates. Returns an error message if the connection immediately fails, or null
+    // on success.
     @CalledByNative
-    public @Nullable String connectToApp(
-            Profile profile, String packageName, String extensionId, boolean isVerifiedExtension) {
+    public @JniType("std::optional<std::string>") @Nullable String connectToApp(
+            @JniType("Profile*") Profile profile,
+            @JniType("std::string") String packageName,
+            @JniType("std::string") String extensionId,
+            boolean isVerifiedExtension,
+            byte[][] certificates) {
         NativeMessagingManager manager = NativeMessagingManager.getForProfile(profile);
-        return manager.addPort(packageName, extensionId, isVerifiedExtension, this);
+        return manager.addPort(packageName, extensionId, isVerifiedExtension, certificates, this);
     }
 
     // Sets the active callback for this port.
@@ -119,7 +132,7 @@ public class NativeMessageAndroidPort {
     // Called to send a message to the external app. If this port is not yet connected to the app's
     // `mRemotePort` receiver then the message is put in a pending queue.
     @CalledByNative
-    public void forwardMessageToApp(String message) {
+    public void forwardMessageToApp(@JniType("std::string") String message) {
         if (mRemotePort != null) {
             send(message);
         } else {
@@ -181,8 +194,29 @@ public class NativeMessageAndroidPort {
 
     private void send(String message) {
         assert mRemotePort != null;
+        byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
         try {
-            mRemotePort.postMessage(message);
+            // TODO(crbug.com/515159909): Handle messages that exceed Binder transaction size limits
+            // by putting them into SharedMemory instead of byte[].
+            MessagePayload payload = new MessagePayload();
+            payload.setInlineBytes(bytes);
+            Bundle extras = new Bundle();
+            mRemotePort.postMessage(payload, extras);
+            RecordHistogram.recordCustomCountHistogram(
+                    "Extensions.NativeMessaging.Android.SentMessageSize.Success",
+                    bytes.length,
+                    1,
+                    MAX_SUCCESS_MESSAGE_SIZE_BYTES,
+                    50);
+        } catch (TransactionTooLargeException e) {
+            RecordHistogram.recordCustomCountHistogram(
+                    "Extensions.NativeMessaging.Android.SentMessageSize.TooLarge",
+                    bytes.length,
+                    1,
+                    MAX_TOO_LARGE_MESSAGE_SIZE_BYTES,
+                    50);
+            Log.w(TAG, "Failed to post message to external app: message too large", e);
+            closeChannel("Error when communicating with the native messaging host.");
         } catch (RemoteException e) {
             Log.w(TAG, "Failed to post message to external app", e);
             closeChannel("Error when communicating with the native messaging host.");
@@ -194,19 +228,19 @@ public class NativeMessageAndroidPort {
     interface Natives {
         // Forwards a message received from the external Android app to the C++
         // NativeMessageAndroidPort, which delivers it to the extension.
-        void postMessageFromApp(long nativeNativeMessageAndroidPort, String message);
+        void postMessageFromApp(
+                long nativeNativeMessageAndroidPort, @JniType("std::string") String message);
 
         // Notifies the C++ NativeMessageAndroidPort that the channel has been closed
         // (e.g. by the app, due to an error, or during teardown), closing the port
         // and dispatching any error message to the extension.
-        void closeChannel(long nativeNativeMessageAndroidPort, String errorMessage);
+        void closeChannel(
+                long nativeNativeMessageAndroidPort, @JniType("std::string") String errorMessage);
     }
 
     // A helper that receives calls from the external app back to the browser
     // and forwards these calls back to the NativeMessageAndroidPort.
     public static class Callback extends IExtensionNativeMessageCallback.Stub {
-        private static final String TAG = "NMCallback";
-
         private @Nullable NativeMessageAndroidPort mPort;
 
         public Callback(NativeMessageAndroidPort port) {
@@ -217,14 +251,19 @@ public class NativeMessageAndroidPort {
         // IExtensionNativeMessageCallback.onMessage implementation. Called on a
         // binder thread so post a task to the UI thread where `mPort` lives.
         @Override
-        public void onMessage(String message) {
-            if (message != null) {
-                ThreadUtils.postOnUiThread(
-                        () -> {
-                            if (mPort != null) {
-                                mPort.postMessageFromApp(message);
-                            }
-                        });
+        public void onMessage(MessagePayload payload, Bundle extras) {
+            if (payload != null) {
+                // TODO(crbug.com/515159909): Support extracting messages from SharedMemory.
+                byte[] messageBytes = payload.getInlineBytes();
+                if (messageBytes != null) {
+                    String message = new String(messageBytes, StandardCharsets.UTF_8);
+                    ThreadUtils.postOnUiThread(
+                            () -> {
+                                if (mPort != null) {
+                                    mPort.postMessageFromApp(message);
+                                }
+                            });
+                }
             }
         }
 

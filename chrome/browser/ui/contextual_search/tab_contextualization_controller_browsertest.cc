@@ -7,12 +7,13 @@
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -35,9 +36,9 @@ namespace lens {
 namespace {
 
 // Returns the viewport size in physical pixels.
-gfx::Size GetViewportPhysicalSize(Browser* browser) {
+gfx::Size GetViewportPhysicalSize(BrowserWindowInterface* browser) {
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   return gfx::ScaleToCeiledSize(
       web_contents->GetViewBounds().size(),
       web_contents->GetRenderWidgetHostView()->GetDeviceScaleFactor());

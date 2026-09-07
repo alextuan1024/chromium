@@ -5,7 +5,9 @@
 /* #css_wrapper_metadata_start
  * #type=style-lit
  * #import=//resources/cr_elements/cr_shared_vars.css.js
+ * #import=/shared/help_bubble_anchor.css.js
  * #scheme=relative
+ * #include=help-bubble-anchor
  * #css_wrapper_metadata_end */
 
 :host {
@@ -62,7 +64,7 @@
   font-family: inherit;
   font-size: inherit;
   font-weight: inherit;
-  gap: var(--toolbar-chip-icon-label-gap);
+  gap: 0;
   height: var(--toolbar-chip-height);
   justify-content: center;
   min-width: var(--toolbar-chip-height);
@@ -182,9 +184,16 @@
                         var(--color-toolbar-background-subtle-emphasis));
   border-radius: var(--toolbar-chip-border-radius);
   color: inherit;
+  gap: var(--toolbar-chip-icon-label-gap);
 
-  /* Add extra padding to move button text away from rounded corners */
+  /* TODO(crbug.com/526660612): Remove --label-side-spacing.
+   * This implicitly adds a generic rounding cushion (H/4) to the chip. However,
+   * native views use different values for different chips, and none of them
+   * uses H/4. To keep 1:1 pixel parity with native views, each chip still needs
+   * to set its own cushion. Then this is no longer needed, and also causes
+   * double-counting the cushion if the WebUI chips set their own cushion. */
   --label-side-spacing: calc(round(down, var(--toolbar-chip-height) / 4, 1px));
+
   padding-inline-start: calc(var(--toolbar-chip-padding-start)
                              + var(--label-side-spacing));
   padding-inline-end: calc(var(--toolbar-chip-padding-end)
@@ -232,12 +241,6 @@
           var(--ease-out-cubic-bezier);
 }
 
-/* When the label is hidden, collapse the flex gap between the icon and the
- * text so there is no lingering empty space inside the circular button. */
-:host([animates-label]:not([has-label])) #button {
-  gap: 0;
-}
-
 /* Target the label text (the slotted element that does not have a specific
  * "slot" attribute). When the chip expands, this transitions the text from 0
  * width and opacity up to its intrinsic max-content width and full opacity. */
@@ -252,38 +255,15 @@
 }
 
 /* When the label is hidden, crush its width and opacity to 0. */
-:host([animates-label]:not([has-label])) ::slotted(:not([slot])) {
+:host(:not([has-label])) ::slotted(:not([slot])) {
   max-width: 0;
   opacity: 0;
+  overflow: hidden;
 }
 
 #button:disabled {
   opacity: var(--cr-disabled-opacity, 0.38);
   pointer-events: none;
-}
-
-:host-context(.help-anchor-highlight) #button {
-  background-color: transparent;
-}
-
-:host-context(.help-anchor-highlight) #button::before {
-  animation: pulse 1600ms infinite;
-  background-color: var(--color-button-feature-attention-highlight);
-  opacity: 1;
-}
-
-@keyframes pulse {
-  0% {
-    inset: 0;
-    animation-timing-function: cubic-bezier(0.333, 0.667, 0.667, 1);
-  }
-  50% {
-    inset: 3px;
-    animation-timing-function: cubic-bezier(0.333, 0.667, 0.667, 1);
-  }
-  100% {
-    inset: 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

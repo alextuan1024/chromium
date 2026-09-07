@@ -38,6 +38,15 @@ chromium-metrics-reviews@google.com.
   <variant name="Encrypted"/>
 </variants>
 
+<variants name="FindLastSessionFileResult">
+  <variant name="Found"
+      summary="a valid session file was found (either the newest file or
+               after falling back to older files)"/>
+  <variant name="NotFound"
+      summary="no valid session file was found (either 0 candidate files
+               existed or all candidate files were invalid)"/>
+</variants>
+
 <variants name="SmartRestartTabCount">
   <variant name="" summary="all sessions"/>
   <variant name=".HighTab" summary="sessions with more than 20 tabs"/>
@@ -133,6 +142,27 @@ chromium-metrics-reviews@google.com.
   <token key="SessionType" variants="CommandStorageSessionType"/>
   <token key="EncryptedStatus" variants="EncryptedStatus"/>
   <token key="Slice" variants="AppendCommandsSlice"/>
+</histogram>
+
+<histogram
+    name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.FindLastSessionFile.{Result}.FilesRead"
+    units="files" expires_after="2027-09-01">
+  <owner>jacastro@google.com</owner>
+  <owner>chrome-counter-abuse-alerts@google.com</owner>
+  <summary>
+    The number of candidate session files inspected/read by
+    CommandStorageBackend for {SessionType} sessions ({EncryptedStatus}) when
+    {Result}.
+
+    For 'Found', records the number of candidate files inspected (1 if the
+    newest file was valid, &gt;=2 if fallback files were inspected). For
+    'NotFound', records 0 if no candidate files existed in the session directory
+    (e.g. fresh profile), or &gt;=1 if candidate files existed but all lacked a
+    valid marker. Recorded during backend initialization.
+  </summary>
+  <token key="SessionType" variants="CommandStorageSessionType"/>
+  <token key="EncryptedStatus" variants="EncryptedStatus"/>
+  <token key="Result" variants="FindLastSessionFileResult"/>
 </histogram>
 
 <histogram
@@ -315,6 +345,26 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Session.PercentDurationInTabletModeOnWindows" units="%"
+    expires_after="2027-06-20">
+  <owner>koretadaniel@chromium.org</owner>
+  <owner>chrome-desktop-ui-waterloo@google.com</owner>
+  <summary>
+    The percentage of a session (as defined by DesktopSessionDurationTracker)
+    spent in tablet mode. Samples correspond one-to-one with
+    Session.TotalDuration samples, except that sessions of zero length are
+    skipped. This metric is only available on Windows.
+
+    Session.TotalDuration.TabletMode summed over the population and divided by
+    Session.TotalDuration gives the aggregate proportion of browsing time spent
+    in tablet mode. This histogram gives the shape behind that proportion: the
+    same aggregate can come from many users occasionally rotating a convertible,
+    which lands in the low buckets, or from a smaller set of users who browse in
+    tablet mode all the time, which lands in the 100 bucket. The two imply
+    different amounts of touch investment, so they are worth telling apart.
+  </summary>
+</histogram>
+
 <histogram name="Session.Restore.SettingChanged.{SessionRestoreInfobarType}"
     enum="Boolean" expires_after="2027-02-07">
   <owner>musalmaan@chromium.org</owner>
@@ -381,7 +431,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.SmartRestart.Lock.SuppressedBeforeUnloadCount"
-    units="tabs" expires_after="2026-12-27">
+    units="tabs" expires_after="2027-02-28">
   <owner>victortan@chromium.org</owner>
   <owner>chrome-analysis-team@google.com</owner>
   <summary>
@@ -394,7 +444,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.SmartRestart.Lock.SuppressedBeforeUnloadEngagementScore"
-    units="units" expires_after="2026-12-27">
+    units="units" expires_after="2027-02-28">
   <owner>victortan@chromium.org</owner>
   <owner>chrome-analysis-team@google.com</owner>
   <summary>
@@ -406,7 +456,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.SmartRestart.Lock.SuppressedBeforeUnloadRatio"
-    units="%" expires_after="2026-12-27">
+    units="%" expires_after="2027-02-28">
   <owner>victortan@chromium.org</owner>
   <owner>chrome-analysis-team@google.com</owner>
   <summary>
@@ -541,7 +591,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.TotalDuration.IgnoreNonInteractiveTimeForOSLaunchedSessions"
-    units="ms" expires_after="2026-12-27">
+    units="ms" expires_after="2027-02-28">
   <owner>atharvmaan@google.com</owner>
   <owner>chrome-desktop-ui-waterloo@google.com</owner>
   <summary>
@@ -1407,7 +1457,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SessionRestore.WindowDiffAfterRestart.{Type}" units="windows"
-    expires_after="2026-12-01">
+    expires_after="2027-02-28">
   <owner>victortan@chromium.org</owner>
   <owner>chrome-analysis-team@google.com</owner>
   <summary>

@@ -10,7 +10,6 @@
 #include "chrome/browser/dictation/session_ui_impl.h"
 #include "chrome/browser/dictation/test_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
@@ -21,6 +20,11 @@ namespace dictation {
 
 DictationInteractiveBrowserTestBase::DictationInteractiveBrowserTestBase() =
     default;
+
+DictationInteractiveBrowserTestBase::DictationInteractiveBrowserTestBase(
+    bool session_ends_on_stream_end)
+    : InteractiveBrowserTestMixin<DictationBrowserTestBase>(
+          session_ends_on_stream_end) {}
 
 DictationInteractiveBrowserTestBase::~DictationInteractiveBrowserTestBase() =
     default;
@@ -131,6 +135,18 @@ DictationInteractiveBrowserTestBase::ExtensionAPISetStreamState(
     ASSERT_NE(last_started_provider_, nullptr);
     ExtensionSendStreamStateUpdate(
         profile(), last_started_provider_->stream_id_for_testing(), state);
+  }));
+}
+
+DictationInteractiveBrowserTestBase::MultiStep
+DictationInteractiveBrowserTestBase::ExtensionAPISetStreamState(
+    ExtensionStreamState state,
+    std::optional<int> error_code) {
+  return Steps(Do([this, state, error_code] {
+    ASSERT_NE(last_started_provider_, nullptr);
+    ExtensionSendStreamStateUpdate(
+        profile(), last_started_provider_->stream_id_for_testing(), state,
+        error_code);
   }));
 }
 

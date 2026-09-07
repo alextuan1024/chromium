@@ -21,11 +21,26 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version.h"
+#include "components/crx_file/id_util.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager.h"
 #include "components/optimization_guide/core/model_execution/test/fake_component_update_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace optimization_guide {
+
+namespace {
+
+std::string GetCrxIdForPublicKey(const std::string& public_key) {
+  std::vector<uint8_t> public_key_hash;
+  if (!base::HexStringToBytes(public_key, &public_key_hash)) {
+    public_key_hash =
+        std::vector<uint8_t>(public_key.begin(), public_key.end());
+    public_key_hash.resize(32, 0);
+  }
+  return crx_file::id_util::GenerateIdFromHash(public_key_hash);
+}
+
+}  // namespace
 
 TestManifestAssetManagerComponentState::InstallTarget::InstallTarget() =
     default;
@@ -77,8 +92,10 @@ class TestManifestAssetManagerComponentState::DelegateImpl final
     CHECK(!registration.pending_registration);
     CHECK(!registration.pending_uninstall);
     registration.manager = manager;
+    state_->manager_ = manager;
     registration.target = {public_key_hex, base::Version(target_version)};
     registration.pending_registration = true;
+    registration.registration_count++;
 
     if (!state_->defer_registration_callbacks_) {
       state_->RunPendingRegistrations(registration);
@@ -95,6 +112,7 @@ class TestManifestAssetManagerComponentState::DelegateImpl final
     CHECK(!registration.pending_registration);
     CHECK(!registration.pending_uninstall);
     registration.manager = manager;
+    state_->manager_ = manager;
     registration.target.public_key_hex = public_key_hex;
     registration.target.version = std::nullopt;
     registration.pending_uninstall = true;
@@ -257,6 +275,12 @@ void TestManifestAssetManagerComponentState::MaybeCompleteDownload(
   registration.has_foreground_update_requested = false;
   registration.has_background_update_requested = false;
 
+  std::string crx_id = GetCrxIdForPublicKey(public_key);
+  FakeComponent comp(crx_id, 1000);
+  auto item =
+      comp.CreateUpdateItem(update_client::ComponentState::kUpdated, 1000);
+  component_update_service_.SendUpdate(item);
+
   VLOG(2) << "Posted OnAssetReady: " << public_key;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
@@ -323,6 +347,33 @@ void TestManifestAssetManagerComponentState::UpdateLanguageDetectionModel(
 void TestManifestAssetManagerComponentState::SimulateRestart() {
   VLOG(2) << "SimulateRestart";
   registrations_.clear();
+  manager_.reset();
+}
+
+void TestManifestAssetManagerComponentState::ClearInstalledComponents() {
+  installed_components_.clear();
+}
+
+void TestManifestAssetManagerComponentState::Uninstall(
+    const std::string& public_key) {
+  installed_components_.erase(public_key);
+}
+
+void TestManifestAssetManagerComponentState::SimulateExternalUninstall(
+    const std::string& public_key) {
+  installed_components_.erase(public_key);
+  if (!manager_) {
+    return;
+  }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ManifestAssetManager::OnAssetUninstalled,
+                                manager_, public_key));
+}
+
+int TestManifestAssetManagerComponentState::GetRegistrationCount(
+    const std::string& public_key) const {
+  auto it = registrations_.find(public_key);
+  return it == registrations_.end() ? 0 : it->second.registration_count;
 }
 
 bool TestManifestAssetManagerComponentState::IsRegistered(
@@ -373,6 +424,20 @@ bool TestManifestAssetManagerComponentState::IsInstalled(
 bool TestManifestAssetManagerComponentState::IsUninstalled(
     const std::string& public_key) const {
   return !installed_components_.contains(public_key);
+}
+
+void TestManifestAssetManagerComponentState::UpdateDownloadProgress(
+    const std::string& public_key,
+    uint64_t downloaded_bytes,
+    uint64_t total_bytes) {
+  std::string crx_id = GetCrxIdForPublicKey(public_key);
+  FakeComponent comp(crx_id, total_bytes);
+  auto item = comp.CreateUpdateItem(
+      downloaded_bytes == total_bytes
+          ? update_client::ComponentState::kUpdated
+          : update_client::ComponentState::kDownloading,
+      downloaded_bytes);
+  component_update_service_.SendUpdate(item);
 }
 
 }  // namespace optimization_guide

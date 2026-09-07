@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string_view>
 
 #include "base/check.h"
 #include "base/check_op.h"
@@ -34,7 +35,7 @@ MemoryCoordinatorPolicyManager::GroupState::SetMemoryLimitForPolicy(
   auto it = requested_limits_.find(policy);
   const int old_policy_limit = (it != requested_limits_.end())
                                    ? it->second
-                                   : base::MemoryConsumer::kDefaultMemoryLimit;
+                                   : base::MemoryLimit::Default().percent();
 
   // Early exit if it didn't change.
   if (percentage == old_policy_limit) {
@@ -42,7 +43,7 @@ MemoryCoordinatorPolicyManager::GroupState::SetMemoryLimitForPolicy(
   }
 
   // Update the map, keeping it small by removing default entries.
-  if (percentage == base::MemoryConsumer::kDefaultMemoryLimit) {
+  if (percentage == base::MemoryLimit::Default().percent()) {
     DCHECK(it != requested_limits_.end());
     requested_limits_.erase(it);
   } else {
@@ -81,7 +82,7 @@ int MemoryCoordinatorPolicyManager::GroupState::RecomputeMemoryLimit() const {
   // The aggregate limit is the product of all policy limits.
   // For example, if policy A requests 80% and policy B requests 50%, the
   // aggregate limit is 40% (0.8 * 0.5 = 0.4).
-  double result = base::MemoryConsumer::kDefaultMemoryLimit;
+  double result = base::MemoryLimit::Default().percent();
   for (auto const& [policy, limit] : requested_limits_) {
     result *= limit / 100.0;
   }
@@ -156,7 +157,7 @@ void MemoryCoordinatorPolicyManager::RemovePolicy(
     for (auto const& [consumer_id, group_state] : host_state->groups) {
       // Setting the default limit clears the policy's requested limit.
       if (std::optional<int> new_limit = group_state->SetMemoryLimitForPolicy(
-              policy, base::MemoryConsumer::kDefaultMemoryLimit)) {
+              policy, base::MemoryLimit::Default().percent())) {
         updates.push_back({consumer_id, *new_limit, /*release_memory=*/false});
       }
     }
@@ -250,7 +251,7 @@ void MemoryCoordinatorPolicyManager::OnConsumerGroupRemoved(
 void MemoryCoordinatorPolicyManager::OnMemoryLimitChanged(
     uint32_t consumer_id,
     ChildProcessId child_process_id,
-    int memory_limit) {
+    base::MemoryLimit memory_limit) {
   for (auto& observer : diagnostic_observers_) {
     observer.OnMemoryLimitChanged(consumer_id, child_process_id, memory_limit);
   }
@@ -291,8 +292,8 @@ void MemoryCoordinatorPolicyManager::UpdateConsumers(
   for (auto const& [child_id, host_state] : hosts_) {
     std::vector<MemoryConsumerUpdate> updates;
     for (auto const& [consumer_id, group_state] : host_state->groups) {
-      if (filter(consumer_id, group_state->traits(), host_state->process_type,
-                 child_id)) {
+      if (filter(consumer_id, group_state->consumer_name(),
+                 group_state->traits(), host_state->process_type, child_id)) {
         updates.push_back({consumer_id, percentage, release_memory});
       }
     }
@@ -314,9 +315,9 @@ void MemoryCoordinatorPolicyManager::UpdateConsumersForProcess(
     GroupState& group_state = GetGroupState(host_state, update.consumer_id);
 
     std::optional<int> new_effective_limit;
-    if (update.percentage) {
+    if (update.memory_limit) {
       new_effective_limit =
-          group_state.SetMemoryLimitForPolicy(policy, *update.percentage);
+          group_state.SetMemoryLimitForPolicy(policy, *update.memory_limit);
     }
 
     // Redundant updates that have no observable effect on the consumer group
@@ -333,7 +334,7 @@ void MemoryCoordinatorPolicyManager::UpdateConsumersForProcess(
 #endif
 
     // Replace the policy request with the computed aggregate limit for the IPC.
-    update.percentage = new_effective_limit;
+    update.memory_limit = new_effective_limit;
     return false;
   });
 

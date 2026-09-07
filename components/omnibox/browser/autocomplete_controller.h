@@ -144,6 +144,9 @@ class AutocompleteController : public AutocompleteProviderListener,
     // Invoked when autocomplete stop timer is triggered.
     virtual void OnAutocompleteStopTimerTriggered(
         const AutocompleteInput& input) {}
+
+    // Invoked when the |controller| is being destroyed.
+    virtual void OnControllerDestroying(AutocompleteController* controller) {}
   };
 
   // Converts `UpdateType` to string.
@@ -337,6 +340,9 @@ class AutocompleteController : public AutocompleteProviderListener,
 #if BUILDFLAG(IS_IOS)
   friend class FakeSuggestionsAutocompleteController;
 #endif
+  FRIEND_TEST_ALL_PREFIXES(
+      AutocompleteControllerTest,
+      UpdateKeywordDescriptions_StaticContextualSearchSuggestion);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
                            FilterMatchesForInstantKeywordWithBareAt);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,

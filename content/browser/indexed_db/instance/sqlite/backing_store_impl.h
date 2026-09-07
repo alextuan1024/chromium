@@ -67,7 +67,13 @@ class CONTENT_EXPORT BackingStoreImpl : public BackingStore {
   // No PartitionedLockManager-level locks are taken on either backing store,
   // and it's up to the caller to ensure there will be no other simultaneous
   // operations.
-  Status MigrateFrom(BackingStore& source);
+  //
+  // If there are any pre-existing SQLite databases in `directory_`, this will
+  // attempt to delete them, and refuse to proceed unless that succeeds.
+  //
+  // `verify` hard-CHECKs that migration succeeded, or at least that it looks
+  // successful. This does extra work; use with caution.
+  Status MigrateFrom(BackingStore& source, bool verify = false);
 
   // BackingStore:
   bool CanOpportunisticallyClose() const override;

@@ -219,7 +219,7 @@ public class WebContentsAccessibilityTest {
     private static final String INPUT_RANGE_VALUE_MISMATCH =
             "Value for <input type='range'> is incorrect, did you honor 'step' value?";
     private static final String INPUT_RANGE_EVENT_ERROR =
-            "TYPE_VIEW_SCROLLED event not received before timeout.";
+            "TYPE_WINDOW_CONTENT_CHANGED event not received before timeout.";
     private static final String CACHING_ERROR = "AccessibilityNodeInfo cache has stale data";
     private static final String NODE_EXTRAS_UNCLIPPED_ERROR =
             "AccessibilityNodeInfo object should have unclipped bounds in extras bundle";
@@ -246,6 +246,38 @@ public class WebContentsAccessibilityTest {
 
     // Constant values for unit tests
     private static final int UNSUPPRESSED_EXPECTED_COUNT = 15;
+
+    // Text formatting histogram names
+    private static final String HISTO_TEXT_FORMATTING_TOTAL_DURATION =
+            "Accessibility.Android.TextFormatting.Performance.TotalDuration";
+    private static final String HISTO_TEXT_FORMATTING_TOTAL_DURATION_NO_STYLE =
+            "Accessibility.Android.TextFormatting.Performance.TotalDuration.NoStyleData";
+    private static final String HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION =
+            "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration";
+    private static final String HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION_NO_STYLE =
+            "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration.NoStyleData";
+    private static final String HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION =
+            "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration";
+    private static final String HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION_NO_STYLE =
+            "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration.NoStyleData";
+    private static final String HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION =
+            "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration";
+    private static final String HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION_NO_STYLE =
+            "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration.NoStyleData";
+    private static final String HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION =
+            "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration";
+    private static final String HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION_NO_STYLE =
+            "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration.NoStyleData";
+    private static final String HISTO_TEXT_FORMATTING_DURATION_FOR_RANGE_COUNT_11_TO_20 =
+            "Accessibility.Android.TextFormatting.Performance.DurationForRangeCount.11To20";
+    private static final String HISTO_TEXT_FORMATTING_RANGES_TOTAL_COUNT =
+            "Accessibility.Android.TextFormatting.Ranges.TotalCount";
+    private static final String HISTO_TEXT_FORMATTING_RANGES_COUNT_FOR_TEXT_LENGTH_26_TO_50 =
+            "Accessibility.Android.TextFormatting.Ranges.CountForTextLength.26To50";
+    private static final String HISTO_TEXT_FORMATTING_TEXT_LENGTH =
+            "Accessibility.Android.TextFormatting.TextLength";
+    private static final String HISTO_TEXT_FORMATTING_TEXT_LENGTH_NO_STYLE =
+            "Accessibility.Android.TextFormatting.TextLength.NoStyleData";
 
     private AccessibilityNodeInfoCompat mNodeInfo;
     private AccessibilityContentShellTestData mTestData;
@@ -451,9 +483,11 @@ public class WebContentsAccessibilityTest {
     private void scrollRangeAndWaitForEvent(
             int viewId, AccessibilityNodeInfoCompat.AccessibilityActionCompat scrollAction)
             throws ExecutionException {
+        mTestData.setTypeWindowContentChangedCount(0);
         performActionOnUiThread(viewId, scrollAction, new Bundle());
-        CriteriaHelper.pollUiThread(() -> mTestData.hasReceivedEvent(), INPUT_RANGE_EVENT_ERROR);
-        mTestData.setReceivedEvent(false);
+        CriteriaHelper.pollUiThread(
+            () -> mTestData.getTypeWindowContentChangedCount() > 0,
+            INPUT_RANGE_EVENT_ERROR);
     }
 
     private ClipboardManager getClipboardManager() {
@@ -520,7 +554,7 @@ public class WebContentsAccessibilityTest {
      * @param args Bundle optional arguments
      * @throws ExecutionException Error
      */
-    private void performTextActionOnUiThread(
+    private void performTextActionOnUiThreadAndWaitForTraversalAndSelectionEvents(
             int viewId, AccessibilityNodeInfoCompat.AccessibilityActionCompat action, Bundle args)
             throws ExecutionException {
         // Reset values for traversal and selection events.
@@ -567,7 +601,7 @@ public class WebContentsAccessibilityTest {
 
     /**
      * Helper method for performing a movement-at-granularity action and asserting the resulting
-     * traversal and selection bounds.
+     * traversal.
      *
      * @param viewId int virtualViewId of the target node.
      * @param moveAtGranularityAction AccessibilityActionCompat movement action to perform.
@@ -575,10 +609,36 @@ public class WebContentsAccessibilityTest {
      * @param extendSelection boolean whether to extend selection or move cursor.
      * @param expectedTraverseFrom int expected start index of the traversed character/word range.
      * @param expectedTraverseTo int expected end index of the traversed character/word range.
-     * @param expectedSelectionFrom int expected start index of the resulting selection (pass -1 if
-     *     selection events are not expected or asserted).
-     * @param expectedSelectionTo int expected end index of the resulting selection (pass -1 if
-     *     selection events are not expected or asserted).
+     * @throws ExecutionException Error during UI-thread action dispatch.
+     */
+    private void moveAtGranularityAndAssertBounds(
+            int viewId,
+            AccessibilityNodeInfoCompat.AccessibilityActionCompat moveAtGranularityAction,
+            int granularity,
+            boolean extendSelection,
+            int expectedTraverseFrom,
+            int expectedTraverseTo)
+            throws ExecutionException {
+        Bundle args = new Bundle();
+        args.putInt(ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, granularity);
+        args.putBoolean(ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, extendSelection);
+        performTextActionOnUiThreadAndWaitForTraversalEvent(viewId, moveAtGranularityAction, args);
+        Assert.assertEquals(expectedTraverseFrom, mTestData.getTraverseFromIndex());
+        Assert.assertEquals(expectedTraverseTo, mTestData.getTraverseToIndex());
+    }
+
+    /**
+     * Helper method for performing a movement-at-granularity action and asserting the resulting
+     * traversal and selection bounds. Selection bounds are changed only on editable nodes.
+     *
+     * @param viewId int virtualViewId of the target node.
+     * @param moveAtGranularityAction AccessibilityActionCompat movement action to perform.
+     * @param granularity int movement granularity (e.g. MOVEMENT_GRANULARITY_CHARACTER).
+     * @param extendSelection boolean whether to extend selection or move cursor.
+     * @param expectedTraverseFrom int expected start index of the traversed character/word range.
+     * @param expectedTraverseTo int expected end index of the traversed character/word range.
+     * @param expectedSelectionFrom int expected start index of the resulting selection.
+     * @param expectedSelectionTo int expected end index of the resulting selection.
      * @throws ExecutionException Error during UI-thread action dispatch.
      */
     private void moveAtGranularityAndAssertBounds(
@@ -591,19 +651,16 @@ public class WebContentsAccessibilityTest {
             int expectedSelectionFrom,
             int expectedSelectionTo)
             throws ExecutionException {
+        Assert.assertTrue(createAccessibilityNodeInfo(viewId).isEditable());
         Bundle args = new Bundle();
         args.putInt(ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, granularity);
         args.putBoolean(ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, extendSelection);
-        if (expectedSelectionFrom == -1 && expectedSelectionTo == -1) {
-            performTextActionOnUiThreadAndWaitForTraversalEvent(
-                    viewId, moveAtGranularityAction, args);
-        } else {
-            performTextActionOnUiThread(viewId, moveAtGranularityAction, args);
-            Assert.assertEquals(expectedSelectionFrom, mTestData.getSelectionFromIndex());
-            Assert.assertEquals(expectedSelectionTo, mTestData.getSelectionToIndex());
-        }
+        performTextActionOnUiThreadAndWaitForTraversalAndSelectionEvents(
+                viewId, moveAtGranularityAction, args);
         Assert.assertEquals(expectedTraverseFrom, mTestData.getTraverseFromIndex());
         Assert.assertEquals(expectedTraverseTo, mTestData.getTraverseToIndex());
+        Assert.assertEquals(expectedSelectionFrom, mTestData.getSelectionFromIndex());
+        Assert.assertEquals(expectedSelectionTo, mTestData.getSelectionToIndex());
     }
 
     /**
@@ -2182,9 +2239,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ true,
                 /* expectedTraverseFrom= */ 0,
-                /* expectedTraverseTo= */ 1,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 1);
 
         // 2. Set selection from p1 (offset 2) to p2 (offset 6).
         setAndAssertExtendedSelection(
@@ -2198,9 +2253,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ true,
                 /* expectedTraverseFrom= */ 6,
-                /* expectedTraverseTo= */ 7,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 7);
     }
 
     /**
@@ -2209,7 +2262,8 @@ public class WebContentsAccessibilityTest {
      */
     @Test
     @SmallTest
-    public void testEvent_MovementAtGranularity_ChildOffsetSelection() throws Throwable {
+    public void testEvent_MovementAtGranularity_WithExtendedSelectionOverEditableNode()
+            throws Throwable {
         setupTestWithHTML(
                 """
                 <p id="p1">FirstParagraph</p>
@@ -2238,33 +2292,152 @@ public class WebContentsAccessibilityTest {
                 /* expectedSelectionFrom= */ 0,
                 /* expectedSelectionTo= */ 1);
 
-        // 3. Set extended selection from beginning of p1 to end of editable using child offset.
+        // 3. Set extended selection from beginning of p1 to the end of editable. Since the next
+        // node is a text-selectable node, a text offset is used.
         setAndAssertExtendedSelection(
-                rootVvid,
-                p1Vvid,
-                0,
-                OFFSET_TYPE_TEXT,
-                rootVvid,
-                input1Index + 1,
-                OFFSET_TYPE_CHILD,
-                p1Vvid,
-                0,
-                OFFSET_TYPE_TEXT,
-                p2Vvid,
-                0,
-                OFFSET_TYPE_TEXT);
+                rootVvid, p1Vvid, 0, OFFSET_TYPE_TEXT, p2Vvid, 0, OFFSET_TYPE_TEXT);
 
-        // 4. Moving forward with extended selection on input1 advances from the local
-        // selection cursor (1 -> 2).
+        // 4. Set accessibility focus to p2 since selection end is on p2.
+        performActionOnUiThread(p2Vvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        // 5. Move forward with extended selection on p2 succeeds (0 -> 1).
         moveAtGranularityAndAssertBounds(
-                input1Vvid,
+                p2Vvid,
                 ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ true,
+                /* expectedTraverseFrom= */ 0,
+                /* expectedTraverseTo= */ 1);
+    }
+
+    /**
+     * Test forward movement at character granularity with extended selection across a
+     * non-text-selectable node.
+     */
+    @Test
+    @SmallTest
+    public void
+            testEvent_MovementAtGranularity_WithExtendedSelectionForwardOverNonTextSelectableNode()
+                    throws Throwable {
+        setupTestWithHTML(
+                """
+                <p id="p1">P1</p>
+                <a id="link" href="https://en.wikipedia.org/wiki/Wikipedia" title="Wikipedia">Wikipedia</a>
+                <p id="p2">P2</p>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int linkVvid = waitForNodeMatching(sClassNameMatcher, "android.view.View");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        int linkIndex = 1;
+
+        // Focus on the link node and send a forward movement request to it.
+        focusNode(linkVvid);
+        moveAtGranularityAndAssertBounds(
+                linkVvid,
+                ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
+                MOVEMENT_GRANULARITY_CHARACTER,
+                /* extendSelection= */ true,
+                /* expectedTraverseFrom= */ 0,
+                /* expectedTraverseTo= */ 1);
+
+        // Since the user extended selection forward into the link (non-text-selectable node), the
+        // selection end is set to the end of the link node.
+        setAndAssertExtendedSelection(
+                rootVvid,
+                rootVvid,
+                linkIndex,
+                OFFSET_TYPE_CHILD,
+                rootVvid,
+                linkIndex + 1,
+                OFFSET_TYPE_CHILD);
+
+        // Send another forward movement on the link node.
+        // Since the link is already fully selected, forward movement fails.
+        Bundle args = new Bundle();
+        args.putInt(ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, MOVEMENT_GRANULARITY_CHARACTER);
+        args.putBoolean(ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, true);
+        Assert.assertFalse(
+                performActionOnUiThread(linkVvid, ACTION_NEXT_AT_MOVEMENT_GRANULARITY, args));
+
+        // Focus on P2 and move forward again. The first character of P2 should be selected.
+        focusNode(p2Vvid);
+        moveAtGranularityAndAssertBounds(
+                p2Vvid,
+                ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
+                MOVEMENT_GRANULARITY_CHARACTER,
+                /* extendSelection= */ true,
+                /* expectedTraverseFrom= */ 0,
+                /* expectedTraverseTo= */ 1);
+    }
+
+    /**
+     * Test backward movement at character granularity with extended selection across a
+     * non-text-selectable node.
+     */
+    @Test
+    @SmallTest
+    public void
+            testEvent_MovementAtGranularity_WithExtendedSelectionBackwardOverNonTextSelectableNode()
+                    throws Throwable {
+        setupTestWithHTML(
+                """
+                <p id="p1">P1</p>
+                <a id="link" href="https://en.wikipedia.org/wiki/Wikipedia" title="Wikipedia">Wikipedia</a>
+                <p id="p2">P2</p>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int linkVvid = waitForNodeMatching(sClassNameMatcher, "android.view.View");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        int linkIndex = 1;
+
+        // Focus on P2 and set selection to the beginning of P2.
+        focusNode(p2Vvid);
+        setAndAssertExtendedSelection(
+                rootVvid, p2Vvid, 0, OFFSET_TYPE_TEXT, p2Vvid, 0, OFFSET_TYPE_TEXT);
+
+        // Send backward movement request to P2.
+        // The request should fail since the cursor is at the beginning of P2 (offset 0).
+        Bundle args = new Bundle();
+        args.putInt(ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, MOVEMENT_GRANULARITY_CHARACTER);
+        args.putBoolean(ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, true);
+        Assert.assertFalse(
+                performActionOnUiThread(p2Vvid, ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY, args));
+
+        // Focus on the link node and send another backward movement request.
+        focusNode(linkVvid);
+        moveAtGranularityAndAssertBounds(
+                linkVvid,
+                ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY,
+                MOVEMENT_GRANULARITY_CHARACTER,
+                /* extendSelection= */ true,
+                /* expectedTraverseFrom= */ 8,
+                /* expectedTraverseTo= */ 9);
+
+        // Since the user extended selection backward into the link (non-text-selectable node), the
+        // selection end is set to the beginning of the link node.
+        setAndAssertExtendedSelection(
+                rootVvid, p2Vvid, 0, OFFSET_TYPE_TEXT, rootVvid, linkIndex, OFFSET_TYPE_CHILD);
+
+        // Send another backward movement on the link node.
+        // Since the link is already fully selected from offset 0, backward movement fails.
+        Assert.assertFalse(
+                performActionOnUiThread(linkVvid, ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY, args));
+
+        // Focus on P1 and move backward again. The last character of P1 should be selected.
+        focusNode(p1Vvid);
+        moveAtGranularityAndAssertBounds(
+                p1Vvid,
+                ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY,
+                MOVEMENT_GRANULARITY_CHARACTER,
+                /* extendSelection= */ true,
                 /* expectedTraverseFrom= */ 1,
-                /* expectedTraverseTo= */ 2,
-                /* expectedSelectionFrom= */ 0,
-                /* expectedSelectionTo= */ 2);
+                /* expectedTraverseTo= */ 2);
     }
 
     /**
@@ -2292,18 +2465,14 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 0,
-                /* expectedTraverseTo= */ 1,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 1);
         moveAtGranularityAndAssertBounds(
                 p1Vvid,
                 ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 1,
-                /* expectedTraverseTo= */ 2,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 2);
 
         // Clear accessibility focus on p1.
         performActionOnUiThread(p1Vvid, ACTION_CLEAR_ACCESSIBILITY_FOCUS, null);
@@ -2316,9 +2485,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 2,
-                /* expectedTraverseTo= */ 3,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 3);
 
         // Move focus to p2 (new node: granularity index resets for p2).
         focusNode(p2Vvid);
@@ -2328,9 +2495,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 0,
-                /* expectedTraverseTo= */ 1,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 1);
     }
 
     /**
@@ -2358,9 +2523,7 @@ public class WebContentsAccessibilityTest {
                         MOVEMENT_GRANULARITY_CHARACTER,
                         extendSelection,
                         /* expectedTraverseFrom= */ i,
-                        /* expectedTraverseTo= */ i + 1,
-                        /* expectedSelectionFrom= */ -1,
-                        /* expectedSelectionTo= */ -1);
+                        /* expectedTraverseTo= */ i + 1);
             }
 
             for (int i = 5; i > 0; i--) {
@@ -2370,9 +2533,7 @@ public class WebContentsAccessibilityTest {
                         MOVEMENT_GRANULARITY_CHARACTER,
                         extendSelection,
                         /* expectedTraverseFrom= */ i - 1,
-                        /* expectedTraverseTo= */ i,
-                        /* expectedSelectionFrom= */ -1,
-                        /* expectedSelectionTo= */ -1);
+                        /* expectedTraverseTo= */ i);
             }
         }
     }
@@ -2400,9 +2561,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 4,
-                /* expectedTraverseTo= */ 5,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 5);
     }
 
     /**
@@ -2726,9 +2885,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 3,
-                /* expectedTraverseTo= */ 4,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 4);
 
         // Focus away to clean up.
         performActionOnUiThread(rootVvid, ACTION_ACCESSIBILITY_FOCUS, null);
@@ -2751,9 +2908,7 @@ public class WebContentsAccessibilityTest {
                 MOVEMENT_GRANULARITY_CHARACTER,
                 /* extendSelection= */ false,
                 /* expectedTraverseFrom= */ 0,
-                /* expectedTraverseTo= */ 1,
-                /* expectedSelectionFrom= */ -1,
-                /* expectedSelectionTo= */ -1);
+                /* expectedTraverseTo= */ 1);
     }
 
     // ------------------ Tests of AccessibilityNodeInfo objects ------------------ //
@@ -2778,12 +2933,8 @@ public class WebContentsAccessibilityTest {
 
         // Perform a series of slider increments and check results.
         for (int i = 1; i <= 10; i++) {
-            // Increment our slider using action, and poll until we receive the scroll event.
-            Assert.assertTrue(
-                    performActionOnUiThread(
-                            inputNodeVirtualViewId, ACTION_SCROLL_FORWARD, new Bundle()));
-            CriteriaHelper.pollUiThread(
-                    () -> mTestData.hasReceivedEvent(), INPUT_RANGE_EVENT_ERROR);
+            // Increment our slider using action, and poll until we receive the event.
+            scrollRangeAndWaitForEvent(inputNodeVirtualViewId, ACTION_SCROLL_FORWARD);
 
             // Refresh our node info to get the latest RangeInfo child object.
             mNodeInfo = createAccessibilityNodeInfo(inputNodeVirtualViewId);
@@ -2794,19 +2945,12 @@ public class WebContentsAccessibilityTest {
                     20 + i,
                     mNodeInfo.getRangeInfo().getCurrent(),
                     0.001);
-
-            // Reset polling value for next test
-            mTestData.setReceivedEvent(false);
         }
 
         // Perform a series of slider decrements and check results.
         for (int i = 1; i <= 20; i++) {
-            // Decrement our slider using action, and poll until we receive the scroll event.
-            Assert.assertTrue(
-                    performActionOnUiThread(
-                            inputNodeVirtualViewId, ACTION_SCROLL_BACKWARD, new Bundle()));
-            CriteriaHelper.pollUiThread(
-                    () -> mTestData.hasReceivedEvent(), INPUT_RANGE_EVENT_ERROR);
+            // Decrement our slider using action, and poll until we receive the event.
+            scrollRangeAndWaitForEvent(inputNodeVirtualViewId, ACTION_SCROLL_BACKWARD);
 
             // Refresh our node info to get the latest RangeInfo child object.
             mNodeInfo = createAccessibilityNodeInfo(inputNodeVirtualViewId);
@@ -2817,9 +2961,6 @@ public class WebContentsAccessibilityTest {
                     30 - i,
                     mNodeInfo.getRangeInfo().getCurrent(),
                     0.001);
-
-            // Reset polling value for next test
-            mTestData.setReceivedEvent(false);
         }
     }
 
@@ -3401,8 +3542,8 @@ public class WebContentsAccessibilityTest {
     }
 
     /**
-     * Test |AccessibilityNodeInfo| object actions for node is specifically user scrollable,
-     * and not just programmatically scrollable.
+     * Test |AccessibilityNodeInfo| object actions for node is specifically user scrollable, and not
+     * just programmatically scrollable.
      */
     @Test
     @SmallTest
@@ -4145,23 +4286,13 @@ public class WebContentsAccessibilityTest {
                 rootVvid, paragraph1Vvid, 1, OFFSET_TYPE_TEXT, paragraph2Vvid, 5, OFFSET_TYPE_TEXT);
 
         // Selection from the beginning of one editable to the end of another.
-        // Since the editables are fully selected, this is supported, but selection positions are
-        // specified using child offset.
-        // TODO(crbug.com/443078007): Returned selection contradicts the selection boundary rules
-        // since selection start is inside an editable and selection end is outside of it. This does
-        // not cause user visible issues, but if TB sends back the same selection to Chrome, it will
-        // be rejected. Fix the issue here and in next test cases.
+        // This is supported since the editables are fully selected, but because the node after the
+        // second editable is text-selectable, selection is done using text offsets.
         setAndAssertExtendedSelection(
                 rootVvid,
                 rootVvid,
                 input1Index,
                 OFFSET_TYPE_CHILD,
-                rootVvid,
-                input2Index + 1,
-                OFFSET_TYPE_CHILD,
-                input1Vvid,
-                0,
-                OFFSET_TYPE_TEXT,
                 paragraph2Vvid,
                 0,
                 OFFSET_TYPE_TEXT);
@@ -4174,13 +4305,7 @@ public class WebContentsAccessibilityTest {
                 OFFSET_TYPE_TEXT,
                 rootVvid,
                 input1Index,
-                OFFSET_TYPE_CHILD,
-                paragraph1Vvid,
-                1,
-                OFFSET_TYPE_TEXT,
-                input1Vvid,
-                0,
-                OFFSET_TYPE_TEXT);
+                OFFSET_TYPE_CHILD);
 
         // Selection from non-editable to the end of the editable.
         setAndAssertExtendedSelection(
@@ -4190,13 +4315,7 @@ public class WebContentsAccessibilityTest {
                 OFFSET_TYPE_TEXT,
                 rootVvid,
                 input2Index + 1,
-                OFFSET_TYPE_CHILD,
-                paragraph1Vvid,
-                1,
-                OFFSET_TYPE_TEXT,
-                paragraph2Vvid,
-                0,
-                OFFSET_TYPE_TEXT);
+                OFFSET_TYPE_CHILD);
 
         // Selection from the beginning of the editable to to a non-editable.
         setAndAssertExtendedSelection(
@@ -4204,12 +4323,6 @@ public class WebContentsAccessibilityTest {
                 rootVvid,
                 input1Index,
                 OFFSET_TYPE_CHILD,
-                paragraph2Vvid,
-                10,
-                OFFSET_TYPE_TEXT,
-                input1Vvid,
-                0,
-                OFFSET_TYPE_TEXT,
                 paragraph2Vvid,
                 10,
                 OFFSET_TYPE_TEXT);
@@ -4352,13 +4465,7 @@ public class WebContentsAccessibilityTest {
                 OFFSET_TYPE_TEXT,
                 rootVvid,
                 contenteditable1Index,
-                OFFSET_TYPE_CHILD,
-                p1Vvid,
-                1,
-                OFFSET_TYPE_TEXT,
-                contenteditable1Vvid,
-                0,
-                OFFSET_TYPE_TEXT);
+                OFFSET_TYPE_CHILD);
 
         // From the end of a contenteditable to outside it.
         setAndAssertExtendedSelection(
@@ -4366,12 +4473,6 @@ public class WebContentsAccessibilityTest {
                 rootVvid,
                 contenteditable1Index + 1,
                 OFFSET_TYPE_CHILD,
-                p2Vvid,
-                5,
-                OFFSET_TYPE_TEXT,
-                p2Vvid,
-                0,
-                OFFSET_TYPE_TEXT,
                 p2Vvid,
                 5,
                 OFFSET_TYPE_TEXT);
@@ -4500,6 +4601,123 @@ public class WebContentsAccessibilityTest {
         // Select the image within the contentEditable.
         setAndAssertExtendedSelection(
                 rootVvid, editableVvid, 0, OFFSET_TYPE_CHILD, editableVvid, 1, OFFSET_TYPE_CHILD);
+    }
+
+    /**
+     * Test setting extended selection using child offsets on an ancestor container when the
+     * targeted child is a non-leaf node (e.g., a link containing text) wrapped inside an
+     * intermediate ignored container (e.g., display: contents).
+     *
+     * <p>Structurally, when resolving unignored selection positions, Chrome descends into the child
+     * subtree. This test verifies that Android conversion bubbles the start boundary position
+     * upward through intermediate ignored containers back to the ancestor container, maintaining
+     * the position as a child offset at the ancestor level without losing precision or dropping
+     * into descendant text nodes.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_childOffsetAcrossIgnoredContainer()
+            throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="container">
+                  <span style="display: contents">
+                    <p id="paragraph1">Text before</p>
+                    <a id="link" href="#">Link text</a>
+                    <p id="paragraph2">Text after</p>
+                  </span>
+                </div>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int containerVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "container");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "link");
+
+        int linkIndex = 1;
+
+        // Select the link using child offsets on the container.
+        setAndAssertExtendedSelection(
+                rootVvid,
+                containerVvid,
+                linkIndex,
+                OFFSET_TYPE_CHILD,
+                containerVvid,
+                linkIndex + 1,
+                OFFSET_TYPE_CHILD);
+    }
+
+    /**
+     * Test setting extended selection using child offsets on an ancestor container when the
+     * targeted child is a non-text container (e.g., a div wrapping an image) inside an intermediate
+     * ignored container.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_nonTextContainerInIgnoredContainer()
+            throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="container">
+                  <span style="display: contents">
+                    <p id="paragraph1">Paragraph1</p>
+                    <div id="image_wrapper">
+                      <img id="image" src="pipe.jpg" alt="pipe" tabIndex="0" />
+                    </div>
+                    <p id="paragraph2">Paragraph2</p>
+                  </span>
+                </div>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int containerVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "container");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "image");
+
+        int wrapperIndex = 1;
+
+        // Select the image wrapper using child offsets on the container.
+        setAndAssertExtendedSelection(
+                rootVvid,
+                containerVvid,
+                wrapperIndex,
+                OFFSET_TYPE_CHILD,
+                containerVvid,
+                wrapperIndex + 1,
+                OFFSET_TYPE_CHILD);
+    }
+
+    /**
+     * Test setting extended selection on an ancestor container to select a non-text container
+     * wrapping multiple non-text elements (e.g., images).
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_nonTextContainerWrappingImages()
+            throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="container">
+                  <img id="image1" src="pipe.jpg" alt="" tabIndex="0" />
+                  <img id="image2" src="pipe.jpg" alt="" tabIndex="0" />
+                </div>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "container");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "image1");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "image2");
+
+        int containerIndex = 0;
+
+        // Select the container using child offsets on the root (from 0 to 1, where 1 is after
+        // container).
+        setAndAssertExtendedSelection(
+                rootVvid,
+                rootVvid,
+                containerIndex,
+                OFFSET_TYPE_CHILD,
+                rootVvid,
+                containerIndex + 1,
+                OFFSET_TYPE_CHILD);
     }
 
     /** Test that the performAction for ACTION_CUT works properly with accessibility. */
@@ -4890,8 +5108,8 @@ public class WebContentsAccessibilityTest {
     }
 
     /**
-     * Test that the performAction for ACTION_CLEAR_ACCESSIBILITY_FOCUS works properly
-     * with accessibility.
+     * Test that the performAction for ACTION_CLEAR_ACCESSIBILITY_FOCUS works properly with
+     * accessibility.
      */
     @Test
     @SmallTest
@@ -5217,12 +5435,18 @@ public class WebContentsAccessibilityTest {
     public void testPerformAction_nextHtmlElement_gridCellDelegation() throws Throwable {
         // Build an ARIA grid where each cell contains a single interactive link.
         setupTestWithHTML(
-                "<div role='grid'>"
-                + "  <div role='row'>"
-                + "    <span role='gridcell' id='cell1'><a id='link1' href='#'>Link 1</a></span>"
-                + "    <span role='gridcell' id='cell2'><a id='link2' href='#'>Link 2</a></span>"
-                + "  </div>"
-                + "</div>");
+                """
+                <div role="grid">
+                  <div role="row">
+                    <span role="gridcell" id="cell1">
+                      <a id="link1" href="#">Link 1</a>
+                    </span>
+                    <span role="gridcell" id="cell2">
+                      <a id="link2" href="#">Link 2</a>
+                    </span>
+                  </div>
+                </div>
+                """);
 
         // Find the inner link nodes
         int vvid1 = waitForNodeMatching(sViewIdResourceNameMatcher, "link1");
@@ -6011,39 +6235,24 @@ public class WebContentsAccessibilityTest {
 
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.DurationForRangeCount.11To20")
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TOTAL_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TOTAL_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_DURATION_FOR_RANGE_COUNT_11_TO_20)
                         .expectIntRecord(
-                                "Accessibility.Android.TextFormatting.Ranges.TotalCount",
+                                HISTO_TEXT_FORMATTING_RANGES_TOTAL_COUNT, expectedRangeCount)
+                        .expectIntRecord(
+                                HISTO_TEXT_FORMATTING_RANGES_COUNT_FOR_TEXT_LENGTH_26_TO_50,
                                 expectedRangeCount)
-                        .expectIntRecord(
-                                "Accessibility.Android.TextFormatting.Ranges.CountForTextLength.26To50",
-                                expectedRangeCount)
-                        .expectIntRecord(
-                                "Accessibility.Android.TextFormatting.TextLength",
-                                expectedString.length())
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.TextLength.NoStyleData")
+                        .expectIntRecord(HISTO_TEXT_FORMATTING_TEXT_LENGTH, expectedString.length())
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TEXT_LENGTH_NO_STYLE)
                         .build();
 
         mNodeInfo = createAccessibilityNodeInfo(vvid);
@@ -6064,30 +6273,19 @@ public class WebContentsAccessibilityTest {
 
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration.NoStyleData")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration.NoStyleData")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration.NoStyleData")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration.NoStyleData")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration.NoStyleData")
-                        .expectNoRecords("Accessibility.Android.TextFormatting.TextLength")
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TOTAL_DURATION)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TOTAL_DURATION_NO_STYLE)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION_NO_STYLE)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION_NO_STYLE)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION_NO_STYLE)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION_NO_STYLE)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TEXT_LENGTH)
                         .expectIntRecord(
-                                "Accessibility.Android.TextFormatting.TextLength.NoStyleData",
-                                expectedText.length())
+                                HISTO_TEXT_FORMATTING_TEXT_LENGTH_NO_STYLE, expectedText.length())
                         .build();
 
         mNodeInfo = createAccessibilityNodeInfo(vvid);
@@ -6110,31 +6308,18 @@ public class WebContentsAccessibilityTest {
 
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.TotalDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.CheckAXFocusDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.ToJavaDataDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.GetTextContentDuration.NoStyleData")
-                        .expectAnyRecord(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration")
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.Performance.SetAniTextDuration.NoStyleData")
-                        .expectIntRecord(
-                                "Accessibility.Android.TextFormatting.TextLength",
-                                expectedText.length())
-                        .expectNoRecords(
-                                "Accessibility.Android.TextFormatting.TextLength.NoStyleData")
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TOTAL_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TOTAL_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_CHECK_AX_FOCUS_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TO_JAVA_DATA_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_GET_TEXT_CONTENT_DURATION_NO_STYLE)
+                        .expectAnyRecord(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION)
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_SET_ANI_TEXT_DURATION_NO_STYLE)
+                        .expectIntRecord(HISTO_TEXT_FORMATTING_TEXT_LENGTH, expectedText.length())
+                        .expectNoRecords(HISTO_TEXT_FORMATTING_TEXT_LENGTH_NO_STYLE)
                         .build();
 
         mNodeInfo = createAccessibilityNodeInfo(vvid);
@@ -6166,6 +6351,7 @@ public class WebContentsAccessibilityTest {
 
     /**
      * Helper method to perform a series of events that trigger histograms being tracked.
+     *
      * @throws Throwable error on focusNode
      */
     private void performHistogramActions() throws Throwable {
@@ -6322,10 +6508,10 @@ public class WebContentsAccessibilityTest {
         Assert.assertFalse(FOCUSING_ERROR, rootNodeInfo.isAccessibilityFocused());
 
         // Perform click action on the button, which disables the button and clears DOM focus.
-        Assert.assertTrue(
-                performActionOnUiThread(btnVvid, ACTION_CLICK, null, () -> true));
+        Assert.assertTrue(performActionOnUiThread(btnVvid, ACTION_CLICK, null, () -> true));
 
-        // Verify that root does not gain accessibility focus and the button retains accessibility focus.
+        // Verify that root does not gain accessibility focus and the button retains accessibility
+        // focus.
         CriteriaHelper.pollUiThread(
                 () -> {
                     AccessibilityNodeInfoCompat currentRoot = createAccessibilityNodeInfo(rootVvid);
@@ -6339,9 +6525,9 @@ public class WebContentsAccessibilityTest {
     }
 
     /**
-     * Test that when content height dynamically expands via JavaScript,
-     * the updated scroll dimensions cause ACTION_SCROLL_FORWARD and ACTION_SCROLL_DOWN
-     * to be added to the AccessibilityNodeInfo.
+     * Test that when content height dynamically expands via JavaScript, the updated scroll
+     * dimensions cause ACTION_SCROLL_FORWARD and ACTION_SCROLL_DOWN to be added to the
+     * AccessibilityNodeInfo.
      */
     @Test
     @SmallTest
@@ -6364,7 +6550,8 @@ public class WebContentsAccessibilityTest {
                 mActivityTestRule.getWebContents(),
                 "document.getElementById('inner').style.height = '1000px';");
 
-        // Verify that the container node's scroll actions are updated to include scroll forward and down.
+        // Verify that the container node's scroll actions are updated to include scroll forward and
+        // down.
         CriteriaHelper.pollUiThread(
                 () -> {
                     AccessibilityNodeInfoCompat updated = createAccessibilityNodeInfo(vvId);
@@ -6374,4 +6561,32 @@ public class WebContentsAccessibilityTest {
                 },
                 "Scroll forward action was not added after expanding content height");
     }
+
+    @Test
+    @SmallTest
+    public void testFocusableContainerWithAriaLabelAndTextChildrenIsLeaf() throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="ex1" tabindex="0" aria-label="Custom Graph Label">Default Text</div>
+                <div id="ex2" tabindex="0">Only Tabindex Text</div>
+                """);
+
+        int ex1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "ex1");
+        int ex2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "ex2");
+
+        AccessibilityNodeInfoCompat ex1NodeInfo = createAccessibilityNodeInfo(ex1Vvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, ex1NodeInfo);
+        Assert.assertEquals(
+                "Focusable div with aria-label and only text children should have 0 children",
+                0,
+                ex1NodeInfo.getChildCount());
+
+        AccessibilityNodeInfoCompat ex2NodeInfo = createAccessibilityNodeInfo(ex2Vvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, ex2NodeInfo);
+        Assert.assertEquals(
+                "Focusable div with only text children should have 0 children",
+                0,
+                ex2NodeInfo.getChildCount());
+    }
 }
+

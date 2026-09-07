@@ -33,7 +33,6 @@ browser_exposed_mojom_targets = [
   "//chrome/browser/ui/webui/app_home:mojo_bindings",
   "//chrome/browser/ui/webui/app_service_internals:mojo_bindings",
   "//chrome/browser/ui/webui/bluetooth_internals:mojo_bindings",
-  "//chrome/browser/ui/webui/chrome_finds_internals:mojo_bindings",
   "//chrome/browser/ui/webui/context_hub:mojo_bindings",
   "//chrome/browser/ui/webui/content_settings:mojo_bindings",
   "//chrome/browser/ui/webui/customize_buttons:mojo_bindings",
@@ -56,6 +55,7 @@ browser_exposed_mojom_targets = [
   "//chrome/browser/ui/webui/omnibox_popup/mojom:mojom",
   "//chrome/browser/ui/webui/on_device_internals:mojom",
   "//chrome/browser/ui/webui/on_device_translation_internals:mojo_bindings",
+  "//chrome/browser/ui/webui/page_action_internals:mojo_bindings",
   "//chrome/browser/ui/webui/password_manager:mojo_bindings",
   "//components/private_ai/private_ai_internals/webui:mojo_bindings",
   "//chrome/browser/ui/webui/reset_password:mojo_bindings",
@@ -76,7 +76,6 @@ browser_exposed_mojom_targets = [
   "//chrome/browser/ui/webui/tab_strip_internals:mojo_bindings",
   "//chrome/browser/ui/webui/updater:mojo_bindings",
   "//chrome/browser/ui/webui/usb_internals:mojo_bindings",
-  "//chrome/browser/ui/webui/user_education:mojo_bindings",
   "//chrome/browser/ui/webui/watermark:mojo_bindings",
   "//chrome/browser/ui/webui/web_app_internals:mojo_bindings",
   "//chrome/browser/ui/webui/webnn_internals:mojo_bindings",
@@ -166,7 +165,6 @@ browser_exposed_mojom_targets = [
   "//components/security_interstitials/core/common/mojom:mojom",
   "//components/services/filesystem/public/mojom:mojom",
   "//components/services/font/public/mojom:mojom",
-  "//components/services/heap_profiling/public/mojom:mojom",
   "//components/services/paint_preview_compositor/public/mojom:mojom",
   "//components/services/patch/public/mojom:mojom",
   "//components/services/print_compositor/public/mojom:mojom",
@@ -183,6 +181,7 @@ browser_exposed_mojom_targets = [
   "//components/surface_embed/common:mojom",
   "//components/tab_groups/public/mojom:mojo_bindings",
   "//components/translate/content/common:common",
+  "//components/user_education/webui:mojo_bindings",
   "//components/variations:variations_mojom",
   "//components/visitedlink/common:interfaces",
   "//components/viz/service/debugger/mojom:mojom",
@@ -359,6 +358,7 @@ if (!is_android) {
     "//chrome/browser/ui/webui/feedback/report_unsafe_site:mojo_bindings",
     "//chrome/browser/ui/webui/iwa_dev:mojo_bindings",
     "//chrome/browser/ui/webui/omnibox_everywhere/debug:mojo_bindings",
+    "//chrome/browser/ui/webui/omnibox_everywhere/mojom:mojo_bindings",
   ]
 }
 

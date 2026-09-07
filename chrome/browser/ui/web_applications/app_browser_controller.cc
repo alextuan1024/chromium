@@ -31,10 +31,10 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/color/chrome_color_provider_utils.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
-#include "chrome/browser/ui/tabs/tab_menu_model_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -80,9 +80,9 @@
 #include "url/url_constants.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/apps/icon_standardizer.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
+#include "ui/gfx/image/icon_standardizer.h"
 #endif
 
 namespace {
@@ -206,17 +206,14 @@ std::optional<int> AppBrowserController::FindTabIndexForApp(
            (From(browser)->GetPinnedHomeTab() == contents);
   };
   // The active web contents should have preference if it is in scope.
-  if (browser->GetFeatures().tab_strip_model()->active_index() !=
-      TabStripModel::kNoTab) {
-    if (is_valid_tab(
-            browser->GetFeatures().tab_strip_model()->GetActiveWebContents())) {
-      return {browser->GetFeatures().tab_strip_model()->active_index()};
+  if (browser->GetTabStripModel()->active_index() != TabStripModel::kNoTab) {
+    if (is_valid_tab(browser->GetTabStripModel()->GetActiveWebContents())) {
+      return {browser->GetTabStripModel()->active_index()};
     }
   }
   // Otherwise, use the first one for the app.
-  for (int i = 0; i < browser->GetFeatures().tab_strip_model()->count(); ++i) {
-    if (is_valid_tab(
-            browser->GetFeatures().tab_strip_model()->GetWebContentsAt(i))) {
+  for (int i = 0; i < browser->GetTabStripModel()->count(); ++i) {
+    if (is_valid_tab(browser->GetTabStripModel()->GetWebContentsAt(i))) {
       return {i};
     }
   }
@@ -478,9 +475,9 @@ bool AppBrowserController::IsFirstLaunchAfterInstall() const {
   return false;
 }
 
-std::unique_ptr<TabMenuModelFactory>
-AppBrowserController::GetTabMenuModelFactory() const {
-  return nullptr;
+std::optional<base::flat_set<tabs::TabContextMenuCommand>>
+AppBrowserController::GetAllowedTabMenuCommands() const {
+  return std::nullopt;
 }
 
 bool AppBrowserController::AppUsesWindowControlsOverlay() const {
@@ -937,7 +934,7 @@ ui::ImageModel AppBrowserController::GetFallbackAppIcon() const {
   if (!page_icon.isNull()) {
 #if BUILDFLAG(IS_CHROMEOS)
     return ui::ImageModel::FromImageSkia(
-        apps::CreateStandardIconImage(page_icon));
+        gfx::CreateStandardAppIconImage(page_icon));
 #else
     return ui::ImageModel::FromImageSkia(page_icon);
 #endif

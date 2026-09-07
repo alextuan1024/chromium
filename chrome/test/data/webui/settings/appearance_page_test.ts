@@ -703,10 +703,6 @@ suite('TabStripPositionSettings', () => {
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    loadTimeData.overrideValues({
-      showVerticalTabsEnabled: true,
-    });
-
     appearanceBrowserProxy = new TestAppearanceBrowserProxy();
     AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
 
@@ -777,7 +773,6 @@ suite('VerticalTabsExpandOnHoverSettings', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
     loadTimeData.overrideValues({
-      showVerticalTabsEnabled: true,
       showVerticalTabsExpandOnHoverEnabled: true,
     });
 
@@ -847,16 +842,32 @@ suite('TabScrollButtonsSettings', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
     loadTimeData.overrideValues({
-      showVerticalTabsEnabled: true,
       tabStripUnificationEnabled: true,
     });
 
     appearanceBrowserProxy = new TestAppearanceBrowserProxy();
     AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
+    metricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
 
     await createAppearancePage();
     await prefService.setPrefValue('vertical_tabs.enabled', false);
     await microtasksFinished();
+  });
+
+  test('Toggle records metrics', async function() {
+    const toggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#tabScrollAutoShowOnOverflow');
+    assertTrue(!!toggle);
+    toggle.click();
+    let action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings_Appearance_TabScrollButtons_Unpinned', action);
+
+    metricsBrowserProxy.resetResolver('recordAction');
+    toggle.click();
+    action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings_Appearance_TabScrollButtons_Pinned', action);
   });
 
   test(

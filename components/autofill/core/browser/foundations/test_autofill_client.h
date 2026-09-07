@@ -45,6 +45,7 @@
 #include "components/autofill/core/browser/integrators/autofill_ai/mock_autofill_ai_manager.h"
 #include "components/autofill/core/browser/integrators/compose/autofill_compose_delegate.h"
 #include "components/autofill/core/browser/integrators/identity_credential/identity_credential_delegate.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/otp_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
 #include "components/autofill/core/browser/integrators/optimization_guide/mock_autofill_optimization_guide_decider.h"
 #include "components/autofill/core/browser/integrators/password_manager/password_manager_delegate.h"
@@ -56,7 +57,7 @@
 #include "components/autofill/core/browser/ml_model/field_classification_model_handler.h"
 #include "components/autofill/core/browser/network/autofill_ai/mock_wallet_pass_access_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/single_field_fillers/autocomplete/mock_autocomplete_history_manager.h"
 #include "components/autofill/core/browser/single_field_fillers/payments/mock_merchant_promo_code_manager.h"
 #include "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
@@ -64,7 +65,7 @@
 #include "components/autofill/core/browser/studies/autofill_ablation_study.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
@@ -102,6 +103,7 @@
 namespace autofill {
 
 class AutofillAiPersonalContextAccessManager;
+class OtpMetricsTracker;
 class TestAutofillClient;
 
 // This class is for easier writing of tests. There are two instances of the
@@ -257,7 +259,8 @@ class TestAutofillClientTemplate : public T {
   AtMemoryManager* GetAtMemoryManager() override {
     if (!at_memory_manager_ &&
         base::FeatureList::IsEnabled(features::kAutofillAtMemory)) {
-      at_memory_manager_ = std::make_unique<AtMemoryManager>(this);
+      at_memory_manager_ =
+          std::make_unique<AtMemoryManager>(this, /*history_service=*/nullptr);
     }
     return at_memory_manager_.get();
   }
@@ -683,7 +686,7 @@ class TestAutofillClientTemplate : public T {
     AccountInfo account_info = GetIdentityManager()->FindExtendedAccountInfo(
         GetIdentityManager()->GetPrimaryAccountInfo(
             signin::ConsentLevel::kSignin));
-    CHECK(!account_info.account_id.empty());
+    CHECK(!account_info.GetAccountId().empty());
     AccountCapabilitiesTestMutator(&account_info)
         .set_can_use_model_execution_features(can_use_model_execution);
     signin::UpdateAccountInfoForAccount(GetIdentityManager(), account_info);
@@ -695,7 +698,7 @@ class TestAutofillClientTemplate : public T {
     AccountInfo account_info = GetIdentityManager()->FindExtendedAccountInfo(
         GetIdentityManager()->GetPrimaryAccountInfo(
             signin::ConsentLevel::kSignin));
-    CHECK(!account_info.account_id.empty());
+    CHECK(!account_info.GetAccountId().empty());
     AccountCapabilitiesTestMutator(&account_info)
         .set_supports_wallet_private_passes_in_autofill(supported);
     signin::UpdateAccountInfoForAccount(GetIdentityManager(), account_info);
@@ -880,6 +883,15 @@ class TestAutofillClientTemplate : public T {
     form_predictions_tracker_ = std::move(form_predictions_tracker);
   }
 
+  OtpMetricsTracker* GetOtpMetricsTracker() override {
+    return otp_metrics_tracker_.get();
+  }
+
+  void set_otp_metrics_tracker(
+      std::unique_ptr<OtpMetricsTracker> otp_metrics_tracker) {
+    otp_metrics_tracker_ = std::move(otp_metrics_tracker);
+  }
+
  private:
   ukm::TestAutoSetUkmRecorder test_ukm_recorder_;
   signin::IdentityTestEnvironment identity_test_env_;
@@ -895,6 +907,7 @@ class TestAutofillClientTemplate : public T {
   std::unique_ptr<GoogleGroupsManager> google_groups_manager_;
 #endif
   std::unique_ptr<OtpPhishGuardDelegate> otp_phish_guard_delegate_;
+  std::unique_ptr<OtpMetricsTracker> otp_metrics_tracker_;
   std::unique_ptr<AtMemoryQueryService> at_memory_query_service_;
   std::unique_ptr<AtMemoryManager> at_memory_manager_;
   personal_context::PersonalContextEligibilityState

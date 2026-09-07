@@ -6,6 +6,8 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
+#import "base/metrics/user_metrics.h"
+#import "base/metrics/user_metrics_action.h"
 #import "build/buildflag.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
@@ -15,10 +17,13 @@
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_item.h"
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_mutator.h"
 #import "ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/net/model/crurl.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/ui/buildflags.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/activity_indicator_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/colorful_symbol_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
@@ -74,6 +79,10 @@ enum class ItemIdentifier {
 
   // Search results to display in the UI.
   NSArray<AtMemorySearchItem*>* _searchResults;
+  // Recent fills to display in the initial empty search state.
+  NSArray<AtMemorySearchItem*>* _recentFills;
+  // Search query for which the current search results or state was produced.
+  NSString* _currentSearchQuery;
 
   // Tells if the notice is visible.
   BOOL _noticeIsVisible;
@@ -81,6 +90,8 @@ enum class ItemIdentifier {
   BOOL _recentFillsAreVisible;
   // The current error type.
   AtMemoryErrorType _errorType;
+  // Subtitle to display in the fetching state cell.
+  NSString* _fetchingSubtitle;
 }
 
 #pragma mark - UIViewController
@@ -112,6 +123,9 @@ enum class ItemIdentifier {
   self.title = l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_FIND_AND_FILL_TITLE);
 
   RegisterTableViewHeaderFooter<TableViewLinkHeaderFooterView>(self.tableView);
+  RegisterTableViewHeaderFooter<TableViewTextHeaderFooterView>(self.tableView);
+  self.tableView.backgroundColor =
+      [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
   [self loadModel];
 }
 
@@ -143,8 +157,7 @@ enum class ItemIdentifier {
 #pragma mark - UISearchBarDelegate
 
 - (void)searchBarSearchButtonClicked:(UISearchBar*)searchBar {
-  [self.mutator startSearchWithQuery:searchBar.text];
-  [self createSnapshotForFetchingState];
+  [self startSearchWithQuery:searchBar.text];
 }
 
 #pragma mark - UISearchResultsUpdating
@@ -153,15 +166,30 @@ enum class ItemIdentifier {
     (UISearchController*)searchController {
   NSString* query = searchController.searchBar.text;
 
+  // Return to the initial state if the search bar is cleared.
   if (query.length == 0) {
+    _currentSearchQuery = nil;
+    _searchResults = nil;
     [self createSnapshotForInitialState];
     return;
   }
 
-  if ([[_dataSource snapshot]
+  // Preserve existing search results and avoid resetting the snapshot when
+  // UIKit sends search updates for an unchanged query.
+  if (_currentSearchQuery && [query isEqualToString:_currentSearchQuery]) {
+    return;
+  }
+
+  _currentSearchQuery = nil;
+  _searchResults = nil;
+
+  BOOL isSearchItemPresent =
+      [[_dataSource snapshot]
           indexOfItemIdentifier:@(static_cast<int>(
                                     ItemIdentifier::kSearchItem))] !=
-      NSNotFound) {
+      NSNotFound;
+
+  if (isSearchItemPresent) {
     [self updateSnapshotForItemIdentifier:ItemIdentifier::kSearchItem];
   } else {
     [self createSnapshotForSearchState];
@@ -173,17 +201,61 @@ enum class ItemIdentifier {
 - (void)tableView:(UITableView*)tableView
     didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   id item = [_dataSource itemIdentifierForIndexPath:indexPath];
-  if ([item isKindOfClass:[NSNumber class]] &&
-      static_cast<ItemIdentifier>([item integerValue]) ==
-          ItemIdentifier::kSearchItem) {
-    [self.mutator startSearchWithQuery:_searchController.searchBar.text];
-    [self createSnapshotForFetchingState];
+  if ([item isKindOfClass:[NSNumber class]]) {
+    ItemIdentifier itemIdentifier =
+        static_cast<ItemIdentifier>([item integerValue]);
+    switch (itemIdentifier) {
+      case ItemIdentifier::kSearchItem: {
+        [self startSearchWithQuery:_searchController.searchBar.text];
+        break;
+      }
+      case ItemIdentifier::kUnsupportedQueryItem: {
+        base::RecordAction(
+            base::UserMetricsAction("IOS.AtMemory.UnsupportedQueryTapped"));
+        [self openGeminiForUnsupportedQuery];
+        break;
+      }
+      case ItemIdentifier::kFetchingItem:
+      case ItemIdentifier::kNoDataItem:
+      case ItemIdentifier::kNoConnectionItem:
+      case ItemIdentifier::kNoticeItem:
+        // These cells are not selectable.
+        return;
+    }
   } else if ([item isKindOfClass:[AtMemorySearchItem class]]) {
     AtMemorySearchItem* searchItem =
         base::apple::ObjCCastStrict<AtMemorySearchItem>(item);
     [self.mutator didSelectSearchResultItem:searchItem];
   }
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+}
+
+- (UIView*)tableView:(UITableView*)tableView
+    viewForHeaderInSection:(NSInteger)section {
+  SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
+      [_dataSource sectionIdentifierForIndex:section].integerValue);
+
+  if (sectionIdentifier == SectionIdentifier::kRecentFillsSection) {
+    TableViewTextHeaderFooterView* header =
+        DequeueTableViewHeaderFooter<TableViewTextHeaderFooterView>(tableView);
+    [header setTitle:l10n_util::GetNSString(
+                         IDS_AUTOFILL_AT_MEMORY_PREVIOUSLY_FILLED)];
+    return header;
+  }
+
+  return nil;
+}
+
+- (CGFloat)tableView:(UITableView*)tableView
+    heightForHeaderInSection:(NSInteger)section {
+  SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
+      [_dataSource sectionIdentifierForIndex:section].integerValue);
+
+  if (sectionIdentifier == SectionIdentifier::kRecentFillsSection) {
+    return UITableViewAutomaticDimension;
+  }
+
+  return 0;
 }
 
 - (UIView*)tableView:(UITableView*)tableView
@@ -224,6 +296,16 @@ enum class ItemIdentifier {
   }
 }
 
+#pragma mark - AtMemoryInlineNoticeViewDelegate
+
+- (void)inlineNoticeViewDidTapOK:(AtMemoryInlineNoticeView*)view {
+  [self.mutator acknowledgePrivacyNotice];
+}
+
+- (void)inlineNoticeViewDidTapSettings:(AtMemoryInlineNoticeView*)view {
+  [self.mutator didTapSettingsLink];
+}
+
 #pragma mark - Actions
 
 - (void)handleCancelButton {
@@ -238,6 +320,7 @@ enum class ItemIdentifier {
 
 - (void)setErrorType:(AtMemoryErrorType)errorType {
   _errorType = errorType;
+  _currentSearchQuery = [_searchController.searchBar.text copy];
   [self createSnapshotForErrorState];
 }
 
@@ -274,20 +357,44 @@ enum class ItemIdentifier {
   [self updateTableViewBackgroundStyle];
 }
 
-- (void)setFetchingSubtitle {
-  // TODO(crbug.com/541237598): Implement fetching subtitle.
+- (void)setFetchingSubtitle:(NSString*)subtitle {
+  _fetchingSubtitle = [subtitle copy];
+  [self updateSnapshotForItemIdentifier:ItemIdentifier::kFetchingItem];
 }
 
-- (void)setRecentFills {
-  // TODO(crbug.com/540877897): Implement recent fills.
+- (void)setRecentFills:(NSArray<AtMemorySearchItem*>*)recentFills {
+  _recentFills = [recentFills copy];
+  _recentFillsAreVisible = _recentFills.count > 0;
+  if (_searchController.searchBar.text.length == 0) {
+    [self createSnapshotForInitialState];
+  }
 }
 
 - (void)setSearchResults:(NSArray<AtMemorySearchItem*>*)searchResults {
   _searchResults = searchResults;
+  _currentSearchQuery = [_searchController.searchBar.text copy];
   [self createSnapshotForSearchResultsState];
 }
 
 #pragma mark - Private
+
+// Initiates the Gemini entry flow for an unsupported query and dismisses the
+// AtMemory UI upon success.
+- (void)openGeminiForUnsupportedQuery {
+  GeminiStartupState* startupState = [[GeminiStartupState alloc]
+      initWithEntryPoint:gemini::EntryPoint::AtMemorySearch];
+  startupState.prepopulatedPrompt = _searchController.searchBar.text;
+  __weak __typeof(self) weakSelf = self;
+  [self.geminiHandler
+      startGeminiEntryFlowWithStartupState:startupState
+                        baseViewController:self
+                  showSnackbarOnCompletion:NO
+                                completion:^(GeminiEntryFlowResult result) {
+                                  if (result == kGeminiEntryFlowResultSuccess) {
+                                    [weakSelf.atMemoryHandler dismissAtMemory];
+                                  }
+                                }];
+}
 
 // Creates the `snapshot` for the initial state.
 - (void)createSnapshotForInitialState {
@@ -300,8 +407,9 @@ enum class ItemIdentifier {
     [snapshot appendSectionsWithIdentifiers:@[
       @(static_cast<int>(SectionIdentifier::kRecentFillsSection))
     ]];
-    // TODO(crbug.com/540877897): Call a method that adds the recentFill
-    // results into the kRecentFillsSection.
+    [snapshot appendItemsWithIdentifiers:_recentFills
+               intoSectionWithIdentifier:
+                   @(static_cast<int>(SectionIdentifier::kRecentFillsSection))];
   }
 
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
@@ -654,7 +762,9 @@ enum class ItemIdentifier {
   configuration.title = _searchController.searchBar.text;
   configuration.titleColor = [UIColor colorNamed:kTextPrimaryColor];
   configuration.subtitle =
-      l10n_util::GetNSString(IDS_AUTOFILL_AT_MEMORY_SEARCH_AFFORDANCE_SUBTITLE);
+      _fetchingSubtitle
+          ?: l10n_util::GetNSString(
+                 IDS_AUTOFILL_AT_MEMORY_FETCHING_FINDING_INFO_WITH_GEMINI);
 
   ActivityIndicatorContentConfiguration* activityIndicatorConfiguration =
       [[ActivityIndicatorContentConfiguration alloc] init];
@@ -675,7 +785,12 @@ enum class ItemIdentifier {
   UITableViewCell* cell =
       [AtMemoryInlineNoticeConfiguration dequeueTableViewCell:tableView];
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  cell.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
+
+  UIBackgroundConfiguration* backgroundConfiguration =
+      [UIBackgroundConfiguration listCellConfiguration];
+  backgroundConfiguration.backgroundColor =
+      [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
+  cell.backgroundConfiguration = backgroundConfiguration;
 
   AtMemoryInlineNoticeConfiguration* config =
       [[AtMemoryInlineNoticeConfiguration alloc] init];
@@ -684,14 +799,13 @@ enum class ItemIdentifier {
   return cell;
 }
 
-#pragma mark - AtMemoryInlineNoticeViewDelegate
-
-- (void)inlineNoticeViewDidTapOK:(AtMemoryInlineNoticeView*)view {
-  [self.mutator acknowledgePrivacyNotice];
-}
-
-- (void)inlineNoticeViewDidTapSettings:(AtMemoryInlineNoticeView*)view {
-  [self.mutator didTapSettingsLink];
+// Starts an AtMemory search for `query` and transitions to the fetching state.
+- (void)startSearchWithQuery:(NSString*)query {
+  _currentSearchQuery = [query copy];
+  _fetchingSubtitle = l10n_util::GetNSString(
+      IDS_AUTOFILL_AT_MEMORY_FETCHING_FINDING_INFO_WITH_GEMINI);
+  [self createSnapshotForFetchingState];
+  [self.mutator startSearchWithQuery:query];
 }
 
 @end

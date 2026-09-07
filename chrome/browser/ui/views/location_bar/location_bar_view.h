@@ -409,6 +409,8 @@ class LocationBarView
   // LocationBarTesting:
   bool TestContentSettingImagePressed(size_t index) override;
   bool IsContentSettingBubbleShowing(size_t index) override;
+  views::Widget* GetContentSettingBubbleWidget(size_t index) override;
+  bool IsContentSettingImageVisible(size_t index) override;
 
   // views::View:
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;

@@ -11,14 +11,14 @@ import './ai_page/offer_writing_help_page.js';
 import './ai_page/skills_page.js';
 import './appearance_page/appearance_fonts_page.js';
 import './autofill_page/contact_info/contact_info_page.js';
-import './autofill_page/identity_docs_page.js';
+import './autofill_page/identity_docs/identity_docs_page.js';
 // <if expr="is_win or is_macosx">
 import './autofill_page/passwords/passkeys_page.js';
 // </if>
 import './autofill_page/payments/payments_page.js';
-import './autofill_page/shopping_page.js';
-import './autofill_page/suggestions_from_gemini_subpage.js';
-import './autofill_page/travel_page.js';
+import './autofill_page/shopping/shopping_page.js';
+import './autofill_page/suggestions_from_gemini/suggestions_from_gemini_page.js';
+import './autofill_page/travel/travel_page.js';
 import './autofill_page/walletable_pass_detection_toggle.js';
 // <if expr="not is_chromeos">
 import './clear_browsing_data_dialog/clear_browsing_data_account_indicator.js';
@@ -110,7 +110,6 @@ import './downloads_page/downloads_page.js';
 import './languages_page/languages_page_index_cros.js';
 // </if>
 // <if expr="not is_chromeos">
-import './languages_page/languages.js';
 import './languages_page/languages_page_index.js';
 // </if>
 import './reset_page/reset_page.js';
@@ -186,7 +185,7 @@ export {CountryDetailManagerProxyImpl} from './autofill_page/country_detail_mana
 export type {CountryDetailManagerProxy} from './autofill_page/country_detail_manager_proxy.js';
 export {EntityDataManagerProxyImpl} from './autofill_page/entity_data_manager_proxy.js';
 export type {EntityDataManagerProxy, EntityInstancesChangedListener} from './autofill_page/entity_data_manager_proxy.js';
-export {SettingsIdentityDocsPageElement} from './autofill_page/identity_docs_page.js';
+export {SettingsIdentityDocsPageElement} from './autofill_page/identity_docs/identity_docs_page.js';
 // <if expr="is_win or is_macosx">
 export {PasskeysBrowserProxyImpl} from './autofill_page/passwords/passkeys_browser_proxy.js';
 export type {Passkey, PasskeysBrowserProxy} from './autofill_page/passwords/passkeys_browser_proxy.js';
@@ -202,17 +201,17 @@ export {PaymentsManagerImpl} from './autofill_page/payments/payments_manager_pro
 export type {PaymentsManagerProxy} from './autofill_page/payments/payments_manager_proxy.js';
 export {SettingsPaymentsPageElement} from './autofill_page/payments/payments_page.js';
 export {SettingsVirtualCardUnenrollDialogElement} from './autofill_page/payments/virtual_card_unenroll_dialog.js';
-export {SettingsShoppingPageElement} from './autofill_page/shopping_page.js';
-export {SettingsSuggestionsFromGeminiSubpageElement} from './autofill_page/suggestions_from_gemini_subpage.js';
-export {SettingsTravelPageElement} from './autofill_page/travel_page.js';
+export {SettingsShoppingPageElement} from './autofill_page/shopping/shopping_page.js';
+export {SettingsSuggestionsFromGeminiPageElement} from './autofill_page/suggestions_from_gemini/suggestions_from_gemini_page.js';
+export {SettingsTravelPageElement} from './autofill_page/travel/travel_page.js';
 export {SettingsWalletablePassDetectionToggleElement} from './autofill_page/walletable_pass_detection_toggle.js';
 // <if expr="not is_chromeos">
-export {SettingsClearBrowsingDataAccountIndicator} from './clear_browsing_data_dialog/clear_browsing_data_account_indicator.js';
+export {SettingsClearBrowsingDataAccountIndicatorElement} from './clear_browsing_data_dialog/clear_browsing_data_account_indicator.js';
 // </if>
 export {BrowsingDataType, ClearBrowsingDataBrowserProxyImpl, TimePeriod} from './clear_browsing_data_dialog/clear_browsing_data_browser_proxy.js';
 export type {ClearBrowsingDataBrowserProxy, ClearBrowsingDataResult, UpdateSyncStateEvent} from './clear_browsing_data_dialog/clear_browsing_data_browser_proxy.js';
 export {getDataTypePrefName, SettingsClearBrowsingDataDialogElement} from './clear_browsing_data_dialog/clear_browsing_data_dialog.js';
-export {getTimePeriodString, SettingsClearBrowsingDataTimePicker} from './clear_browsing_data_dialog/clear_browsing_data_time_picker.js';
+export {getTimePeriodString, SettingsClearBrowsingDataTimePickerElement} from './clear_browsing_data_dialog/clear_browsing_data_time_picker.js';
 export {SettingsHistoryDeletionDialogElement} from './clear_browsing_data_dialog/history_deletion_dialog.js';
 export {SettingsOtherGoogleDataDialogElement} from './clear_browsing_data_dialog/other_google_data_dialog.js';
 export {SettingsCollapseRadioButtonElement} from './controls/collapse_radio_button.js';
@@ -231,7 +230,7 @@ export {SettingsAddLanguagesDialogElement} from './languages_page/add_languages_
 export {SettingsEditDictionaryPageElement} from './languages_page/edit_dictionary_page.js';
 // </if>
 
-export {getLanguageHelperInstance} from './languages_page/languages.js';
+export {getLanguageHelperInstance, LanguageHelperImpl} from './languages_page/languages.js';
 export {LanguagesBrowserProxyImpl} from './languages_page/languages_browser_proxy.js';
 export type {LanguagesBrowserProxy} from './languages_page/languages_browser_proxy.js';
 export {kMenuCloseDelay, SettingsLanguagesPageElement} from './languages_page/languages_page.js';

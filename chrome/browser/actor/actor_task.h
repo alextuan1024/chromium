@@ -283,6 +283,12 @@ class ActorTask : public base::SupportsUserData {
   // The set of tabs that were acted on by the last call to Act.
   TabHandleSet GetLastActedTabs() const;
 
+  // The tab that was most recently added or actuated on. Unlike GetTabs()
+  // and GetLastActedTabs(), this handle is preserved after task completion
+  // as long as the underlying tab has not been destroyed.
+  tabs::TabInterface* GetLastActuatedTab() const;
+  tabs::TabHandle GetLastActuatedTabHandle() const;
+
   base::WeakPtr<ActorTask> GetWeakPtr();
 
   Profile* GetProfile() const;
@@ -292,6 +298,9 @@ class ActorTask : public base::SupportsUserData {
   }
 
   ActorKeyedService& actor_keyed_service() const { return service_.get(); }
+  ui::UiEventDispatcher& ui_event_dispatcher() const {
+    return *ui_event_dispatcher_;
+  }
 
   bool has_visible_tab() const { return has_visible_tab_; }
   bool is_in_pip() const { return is_in_pip_; }
@@ -358,8 +367,8 @@ class ActorTask : public base::SupportsUserData {
   void DidContentsExitActorControl(ActorControlledTabState* state,
                                    content::WebContents* contents);
 
-  // Returns true if the tab belongs to a different profile than the task,
-  // and logs an error to the journal.
+  // Returns true if the tab does not exist or belongs to a different profile
+  // than the task, and logs an error to the journal.
   bool CheckCrossProfileAndLog(tabs::TabInterface* tab,
                                tabs::TabHandle tab_handle,
                                std::string_view method_name);
@@ -400,11 +409,13 @@ class ActorTask : public base::SupportsUserData {
 
   std::unique_ptr<ActionTrackerForMetrics> action_tracker_for_metrics_;
 
+  // This is used by and should be kept above `execution_engine_`.
+  std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher_;
+
   // The engine responsible for actually processing and invoking a list of
   // ToolRequests. Always non-null.
   std::unique_ptr<ExecutionEngine> execution_engine_;
 
-  std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher_;
 
   base::SafeRef<AggregatedJournal> journal_;
 
@@ -453,6 +464,10 @@ class ActorTask : public base::SupportsUserData {
   // turn. Reset at the beginning of each call to Act.
   absl::flat_hash_map<tabs::TabHandle, std::unique_ptr<ActorControlledTabState>>
       to_observe_tabs_;
+
+  // The handle of the tab most recently added for actuation, preserved across
+  // task completion.
+  tabs::TabHandle last_actuated_tab_;
 
   // A set of additional tab observations performed directly by the tools.
   std::vector<optimization_guide::proto::TabObservation>

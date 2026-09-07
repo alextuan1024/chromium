@@ -9,3 +9,7 @@ dictionary WebSocketInit {
     [RuntimeEnabled=LocalNetworkAccessWebSocketsTargetAddressSpace] IPAddressSpace targetAddressSpace;
 };
 
+// This typedef ensures that the union is still generated even when it isn't
+// mentioned in websocket.idl.
+typedef (DOMString or sequence<DOMString> or WebSocketInit) WebSocketProtocolsOrWebSocketInit;
+

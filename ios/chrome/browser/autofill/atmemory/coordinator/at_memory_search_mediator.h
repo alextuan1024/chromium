@@ -10,7 +10,8 @@
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_mutator.h"
 
 namespace autofill {
-class AtMemoryQueryService;
+class AtMemoryManager;
+class BrowserAutofillManager;
 }
 
 namespace personal_context {
@@ -41,18 +42,16 @@ class WebState;
 // The consumer for this mediator.
 @property(nonatomic, weak) id<AtMemorySearchConsumer> consumer;
 
-// The designated initializer. `atMemoryQueryService` takes the string provided
-// by the user and provides results to the user if available. If not, the
-// service provides an empty result along with a status indicating the error.
-// `webState` is used to retrieve context like the current URL and page title.
+// The designated initializer. `atMemoryManager` provides access to the
+// AtMemory manager. `autofillManager` provides the primary main frame autofill
+// manager. `webState` is used to retrieve context like the UKM source ID.
 // `firstRunService` is used to read and update notice confirmation states.
 - (instancetype)
-    initWithAtMemoryQueryService:
-        (autofill::AtMemoryQueryService*)atMemoryQueryService
-                        webState:(web::WebState*)webState
-                 firstRunService:
-                     (personal_context::PersonalContextFirstRunService*)
-                         firstRunService NS_DESIGNATED_INITIALIZER;
+    initWithAtMemoryManager:(autofill::AtMemoryManager*)atMemoryManager
+            autofillManager:(autofill::BrowserAutofillManager*)autofillManager
+                   webState:(web::WebState*)webState
+            firstRunService:(personal_context::PersonalContextFirstRunService*)
+                                firstRunService NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

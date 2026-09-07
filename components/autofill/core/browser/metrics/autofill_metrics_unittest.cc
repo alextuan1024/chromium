@@ -49,13 +49,13 @@
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/browser/metrics/form_events/address_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/credit_card_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
-#include "components/autofill/core/browser/metrics/ukm_metrics_test_utils.h"
+#include "components/autofill/core/browser/metrics/ukm_metrics_test_util.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test_credit_card_save_manager.h"
@@ -63,17 +63,17 @@
 #include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
-#include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
+#include "components/autofill/core/browser/test_utils/valuables_data_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/test_autofill_external_delegate.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -2332,11 +2332,7 @@ class AutofillMetricsParseQueryResponseTest : public AutofillMetricsTest {
     AutofillMetricsTest::SetUp();
 
     forms_.push_back(test::GetFormData(
-        {.fields = {{.role = NAME_FULL},
-                    {.role = ADDRESS_HOME_LINE1},
-                    {.label = u"radio_button",
-                     // Checkable fields should be ignored in parsing.
-                     .form_control_type = FormControlType::kInputRadio}}}));
+        {.fields = {{.role = NAME_FULL}, {.role = ADDRESS_HOME_LINE1}}}));
     SeeForm(forms_.back());
 
     forms_.push_back(test::GetFormData(
@@ -3252,6 +3248,90 @@ TEST_F(AutofillMetricsTest, FormRequirementsAndAvailabilityMetrics) {
       "Autofill.KeyMetrics.FillingReadiness.AvailableRequiredDataSources."
       "Required2",
       1, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardPromptShown) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage,
+      /*is_new_user=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.ExistingUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardPromptSelected) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.NewUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCardPrompt.NewUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage,
+      /*is_new_user=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.ExistingUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardScreenType) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kUnknown);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kUnknown, 1);
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kOcr);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kOcr, 1);
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kNfc);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kNfc, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardCompletedNewUser) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardCompletedNewUser(true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.NewUser", true, 1);
+
+  AutofillMetrics::LogScanCreditCardCompletedNewUser(false);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.NewUser", false, 1);
 }
 
 }  // namespace

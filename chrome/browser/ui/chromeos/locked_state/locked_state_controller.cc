@@ -4,15 +4,15 @@
 
 #include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 
+#include "ash/wm/window_pin_util.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/notreached.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/extensions/context_menu_matcher.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/common/chrome_features.h"
 #include "ui/aura/window.h"
@@ -67,9 +67,17 @@ bool IsTrustedPinnedState(LockedState state) {
 
 constexpr auto kCommandMap =
     base::MakeFixedFlatMap<int, LockedStateController::CommandType>({
+        {IDC_CUT, LockedStateController::CommandType::kClipboard},
+        {IDC_COPY, LockedStateController::CommandType::kClipboard},
+        {IDC_PASTE, LockedStateController::CommandType::kClipboard},
         {IDC_BACK, LockedStateController::CommandType::kPageNavigation},
         {IDC_FORWARD, LockedStateController::CommandType::kPageNavigation},
         {IDC_RELOAD, LockedStateController::CommandType::kPageNavigation},
+        {IDC_RELOAD_BYPASSING_CACHE,
+         LockedStateController::CommandType::kPageNavigation},
+        {IDC_RELOAD_CLEARING_CACHE,
+         LockedStateController::CommandType::kPageNavigation},
+        {IDC_STOP, LockedStateController::CommandType::kPageNavigation},
         {IDC_CONTENT_CONTEXT_COPYIMAGE,
          LockedStateController::CommandType::kAllowedContentContext},
         {IDC_CONTENT_CONTEXT_COPYIMAGELOCATION,
@@ -89,14 +97,26 @@ constexpr auto kCommandMap =
         {IDC_FIND, LockedStateController::CommandType::kFindInPage},
         {IDC_FIND_NEXT, LockedStateController::CommandType::kFindInPage},
         {IDC_FIND_PREVIOUS, LockedStateController::CommandType::kFindInPage},
+        {IDC_CLOSE_FIND_OR_STOP,
+         LockedStateController::CommandType::kFindInPage},
     });
+
+// The range of command IDs reserved for extension custom menus.
+constexpr int kMaxExtensionCustomCommands = 1000;
+constexpr int IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST =
+    IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST + kMaxExtensionCustomCommands;
+
+bool IsExtensionsCustomCommandId(int command_id) {
+  return command_id >= IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST &&
+         command_id <= IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST;
+}
 
 LockedStateController::CommandType GetCommandType(int command_id) {
   const auto it = kCommandMap.find(command_id);
   if (it != kCommandMap.end()) {
     return it->second;
   }
-  if (extensions::ContextMenuMatcher::IsExtensionsCustomCommandId(command_id)) {
+  if (IsExtensionsCustomCommandId(command_id)) {
     return LockedStateController::CommandType::kExtensionsCustom;
   }
   return LockedStateController::CommandType::kUnknown;
@@ -107,10 +127,10 @@ LockedStateController::CommandType GetCommandType(int command_id) {
 // static
 LockedStateController* LockedStateController::From(
     BrowserWindowInterface* browser_window_interface) {
-  if (!features::IsUseUnifiedLockedStateControllerEnabled()) {
-    return nullptr;
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    return Get(browser_window_interface->GetUnownedUserDataHost());
   }
-  return Get(browser_window_interface->GetUnownedUserDataHost());
+  return nullptr;
 }
 
 LockedStateController::LockedStateController(
@@ -151,16 +171,18 @@ bool LockedStateController::Lock(LockedState state) {
   state_ = state;
   UpdateCapabilities();
 
-  // EnterLockedFullscreen/LeaveLockedFullscreen will be moved to
-  // LocekdStateController.  See TODO in browser_delegate.h
   if (should_be_pinned && !was_pinned) {
-    CHECK_DEREF(ash::BrowserController::GetInstance()->GetDelegate(
-                    browser_window_interface_))
-        .EnterLockedFullscreen(capabilities_.focus_toolbar_on_lock);
+    ash::PinWindow(browser_window_interface_->GetWindow()->GetNativeWindow(),
+                   /*trusted=*/true);
+    chrome::BrowserCommandController::From(browser_window_interface_)
+        ->LockedFullscreenStateChanged();
+    if (capabilities_.focus_toolbar_on_lock) {
+      ToolbarButtonProvider::From(browser_window_interface_)->FocusToolbar();
+    }
   } else if (!should_be_pinned && was_pinned) {
-    CHECK_DEREF(ash::BrowserController::GetInstance()->GetDelegate(
-                    browser_window_interface_))
-        .LeaveLockedFullscreen();
+    ash::UnpinWindow(browser_window_interface_->GetWindow()->GetNativeWindow());
+    chrome::BrowserCommandController::From(browser_window_interface_)
+        ->LockedFullscreenStateChanged();
   }
 
   NotifyStateUpdated();
@@ -190,11 +212,9 @@ bool LockedStateController::Unlock(LockedState expected_state) {
   UpdateCapabilities();
 
   if (was_pinned) {
-    // LeaveLockedFullscreen will be moved to LocekdStateController.  See TODO
-    // in browser_delegate.h
-    CHECK_DEREF(ash::BrowserController::GetInstance()->GetDelegate(
-                    browser_window_interface_))
-        .LeaveLockedFullscreen();
+    ash::UnpinWindow(browser_window_interface_->GetWindow()->GetNativeWindow());
+    chrome::BrowserCommandController::From(browser_window_interface_)
+        ->LockedFullscreenStateChanged();
   }
 
   NotifyStateUpdated();
@@ -205,7 +225,11 @@ bool LockedStateController::IsLocked() const {
   return IsTrustedPinnedState(state_);
 }
 
-bool LockedStateController::IsLockedForOnTaskForTesting() const {
+bool LockedStateController::IsLockedFullscreen() const {
+  return state_ == LockedState::kExtensionLocked;
+}
+
+bool LockedStateController::IsLockedForOnTask() const {
   return state_ == LockedState::kOnTaskPrepared ||
          state_ == LockedState::kOnTaskLocked ||
          state_ == LockedState::kOnTaskLockedPaused;
@@ -224,19 +248,32 @@ bool LockedStateController::IsCommandIdEnabled(int command_id) const {
     return true;
   }
 
+  CommandType type = GetCommandType(command_id);
+  switch (type) {
+    case CommandType::kClipboard:
+      return true;
+    case CommandType::kTabManagement:
+      return capabilities_.supports_tab_strip;
+    case CommandType::kFindInPage:
+      return capabilities_.allow_find;
+    case CommandType::kPageNavigation:
+      return capabilities_.allow_browser_navigation;
+    case CommandType::kAllowedContentContext:
+    case CommandType::kExtensionsCustom:
+      return capabilities_.context_menu_policy != ContextMenuPolicy::kBlockAll;
+    case CommandType::kUnknown:
+      break;
+  }
+
+  // For other command IDs, follow the context menu policy.
   switch (capabilities_.context_menu_policy) {
     case ContextMenuPolicy::kBlockAll:
       return false;
     case ContextMenuPolicy::kAllowAll:
       return true;
-    case ContextMenuPolicy::kLimited: {
-      CommandType type = GetCommandType(command_id);
-      return type == CommandType::kPageNavigation ||
-             type == CommandType::kAllowedContentContext ||
-             type == CommandType::kExtensionsCustom;
-    }
+    case ContextMenuPolicy::kLimited:
+      return false;
   }
-  return false;
 }
 
 bool LockedStateController::IsCommandUpdateBlocked(int command_id) const {
@@ -247,7 +284,10 @@ bool LockedStateController::IsCommandUpdateBlocked(int command_id) const {
 
   if ((type == CommandType::kTabManagement &&
        capabilities_.supports_tab_strip) ||
-      (type == CommandType::kFindInPage && capabilities_.allow_find)) {
+      (type == CommandType::kFindInPage && capabilities_.allow_find) ||
+      (type == CommandType::kPageNavigation &&
+       capabilities_.allow_browser_navigation) ||
+      type == CommandType::kClipboard) {
     return false;
   }
   return true;

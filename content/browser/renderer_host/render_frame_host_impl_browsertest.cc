@@ -38,6 +38,7 @@
 #include "components/viz/common/features.h"
 #include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/browser_main_loop.h"
+#include "content/browser/renderer_host/initiator_navigation_state_impl.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/origin_trial_state_host_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
@@ -212,6 +213,31 @@ class FirstPartySchemeContentBrowserClient
   std::unique_ptr<network::TestURLLoaderFactory> trustme_factory_;
   std::unique_ptr<network::TestURLLoaderFactory>
       trustmeifembeddingsecure_factory_;
+};
+
+class BlockedNavigationDelegate : public WebContentsDelegate {
+ public:
+  explicit BlockedNavigationDelegate(WebContents* web_contents)
+      : web_contents_(web_contents) {
+    web_contents_->SetDelegate(this);
+  }
+
+  ~BlockedNavigationDelegate() override { web_contents_->SetDelegate(nullptr); }
+
+  void OnDidBlockNavigation(
+      WebContents* web_contents,
+      const GURL& blocked_url,
+      const GURL& initiator_url,
+      const url::Origin& initiator_origin,
+      blink::mojom::NavigationBlockedReason reason) override {
+    ++blocked_navigation_count_;
+  }
+
+  int blocked_navigation_count() const { return blocked_navigation_count_; }
+
+ private:
+  raw_ptr<WebContents> web_contents_;
+  int blocked_navigation_count_ = 0;
 };
 
 }  // namespace
@@ -744,14 +770,16 @@ class RenderFrameHostFactoryForBeforeUnloadInterceptor
       const blink::LocalFrameToken& frame_token,
       const blink::DocumentToken& document_token,
       base::UnguessableToken devtools_frame_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       bool renderer_initiated_creation,
       RenderFrameHostImpl::LifecycleStateImpl lifecycle_state,
       scoped_refptr<BrowsingContextState> browsing_context_state) override {
     return base::WrapUnique(new RenderFrameHostImplForBeforeUnloadInterceptor(
         site_instance, std::move(render_view_host), delegate, frame_tree,
         frame_tree_node, routing_id, std::move(frame_remote), frame_token,
-        document_token, devtools_frame_token, renderer_initiated_creation,
-        lifecycle_state, std::move(browsing_context_state),
+        document_token, devtools_frame_token, initiator_state_token,
+        renderer_initiated_creation, lifecycle_state,
+        std::move(browsing_context_state),
         frame_tree_node->frame_owner_element_type(), frame_tree_node->parent(),
         frame_tree_node->fenced_frame_status()));
   }
@@ -9751,6 +9779,132 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_FALSE(popup_rwhi->IsContentRenderingTimeoutRunning());
 }
 
+class InitialEmptyDocumentInsecureRequestStateBrowserTest
+    : public RenderFrameHostImplBrowserTest {
+ public:
+  InitialEmptyDocumentInsecureRequestStateBrowserTest() {
+    feature_list_.InitAndEnableFeature(
+        features::kEnforceSameDocumentOriginInvariants);
+  }
+
+ protected:
+  void NavigateOpenerWithInsecureRequestState() {
+    GURL opener_url(embedded_test_server()->GetURL(
+        "a.com",
+        "/set-header?Content-Security-Policy: upgrade-insecure-requests; "
+        "block-all-mixed-content"));
+    ASSERT_TRUE(NavigateToURL(shell(), opener_url));
+
+    const blink::mojom::FrameReplicationState& opener_replication_state =
+        root_frame_host()->frame_tree_node()->current_replication_state();
+    EXPECT_EQ(blink::mojom::InsecureRequestPolicy::kMaxInsecureRequestPolicy,
+              opener_replication_state.insecure_request_policy);
+    ASSERT_FALSE(opener_replication_state.insecure_navigations_set.empty());
+  }
+
+  void ExpectDefaultInsecureRequestState(RenderFrameHostImpl* rfh) {
+    const blink::mojom::FrameReplicationState& replication_state =
+        rfh->frame_tree_node()->current_replication_state();
+    EXPECT_EQ(blink::mojom::InsecureRequestPolicy::kLeaveInsecureRequestsAlone,
+              replication_state.insecure_request_policy);
+    EXPECT_TRUE(replication_state.insecure_navigations_set.empty());
+  }
+
+  void ExpectSameInsecureRequestState(RenderFrameHostImpl* expected_rfh,
+                                      RenderFrameHostImpl* actual_rfh) {
+    const blink::mojom::FrameReplicationState& expected_state =
+        expected_rfh->frame_tree_node()->current_replication_state();
+    const blink::mojom::FrameReplicationState& actual_state =
+        actual_rfh->frame_tree_node()->current_replication_state();
+    EXPECT_EQ(expected_state.insecure_request_policy,
+              actual_state.insecure_request_policy);
+    EXPECT_EQ(expected_state.insecure_navigations_set,
+              actual_state.insecure_navigations_set);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(InitialEmptyDocumentInsecureRequestStateBrowserTest,
+                       PopupInheritsInsecureRequestStateFromOpener) {
+  NavigateOpenerWithInsecureRequestState();
+
+  ShellAddedObserver new_shell_observer;
+  ASSERT_TRUE(ExecJs(shell(), "window.popup = window.open();"));
+  Shell* popup = new_shell_observer.GetShell();
+  WebContentsImpl* popup_contents =
+      static_cast<WebContentsImpl*>(popup->web_contents());
+  ASSERT_TRUE(WaitForLoadStop(popup_contents));
+
+  RenderFrameHostImpl* popup_rfh = popup_contents->GetPrimaryMainFrame();
+  ASSERT_TRUE(popup_rfh->frame_tree_node()->is_on_initial_empty_document());
+  ExpectSameInsecureRequestState(root_frame_host(), popup_rfh);
+
+  EXPECT_TRUE(
+      ExecJs(popup_rfh, "history.pushState({}, '', 'about:blank#same-doc')"));
+  EXPECT_TRUE(popup_rfh->IsRenderFrameLive());
+
+  GURL clean_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  ASSERT_TRUE(NavigateToURL(popup, clean_url));
+  popup_rfh = popup_contents->GetPrimaryMainFrame();
+  EXPECT_FALSE(popup_rfh->frame_tree_node()->is_on_initial_empty_document());
+  ExpectDefaultInsecureRequestState(popup_rfh);
+}
+
+IN_PROC_BROWSER_TEST_F(InitialEmptyDocumentInsecureRequestStateBrowserTest,
+                       NoopenerPopupDoesNotInheritInsecureRequestState) {
+  NavigateOpenerWithInsecureRequestState();
+
+  ShellAddedObserver new_shell_observer;
+  ASSERT_TRUE(
+      ExecJs(shell(), "window.open('about:blank', '_blank', 'noopener');"));
+  Shell* popup = new_shell_observer.GetShell();
+  WebContentsImpl* popup_contents =
+      static_cast<WebContentsImpl*>(popup->web_contents());
+  ASSERT_TRUE(WaitForLoadStop(popup_contents));
+
+  RenderFrameHostImpl* popup_rfh = popup_contents->GetPrimaryMainFrame();
+  EXPECT_EQ(nullptr, popup_rfh->frame_tree_node()->opener());
+  ExpectDefaultInsecureRequestState(popup_rfh);
+}
+
+IN_PROC_BROWSER_TEST_F(InitialEmptyDocumentInsecureRequestStateBrowserTest,
+                       PopupInheritsInsecureRequestStateFromSubframeOpener) {
+  GURL main_url(embedded_test_server()->GetURL(
+      "a.com", "/frame_tree/page_with_one_frame.html"));
+  ASSERT_TRUE(NavigateToURL(shell(), main_url));
+  ExpectDefaultInsecureRequestState(root_frame_host());
+
+  GURL subframe_url(embedded_test_server()->GetURL(
+      "b.com",
+      "/set-header?Content-Security-Policy: upgrade-insecure-requests; "
+      "block-all-mixed-content"));
+  ASSERT_TRUE(NavigateIframeToURL(web_contents(), "child0", subframe_url));
+  RenderFrameHostImpl* subframe_rfh =
+      static_cast<RenderFrameHostImpl*>(ChildFrameAt(root_frame_host(), 0));
+  ASSERT_TRUE(subframe_rfh);
+  const blink::mojom::FrameReplicationState& subframe_replication_state =
+      subframe_rfh->frame_tree_node()->current_replication_state();
+  EXPECT_EQ(blink::mojom::InsecureRequestPolicy::kMaxInsecureRequestPolicy,
+            subframe_replication_state.insecure_request_policy);
+  ASSERT_FALSE(subframe_replication_state.insecure_navigations_set.empty());
+  ExpectDefaultInsecureRequestState(root_frame_host());
+
+  ShellAddedObserver new_shell_observer;
+  ASSERT_TRUE(ExecJs(subframe_rfh, "window.open();"));
+  Shell* popup = new_shell_observer.GetShell();
+  WebContentsImpl* popup_contents =
+      static_cast<WebContentsImpl*>(popup->web_contents());
+  ASSERT_TRUE(WaitForLoadStop(popup_contents));
+
+  RenderFrameHostImpl* popup_rfh = popup_contents->GetPrimaryMainFrame();
+  ASSERT_TRUE(popup_rfh->frame_tree_node()->is_on_initial_empty_document());
+  EXPECT_EQ(subframe_rfh->frame_tree_node(),
+            popup_rfh->frame_tree_node()->opener());
+  ExpectSameInsecureRequestState(subframe_rfh, popup_rfh);
+}
+
 // Tests that paint holding is not used when an opener-created popup that is
 // still on its initial empty document navigates cross-origin without user
 // activation. Similar to the test above, but checks the case where the opener
@@ -10085,6 +10239,36 @@ IN_PROC_BROWSER_TEST_F(RenderFrameHostImplBrowserTestWithBFCache,
   EXPECT_EQ(ids.size(), 2u);
   EXPECT_TRUE(ContainsSurfaceIdOrNewer(ids, id_a));
   EXPECT_TRUE(ContainsSurfaceIdOrNewer(ids, id_b));
+}
+
+// Tests that DidBlockNavigation from a document that has been placed in the
+// back/forward cache does not surface blocked-redirect UI for the now-primary
+// page.
+IN_PROC_BROWSER_TEST_F(RenderFrameHostImplBrowserTestWithBFCache,
+                       DidBlockNavigationIgnoredFromBackForwardCache) {
+  GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  GURL url_b(embedded_test_server()->GetURL("b.com", "/title2.html"));
+
+  // Navigate to A.
+  EXPECT_TRUE(NavigateToURL(shell(), url_a));
+  RenderFrameHostImpl* rfh_a = web_contents()->GetPrimaryMainFrame();
+
+  // Navigate to B, placing A in the back/forward cache.
+  EXPECT_TRUE(NavigateToURL(shell(), url_b));
+  ASSERT_TRUE(rfh_a->IsInBackForwardCache());
+
+  BlockedNavigationDelegate delegate(web_contents());
+
+  // Simulate the cached document reporting a blocked redirect after it has
+  // entered the back/forward cache.
+  rfh_a->DidBlockNavigation(
+      url_a, blink::mojom::NavigationBlockedReason::kRedirectWithNoUserGesture);
+  EXPECT_EQ(0, delegate.blocked_navigation_count());
+
+  // The active document should still be able to report blocked redirects.
+  web_contents()->GetPrimaryMainFrame()->DidBlockNavigation(
+      url_b, blink::mojom::NavigationBlockedReason::kRedirectWithNoUserGesture);
+  EXPECT_EQ(1, delegate.blocked_navigation_count());
 }
 
 class RenderFrameHostImplPrerenderBrowserTest
@@ -10667,16 +10851,16 @@ IN_PROC_BROWSER_TEST_F(RenderFrameHostImplConnectionAllowlistBrowserTest,
   )",
                                              cross_origin_url)));
 
-  RenderFrameHost* openee_rfh =
+  RenderFrameHostImpl* openee_rfh = static_cast<RenderFrameHostImpl*>(
       static_cast<WebContentsImpl*>(openee_shell->web_contents())
-          ->GetPrimaryMainFrame();
+          ->GetPrimaryMainFrame());
 
   // 5. Issue a KeepAlive for the navigation state so that the
   //    PolicyContainerHost will still exist after the initiator RenderFrameHost
   //    is gone.
   mojo::PendingRemote<blink::mojom::NavigationStateKeepAliveHandle> keep_alive;
-  static_cast<RenderFrameHostImpl*>(openee_rfh)
-      ->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver());
+  openee_rfh->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver(),
+                                   openee_rfh->current_initiator_state_token());
 
   // 6. Watch for the navigation in the opener.
   TestNavigationObserver navigation_observer(web_contents());
@@ -10727,16 +10911,16 @@ IN_PROC_BROWSER_TEST_F(
   )",
                                              GURL(url::kAboutBlankURL))));
 
-  RenderFrameHost* openee_rfh =
+  RenderFrameHostImpl* openee_rfh = static_cast<RenderFrameHostImpl*>(
       static_cast<WebContentsImpl*>(openee_shell->web_contents())
-          ->GetPrimaryMainFrame();
+          ->GetPrimaryMainFrame());
 
   // 5. Issue a KeepAlive for the navigation state so that the
   //    PolicyContainerHost will still exist after the initiator RenderFrameHost
   //    is gone.
   mojo::PendingRemote<blink::mojom::NavigationStateKeepAliveHandle> keep_alive;
-  static_cast<RenderFrameHostImpl*>(openee_rfh)
-      ->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver());
+  openee_rfh->IssueKeepAliveHandle(keep_alive.InitWithNewPipeAndPassReceiver(),
+                                   openee_rfh->current_initiator_state_token());
 
   // 6. Watch for the navigation in the opener.
   TestNavigationObserver navigation_observer(web_contents());

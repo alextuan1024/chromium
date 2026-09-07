@@ -4,9 +4,11 @@
 
 #include "chrome/browser/devtools/devtools_availability_checker.h"
 
+#include "base/test/scoped_feature_list.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
+#include "chrome/browser/devtools/features.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
-#include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
@@ -14,6 +16,10 @@
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "extensions/buildflags/buildflags.h"
+#include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -22,10 +28,16 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/mojom/manifest.mojom-shared.h"
-#include "testing/gtest/include/gtest/gtest.h"
+#endif
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
+#include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/webapps/common/web_app_id.h"
 #endif
 
@@ -140,7 +152,6 @@ TEST_F(DevToolsAvailabilityCheckerTest,
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 TEST_F(DevToolsAvailabilityCheckerTest,
        UrlBlockedWhenNotOnAllowlistAndBlocklistIsEmpty) {
   base::ListValue allowlist;
@@ -154,7 +165,6 @@ TEST_F(DevToolsAvailabilityCheckerTest,
       ->NavigateAndCommit(GURL("https://example.com/page"));
   EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(DevToolsAvailabilityCheckerTest, DeveloperToolsDisallowedByPolicy) {
   profile_->GetPrefs()->SetInteger(
@@ -166,6 +176,13 @@ TEST_F(DevToolsAvailabilityCheckerTest, DeveloperToolsDisallowedByPolicy) {
   EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
 }
 
+TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullWebContents) {
+  // Passing nullptr for WebContents should default to allowed.
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
+                                  static_cast<content::WebContents*>(nullptr)));
+}
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 TEST_F(DevToolsAvailabilityCheckerTest, ExtensionAllowedByPolicy) {
   base::ListValue allowlist;
   allowlist.Append("abc");
@@ -279,12 +296,6 @@ TEST_F(DevToolsAvailabilityCheckerTest, ExtensionForceInstalledButAllowlisted) {
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(), extension.get()));
 }
 
-TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullWebContents) {
-  // Passing nullptr for WebContents should default to allowed.
-  EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
-                                  static_cast<content::WebContents*>(nullptr)));
-}
-
 TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullExtension) {
   // Passing nullptr for Extension should default to allowed.
   EXPECT_TRUE(IsInspectionAllowed(
@@ -317,6 +328,7 @@ TEST_F(DevToolsAvailabilityCheckerTest,
   EXPECT_FALSE(IsInspectionAllowed(
       profile_.get(), static_cast<extensions::Extension*>(nullptr)));
 }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 TEST_F(DevToolsAvailabilityCheckerTest, NoPolicy_DefaultAllowed) {
   // By default, devtools are allowed.
@@ -542,6 +554,137 @@ TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullWebApp) {
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
                                   static_cast<web_app::WebApp*>(nullptr)));
 }
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerDisallowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       UserInstalledIwaServiceWorkerAllowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app =
+      web_app::test::CreateWebApp(url_info->origin().GetURL(),
+                                  web_app::WebAppManagement::kIwaUserInstalled);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       UninstalledIwaServiceWorkerAllowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerAllowedWhenDevToolsAllowed) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerDisallowedWhenDevToolsDisallowed) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(DevToolsAvailabilityCheckerTest, TargetLevelSubframeBlocked) {
@@ -567,4 +710,38 @@ TEST_F(DevToolsAvailabilityCheckerTest, TargetLevelSubframeBlocked) {
   // blocked.
   EXPECT_FALSE(
       IsInspectionAllowed(profile_.get(), GURL("https://blocked.com/iframe")));
+}
+
+class DevToolsAvailabilityCheckerTargetLevelDisabledTest
+    : public DevToolsAvailabilityCheckerTest {
+ public:
+  DevToolsAvailabilityCheckerTargetLevelDisabledTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        features::kDevToolsTargetLevelEvaluation);
+  }
+
+  ~DevToolsAvailabilityCheckerTargetLevelDisabledTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DevToolsAvailabilityCheckerTargetLevelDisabledTest,
+       SubframeBlockedByBlocklistPolicy) {
+  base::ListValue blocklist;
+  blocklist.Append("blocked.com");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                std::move(blocklist));
+
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://allowed.com/page"));
+  content::RenderFrameHost* subframe =
+      content::RenderFrameHostTester::For(web_contents_->GetPrimaryMainFrame())
+          ->AppendChild("subframe");
+  content::RenderFrameHostTester::For(subframe)
+      ->InitializeRenderFrameIfNeeded();
+  content::NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL("https://blocked.com/iframe"), subframe);
+
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
 }

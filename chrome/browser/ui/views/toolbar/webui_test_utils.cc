@@ -50,6 +50,9 @@ namespace {
       return ::AvatarToolbarButtonState::kGuestSession;
     case toolbar_ui_api::mojom::AvatarToolbarButtonState::kIncognitoProfile:
       return ::AvatarToolbarButtonState::kIncognitoProfile;
+    case toolbar_ui_api::mojom::AvatarToolbarButtonState::
+        kEnterpriseIsolatedProfile:
+      return ::AvatarToolbarButtonState::kEnterpriseIsolatedProfile;
     case toolbar_ui_api::mojom::AvatarToolbarButtonState::kExplicitTextShowing:
       return ::AvatarToolbarButtonState::kExplicitTextShowing;
     case toolbar_ui_api::mojom::AvatarToolbarButtonState::kOnSignin:
@@ -153,7 +156,7 @@ void SetUpWebUI(const ui::ElementIdentifier& element_id,
                 ui::TrackedElement** element_out,
                 WebUIToolbarWebView** webui_toolbar_view_out,
                 views::WebView** web_view_out,
-                Browser* browser) {
+                BrowserWindowInterface* browser) {
   // Wait for the WebUIToolbarWebView to be available.
   *webui_toolbar_view_out = nullptr;
   ASSERT_TRUE(base::test::RunUntil([&]() {
@@ -189,7 +192,7 @@ void SetUpWebUI(const ui::ElementIdentifier& element_id,
   content::WaitForCopyableViewInWebContents((*web_view_out)->GetWebContents());
 }
 
-WebUIToolbarWebView* GetWebUIToolbarWebView(Browser* browser) {
+WebUIToolbarWebView* GetWebUIToolbarWebView(BrowserWindowInterface* browser) {
   return BrowserView::GetBrowserViewForBrowser(browser)
       ->toolbar_button_provider()
       ->GetWebUIToolbarViewForTesting();
@@ -257,15 +260,16 @@ void AvatarToolbarButtonTestAccessor::WaitForAvatarButton() {
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS only badges Incognito, Guest, and captive portal signin icons in
   // the browser window.
-  show_avatar_toolbar_button = profile->IsIncognitoProfile() ||
-                               profile->IsGuestSession() ||
-                               (profile->IsOffTheRecord() &&
-                                profile->GetOTRProfileID().IsCaptivePortal());
+  show_avatar_toolbar_button =
+      profile->IsPrimaryOTRProfileWithRegularParent() ||
+      profile->IsGuestSession() ||
+      (profile->IsOffTheRecord() &&
+       profile->GetOTRProfileID().IsCaptivePortal());
 #else
   // DevTools profiles are OffTheRecord, so hide it there.
-  show_avatar_toolbar_button = profile->IsIncognitoProfile() ||
-                               profile->IsGuestSession() ||
-                               profile->IsRegularProfile();
+  show_avatar_toolbar_button =
+      profile->IsPrimaryOTRProfileWithRegularParent() ||
+      profile->IsGuestSession() || profile->IsRegularProfile();
 #endif
 
   if (!show_avatar_toolbar_button) {
@@ -292,7 +296,6 @@ bool AvatarToolbarButtonTestAccessor::WaitForTextNotEqual(
     const std::u16string& text) {
   return base::test::RunUntil([this, text]() { return GetText() != text; });
 }
-
 
 bool AvatarToolbarButtonTestAccessor::WaitForState(
     AvatarToolbarButtonState state) {
@@ -351,7 +354,6 @@ AvatarToolbarButtonState AvatarToolbarButtonTestAccessor::GetState() {
       GetButton());
 }
 
-
 bool AvatarToolbarButtonTestAccessor::WaitForRenderedTooltipText(
     const std::u16string& text) {
   return base::test::RunUntil(
@@ -368,6 +370,11 @@ bool AvatarToolbarButtonTestAccessor::WaitForAccessibilityDescription(
     const std::u16string& text) {
   return base::test::RunUntil(
       [this, text]() { return GetAccessibilityDescription() == text; });
+}
+
+bool AvatarToolbarButtonTestAccessor::WaitForEnabled(bool enabled) {
+  return base::test::RunUntil(
+      [this, enabled]() { return GetEnabled() == enabled; });
 }
 
 AvatarToolbarButtonInterface* AvatarToolbarButtonTestAccessor::GetInterface() {
@@ -453,10 +460,20 @@ bool AvatarToolbarButtonTestAccessor::GetEnabled() {
             return contents &&
                    content::EvalJs(
                        contents,
-                       "document.querySelector('toolbar-app')"
-                       "?.shadowRoot?.querySelector('avatar-button')"
-                       "?.shadowRoot?.querySelector('#button')"
-                       "?.disabled === false")
+                       "(async () => {"
+                       "  const app = document.querySelector('toolbar-app');"
+                       "  if (!app) return false;"
+                       "  await app.updateComplete;"
+                       "  const btn = "
+                       "app.shadowRoot?.querySelector('avatar-button');"
+                       "  if (!btn) return false;"
+                       "  await btn.updateComplete;"
+                       "  const chip = "
+                       "btn.shadowRoot?.querySelector('#button');"
+                       "  if (!chip) return false;"
+                       "  await chip.updateComplete;"
+                       "  return !chip.disabled;"
+                       "})()")
                        .ExtractBool();
           },
       },
@@ -831,12 +848,14 @@ bool WaitForButtonHidden(content::WebContents* web_contents,
       [&]() { return !IsButtonVisible(web_contents, selector); });
 }
 
-void PinButton(Browser* browser, views::WebView* web_view, const char* pref) {
+void PinButton(BrowserWindowInterface* browser,
+               views::WebView* web_view,
+               const char* pref) {
   browser->GetProfile()->GetPrefs()->SetBoolean(pref, true);
   content::WaitForCopyableViewInWebContents(web_view->GetWebContents());
 }
 
-WebUIToolbarWebView* SetUpAndPinHomeButton(Browser* browser) {
+WebUIToolbarWebView* SetUpAndPinHomeButton(BrowserWindowInterface* browser) {
   WebUIToolbarWebView* webui_toolbar_view = GetWebUIToolbarWebView(browser);
   views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
   PinButton(browser, web_view, prefs::kShowHomeButton);

@@ -31,6 +31,7 @@
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/features.h"
+#include "chrome/browser/enterprise/isolated_mode/isolated_mode_settings_service_factory.h"
 #include "chrome/browser/feedback/public/feedback_source.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/glic/glic_enums.h"
@@ -113,7 +114,6 @@
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/dom_distiller/core/dom_distiller_features.h"
-#include "components/enterprise/isolated_mode/settings.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/lens/buildflags.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
@@ -170,6 +170,7 @@
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_context_menu.h"
 #include "chrome/browser/ui/browser_commands_chromeos.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #endif
@@ -236,7 +237,7 @@ void AppInfoDialogClosedCallback(SessionID session_id,
   }
 }
 
-bool CanOpenFile(Browser* browser) {
+bool CanOpenFile(BrowserWindowInterface* browser) {
   if (browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS ||
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP ||
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP) {
@@ -256,7 +257,8 @@ void InvokeAction(actions::ActionId id, actions::ActionItem* scope) {
   actions::ActionManager::Get().FindAction(id, scope)->InvokeAction();
 }
 
-actions::ActionItem* FindAction(actions::ActionId action_id, Browser* browser) {
+actions::ActionItem* FindAction(actions::ActionId action_id,
+                                BrowserWindowInterface* browser) {
   actions::ActionItem* const root_action_item =
       BrowserActions::From(browser)->root_action_item();
   if (!root_action_item) {
@@ -264,6 +266,17 @@ actions::ActionItem* FindAction(actions::ActionId action_id, Browser* browser) {
   }
   return actions::ActionManager::Get().FindAction(action_id, root_action_item);
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+bool IsLockedForOnTask(BrowserWindowInterface* browser) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    auto* controller = chromeos::LockedStateController::From(browser);
+    return controller && controller->IsLockedForOnTask();
+  }
+  return ash::boca::OnTaskLockedController::From(browser)
+      ->is_locked_for_on_task();
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 
@@ -317,7 +330,7 @@ const BrowserCommandController* BrowserCommandController::From(
 // TODO(crbug.com/434734349): Implement dependency injection for this class to
 // allow removing the Browser dependency.
 BrowserCommandController::BrowserCommandController(BrowserWindowInterface* bwi)
-    : browser_(bwi->GetBrowserForMigrationOnly()),
+    : browser_(bwi),
       command_updater_(CreateCommandUpdater()),
       scoped_unowned_user_data_(bwi->GetUnownedUserDataHost(), *this) {
   browser_->tab_strip_model()->AddObserver(this);
@@ -571,12 +584,7 @@ void BrowserCommandController::FindBarVisibilityChanged() {
   // TODO(crbug.com/365146870): Remove once we consolidate locked fullscreen
   // with OnTask.
 #if BUILDFLAG(IS_CHROMEOS)
-  bool should_block_command_update = is_locked_fullscreen_;
-  if (ash::boca::OnTaskLockedController::From(browser_)
-          ->is_locked_for_on_task()) {
-    should_block_command_update = false;
-  }
-  if (should_block_command_update) {
+  if (is_locked_fullscreen_ && !IsLockedForOnTask(browser_)) {
     return;
   }
 #endif
@@ -1126,9 +1134,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
 
     // Show various bits of UI
     case IDC_OPEN_FILE:
-      browser_->GetFeatures()
-          .browser_select_file_dialog_controller()
-          ->OpenFile();
+      BrowserSelectFileDialogController::From(browser_)->OpenFile();
       break;
     case IDC_CREATE_SHORTCUT:
       base::RecordAction(base::UserMetricsAction("CreateShortcut"));
@@ -1240,8 +1246,8 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ShowBookmarkManager(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_BOOKMARK_SIDE_PANEL:
-      browser_->GetFeatures().side_panel_ui()->Show(
-          SidePanelEntryId::kBookmarks, SidePanelOpenTrigger::kAppMenu);
+      SidePanelUI::From(browser_)->Show(SidePanelEntryId::kBookmarks,
+                                        SidePanelOpenTrigger::kAppMenu);
       break;
     case IDC_SHOW_APP_MENU:
       base::RecordAction(base::UserMetricsAction("Accel_Show_App_Menu"));
@@ -1254,20 +1260,19 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
-      browser_->GetFeatures().side_panel_ui()->Show(
-          SidePanelEntryId::kHistoryClusters, SidePanelOpenTrigger::kAppMenu);
+      SidePanelUI::From(browser_)->Show(SidePanelEntryId::kHistoryClusters,
+                                        SidePanelOpenTrigger::kAppMenu);
       break;
     case IDC_SHOW_TABS_FROM_OTHER_DEVICES_SIDE_PANEL:
-      browser_->GetFeatures().side_panel_ui()->Show(
-          SidePanelEntryId::kTabsFromOtherDevices,
-          SidePanelOpenTrigger::kAppMenu);
+      SidePanelUI::From(browser_)->Show(SidePanelEntryId::kTabsFromOtherDevices,
+                                        SidePanelOpenTrigger::kAppMenu);
       break;
     case IDC_SHOW_DOWNLOADS:
       ShowDownloads(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_SHOW_COMMENTS_SIDE_PANEL:
-      browser_->GetFeatures().side_panel_ui()->Show(
-          SidePanelEntryId::kComments, SidePanelOpenTrigger::kAppMenu);
+      SidePanelUI::From(browser_)->Show(SidePanelEntryId::kComments,
+                                        SidePanelOpenTrigger::kAppMenu);
       break;
     case IDC_MANAGE_EXTENSIONS:
     case IDC_SAFETY_HUB_MANAGE_EXTENSIONS:
@@ -1494,8 +1499,8 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
 
     case IDC_READING_LIST_MENU_SHOW_UI:
-      browser_->GetFeatures().side_panel_ui()->Show(
-          SidePanelEntryId::kReadingList, SidePanelOpenTrigger::kAppMenu);
+      SidePanelUI::From(browser_)->Show(SidePanelEntryId::kReadingList,
+                                        SidePanelOpenTrigger::kAppMenu);
       break;
 
     case IDC_SHOW_READING_MODE_SIDE_PANEL: {
@@ -1620,12 +1625,7 @@ bool BrowserCommandController::UpdateCommandEnabled(int id, bool state) {
   // TODO(crbug.com/365146870): Remove once we consolidate locked fullscreen
   // with OnTask.
 #if BUILDFLAG(IS_CHROMEOS)
-  bool should_block_command_update = is_locked_fullscreen_;
-  if (ash::boca::OnTaskLockedController::From(browser_)
-          ->is_locked_for_on_task()) {
-    should_block_command_update = false;
-  }
-  if (should_block_command_update) {
+  if (is_locked_fullscreen_ && !IsLockedForOnTask(browser_)) {
     return false;
   }
 #endif
@@ -2055,8 +2055,7 @@ void BrowserCommandController::UpdateSharedCommandsForIncognitoAvailability(
       IDC_NEW_WINDOW,
       incognito_availability != policy::IncognitoModeAvailability::kForced);
   bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(
-          *profile->GetPrefs(), chrome::GetChannel());
+      enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile);
 
   command_updater->UpdateCommandEnabled(
       IDC_NEW_INCOGNITO_WINDOW,
@@ -2144,12 +2143,7 @@ void BrowserCommandController::UpdateCommandsForTabState() {
   // TODO(b/365146870): Remove once we consolidate locked fullscreen with
   // OnTask.
 #if BUILDFLAG(IS_CHROMEOS)
-  bool skip_all_command_updates = is_locked_fullscreen_;
-  if (ash::boca::OnTaskLockedController::From(browser_)
-          ->is_locked_for_on_task()) {
-    skip_all_command_updates = false;
-  }
-  if (skip_all_command_updates) {
+  if (is_locked_fullscreen_ && !IsLockedForOnTask(browser_)) {
     return;
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -2493,6 +2487,9 @@ void NonAllowlistedCommandsAreDisabled(const CommandUpdater* command_updater) {
 
 }  // namespace
 
+// TODO(crbug.com/438540029): Move most of logic for
+// UpdateCommandsForLockedFullscreenMode to LockedStateController when
+// migration is completed.
 void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
   bool is_locked_fullscreen =
       platform_util::IsBrowserLockedFullscreen(browser_);
@@ -2517,8 +2514,7 @@ void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
     // Enable commands that allow users to switch between tabs and find content
     // within a webpage if the webapp is locked for OnTask
     // (only relevant for non-web browser scenarios).
-    if (ash::boca::OnTaskLockedController::From(browser_)
-            ->is_locked_for_on_task()) {
+    if (IsLockedForOnTask(browser_)) {
       UpdateTabSwitchingCommandState();
       UpdateCommandsForFind();
     }
@@ -2616,12 +2612,7 @@ void BrowserCommandController::UpdateReloadStopState(bool is_loading,
   // TODO(crbug.com/365146870): Remove once we consolidate locked fullscreen
   // with OnTask.
 #if BUILDFLAG(IS_CHROMEOS)
-  bool should_skip_command_updates = is_locked_fullscreen_;
-  if (ash::boca::OnTaskLockedController::From(browser_)
-          ->is_locked_for_on_task()) {
-    should_skip_command_updates = false;
-  }
-  if (should_skip_command_updates) {
+  if (is_locked_fullscreen_ && !IsLockedForOnTask(browser_)) {
     return;
   }
 #endif

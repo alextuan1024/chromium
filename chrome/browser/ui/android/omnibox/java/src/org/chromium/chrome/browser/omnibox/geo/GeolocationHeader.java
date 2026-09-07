@@ -20,6 +20,7 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
@@ -82,16 +83,16 @@ public class GeolocationHeader {
     /** The maximum age in milliseconds of a location before we'll request a refresh. */
     @VisibleForTesting static final int REFRESH_LOCATION_AGE = 5 * 60 * 1000; // 5 minutes
 
-    /** The X-Geo header prefix, preceding any location descriptors */
+    /** The X-Geo header prefix, preceding any location descriptors. */
     private static final String XGEO_HEADER_PREFIX = "X-Geo:";
 
     /**
      * The location descriptor separator used in the X-Geo header to separate encoding prefix, and
-     * encoded descriptors
+     * encoded descriptors.
      */
     private static final String LOCATION_SEPARATOR = " ";
 
-    /** The location descriptor prefix used in the X-Geo header to specify a proto wire encoding */
+    /** The location descriptor prefix used in the X-Geo header to specify a proto wire encoding. */
     private static final String LOCATION_PROTO_PREFIX = "w";
 
     private static final String DUMMY_URL_QUERY = "some_query";
@@ -258,7 +259,8 @@ public class GeolocationHeader {
     }
 
     @CalledByNative
-    private static @Nullable String getGeoHeader(String url, @Nullable Profile profile) {
+    private static @JniType("std::optional<std::string>") @Nullable String getGeoHeader(
+            @JniType("std::string") String url, @Nullable Profile profile) {
         if (profile == null) return null;
         TemplateUrlService service = TemplateUrlServiceFactory.getForProfile(profile);
         return getGeoHeader(url, profile, service);

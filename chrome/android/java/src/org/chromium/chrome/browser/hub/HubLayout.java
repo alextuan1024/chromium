@@ -65,6 +65,7 @@ import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.TabSwitcherUtils;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
@@ -144,6 +145,9 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
             ObservableSuppliers.createMonotonic();
 
     private final SettableNonNullObservableSupplier<Boolean> mIsAnimatingSupplier =
+            ObservableSuppliers.createNonNull(false);
+
+    private final SettableNonNullObservableSupplier<Boolean> mIsHidingSupplier =
             ObservableSuppliers.createNonNull(false);
 
     private @Nullable SceneLayer mCurrentSceneLayer;
@@ -257,6 +261,11 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
     }
 
     @Override
+    public NonNullObservableSupplier<Boolean> getIsHidingSupplier() {
+        return mIsHidingSupplier;
+    }
+
+    @Override
     public void onFinishNativeInitialization() {
         ensureSceneLayersExist();
     }
@@ -314,15 +323,20 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
 
     @Override
     public void show(long time, boolean animate) {
+        if (TabSwitcherUtils.isGridTabSwitcherDisabled()) {
+            throw new IllegalStateException(
+                    "HubLayout should not be shown when Grid Tab Switcher is disabled.");
+        }
         final boolean isXrFullSpaceMode = mXrFullSpaceModeSupplier.get();
         if (isStartingToShow()) return;
         if (isXrFullSpaceMode && animate && !ChromeFeatureList.sShowTabListAnimations.isEnabled()) {
             animate = false;
         }
 
-        try (TraceEvent e = TraceEvent.scoped("HubLayout.show")) {
+        try (TraceEvent _ = TraceEvent.scoped("HubLayout.show")) {
             super.show(time, animate);
 
+            mIsHidingSupplier.set(false);
             forceAnimationToFinish();
 
             Promise<@Nullable Bitmap> bitmapPromise = new Promise<>();
@@ -376,7 +390,7 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
 
             mRootView.setVisibility(View.VISIBLE);
             containerView.setVisibility(View.INVISIBLE);
-            LayoutParams params = (LayoutParams) containerView.getLayoutParams();
+            LayoutParams params = containerView.getLayoutParams();
             // TODO(crbug.com/41495991): Change this to an assert and fix any broken tests.
             if (params == null) {
                 params = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
@@ -399,7 +413,7 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
 
     @Override
     public void doneShowing() {
-        try (TraceEvent e = TraceEvent.scoped("HubLayout.doneShowing")) {
+        try (TraceEvent _ = TraceEvent.scoped("HubLayout.doneShowing")) {
             super.doneShowing();
             mCurrentSceneLayer = mEmptySceneLayer;
             mCurrentAnimationRunner = null;
@@ -419,11 +433,12 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
     public void startHiding() {
         if (isStartingToHide()) return;
 
-        try (TraceEvent e = TraceEvent.scoped("HubLayout.startHiding")) {
+        try (TraceEvent _ = TraceEvent.scoped("HubLayout.startHiding")) {
             super.startHiding();
 
             // Since we are hiding this is no-longer fully shown.
             mFullyShown = false;
+            mIsHidingSupplier.set(true);
             final boolean isXrFullSpaceMode = mXrFullSpaceModeSupplier.get();
 
             // Use the EXPAND_NEW_TAB animation if it is already prepared.
@@ -490,7 +505,7 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
 
     @Override
     public void doneHiding() {
-        try (TraceEvent e = TraceEvent.scoped("HubLayout.doneHiding")) {
+        try (TraceEvent _ = TraceEvent.scoped("HubLayout.doneHiding")) {
             HubContainerView containerView = mHubController.getContainerViewUnchecked();
             containerView.setVisibility(View.INVISIBLE);
             mRootView.removeView(containerView);
@@ -509,6 +524,8 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
             // This is a legacy value from the stack tab switcher, we are using at a proxy for Hub
             // hidden.
             RecordUserAction.record("MobileExitStackView");
+
+            mIsHidingSupplier.set(false);
 
             // Do this last so the Hub is ready to show again.
             super.doneHiding();
@@ -911,7 +928,7 @@ public class HubLayout extends Layout implements HubLayoutController, AppHeaderO
                     // stale.
                     assumeNonNull(mTabContentManager);
                     mTabContentManager.getEtc1TabThumbnailWithCallback(
-                            currentTab.getId(), result -> bitmapPromise.fulfill(result));
+                            currentTab.getId(), bitmapPromise::fulfill);
                 });
     }
 

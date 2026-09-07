@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/notreached.h"
 #include "cc/layers/surface_layer.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "ui/compositor/layer_mirror.h"
@@ -23,10 +24,6 @@ LayerSurface::LayerSurface() : Layer(LAYER_SURFACE) {
 
 LayerSurface::~LayerSurface() {
   Destroy();
-}
-
-bool LayerSurface::HasExternalContent() const {
-  return true;
 }
 
 bool LayerSurface::ShouldSchedulePaint() const {
@@ -162,6 +159,10 @@ void LayerSurface::RecomputeDrawsContentAndUVRect() {
 
 void LayerSurface::Reset() {
   surface_layer_ = nullptr;
+}
+
+void LayerSurface::OnPaintScheduled() {
+  NOTREACHED();
 }
 
 }  // namespace ui

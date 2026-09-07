@@ -108,11 +108,14 @@ inline void UmaHistogramDeletion(BtmCookieMode mode, BtmDeletionAction action) {
 
 void RecordRedirectMetrics(const BtmRedirect& redirect,
                            const BtmRedirectChain& chain) {
-  DCHECK(redirect.site_had_user_activation.has_value());
-  DCHECK(redirect.site_had_webauthn_assertion.has_value());
-  DCHECK(redirect.chain_id.has_value());
-  DCHECK(redirect.chain_index.has_value());
-  DCHECK_LT(redirect.chain_index.value(), chain.length);
+  CHECK(redirect.site_had_user_activation.has_value(),
+        base::NotFatalUntil::M158);
+  CHECK(redirect.site_had_webauthn_assertion.has_value(),
+        base::NotFatalUntil::M158);
+  CHECK(redirect.chain_id.has_value(), base::NotFatalUntil::M158);
+  CHECK(redirect.chain_index.has_value(), base::NotFatalUntil::M158);
+  CHECK_LT(redirect.chain_index.value(), chain.length,
+           base::NotFatalUntil::M158);
 
   bool initial_site_same = (redirect.site == chain.initial_site);
   bool final_site_same = (redirect.site == chain.final_site);
@@ -199,7 +202,7 @@ class StateClearer : public BrowsingDataRemover::Observer {
                           std::vector<std::string> sites_to_clear,
                           BrowsingDataRemover::DataType remove_mask,
                           base::OnceClosure callback) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M158);
 
     // This filter will match unpartitioned cookies and storage, as well as
     // storage (but not cookies) that is partitioned under tracking domains.
@@ -273,31 +276,30 @@ class StateClearer : public BrowsingDataRemover::Observer {
   base::OnceClosure callback_;
 };
 
-class DipsTimerStorage : public PersistentRepeatingTimer::Storage {
+class BtmTimerStorage : public PersistentRepeatingTimer::Storage {
  public:
-  explicit DipsTimerStorage(base::SequenceBound<BtmStorage>* dips_storage);
-  ~DipsTimerStorage() override;
+  explicit BtmTimerStorage(base::SequenceBound<BtmStorage>* btm_storage);
+  ~BtmTimerStorage() override;
 
-  // Reads the timestamp from the DIPS DB.
+  // Reads the timestamp from the BTM DB.
   void GetLastFired(TimeCallback callback) const override {
-    dips_storage_->AsyncCall(&BtmStorage::GetTimerLastFired)
+    btm_storage_->AsyncCall(&BtmStorage::GetTimerLastFired)
         .Then(std::move(callback));
   }
-  // Write the timestamp to the DIPS DB.
+  // Write the timestamp to the BTM DB.
   void SetLastFired(base::Time time) override {
-    dips_storage_->AsyncCall(base::IgnoreResult(&BtmStorage::SetTimerLastFired))
+    btm_storage_->AsyncCall(base::IgnoreResult(&BtmStorage::SetTimerLastFired))
         .WithArgs(time);
   }
 
  private:
-  raw_ref<base::SequenceBound<BtmStorage>> dips_storage_;
+  raw_ref<base::SequenceBound<BtmStorage>> btm_storage_;
 };
 
-DipsTimerStorage::DipsTimerStorage(
-    base::SequenceBound<BtmStorage>* dips_storage)
-    : dips_storage_(CHECK_DEREF(dips_storage)) {}
+BtmTimerStorage::BtmTimerStorage(base::SequenceBound<BtmStorage>* btm_storage)
+    : btm_storage_(CHECK_DEREF(btm_storage)) {}
 
-DipsTimerStorage::~DipsTimerStorage() = default;
+BtmTimerStorage::~BtmTimerStorage() = default;
 
 }  // namespace
 
@@ -309,7 +311,8 @@ BtmService* BtmService::Get(BrowserContext* context) {
 BtmServiceImpl::BtmServiceImpl(base::PassKey<BrowserContextImpl>,
                                BrowserContext* context)
     : browser_context_(context) {
-  DCHECK(base::FeatureList::IsEnabled(features::kBtm));
+  CHECK(base::FeatureList::IsEnabled(features::kBtm),
+        base::NotFatalUntil::M158);
   base::FilePath btm_path = GetBtmFilePath(browser_context_);
   // This feature explicitly uses in-memory storage on WebEngine on Fuchsia to
   // avoid consuming too much storage space. WebEngine has only 2MB of storage
@@ -342,7 +345,7 @@ std::unique_ptr<PersistentRepeatingTimer> BtmServiceImpl::CreateTimer() {
   // base::Unretained(this) is safe here since the timer that is created has the
   // same lifetime as this service.
   return std::make_unique<PersistentRepeatingTimer>(
-      std::make_unique<DipsTimerStorage>(&storage_),
+      std::make_unique<BtmTimerStorage>(&storage_),
       features::kBtmTimerDelay.Get(),
       base::BindRepeating(&BtmServiceImpl::OnTimerFired,
                           base::Unretained(this)));
@@ -396,10 +399,10 @@ void BtmServiceImpl::HandleRedirectChain(
     std::vector<BtmRedirectPtr> redirects,
     BtmRedirectChainPtr chain,
     StatefulBounceCallback stateful_bounce_callback) {
-  DCHECK_LE(redirects.size(), chain->length);
+  CHECK_LE(redirects.size(), chain->length, base::NotFatalUntil::M158);
 
   if (redirects.empty()) {
-    DCHECK(!chain->is_partial_chain);
+    CHECK(!chain->is_partial_chain, base::NotFatalUntil::M158);
     for (auto& observer : observers_) {
       observer.OnChainHandled(redirects, chain);
     }
@@ -446,20 +449,22 @@ void BtmServiceImpl::HandleRedirects(
   for (size_t index = 0; index < redirects.size(); index++) {
     auto& redirect = *redirects[index];
 
-    DCHECK(!redirect.site_had_user_activation.has_value());
+    CHECK(!redirect.site_had_user_activation.has_value(),
+          base::NotFatalUntil::M158);
     redirect.site_had_user_activation =
         sites_with_user_activation.contains(redirect.site);
-    DCHECK(!redirect.site_had_webauthn_assertion.has_value());
+    CHECK(!redirect.site_had_webauthn_assertion.has_value(),
+          base::NotFatalUntil::M158);
     redirect.site_had_webauthn_assertion =
         sites_with_webauthn_assertion.contains(redirect.site);
-    DCHECK(!redirect.chain_id.has_value());
+    CHECK(!redirect.chain_id.has_value(), base::NotFatalUntil::M158);
     redirect.chain_id = chain->chain_id;
     // If the chain was too long, some redirects may have been trimmed already,
     // which would make `index` not the "true" index of the redirect in the
     // whole chain. `chain->length` is accurate though. `chain->length -
     // redirects.size()` is then the number of trimmed redirects; so add that to
     // `index` to get the "true" index to report in our metrics.
-    DCHECK(!redirect.chain_index.has_value());
+    CHECK(!redirect.chain_index.has_value(), base::NotFatalUntil::M158);
     redirect.chain_index = chain->length - redirects.size() + index;
 
     RecordRedirectMetrics(redirect, *chain);
@@ -586,7 +591,7 @@ void BtmServiceImpl::DeleteBtmEligibleState(
     }
     UmaHistogramDeletion(GetCookieMode(), BtmDeletionAction::kEnforced);
 
-    const ukm::SourceId source_id = ukm::UkmRecorder::GetSourceIdForDipsSite(
+    const ukm::SourceId source_id = ukm::UkmRecorder::GetSourceIdForBtmSite(
         base::PassKey<BtmServiceImpl>(), site);
     ukm::builders::DIPS_Deletion(source_id)
         // These settings are checked at bounce time, before logging the bounce.
@@ -616,7 +621,7 @@ void BtmServiceImpl::DeleteBtmEligibleState(
 
 void BtmServiceImpl::RunDeletionTaskOnUIThread(std::vector<std::string> sites,
                                                base::OnceClosure callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M158);
 
   uint64_t remove_mask = GetContentClient()->browser()->GetBtmRemoveMask();
 

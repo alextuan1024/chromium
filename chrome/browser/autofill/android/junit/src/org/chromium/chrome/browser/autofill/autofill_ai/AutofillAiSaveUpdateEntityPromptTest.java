@@ -20,6 +20,7 @@ import static org.chromium.chrome.browser.autofill.autofill_ai.AutofillAiSaveUpd
 import android.graphics.Paint;
 import android.text.SpannableString;
 import android.text.style.ClickableSpan;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -35,7 +36,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -63,7 +63,6 @@ import java.util.List;
 
 /** Unit tests for {@link AutofillAiSaveUpdateEntityPrompt}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures({
     ChromeFeatureList.AUTOFILL_AI_EDIT_ENTITIES_FROM_SAVE_UPDATE_PROMPT,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
@@ -189,6 +188,7 @@ public class AutofillAiSaveUpdateEntityPromptTest {
 
     @Test
     @SmallTest
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PASS_BRANDING_2026)
     public void dialogStrings() {
         mPrompt.setDialogDetails(
                 "title",
@@ -206,6 +206,27 @@ public class AutofillAiSaveUpdateEntityPromptTest {
                 "negative button text",
                 propertyModel.get(ModalDialogProperties.NEGATIVE_BUTTON_TEXT));
         assertNotNull(propertyModel.get(ModalDialogProperties.TITLE_END_ICON));
+        assertEquals(
+                Gravity.NO_GRAVITY,
+                propertyModel.get(ModalDialogProperties.TITLE_END_ICON_GRAVITY));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PASS_BRANDING_2026)
+    public void dialogStrings_branding2026Enabled() {
+        mPrompt.setDialogDetails(
+                "title",
+                "positive button text",
+                "negative button text",
+                /* isWalletableEntity= */ true);
+        mPrompt.show();
+        PropertyModel propertyModel = mModalDialogManager.getShownDialogModel();
+
+        assertNotNull(propertyModel.get(ModalDialogProperties.TITLE_END_ICON));
+        assertEquals(
+                Gravity.TOP,
+                propertyModel.get(ModalDialogProperties.TITLE_END_ICON_GRAVITY));
     }
 
     @Test

@@ -28,7 +28,7 @@ class TestEventDispatcherImpl : public mojom::EventDispatcher {
 
   // mojom::EventDispatcher overrides:
   void DispatchEvent(mojom::DispatchEventParamsPtr params,
-                     base::ListValue event_args,
+                     const scoped_refptr<const EventArgs>& event_args,
                      DispatchEventCallback callback) override {}
 
   mojo::AssociatedReceiver<mojom::EventDispatcher>& receiver() {
@@ -85,10 +85,14 @@ class TestServiceWorkerHostImpl : public mojom::ServiceWorkerHost {
       override {}
   void OpenChannelToNativeApp(
       const std::string& native_app_name,
+#if BUILDFLAG(IS_ANDROID)
+      const std::vector<std::vector<uint8_t>>& android_certificates,
+#endif
       const PortId& port_id,
       mojo::PendingAssociatedRemote<mojom::MessagePort> port,
       mojo::PendingAssociatedReceiver<mojom::MessagePortHost> port_host)
-      override {}
+      override {
+  }
   void OpenChannelToTab(int32_t tab_id,
                         int32_t frame_id,
                         const std::optional<std::string>& document_id,

@@ -18,6 +18,7 @@ source_set("picture_in_picture") {
   sources = [
     "picture_in_picture_bounds_cache.h",
     "picture_in_picture_window_manager.h",
+    "video_overlay_window.h",
 
     # Common Auto Picture-in-Picture files
     "auto_picture_in_picture_safe_browsing_checker_client.h",
@@ -128,6 +129,7 @@ source_set("impl") {
       "auto_picture_in_picture_tab_model_observer_helper.cc",
       "document_picture_in_picture_bridge_android.cc",
       "picture_in_picture_bounds_cache_bridge.cc",
+      "picture_in_picture_window_manager_bridge.cc",
     ]
     deps += [
       "//chrome/android:chrome_jni_headers",
@@ -222,7 +224,6 @@ source_set("unit_tests") {
       "picture_in_picture_window_manager_uma_helper_unittest.cc",
     ]
     deps += [
-      "//chrome/browser",
       "//chrome/browser/ui/hats:test_support",
       "//chrome/browser/ui/safety_hub:test_support",
       "//components/safe_browsing/core/browser/db:v5_get_hash_protocol_manager",
@@ -349,7 +350,6 @@ if (!is_android) {
       "//ui/gfx/geometry",
     ]
     deps = [
-      "//chrome/browser/ui",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_strip",
       "//content/public/browser",

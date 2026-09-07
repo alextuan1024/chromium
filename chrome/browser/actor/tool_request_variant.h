@@ -34,6 +34,8 @@ using ToolRequestVariant = std::variant<
     EnterFullscreenToolRequest,
     ExitFullscreenToolRequest,
 #endif
+    FileUploadToolRequest,
+    FindAndHighlightToolRequest,
     HistoryToolRequest,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     LoadAndExtractContentToolRequest,
@@ -41,6 +43,7 @@ using ToolRequestVariant = std::variant<
     MediaControlToolRequest,
     MoveMouseToolRequest,
     NavigateToolRequest,
+    PerformSearchToolRequest,
     RemoveBookmarkToolRequest,
     ScriptToolRequest,
     ScrollToolRequest,
@@ -77,6 +80,8 @@ class ConvertToVariantFn : public ToolRequestVisitorFunctor {
   void Apply(const EnterFullscreenToolRequest&) override;
   void Apply(const ExitFullscreenToolRequest&) override;
 #endif
+  void Apply(const FileUploadToolRequest&) override;
+  void Apply(const FindAndHighlightToolRequest&) override;
   void Apply(const HistoryToolRequest&) override;
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
   void Apply(const LoadAndExtractContentToolRequest&) override;
@@ -84,6 +89,7 @@ class ConvertToVariantFn : public ToolRequestVisitorFunctor {
   void Apply(const MediaControlToolRequest&) override;
   void Apply(const MoveMouseToolRequest&) override;
   void Apply(const NavigateToolRequest&) override;
+  void Apply(const PerformSearchToolRequest&) override;
   void Apply(const RemoveBookmarkToolRequest&) override;
   void Apply(const ScriptToolRequest&) override;
   void Apply(const ScrollToolRequest&) override;

@@ -46,12 +46,12 @@ NSString* const kToolsMenuCustomizeHomePageId =
     @"kToolsMenuCustomizeHomePageId";
 NSString* const kToolsMenuSetTabReminder = @"kToolsMenuSetTabReminder";
 NSString* const kToolsMenuShareChromeId = @"kToolsMenuShareChromeId";
+NSString* const kToolsMenuDefaultBrowserId = @"kToolsMenuDefaultBrowserId";
 NSString* const kToolsMenuWhatsNewId = @"kToolsMenuWhatsNewId";
 NSString* const kToolsMenuLevelUpId = @"kToolsMenuLevelUpId";
 NSString* const kToolsMenuPriceNotifications = @"kToolsMenuPriceNotifications";
 NSString* const kToolsMenuEditActionsId = @"kToolsMenuEditActionsId";
 NSString* const kToolsMenuOpenAskBWG = @"kToolsMenuOpenAskBWG";
-NSString* const kToolsMenuHideToolbars = @"kToolsMenuHideToolbars";
 NSString* const kToolsMenuNewTabGroupId = @"kToolsMenuNewTabGroupId";
 NSString* const kToolsMenuMoveTabToGroupId = @"kToolsMenuMoveTabToGroupId";
 NSString* const kToolsMenuAddTabToGroupId = @"kToolsMenuAddTabToGroupId";

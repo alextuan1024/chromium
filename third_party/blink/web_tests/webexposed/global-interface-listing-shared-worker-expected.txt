@@ -644,6 +644,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter variant
 [Worker]     getter variationSettings
 [Worker]     getter weight
+[Worker]     getter width
 [Worker]     method constructor
 [Worker]     method load
 [Worker]     setter ascentOverride
@@ -659,6 +660,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     setter variant
 [Worker]     setter variationSettings
 [Worker]     setter weight
+[Worker]     setter width
 [Worker] interface FontFaceSet : EventTarget
 [Worker]     attribute @@toStringTag
 [Worker]     getter onloading
@@ -1419,11 +1421,13 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter oncontextlost
 [Worker]     getter oncontextrestored
 [Worker]     getter width
+[Worker]     method clearElementGeometry
 [Worker]     method constructor
 [Worker]     method convertToBlob
 [Worker]     method getContext
 [Worker]     method getElementTransform
 [Worker]     method transferToImageBitmap
+[Worker]     method updateElementGeometry
 [Worker]     setter height
 [Worker]     setter oncontextlost
 [Worker]     setter oncontextrestored
@@ -2842,6 +2846,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method drawElementsInstanced
 [Worker]     method drawRangeElements
 [Worker]     method drawingBufferStorage
+[Worker]     method drawingBufferToneMapping
 [Worker]     method enable
 [Worker]     method enableVertexAttribArray
 [Worker]     method endQuery
@@ -3377,6 +3382,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method drawArrays
 [Worker]     method drawElements
 [Worker]     method drawingBufferStorage
+[Worker]     method drawingBufferToneMapping
 [Worker]     method enable
 [Worker]     method enableVertexAttribArray
 [Worker]     method finish
@@ -3536,6 +3542,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method close
 [Worker]     method constructor
 [Worker] interface WebTransport
+[Worker]     static getter supportsReliableOnly
 [Worker]     attribute @@toStringTag
 [Worker]     getter anticipatedConcurrentIncomingBidirectionalStreams
 [Worker]     getter anticipatedConcurrentIncomingUnidirectionalStreams
@@ -3547,6 +3554,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter incomingUnidirectionalStreams
 [Worker]     getter protocol
 [Worker]     getter ready
+[Worker]     getter reliability
 [Worker]     getter responseHeaders
 [Worker]     method close
 [Worker]     method constructor
@@ -3573,12 +3581,20 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter readable
 [Worker]     getter writable
 [Worker]     method constructor
+[Worker]     method createWritable
 [Worker]     setter incomingHighWaterMark
 [Worker]     setter incomingMaxAge
 [Worker]     setter incomingMaxBufferedDatagrams
 [Worker]     setter outgoingHighWaterMark
 [Worker]     setter outgoingMaxAge
 [Worker]     setter outgoingMaxBufferedDatagrams
+[Worker] interface WebTransportDatagramsWritable : WritableStream
+[Worker]     attribute @@toStringTag
+[Worker]     getter sendGroup
+[Worker]     getter sendOrder
+[Worker]     method constructor
+[Worker]     setter sendGroup
+[Worker]     setter sendOrder
 [Worker] interface WebTransportError : DOMException
 [Worker]     attribute @@toStringTag
 [Worker]     getter source

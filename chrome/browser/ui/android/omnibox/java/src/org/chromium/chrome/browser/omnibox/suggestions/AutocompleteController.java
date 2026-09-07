@@ -328,7 +328,7 @@ public class AutocompleteController {
     }
 
     /**
-     * Create a native navigation observser on native side.
+     * Create a native navigation observer on native side.
      *
      * @param navigationHandle The NavigationHandle for the current navigation.
      * @param match AutocompleteMatch that was selected by the user
@@ -519,6 +519,7 @@ public class AutocompleteController {
 
         void deleteMatch(long nativeAutocompleteControllerAndroid, long nativeAutocompleteMatch);
 
+        @JniType("GURL")
         GURL updateMatchDestinationURLWithAdditionalSearchboxStats(
                 long nativeAutocompleteControllerAndroid,
                 long nativeAutocompleteMatch,
@@ -541,7 +542,7 @@ public class AutocompleteController {
                 @PageClassification @JniType("metrics::OmniboxEventProto::PageClassification")
                         int pageClassification);
 
-        // Create a navigation observser.
+        // Create a navigation observer.
         void createNavigationObserver(
                 long nativeAutocompleteControllerAndroid,
                 long mNativeNavigationHandle,

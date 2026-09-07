@@ -65,6 +65,7 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/pointer_interaction_util.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/lens/lens_api.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -299,8 +300,12 @@ const CGFloat kGeminiLiveCircleSize = 20.0;
 }
 
 - (void)updateTrailingButtonState {
-  if (IsNextOldDesignEnabled()) {
-    self.trailingButtonState = kShareButton;
+  if (IsChromeNextIaEnabled()) {
+    BOOL shouldShowVoiceSearch = self.traitCollection.verticalSizeClass ==
+                                 UIUserInterfaceSizeClassCompact;
+
+    self.trailingButtonState =
+        shouldShowVoiceSearch ? kVoiceSearchButton : kShareButton;
     return;
   }
 
@@ -970,7 +975,10 @@ const CGFloat kGeminiLiveCircleSize = 20.0;
   if (!self.isViewLoaded) {
     return;
   }
-  if (_active) {
+  // The _active flag is only used when NextIA is enabled. When it is disabled,
+  // the location bar should always be treated as active for layout guides.
+  BOOL isActive = _active || !IsChromeNextIaEnabled();
+  if (isActive) {
     if (self.readerModeChipView) {
       [self.layoutGuideCenter referenceView:self.readerModeChipView
                                   underName:kReaderModeOptionsEntrypointGuide];
@@ -1193,7 +1201,7 @@ const CGFloat kGeminiLiveCircleSize = 20.0;
 
     UIAction* hideAddressBarAction =
         [UIAction actionWithTitle:l10n_util::GetNSString(
-                                      IDS_IOS_OVERFLOW_MENU_HIDE_TOOLBARS)
+                                      IDS_IOS_TOOLBAR_MENU_HIDE_TOOLBAR)
                             image:image
                        identifier:nil
                           handler:^(UIAction* action) {
@@ -1357,6 +1365,7 @@ const CGFloat kGeminiLiveCircleSize = 20.0;
 }
 
 - (void)hideToolbars {
+  RecordAction(UserMetricsAction("Mobile.OmniboxContextMenu.HideToolbar"));
   [self.delegate locationBarHideToolbarTapped];
 }
 

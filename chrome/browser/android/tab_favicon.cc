@@ -121,7 +121,7 @@ void TabFavicon::RemoveObserver(TabAndroid* tab_android, Observer* observer) {
 void TabFavicon::GetBitmapForTabOrFallback(
     TabAndroid* tab_android,
     base::OnceCallback<void(const SkBitmap&)> callback) {
-  SkBitmap bitmap = GetBitmapForTab(tab_android, /*allow_fallback=*/false);
+  SkBitmap bitmap = GetBitmapForTab(tab_android, /*allow_fallback=*/true);
   if (!bitmap.empty()) {
     std::move(callback).Run(bitmap);
     return;
@@ -206,11 +206,6 @@ void TabFavicon::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
                                   const GURL& icon_url,
                                   bool icon_url_changed,
                                   const gfx::Image& image) {
-  if (notification_icon_type != NON_TOUCH_LARGEST &&
-      notification_icon_type != TOUCH_LARGEST) {
-    return;
-  }
-
   SkBitmap favicon = image.AsImageSkia().GetRepresentation(1.0f).GetBitmap();
   if (favicon.empty()) {
     return;

@@ -20,6 +20,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "cc/paint/paint_flags.h"
+#include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -33,6 +34,7 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_image.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -57,6 +59,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
@@ -173,6 +176,7 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   bool IsSelected() const override { return tab_->IsSelected(); }
   bool IsHovering() const override { return tab_->IsHovering(); }
   bool IsClosing() const override { return tab_->closing(); }
+  bool IsDragging() const override { return tab_->dragging(); }
   std::optional<tab_groups::TabGroupId> GetGroup() const override {
     return tab_->group();
   }
@@ -182,6 +186,11 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   bool IsInFocusedGroup() const override {
     const std::optional<tab_groups::TabGroupId> group = tab_->group();
     return group.has_value() && tab_->controller()->GetFocusedGroup() == group;
+  }
+  bool IsGroupCollapsed() const override {
+    const std::optional<tab_groups::TabGroupId> group = tab_->group();
+    return group.has_value() &&
+           tab_->controller()->IsGroupCollapsed(group.value());
   }
   bool IsSplit() const override { return tab_->split().has_value(); }
   std::optional<split_tabs::SplitTabId> GetSplit() const override {
@@ -361,11 +370,18 @@ Tab::Tab(tabs::TabHandle handle, TabSlotController* controller)
 
   BrowserWindowInterface* const browser_window_interface =
       controller_->GetBrowserWindowInterface();
-  if (browser_window_interface &&
-      ((base::FeatureList::IsEnabled(features::kGlicMultitabUnderlines) &&
-        glic::GlicEnabling::IsProfileEligible(
-            browser_window_interface->GetProfile())) ||
-       contextual_tasks::IsContextualTasksUIEnabled())) {
+
+  bool should_create_underline = false;
+  if (browser_window_interface) {
+    Profile* profile = browser_window_interface->GetProfile();
+    should_create_underline =
+        (base::FeatureList::IsEnabled(features::kGlicMultitabUnderlines) &&
+         glic::GlicEnabling::IsProfileEligible(profile)) ||
+        contextual_tasks::IsContextualTasksUIEnabled() ||
+        (dictation::DictationKeyedService::Get(profile));
+  }
+
+  if (should_create_underline) {
     glic_tab_underline_view_ = AddChildView(
         views::Builder<glic::TabUnderlineView>(
             glic::TabUnderlineView::Factory::Create(

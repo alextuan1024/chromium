@@ -58,11 +58,13 @@ class WebState;
 
 namespace autofill {
 
+class AtMemoryManager;
 class AtMemoryQueryService;
 class AutofillAiSaveEntityInfoBarDelegateIOS;
 class AutofillSuggestionDelegate;
 class LogRouter;
 class AutofillAiPersonalContextAccessManager;
+class EntitySuppressionManager;
 class FormPredictionsTracker;
 
 enum class SuggestionType;
@@ -108,6 +110,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   PersonalDataManager& GetPersonalDataManager() override;
   ValuablesDataManager* GetValuablesDataManager() override;
   EntityDataManager* GetEntityDataManager() override;
+  EntitySuppressionManager* GetEntitySuppressionManager() override;
   WalletPassAccessManager* GetWalletPassAccessManager() override;
   FieldClassificationModelHandler*
   GetAutofillFieldClassificationModelHandler() override;
@@ -126,6 +129,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   consent_auditor::ConsentAuditor* GetConsentAuditor() final;
   optimization_guide::RemoteModelExecutor* GetRemoteModelExecutor() override;
   AtMemoryQueryService* GetAtMemoryQueryService() override;
+  AtMemoryManager* GetAtMemoryManager() override;
   personal_context::PersonalContextEligibilityState
   GetPersonalContextEligibilityState() const override;
   personal_context::PersonalContextEligibilityService*
@@ -249,6 +253,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   std::unique_ptr<AutofillAiManager> autofill_ai_manager_;
   std::unique_ptr<FormPredictionsTracker> form_predictions_tracker_;
   PageContextWrapper* page_context_wrapper_;
+  std::unique_ptr<AtMemoryManager> at_memory_manager_;
 
   // Order matters for this initialization. This initialization must happen
   // after all of the members passed into the constructor of

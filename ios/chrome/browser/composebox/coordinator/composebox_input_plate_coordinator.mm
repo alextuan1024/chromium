@@ -190,6 +190,7 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
                          browser:self.browser];
   _pickerPresenter.delegate = self;
   _pickerPresenter.dataSource = self;
+  _pickerPresenter.metricsRecorder = _metricsRecorder;
 
   if (_entrypoint == ComposeboxEntrypoint::kNTPAIMButton) {
     [_metricsRecorder
@@ -199,26 +200,23 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   _voiceSearchController =
       ios::provider::CreateVoiceSearchController(self.browser);
 
+  auto query_controller_config_params = std::make_unique<
+      contextual_search::ContextualSearchContextController::ConfigParams>();
+  query_controller_config_params->send_lns_surface = false;
+  query_controller_config_params->enable_viewport_images = true;
+  query_controller_config_params
+      ->prioritize_suggestions_for_the_first_attached_document = true;
+
+  _contextualService =
+      ContextualSearchServiceFactory::GetForProfile(self.profile);
+
   std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
-      contextualSearchSession = nullptr;
-  if (!IsComposeboxAIMDisabled()) {
-    auto query_controller_config_params = std::make_unique<
-        contextual_search::ContextualSearchContextController::ConfigParams>();
-    query_controller_config_params->send_lns_surface = false;
-    query_controller_config_params->enable_viewport_images = true;
-    query_controller_config_params
-        ->prioritize_suggestions_for_the_first_attached_document = true;
-
-    _contextualService =
-        ContextualSearchServiceFactory::GetForProfile(self.profile);
-
-    contextualSearchSession = _contextualService->CreateSession(
-        std::move(query_controller_config_params),
-        ContextualSearchSourceFromEntrypoint(_entrypoint),
-        lens::LensOverlayInvocationSource::kOmniboxContextualQuery);
-    _metricsRecorder.contextualSearchMetricsRecorder =
-        contextualSearchSession->GetMetricsRecorder();
-  }
+      contextualSearchSession = _contextualService->CreateSession(
+          std::move(query_controller_config_params),
+          ContextualSearchSourceFromEntrypoint(_entrypoint),
+          lens::LensOverlayInvocationSource::kOmniboxContextualQuery);
+  _metricsRecorder.contextualSearchMetricsRecorder =
+      contextualSearchSession->GetMetricsRecorder();
 
   FaviconLoader* faviconLoader =
       IOSChromeFaviconLoaderFactory::GetForProfile(self.profile);
@@ -358,8 +356,12 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 }
 
 - (void)hideComposeboxMenu {
-  [_menuCoorinator stop];
-  _menuCoorinator = nil;
+  if (IsComposeboxPlusButtonBottomSheet()) {
+    [_menuCoorinator stop];
+    _menuCoorinator = nil;
+  } else {
+    [_viewController dismissContextMenu];
+  }
 }
 
 - (void)focusComposebox {
@@ -874,6 +876,9 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
   if (diff.added.size() > 0) {
     [_metricsRecorder recordTabPickerTabsAttached:diff.added.size()];
+    [_metricsRecorder
+        recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
+          forAttachmentType:MobileFuseboxPickerAttachmentType::kTabs];
   }
 
   [_mediator attachSelectedTabsWithWebStateIDs:selectedWebStateIDs
@@ -888,6 +893,9 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   }
 
   [_metricsRecorder recordDriveFilesAttached:results.count];
+  [_metricsRecorder
+      recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
+        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
 
   for (ComposeboxPickerDriveResult* result in results) {
     [_mediator processDriveFileWithIdentifier:result.identifier
@@ -907,6 +915,11 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 - (NSUInteger)maxTabAttachmentCountForPresenter:
     (ComposeboxPickerPresenter*)presenter {
   return [_mediator maxTabAttachmentCount];
+}
+
+- (NSUInteger)maxDriveAttachmentCountForPresenter:
+    (ComposeboxPickerPresenter*)presenter {
+  return [_mediator remainingAttachmentCapacity];
 }
 
 - (NSArray<NSString*>*)attachedImageAssetIDsForPresenter:

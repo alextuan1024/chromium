@@ -28,7 +28,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.blink.mojom.Authenticator;
@@ -49,7 +48,6 @@ import org.chromium.url.Origin;
 
 /** Tests for {@link AuthenticatorImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @SmallTest
 public class AuthenticatorImplTest {
     private AuthenticatorImpl mAuthenticator;
@@ -64,7 +62,6 @@ public class AuthenticatorImplTest {
     @Mock private WebauthnBrowserBridge.Natives mWebauthnBrowserBridgeNativesMock;
     @Mock private UkmRecorder.Natives mUkmRecorderNativesMock;
 
-    @Captor private ArgumentCaptor<IsUvpaaResponseCallback> mIsUvpaaCallbackCaptor;
     @Captor private ArgumentCaptor<WebAuthnClientCapability[]> mCapabilitiesCaptor;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();

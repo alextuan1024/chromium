@@ -28,7 +28,6 @@ import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.DiscardableReferencePool;
@@ -38,7 +37,6 @@ import org.chromium.components.browser_ui.util.BitmapCache;
 /** Unit tests for InMemoryCachedImageFetcher. */
 @SuppressWarnings("unchecked")
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class InMemoryCachedImageFetcherTest {
     private static final String UMA_CLIENT_NAME = "TestUmaClient";
     private static final String URL = "http://foo.bar";
@@ -60,8 +58,6 @@ public class InMemoryCachedImageFetcherTest {
     @Mock private ImageFetcherBridge mBridge;
     @Mock private CachedImageFetcher mMockImageFetcher;
     @Mock private Callback<Bitmap> mCallback;
-    @Captor private ArgumentCaptor<Integer> mWidthCaptor;
-    @Captor private ArgumentCaptor<Integer> mHeightCaptor;
     @Captor private ArgumentCaptor<Callback<Bitmap>> mCallbackCaptor;
 
     @Before

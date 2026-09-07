@@ -19,17 +19,19 @@
 #include "chrome/browser/ui/passwords/password_change_ui_controller.h"
 #include "chrome/browser/ui/passwords/passwords_leak_dialog_delegate_mock.h"
 #include "chrome/browser/ui/passwords/passwords_model_delegate_mock.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/proto/features/password_change_submission.pb.h"
 #include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/stub_password_manager_client.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -165,6 +167,7 @@ class PasswordChangeDelegateImplTest : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
+    layout_provider_ = ChromeLayoutProvider::CreateLayoutProvider();
     mock_optimization_guide_keyed_service_ =
         static_cast<MockOptimizationGuideKeyedService*>(
             OptimizationGuideKeyedServiceFactory::GetInstance()
@@ -199,6 +202,7 @@ class PasswordChangeDelegateImplTest : public ChromeRenderViewHostTestHarness {
     actuator_.reset();
     delegate_.reset();
     mock_optimization_guide_keyed_service_ = nullptr;
+    layout_provider_.reset();
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -209,7 +213,8 @@ class PasswordChangeDelegateImplTest : public ChromeRenderViewHostTestHarness {
     form.url = GURL(kChangePasswordURL);
     form.signon_realm = GURL(kChangePasswordURL).GetWithEmptyPath().spec();
     form.username_value = kTestEmail;
-    form.password_value = kPassword;
+    form.password_value =
+        password_manager::PasswordString(std::u16string(kPassword));
     delegate_ = std::make_unique<PasswordChangeDelegateImpl>(
         GURL(kChangePasswordURL), std::move(form), tab_interface_.get());
     delegate_->SetCustomUIController(
@@ -260,6 +265,7 @@ class PasswordChangeDelegateImplTest : public ChromeRenderViewHostTestHarness {
   std::unique_ptr<PasswordChangeDelegateImpl> delegate_;
   base::WeakPtr<MockPasswordChangeActuator> actuator_;
   tabs::TabInterface::WillDetach tab_will_detach_callback_;
+  std::unique_ptr<views::LayoutProvider> layout_provider_;
 
   autofill::test::AutofillUnitTestEnvironment autofill_environment_;
   autofill::TestAutofillClientInjector<autofill::TestContentAutofillClient>
@@ -619,6 +625,7 @@ TEST_F(PasswordChangeDelegateImplTest, PrivateInferenceLoginCheck_Success) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
       password_change::features::kPasswordChangeWithPrivateInferenceLoginCheck);
+  SetOptimizationFeatureEnabled(true);
 
   CreateDelegate();
 
@@ -632,6 +639,12 @@ TEST_F(PasswordChangeDelegateImplTest, PrivateInferenceLoginCheck_Success) {
       ->mutable_is_logged_in_data()
       ->set_is_logged_in(true);
 
+  // Even though Optimization Guide feature is enabled (e.g. legacy APC was
+  // accepted), the user must still agree to the new Private Inference notice.
+  EXPECT_FALSE(prefs()->GetBoolean(
+      password_manager::prefs::
+          kPasswordChangeWithPrivateInferenceNoticeAgreement));
+
   delegate()->login_checker()->RespondWithLoginStatus(
       LoginCheckResult::Status::kLoggedIn, std::move(logging_data));
   EXPECT_EQ(delegate()->GetCurrentState(),
@@ -643,6 +656,15 @@ TEST_F(PasswordChangeDelegateImplTest, PrivateInferenceLoginCheck_Success) {
 
   delegate()->OnPrivacyNoticeAccepted();
 
+  EXPECT_TRUE(prefs()->GetBoolean(
+      password_manager::prefs::
+          kPasswordChangeWithPrivateInferenceNoticeAgreement));
+  EXPECT_EQ(
+      prefs()->GetInteger(optimization_guide::prefs::GetSettingEnabledPrefName(
+          optimization_guide::UserVisibleFeatureKey::
+              kPasswordChangeSubmission)),
+      static_cast<int>(optimization_guide::prefs::FeatureOptInState::kEnabled));
+
   optimization_guide::proto::PasswordChangeQuality quality =
       delegate()
           ->logs_uploader()
@@ -652,6 +674,21 @@ TEST_F(PasswordChangeDelegateImplTest, PrivateInferenceLoginCheck_Success) {
   EXPECT_TRUE(quality.has_logged_in_check());
   EXPECT_TRUE(
       quality.logged_in_check().response().is_logged_in_data().is_logged_in());
+
+  // Subsequent flow with notice already accepted transitions directly to
+  // offering without re-showing the privacy notice.
+  ResetDelegate();
+  CreateDelegate();
+  ASSERT_TRUE(delegate()->login_checker());
+  auto subsequent_logging_data = std::make_unique<
+      optimization_guide::proto::PasswordChangeSubmissionLoggingData>();
+  subsequent_logging_data->mutable_response()
+      ->mutable_is_logged_in_data()
+      ->set_is_logged_in(true);
+  delegate()->login_checker()->RespondWithLoginStatus(
+      LoginCheckResult::Status::kLoggedIn, std::move(subsequent_logging_data));
+  EXPECT_EQ(delegate()->GetCurrentState(),
+            PasswordChangeDelegate::State::kOfferingPasswordChange);
 }
 
 TEST_F(PasswordChangeDelegateImplTest, PrivateInferenceLoginCheck_Failure) {

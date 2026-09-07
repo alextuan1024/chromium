@@ -31,8 +31,9 @@ namespace content {
 
 SerialService::SerialService(RenderFrameHost* rfh)
     : DocumentUserData<SerialService>(rfh) {
-  DCHECK(render_frame_host().IsFeatureEnabled(
-      network::mojom::PermissionsPolicyFeature::kSerial));
+  CHECK(render_frame_host().IsFeatureEnabled(
+            network::mojom::PermissionsPolicyFeature::kSerial),
+        base::NotFatalUntil::M159);
   // Serial API is not supported for back-forward cache for now because we
   // don't have support for closing/freezing ports when the frame is added to
   // the back-forward cache, so we mark frames that use this API as disabled
@@ -90,7 +91,15 @@ void SerialService::RequestPort(
         allowed_bluetooth_service_class_ids,
     RequestPortCallback callback) {
   SerialDelegate* delegate = GetContentClient()->browser()->GetSerialDelegate();
-  if (!delegate ||
+  if (!delegate || !delegate->CanRequestPortPermission(&render_frame_host())) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+
+  // Ensure the requesting document is still active and consume transient user
+  // activation to prevent stale/pending-deletion frames from opening choosers
+  // or consuming user gestures from newly committed documents.
+  if (!render_frame_host().IsActive() ||
       !FrameTreeNode::From(&render_frame_host())
            ->UpdateUserActivationState(
                blink::mojom::UserActivationUpdateType::
@@ -100,16 +109,20 @@ void SerialService::RequestPort(
     return;
   }
 
-  if (!delegate->CanRequestPortPermission(&render_frame_host())) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  chooser_ = delegate->RunChooser(
+  // The delegate's chooser implementation may spin a nested message loop (e.g.
+  // to drop fullscreen), during which the frame may be detached and the
+  // service destroyed. Check that the service is still alive before accessing
+  // member variables.
+  base::WeakPtr<SerialService> weak_this = weak_factory_.GetWeakPtr();
+  auto chooser = delegate->RunChooser(
       &render_frame_host(), std::move(filters),
       allowed_bluetooth_service_class_ids,
       base::BindOnce(&SerialService::FinishRequestPort,
                      weak_factory_.GetWeakPtr(), std::move(callback)));
+  if (!weak_this) {
+    return;
+  }
+  chooser_ = std::move(chooser);
 }
 
 void SerialService::OpenPort(

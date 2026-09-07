@@ -406,17 +406,35 @@ bool ComposeboxQueryController::HasC2paMetadata(
     base::span<const uint8_t> bytes) {
   std::string_view bytes_to_search(reinterpret_cast<const char*>(bytes.data()),
                                    std::min(bytes.size(), kMaxC2paSearchBytes));
+  // TODO(crbug.com/555150321): Improve c2pa detection heuristic.
   return bytes_to_search.find(kC2paMarker) != std::string_view::npos;
+}
+
+bool ComposeboxQueryController::IsSupportedC2paMimeType(
+    std::optional<std::string_view> mime_type) {
+  if (!mime_type.has_value()) {
+    return false;
+  }
+  return base::EqualsCaseInsensitiveASCII(*mime_type, "image/jpeg") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/jpg") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/png") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/webp") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/heic") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/heif");
 }
 
 std::optional<lens::ImageData>
 ComposeboxQueryController::MaybeCreateC2paBypassImageData(
     base::span<const uint8_t> original_image_bytes,
     int width,
-    int height) {
+    int height,
+    std::optional<std::string_view> mime_type_string) {
+  // TODO(crbug.com/555150730): Pass the c2pa header detection bit from Java to
+  // c++ so that c2pa header detection can be skipped in the c++ layer.
   if (original_image_bytes.empty() ||
       !base::FeatureList::IsEnabled(
           lens::features::kLensBypassCompressionForC2pa) ||
+      !IsSupportedC2paMimeType(mime_type_string) ||
       width * height > kMaxC2paPixels ||
       !HasC2paMetadata(original_image_bytes)) {
     return std::nullopt;
@@ -689,14 +707,21 @@ void ComposeboxQueryController::CreateSearchUrl(
   latest_interaction_request_data_.reset();
   num_files_in_request_ = 0;
 
+  bool is_aim_search =
+      search_url_request_info->search_url_type == SearchUrlType::kAim;
   bool should_create_multimodal_url =
       !active_files_.empty() && !search_url_request_info->file_tokens.empty();
+  bool should_wait_for_uploads =
+      is_any_context_uploading() &&
+      (!contextual_tasks::
+           GetIsContextualTasksNonBlockingUrlNavigationEnabled() ||
+       !is_aim_search);
   // If a multimodal URL is requested, but the cluster info has not been
   // received yet, store the request info and callback for later use.
   if ((should_create_multimodal_url &&
        query_controller_state_ ==
            QueryControllerState::kAwaitingClusterInfoResponse) ||
-      is_any_context_uploading()) {
+      should_wait_for_uploads) {
     // Since 1) `startFileUploadFlow` should clear past pending/files,
     // and 2) resuming the "pause" by running `pending_search_url_request`
     // clears the stashed request (callback) and calls this function:
@@ -716,8 +741,6 @@ void ComposeboxQueryController::CreateSearchUrl(
         {kVoiceSearchQueryParameterKey, "1"});
   }
 
-  bool is_aim_search =
-      search_url_request_info->search_url_type == SearchUrlType::kAim;
   bool send_upload_type =
       base::FeatureList::IsEnabled(
           contextual_tasks::kContextualTasksSendContextualInputUploadType) &&
@@ -2066,6 +2089,7 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
     UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     scoped_refptr<base::RefCountedData<std::vector<uint8_t>>>
         original_image_data,
     const SkBitmap& bitmap) {
@@ -2099,6 +2123,13 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
                     ImageTypeToString(image_type), ".InputMaxDimension"}),
       max_dimension, 1, 10000, 50);
 
+  bool has_c2pa =
+      original_image_data && HasC2paMetadata(original_image_data->data);
+  base::UmaHistogramBoolean(
+      base::StrCat({"Lens.Composebox.ImageUpload.",
+                    ImageTypeToString(image_type), ".C2paDetected"}),
+      has_c2pa);
+
   // If the bitmap is a viewport bitmap, it will be destroyed after the
   // owning ContextualInputData is destroyed (i.e. at the end of
   // CreateUploadRequestBodiesAndContinue). To ensure the bitmap is not
@@ -2111,7 +2142,8 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
   if (original_image_data) {
     if (std::optional<lens::ImageData> image_data_proto =
             MaybeCreateC2paBypassImageData(original_image_data->data,
-                                           bitmap.width(), bitmap.height())) {
+                                           bitmap.width(), bitmap.height(),
+                                           mime_type_string)) {
       CreateFileUploadRequestProtoWithImageDataAndContinue(
           request_id, CreateClientContext(), ref_counted_logs,
           std::move(callback), page_url, page_title, file_name, image_type,
@@ -2142,6 +2174,7 @@ void ComposeboxQueryController::CreateImageUploadRequest(
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
     UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     RequestBodyProtoCreatedCallback callback) {
 #if !BUILDFLAG(IS_IOS)
   CHECK(image_options.has_value());
@@ -2157,7 +2190,8 @@ void ComposeboxQueryController::CreateImageUploadRequest(
       base::BindOnce(&ComposeboxQueryController::ProcessDecodedImageAndContinue,
                      weak_ptr_factory_.GetWeakPtr(), request_id,
                      image_options.value(), std::move(callback), page_url,
-                     page_title, file_name, image_type, refcounted_image_data));
+                     page_title, file_name, image_type,
+                     std::move(mime_type_string), refcounted_image_data));
 #endif  // !BUILDFLAG(IS_IOS)
 }
 
@@ -2186,6 +2220,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
         std::move(image_options), contextual_input_data->page_url,
         contextual_input_data->page_title, /*file_name=*/std::nullopt,
         UploadImageType::kViewport,
+        /*mime_type_string=*/std::nullopt,
         base::BindOnce(
             &ComposeboxQueryController::AddPageIndexToUploadRequestAndContinue,
             weak_ptr_factory_.GetWeakPtr(),
@@ -2218,6 +2253,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
                     request_index))),
         contextual_input_data->page_url, contextual_input_data->page_title,
         /*file_name=*/std::nullopt, UploadImageType::kViewport,
+        /*mime_type_string=*/std::nullopt,
         /*original_image_data=*/nullptr,
         // Pass ownership of the viewport screenshot to the
         // callback.
@@ -2323,7 +2359,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
             std::move(contextual_input_data->context_input->front().bytes_),
             std::move(image_options), contextual_input_data->page_url,
             contextual_input_data->page_title, contextual_input_data->file_name,
-            UploadImageType::kFile,
+            UploadImageType::kFile, file_info->mime_type_string,
             base::BindOnce(
                 &ComposeboxQueryController::
                     AddLensUsageIntentToUploadRequestAndContinue,

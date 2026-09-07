@@ -21,6 +21,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
@@ -33,7 +36,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -75,10 +77,10 @@ import java.util.List;
 
 /** Unit tests for {@link BookmarkUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @DisableFeatures({
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
-    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
 })
 public class BookmarkUtilsTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -332,6 +334,55 @@ public class BookmarkUtilsTest {
         assertEquals(1, mBookmarkIdListCaptor.getValue().size());
         assertNotNull(mBookmarkIdListCaptor.getValue().get(0));
 
+        verifyNoInteractions(mBottomSheetController);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testAddOrEditBookmark_desktopPopup_anchorsToVisibleMenuButton() {
+        BookmarkModel.setInstanceForTesting(mBookmarkModel);
+        mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
+
+        ViewGroup content = mActivity.findViewById(android.R.id.content);
+
+        // Simulate a hidden toolbar with a menu_button_wrapper (e.g. ToolbarTablet in tab
+        // switcher).
+        FrameLayout hiddenToolbar = new FrameLayout(mActivity);
+        hiddenToolbar.setVisibility(View.GONE);
+        View hiddenMenuButton = new View(mActivity);
+        hiddenMenuButton.setId(R.id.menu_button_wrapper);
+        hiddenToolbar.addView(hiddenMenuButton);
+        content.addView(hiddenToolbar);
+
+        // Simulate a visible hub toolbar with a menu_button_wrapper (e.g. HubToolbarView in tab
+        // switcher).
+        FrameLayout hubToolbar = new FrameLayout(mActivity);
+        hubToolbar.setVisibility(View.VISIBLE);
+        View visibleMenuButton = new View(mActivity);
+        visibleMenuButton.setId(R.id.menu_button_wrapper);
+        hubToolbar.addView(visibleMenuButton);
+        content.addView(hubToolbar);
+
+        doReturn("test title").when(mTab).getTitle();
+        doReturn(new GURL("https://test.com")).when(mTab).getOriginalUrl();
+
+        BookmarkUtils.addOrEditBookmark(
+                Collections.singletonList(null),
+                mBookmarkModel,
+                Collections.singletonList(mTab),
+                /* snackbarManager= */ null,
+                mBottomSheetController,
+                mActivity,
+                BookmarkType.NORMAL,
+                mBookmarkIdListCallback,
+                /* fromExplicitTrackUi= */ false,
+                mBookmarkManagerOpener,
+                mPriceDropNotificationManager,
+                false);
+
+        verify(mBookmarkIdListCallback).onResult(mBookmarkIdListCaptor.capture());
+        assertEquals(1, mBookmarkIdListCaptor.getValue().size());
+        assertNotNull(mBookmarkIdListCaptor.getValue().get(0));
         verifyNoInteractions(mBottomSheetController);
     }
 
@@ -660,6 +711,18 @@ public class BookmarkUtilsTest {
 
         // invalid url
         assertFalse(BookmarkUtils.isReadingListSupported(JUnitTestGURLs.INVALID_URL));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testIsDesktopBookmarksDialogEnabled_featureEnabled() {
+        assertTrue(BookmarkUtils.isDesktopBookmarksDialogEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testIsDesktopBookmarksDialogEnabled_featureDisabled() {
+        assertFalse(BookmarkUtils.isDesktopBookmarksDialogEnabled());
     }
 
     @Test

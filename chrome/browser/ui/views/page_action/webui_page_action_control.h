@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback_list.h"
@@ -29,6 +30,7 @@ class BrowserWindowInterface;
 class WebUIToolbarControlDelegate;
 
 namespace page_actions {
+class AnchoredMessageBubbleView;
 class PageActionModelInterface;
 class PageActionViewInterface;
 class WebUIPageActionView;
@@ -63,6 +65,9 @@ class WebUIPageActionControl {
   PageActionViewInterface* GetPageActionViewInterface(
       actions::ActionId action_id);
 
+  // Handles a pointer down on a page action from WebUI.
+  void OnPageActionPointerDown(toolbar_ui_api::mojom::PageActionId action_id);
+
   // Handles a click on a page action from WebUI.
   void OnPageActionClick(
       toolbar_ui_api::mojom::PageActionId action_id,
@@ -76,11 +81,22 @@ class WebUIPageActionControl {
       toolbar_ui_api::mojom::ToolbarUIService::
           OnPageActionChipShowingChangedCallback callback);
 
+  void SetSuppressionThresholdForTesting(base::TimeDelta threshold);
+
   // Helpers accessed by WebUIPageActionView:
   BrowserWindowInterface* GetBrowser();
   const page_actions::PageActionModelInterface* GetObservedModel(
       actions::ActionId action_id) const;
   page_actions::PageActionController* GetController(
+      actions::ActionId action_id);
+
+  // Returns true if there is an anchored message currently showing for
+  // `action_id`.
+  bool IsAnchoredMessageShowing(actions::ActionId action_id) const;
+
+  // Returns the AnchoredMessageBubbleView currently showing for `action_id`,
+  // or nullptr if none is showing. For testing.
+  AnchoredMessageBubbleView* GetAnchoredMessageForTesting(
       actions::ActionId action_id);
 
  private:
@@ -115,6 +131,15 @@ class WebUIPageActionControl {
   std::map<actions::ActionId, std::unique_ptr<WebUIPageActionDelegate>>
       delegates_;
   std::map<actions::ActionId, std::unique_ptr<WebUIPageActionView>> views_;
+
+  // Incremented on active controller (tab) changes. Used to track active tab
+  // changes and propagate a token to WebUI to suppress tab-switching icon
+  // animations.
+  uint32_t icon_animation_token_ = 0;
+
+  // The URL spec of the last active tab's web contents, used to detect
+  // navigations and suppress icon animations on the same tab.
+  std::string last_url_spec_;
 };
 
 }  // namespace page_actions

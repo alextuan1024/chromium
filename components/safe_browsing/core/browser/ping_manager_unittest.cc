@@ -44,17 +44,21 @@ using enum ExtendedReportingLevel;
 
 class FakeSafeBrowsingHatsDelegate : public SafeBrowsingHatsDelegate {
  public:
-  void LaunchRedWarningSurvey(const SurveyStringData& survey_string_data,
-                              const SurveyBitsData& survey_bits_data) override {
-    survey_string_data_ = survey_string_data;
-    survey_bits_data_ = survey_bits_data;
+  void LaunchRedWarningSurvey(SurveyStringData survey_string_data,
+                              SurveyBitsData survey_bits_data,
+                              bool is_tab_closed) override {
+    survey_string_data_ = std::move(survey_string_data);
+    survey_bits_data_ = std::move(survey_bits_data);
+    is_tab_closed_ = is_tab_closed;
   }
   SurveyStringData GetSurveyStringData() { return survey_string_data_; }
   SurveyBitsData GetSurveyBitsData() { return survey_bits_data_; }
+  bool GetIsTabClosed() const { return is_tab_closed_; }
 
  private:
   SurveyStringData survey_string_data_;
   SurveyBitsData survey_bits_data_;
+  bool is_tab_closed_ = false;
 };
 class MockWebUIDelegate : public PingManager::WebUIDelegate {
  public:
@@ -752,6 +756,7 @@ TEST_F(PingManagerTest,
                                             /*is_tab_closed=*/true);
   EXPECT_FALSE(delegate->GetSurveyBitsData()[kLearnMoreClicked]);
   EXPECT_EQ(delegate->GetSurveyStringData()[kUserAction], kUserActionCloseTab);
+  EXPECT_TRUE(delegate->GetIsTabClosed());
 }
 
 TEST_F(PingManagerTest,

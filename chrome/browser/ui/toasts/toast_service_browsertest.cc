@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/api/toast_registry.h"
+#include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -69,7 +70,7 @@ class ToastServiceBrowserTest : public InProcessBrowserTest {
 // Verifies that all ToastIds are registered with the toast registry owned by
 // the toast service.
 IN_PROC_BROWSER_TEST_F(ToastServiceBrowserTest, RegisterAllToastIds) {
-  ToastService* const toast_service = browser()->GetFeatures().toast_service();
+  ToastService* const toast_service = ToastService::From(browser());
   const ToastRegistry* const toast_registry = toast_service->toast_registry();
 
   for (ToastId id : GetActiveToastIds()) {
@@ -81,39 +82,32 @@ IN_PROC_BROWSER_TEST_F(ToastServiceBrowserTest, RegisterAllToastIds) {
 // browser windows, and PWAs. The ToastService and ToastController should be
 // null for other browser types since toasts are not supported on them.
 IN_PROC_BROWSER_TEST_F(ToastServiceBrowserTest, ServiceExistForBrowserTypes) {
-  BrowserWindowFeatures* const normal_window_features =
-      &browser()->GetFeatures();
-  EXPECT_TRUE(normal_window_features->toast_service());
-  EXPECT_TRUE(normal_window_features->toast_controller());
+  EXPECT_TRUE(ToastService::From(browser()));
+  EXPECT_TRUE(ToastController::From(browser()));
   Profile* const profile = browser()->GetProfile();
 
-  BrowserWindowFeatures* const popup_window_features =
-      &CreateBrowserForPopup(profile)->GetFeatures();
-  EXPECT_FALSE(popup_window_features->toast_service());
-  EXPECT_FALSE(popup_window_features->toast_controller());
+  BrowserWindowInterface* const popup_browser = CreateBrowserForPopup(profile);
+  EXPECT_FALSE(ToastService::From(popup_browser));
+  EXPECT_FALSE(ToastController::From(popup_browser));
 
-  BrowserWindowFeatures* const app_window_features =
-      &CreateBrowserForApp("test_app_name", profile)->GetFeatures();
-  EXPECT_TRUE(app_window_features->toast_service());
-  EXPECT_TRUE(app_window_features->toast_controller());
+  BrowserWindowInterface* const app_browser =
+      CreateBrowserForApp("test_app_name", profile);
+  EXPECT_TRUE(ToastService::From(app_browser));
+  EXPECT_TRUE(ToastController::From(app_browser));
 
   BrowserWindowInterface* const pip_browser =
       CreateBrowserWindow(BrowserWindowCreateParams::CreateForPictureInPicture(
           "test_app_name", /*trusted_source=*/false, profile,
           /*user_gesture=*/false));
   AddBlankTabAndShow(pip_browser);
-  BrowserWindowFeatures* const pip_window_features =
-      &pip_browser->GetFeatures();
-  EXPECT_FALSE(pip_window_features->toast_service());
-  EXPECT_FALSE(pip_window_features->toast_controller());
+  EXPECT_FALSE(ToastService::From(pip_browser));
+  EXPECT_FALSE(ToastController::From(pip_browser));
 
   BrowserWindowInterface* const devtools_browser = CreateBrowserWindow(
       BrowserWindowCreateParams::CreateForDevTools(profile));
   AddBlankTabAndShow(devtools_browser);
-  BrowserWindowFeatures* const devtools_window_features =
-      &devtools_browser->GetFeatures();
-  EXPECT_FALSE(devtools_window_features->toast_service());
-  EXPECT_FALSE(devtools_window_features->toast_controller());
+  EXPECT_FALSE(ToastService::From(devtools_browser));
+  EXPECT_FALSE(ToastController::From(devtools_browser));
 }
 
 }  // namespace

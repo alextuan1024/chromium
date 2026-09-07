@@ -8,6 +8,7 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/grit/generated_resources.h"
+#include "extensions/buildflags/buildflags.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -40,8 +41,43 @@ void OrganizerPanelStateController::SetOrganizerVisible(bool visible) {
   }
 
   is_visible_ = visible;
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  if (!is_visible_) {
+    active_extension_id_.reset();
+  }
+#endif
   NotifyStateChanged();
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+void OrganizerPanelStateController::OpenForExtension(
+    const extensions::ExtensionId& extension_id) {
+  if (is_visible_ && active_extension_id_ == extension_id) {
+    return;
+  }
+
+  active_extension_id_ = extension_id;
+  is_visible_ = true;
+  NotifyStateChanged();
+}
+
+void OrganizerPanelStateController::ToggleForExtension(
+    const extensions::ExtensionId& extension_id) {
+  if (is_visible_ && active_extension_id_ == extension_id) {
+    SetOrganizerVisible(false);
+    return;
+  }
+  OpenForExtension(extension_id);
+}
+
+void OrganizerPanelStateController::CloseForExtension(
+    const extensions::ExtensionId& extension_id) {
+  if (!is_visible_ || active_extension_id_ != extension_id) {
+    return;
+  }
+  SetOrganizerVisible(false);
+}
+#endif
 
 base::CallbackListSubscription
 OrganizerPanelStateController::RegisterOnStateChanged(
@@ -55,16 +91,17 @@ void OrganizerPanelStateController::NotifyStateChanged() {
 }
 
 void OrganizerPanelStateController::UpdateOrganizerActionItem() {
-  const auto& text = IsOrganizerPanelVisible() ? IDS_HIDE_ORGANIZER_PANEL
-                                               : IDS_VIEW_ORGANIZER_PANEL;
-
   actions::ActionItem* organizer_action =
       actions::ActionManager::Get().FindAction(kActionToggleOrganizerPanel,
                                                root_action_item_);
-  if (organizer_action) {
-    organizer_action->SetText(
-        chrome::GetCleanTitleAndTooltipText(l10n_util::GetStringUTF16(text)));
-    organizer_action->SetTooltipText(
-        chrome::GetCleanTitleAndTooltipText(l10n_util::GetStringUTF16(text)));
+  if (!organizer_action) {
+    return;
   }
+
+  const auto& text = IsOrganizerPanelVisible() ? IDS_HIDE_ORGANIZER_PANEL
+                                               : IDS_VIEW_ORGANIZER_PANEL;
+  const std::u16string title_and_tooltip =
+      chrome::GetCleanTitleAndTooltipText(l10n_util::GetStringUTF16(text));
+  organizer_action->SetText(title_and_tooltip);
+  organizer_action->SetTooltipText(title_and_tooltip);
 }

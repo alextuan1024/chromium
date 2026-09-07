@@ -7,10 +7,12 @@
 
 #import <Foundation/Foundation.h>
 
+#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/suggestions_from_gemini_entry_point_consumer.h"
+
 @class TableViewItem;
 
 // Consumer protocol for Shopping settings.
-@protocol ShoppingConsumer <NSObject>
+@protocol ShoppingConsumer <SuggestionsFromGeminiEntryPointConsumer>
 
 // Sets the shopping item list with orders and shipments.
 - (void)setShoppingWithOrders:(NSArray<TableViewItem*>*)orders

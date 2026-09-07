@@ -23,7 +23,7 @@
 #include "chrome/browser/ui/autofill/autofill_keyboard_accessory_controller.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/ui/autofill_resource_utils.h"
+#include "components/autofill/core/browser/ui/autofill_resource_util.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -113,7 +113,6 @@ bool IsSuggestionTypeEligibleForKeyboardAccessory(SuggestionType type) {
     case SuggestionType::kWebauthnSignInWithAnotherDevice:
     case SuggestionType::kWebauthnPasskeyQrCode:
     case SuggestionType::kOneTimePasswordEntry:
-    case SuggestionType::kMixedFormMessage:
     case SuggestionType::kDevtoolsTestAddresses:
     case SuggestionType::kDevtoolsTestAddressEntry:
     case SuggestionType::kDevtoolsTestAddressByCountry:
@@ -216,6 +215,10 @@ void AutofillKeyboardAccessoryViewImpl::Show() {
                    std::get_if<Suggestion::AutofillAiPayload>(
                        &suggestion.payload)) {
       payload = ai_payload->CreateJavaObject();
+    } else if (const auto* at_memory_payload =
+                   std::get_if<Suggestion::AtMemoryPayload>(
+                       &suggestion.payload)) {
+      payload = at_memory_payload->CreateJavaObject();
     }
 
     auto* custom_icon_url =
@@ -264,12 +267,24 @@ void AutofillKeyboardAccessoryViewImpl::SuggestionAccepted(JNIEnv* env,
   }
 }
 
+void AutofillKeyboardAccessoryViewImpl::SuggestionSelectionStateChanged(
+    JNIEnv* env,
+    int32_t list_index,
+    bool is_selected) {
+  if (!controller_) {
+    return;
+  }
+  if (is_selected) {
+    controller_->SelectSuggestion(list_index);
+  } else {
+    controller_->UnselectSuggestion();
+  }
+}
+
 void AutofillKeyboardAccessoryViewImpl::DeletionRequested(JNIEnv* env,
                                                           int32_t list_index) {
   if (controller_) {
-    controller_->RemoveSuggestion(
-        list_index,
-        AutofillMetrics::SingleEntryRemovalMethod::kKeyboardAccessory);
+    controller_->RemoveSuggestion(list_index);
   }
 }
 

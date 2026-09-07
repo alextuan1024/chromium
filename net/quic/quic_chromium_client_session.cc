@@ -473,12 +473,12 @@ void LogSessionMetricsToHistogram(
 
   if (details.establishment_reason) {
     std::string reason_histogram_name = base::StrCat(
-        {"Net.QuicSession.GoogleSearch.EstablishmentReason", suffix});
+        {"Net.QuicSession.GoogleSearch.EstablishmentReason2", suffix});
     base::UmaHistogramEnumeration(reason_histogram_name,
                                   *details.establishment_reason);
 
     std::string reason_initiator_histogram_name =
-        base::StrCat({"Net.QuicSession.GoogleSearch.EstablishmentReason",
+        base::StrCat({"Net.QuicSession.GoogleSearch.EstablishmentReason2",
                       initiator_suffix, suffix});
     base::UmaHistogramEnumeration(reason_initiator_histogram_name,
                                   *details.establishment_reason);
@@ -501,9 +501,6 @@ void LogSessionMetricsToHistogram(
 EchMode GetEchModeForHost(SSLConfigService* ssl_config_service,
                           std::string_view host) {
   CHECK(ssl_config_service);
-  if (!ssl_config_service->GetSSLContextConfig().ech_enabled) {
-    return EchMode::kDisabled;
-  }
   return ssl_config_service->GetEchMode(host);
 }
 

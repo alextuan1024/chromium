@@ -21,7 +21,6 @@
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/features.h"
-#include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -47,6 +46,7 @@
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
@@ -141,17 +141,8 @@ void UpdateBorderInsetsIfNeeded(views::View* view,
 std::unique_ptr<TabStrip> CreateTabStrip(
     TabStripRegionView* tab_strip_region_view,
     BrowserView* browser_view) {
-  std::unique_ptr<TabMenuModelFactory> tab_menu_model_factory;
-  if (browser_view &&
-      web_app::AppBrowserController::From(browser_view->browser())) {
-    tab_menu_model_factory =
-        web_app::AppBrowserController::From(browser_view->browser())
-            ->GetTabMenuModelFactory();
-  }
-
   auto tabstrip_controller = std::make_unique<BrowserTabStripController>(
-      browser_view->browser()->GetTabStripModel(), browser_view,
-      std::move(tab_menu_model_factory));
+      browser_view->browser()->GetTabStripModel(), browser_view);
 
   std::unique_ptr<TabHoverCardController> hover_card_controller(
       std::make_unique<TabHoverCardController>(tab_strip_region_view,
@@ -791,6 +782,10 @@ HorizontalTabStripRegionViewNew::HorizontalTabStripRegionViewNew(
         browser, TabStripComboButton::Context::kHorizontalTabStrip));
     combo_button_->SetProperty(views::kCrossAxisAlignmentKey,
                                views::LayoutAlignment::kCenter);
+    combo_button_->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets::TLBR(
+            0, GetLayoutConstant(LayoutConstant::kTabStripPadding), 0, 0));
 
     if (glic::GlicEnabling::IsProfileEligible(browser_view->GetProfile())) {
       tab_strip_action_container =
@@ -913,10 +908,45 @@ views::View* HorizontalTabStripRegionViewNew::GetTabStripView() {
 }
 
 gfx::Rect HorizontalTabStripRegionViewNew::GetTabStripDraggableBounds() const {
-  if (tab_strip_view()) {
-    return tab_strip_view()->GetBoundsInScreen();
+  if (!tab_strip_view()) {
+    return gfx::Rect();
   }
-  return gfx::Rect();
+
+  // Tabs should be draggable from the leading edge of the tab strip across the
+  // available region space, saving space for the trailing controls (grab
+  // handle, action container, and new tab button). This allows the tab strip to
+  // expand into available space during a drag while preventing tabs from being
+  // dragged past the new tab button into the frame grab handle area.
+  int trailing_reserved_width = 0;
+  if (reserved_grab_handle_space_) {
+    trailing_reserved_width +=
+        reserved_grab_handle_space_->GetPreferredSize().width();
+  }
+  if (tab_strip_action_container_ &&
+      tab_strip_action_container_->GetVisible()) {
+    trailing_reserved_width +=
+        tab_strip_action_container_->GetPreferredSize().width();
+  }
+  if (new_tab_button_ && new_tab_button_->GetVisible()) {
+    trailing_reserved_width += new_tab_button_->GetPreferredSize().width();
+  }
+
+  const gfx::Rect tab_strip_bounds = tab_strip_view()->GetBoundsInScreen();
+  const gfx::Rect region_bounds = GetBoundsInScreen();
+  const bool is_rtl = base::i18n::IsRTL();
+
+  const int start_x =
+      is_rtl ? std::min(tab_strip_bounds.x(),
+                        region_bounds.x() + trailing_reserved_width)
+             : tab_strip_bounds.x();
+  const int end_x =
+      is_rtl ? tab_strip_bounds.right()
+             : std::max(tab_strip_bounds.right(),
+                        region_bounds.right() - trailing_reserved_width);
+
+  gfx::Rect tab_strip_draggable_bounds = tab_strip_bounds;
+  tab_strip_draggable_bounds.SetHorizontalBounds(start_x, end_x);
+  return tab_strip_draggable_bounds;
 }
 
 gfx::Point HorizontalTabStripRegionViewNew::GetLinkDropArrowPosition(

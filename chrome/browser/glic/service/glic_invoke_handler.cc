@@ -23,6 +23,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/common/chrome_features.h"
@@ -41,9 +42,12 @@ ShowOptions CreateShowOptions(
     const GlicInvokeOptions& options) {
   ShowOptions show_options = std::visit(
       absl::Overload{[&](const GlicInvokeHandler::TabSurface& tab_surface) {
-                       return ShowOptions::ForSidePanel(
-                           *tab_surface.tab, GlicPinTrigger::kInstanceCreation,
-                           options.GetInvocationSource());
+                       SidePanelShowOptions side_panel_options{
+                           *tab_surface.tab};
+                       side_panel_options.pin_trigger =
+                           GlicPinTrigger::kInstanceCreation;
+                       side_panel_options.pin_on_bind = options.pin_on_bind;
+                       return ShowOptions(side_panel_options);
                      },
                      [&](Floating) {
                        return ShowOptions::ForFloating(
@@ -135,6 +139,11 @@ GlicInvokeHandler::ResolvedTarget GlicInvokeHandler::ResolveTargetSurface(
   if (const auto* tab_handle = std::get_if<tabs::TabHandle>(&target.surface)) {
     tabs::TabInterface* tab = tab_handle->Get();
     if (tab) {
+      BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
+      if (!browser ||
+          browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
+        return {TabSurface{/*tab=*/nullptr, /*is_new=*/false}};
+      }
       return {TabSurface{tab, /*is_new=*/false}};
     }
   }
@@ -243,6 +252,17 @@ void GlicInvokeHandler::Invoke() {
 
   std::vector<std::unique_ptr<GlicInvokeTask>> tasks;
 
+  // The copy check task must come first so that it is started immediately. This
+  // ensures that data needed for the check is cached immediately, removing the
+  // need to observe navigations that may disrupt the check.
+  if (options_.additional_context.has_value() &&
+      options_.additional_context->policy_check == PolicyCheck::kClipboard) {
+    tasks.push_back(std::make_unique<CopyPolicyTask>(
+        &*instance_, options_,
+        base::BindOnce(&GlicInvokeHandler::OnError,
+                       weak_ptr_factory_.GetWeakPtr())));
+  }
+
   if (IsActuatingFeatureMode() && IsTabTarget()) {
     tasks.push_back(std::make_unique<SetTabPendingActuationTask>(
         instance_->profile(), GetTab().GetHandle()));
@@ -251,14 +271,6 @@ void GlicInvokeHandler::Invoke() {
   if (should_wait_for_load_ && IsTabTarget()) {
     tasks.push_back(
         std::make_unique<WaitForNavigationTask>(GetTab().GetContents()));
-  }
-
-  if (options_.additional_context.has_value() &&
-      options_.additional_context->policy_check == PolicyCheck::kClipboard) {
-    tasks.push_back(std::make_unique<CopyPolicyTask>(
-        &*instance_, options_,
-        base::BindOnce(&GlicInvokeHandler::OnError,
-                       weak_ptr_factory_.GetWeakPtr())));
   }
 
   ShowOptions show_options = CreateShowOptions(resolved_target_, options_);
@@ -315,8 +327,8 @@ void GlicInvokeHandler::Invoke() {
   if (options_.additional_context.has_value() &&
       options_.additional_context->policy_check == PolicyCheck::kClipboard &&
       IsTabTarget()) {
-    tasks.push_back(std::make_unique<PastePolicyCheckTask>(
-        GetTab().GetContents(), &*instance_, options_,
+    tasks.push_back(std::make_unique<PastePolicyTask>(
+        &*instance_, options_,
         base::BindOnce(&GlicInvokeHandler::OnError,
                        weak_ptr_factory_.GetWeakPtr())));
   }
@@ -487,6 +499,13 @@ mojom::InvokeOptionsPtr GlicInvokeHandler::CreateMojoOptions() {
   }
 
   return mojo_options;
+}
+
+std::optional<GlicTaskType> GlicInvokeHandler::GetLastActiveTaskType() const {
+  if (!main_task_) {
+    return std::nullopt;
+  }
+  return main_task_->GetLastActiveTaskType();
 }
 
 }  // namespace glic

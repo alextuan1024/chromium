@@ -232,7 +232,7 @@ void IntersectionObserver::SetThrottleDelayEnabledForTesting(bool enabled) {
 IntersectionObserver* IntersectionObserver::Create(
     const IntersectionObserverInit* observer_init,
     IntersectionObserverDelegate& delegate,
-    std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+    std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
     ExceptionState& exception_state) {
   Node* root = nullptr;
   if (observer_init->root()) {
@@ -298,14 +298,14 @@ IntersectionObserver* IntersectionObserver::Create(
                       WebFeature::kIntersectionObserverV2);
   }
   return Create(observer_init, *delegate,
-                LocalFrameUkmAggregator::kJavascriptIntersectionObserver,
+                LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
                 exception_state);
 }
 
 IntersectionObserver* IntersectionObserver::Create(
     const Document& document,
     EventCallback callback,
-    std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+    std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
     Params&& params) {
   IntersectionObserverDelegateImpl* intersection_observer_delegate =
       MakeGarbageCollected<IntersectionObserverDelegateImpl>(
@@ -316,7 +316,7 @@ IntersectionObserver* IntersectionObserver::Create(
 
 IntersectionObserver::IntersectionObserver(
     IntersectionObserverDelegate& delegate,
-    std::optional<LocalFrameUkmAggregator::MetricId> ukm_metric_id,
+    std::optional<LocalFrameMetricsAggregator::MetricId> ukm_metric_id,
     Params&& params)
     : ActiveScriptWrappable<IntersectionObserver>({}),
       ExecutionContextClient(delegate.GetExecutionContext()),
@@ -333,7 +333,8 @@ IntersectionObserver::IntersectionObserver(
       track_fraction_of_root_(params.semantics == kFractionOfRoot),
       always_report_root_bounds_(params.always_report_root_bounds),
       use_overflow_clip_edge_(params.use_overflow_clip_edge),
-      expose_occluder_id_(params.expose_occluder_id) {
+      expose_occluder_id_(params.expose_occluder_id),
+      hit_node_cb_(std::move(params.hit_node_cb)) {
   if (params.root) {
     if (params.root->IsDocumentNode()) {
       To<Document>(params.root)
@@ -345,6 +346,10 @@ IntersectionObserver::IntersectionObserver(
           ->EnsureIntersectionObserverData()
           .AddObserver(*this);
     }
+  }
+  if (params.hit_node_cb) {
+    DCHECK(track_visibility_);
+    DCHECK(!hit_node_cb_->is_null());
   }
 }
 
@@ -448,7 +453,7 @@ base::TimeDelta IntersectionObserver::GetEffectiveDelay() const {
 bool IntersectionObserver::IsInternal() const {
   return !GetUkmMetricId() ||
          GetUkmMetricId() !=
-             LocalFrameUkmAggregator::kJavascriptIntersectionObserver;
+             LocalFrameMetricsAggregator::kJavascriptIntersectionObserver;
 }
 
 void IntersectionObserver::ReportUpdates(IntersectionObservation& observation) {

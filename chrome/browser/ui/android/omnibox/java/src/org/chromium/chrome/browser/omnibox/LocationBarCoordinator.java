@@ -34,7 +34,6 @@ import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
-import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -332,14 +331,7 @@ public class LocationBarCoordinator
                                         ? mAutocompleteCoordinator.getSuggestionsDropdown()
                                         : null,
                         backPressManager,
-                        () ->
-                                mAutocompleteCoordinator.loadTypedOmniboxText(
-                                        TimeUtils.uptimeMillis(),
-                                        AutocompleteCoordinator.NavigationTarget.CURRENT_TAB),
-                        this::clearEditingAndUserText,
-                        this::getUrlBarTextWithoutAutocomplete,
-                        uiOverrides.isForcedPhoneStyleOmnibox(),
-                        mWindowFocusSupplier);
+                        uiOverrides.isForcedPhoneStyleOmnibox());
         NonNullObservableSupplier<Integer> fuseboxStateSupplier =
                 mFuseboxCoordinator.getFuseboxStateSupplier();
         fuseboxStateSupplier.addSyncObserverAndPostIfNonNull(mOnFuseboxStateChange);
@@ -353,6 +345,8 @@ public class LocationBarCoordinator
             mLocationBarHolder = (ViewGroup) tabletLayout.getParent();
             tabletLayout.setHolderAndContainer(
                     mLocationBarHolder, mLocationBarEmbedder.getContainerView());
+            tabletLayout.setIsFullWidthExpansionAllowedSupplier(
+                    uiOverrides::isFullWidthExpansionAllowed);
         }
 
         View alignmentView = mLocationBarLayout.getAlignmentView();
@@ -374,7 +368,8 @@ public class LocationBarCoordinator
                         bottomWindowPaddingSupplier,
                         fuseboxStateSupplier,
                         fuseboxLayoutModeSupplier,
-                        topInsetProvider);
+                        topInsetProvider,
+                        uiOverrides::isFullWidthExpansionAllowed);
 
         mPageZoomIndicatorCoordinator =
                 pageZoomManager != null
@@ -748,11 +743,6 @@ public class LocationBarCoordinator
     }
 
     @Override
-    public void requestUrlBarAccessibilityFocus() {
-        mUrlCoordinator.requestAccessibilityFocus();
-    }
-
-    @Override
     public void showUrlBarCursorWithoutFocusAnimations() {
         mLocationBarMediator.showUrlBarCursorWithoutFocusAnimations();
     }
@@ -769,11 +759,6 @@ public class LocationBarCoordinator
         }
 
         return mLocationBarLayout;
-    }
-
-    @Override
-    public View getSecurityIconView() {
-        return mLocationBarLayout.getSecurityIconView();
     }
 
     @Override
@@ -908,14 +893,6 @@ public class LocationBarCoordinator
         mLocationBarMediator.endInput();
     }
 
-    private void clearEditingAndUserText() {
-        if (mLocationBarMediator == null || mLocationBarMediator.getCurrentInput() == null) {
-            return;
-        }
-        setOmniboxEditingText("");
-        mLocationBarMediator.getCurrentInput().setUserText("");
-    }
-
     @Override
     public void setOmniboxEditingText(String text) {
         mUrlCoordinator.setUrlBarData(
@@ -1038,10 +1015,11 @@ public class LocationBarCoordinator
         mUrlCoordinator.setAllowFocus(focusable);
     }
 
-    private void onTextWrappingChanged(boolean isWrapping) {
+    /* package */ void onTextWrappingChanged(boolean isWrapping) {
         if (mFuseboxCoordinator != null) {
             mFuseboxCoordinator.onFuseboxTextWrappingChanged(isWrapping);
         }
+        mLocationBarMediator.setIsTextWrapping(isWrapping);
         mLocationBarMediator.updateButtonVisibility();
     }
 
@@ -1098,7 +1076,7 @@ public class LocationBarCoordinator
         // If the refactored animations are enabled, the ChangeBounds transition will instead be
         // kicked off with the other transitions in ToolbarPhone.
         if (ChromeFeatureList.sToolbarPhoneAnimationRefactor.isEnabled()) {
-            changeBounds.setResizeClip(/* resizeClip= */ true);
+            changeBounds.setResizeClip(true);
             mLocationBarEmbedder.beginEmbeddedDelayedTransition(mLocationBarLayout, transition);
         } else {
             TransitionManager.beginDelayedTransition(mLocationBarLayout, transition);
@@ -1156,15 +1134,6 @@ public class LocationBarCoordinator
     public void setShouldShowMicButtonWhenUnfocused(boolean shouldShowMicButtonWhenUnfocused) {
         mLocationBarMediator.setShouldShowMicButtonWhenUnfocusedForPhone(
                 shouldShowMicButtonWhenUnfocused);
-    }
-
-    /**
-     * Toggles the lens button being shown when the location bar is not focused. By default the lens
-     * button is not shown.
-     */
-    public void setShouldShowLensButtonWhenUnfocused(boolean shouldShowLensButtonWhenUnfocused) {
-        mLocationBarMediator.setShouldShowLensButtonWhenUnfocusedForPhone(
-                shouldShowLensButtonWhenUnfocused);
     }
 
     /** Updates the visibility of the buttons inside the location bar. */
@@ -1318,8 +1287,8 @@ public class LocationBarCoordinator
         return mFuseboxCoordinator.getFuseboxStateSupplier();
     }
 
-    @Override
-    public void onZoomLevelChanged(double zoomLevel) {
+    /** Callback invoked by PageZoomIndicatorCoordinator when the zoom level changes. */
+    private void onZoomLevelChanged(double zoomLevel) {
         long readableZoomLevel = PageZoomUtils.getReadableZoomLevel(zoomLevel);
         Context context = mLocationBarLayout.getContext();
         String zoomString =

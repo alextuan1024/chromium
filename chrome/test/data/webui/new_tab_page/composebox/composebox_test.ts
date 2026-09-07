@@ -421,7 +421,10 @@ suite(`NewTabPageComposeboxTest`, () => {
 
         try {
           // Guard off: ImageGen renders the legacy layout.
-          loadTimeData.overrideValues({isAndroid: false});
+          loadTimeData.overrideValues({
+            isAndroid: false,
+            useSearchboxConfigIconIds: false,
+          });
           testProxy.searchboxCallbackRouterRemote.onInputStateChanged(
               new MockInputState({activeTool: ToolMode.kImageGen}));
           await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
@@ -474,7 +477,10 @@ suite(`NewTabPageComposeboxTest`, () => {
               'Canvas should render the Clank close icon when isAndroid is' +
                   ' true');
         } finally {
-          loadTimeData.overrideValues({isAndroid: false});
+          loadTimeData.overrideValues({
+            isAndroid: false,
+            useSearchboxConfigIconIds: true,
+          });
         }
       });
 
@@ -720,7 +726,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       removeImgButton!.click();
       await microtasksFinished();
       await testProxy.element.updateComplete;
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
 
       // Remove toolchip:
       testProxy.element.inToolMode = false;
@@ -773,13 +779,13 @@ suite(`NewTabPageComposeboxTest`, () => {
       removeImgButton!.click();
       await microtasksFinished();
       await testProxy.element.updateComplete;
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
 
       // Submit:
       await submitVoiceSearch();
 
       assertTrue(testProxy.element.inToolMode);
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
     });
 
     test('remove toolchip but submit image in voice search mode', async () => {
@@ -831,7 +837,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       await submitVoiceSearch();
 
       assertFalse(testProxy.element.inToolMode);
-      assertEquals(1, testProxy.element.files.size);
+      assertEquals(1, testProxy.element.attachedContext.size);
     });
 
     test(
@@ -886,7 +892,7 @@ suite(`NewTabPageComposeboxTest`, () => {
           removeImgButton!.click();
           await microtasksFinished();
           await testProxy.element.updateComplete;
-          assertEquals(0, testProxy.element.files.size);
+          assertEquals(0, testProxy.element.attachedContext.size);
 
           // Remove tool chip from voice tool chips container:
           const toolChip =
@@ -918,7 +924,7 @@ suite(`NewTabPageComposeboxTest`, () => {
           await testProxy.element.updateComplete;
 
           assertFalse(testProxy.element.inToolMode);
-          assertEquals(0, testProxy.element.files.size);
+          assertEquals(0, testProxy.element.attachedContext.size);
         });
 
     test(
@@ -980,6 +986,7 @@ suite(`NewTabPageComposeboxTest`, () => {
 
   test('handleFuseboxAction applies and resets action state', async () => {
     const composebox = new NtpComposeboxElement();
+    assertTrue(composebox.shouldHandleSuggestionFuseboxActions());
     const inputStateRequested =
         testProxy.searchboxHandler.whenCalled('getInputState');
     document.body.appendChild(composebox);
@@ -1104,6 +1111,20 @@ suite(`NewTabPageComposeboxTest`, () => {
         await microtasksFinished();
 
         assertTrue(fileInputClicked);
+      });
+
+  test(
+      'getFileInputsElement returns element or null when disabled',
+      async () => {
+        const composebox = new NtpComposeboxElement();
+        composebox.contextMenuEnabled = true;
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        assertEquals(
+            composebox.$.fileInputs, composebox.getFileInputsElement());
+        composebox.contextMenuEnabled = false;
+        assertEquals(null, composebox.getFileInputsElement());
       });
 
   test(

@@ -12,6 +12,7 @@ import android.text.style.ImageSpan;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
@@ -28,6 +29,7 @@ import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
+import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -49,6 +51,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
     private final Callback<CharSequence> mUpdateHintTextCallback;
     private final MonotonicObservableSupplier<SearchEngineService> mSearchEngineServiceSupplier;
     private final FuseboxCoordinator mFuseboxCoordinator;
+    private final NonNullObservableSupplier<Boolean> mActivationChipVisibilitySupplier;
     private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final SearchEngineNameObserver mSearchEngineNameObserver = this::updateHintText;
     private final Callback<@AutocompleteRequestType Integer> mAutocompleteRequestTypeObserver =
@@ -65,6 +68,8 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             (visible) -> updateHintText();
     private final Callback<Profile> mProfileObserver = (profile) -> updateHintText();
     private final Callback<String> mUserTextObserver = (text) -> updateHintText();
+    private final Callback<@DisplayState Integer> mDisplayStateObserver =
+            (state) -> updateHintText();
 
     private @Nullable SearchEngineService mSearchEngineService;
     private @Nullable AutocompleteInput mCurrentInput;
@@ -76,6 +81,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             LocationBarEmbedderUiOverrides embedderUiOverrides,
             MonotonicObservableSupplier<SearchEngineService> searchEngineServiceSupplier,
             FuseboxCoordinator fuseboxCoordinator,
+            NonNullObservableSupplier<Boolean> activationChipVisibilitySupplier,
             MonotonicObservableSupplier<Profile> profileSupplier,
             Callback<CharSequence> updateHintTextCallback) {
         mResourceProvider = resourceProvider;
@@ -83,6 +89,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mEmbedderUiOverrides = embedderUiOverrides;
         mSearchEngineServiceSupplier = searchEngineServiceSupplier;
         mFuseboxCoordinator = fuseboxCoordinator;
+        mActivationChipVisibilitySupplier = activationChipVisibilitySupplier;
         mProfileSupplier = profileSupplier;
         mUpdateHintTextCallback = updateHintTextCallback;
         mLocationBarDataProvider.addObserver(this);
@@ -92,9 +99,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mFuseboxCoordinator
                 .getFuseboxLayoutModeSupplier()
                 .addSyncObserver(mFuseboxLayoutModeObserver);
-        mFuseboxCoordinator
-                .getActivationChipVisibilitySupplier()
-                .addSyncObserver(mActivationChipVisibilityObserver);
+        mActivationChipVisibilitySupplier.addSyncObserver(mActivationChipVisibilityObserver);
         mProfileSupplier.addSyncObserver(mProfileObserver);
 
         updateHintText();
@@ -111,9 +116,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mFuseboxCoordinator
                 .getFuseboxLayoutModeSupplier()
                 .removeObserver(mFuseboxLayoutModeObserver);
-        mFuseboxCoordinator
-                .getActivationChipVisibilitySupplier()
-                .removeObserver(mActivationChipVisibilityObserver);
+        mActivationChipVisibilitySupplier.removeObserver(mActivationChipVisibilityObserver);
         mProfileSupplier.removeObserver(mProfileObserver);
         endInput();
     }
@@ -132,6 +135,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mCurrentInput.getRequestTypeSupplier().addSyncObserver(mAutocompleteRequestTypeObserver);
         mCurrentInput.getSiteSearchDataSupplier().addSyncObserver(mSiteSearchDataObserver);
         mCurrentInput.getUserTextSupplier().addSyncObserver(mUserTextObserver);
+        mCurrentInput.getDisplayStateSupplier().addSyncObserver(mDisplayStateObserver);
         updateHintText();
     }
 
@@ -141,6 +145,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             mCurrentInput.getRequestTypeSupplier().removeObserver(mAutocompleteRequestTypeObserver);
             mCurrentInput.getSiteSearchDataSupplier().removeObserver(mSiteSearchDataObserver);
             mCurrentInput.getUserTextSupplier().removeObserver(mUserTextObserver);
+            mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
         }
         dismissAimHintIph();
         mCurrentInput = null;
@@ -184,6 +189,11 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             } else {
                 mUpdateHintTextCallback.onResult("");
             }
+            return;
+        }
+
+        if (isSuggestionsPopover() && isConventionalSearchFocused()) {
+            mUpdateHintTextCallback.onResult("");
             return;
         }
 
@@ -257,12 +267,20 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
     private boolean useAimActivationOrEmptyHint() {
         return mFuseboxCoordinator.getFuseboxStateSupplier().get() != FuseboxState.DISABLED
                 && isSuggestionsPopover()
-                && mFuseboxCoordinator.getActivationChipVisibilitySupplier().get();
+                && mActivationChipVisibilitySupplier.get();
     }
 
     private boolean isSuggestionsPopover() {
         return mFuseboxCoordinator.getFuseboxLayoutModeSupplier().get()
                 == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
+    }
+
+    private boolean isConventionalSearchFocused() {
+        if (mCurrentInput == null) return false;
+        @DisplayState int displayState = mCurrentInput.getDisplayState();
+        boolean isFocused =
+                displayState == DisplayState.DRAFTING || displayState == DisplayState.SUGGESTIONS;
+        return isFocused && mCurrentInput.isConventionalRequestType();
     }
 
     private boolean triggerOrAlreadyShowingActivationHint() {

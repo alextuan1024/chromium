@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -150,7 +151,7 @@ void CommentsSidePanelCoordinator::UpdateCommentsActionVisibility(
 
 void CommentsSidePanelCoordinator::UpdateCommentsSidePanelVisibility(
     bool should_show_comments_action) {
-  SidePanelUI* const side_panel_ui = browser_->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser_);
 
   SidePanelEntry::Key side_panel_entry_key(SidePanelEntry::Id::kComments);
 

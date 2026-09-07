@@ -35,6 +35,7 @@
 #include "content/public/common/referrer.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -350,6 +351,7 @@ void SuspiciousSiteControllerAndroid::CloseDialog(
   }
 
   dialog_view_.reset();
+  is_closing_ = false;
 }
 
 void SuspiciousSiteControllerAndroid::HandleBackNavigation(

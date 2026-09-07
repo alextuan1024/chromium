@@ -25,11 +25,13 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/transform.h"
 
 namespace blink {
 
 class CanvasContextCreationAttributesCore;
 class DOMMatrix;
+class UpdateElementGeometryOptions;
 class ImageBitmap;
 class ImageEncodeOptions;
 class
@@ -84,6 +86,10 @@ class CORE_EXPORT OffscreenCanvas final
   DOMMatrix* getElementTransform(const V8UnionElementOrElementImage* element,
                                  DOMMatrix* draw_transform,
                                  ExceptionState&);
+  void updateElementGeometry(const V8UnionElementOrElementImage*,
+                             const UpdateElementGeometryOptions*,
+                             ExceptionState&);
+  void clearElementGeometry(const V8UnionElementOrElementImage*);
 
   void SetSize(gfx::Size);
   void RecordTransfer();
@@ -148,6 +154,21 @@ class CORE_EXPORT OffscreenCanvas final
   void UpdateDrawnElementGeometry(ElementImage&,
                                   const gfx::Transform*,
                                   bool update_hit_test_order) override;
+  void ClearDrawnElementGeometry(Element&) override;
+  void ClearDrawnElementGeometry(ElementImage&) override;
+
+  // A pending update created by a call to either updateElementGeometry or
+  // clearElementGeometry.
+  struct ElementGeometryUpdate {
+    DOMNodeId element_id;
+
+    // Fields populated by updateElementGeometry.
+    std::optional<gfx::Transform> transform;
+    bool update_hit_test_order = false;
+
+    // Set to `true` by clearElementGeometry.
+    bool clear_element_geometry = false;
+  };
 
   bool PushFrameIfNeeded();
   bool PushFrame(scoped_refptr<CanvasResource>&& frame);
@@ -268,6 +289,13 @@ class CORE_EXPORT OffscreenCanvas final
   static ContextFactoryVector& RenderingContextFactories();
   static CanvasRenderingContextFactory* GetRenderingContextFactory(int);
 
+  void QueueUpdate(ElementGeometryUpdate update);
+  void QueueElementGeometryUpdate(DOMNodeId element_id,
+                                  const gfx::Transform* transform,
+                                  bool update_hit_test_order);
+  void QueueClearElementGeometry(DOMNodeId element_id);
+  void ProcessPendingElementGeometryUpdates();
+
   Member<CanvasRenderingContext> context_;
   WeakMember<ExecutionContext> execution_context_;
 
@@ -306,6 +334,8 @@ class CORE_EXPORT OffscreenCanvas final
   // then the following members would remain as initialized zero values.
   uint32_t client_id_ = 0;
   uint32_t sink_id_ = 0;
+
+  Vector<ElementGeometryUpdate> pending_element_geometry_updates_;
 };
 
 }  // namespace blink

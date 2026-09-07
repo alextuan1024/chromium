@@ -27,8 +27,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gen-dir", required=True)
     parser.add_argument("--node-py", required=True)
-    parser.add_argument("args", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    parser.add_argument("--browser-bin", default=None)
+    parser.add_argument("--chromedriver-bin", default=None)
+    args, unknown_args = parser.parse_known_args()
 
     # The current directory may be the root of the checkout or the build dir (e.g. out/Default).
     # Use __file__ to reliably find the source directory for chromium-bidi.
@@ -48,19 +49,32 @@ def main():
             if os.path.isdir(src):
                 if os.path.exists(dst):
                     shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+                # Skip .bin/ and broken symlinks to avoid permission errors
+                # on virtual/Cog filesystems. Runtime tests only need library
+                # packages, not CLI binaries.
+                shutil.copytree(
+                    src,
+                    dst,
+                    symlinks=False,
+                    ignore=shutil.ignore_patterns(".bin"),
+                    ignore_dangling_symlinks=True,
+                )
             else:
                 shutil.copy2(src, dst)
 
-    node_args = args.args
-    if node_args and node_args[0] == "--":
+    node_args = unknown_args
+    while node_args and node_args[0] == "--":
         node_args = node_args[1:]
+    node_dir = os.path.dirname(os.path.abspath(args.node_py))
+    sys.path.insert(0, node_dir)
+    import node
+
+    node_bin = node.GetBinaryPath()
 
     env = os.environ.copy()
 
     cmd = [
-        sys.executable,
-        args.node_py,
+        node_bin,
         os.path.join(src_dir, "tools", "run-e2e.mjs"),
         "--gen-dir",
         dst_dir,
@@ -69,6 +83,10 @@ def main():
     ]
     if os.environ.get("TESTING_PYTHON_BIN", "vpython3") == "vpython3":
         cmd.extend(["--python-spec", os.path.join(src_dir, ".vpython3")])
+    if args.browser_bin:
+        cmd.extend(["--browser-bin", os.path.abspath(args.browser_bin)])
+    if args.chromedriver_bin:
+        cmd.extend(["--chromedriver-bin", os.path.abspath(args.chromedriver_bin)])
     cmd.extend(node_args)
     return subprocess.call(cmd, env=env)
 
