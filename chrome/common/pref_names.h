@@ -603,6 +603,11 @@ inline constexpr char
 // visible on the toolbar.
 inline constexpr char kShowHomeButton[] = "browser.show_home_button";
 
+#if BUILDFLAG(IS_MAC)
+// Whether the toolbar uses the active page's color.
+inline constexpr char kAdaptToolbarColor[] = "browser.adapt_toolbar_color";
+#endif
+
 // A boolean pref set to true if the Forward button should be visible on the
 // toolbar.
 inline constexpr char kShowForwardButton[] = "browser.show_forward_button";
