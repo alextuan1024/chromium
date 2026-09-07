@@ -60,6 +60,9 @@
 
 namespace {
 
+// Minimum area next to caption buttons to use as a grab handle.
+constexpr int kVerticalTabsGrabHandleSize = 40;
+
 // Maximum portion of the window a "size-restricted" contents-height side panel
 // can take up. This is not the only limit on side panel size.
 constexpr float kMaxContentsHeightSidePanelFraction = 2.f / 3.f;
@@ -604,7 +607,8 @@ BrowserViewTabbedLayoutImpl::CalculateVerticalTabStripAnimation() {
 }
 
 int BrowserViewTabbedLayoutImpl::GetMinimumGrabHandlePadding() const {
-  return 0;
+  return kVerticalTabsGrabHandleSize -
+         GetLayoutInsets(LayoutInset::TOOLBAR_INTERIOR_MARGIN).right();
 }
 
 gfx::Size BrowserViewTabbedLayoutImpl::GetMinimumMainAreaSize(
