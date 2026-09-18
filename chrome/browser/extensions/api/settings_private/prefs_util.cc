@@ -303,6 +303,9 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   (*s_allowlist)[::prefs::kUseCustomChromeFrame] =
       settings_api::PrefType::kBoolean;
 #endif
+#if BUILDFLAG(IS_MAC)
+  (*s_allowlist)[::prefs::kAdaptToolbarColor] = settings_api::PrefType::kBoolean;
+#endif
   (*s_allowlist)[::prefs::kShowHomeButton] = settings_api::PrefType::kBoolean;
   (*s_allowlist)[contextual_search::kDriveConsentState] =
       settings_api::PrefType::kNumber;

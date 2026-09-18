@@ -80,6 +80,12 @@ export function getHtml(this: SettingsAppearancePageElement) {
         `)}
       </select>
     </div>
+    <if expr="is_macosx">
+      <settings-toggle-button id="adaptToolbarColor"
+          pref-key="browser.adapt_toolbar_color"
+          label="$i18n{adaptToolbarColor}">
+      </settings-toggle-button>
+    </if>
     <div class="hr" ?hidden="${!this.showHr_(
         this.pageVisibility_.setTheme, this.pageVisibility_.homeButton)}">
     </div>

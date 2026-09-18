@@ -592,6 +592,9 @@ void AddAppearanceStrings(content::WebUIDataSource* html_source,
       {"lightMode", IDS_NTP_CUSTOMIZE_CHROME_COLOR_SCHEME_MODE_LIGHT_LABEL},
       {"darkMode", IDS_NTP_CUSTOMIZE_CHROME_COLOR_SCHEME_MODE_DARK_LABEL},
       {"systemMode", IDS_NTP_CUSTOMIZE_CHROME_COLOR_SCHEME_MODE_SYSTEM_LABEL},
+#if BUILDFLAG(IS_MAC)
+      {"adaptToolbarColor", IDS_SETTINGS_ADAPT_TOOLBAR_COLOR},
+#endif
       {"showHomeButton", IDS_SETTINGS_SHOW_HOME_BUTTON},
       {"showBookmarksBar", IDS_SETTINGS_SHOW_BOOKMARKS_BAR},
       {"bookmarksBar", IDS_SETTINGS_BOOKMARKS_BAR},

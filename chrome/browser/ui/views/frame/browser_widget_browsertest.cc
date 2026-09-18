@@ -290,6 +290,37 @@ class BrowserWidgetColorProviderTest : public BrowserWidgetTest {
 
 #if BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
+                       PRE_PageThemeColorCanBeDisabled) {
+  auto* prefs = profile()->GetPrefs();
+  EXPECT_TRUE(prefs->GetBoolean(prefs::kAdaptToolbarColor));
+  prefs->SetBoolean(prefs::kAdaptToolbarColor, false);
+  const SkColor baseline =
+      GetBrowserWidget(browser())->GetColorProvider()->GetColor(kColorToolbar);
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  FirstPaintWaiter paint_waiter(contents);
+  paint_waiter.PrepareForNextPaint();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("data:text/html,<meta name=theme-color content=red>"
+                      "<body>page")));
+  paint_waiter.Wait();
+  EXPECT_EQ(baseline, GetBrowserWidget(browser())->GetColorProvider()->GetColor(
+                          kColorToolbar));
+
+  prefs->SetBoolean(prefs::kAdaptToolbarColor, true);
+  EXPECT_EQ(SK_ColorRED, GetBrowserWidget(browser())->GetColorProvider()->GetColor(
+                             kColorToolbar));
+  prefs->SetBoolean(prefs::kAdaptToolbarColor, false);
+  EXPECT_EQ(baseline, GetBrowserWidget(browser())->GetColorProvider()->GetColor(
+                          kColorToolbar));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
+                       PageThemeColorCanBeDisabled) {
+  EXPECT_FALSE(profile()->GetPrefs()->GetBoolean(prefs::kAdaptToolbarColor));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
                        PageThemeColorIsLatchedPerPage) {
   content::WebContents* first_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
