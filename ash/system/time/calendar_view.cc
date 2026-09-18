@@ -268,18 +268,12 @@ void StopViewLayerAnimation(views::View* view) {
 class CalendarLabel : public views::Label {
  public:
   explicit CalendarLabel(const std::u16string& text) : views::Label(text) {
-    views::Label::SetEnabledColor(calendar_utils::GetPrimaryTextColor());
+    views::Label::SetEnabledColor(cros_tokens::kTextColorPrimary);
     views::Label::SetAutoColorReadabilityEnabled(false);
   }
   CalendarLabel(const CalendarLabel&) = delete;
   CalendarLabel& operator=(const CalendarLabel&) = delete;
   ~CalendarLabel() override = default;
-
-  void OnThemeChanged() override {
-    views::Label::OnThemeChanged();
-
-    views::Label::SetEnabledColor(calendar_utils::GetPrimaryTextColor());
-  }
 };
 
 // Resets the `view`'s opacity and position.
@@ -577,6 +571,7 @@ CalendarView::CalendarView(bool use_glanceables_container_style)
   calendar_sliding_surface_->SetProperty(views::kViewIgnoredByLayoutKey, true);
   // This layer is required for animations.
   calendar_sliding_surface_->SetPaintToLayer();
+  calendar_sliding_surface_->layer()->SetName("CalendarView:SlidingSurface");
   calendar_sliding_surface_->layer()->SetFillsBoundsOpaquely(false);
 
   // Override the default focus order so the calendar contents (which contains

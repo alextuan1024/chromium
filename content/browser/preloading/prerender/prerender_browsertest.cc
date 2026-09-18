@@ -336,7 +336,6 @@ enum class TriggerType {
 class PrerenderBrowserTest : public ContentBrowserTest,
                              public WebContentsObserver {
  public:
-  using LifecycleStateImpl = RenderFrameHostImpl::LifecycleStateImpl;
 
   enum class OriginType {
     kSameOrigin,
@@ -707,7 +706,7 @@ class PrerenderBrowserTest : public ContentBrowserTest,
     RenderFrameHostImpl* initiator_render_frame_host = current_frame_host();
     EXPECT_TRUE(initiator_render_frame_host->frame_tree()->is_primary());
     EXPECT_EQ(initiator_render_frame_host->lifecycle_state(),
-              LifecycleStateImpl::kActive);
+              RenderFrameHostLifecycleStateImpl::kActive);
 
     // Start a prerender.
     AddPrerender(prerender_url);
@@ -724,9 +723,9 @@ class PrerenderBrowserTest : public ContentBrowserTest,
     navigated_render_frame_host->ForEachRenderFrameHostImpl(
         [](RenderFrameHostImpl* rfhi) {
           // All the subframes should be transitioned to
-          // LifecycleStateImpl::kActive state after activation.
+          // RenderFrameHostLifecycleStateImpl::kActive state after activation.
           EXPECT_EQ(rfhi->lifecycle_state(),
-                    RenderFrameHostImpl::LifecycleStateImpl::kActive);
+                    RenderFrameHostLifecycleStateImpl::kActive);
           EXPECT_FALSE(rfhi->frame_tree()->is_prerendering());
 
           // Check that each document can use a deferred Mojo interface. Choose
@@ -4471,6 +4470,88 @@ IN_PROC_BROWSER_TEST_F(PrerenderTargetHintBrowserTest,
       PrerenderFinalStatus::kTabClosedWithoutUserGesture);
 }
 
+// Test fixture with a ControllableHttpResponse for slow prerender URLs.
+class PrerenderTargetHintSlowResponseBrowserTest
+    : public PrerenderTargetHintBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    // Register controllable responses before the server starts.
+    prerender_response_ =
+        std::make_unique<net::test_server::ControllableHttpResponse>(
+            &ssl_server(), "/title2.html");
+    PrerenderTargetHintBrowserTest::SetUpOnMainThread();
+  }
+
+ protected:
+  net::test_server::ControllableHttpResponse& prerender_response() {
+    return *prerender_response_;
+  }
+
+ private:
+  std::unique_ptr<net::test_server::ControllableHttpResponse>
+      prerender_response_;
+};
+
+// Regression test: closing the initiator shell while a new-tab prerender
+// activation is deferred (prerender still loading) must not CHECK-crash in
+// CanNavigationActivateHost when host.initiator_web_contents() is null.
+// When activation is triggered via a target=_blank link click,
+// TakePreCreatedWebContentsForNewTabIfExists detaches the prerender
+// from the initiator's PrerenderHostRegistry. Closing the initiator tab
+// can then no longer cancel the PrerenderHost, leaving it with a null
+// initiator_web_contents WeakPtr.
+IN_PROC_BROWSER_TEST_F(PrerenderTargetHintSlowResponseBrowserTest,
+                       NewTabPrerenderNoCrashOnActivationAfterInitiatorClosed) {
+  const GURL initial_url = GetUrl("/simple_links.html");
+  const GURL prerendering_url = GetUrl("/title2.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+  Shell* initiator_shell = shell();
+
+  // Start prerendering title2.html with _blank target hint. The response is
+  // held by ControllableHttpResponse so the prerender stays loading.
+  prerender_helper()->AddPrerendersAsync({prerendering_url},
+                                         /*eagerness=*/std::nullopt, "_blank");
+
+  prerender_response().WaitForRequest();
+
+  // Click the noopener "target=_blank" link to trigger activation.
+  // TakePreCreatedWebContentsForNewTabIfExists detaches the prerender from
+  // the initiator's registry (noopener is required for opener_suppressed).
+  // The activation defers via PrerenderCommitDeferringCondition because the
+  // prerender is still loading.
+  ShellAddedObserver new_shell_observer;
+  EXPECT_TRUE(
+      ExecJs(web_contents(), "clickSameSiteNewWindowWithNoopenerLink();"));
+  Shell* new_shell = new_shell_observer.GetShell();
+  ASSERT_TRUE(new_shell);
+  WebContents* new_wc = new_shell->web_contents();
+
+  // Close only the initiator shell, keeping the new tab's shell alive. The
+  // PrerenderNewTabHandle was already detached, so CancelHost cannot find the
+  // host. The PrerenderHost survives with a null initiator_web_contents
+  // WeakPtr. Wait for full destruction to ensure the WeakPtr is invalidated
+  // before the activation resumes.
+  WebContents* initiator_wc = initiator_shell->web_contents();
+  WebContentsDestroyedWatcher initiator_destroyed_watcher(initiator_wc);
+  initiator_shell->Close();
+  initiator_destroyed_watcher.Wait();
+
+  // Send the prerender response. The deferred activation resumes and calls
+  // CanNavigationActivateHost. Without the fix,
+  // CHECK(host.initiator_web_contents()) crashes. With the fix, the prerender
+  // is cancelled gracefully.
+  TestNavigationObserver activation_observer(new_wc);
+  prerender_response().Send(net::HTTP_OK, "text/html",
+                            "<html><head><title>Title 2</title></head></html>");
+  prerender_response().Done();
+  activation_observer.Wait();
+
+  ExpectFinalStatusForSpeculationRule(PrerenderFinalStatus::kTriggerDestroyed);
+  EXPECT_EQ(new_wc->GetLastCommittedURL(), prerendering_url);
+  EXPECT_TRUE(activation_observer.last_navigation_succeeded());
+}
+
 // Tests that trigger cancellation via BrowsingDataRemover (e.g.,
 // Clear-Site-Data) is handled safely without causing Use-After-Free due to
 // synchronous destruction of the WebContentsImpl during iteration.
@@ -5744,11 +5825,11 @@ IN_PROC_BROWSER_TEST_F(
       const GURL same_origin_subframe_url3 =
           GetUrl("/empty.html?same_origin_iframe3");
       shell()->web_contents()->OpenURL(
-          OpenURLParams(same_origin_subframe_url3, Referrer(),
-                        child_frame->GetFrameTreeNodeId(),
-                        WindowOpenDisposition::CURRENT_TAB,
-                        ui::PAGE_TRANSITION_AUTO_SUBFRAME,
-                        /*is_renderer_initiated=*/false),
+          OpenURLParams::CreateBrowserInitiated(
+              same_origin_subframe_url3, WindowOpenDisposition::CURRENT_TAB,
+              ui::PAGE_TRANSITION_AUTO_SUBFRAME, Referrer(),
+              /*started_from_context_menu=*/false,
+              child_frame->GetFrameTreeNodeId()),
           /*navigation_handle_callback=*/{});
       capturer.Wait();
       child_frame = ChildFrameAt(prerender_frame_host, 0);
@@ -7290,7 +7371,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest, MojoCapabilityControl) {
   for (auto* frame : frames) {
     auto* rfhi = static_cast<RenderFrameHostImpl*>(frame);
     EXPECT_TRUE(rfhi->frame_tree()->is_prerendering());
-    EXPECT_EQ(rfhi->lifecycle_state(), LifecycleStateImpl::kPrerendering);
+    EXPECT_EQ(rfhi->lifecycle_state(),
+              RenderFrameHostLifecycleStateImpl::kPrerendering);
     EXPECT_EQ(rfhi->GetLifecycleState(),
               RenderFrameHost::LifecycleState::kPrerendering);
 
@@ -7517,8 +7599,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest, MojoCapabilityControl_LoosenMode) {
   prerendered_render_frame_host->ForEachRenderFrameHostImplIncludingSpeculative(
       [&](RenderFrameHostImpl* rfh) {
         all_prerender_frames.push_back(rfh);
-        count_speculative +=
-            (rfh->lifecycle_state() == LifecycleStateImpl::kSpeculative);
+        count_speculative += (rfh->lifecycle_state() ==
+                              RenderFrameHostLifecycleStateImpl::kSpeculative);
       });
   // With feature DeferSpeculativeRFHCreation, the speculative RFH won't be
   // created when the navigation starts.
@@ -8418,7 +8500,7 @@ IN_PROC_BROWSER_TEST_P(PrerenderTargetAgnosticBrowserTest,
   // Navigate to an initial page.
   ASSERT_TRUE(NavigateToURL(shell(), initial_url));
   EXPECT_EQ(current_frame_host()->lifecycle_state(),
-            LifecycleStateImpl::kActive);
+            RenderFrameHostLifecycleStateImpl::kActive);
 
   // Start a prerender.
   PrerenderHostId host_id = prerender_helper()->AddPrerender(
@@ -8437,8 +8519,10 @@ IN_PROC_BROWSER_TEST_P(PrerenderTargetAgnosticBrowserTest,
   RenderFrameHostImpl* rfh_b = rfh_a->child_at(0)->current_frame_host();
 
   // Both rfh_a and rfh_b lifecycle state's should be kPrerendering.
-  EXPECT_EQ(LifecycleStateImpl::kPrerendering, rfh_a->lifecycle_state());
-  EXPECT_EQ(LifecycleStateImpl::kPrerendering, rfh_b->lifecycle_state());
+  EXPECT_EQ(RenderFrameHostLifecycleStateImpl::kPrerendering,
+            rfh_a->lifecycle_state());
+  EXPECT_EQ(RenderFrameHostLifecycleStateImpl::kPrerendering,
+            rfh_b->lifecycle_state());
   EXPECT_FALSE(rfh_a->IsInPrimaryMainFrame());
   EXPECT_FALSE(rfh_b->IsInPrimaryMainFrame());
 
@@ -8446,8 +8530,10 @@ IN_PROC_BROWSER_TEST_P(PrerenderTargetAgnosticBrowserTest,
   ActivatePrerenderedPage(*prerender_web_contents, prerendering_url);
 
   // Both rfh_a and rfh_b lifecycle state's should be kActive after activation.
-  EXPECT_EQ(LifecycleStateImpl::kActive, rfh_a->lifecycle_state());
-  EXPECT_EQ(LifecycleStateImpl::kActive, rfh_b->lifecycle_state());
+  EXPECT_EQ(RenderFrameHostLifecycleStateImpl::kActive,
+            rfh_a->lifecycle_state());
+  EXPECT_EQ(RenderFrameHostLifecycleStateImpl::kActive,
+            rfh_b->lifecycle_state());
   EXPECT_TRUE(rfh_a->IsInPrimaryMainFrame());
   EXPECT_FALSE(rfh_b->IsInPrimaryMainFrame());
 
@@ -10207,13 +10293,13 @@ IN_PROC_BROWSER_TEST_P(PrerenderBrowserTestFallbackEnabledDisabled,
 
   // Invoke IsInactiveAndDisallowActivation for the prerendered document.
   EXPECT_EQ(prerender_render_frame_host->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kPrerendering);
+            RenderFrameHostLifecycleStateImpl::kPrerendering);
   EXPECT_TRUE(prerender_render_frame_host->IsInactiveAndDisallowActivation(
       DisallowActivationReasonId::kForTesting));
 
   // The prerender host for the URL should be destroyed as
   // RenderFrameHost::IsInactiveAndDisallowActivation cancels prerendering in
-  // LifecycleStateImpl::kPrerendering state.
+  // RenderFrameHostLifecycleStateImpl::kPrerendering state.
   EXPECT_FALSE(HasHostForUrl(prerendering_url));
 
   // Cancelling the prerendering disables the activation. The navigation
@@ -10415,10 +10501,11 @@ IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest, OpenURLInPrerenderingFrame) {
   TestNavigationManager iframe_observer(shell()->web_contents(),
                                         new_iframe_url);
   shell()->web_contents()->OpenURL(
-      OpenURLParams(
-          new_iframe_url, Referrer(), child_frame->GetFrameTreeNodeId(),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_AUTO_SUBFRAME,
-          /*is_renderer_initiated=*/false),
+      OpenURLParams::CreateBrowserInitiated(
+          new_iframe_url, WindowOpenDisposition::CURRENT_TAB,
+          ui::PAGE_TRANSITION_AUTO_SUBFRAME, Referrer(),
+          /*started_from_context_menu=*/false,
+          child_frame->GetFrameTreeNodeId()),
       /*navigation_handle_callback=*/{});
   ASSERT_TRUE(iframe_observer.WaitForNavigationFinished());
   EXPECT_TRUE(iframe_observer.was_committed());
@@ -10560,11 +10647,11 @@ IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest,
   // prerendering page is activated.
   {
     shell()->web_contents()->OpenURL(
-        OpenURLParams(new_iframe_url, Referrer(),
-                      child_frame->GetFrameTreeNodeId(),
-                      WindowOpenDisposition::CURRENT_TAB,
-                      ui::PAGE_TRANSITION_AUTO_SUBFRAME,
-                      /*is_renderer_initiated=*/false),
+        OpenURLParams::CreateBrowserInitiated(
+            new_iframe_url, WindowOpenDisposition::CURRENT_TAB,
+            ui::PAGE_TRANSITION_AUTO_SUBFRAME, Referrer(),
+            /*started_from_context_menu=*/false,
+            child_frame->GetFrameTreeNodeId()),
         /*navigation_handle_callback=*/{});
     ASSERT_TRUE(iframe_observer.WaitForFirstYieldAfterDidStartNavigation());
     NavigationRequest* request =
@@ -11434,11 +11521,11 @@ IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest,
     TestNavigationManager iframe_observer(shell()->web_contents(),
                                           new_iframe_url);
     shell()->web_contents()->OpenURL(
-        OpenURLParams(new_iframe_url, Referrer(),
-                      child_frame->GetFrameTreeNodeId(),
-                      WindowOpenDisposition::CURRENT_TAB,
-                      ui::PAGE_TRANSITION_AUTO_SUBFRAME,
-                      /*is_renderer_initiated=*/false),
+        OpenURLParams::CreateBrowserInitiated(
+            new_iframe_url, WindowOpenDisposition::CURRENT_TAB,
+            ui::PAGE_TRANSITION_AUTO_SUBFRAME, Referrer(),
+            /*started_from_context_menu=*/false,
+            child_frame->GetFrameTreeNodeId()),
         /*navigation_handle_callback=*/{});
     ASSERT_TRUE(iframe_observer.WaitForNavigationFinished());
     EXPECT_EQ(child_frame->GetLastCommittedURL(), new_iframe_url);
@@ -15182,196 +15269,6 @@ IN_PROC_BROWSER_TEST_P(PrerenderSpeculationRulesHoldbackBrowserTest,
   }
 }
 
-class PrerenderFencedFrameBrowserTest : public PrerenderBrowserTest {
- public:
-  PrerenderFencedFrameBrowserTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kFencedFrames, {}},
-         {::features::kPrivacySandboxAdsAPIsOverride, {}},
-         {blink::features::kFencedFramesAPIChanges, {}},
-         {blink::features::kFencedFramesDefaultMode, {}}},
-        {/* disabled_features */});
-  }
-  ~PrerenderFencedFrameBrowserTest() override = default;
-
-  void SetUp() override {
-    ssl_server().RegisterRequestHandler(base::BindRepeating(
-        &net::test_server::HandlePrefixedRequest,
-        "/fenced-frame-with-speculation-rules",
-        base::BindRepeating(HandleFencedFrameWithSpeculationRulesRequest)));
-    ssl_server().RegisterRequestHandler(base::BindRepeating(
-        &net::test_server::HandlePrefixedRequest,
-        "/fenced-frame-with-speculation-rules-header",
-        base::BindRepeating(
-            HandleFencedFrameWithSpeculationRulesHeaderRequest)));
-    ssl_server().RegisterRequestHandler(base::BindRepeating(
-        &net::test_server::HandlePrefixedRequest, "/prerender.json",
-        base::BindRepeating(HandlePrerenderJsonRequest)));
-    PrerenderBrowserTest::SetUp();
-  }
-
-  static std::unique_ptr<net::test_server::HttpResponse>
-  HandleFencedFrameWithSpeculationRulesRequest(
-      const net::test_server::HttpRequest& request) {
-    constexpr char kSpeculationRule[] = R"({
-      <!doctype html>
-      <script type="speculationrules">
-      {
-        "prerender":[
-          {"source": "list", "urls": ["/empty.html"]}
-        ]
-      }
-      </script>
-    })";
-
-    auto http_response =
-        std::make_unique<net::test_server::BasicHttpResponse>();
-    http_response->set_code(net::HTTP_OK);
-    http_response->AddCustomHeader("Supports-Loading-Mode", "fenced-frame");
-    http_response->set_content_type("text/html");
-    http_response->set_content(kSpeculationRule);
-    return http_response;
-  }
-
-  static std::unique_ptr<net::test_server::HttpResponse>
-  HandleFencedFrameWithSpeculationRulesHeaderRequest(
-      const net::test_server::HttpRequest& request) {
-    auto http_response =
-        std::make_unique<net::test_server::BasicHttpResponse>();
-    http_response->set_code(net::HTTP_OK);
-    http_response->AddCustomHeader("Supports-Loading-Mode", "fenced-frame");
-    http_response->AddCustomHeader("Speculation-Rules", "\"/prerender.json\"");
-    http_response->set_content_type("text/html");
-    http_response->set_content("<!doctype html>nothing");
-    return http_response;
-  }
-
-  static std::unique_ptr<net::test_server::HttpResponse>
-  HandlePrerenderJsonRequest(const net::test_server::HttpRequest& request) {
-    constexpr char kSpeculationRule[] = R"(
-      {
-        "prerender":[
-          {"source": "list", "urls": ["/empty.html"]}
-        ]
-      }
-    )";
-
-    auto http_response =
-        std::make_unique<net::test_server::BasicHttpResponse>();
-    http_response->set_code(net::HTTP_OK);
-    http_response->set_content_type("application/speculationrules+json");
-    http_response->set_content(kSpeculationRule);
-    return http_response;
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-// Test that creating a fenced frame in a prerendered page is deferred until
-// activation.
-IN_PROC_BROWSER_TEST_F(PrerenderFencedFrameBrowserTest,
-                       CreateFencedFrameInPrerenderedPage) {
-  const GURL initial_url = GetUrl("/empty.html");
-  const GURL prerendering_url = GetUrl("/empty.html?prerender");
-  const GURL fenced_frame_url = GetUrl("/title1.html");
-  constexpr char kAddFencedFrameScript[] = R"({
-    const fenced_frame = document.createElement('fencedframe');
-    fenced_frame.config = new FencedFrameConfig($1);
-    document.body.appendChild(fenced_frame);
-  })";
-
-  const int kNumNavigations = 3;
-  TestNavigationObserver nav_observer(web_contents(), kNumNavigations);
-
-  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
-  EXPECT_EQ(initial_url, nav_observer.last_navigation_url());
-
-  // Start a prerender.
-  PrerenderHostId host_id = AddPrerender(prerendering_url);
-  auto* prerendered_rfh = GetPrerenderedMainFrameHost(host_id);
-  EXPECT_TRUE(ExecJs(prerendered_rfh,
-                     JsReplace(kAddFencedFrameScript, fenced_frame_url)));
-  // Since we've deferred creating the fenced frame delegate, we should see no
-  // child frames.
-  size_t child_frame_count = 0;
-  prerendered_rfh->ForEachRenderFrameHostImpl([&](RenderFrameHostImpl* rfh) {
-    if (rfh != prerendered_rfh) {
-      child_frame_count++;
-    }
-  });
-  EXPECT_EQ(0lu, child_frame_count);
-
-  NavigatePrimaryPage(prerendering_url);
-  EXPECT_EQ(prerendering_url, nav_observer.last_navigation_url());
-  nav_observer.Wait();
-  EXPECT_EQ(fenced_frame_url, nav_observer.last_navigation_url());
-}
-
-// Test that prerendering triggered by fenced frames with speculation rules is
-// blocked.
-IN_PROC_BROWSER_TEST_F(PrerenderFencedFrameBrowserTest,
-                       PrerenderFromFencedFrame_SpeculationRules) {
-  const GURL initial_url = GetUrl("/empty.html");
-  const GURL fenced_frame_url = GetUrl("/fenced-frame-with-speculation-rules");
-  constexpr char kAddFencedFrameScript[] = R"({
-    const fenced_frame = document.createElement('fencedframe');
-    fenced_frame.config = new FencedFrameConfig($1);
-    document.body.appendChild(fenced_frame);
-  })";
-
-  // Prerendering triggered by fenced frames will be blocked. To detect it, we
-  // need to wait its failure by monitoring a console error.
-  const char* console_pattern =
-      "The SpeculationRules API does not support prerendering in fenced "
-      "frames.";
-  WebContentsConsoleObserver console_observer(web_contents());
-  console_observer.SetPattern(console_pattern);
-
-  // Start prerendering from fenced frames.
-  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
-  RenderFrameHostImpl* primary_rfh = web_contents_impl()->GetPrimaryMainFrame();
-  EXPECT_TRUE(
-      ExecJs(primary_rfh, JsReplace(kAddFencedFrameScript, fenced_frame_url)));
-
-  ASSERT_TRUE(console_observer.Wait());
-
-  histogram_tester().ExpectTotalCount(
-      "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule", 0);
-}
-
-// Test that prerendering triggered by fenced frames with speculation rules
-// header is blocked.
-IN_PROC_BROWSER_TEST_F(PrerenderFencedFrameBrowserTest,
-                       PrerenderFromFencedFrame_LinkSpeculationRules) {
-  const GURL initial_url = GetUrl("/empty.html");
-  const GURL fenced_frame_url =
-      GetUrl("/fenced-frame-with-speculation-rules-header");
-  constexpr char kAddFencedFrameScript[] = R"({
-    const fenced_frame = document.createElement('fencedframe');
-    fenced_frame.config = new FencedFrameConfig($1);
-    document.body.appendChild(fenced_frame);
-  })";
-
-  // Prerendering triggered by fenced frames will be blocked. To detect it, we
-  // need to wait its failure by monitoring a console error.
-  const char* console_pattern =
-      "The SpeculationRules API does not support prerendering in fenced "
-      "frames.";
-  WebContentsConsoleObserver console_observer(web_contents());
-  console_observer.SetPattern(console_pattern);
-
-  // Start prerendering from fenced frames.
-  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
-  RenderFrameHostImpl* primary_rfh = web_contents_impl()->GetPrimaryMainFrame();
-  EXPECT_TRUE(
-      ExecJs(primary_rfh, JsReplace(kAddFencedFrameScript, fenced_frame_url)));
-
-  ASSERT_TRUE(console_observer.Wait());
-
-  histogram_tester().ExpectTotalCount(
-      "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule", 0);
-}
 
 namespace {
 
@@ -15468,7 +15365,7 @@ IN_PROC_BROWSER_TEST_F(PrerenderWithSiteIsolationDisabledBrowserTest,
   RenderFrameHostImplWrapper prerender_rfh(
       GetPrerenderedMainFrameHost(host_id));
   EXPECT_EQ(prerender_rfh->lifecycle_state(),
-            LifecycleStateImpl::kPrerendering);
+            RenderFrameHostLifecycleStateImpl::kPrerendering);
   EXPECT_EQ(prerender_rfh->GetProcess(), current_frame_host()->GetProcess());
 }
 
@@ -15652,9 +15549,9 @@ IN_PROC_BROWSER_TEST_F(PrerenderClientHintsBrowserTest,
 
   // Open a new tab, and the new page clears all settings.
   GURL new_tab_url = GetUrl("/image.html?acceptch-no-value");
-  OpenURLParams params(
-      new_tab_url, Referrer(), WindowOpenDisposition::NEW_BACKGROUND_TAB,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      new_tab_url, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui::PAGE_TRANSITION_LINK);
   auto* new_web_contents =
       web_contents_impl()->OpenURL(params, /*navigation_handle_callback=*/{});
   ASSERT_NE(nullptr, new_web_contents);

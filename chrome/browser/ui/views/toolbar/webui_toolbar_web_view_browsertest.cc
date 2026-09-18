@@ -84,6 +84,8 @@
 #include "chrome/browser/ui/views/page_action/webui_page_action_control.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view_base.h"
 #include "chrome/browser/ui/views/performance_controls/battery_saver_bubble_view.h"
+#include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
+#include "chrome/browser/ui/views/profiles/profile_menu_view_base.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/home_button.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
@@ -95,6 +97,7 @@
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view_test_base.h"
 #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
+#include "chrome/browser/ui/webui/searchbox/searchbox_test_utils.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/browser/ui/webui/webui_toolbar/utils/toolbar_button_utils.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container.h"
@@ -209,13 +212,18 @@ constexpr int kNumMaxRecoveryTime = 2;
 constexpr base::TimeDelta kRecoveryResetInterval = base::Seconds(10);
 constexpr base::TimeDelta kRecoveryRetryInterval = base::Seconds(20);
 
+// `kAvatarSelector` is unused on ChromeOS, since it doesn't normally show the
+// Avatar button. Other files have test coverage of cases where it is shown on
+// ChromeOS.
+#if !BUILDFLAG(IS_CHROMEOS)
+constexpr char kAvatarSelector[] = "#avatar";
+#endif
 constexpr char kSplitTabsSelector[] = "split-tabs-button";
 constexpr char kReloadButtonSelector[] = "reload-button";
 constexpr char kBackSelector[] = "#back";
 constexpr char kForwardSelector[] = "#forward";
-constexpr char kHomeSelector[] = "#home";
 constexpr char kAppMenuButtonSelector[] = "#app-menu";
-
+constexpr char kBatterySaverSelector[] = "#battery-saver";
 
 #if !BUILDFLAG(IS_CHROMEOS)
 std::string GetAppMenuPropertyJS(const std::string& property) {
@@ -295,33 +303,6 @@ std::string DispatchPointerEvent(
                                   pointer_type, opts);
 }
 
-// Simulates a physical pointer press + release cycle without dispatching a
-// top-level 'click' event. This is practically sufficient for interacting with
-// some custom WebUI elements (like CrIconButton) that bind their action logic
-// exclusively to 'pointerup'. It is also strictly required for simulating
-// auxiliary interactions (like middle-clicks) which do not produce standard
-// 'click' events.
-std::string DispatchPointerDownAndUpImpl(
-    const std::string& el_js,
-    const std::string& pointer_type = "mouse",
-    const std::string& opts = "detail: 1, button: 0") {
-  return base::StringPrintf(
-      "(() => { const target = %s; "
-      "%s"
-      "%s"
-      "target.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, "
-      "cancelable: true, view: window, pointerType: '%s', clientX: x, clientY: "
-      "y, "
-      "%s}));"
-      "target.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, "
-      "cancelable: true, view: window, pointerType: '%s', clientX: x, clientY: "
-      "y, "
-      "%s})); })();",
-      el_js.c_str(), kGetCoordinatesJS,
-      AddMockPointerCaptureFunctions("target").c_str(), pointer_type.c_str(),
-      opts.c_str(), pointer_type.c_str(), opts.c_str());
-}
-
 // Simulates a full physical left-click sequence (press, release, click) on an
 // element. This mirrors exactly how a native browser synthesizes DOM events for
 // hardware mouse interactions. Using this prevents internal WebUI state
@@ -334,14 +315,6 @@ std::string DispatchLeftClickSequenceImpl(
       {DispatchPointerEventImpl("pointerdown", el_js, pointer_type),
        DispatchPointerEventImpl("pointerup", el_js, pointer_type),
        DispatchPointerEventImpl("click", el_js, pointer_type)});
-}
-
-std::string DispatchPointerDownAndUp(
-    const std::string& selector,
-    const std::string& pointer_type = "mouse",
-    const std::string& opts = "detail: 1, button: 0") {
-  return DispatchPointerDownAndUpImpl(GetButtonIconJS(selector), pointer_type,
-                                      opts);
 }
 
 std::string GetContentSettingIcon(
@@ -363,31 +336,6 @@ std::string GetContentSettingIcon(
   )",
                             static_cast<int>(type));
 }
-
-class NavigationCounter : public content::WebContentsObserver {
- public:
-  explicit NavigationCounter(content::WebContents* web_contents)
-      : content::WebContentsObserver(web_contents) {}
-
-  void DidStartNavigation(
-      content::NavigationHandle* navigation_handle) override {
-    navigation_count_++;
-  }
-
-  // A helper that waits some time and then checks that no navigations occurred.
-  void WaitForNoNavigations() {
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(), TestTimeouts::tiny_timeout());
-    run_loop.Run();
-    EXPECT_EQ(navigation_count_, 0u);
-  }
-
-  size_t navigation_count() const { return navigation_count_; }
-
- private:
-  size_t navigation_count_ = 0;
-};
 
 class TestMenuRunnerHandler : public views::MenuRunnerHandler {
  public:
@@ -411,27 +359,27 @@ class TestMenuRunnerHandler : public views::MenuRunnerHandler {
 
 }  // namespace
 
-class WebUIToolbarWebViewPixelBrowserTest : public InProcessBrowserTest {
+class WebUIToolbarWebViewPixelBrowserTest : public WebUIToolbarWebViewTestBase {
  public:
-  WebUIToolbarWebViewPixelBrowserTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        // All features for Webium Production should be included here.
-        {features::kInitialWebUI, features::kWebUIReloadButton,
-         features::kWebUISplitTabsButton, features::kWebUIBackForwardButton,
-         features::kWebUIHomeButton, features::kWebUIPinnedToolbarActions,
-         features::kWebUILocationBar, features::kWebUIExtensionsContainer,
-         features::kSkipIPCChannelPausingForNonGuests,
-         features::kWebUIInProcessResourceLoadingV2,
+  WebUIToolbarWebViewPixelBrowserTest()
+      : WebUIToolbarWebViewTestBase(
+            /*enabled=*/
+            // All features for Webium Production should be included here.
+            {features::kInitialWebUI, features::kWebUIReloadButton,
+             features::kWebUISplitTabsButton, features::kWebUIBackForwardButton,
+             features::kWebUIHomeButton, features::kWebUIPinnedToolbarActions,
+             features::kWebUILocationBar, features::kWebUIExtensionsContainer,
+             features::kSkipIPCChannelPausingForNonGuests,
+             features::kWebUIInProcessResourceLoadingV2,
 #if BUILDFLAG(IS_CHROMEOS)
-         ash::features::kBatterySaver,
+             ash::features::kBatterySaver,
 #endif
-         features::kWebUIBatterySaverButton},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+             features::kWebUIBatterySaverButton},
+            /*disabled=*/
+            // TODO(crbug.com/452061489): Fix tests that fail when the WebUI
+            // Omnibox is enabled and then remove these two Features.
+            {omnibox::internal::kWebUIOmniboxPopup,
+             omnibox::internal::kWebUIOmniboxAimPopup}) {
   }
 
   void SetUp() override {
@@ -440,13 +388,9 @@ class WebUIToolbarWebViewPixelBrowserTest : public InProcessBrowserTest {
   }
 
   void SetUpOnMainThread() override {
-    InProcessBrowserTest::SetUpOnMainThread();
+    WebUIToolbarWebViewTestBase::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
-
-    // Force the color mode to light to avoid flakiness.
-    ThemeServiceFactory::GetForProfile(browser()->GetProfile())
-        ->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kLight);
   }
 
   SkColor GetCenterPixelColor(views::WebView* web_view, const gfx::Rect& rect) {
@@ -468,9 +412,6 @@ class WebUIToolbarWebViewPixelBrowserTest : public InProcessBrowserTest {
 
     return image.getColor(image.width() / 2, image.height() / 2);
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewPixelBrowserTest, Accessibility) {
@@ -1258,28 +1199,17 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewPixelBrowserTest,
                                      browser()));
 
   content::WebContents* webui_web_contents = web_view->GetWebContents();
-  const std::string bsm_selector = "#battery-saver";
 
   // 1. Verify initially hidden.
   EXPECT_FALSE(webui_toolbar_view->battery_saver_control_.IsVisible());
-  EXPECT_FALSE(IsButtonVisible(webui_web_contents, bsm_selector));
+  EXPECT_FALSE(IsButtonVisible(webui_web_contents, kBatterySaverSelector));
 
   // 2. Enable Battery Saver.
-#if BUILDFLAG(IS_CHROMEOS)
-  g_browser_process->local_state()->SetBoolean(ash::prefs::kPowerBatterySaver,
-                                               true);
-#else
-  g_browser_process->local_state()->SetInteger(
-      performance_manager::user_tuning::prefs::kBatterySaverModeState,
-      static_cast<int>(performance_manager::user_tuning::prefs::
-                           BatterySaverModeState::kEnabled));
-#endif
+  EnableBatterySaverButton(webui_web_contents);
 
-  // 3. Verify it becomes visible.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return webui_toolbar_view->battery_saver_control_.IsVisible();
-  }));
-  EXPECT_TRUE(WaitForButtonVisible(webui_web_contents, bsm_selector));
+  // 3. Verify it has become visible. EnableBatterySaverButton() already has
+  // some checks for this, but this test also checks with the control directly.
+  EXPECT_TRUE(webui_toolbar_view->battery_saver_control_.IsVisible());
 
   // Verify appropriate accessibility properties for battery saver button.
   std::string expected_bsm_name =
@@ -1314,7 +1244,7 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewPixelBrowserTest,
   EXPECT_TRUE(content::ExecJs(
       webui_web_contents,
       base::StringPrintf("%s.click();",
-                         GetButtonIconJS(bsm_selector).c_str())));
+                         GetButtonIconJS(kBatterySaverSelector).c_str())));
 
   views::Widget* bubble_widget = waiter.WaitIfNeededAndGet();
   ASSERT_TRUE(bubble_widget);
@@ -1338,7 +1268,7 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewPixelBrowserTest,
   EXPECT_TRUE(base::test::RunUntil([&]() {
     return !webui_toolbar_view->battery_saver_control_.IsVisible();
   }));
-  EXPECT_TRUE(WaitForButtonHidden(webui_web_contents, bsm_selector));
+  EXPECT_TRUE(WaitForButtonHidden(webui_web_contents, kBatterySaverSelector));
 }
 
 class WebUIToolbarWebViewStabilityTest : public InProcessBrowserTest {
@@ -2213,6 +2143,7 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarLifecyclePrewarmedDeferredBrowserTest,
   auto toolbar_view = std::make_unique<WebUIToolbarWebView>(
       &setup.mock_browser, chrome::BrowserCommandController::From(browser()),
       /*location_bar=*/nullptr);
+  auto* webview_ptr = toolbar_view.get();
 
   // Add it to a widget. This should trigger the deferred navigation.
   auto widget = std::make_unique<views::Widget>();
@@ -2224,9 +2155,24 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarLifecyclePrewarmedDeferredBrowserTest,
   widget->Init(std::move(widget_params));
   widget->GetContentsView()->AddChildView(std::move(toolbar_view));
 
+  auto* web_ui = webview_ptr->GetWebUIToolbarUIForTesting();
+  ASSERT_TRUE(web_ui);
+  EXPECT_FALSE(web_ui->has_been_initialized_for_testing());
+
+  // Test for searchbox CreatePageHandler request happening before this
+  // navigation completes --- see crbug.com/559041124
+  MockSearchboxPage mock_page;
+  mojo::Receiver<searchbox::mojom::Page> page(&mock_page);
+  mojo::Remote<searchbox::mojom::PageHandler> page_handler;
+  web_ui->CreatePageHandler(page.BindNewPipeAndPassRemote(),
+                            page_handler.BindNewPipeAndPassReceiver());
+
   // Wait for the deferred navigation to complete.
   observer.Wait();
   EXPECT_TRUE(observer.last_navigation_succeeded());
+
+  EXPECT_TRUE(page.is_bound());
+  EXPECT_TRUE(page_handler.is_bound());
 
   widget->CloseNow();
 }
@@ -2499,8 +2445,6 @@ class WebUIToolbarWebViewBrowserTest : public WebUIToolbarWebViewTestBase {
           .ExtractBool();
     });
   }
-
-
 };
 
 class WebUIAppMenuBrowserTest : public WebUIToolbarWebViewBrowserTest {
@@ -2934,6 +2878,75 @@ IN_PROC_BROWSER_TEST_F(WebUIAvatarButtonBrowserTest, AvatarButtonIPHPromo) {
                toolbar_ui_api::mojom::AvatarToolbarButtonState::kNormal &&
            delegate->GetState().avatar_control_state->text.empty();
   }));
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIAvatarButtonBrowserTest, ClickingClosesMenu) {
+  BrowserWindowInterface* target_browser =
+#if BUILDFLAG(IS_CHROMEOS)
+      // On ChromeOS, only incognito windows have an avatar button and profile
+      // menu in the browser window.
+      CreateIncognitoBrowser();
+#else
+      browser();
+#endif
+  WebUIToolbarWebView* webui_toolbar_view =
+      GetWebUIToolbarWebView(target_browser);
+  ASSERT_TRUE(webui_toolbar_view);
+
+  auto* avatar_button = static_cast<WebUIAvatarToolbarButton*>(
+      webui_toolbar_view->GetAvatarToolbarButtonInterface());
+  ASSERT_TRUE(avatar_button);
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return avatar_button->is_initialized() &&
+           ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+               kToolbarAvatarButtonElementId);
+  }));
+
+  auto* coordinator = ProfileMenuCoordinator::From(target_browser);
+  ASSERT_TRUE(coordinator);
+
+  // 1. Open the profile menu.
+  webui_toolbar_view->OnAvatarButtonMousePressed();
+  webui_toolbar_view->ShowAvatarMenu(/*is_pointer_interaction=*/true);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return coordinator->IsShowing(); }));
+
+  views::Widget* widget =
+      coordinator->GetProfileMenuViewBaseForTesting()->GetWidget();
+  ASSERT_TRUE(widget);
+
+  // 2. Simulate clicking the WebUI avatar button while the menu is open:
+  // Pointer down notifies C++ of the press.
+  webui_toolbar_view->OnAvatarButtonMousePressed();
+
+  // The mouse-down causes the bubble widget to lose focus and close
+  // synchronously.
+  widget->CloseWithReason(views::Widget::ClosedReason::kLostFocus);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !coordinator->IsShowing(); }));
+
+  // Asynchronously, WebUI dispatches the click event which calls
+  // ShowAvatarMenu().
+  webui_toolbar_view->ShowAvatarMenu(/*is_pointer_interaction=*/true);
+
+  // The menu should remain closed and NOT reopen.
+  EXPECT_FALSE(coordinator->IsShowing());
+
+  // 3. If the menu is open and click arrives before focus loss closes it,
+  // the click should close the menu directly.
+  coordinator->Show(/*is_source_accelerator=*/false);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return coordinator->IsShowing(); }));
+
+  webui_toolbar_view->OnAvatarButtonMousePressed();
+  webui_toolbar_view->ShowAvatarMenu(/*is_pointer_interaction=*/true);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !coordinator->IsShowing(); }));
+  EXPECT_FALSE(coordinator->IsShowing());
+
+  // 4. Keyboard activation (is_pointer_interaction = false) opens the menu.
+  webui_toolbar_view->ShowAvatarMenu(/*is_pointer_interaction=*/false);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return coordinator->IsShowing(); }));
+  EXPECT_TRUE(coordinator->IsShowing());
 }
 
 struct ButtonVisibilityToggleTestParam {
@@ -4022,7 +4035,16 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest,
       committed_url.query().find("q=hello%20world") != std::string::npos);
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest, DropFileOnToolbar) {
+// On ChromeOS, drag origin provenance cannot be distinguished between OS-local
+// and renderer sources (b/256022714), so all drags are conservatively treated
+// as renderer-originated and local file navigation via drag is blocked.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_DropFileOnToolbar DISABLED_DropFileOnToolbar
+#else
+#define MAYBE_DropFileOnToolbar DropFileOnToolbar
+#endif
+IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest,
+                       MAYBE_DropFileOnToolbar) {
   ui::TrackedElement* element = nullptr;
   WebUIToolbarWebView* webui_toolbar_view = nullptr;
   views::WebView* web_view = nullptr;
@@ -4070,6 +4092,109 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest, DropFileOnToolbar) {
                           ->GetTabStripModel()
                           ->GetActiveWebContents()
                           ->GetLastCommittedURL());
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest,
+                       DropFileOnToolbar_BlockedRendererOriginated) {
+  ui::TrackedElement* element = nullptr;
+  WebUIToolbarWebView* webui_toolbar_view = nullptr;
+  views::WebView* web_view = nullptr;
+  ASSERT_NO_FATAL_FAILURE(SetUpWebUI(kWebUIToolbarElementIdentifier, &element,
+                                     &webui_toolbar_view, &web_view,
+                                     browser()));
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("secret.html");
+  ASSERT_TRUE(base::WriteFile(file_path, "<html><body>secret</body></html>"));
+
+  gfx::Point click_point(10, 10);
+
+  content::DropData drop_data;
+  drop_data.did_originate_from_renderer = true;
+  drop_data.filenames.emplace_back(file_path, base::FilePath());
+
+  web_view->GetWebContents()->GetDelegate()->PreHandleDragUpdate(
+      drop_data, gfx::PointF(click_point));
+
+  content::WebContents* active_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  GURL initial_url = active_contents->GetLastCommittedURL();
+  NavigationCounter counter(active_contents);
+
+  EXPECT_TRUE(
+      content::ExecJs(web_view->GetWebContents(),
+                      base::StringPrintf(R"(
+    const toolbarApp = document.querySelector('toolbar-app');
+    const dataTransfer = new DataTransfer();
+    Object.defineProperty(dataTransfer, 'types', {value: ['Files']});
+    const dropEvent = new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dataTransfer,
+      clientX: %d,
+      clientY: %d
+    });
+    toolbarApp.dispatchEvent(dropEvent);
+  )",
+                                         click_point.x(), click_point.y())));
+
+  counter.WaitForNoNavigations();
+  EXPECT_EQ(initial_url, active_contents->GetLastCommittedURL());
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest,
+                       DropFileOnToolbar_BlockedAfterDragExit) {
+  ui::TrackedElement* element = nullptr;
+  WebUIToolbarWebView* webui_toolbar_view = nullptr;
+  views::WebView* web_view = nullptr;
+  ASSERT_NO_FATAL_FAILURE(SetUpWebUI(kWebUIToolbarElementIdentifier, &element,
+                                     &webui_toolbar_view, &web_view,
+                                     browser()));
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("test.html");
+  ASSERT_TRUE(base::WriteFile(file_path, "<html><body>test</body></html>"));
+
+  gfx::Point click_point(10, 10);
+
+  content::DropData drop_data;
+  drop_data.did_originate_from_renderer = false;
+  drop_data.filenames.emplace_back(file_path, base::FilePath());
+
+  auto* delegate = web_view->GetWebContents()->GetDelegate();
+  delegate->PreHandleDragUpdate(drop_data, gfx::PointF(click_point));
+
+  // Drag exits the toolbar area before dropping.
+  delegate->PreHandleDragExit();
+
+  content::WebContents* active_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  GURL initial_url = active_contents->GetLastCommittedURL();
+  NavigationCounter counter(active_contents);
+
+  EXPECT_TRUE(
+      content::ExecJs(web_view->GetWebContents(),
+                      base::StringPrintf(R"(
+    const toolbarApp = document.querySelector('toolbar-app');
+    const dataTransfer = new DataTransfer();
+    Object.defineProperty(dataTransfer, 'types', {value: ['Files']});
+    const dropEvent = new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dataTransfer,
+      clientX: %d,
+      clientY: %d
+    });
+    toolbarApp.dispatchEvent(dropEvent);
+  )",
+                                         click_point.x(), click_point.y())));
+
+  counter.WaitForNoNavigations();
+  EXPECT_EQ(initial_url, active_contents->GetLastCommittedURL());
 }
 
 IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewBrowserTest, LoadExtension) {
@@ -4667,7 +4792,16 @@ IN_PROC_BROWSER_TEST_F(WebUIReadOnlyOmniboxDragDropBrowserTest, DropUrl) {
             GetOmniboxTextEventually(web_contents));
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIReadOnlyOmniboxDragDropBrowserTest, DropFilePath) {
+// On ChromeOS, drag origin provenance cannot be distinguished between OS-local
+// and renderer sources (b/256022714), so all drags are conservatively treated
+// as renderer-originated and local file drops on Omnibox are blocked.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_DropFilePath DISABLED_DropFilePath
+#else
+#define MAYBE_DropFilePath DropFilePath
+#endif
+IN_PROC_BROWSER_TEST_F(WebUIReadOnlyOmniboxDragDropBrowserTest,
+                       MAYBE_DropFilePath) {
   ui::TrackedElement* element = nullptr;
   WebUIToolbarWebView* webui_toolbar_view = nullptr;
   views::WebView* web_view = nullptr;
@@ -4699,372 +4833,6 @@ IN_PROC_BROWSER_TEST_F(WebUIReadOnlyOmniboxDragDropBrowserTest,
 
   SimulateDropOnOmnibox(web_contents, "javascript:alert(1)", DropType::kUrl);
   EXPECT_EQ("alert(1)", GetOmniboxTextEventually(web_contents));
-}
-
-// Tests for the home button. Also serve as the general PressHandler tests.
-class WebUIToolbarWebViewHomeButtonBrowserTest
-    : public WebUIHomeControlTestBase {};
-
-// Home icon is different for touch only with old icon set.
-class WebUIToolbarWebViewHomeButtonOldIconsBrowserTest
-    : public WebUIToolbarWebViewHomeButtonBrowserTest {
- public:
-  WebUIToolbarWebViewHomeButtonOldIconsBrowserTest() {
-    feature_list_.InitAndDisableFeature(features::kRoundedIcons);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       ClickHomeButton) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-
-  GURL home_url = GetHomeURL();
-
-  const struct {
-    const char* name;
-    std::string script;
-  } test_cases[] = {
-      {"Mouse Click", DispatchPointerDownAndUp(kHomeSelector)},
-      {"Keyboard Click",
-       DispatchEventScript(kHomeSelector, "MouseEvent", "click", "detail: 0")}};
-
-  for (const auto& test_case : test_cases) {
-    SCOPED_TRACE(test_case.name);
-    const std::string& script = test_case.script;
-    // Navigate away so clicking home actually does something.
-    ASSERT_TRUE(
-        ui_test_utils::NavigateToURL(browser(), GURL("chrome://version")));
-
-    // Click the button.
-    content::TestNavigationObserver nav_observer(
-        browser()->GetTabStripModel()->GetActiveWebContents());
-    EXPECT_TRUE(content::ExecJs(web_view->GetWebContents(), script));
-    nav_observer.Wait();
-
-    EXPECT_EQ(home_url, browser()
-                            ->GetTabStripModel()
-                            ->GetActiveWebContents()
-                            ->GetLastCommittedURL());
-  }
-}
-
-
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       CtrlClickHomeButton) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-
-  GURL home_url = GetHomeURL();
-
-  int initial_tab_count = browser()->GetTabStripModel()->count();
-  ui_test_utils::TabAddedWaiter tab_add_waiter(browser());
-
-#if BUILDFLAG(IS_MAC)
-  const char* kModifier = "metaKey: true";
-#else
-  const char* kModifier = "ctrlKey: true";
-#endif
-
-  EXPECT_TRUE(content::ExecJs(
-      web_view->GetWebContents(),
-      DispatchPointerDownAndUp(
-          kHomeSelector, "mouse",
-          base::StrCat({"detail: 1, button: 0, ", kModifier}))));
-
-  tab_add_waiter.Wait();
-
-  EXPECT_EQ(initial_tab_count + 1, browser()->GetTabStripModel()->count());
-  // Verify new tab is in the background.
-  EXPECT_EQ(0, browser()->GetTabStripModel()->active_index());
-
-  content::WebContents* new_tab =
-      browser()->GetTabStripModel()->GetWebContentsAt(initial_tab_count);
-  content::TestNavigationObserver observer(new_tab);
-  if (new_tab->GetLastCommittedURL() != home_url) {
-    observer.WaitForNavigationFinished();
-  }
-  EXPECT_EQ(home_url, new_tab->GetLastCommittedURL());
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       CtrlShiftClickHomeButton) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-
-  GURL home_url = GetHomeURL();
-
-  int initial_tab_count = browser()->GetTabStripModel()->count();
-  ui_test_utils::TabAddedWaiter tab_add_waiter(browser());
-
-#if BUILDFLAG(IS_MAC)
-  const char* kModifier = "metaKey: true";
-#else
-  const char* kModifier = "ctrlKey: true";
-#endif
-
-  EXPECT_TRUE(content::ExecJs(
-      web_view->GetWebContents(),
-      DispatchPointerDownAndUp(kHomeSelector, "mouse",
-                               base::StrCat({"detail: 1, button: 0, ",
-                                             kModifier, ", shiftKey: true"}))));
-
-  tab_add_waiter.Wait();
-
-  EXPECT_EQ(initial_tab_count + 1, browser()->GetTabStripModel()->count());
-  // Verify new tab is in the foreground.
-  EXPECT_EQ(initial_tab_count, browser()->GetTabStripModel()->active_index());
-
-  content::WebContents* new_tab =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-  content::TestNavigationObserver observer(new_tab);
-  if (new_tab->GetLastCommittedURL() != home_url) {
-    observer.WaitForNavigationFinished();
-  }
-  EXPECT_EQ(home_url, new_tab->GetLastCommittedURL());
-}
-
-// Test the case the mouse is released over the home button without pressing on
-// it.
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       ReleaseOnHomeButtonWithoutPress) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-
-  GURL home_url = GetHomeURL();
-
-  // Navigate away so clicking home actually does something.
-  GURL other_url("chrome://version");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), other_url));
-
-  // Release the pointer over the button.
-  NavigationCounter nav_observer(
-      browser()->GetTabStripModel()->GetActiveWebContents());
-  std::string script = base::StringPrintf(
-      R"((() => {
-          const target = %s;
-          %s
-          %s
-          // Up event with no matching down event.
-          target.dispatchEvent(new PointerEvent('pointerup',
-              {bubbles: true, cancelable: true, view: window,
-                pointerType: 'mouse', clientX: x, clientY: y,
-                detail: 1, button: 0}));
-      })();)",
-      GetButtonIconJS(kHomeSelector), kGetCoordinatesJS,
-      AddMockPointerCaptureFunctions("target").c_str());
-  EXPECT_TRUE(content::ExecJs(web_view->GetWebContents(), script));
-
-  nav_observer.WaitForNoNavigations();
-
-  EXPECT_EQ(other_url, browser()
-                           ->GetTabStripModel()
-                           ->GetActiveWebContents()
-                           ->GetLastCommittedURL());
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonOldIconsBrowserTest,
-                       TouchModeChangesIcon) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-  content::WebContents* web_contents = web_view->GetWebContents();
-
-  std::string get_icon_js = base::StrCat(
-      {GetButtonIconJS(kHomeSelector), ".getAttribute('iron-icon')"});
-  std::string get_button_height_js =
-      base::StrCat({GetButtonIconJS(kHomeSelector), ".offsetHeight"});
-
-  // Verify standard mode icon
-  EXPECT_EQ("webui-toolbar:navigate_home_chrome_refresh_old",
-            content::EvalJs(web_contents, get_icon_js));
-
-  // Also its size.
-  EXPECT_EQ(GetLayoutConstant(LayoutConstant::kToolbarButtonHeight),
-            content::EvalJs(web_contents, get_button_height_js));
-
-  {
-    ui::TouchUiController::TouchUiScoperForTesting touch_ui_scoper(true);
-
-    // Wait and verify Touch mode icon
-    EXPECT_TRUE(base::test::RunUntil([&]() {
-      return GetLayoutConstant(LayoutConstant::kToolbarButtonHeight) ==
-             content::EvalJs(web_contents, get_button_height_js);
-    }));
-    EXPECT_EQ("webui-toolbar:navigate_home_touch_old",
-              content::EvalJs(web_contents, get_icon_js));
-  }
-
-  // Revert to non-touch mode happens automatically when scoper goes out of
-  // scope
-
-  // Wait and verify standard mode icon again
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return GetLayoutConstant(LayoutConstant::kToolbarButtonHeight) ==
-           content::EvalJs(web_contents, get_button_height_js);
-  }));
-  EXPECT_EQ("webui-toolbar:navigate_home_chrome_refresh_old",
-            content::EvalJs(web_contents, get_icon_js));
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       ShiftClickHomeButton) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  views::WebView* web_view = webui_toolbar_view->GetWebViewForTesting();
-
-  GURL home_url = GetHomeURL();
-
-  ui_test_utils::BrowserCreatedObserver new_browser_observer;
-
-  EXPECT_TRUE(content::ExecJs(
-      web_view->GetWebContents(),
-      DispatchPointerDownAndUp(kHomeSelector, "mouse",
-                               "detail: 1, button: 0, shiftKey: true")));
-
-  BrowserWindowInterface* new_browser = new_browser_observer.Wait();
-  ASSERT_TRUE(new_browser);
-
-  content::WebContents* new_tab =
-      new_browser->GetTabStripModel()->GetActiveWebContents();
-  content::TestNavigationObserver observer(new_tab);
-  if (new_tab->GetLastCommittedURL() != home_url) {
-    observer.WaitForNavigationFinished();
-  }
-  EXPECT_EQ(home_url, new_tab->GetLastCommittedURL());
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       DragAndDropHomeButton) {
-  std::string current_home_url =
-      browser()->GetProfile()->GetPrefs()->GetString(prefs::kHomePage);
-  std::string new_home_url = "https://www.example.test/";
-  EXPECT_NE(current_home_url, new_home_url);
-
-  PerformDragAndDrop(new_home_url);
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       DragAndDropHomeButton_BlockedJavascript) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-
-  PrefService* prefs = browser()->GetProfile()->GetPrefs();
-  std::string default_homepage = prefs->GetString(prefs::kHomePage);
-
-  // Directly call the drop URL method with a javascript: URL.
-  std::string malicious_url = "javascript:alert(1)";
-  webui_toolbar_view->OnHomeButtonDropUrl(GURL(malicious_url));
-
-  // Verify the homepage preference has NOT changed.
-  EXPECT_EQ(default_homepage, prefs->GetString(prefs::kHomePage));
-
-  // Also verify NO undo bubble appeared.
-  EXPECT_EQ(
-      nullptr,
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          HomePageUndoBubbleCoordinator::kHomePageUndoBubbleMainViewId,
-          views::ElementTrackerViews::GetContextForView(webui_toolbar_view)));
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       DragAndDropHomeButtonAndUndo) {
-  auto* const prefs = browser()->GetProfile()->GetPrefs();
-  prefs->SetString(prefs::kHomePage, "https://www.url-a.test");
-  prefs->SetBoolean(prefs::kHomePageIsNewTabPage, false);
-  base::RunLoop().RunUntilIdle();
-
-  WebUIToolbarWebView* webui_toolbar_view =
-      PerformDragAndDrop("https://www.url-b.test/");
-  PerformUndo(webui_toolbar_view);
-
-  // Verify the home page is reverted.
-  EXPECT_EQ("https://www.url-a.test/", prefs->GetString(prefs::kHomePage));
-  EXPECT_FALSE(prefs->GetBoolean(prefs::kHomePageIsNewTabPage));
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       DragAndDropHomeButtonAndUndoFromNTP) {
-  auto* const prefs = browser()->GetProfile()->GetPrefs();
-  prefs->SetBoolean(prefs::kHomePageIsNewTabPage, true);
-  base::RunLoop().RunUntilIdle();
-
-  WebUIToolbarWebView* webui_toolbar_view =
-      PerformDragAndDrop("https://www.example.test/");
-  PerformUndo(webui_toolbar_view);
-
-  // Verify the home page is reverted.
-  EXPECT_TRUE(prefs->GetBoolean(prefs::kHomePageIsNewTabPage));
-}
-
-// Verify that dropping a file on the home button sets it as the home page,
-// and the action can be undone.
-IN_PROC_BROWSER_TEST_F(WebUIToolbarWebViewHomeButtonBrowserTest,
-                       DropFileOnHomeButtonAndUndo) {
-  WebUIToolbarWebView* webui_toolbar_view = SetUpAndPinHomeButton(browser());
-  content::WebContents* web_contents =
-      webui_toolbar_view->GetWebViewForTesting()->GetWebContents();
-
-  std::string file_path = "/fake/path/to/file.pdf";
-
-  // Get the coordinates of the home button and dispatch event via hit-testing.
-  gfx::Point center = BrowserElements::From(browser())
-                          ->GetElement(kToolbarHomeButtonElementId)
-                          ->GetScreenBounds()
-                          .CenterPoint();
-  gfx::Point click_point =
-      center - webui_toolbar_view->GetBoundsInScreen().OffsetFromOrigin();
-
-  PrefService* prefs = browser()->GetProfile()->GetPrefs();
-  GURL old_url = GURL(prefs->GetString(prefs::kHomePage));
-  bool old_is_ntp = prefs->GetBoolean(prefs::kHomePageIsNewTabPage);
-
-  content::DropData drop_data;
-  drop_data.filenames.emplace_back(base::FilePath::FromUTF8Unsafe(file_path),
-                                   base::FilePath());
-
-  webui_toolbar_view->GetWebViewForTesting()
-      ->GetWebContents()
-      ->GetDelegate()
-      ->PreHandleDragUpdate(drop_data, gfx::PointF(click_point));
-
-  // Now actually dispatch the drop event.
-  EXPECT_EQ("success",
-            content::EvalJs(web_contents, base::StringPrintf(R"(
-    (function() {
-      const target = document.querySelector('toolbar-app').shadowRoot
-                       .querySelector('#home').shadowRoot
-                       .querySelector('cr-icon-button');
-      const dataTransfer = new DataTransfer();
-      Object.defineProperty(dataTransfer, 'types', {value: ['Files']});
-      const dropEvent = new DragEvent('drop', {
-        bubbles: true,
-        cancelable: true,
-        clientX: %d,
-        clientY: %d,
-        dataTransfer: dataTransfer
-      });
-      target.dispatchEvent(dropEvent);
-      return 'success';
-    })();
-  )",
-                                                             click_point.x(),
-                                                             click_point.y())));
-
-  // Wait for the undo bubble. This proves the Mojo call reached C++.
-  WaitForUndoBubble(webui_toolbar_view);
-
-  GURL expected_url =
-      net::FilePathToFileURL(base::FilePath::FromUTF8Unsafe(file_path));
-  EXPECT_EQ(prefs->GetString(prefs::kHomePage), expected_url.spec());
-  EXPECT_FALSE(prefs->GetBoolean(prefs::kHomePageIsNewTabPage));
-
-  PerformUndo(webui_toolbar_view);
-
-  // Verify that the pref is restored.
-  EXPECT_EQ(prefs->GetString(prefs::kHomePage), old_url.spec());
-  EXPECT_EQ(prefs->GetBoolean(prefs::kHomePageIsNewTabPage), old_is_ntp);
 }
 
 class WebUIPageActionBrowserTest : public WebUIToolbarWebViewBrowserTest {
@@ -5968,11 +5736,18 @@ class WebUIToolbarFullyEnabledBrowserTest
  public:
   WebUIToolbarFullyEnabledBrowserTest()
       : WebUIToolbarWebViewBrowserTest(
-            {features::kInitialWebUI, features::kWebUIToolbar,
-             features::kSkipIPCChannelPausingForNonGuests,
-             features::kWebUIInProcessResourceLoadingV2,
-             features::kOmniboxResizingPrioritization},
-            {}) {}
+            {
+                features::kInitialWebUI,
+                features::kWebUIToolbar,
+                features::kSkipIPCChannelPausingForNonGuests,
+                features::kWebUIInProcessResourceLoadingV2,
+                features::kOmniboxResizingPrioritization,
+#if BUILDFLAG(IS_CHROMEOS)
+                ash::features::kBatterySaver,
+#endif
+            },
+            {}) {
+  }
 
   // Waits until all the controls identified by `selectors` are visible. Also
   // verifies that the location-bar is visible and doesn't have the flex-grow
@@ -6288,9 +6063,13 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
                                                   true);
 
-  // Wait for home, forward, and split tabs buttons to be visible.
-  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible(
-      {kSplitTabsSelector, kForwardSelector, kHomeSelector}));
+  // Wait for home, forward, split tabs, and avatar buttons to be visible.
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible({
+#if !BUILDFLAG(IS_CHROMEOS)
+      // ChromeOS should not show the avatar button.
+      kAvatarSelector,
+#endif
+      kSplitTabsSelector, kForwardSelector, kHomeSelector}));
 
   // Create spacer so that any padding it will added is taking into account by
   // the MeasureResponsiveControls() call.
@@ -6300,8 +6079,13 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   AllResponsiveControlsInfo all_controls_info;
   ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
 
-  CheckResponsiveControlOrder(
-      all_controls_info, {"location-bar", "split-tabs", "forward", "home"});
+  CheckResponsiveControlOrder(all_controls_info,
+                              {"location-bar",
+#if !BUILDFLAG(IS_CHROMEOS)
+                               // ChromeOS should not show the avatar button.
+                               "avatar",
+#endif
+                               "split-tabs", "forward", "home"});
   // Check that TrackedElements reach a consistent state.
   EXPECT_TRUE(WaitForTrackedElements(
       /*visible=*/{kToolbarBackButtonElementId, kToolbarForwardButtonElementId,
@@ -6325,50 +6109,29 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
                    kToolbarSplitTabsToolbarButtonElementId},
       /*hidden=*/{kToolbarOverflowButtonElementId}));
 
-  // Increasing spacer width to overflow the home button will cause the overflow
-  // button to be shown, taking up space and causing the forward button to
-  // overflow as well. Note that this logic assumes the overflow button has the
-  // same effective width as the forward button, when all CSS margins and
-  // padding are taken into account.
-  const ResponsiveControlInfo& home_info = all_controls_info.controls[3];
-  const ResponsiveControlInfo& forward_info = all_controls_info.controls[2];
-  spacer_width += home_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+  // Walk through each control in low-to-high priority order, increasing the
+  // size of the spacer to exactly hide the control, checking the resulting
+  // sizes are as expected. The first loop iteration expects to hide two
+  // controls, due to showing the overflow button.
+  for (int i = all_controls_info.controls.size() - 1; i >= 0; --i) {
+    const ResponsiveControlInfo& control = all_controls_info.controls[i];
+    spacer_width += control.effective_width_delta;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
 
-  expected_sizes.Set(home_info.id, home_info.min_width);
-  expected_sizes.Set(forward_info.id, forward_info.min_width);
-  expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
-  CheckControlSizes(expected_sizes);
-  // Check that TrackedElements reach a consistent state.
-  EXPECT_TRUE(WaitForTrackedElements(
-      /*visible=*/{kToolbarBackButtonElementId,
-                   kToolbarSplitTabsToolbarButtonElementId,
-                   kToolbarOverflowButtonElementId},
-      /*hidden=*/{kToolbarForwardButtonElementId,
-                  kToolbarHomeButtonElementId}));
+    expected_sizes.Set(control.id, control.min_width);
+    // If this is the lowest priority control (i.e., the first loop iteration),
+    // the next control should also be hidden, to make room for the overflow
+    // button, which should be shown. We also need to skip over the next loop
+    // iteration.
+    if (i == static_cast<int>(all_controls_info.controls.size()) - 1) {
+      --i;
+      expected_sizes.Set(all_controls_info.controls[i].id,
+                         all_controls_info.controls[i].min_width);
+      expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
+    }
+    CheckControlSizes(expected_sizes);
+  }
 
-  // Increase spacer width to overflow the split-tabs button.
-  const ResponsiveControlInfo& split_tabs_info = all_controls_info.controls[1];
-  spacer_width += split_tabs_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(split_tabs_info.id, split_tabs_info.min_width);
-  CheckControlSizes(expected_sizes);
-  // Check that TrackedElements reach a consistent state.
-  EXPECT_TRUE(WaitForTrackedElements(
-      /*visible=*/{kToolbarBackButtonElementId,
-                   kToolbarOverflowButtonElementId},
-      /*hidden=*/{kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
-                  kToolbarSplitTabsToolbarButtonElementId}));
-
-  // Increase spacer width to shrink the location bar to its minimum size.
-  const ResponsiveControlInfo& location_bar_info =
-      all_controls_info.controls[0];
-  spacer_width += location_bar_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(location_bar_info.id, location_bar_info.min_width);
-  CheckControlSizes(expected_sizes);
   // Check that TrackedElements reach a consistent state.
   EXPECT_TRUE(WaitForTrackedElements(
       /*visible=*/{kToolbarBackButtonElementId,
@@ -6399,9 +6162,12 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
                                                   true);
 
-  // Wait for home, forward, and split tabs buttons to be visible.
-  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible(
-      {kSplitTabsSelector, kForwardSelector, kHomeSelector}));
+  // Wait for home, forward, split tabs, and avatar buttons to be visible.
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible({
+#if !BUILDFLAG(IS_CHROMEOS)
+      kAvatarSelector,
+#endif
+      kSplitTabsSelector, kForwardSelector, kHomeSelector}));
 
   // Create spacer so that any padding it will add is taken into account by
   // the MeasureResponsiveControls() call.
@@ -6411,15 +6177,19 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   AllResponsiveControlsInfo all_controls_info;
   ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
 
-  CheckResponsiveControlOrder(
-      all_controls_info, {"location-bar", "split-tabs", "forward", "home"});
+  CheckResponsiveControlOrder(all_controls_info,
+                              {"location-bar",
+#if !BUILDFLAG(IS_CHROMEOS)
+                               // ChromeOS should not show the avatar button.
+                               "avatar",
+#endif
+                               "split-tabs", "forward", "home"});
 
   // Calculate spacer width needed to force all controls to their minimum size.
   // Skip adding the home button's delta since showing the overflow button takes
   // up space, which we assume is the same effective width as the home button,
-  // so adding deltas for location-bar, split-tabs, and forward is sufficient to
-  // overflow the home button, as well as shrink all those controls to their
-  // minimum sizes.
+  // so adding deltas for all other buttons should be sufficient to overflow the
+  // home button, as well as shrink all those controls to their minimum sizes.
   spacer_width += all_controls_info.location_bar_extra_width;
   base::DictValue expected_sizes;
   for (const ResponsiveControlInfo& info : all_controls_info.controls) {
@@ -6439,57 +6209,42 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
       /*hidden=*/{kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
                   kToolbarSplitTabsToolbarButtonElementId}));
 
-  // Shrink the spacer enough to let the location bar, the next highest priority
-  // control, expand to its preferred size + 4px.
+  // From highest to lowest priority order, for each control, shrink the spacer
+  // by the control's preferred size, plus 4px, and then check the size of all
+  // controls. Those extra 4 pixels should go to the location bar.
+  int expected_additional_location_bar_length = 0;
   const ResponsiveControlInfo& location_bar_info =
       all_controls_info.controls[0];
-  spacer_width -= (location_bar_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+  for (size_t i = 0; i < all_controls_info.controls.size(); ++i) {
+    SCOPED_TRACE(i);
+    const ResponsiveControlInfo& control_info = all_controls_info.controls[i];
+    spacer_width -= (control_info.effective_width_delta + 4);
+    expected_additional_location_bar_length += 4;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
 
-  expected_sizes.Set(location_bar_info.id,
-                     location_bar_info.preferred_width + 4);
-  CheckControlSizes(expected_sizes);
-  // Check that TrackedElements reach a consistent state.
-  EXPECT_TRUE(WaitForTrackedElements(
-      /*visible=*/{kToolbarBackButtonElementId,
-                   kToolbarOverflowButtonElementId},
-      /*hidden=*/{kToolbarForwardButtonElementId, kToolbarHomeButtonElementId,
-                  kToolbarSplitTabsToolbarButtonElementId}));
+    // If this is the first control, it's the location bar, and its size is set
+    // below, taking `expected_additional_location_bar_length` into account.
+    if (i != 0) {
+      expected_sizes.Set(control_info.id, control_info.preferred_width);
+    }
+    // If this is the second to last control, the last control will replace the
+    // overflow button, so update `expected_sizes` accordingly, expect the
+    // overflow button to be hidden, and increment `i` to skip over the last
+    // loop iteration.
+    if (i == all_controls_info.controls.size() - 2) {
+      ++i;
+      expected_sizes.Set(all_controls_info.controls[i].id,
+                         all_controls_info.controls[i].preferred_width);
+      expected_sizes.Remove("overflow");
+    }
+    // Update location bar, taking into account
+    // `expected_additional_location_bar_length`.
+    expected_sizes.Set(location_bar_info.id,
+                       location_bar_info.preferred_width +
+                           expected_additional_location_bar_length);
+    CheckControlSizes(expected_sizes);
+  }
 
-  // Shrink the spacer enough to show the split-tabs button, the next highest
-  // priority control.
-  const ResponsiveControlInfo& split_tabs_info = all_controls_info.controls[1];
-  spacer_width -= (split_tabs_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(split_tabs_info.id, split_tabs_info.preferred_width);
-  expected_sizes.Set(location_bar_info.id,
-                     location_bar_info.preferred_width + 8);
-  CheckControlSizes(expected_sizes);
-  // Check that TrackedElements reach a consistent state.
-  EXPECT_TRUE(WaitForTrackedElements(
-      /*visible=*/{kToolbarBackButtonElementId,
-                   kToolbarSplitTabsToolbarButtonElementId,
-                   kToolbarOverflowButtonElementId},
-      /*hidden=*/{kToolbarForwardButtonElementId,
-                  kToolbarHomeButtonElementId}));
-
-  // Shrink the spacer enough to show the forward button. This should result in
-  // swapping the overflow button for the home button as well, since the home
-  // button and overflow button are the same size, and there's no reason to show
-  // an overflow button for just a single overflowed home button, if we can show
-  // the home button instead.
-  const ResponsiveControlInfo& forward_info = all_controls_info.controls[2];
-  const ResponsiveControlInfo& home_info = all_controls_info.controls[3];
-  spacer_width -= (forward_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(forward_info.id, forward_info.preferred_width);
-  expected_sizes.Set(home_info.id, home_info.preferred_width);
-  expected_sizes.Remove("overflow");
-  expected_sizes.Set(location_bar_info.id,
-                     location_bar_info.preferred_width + 12);
-  CheckControlSizes(expected_sizes);
   // Check that TrackedElements reach a consistent state.
   EXPECT_TRUE(WaitForTrackedElements(
       /*visible=*/{kToolbarBackButtonElementId, kToolbarForwardButtonElementId,
@@ -6509,12 +6264,17 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
 // preferred size while home is hidden.
 IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
                        ResponsiveNavigationControlsPinUnpinControl) {
-  // Pin home button. Forward button is pinned by default.
+  // Pin home button. Forward button is pinned by default. Avatar is always
+  // visible.
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
 
-  // Wait for home and forward buttons to be visible.
-  ASSERT_TRUE(
-      WaitUntilResponsiveControlsAreVisible({kForwardSelector, kHomeSelector}));
+  // Wait for expected buttons to be visible.
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible({
+#if !BUILDFLAG(IS_CHROMEOS)
+      // ChromeOS should not show the avatar button.
+      kAvatarSelector,
+#endif
+      kForwardSelector, kHomeSelector}));
 
   // Create spacer so that any padding it adds is taken into account by
   // the MeasureResponsiveControls() call.
@@ -6524,9 +6284,17 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   AllResponsiveControlsInfo all_controls_info;
   ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
 
-  CheckResponsiveControlOrder(all_controls_info,
-                              {"location-bar", "forward", "home"});
-  // Check that TrackedElements reach a consistent state.
+  CheckResponsiveControlOrder(
+      all_controls_info,
+      // Check that TrackedElements reach a consistent state.
+      {"location-bar",
+#if !BUILDFLAG(IS_CHROMEOS)
+       // ChromeOS should not show the avatar button.
+       "avatar",
+#endif
+       "forward", "home"});
+  // Check that TrackedElements reach a consistent state. Don't include the
+  // Avatar button, to avoid more ChromeOS-specific #ifs.
   EXPECT_TRUE(WaitForTrackedElements(
       /*visible=*/{kToolbarBackButtonElementId, kToolbarForwardButtonElementId,
                    kToolbarHomeButtonElementId},
@@ -6537,17 +6305,10 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   // size, but no extra space is available.
   spacer_width += all_controls_info.location_bar_extra_width;
   ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
   base::DictValue expected_sizes;
-  // location-bar
-  expected_sizes.Set(all_controls_info.controls[0].id,
-                     all_controls_info.controls[0].preferred_width);
-  // forward
-  expected_sizes.Set(all_controls_info.controls[1].id,
-                     all_controls_info.controls[1].preferred_width);
-  // home
-  expected_sizes.Set(all_controls_info.controls[2].id,
-                     all_controls_info.controls[2].preferred_width);
+  for (const auto& control_info : all_controls_info.controls) {
+    expected_sizes.Set(control_info.id, control_info.preferred_width);
+  }
   CheckControlSizes(expected_sizes);
   // Check that TrackedElements reach a consistent state.
   EXPECT_TRUE(WaitForTrackedElements(
@@ -6562,17 +6323,14 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   // forward button to overflow as well.
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
                                                   true);
-  base::DictValue expected_sizes2;
-  // location-bar
-  expected_sizes2.Set(all_controls_info.controls[0].id,
-                      all_controls_info.controls[0].preferred_width);
+  base::DictValue expected_sizes2 = expected_sizes.Clone();
+  // This assumes all buttons are the same size - it uses the preferred size of
+  // the last button, the home button, for the split-tabs button.
   expected_sizes2.Set("split-tabs",
-                      all_controls_info.controls[1].preferred_width);
+                      all_controls_info.controls.back().preferred_width);
   expected_sizes2.Set("overflow", all_controls_info.overflow_button_width);
-  // forward
-  expected_sizes2.Set(all_controls_info.controls[1].id, 0);
-  // home
-  expected_sizes2.Set(all_controls_info.controls[2].id, 0);
+  expected_sizes2.Set("forward", 0);
+  expected_sizes2.Set("home", 0);
   CheckControlSizes(expected_sizes2);
   // Check that TrackedElements reach a consistent state.
   EXPECT_TRUE(WaitForTrackedElements(
@@ -6680,6 +6438,91 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   // home
   expected_sizes_after.Set("home", 0);
   CheckControlSizes(expected_sizes_after);
+}
+
+// Tests battery button overflow.
+//
+// Enables the home button and battery saver button, sizes the toolbar so all
+// buttons fit with no extra space, and then shrinks available space by the
+// battery saver button's effective width delta. Verifies that both the battery
+// saver button and home button overflow, and the overflow button is displayed.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
+                       BatterySaverButtonOverflow) {
+  ui::TrackedElement* element = nullptr;
+  WebUIToolbarWebView* webui_toolbar_view = nullptr;
+  views::WebView* web_view = nullptr;
+  ASSERT_NO_FATAL_FAILURE(SetUpWebUI(kWebUIToolbarElementIdentifier, &element,
+                                     &webui_toolbar_view, &web_view,
+                                     browser()));
+
+  // Enable home button and battery saver button.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+  EnableBatterySaverButton(web_view->GetWebContents());
+
+  // Wait for home, forward, and battery saver buttons to be visible.
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible(
+      {kForwardSelector, kHomeSelector, kBatterySaverSelector}));
+
+  // Create spacer so that any padding it adds is taken into account by
+  // the MeasureResponsiveControls() call.
+  int spacer_width = 0;
+  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+
+  AllResponsiveControlsInfo all_controls_info;
+  ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
+
+  // Check that layout priority order matches expected order.
+  CheckResponsiveControlOrder(all_controls_info,
+                              {"location-bar",
+#if !BUILDFLAG(IS_CHROMEOS)
+                               // ChromeOS should not show the avatar button.
+                               "avatar",
+#endif
+                               "forward", "home", "battery-saver"});
+  // Check that TrackedElements reach a consistent state.
+  EXPECT_TRUE(WaitForTrackedElements(
+      /*visible=*/{kToolbarBackButtonElementId, kToolbarForwardButtonElementId,
+                   kToolbarHomeButtonElementId,
+                   kToolbarBatterySaverButtonElementId},
+      /*hidden=*/{kToolbarOverflowButtonElementId}));
+
+  // Size spacer so that all currently enabled controls are at their preferred
+  // size, but no extra space is available.
+  spacer_width += all_controls_info.location_bar_extra_width;
+  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+
+  base::DictValue expected_sizes;
+  const ResponsiveControlInfo* battery_saver_info = nullptr;
+  const ResponsiveControlInfo* home_info = nullptr;
+  for (const ResponsiveControlInfo& info : all_controls_info.controls) {
+    if (info.id == "battery-saver") {
+      battery_saver_info = &info;
+    } else if (info.id == "home") {
+      home_info = &info;
+    }
+    expected_sizes.Set(info.id, info.preferred_width);
+  }
+  CHECK(battery_saver_info);
+  CHECK(home_info);
+  CheckControlSizes(expected_sizes);
+
+  // Grow spacer by the battery saver button's effective width. This should
+  // cause the battery saver button to overflow, showing the overflow button,
+  // which in turn causes the home button to overflow.
+  spacer_width += battery_saver_info->effective_width_delta;
+  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+
+  expected_sizes.Set(battery_saver_info->id, battery_saver_info->min_width);
+  expected_sizes.Set(home_info->id, home_info->min_width);
+  expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
+  CheckControlSizes(expected_sizes);
+
+  // Check that TrackedElements reach a consistent state.
+  EXPECT_TRUE(WaitForTrackedElements(
+      /*visible=*/{kToolbarBackButtonElementId, kToolbarForwardButtonElementId,
+                   kToolbarOverflowButtonElementId},
+      /*hidden=*/{kToolbarHomeButtonElementId,
+                  kToolbarBatterySaverButtonElementId}));
 }
 
 // This test makes sure the toolbar-app element is correctly resized in response
@@ -6818,6 +6661,169 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
   EXPECT_EQ(observations, "");
 }
 
+// Test with 4 pinned actions are enabled. Adds a spacer and increases its size
+// incrementally, verifying the actions are hidden in the expected order. First,
+// the leftmost should be hidden together, since the overflow icon is exactly as
+// large as a pinned action icon, a single icon cannot be hidden. Then the
+// middle control is hidden. And finally, the last control and the divider are
+// hidden together.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarFullyEnabledBrowserTest,
+                       ResponsivePinnedToolbarActionsShrinkToolbar) {
+  // Enable 4 pinned action buttons.
+  auto* model = PinnedToolbarActionsModel::Get(browser()->GetProfile());
+  model->UpdatePinnedState(kActionShowDownloads, true);
+  model->UpdatePinnedState(kActionSidePanelShowBookmarks, true);
+  model->UpdatePinnedState(kActionSidePanelShowHistoryCluster, true);
+  model->UpdatePinnedState(kActionSidePanelShowReadingList, true);
+
+  InstallErrorListener();
+
+  // Helper lambda that returns a comma-separated string of ordered element IDs
+  // in #pinnedToolbarActions, prefixing hidden ones with '!' and using
+  // '<divider>' for dividers.
+  auto get_pinned_actions_state = [&]() -> std::string {
+    return content::EvalJs(GetWebUIWebContents(), R"(
+          (() => {
+            const app = document.querySelector('toolbar-app');
+            const pinned =
+                app?.shadowRoot?.querySelector('#pinnedToolbarActions');
+            if (!pinned) {
+              return '';
+            }
+            return pinned.getActions().map(el => {
+              let name = el.isDivider() ? '<divider>' : el.getItemId();
+              if (!el.checkVisibility()) {
+                name = '!' + name;
+              }
+              return name;
+            }).join(',');
+          })()
+        )")
+        .ExtractString();
+  };
+
+  // Wait until all 5 pinned actions (4 action buttons + 1 divider at the end)
+  // exist and are visible.
+  std::vector<std::string> pinned_actions;
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    std::string pinned_actions_string = get_pinned_actions_state();
+    pinned_actions =
+        base::SplitString(pinned_actions_string, ",", base::TRIM_WHITESPACE,
+                          base::SPLIT_WANT_NONEMPTY);
+    // Check for 5 pinned actions, none hidden.
+    if (pinned_actions.size() != 5u ||
+        pinned_actions_string.find('!') != std::string::npos) {
+      return false;
+    }
+    // None of the first 4 actions should be a divider.
+    for (int i = 0; i < 4; ++i) {
+      if (pinned_actions[i] == "<divider>") {
+        return false;
+      }
+    }
+    // The last action should be the divider.
+    return "<divider>" == pinned_actions[4];
+  }));
+
+  // Used shorter names for the actions in this list. These will be used for
+  // checking future return values of get_pinned_actions_state(), while avoiding
+  // any dependency on initial order of the action buttons.
+  std::string id1 = pinned_actions[0];
+  std::string id2 = pinned_actions[1];
+  std::string id3 = pinned_actions[2];
+  std::string id4 = pinned_actions[3];
+  std::string divider = pinned_actions[4];
+
+  // As discussed in test description, this test will go through three sets of
+  // hidden action buttons. Construct strings representing those three states.
+  std::string no_buttons_hidden =
+      base::StrCat({id1, ",", id2, ",", id3, ",", id4, ",", divider});
+  std::string two_buttons_hidden =
+      base::StrCat({"!", id1, ",!", id2, ",", id3, ",", id4, ",", divider});
+  std::string three_buttons_hidden =
+      base::StrCat({"!", id1, ",!", id2, ",!", id3, ",", id4, ",", divider});
+  std::string all_buttons_hidden =
+      base::StrCat({"!", id1, ",!", id2, ",!", id3, ",!", id4, ",!", divider});
+
+  // Create spacer so that any padding it adds is taken into account by
+  // the MeasureResponsiveControls() call.
+  int spacer_width = 0;
+  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+
+  // Set `expected_sizes` so that every ResponsiveControl is expected to be
+  // exactly its preferred width. Also record preferred width of the location
+  // bar, which will be useful in sizing the spacer correctly.
+  AllResponsiveControlsInfo all_controls_info;
+  ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
+  int location_bar_preferred_width = 0;
+  base::DictValue expected_sizes;
+  for (const ResponsiveControlInfo& info : all_controls_info.controls) {
+    expected_sizes.Set(info.id, info.preferred_width);
+    if (info.id == "location-bar") {
+      location_bar_preferred_width = info.preferred_width;
+    }
+  }
+  ASSERT_NE(location_bar_preferred_width, 0);
+
+  // Size spacer so that all currently enabled controls are at their preferred
+  // size, but no extra space is available, so growing it by 1 will shrink the
+  // lowest priority control.
+  spacer_width += all_controls_info.location_bar_extra_width;
+  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+  CheckControlSizes(expected_sizes);
+  EXPECT_EQ(get_pinned_actions_state(), no_buttons_hidden);
+
+  // For each set of pinned toolbar actions we expect to be hidden, we add a
+  // pixel to the spacer, expecting exactly the new set of actions to be hidden,
+  // and no other controls. We then expand the spacer so that all other elements
+  // are exactly their preferred size, expecting exactly the same things to be
+  // hidden before. We're at the exact point where adding one more pixel to the
+  // spacer will result in another toolbar action being hidden, if any are
+  // still visible.
+  for (const std::string& expected_pinned_actions_state :
+       {two_buttons_hidden, three_buttons_hidden, all_buttons_hidden}) {
+    // Grow spacer by 1 pixel and wait until the expected actions are hidden.
+    spacer_width += 1;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return get_pinned_actions_state() == expected_pinned_actions_state;
+    }));
+
+    // Get the size of the pinned toolbar actions with controls hidden.
+    base::DictValue current_sizes = GetControlSizes();
+    std::optional<int> current_pinned_actions_width =
+        current_sizes.FindInt("pinnedToolbarActions");
+    ASSERT_TRUE(current_pinned_actions_width.has_value());
+
+    // All extra space should have been taken up by the location bar. Everything
+    // else, other than the toolbar actions, should be at their preferred sizes.
+    // Get how much the location bar grew by.
+    std::optional<int> current_location_bar_width =
+        current_sizes.FindInt("location-bar");
+    ASSERT_TRUE(current_location_bar_width.has_value());
+    ASSERT_GE(*current_location_bar_width, location_bar_preferred_width);
+
+    // Expand the spacer by how much the location bar grew, which should result
+    // in everything being its preferred size again, including the location bar,
+    // except for the pinned actions control, which should still have the same
+    // actions hidden, and be the same size as before.
+    spacer_width += *current_location_bar_width - location_bar_preferred_width;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+
+    // Check that sizes are now as expected. `pinnedToolbarActions` should still
+    // be `current_pinned_actions_width`, and the overflow button should be
+    // visible. Other ResponsiveControls should all be at their preferred sizes,
+    // which should already have been put in `expected_sizes`.
+    expected_sizes.Set("pinnedToolbarActions", *current_pinned_actions_width);
+    expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
+    CheckControlSizes(expected_sizes);
+    // Check that only the expected buttons are still hidden.
+    EXPECT_EQ(get_pinned_actions_state(), expected_pinned_actions_state);
+  }
+
+  AssertNoJsErrors();
+}
+
 // Test fixture that enables all WebUI toolbar controls, but disables
 // OmniboxResizingPrioritization so that navigation buttons have higher
 // layout priority than the location bar.
@@ -6844,9 +6850,13 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
                                                   true);
 
-  // Wait for home, forward, and split tabs buttons to be visible.
-  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible(
-      {kSplitTabsSelector, kForwardSelector, kHomeSelector}));
+  // Wait for home, forward, avatar, and split tabs buttons to be visible.
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible({
+#if !BUILDFLAG(IS_CHROMEOS)
+      // ChromeOS should not show the avatar button.
+      kAvatarSelector,
+#endif
+      kSplitTabsSelector, kForwardSelector, kHomeSelector}));
 
   InstallErrorListener();
 
@@ -6859,7 +6869,12 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
 
   CheckResponsiveControlOrder(
-      all_controls_info, {"split-tabs", "forward", "home", "location-bar"});
+      all_controls_info, {
+#if !BUILDFLAG(IS_CHROMEOS)
+                             // ChromeOS should not show the avatar button.
+                             "avatar",
+#endif
+                             "split-tabs", "forward", "home", "location-bar"});
 
   // Start by increasing spacer width by locationBarExtraWidth so that all
   // controls, including location bar, are at their preferred size.
@@ -6871,39 +6886,30 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   ASSERT_EQ(SetSpacerWidth(spacer_width), true);
   CheckControlSizes(expected_sizes);
 
-  // Increase spacer width to shrink the location bar (lowest priority control)
-  // to its minimum size. No control has overflowed yet, so the overflow button
-  // remains hidden.
-  const ResponsiveControlInfo& location_bar_info =
-      all_controls_info.controls[3];
-  spacer_width += location_bar_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+  // Walk through each control in low-to-high priority order, increasing the
+  // size of the spacer to exactly hide the control, checking the resulting
+  // sizes are as expected. The second loop iteration expects to hide two
+  // controls, due to showing the overflow button. The first iteration reduces
+  // the size of the location bar to its min size, so does not overflow any
+  // control.
+  for (int i = all_controls_info.controls.size() - 1; i >= 0; --i) {
+    const ResponsiveControlInfo& control = all_controls_info.controls[i];
+    spacer_width += control.effective_width_delta;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
 
-  expected_sizes.Set(location_bar_info.id, location_bar_info.min_width);
-  CheckControlSizes(expected_sizes);
-
-  // Increasing spacer width to overflow the home button will cause the overflow
-  // button to be shown, taking up space and causing the forward button to
-  // overflow as well. Note that this logic assumes the overflow button has the
-  // same effective width as the forward button, when all CSS margins and
-  // padding are taken into account.
-  const ResponsiveControlInfo& home_info = all_controls_info.controls[2];
-  const ResponsiveControlInfo& forward_info = all_controls_info.controls[1];
-  spacer_width += home_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(home_info.id, home_info.min_width);
-  expected_sizes.Set(forward_info.id, forward_info.min_width);
-  expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
-  CheckControlSizes(expected_sizes);
-
-  // Increase spacer width to overflow the split-tabs button.
-  const ResponsiveControlInfo& split_tabs_info = all_controls_info.controls[0];
-  spacer_width += split_tabs_info.effective_width_delta;
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(split_tabs_info.id, split_tabs_info.min_width);
-  CheckControlSizes(expected_sizes);
+    expected_sizes.Set(control.id, control.min_width);
+    // If this is the second-to-lowest priority control (i.e., the second loop
+    // iteration), the next control should also be hidden, to make room for the
+    // overflow button, which should be shown. We also need to skip over the
+    // next loop iteration.
+    if (i == static_cast<int>(all_controls_info.controls.size()) - 2) {
+      --i;
+      expected_sizes.Set(all_controls_info.controls[i].id,
+                         all_controls_info.controls[i].min_width);
+      expected_sizes.Set("overflow", all_controls_info.overflow_button_width);
+    }
+    CheckControlSizes(expected_sizes);
+  }
 
   AssertNoJsErrors();
 }
@@ -6920,9 +6926,12 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
                                                   true);
 
-  // Wait for home, forward, and split tabs buttons to be visible.
-  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible(
-      {kSplitTabsSelector, kForwardSelector, kHomeSelector}));
+  ASSERT_TRUE(WaitUntilResponsiveControlsAreVisible({
+#if !BUILDFLAG(IS_CHROMEOS)
+      // ChromeOS should not show the avatar button.
+      kAvatarSelector,
+#endif
+      kSplitTabsSelector, kForwardSelector, kHomeSelector}));
 
   InstallErrorListener();
 
@@ -6935,7 +6944,12 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   ASSERT_NO_FATAL_FAILURE(MeasureResponsiveControls(all_controls_info));
 
   CheckResponsiveControlOrder(
-      all_controls_info, {"split-tabs", "forward", "home", "location-bar"});
+      all_controls_info, {
+#if !BUILDFLAG(IS_CHROMEOS)
+                             // ChromeOS should not show the avatar button.
+                             "avatar",
+#endif
+                             "split-tabs", "forward", "home", "location-bar"});
 
   // Calculate spacer width needed to force all controls to their minimum size.
   // Skip adding the home button's delta since showing the overflow button takes
@@ -6956,42 +6970,47 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarNoOmniboxPrioritizationBrowserTest,
   ASSERT_EQ(SetSpacerWidth(spacer_width), true);
   CheckControlSizes(expected_sizes);
 
-  // Shrink the spacer enough to let the split-tabs button, the highest priority
-  // control, expand to its preferred size.
-  const ResponsiveControlInfo& split_tabs_info = all_controls_info.controls[0];
+  // From highest to lowest priority order, for each control, shrink the spacer
+  // by the control's preferred size, plus 4px, and then check the size of all
+  // controls. Those extra 4 pixels should go to the location bar.
+  int expected_additional_location_bar_length = 0;
   const ResponsiveControlInfo& location_bar_info =
-      all_controls_info.controls[3];
-  spacer_width -= (split_tabs_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
+      all_controls_info.controls.back();
+  for (size_t i = 0; i < all_controls_info.controls.size(); ++i) {
+    SCOPED_TRACE(i);
+    const ResponsiveControlInfo& control_info = all_controls_info.controls[i];
+    spacer_width -= (control_info.effective_width_delta + 4);
+    expected_additional_location_bar_length += 4;
+    ASSERT_EQ(SetSpacerWidth(spacer_width), true);
 
-  expected_sizes.Set(split_tabs_info.id, split_tabs_info.preferred_width);
-  expected_sizes.Set(location_bar_info.id, location_bar_info.min_width + 4);
-  CheckControlSizes(expected_sizes);
-
-  // Shrink the spacer enough to show the forward button. This should result in
-  // swapping the overflow button for the home button as well, since the home
-  // button and overflow button are the same size, and there's no reason to show
-  // an overflow button for just a single overflowed home button, if we can show
-  // the home button instead.
-  const ResponsiveControlInfo& forward_info = all_controls_info.controls[1];
-  const ResponsiveControlInfo& home_info = all_controls_info.controls[2];
-  spacer_width -= (forward_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(forward_info.id, forward_info.preferred_width);
-  expected_sizes.Set(home_info.id, home_info.preferred_width);
-  expected_sizes.Remove("overflow");
-  expected_sizes.Set(location_bar_info.id, location_bar_info.min_width + 8);
-  CheckControlSizes(expected_sizes);
-
-  // Shrink the spacer one more time, expanding the location bar to its
-  // preferred size + 12px.
-  spacer_width -= (location_bar_info.effective_width_delta + 4);
-  ASSERT_EQ(SetSpacerWidth(spacer_width), true);
-
-  expected_sizes.Set(location_bar_info.id,
-                     location_bar_info.preferred_width + 12);
-  CheckControlSizes(expected_sizes);
+    // The last, lowest priority control is the location bar. Until we've hit
+    // it, its width should be its `min_width` plus
+    // `expected_additional_location_bar_length`.
+    if (i != all_controls_info.controls.size() - 1) {
+      // Current control should be its preferred width.
+      expected_sizes.Set(control_info.id, control_info.preferred_width);
+      // Location bar's base width should be `min_width`.
+      expected_sizes.Set(location_bar_info.id,
+                         location_bar_info.min_width +
+                             expected_additional_location_bar_length);
+      // If this is the third to last control, there is only one overflowable
+      // control after it, so showing it will also result in showing the next
+      // control and hiding the overflow button, so we need to update
+      // expectations for those as well, and then skip over the next loop
+      // iteration, since that control will already be visible.
+      if (i == all_controls_info.controls.size() - 3) {
+        i++;
+        expected_sizes.Set(all_controls_info.controls[i].id,
+                           all_controls_info.controls[i].preferred_width);
+        expected_sizes.Remove("overflow");
+      }
+    } else {
+      expected_sizes.Set(location_bar_info.id,
+                         location_bar_info.preferred_width +
+                             expected_additional_location_bar_length);
+    }
+    CheckControlSizes(expected_sizes);
+  }
 
   AssertNoJsErrors();
 }

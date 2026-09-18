@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_WEB_INSTALL_SERVICE_IMPL_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_WEB_INSTALL_SERVICE_IMPL_H_
 
+#include <optional>
 #include <vector>
 
 #include "base/auto_reset.h"
@@ -12,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
+#include "chrome/browser/web_applications/model/parse_manifest_result.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/permission_result.h"
@@ -27,6 +29,10 @@ namespace content {
 class Page;
 class WebContents;
 }  // namespace content
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace webapps {
 enum class InstallResultCode;
@@ -98,6 +104,8 @@ class WebInstallServiceImpl
       size_t max_queries);
   static base::AutoReset<base::TimeDelta>
   SetMinCrossOriginQueryIntervalForTesting(base::TimeDelta interval);
+  static base::AutoReset<network::SharedURLLoaderFactory*>
+  SetURLLoaderFactoryForTesting(network::SharedURLLoaderFactory* factory);
 
   // blink::mojom::WebInstallService:
   // TODO(crbug.com/485281836): Only explicit manifest IDs are supported for
@@ -113,6 +121,8 @@ class WebInstallServiceImpl
 
   // content::WebContentsObserver:
   void PrimaryPageChanged(content::Page& page) override;
+
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory();
 
  private:
   // Internal entry point for the manifest URL install flow. Acquires the
@@ -153,6 +163,7 @@ class WebInstallServiceImpl
   void OnDidCheckInstallabilityForCurrentDocumentInstall(
       InstallFromManifestCallbackWithMetrics callback_with_metrics,
       base::WeakPtr<WebAppDataRetriever> data_retriever,
+      std::optional<GURL> linked_manifest_url,
       blink::mojom::ManifestPtr manifest,
       bool valid_manifest_for_web_app,
       webapps::InstallableStatusCode error_code);
@@ -177,6 +188,7 @@ class WebInstallServiceImpl
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
       bool triggered_from_element,
+      bool can_report_devtools_issue,
       base::expected<std::string, WebInstallManifestFetchError> result);
 
   // Callback for when the manifest parse command completes.
@@ -185,7 +197,8 @@ class WebInstallServiceImpl
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
       bool triggered_from_element,
-      blink::mojom::ManifestPtr manifest);
+      bool can_report_devtools_issue,
+      ParseManifestResult parse_result);
 
   void OnManifestInstallNotSupportedDialogClosed(
       InstallFromManifestCallbackWithMetrics callback_with_metrics);

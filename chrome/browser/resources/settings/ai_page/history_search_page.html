@@ -57,7 +57,7 @@
   <settings-toggle-button aria-label="$i18n{historySearchSettingLabel}"
       learn-more-url="[[getLearnMoreUrl_(enterprisePref_)]]"
       learn-more-aria-label="$i18n{historySearchLearnMoreA11yLabel}"
-      pref="{{prefs.optimization_guide.history_search_setting_state}}"
+      pref-key="optimization_guide.history_search_setting_state"
       numeric-unchecked-values="[[numericUncheckedValues_]]"
       numeric-checked-value="[[featureOptInStateEnum_.ENABLED]]"
       on-settings-boolean-control-change="onHistorySearchToggleChange_"
@@ -112,7 +112,8 @@
         <cr-icon icon="settings20:google" aria-hidden="true"></cr-icon>
         <div class="secondary">$i18n{historySearchConsiderData}</div>
       </li>
-      <settings-ai-logging-info-bullet pref="[[enterprisePref_]]">
+      <settings-ai-logging-info-bullet
+          pref-key="optimization_guide.model_execution.history_search_enterprise_policy_allowed">
       </settings-ai-logging-info-bullet>
       <li>
         <cr-icon icon="settings20:file-save" aria-hidden="true"></cr-icon>

@@ -5,6 +5,7 @@
 import './omnibox.js';
 import './composebox.js';
 import './fre_modal.js';
+import './fre_chin.js';
 import '/strings.m.js';
 import '//resources/cr_components/composebox/composebox_voice_search.js';
 import '//resources/cr_components/most_visited/most_visited.js';
@@ -21,13 +22,16 @@ import {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchb
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import type {PageCallbackRouter} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {FreStage} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {FreState, PageCallbackRouter} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
 import {OmniboxEverywhereBrowserProxyImpl} from './browser_proxy.js';
 import type {OmniboxEverywhereComposeboxElement} from './composebox.js';
+import {FreChinMode} from './fre_chin.js';
+import type {ShowHotkeyDropdownDetail} from './fre_chin.js';
 import type {OmniboxEverywhereOmniboxElement} from './omnibox.js';
 import type {ComposeboxInitialState} from './omnibox_everywhere.mojom-webui.js';
 
@@ -103,13 +107,25 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       callbackRouter_: {type: Object},
       hasMostVisitedTiles_: {type: Boolean},
       mostVisitedEnabled_: {type: Boolean},
-      showShortcuts_: {type: Boolean},
-      showFreModal_: {type: Boolean},
+      smallLoomnibox_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'small-loomnibox',
+      },
+      hideTitle_: {type: Boolean},
+      freStage_: {type: Number},
+      hotkeyTokens_: {type: Array},
+      isActive_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-active',
+      },
     };
   }
 
   protected accessor omniboxPopupDebugEnabled_ =
       loadTimeData.getBoolean('omniboxPopupDebugEnabled');
+  protected accessor isActive_: boolean = true;
   protected accessor isComposeboxMode_: boolean = false;
   protected accessor searchboxLayoutMode_: string =
       loadTimeData.getString('searchboxLayoutMode');
@@ -135,11 +151,19 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       SearchboxBrowserProxy.getInstance().callbackRouter;
   protected accessor mostVisitedEnabled_: boolean =
       loadTimeData.getBoolean('omniboxEverywhereMostVisitedEnabled');
-  protected accessor showShortcuts_: boolean =
-      loadTimeData.getBoolean('omniboxEverywhereShowShortcuts');
+  protected accessor smallLoomnibox_: boolean =
+      loadTimeData.getBoolean('smallLoomnibox');
+  protected accessor hideTitle_: boolean =
+      loadTimeData.getBoolean('omniboxEverywhereMostVisitedHideTitle');
   protected accessor hasMostVisitedTiles_: boolean = false;
-  protected accessor showFreModal_: boolean =
-      loadTimeData.getBoolean('initialShowFre');
+  protected accessor freStage_: FreStage =
+      (loadTimeData.valueExists('initialFreStage') ?
+           loadTimeData.getInteger('initialFreStage') :
+           FreStage.kNone) as FreStage;
+  protected accessor hotkeyTokens_: string[] =
+      loadTimeData.valueExists('initialHotkeyTokens') ?
+      loadTimeData.getValue('initialHotkeyTokens') :
+      [];
   private eventTracker_ = new EventTracker();
   private mostVisitedListenerId_: number|null = null;
   private searchboxListenerIds_: number[] = [];
@@ -147,9 +171,19 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this.isActive_ = document.hasFocus();
+    this.eventTracker_.add(window, 'focus', () => {
+      this.isActive_ = true;
+      this.focusActiveInput_();
+    });
+    this.eventTracker_.add(window, 'blur', () => {
+      this.isActive_ = false;
+    });
     this.eventTracker_.add(
         document.documentElement, 'visibilitychange',
         this.onVisibilitychange_.bind(this));
+    this.eventTracker_.add(
+        window, 'keydown', (e: KeyboardEvent) => this.onKeyDown_(e));
     this.setupListeners_();
     this.onVisibilitychange_();
   }
@@ -195,9 +229,21 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     };
 
     this.searchboxListenerIds_.push(
-        this.callbackRouter_.setShowFre.addListener((show: boolean) => {
-          this.showFreModal_ = show;
+        this.callbackRouter_.setFreState.addListener((state: FreState) => {
+          this.freStage_ = state.stage;
+          this.hotkeyTokens_ = state.currentHotkeyTokens;
+          const freElement =
+              this.shadowRoot?.querySelector('fre-modal, fre-chin');
+          if (freElement) {
+            freElement.classList.remove('dismissing');
+          }
         }),
+        this.callbackRouter_.updateAimPopupEligibility.addListener(
+            (aiModePrefEnabled: boolean) => {
+              if (!aiModePrefEnabled && this.isComposeboxMode_) {
+                this.onCloseComposebox_();
+              }
+            }),
     );
 
     if (this.mostVisitedEnabled_) {
@@ -272,53 +318,121 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     // state so user queries are preserved when switching to Composebox mode
     // (e.g. when clicking a tool or attaching a tab from the '+' context menu).
     const text = this.searchbox ? this.searchbox.getInputText?.() || '' : '';
+    // Calls setActiveToolMode(initialMode) directly without passing mode down
+    // through composeboxState_. This prevents
+    // ComposeboxEmbedderMixin.updateState() from mistakenly calling
+    // handleToolClick() and toggling off the active tool mode.
+    const {mode: initialMode = ToolMode.kUnspecified, ...stateForComposebox} =
+        state ?? {};
+
     this.composeboxState_ = {
       text,
       files: [],
       mode: ToolMode.kUnspecified,
       model: ModelMode.kUnspecified,
       smartTabSharingActive: false,
-      ...state,
+      ...stateForComposebox,
     };
-    this.isComposeboxMode_ = true;
+    if (initialMode !== ToolMode.kUnspecified) {
+      SearchboxBrowserProxy.getInstance().handler.setActiveToolMode(
+          initialMode, false);
+    }
+    this.setIsComposebox_(true);
     await this.updateComplete;
     if (this.composebox) {
       this.composebox.focusInput();
       this.composebox.playGlowAnimation();
     }
-    if (this.mostVisitedListenerId_ !== null) {
-      browserProxyFactory.getInstance().callbackRouter.removeListener(
-          this.mostVisitedListenerId_);
-      this.mostVisitedListenerId_ = null;
+  }
+
+  protected isFreIntroModal_(): boolean {
+    return this.freStage_ === FreStage.kIntroModal && !this.isComposeboxMode_;
+  }
+
+  protected isFreChin_(): boolean {
+    return (this.freStage_ === FreStage.kShortcutSetupChin ||
+            this.freStage_ === FreStage.kShortcutReminderChin) &&
+        !this.isComposeboxMode_;
+  }
+
+  protected isMostVisitedHidden_(): boolean {
+    return !this.hasMostVisitedTiles_ || this.isFreIntroModal_() ||
+        this.isFreChin_();
+  }
+
+  protected isFreShortcutSetupChin_(): boolean {
+    return this.freStage_ === FreStage.kShortcutSetupChin &&
+        !this.isComposeboxMode_;
+  }
+
+  protected isFreShortcutReminderChin_(): boolean {
+    return this.freStage_ === FreStage.kShortcutReminderChin &&
+        !this.isComposeboxMode_;
+  }
+
+  protected getFreChinMode_(): FreChinMode {
+    return this.freStage_ === FreStage.kShortcutSetupChin ?
+        FreChinMode.SHORTCUT_SETUP :
+        FreChinMode.SHORTCUT_REMINDER;
+  }
+
+  private setIsComposebox_(isComposebox: boolean) {
+    if (this.isComposeboxMode_ === isComposebox) {
+      return;
     }
+    this.isComposeboxMode_ = isComposebox;
+    OmniboxEverywhereBrowserProxyImpl.getInstance().handler.setIsComposebox(
+        isComposebox);
   }
 
   protected onFreClose_() {
-    const freModal = this.shadowRoot.querySelector('fre-modal');
-    if (!freModal) {
-      this.showFreModal_ = false;
-      SearchboxBrowserProxy.getInstance().handler.dismissFre();
+    const stageToDismiss = this.freStage_;
+    const freElement = this.shadowRoot?.querySelector('fre-modal, fre-chin');
+    if (!freElement) {
+      SearchboxBrowserProxy.getInstance().handler.dismissFre(stageToDismiss);
+      return;
+    }
+    if (freElement.classList.contains('dismissing')) {
       return;
     }
 
-    freModal.classList.add('dismissing');
-    freModal.addEventListener('animationend', () => {
-      this.showFreModal_ = false;
-      SearchboxBrowserProxy.getInstance().handler.dismissFre();
-    }, {once: true});
+    freElement.classList.add('dismissing');
+
+    let dismissed = false;
+    const finishDismissal = () => {
+      if (dismissed) {
+        return;
+      }
+      dismissed = true;
+      SearchboxBrowserProxy.getInstance().handler.dismissFre(stageToDismiss);
+    };
+
+    // Use a single named function so we can remove it accurately.
+    const onAnimationDone = (e: Event) => {
+      const animEvent = e as AnimationEvent;
+      if (animEvent.target === freElement &&
+          animEvent.animationName === 'fadeOutFre') {
+        // Only remove the listeners once our specific animation is handled.
+        freElement.removeEventListener('animationend', onAnimationDone);
+        freElement.removeEventListener('animationcancel', onAnimationDone);
+        finishDismissal();
+      }
+    };
+
+    freElement.addEventListener('animationend', onAnimationDone);
+    freElement.addEventListener('animationcancel', onAnimationDone);
   }
 
-  protected onFreAcceptHotkey_() {
-    this.onFreClose_();
+  protected onFreShowHotkeyDropdown_(e: CustomEvent<ShowHotkeyDropdownDetail>) {
+    SearchboxBrowserProxy.getInstance().handler.showHotkeyDropdown(e.detail);
   }
 
   protected onFreOpenSettings_() {
     SearchboxBrowserProxy.getInstance().handler.openHotkeySettings();
   }
-
   protected async onOpenComposebox_(e: CustomEvent<ComposeboxState>) {
     this.composeboxState_ = e.detail;
-    this.isComposeboxMode_ = true;
+    this.setIsComposebox_(true);
     await this.updateComplete;
     const composebox =
         this.shadowRoot?.querySelector<OmniboxEverywhereComposeboxElement>(
@@ -331,25 +445,74 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
 
   protected async onCloseComposebox_() {
     this.composeboxState_ = null;
-    this.isComposeboxMode_ = false;
+    this.setIsComposebox_(false);
     await this.updateComplete;
-    const searchbox =
-        this.shadowRoot?.querySelector<OmniboxEverywhereOmniboxElement>(
-            'omnibox-everywhere-omnibox');
-    if (searchbox) {
-      searchbox.focusInput();
+    this.focusActiveInput_();
+  }
+
+  private onKeyDown_(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || e.defaultPrevented) {
+      return;
     }
+    if (this.showVoiceSearchOverlay_) {
+      return;
+    }
+
+    if (this.isComposeboxMode_) {
+      const composebox =
+          this.shadowRoot?.querySelector<OmniboxEverywhereComposeboxElement>(
+              'omnibox-everywhere-composebox');
+      if (composebox) {
+        composebox.handleEscapeKeyLogic();
+        e.preventDefault();
+        return;
+      }
+    } else {
+      const searchbox =
+          this.shadowRoot?.querySelector<OmniboxEverywhereOmniboxElement>(
+              'omnibox-everywhere-omnibox');
+      if (searchbox) {
+        const inputElement = searchbox.getInputElement();
+        if (inputElement && inputElement.getInputValue()) {
+          inputElement.setInputText('');
+          searchbox.clearAutocompleteMatches();
+          searchbox.focusInput();
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+
+    SearchboxBrowserProxy.getInstance().handler.onEscapePressed();
+    e.preventDefault();
   }
 
   protected async onComposeboxSubmit_() {
     this.composeboxState_ = null;
     this.isComposeboxMode_ = false;
     await this.updateComplete;
-    const searchbox =
-        this.shadowRoot?.querySelector<OmniboxEverywhereOmniboxElement>(
-            'omnibox-everywhere-omnibox');
-    if (searchbox) {
-      searchbox.focusInput();
+    this.focusActiveInput_();
+  }
+
+  private shouldAutoFocusInput_(): boolean {
+    if (this.isFreIntroModal_() || this.showVoiceSearchOverlay_) {
+      return false;
+    }
+    const openDialog = this.shadowRoot?.querySelector('dialog[open]');
+    if (openDialog) {
+      return false;
+    }
+    return true;
+  }
+
+  private focusActiveInput_() {
+    if (!this.shouldAutoFocusInput_()) {
+      return;
+    }
+    if (this.isComposeboxMode_) {
+      this.composebox?.focusInput();
+    } else {
+      this.searchbox?.focusInput();
     }
   }
 
@@ -359,21 +522,7 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     }
 
     await this.updateComplete;
-    if (this.isComposeboxMode_) {
-      const composebox =
-          this.shadowRoot?.querySelector<OmniboxEverywhereComposeboxElement>(
-              'omnibox-everywhere-composebox');
-      if (composebox) {
-        composebox.focusInput();
-      }
-    } else {
-      const searchbox =
-          this.shadowRoot?.querySelector<OmniboxEverywhereOmniboxElement>(
-              'omnibox-everywhere-omnibox');
-      if (searchbox) {
-        searchbox.focusInput();
-      }
-    }
+    this.focusActiveInput_();
   }
 
   // TODO(b/540973063): Extract common voice search lifecycle handling into
@@ -416,6 +565,18 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       this.voiceSearchListening_ =
           this.showVoiceSearchOverlay_ && !this.hasVoiceSearchError_;
     }
+
+    this.classList.toggle('has-permission-prompt', e.detail.isOpened);
+    if (e.detail.isOpened) {
+      this.style.setProperty(
+          '--voice_search_minimum_height', `${e.detail.height}px`);
+      this.style.setProperty(
+          '--voice_search_minimum_width', `${e.detail.width}px`);
+    } else {
+      this.style.removeProperty('--voice_search_minimum_height');
+      this.style.removeProperty('--voice_search_minimum_width');
+    }
+
     const audioAnimation =
         this.shadowRoot?.querySelector<SearchAnimatedGlowElement>(
             '#voiceSearchGlow');

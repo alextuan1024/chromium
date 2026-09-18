@@ -52,10 +52,9 @@ std::unique_ptr<AudioBuffer::ExternalMemory> AllocateMemory(size_t size) {
   return std::make_unique<SelfOwnedMemory>(size);
 }
 
-
 template <typename SampleTypeTraits>
 void PlanarRead(AudioBus* dest,
-                const std::vector<base::raw_span<uint8_t>>& source,
+                const std::vector<base::span<uint8_t>>& source,
                 size_t dest_offset,
                 size_t source_offset,
                 size_t frames) {
@@ -236,27 +235,29 @@ AudioBuffer::AudioBuffer(base::PassKey<AudioBuffer>,
 
     // Copy each channel's data into the appropriate spot.
     for (int i = 0; i < channel_count_; ++i) {
-      auto [channel, rem] = remaining_channels.split_at(block_size_per_channel);
+      auto [channel, padding] =
+          remaining_channels.take_first(block_size_per_channel)
+              .split_at(data_size_per_channel);
       if (!data.empty()) {
         CHECK_EQ(data[i].size(), data_size_per_channel);
-        channel.first(data_size_per_channel).copy_from_nonoverlapping(data[i]);
+        channel.copy_from_nonoverlapping(data[i]);
       }
+      std::ranges::fill(padding, 0u);
       channel_spans_.push_back(channel);
-      remaining_channels = rem;
     }
 
     CHECK(remaining_channels.empty());
     return;
   }
 
-  // Remaining formats are interleaved data.
-  CHECK(IsInterleaved(sample_format)) << sample_format_;
-  // Allocate our own buffer and copy the supplied data into it. Buffer must
-  // contain the data for all channels.
-  if (!IsBitstreamFormat()) {
-    data_size_ = data_size_per_channel * channel_count_;
-  } else {
+  // Remaining formats are either bitstream or interleaved data.
+  if (IsBitstreamFormat()) {
     DCHECK_GT(data_size_, 0u);
+  } else {
+    CHECK(IsInterleaved(sample_format)) << sample_format_;
+    // Allocate our own buffer and copy the supplied data into it. Buffer must
+    // contain the data for all channels.
+    data_size_ = data_size_per_channel * channel_count_;
   }
 
   data_ = pool_ ? pool_->CreateBuffer(data_size_) : AllocateMemory(data_size_);
@@ -313,7 +314,7 @@ AudioBuffer::AudioBuffer(base::PassKey<AudioBuffer>,
   CHECK_GE(data_->span().size(), data_size_);
 
   if (IsInterleaved(sample_format)) {
-    channel_spans_.push_back(data_->span());
+    channel_spans_.push_back(data_->span().first(data_size_));
     return;
   }
 
@@ -658,6 +659,25 @@ void AudioBuffer::TrimEnd(int frames_to_trim) {
   // Adjust the number of frames and duration for this buffer.
   adjusted_frame_count_ -= frames_to_trim;
   duration_ = CalculateDuration(adjusted_frame_count_, sample_rate_);
+
+  if (channel_spans_.empty()) {
+    return;
+  }
+
+  const size_t bytes_per_channel =
+      SampleFormatToBytesPerChannel(sample_format_);
+  if (IsPlanar(sample_format_)) {
+    const size_t new_size = adjusted_frame_count_ * bytes_per_channel;
+    for (auto& channel : channel_spans_) {
+      channel = channel.first(new_size);
+    }
+    return;
+  }
+
+  CHECK(IsInterleaved(sample_format_));
+  const size_t new_size =
+      adjusted_frame_count_ * channel_count_ * bytes_per_channel;
+  channel_spans_[0] = channel_spans_[0].first(new_size);
 }
 
 void AudioBuffer::TrimRange(int start, int end) {

@@ -57,6 +57,7 @@
 #include "cc/input/snap_selection_strategy.h"
 #include "cc/layers/picture_layer.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -521,7 +522,7 @@ void PaintLayerScrollableArea::UpdateScrollOffset(
   // when navigating back.
   if (is_root_layer) {
     frame_view->GetFrame().Loader().SaveScrollState();
-    frame_view->DidChangeScrollOffset();
+    frame_view->DidChangeScrollOffset(scroll_type);
     if (scroll_type == mojom::blink::ScrollType::kCompositor ||
         scroll_type == mojom::blink::ScrollType::kUser) {
       if (DocumentLoader* document_loader = frame->Loader().GetDocumentLoader())
@@ -617,10 +618,6 @@ bool PaintLayerScrollableArea::BackgroundNeedsRepaintOnScroll() const {
     return true;
   }
   return false;
-}
-
-gfx::Vector2d PaintLayerScrollableArea::PixelSnappedScrollOffset() const {
-  return SnapScrollOffsetToPhysicalPixels(scroll_offset_);
 }
 
 ScrollOffset PaintLayerScrollableArea::GetScrollOffset() const {
@@ -1400,9 +1397,9 @@ bool PaintLayerScrollableArea::HasVerticalOverflow() const {
 
 bool PaintLayerScrollableArea::CanPropagateScroll() const {
   auto* box = GetLayoutBox();
-  // TODO(crbug.com/425353152): Remove the visibility check.
   if (!box || !box->IsScrollContainer() ||
-      box->StyleRef().Visibility() != EVisibility::kVisible) {
+      (!RuntimeEnabledFeatures::ScrollVisibilityHiddenScrollersEnabled() &&
+       box->StyleRef().Visibility() != EVisibility::kVisible)) {
     return true;
   }
   if ((box->StyleRef().OverscrollBehaviorX() != EOverscrollBehavior::kAuto &&
@@ -1847,12 +1844,11 @@ void PaintLayerScrollableArea::ComputeScrollbarExistence(
     if (h_mode == mojom::blink::ScrollbarMode::kAuto) {
       // Don't add auto scrollbars if the box contents aren't visible.
       needs_horizontal_scrollbar =
-          GetLayoutBox()->IsRooted() && HasHorizontalOverflow() &&
+          HasHorizontalOverflow() &&
           VisibleContentRect(kIncludeScrollbars).height();
     }
     if (v_mode == mojom::blink::ScrollbarMode::kAuto) {
-      needs_vertical_scrollbar = GetLayoutBox()->IsRooted() &&
-                                 HasVerticalOverflow() &&
+      needs_vertical_scrollbar = HasVerticalOverflow() &&
                                  VisibleContentRect(kIncludeScrollbars).width();
     }
   }
@@ -2235,7 +2231,7 @@ void PaintLayerScrollableArea::UpdateScrollCornerStyle() {
       scroll_corner_ = LayoutCustomScrollbarPart::CreateAnonymous(
           GetLayoutBox()->GetDocument(), this);
     }
-    scroll_corner_->SetStyle(std::move(corner));
+    scroll_corner_->SetStyle(*corner);
   } else if (scroll_corner_) {
     scroll_corner_->Destroy();
     scroll_corner_ = nullptr;
@@ -2360,7 +2356,7 @@ void PaintLayerScrollableArea::UpdateResizerStyle(
       resizer_ = LayoutCustomScrollbarPart::CreateAnonymous(
           GetLayoutBox()->GetDocument(), this);
     }
-    resizer_->SetStyle(std::move(resizer));
+    resizer_->SetStyle(*resizer);
   } else if (resizer_) {
     resizer_->Destroy();
     resizer_ = nullptr;
@@ -2650,9 +2646,8 @@ void PaintLayerScrollableArea::UpdateScrollableAreaSet() {
     frame_view->RemoveScrollAnchoringScrollableArea(this);
   }
 
-  // TODO(crbug.com/425353152): Should be able to scroll invisible scroll
-  // containers.
   bool is_visible =
+      RuntimeEnabledFeatures::ScrollVisibilityHiddenScrollersEnabled() ||
       GetLayoutBox()->StyleRef().Visibility() == EVisibility::kVisible;
   bool did_scroll_overflow = scrolls_overflow_;
   if (auto* layout_view = DynamicTo<LayoutView>(GetLayoutBox())) {
@@ -2789,9 +2784,7 @@ bool PaintLayerScrollableArea::PrefersNonCompositedScrolling() const {
       }
     }
   }
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          GetLayoutBox()->GetDocument().GetExecutionContext()) &&
-      GetLayoutBox()->IsInCanvasSubtree()) {
+  if (GetLayoutBox()->IsInCanvasSubtree()) {
     return true;
   }
   return false;
@@ -3169,9 +3162,7 @@ bool PaintLayerScrollableArea::MayCompositeScrollbar(
   }
   // Disable composited scrollbars under canvas.
   const auto* box = GetLayoutBox();
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          box->GetDocument().GetExecutionContext()) &&
-      box->IsInCanvasSubtree()) {
+  if (box->IsInCanvasSubtree()) {
     return false;
   }
   // Compositing of scrollbar is decided in PaintArtifactCompositor. We assume

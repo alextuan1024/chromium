@@ -8,9 +8,11 @@ import '//resources/cr_components/composebox/composebox_input.js';
 import '//resources/cr_components/composebox/composebox_tool_chip.js';
 import '//resources/cr_components/composebox/contextual_entrypoint_button.js';
 import '//resources/cr_components/composebox/composebox_submit.js';
+import '//resources/cr_components/composebox/error_scrim.js';
 import '//resources/cr_components/composebox/file_carousel.js';
 import '//resources/cr_components/search/animated_glow.js';
 
+import type {ComposeboxFile} from '//resources/cr_components/composebox/common.js';
 import {getLoadTimeBoolean} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
@@ -24,7 +26,9 @@ import {GlowAnimationState} from '//resources/cr_components/search/constants.js'
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import type {ContextUploadErrorType} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import {ContextUploadStatus, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 
 import {OmniboxEverywhereBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './composebox.css.js';
@@ -75,8 +79,15 @@ export class OmniboxEverywhereComposeboxElement extends
         type: Boolean,
         reflect: true,
       },
+      isActive: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-active',
+      },
     };
   }
+
+  accessor isActive: boolean = true;
 
   /**
    * Entrypoint name used by SearchAnimatedGlowElement and
@@ -100,7 +111,27 @@ export class OmniboxEverywhereComposeboxElement extends
         new Event('open-voice-search', {bubbles: true, composed: true}));
   }
 
+  private wasScreenshotMenuOpenOnPointerDown_: boolean = false;
+
+  protected onLensSearchPointerdown_(e: PointerEvent) {
+    if (e.button !== 0) {
+      return;
+    }
+    this.wasScreenshotMenuOpenOnPointerDown_ = this.isScreenshotMenuOpen;
+  }
+
+  protected onLensSearchPointercancel_() {
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+  }
+
   protected onLensSearchClick_(e: Event) {
+    const wasOpen =
+        this.wasScreenshotMenuOpenOnPointerDown_ || this.isScreenshotMenuOpen;
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+    if (wasOpen) {
+      this.isScreenshotMenuOpen = false;
+      return;
+    }
     this.notifyHelpBubbleAnchorActivated(
         'kOmniboxEverywhereLensButtonElementId');
     this.isScreenshotMenuOpen = true;
@@ -244,7 +275,6 @@ export class OmniboxEverywhereComposeboxElement extends
     // embedded WebUI menu on the entrypoint button.
   }
 
-
   override shouldShowDivider(): boolean {
     if (this.searchboxLayoutMode === 'TallBottomContext' &&
         !this.showFileCarousel) {
@@ -252,6 +282,48 @@ export class OmniboxEverywhereComposeboxElement extends
     }
 
     return super.shouldShowDivider();
+  }
+
+  /**
+   * Enables handling of Fusebox suggestion actions (e.g. contextual tool
+   * suggestions like "Turn it into a graphic novel illustration" in image mode)
+   * so clicking a suggestion chip fills the prompt into the Composebox rather
+   * than falling through to standard URL navigation.
+   */
+  override shouldHandleSuggestionFuseboxActions(): boolean {
+    return true;
+  }
+
+  override deleteFile(uuidToDelete: UnguessableToken, fromUserAction?: boolean):
+      ComposeboxFile|null {
+    const file = super.deleteFile(uuidToDelete, fromUserAction);
+    if (!file) {
+      return null;
+    }
+
+    // Refresh autocomplete suggestions when a context chip is removed by the
+    // user so stale contextual matches do not linger in the popup dropdown.
+    //
+    // TODO(b/562109233): Move this logic to the mixin.
+    this.queryAutocomplete(/* clearMatches= */ true);
+    return file;
+  }
+
+  override onContextualInputStatusChanged(
+      token: UnguessableToken, status: ContextUploadStatus,
+      errorType: ContextUploadErrorType|null) {
+    super.onContextualInputStatusChanged(token, status, errorType);
+    // When a tab/file context is unselected or removed via the browser-side
+    // context menu, C++ sends `kUploadReplaced`. Omnibox Everywhere needs to
+    // explicitly query autocomplete with `clearMatches = true` to refresh
+    // suggestions so stale contextual results for the unselected context do
+    // not linger. We keep this behavior specific to Omnibox Everywhere to avoid
+    // unintentionally triggering re-queries or disrupting other consumers
+    // (such as NTP or Lens) that are not reinvoked in the same manner when a
+    // new tab or context is added or removed.
+    if (status === ContextUploadStatus.kUploadReplaced) {
+      this.queryAutocomplete(/* clearMatches= */ true);
+    }
   }
 
   override selectFirstMatch() {
@@ -315,6 +387,10 @@ export class OmniboxEverywhereComposeboxElement extends
         this.glowAnimationTimeoutId_ = null;
       }, timeoutMs);
     });
+  }
+
+  override handleEscapeKeyLogic() {
+    this.onCancelClick();
   }
 }
 

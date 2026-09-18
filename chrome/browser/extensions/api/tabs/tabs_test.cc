@@ -9,6 +9,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/feature_list.h"
 #include "base/files/scoped_temp_dir.h"
@@ -72,6 +73,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function_dispatcher.h"
@@ -83,10 +85,12 @@
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/mojom/context_type.mojom.h"
+#include "extensions/common/permissions/permissions_data.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "pdf/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -94,6 +98,7 @@
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "ui/base/base_window.h"
+#include "ui/base/device_form_factor.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
@@ -1060,6 +1065,52 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, InvalidUpdateWindowBounds) {
   }
 }
 
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
+                       InvalidUpdateWindowBoundsWithSmallSizes) {
+  scoped_refptr<const Extension> extension(ExtensionBuilder("Test").Build());
+
+  // Get the display bounds so we can position the window outside of them.
+  gfx::Rect displays;
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
+    displays.Union(display.bounds());
+  }
+
+  int window_id = ExtensionTabUtil::GetWindowId(browser_window_interface());
+  int window_left = displays.right() + 10;
+  int window_top = displays.bottom() + 10;
+
+  static const char kArgsUpdateFunction[] =
+      "[%u, {\"left\": %d, \"top\": %d, \"width\": %d, \"height\": %d}]";
+
+  // Windows with an empty or tiny size cannot be moved outside the displays.
+  constexpr struct {
+    int width;
+    int height;
+  } kSizes[] = {{0, 500}, {500, 0}, {0, 0}, {1, 1}};
+  for (const auto& size : kSizes) {
+    auto function = base::MakeRefCounted<WindowsUpdateFunction>();
+    function->set_extension(extension.get());
+    EXPECT_TRUE(base::MatchPattern(
+        utils::RunFunctionAndReturnError(
+            function.get(),
+            base::StringPrintf(kArgsUpdateFunction, window_id, window_left,
+                               window_top, size.width, size.height),
+            profile()),
+        keys::kInvalidWindowBoundsError))
+        << "size: " << size.width << "x" << size.height;
+  }
+
+  // Resizing a window to an empty size is not valid regardless of its
+  // position.
+  auto function = base::MakeRefCounted<WindowsUpdateFunction>();
+  function->set_extension(extension.get());
+  EXPECT_TRUE(base::MatchPattern(
+      utils::RunFunctionAndReturnError(
+          function.get(), base::StringPrintf("[%u, {\"width\": 0}]", window_id),
+          profile()),
+      keys::kInvalidWindowBoundsError));
+}
+
 // On Android this fails when Run() calls BaseWindow::CanResize() returns false
 // due to default Android Browser Tests not having free-form windows.
 #if !BUILDFLAG(IS_ANDROID)
@@ -1093,6 +1144,26 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
                                               window_left, window_top),
                            profile(), api_test_utils::FunctionMode::kNone));
   }
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
+                       UpdatingWindowBoundsSucceedsForSmallOnScreenBounds) {
+  scoped_refptr<const Extension> extension(ExtensionBuilder("Test").Build());
+
+  int window_id = ExtensionTabUtil::GetWindowId(browser_window_interface());
+
+  // A tiny window is valid as long as it is fully within a display.
+  const gfx::Point center =
+      display::Screen::Get()->GetPrimaryDisplay().bounds().CenterPoint();
+  static const char kArgsUpdateFunction[] =
+      "[%u, {\"left\": %d, \"top\": %d, \"width\": 1, \"height\": 1}]";
+  auto function = base::MakeRefCounted<WindowsUpdateFunction>();
+  function->set_extension(extension.get());
+  EXPECT_TRUE(
+      utils::RunFunction(function.get(),
+                         base::StringPrintf(kArgsUpdateFunction, window_id,
+                                            center.x(), center.y()),
+                         profile(), api_test_utils::FunctionMode::kNone));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -1391,6 +1462,52 @@ IN_PROC_BROWSER_TEST_F(ExtensionWindowCreateTest, ValidateCreateWindowBounds) {
                            base::StringPrintf(kArgsCreateFunctionOnlySize,
                                               window_width, window_height),
                            profile(), api_test_utils::FunctionMode::kNone));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionWindowCreateTest,
+                       ValidateCreateWindowBoundsWithSmallSizes) {
+  // Get the display bounds so we can position the window outside of them.
+  gfx::Rect displays;
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
+    displays.Union(display.bounds());
+  }
+
+  static const char kArgsCreateFunction[] =
+      "[{\"left\": %d, \"top\": %d, \"width\": %d, \"height\": %d }]";
+  int window_left = displays.right() + 10;
+  int window_top = displays.bottom() + 10;
+
+  // Windows with an empty or tiny size cannot be created outside the
+  // displays.
+  constexpr struct {
+    int width;
+    int height;
+  } kSizes[] = {{0, 100}, {100, 0}, {0, 0}, {1, 1}};
+  for (const auto& size : kSizes) {
+    EXPECT_TRUE(base::MatchPattern(
+        RunCreateWindowExpectError(base::StringPrintf(kArgsCreateFunction,
+                                                      window_left, window_top,
+                                                      size.width, size.height)),
+        keys::kInvalidWindowBoundsError))
+        << "size: " << size.width << "x" << size.height;
+  }
+
+  // Bounds with an empty size are not valid regardless of position.
+  EXPECT_TRUE(base::MatchPattern(
+      RunCreateWindowExpectError("[{\"width\": 0, \"height\": 0 }]"),
+      keys::kInvalidWindowBoundsError));
+
+  {
+    // A tiny window is valid as long as it is fully within a display.
+    const gfx::Point center =
+        display::Screen::Get()->GetPrimaryDisplay().bounds().CenterPoint();
+    auto function = base::MakeRefCounted<WindowsCreateFunction>();
+    function->set_extension(ExtensionBuilder("Test").Build().get());
+    EXPECT_TRUE(utils::RunFunction(
+        function.get(),
+        base::StringPrintf(kArgsCreateFunction, center.x(), center.y(), 1, 1),
+        profile(), api_test_utils::FunctionMode::kNone));
   }
 }
 
@@ -1757,9 +1874,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabsIwaDuplicateTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DuplicateTab) {
-  content::OpenURLParams params(GURL(url::kAboutBlankURL), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* web_contents =
       browser()->OpenURL(params, /*navigation_handle_callback=*/{});
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
@@ -1794,9 +1912,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DuplicateTab) {
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DuplicateTabNoPermission) {
-  content::OpenURLParams params(GURL(url::kAboutBlankURL), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* web_contents =
       browser()->OpenURL(params, /*navigation_handle_callback=*/{});
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
@@ -2000,9 +2119,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DiscardedProperty) {
           ->SetFocusedTabStripModelForTesting(browser()->tab_strip_model());
 
   // Create two additional tabs and wait for them to finish loading.
-  content::OpenURLParams params(GURL(url::kAboutBlankURL), content::Referrer(),
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* web_contents_a =
       browser()->OpenURL(params, /*navigation_handle_callback=*/{});
   ASSERT_TRUE(web_contents_a);
@@ -2197,7 +2317,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DiscardWithInvalidId) {
   EXPECT_FALSE(GetTabListInterface()->GetTab(1)->GetContents()->WasDiscarded());
 
   // Check error message.
-  EXPECT_TRUE(base::MatchPattern(error, ExtensionTabUtil::kTabNotFoundError));
+  EXPECT_TRUE(base::MatchPattern(error, kTabNotFoundError));
 }
 
 // Tests chrome.tabs.discard for an incognito tab when the extension doesn't
@@ -2232,7 +2352,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, DiscardIncognitoWithoutPermission) {
   std::string error = utils::RunFunctionAndReturnError(
       discard.get(), base::StringPrintf("[%u]", tab_id), profile());
   EXPECT_FALSE(incognito_web_contents->WasDiscarded());
-  EXPECT_TRUE(base::MatchPattern(error, ExtensionTabUtil::kTabNotFoundError));
+  EXPECT_TRUE(base::MatchPattern(error, kTabNotFoundError));
 
   // Now run without passing an id. The extension only has access to the normal
   // tabs, so only the normal tabs should be discardable.
@@ -2678,9 +2798,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, Freezing) {
 
 IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, AutoDiscardableProperty) {
   // Create two additional tabs.
-  content::OpenURLParams params(GURL(url::kAboutBlankURL), content::Referrer(),
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* web_contents_a =
       browser()->OpenURL(params, /*navigation_handle_callback=*/{});
   content::WebContents* web_contents_b =
@@ -2977,9 +3098,9 @@ double GetZoomFactor(const content::WebContents* web_contents) {
 }
 
 content::OpenURLParams GetOpenParams(const char* url) {
-  return content::OpenURLParams(GURL(url), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  return content::OpenURLParams::CreateBrowserInitiated(
+      GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::PAGE_TRANSITION_LINK);
 }
 
 }  // namespace
@@ -3185,10 +3306,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsZoomTest, CannotZoomInvalidTab) {
 
   int bogus_id = tab_id + 100;
   std::string error = RunSetZoomExpectError(bogus_id, 3.14159);
-  EXPECT_TRUE(base::MatchPattern(error, ExtensionTabUtil::kTabNotFoundError));
+  EXPECT_TRUE(base::MatchPattern(error, kTabNotFoundError));
 
   error = RunSetZoomSettingsExpectError(bogus_id, "manual", "per-tab");
-  EXPECT_TRUE(base::MatchPattern(error, ExtensionTabUtil::kTabNotFoundError));
+  EXPECT_TRUE(base::MatchPattern(error, kTabNotFoundError));
 
   const char kNewTestTabArgs[] = "chrome://version/";
   web_contents = OpenUrlAndWaitForLoad(GURL(kNewTestTabArgs));
@@ -3866,11 +3987,14 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, TabsUpdate_WebToAboutNewTab) {
   // definitely undesirable for http-initiated navigations (see r818969), but
   // it is less clear what should happen in extension-initiated navigations.
   GURL about_newtab_url = GURL("about:newtab");
-#if BUILDFLAG(IS_ANDROID)
-  GURL chrome_newtab_url = GURL("chrome-native://newtab/");
-#else
-  GURL chrome_newtab_url = GURL("chrome://new-tab-page/");
-#endif
+
+  // The expected URL depends on the device form factor and not on platform,
+  // as Desktop Android now points to chrome://new-tab-page/.
+  GURL chrome_newtab_url =
+      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP)
+          ? GURL("chrome://new-tab-page/")
+          : GURL("chrome-native://newtab/");
+
   // Navigate a tab to an extension page.
   content::WebContents* extension_contents = GetActiveWebContents();
   ASSERT_TRUE(NavigateToURL(extension_contents, extension_url));
@@ -3905,13 +4029,14 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, TabsUpdate_WebToAboutNewTab) {
   content::RenderFrameHost* test_frame = test_contents->GetPrimaryMainFrame();
   EXPECT_EQ(chrome_newtab_url, test_frame->GetLastCommittedURL());
 
-#if BUILDFLAG(IS_ANDROID)
-  // "chrome-native://newtab/" has an opaque origin.
-  EXPECT_TRUE(test_frame->GetLastCommittedOrigin().opaque());
-#else
-  EXPECT_EQ(url::Origin::Create(chrome_newtab_url),
-            test_frame->GetLastCommittedOrigin());
-#endif
+  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP) {
+    EXPECT_EQ(url::Origin::Create(chrome_newtab_url),
+              test_frame->GetLastCommittedOrigin());
+  } else {
+    // "chrome-native://newtab/" has an opaque origin.
+    EXPECT_TRUE(test_frame->GetLastCommittedOrigin().opaque());
+  }
+
   EXPECT_NE(extension_contents->GetPrimaryMainFrame()->GetProcess(),
             test_contents->GetPrimaryMainFrame()->GetProcess());
 }
@@ -4285,6 +4410,212 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryWithHostPermission) {
   }
 }
 
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
+                       QueryPermissionsWithPendingNavigation) {
+  net::test_server::ControllableHttpResponse response(embedded_test_server(),
+                                                      "/slow");
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Constants for testing.
+  static constexpr char kHostA[] = "a.example";
+  static constexpr char kHostB[] = "b.example";
+  static constexpr char kTitleA[] = "Site A Title";
+  static constexpr char kTitleB[] = "Site B Title";
+  // Query templates.
+  constexpr char kTitleQuery[] = R"([{"title": "%s"}])";
+  constexpr char kUrlQuery[] = R"([{"url": "*://%s/*"}])";
+  constexpr char kCombinedQuery[] = R"([{"title": "%s", "url": "*://%s/*"}])";
+
+  auto count_matches = [&](const Extension* ext,
+                           const std::string& query_json) {
+    return RunQueryFunction(ext, query_json.c_str()).size();
+  };
+
+  const GURL url_a = embedded_test_server()->GetURL(kHostA, "/empty.html");
+  const GURL url_b = embedded_test_server()->GetURL(kHostB, "/slow");
+
+  // Set up the initial tab.
+  tabs::TabInterface* tab = GetTabListInterface()->OpenTab(url_a, -1);
+  ASSERT_TRUE(tab);
+  content::WebContents* web_contents = tab->GetContents();
+  content::WaitForLoadStop(web_contents);
+  web_contents->GetController().GetVisibleEntry()->SetTitle(
+      base::ASCIIToUTF16(std::string(kTitleA)));
+  EXPECT_EQ(url_a, web_contents->GetLastCommittedURL());
+  EXPECT_EQ(kTitleA, base::UTF16ToUTF8(web_contents->GetTitle()));
+
+  // Build test extensions with distinct permission scopes.
+  auto extension_a =
+      ExtensionBuilder("ExtensionA")
+          .AddHostPermission(base::StringPrintf("*://%s/*", kHostA))
+          .Build();
+  auto extension_b =
+      ExtensionBuilder("ExtensionB")
+          .AddHostPermission(base::StringPrintf("*://%s/*", kHostB))
+          .Build();
+  auto extension_tabs =
+      ExtensionBuilder("TabsPermission").AddAPIPermission("tabs").Build();
+
+  // Start in-flight browser-initiated navigation to url_b.
+  content::NavigationController::LoadURLParams params(url_b);
+  params.transition_type = ui::PAGE_TRANSITION_TYPED;
+  web_contents->GetController().LoadURLWithParams(params);
+  response.WaitForRequest();
+
+  // Verify that the committed URL and title have not yet been updated to url_b.
+  EXPECT_EQ(url_a, web_contents->GetLastCommittedURL());
+  EXPECT_EQ(url_b, web_contents->GetVisibleURL());
+  EXPECT_EQ(kTitleA, base::UTF16ToUTF8(web_contents->GetTitle()));
+
+  {
+    SCOPED_TRACE("Before navigation (A committed, B pending)");
+
+    // Extension A: matches committed A info, but cannot see pending URL for B.
+    EXPECT_EQ(1u, count_matches(extension_a.get(),
+                                base::StringPrintf(kTitleQuery, kTitleA)));
+    EXPECT_EQ(1u, count_matches(extension_a.get(),
+                                base::StringPrintf(kUrlQuery, kHostA)));
+    EXPECT_EQ(0u, count_matches(extension_a.get(),
+                                base::StringPrintf(kUrlQuery, kHostB)));
+
+    // Extension B: can match its pending URL, but cannot see committed title or
+    // URL from A.
+    EXPECT_EQ(0u, count_matches(extension_b.get(),
+                                base::StringPrintf(kUrlQuery, kHostA)));
+    EXPECT_EQ(1u, count_matches(extension_b.get(),
+                                base::StringPrintf(kUrlQuery, kHostB)));
+    // Bug fix for crbug.com/513741326: Cross-origin check (B cannot see A's
+    // committed info).
+    EXPECT_EQ(0u, count_matches(extension_b.get(),
+                                base::StringPrintf(kTitleQuery, kTitleA)));
+    EXPECT_EQ(
+        0u, count_matches(extension_b.get(),
+                          base::StringPrintf(kCombinedQuery, kTitleA, kHostB)));
+
+    // Tabs extension: has global access to all titles and URLs.
+    EXPECT_EQ(1u, count_matches(extension_tabs.get(),
+                                base::StringPrintf(kTitleQuery, kTitleA)));
+    EXPECT_EQ(1u, count_matches(extension_tabs.get(),
+                                base::StringPrintf(kUrlQuery, kHostA)));
+    EXPECT_EQ(1u, count_matches(extension_tabs.get(),
+                                base::StringPrintf(kUrlQuery, kHostB)));
+  }
+
+  // Complete the navigation.
+  response.Send(
+      base::StringPrintf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                         "<html><head><title>%s</title></head></html>",
+                         kTitleB));
+  response.Done();
+  content::WaitForLoadStop(web_contents);
+
+  // Verify that the committed URL and title have been updated to url_b.
+  EXPECT_EQ(url_b, web_contents->GetLastCommittedURL());
+  EXPECT_EQ(url_b, web_contents->GetVisibleURL());
+  EXPECT_EQ(kTitleB, base::UTF16ToUTF8(web_contents->GetTitle()));
+
+  {
+    SCOPED_TRACE("After navigation (B committed)");
+
+    // Extension A no longer matches anything on this tab.
+    EXPECT_EQ(0u, count_matches(extension_a.get(),
+                                base::StringPrintf(kTitleQuery, kTitleB)));
+    EXPECT_EQ(0u, count_matches(extension_a.get(),
+                                base::StringPrintf(kUrlQuery, kHostB)));
+
+    // Extension B now matches committed B title and URL.
+    EXPECT_EQ(1u, count_matches(extension_b.get(),
+                                base::StringPrintf(kTitleQuery, kTitleB)));
+    EXPECT_EQ(1u, count_matches(extension_b.get(),
+                                base::StringPrintf(kUrlQuery, kHostB)));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryWithPolicyBlockedHost) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  auto tab_urls = std::to_array<GURL>({
+      embedded_test_server()->GetURL("www.google.com", "/empty.html"),
+      embedded_test_server()->GetURL("www.example.com", "/empty.html"),
+  });
+  auto tab_titles =
+      std::to_array<std::string>({"Sample title", "Sample title"});
+
+  std::array<content::WebContents*, std::size(tab_urls)> web_contentses;
+  for (size_t i = 0; i < std::size(tab_urls); ++i) {
+    tabs::TabInterface* tab = GetTabListInterface()->OpenTab(tab_urls[i], -1);
+    content::WebContents* raw_web_contents = tab->GetContents();
+    web_contentses[i] = raw_web_contents;
+    content::WaitForLoadStop(raw_web_contents);
+    raw_web_contents->GetController().GetVisibleEntry()->SetTitle(
+        base::ASCIIToUTF16(tab_titles[i]));
+  }
+
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder()
+          .SetManifest(base::DictValue()
+                           .Set("name", "Extension with host permissions")
+                           .Set("version", "1.0")
+                           .Set("manifest_version", 3)
+                           .Set("host_permissions",
+                                base::ListValue()
+                                    .Append("*://www.google.com/*")
+                                    .Append("*://www.example.com/*")))
+          .Build();
+
+  URLPatternSet policy_blocked_hosts;
+  policy_blocked_hosts.AddOrigin(Extension::kValidHostPermissionSchemes,
+                                 GURL("http://www.google.com"));
+  extension->permissions_data()->SetPolicyHostRestrictions(policy_blocked_hosts,
+                                                           URLPatternSet());
+
+  // Query for www.google.com tabs should return 0 tabs due to policy
+  // restriction.
+  const char* kBlockedURLQueryInfo = "[{\"url\": \"*://www.google.com/*\"}]";
+  base::ListValue blocked_tabs =
+      RunQueryFunction(extension.get(), kBlockedURLQueryInfo);
+  EXPECT_EQ(0u, blocked_tabs.size());
+
+  // Query with title on blocked host should not match.
+  const char* kBlockedTitleQueryInfo =
+      "[{\"title\": \"Sample title\", \"url\": \"*://www.google.com/*\"}]";
+  base::ListValue blocked_title_tabs =
+      RunQueryFunction(extension.get(), kBlockedTitleQueryInfo);
+  EXPECT_EQ(0u, blocked_title_tabs.size());
+
+  // Query for unblocked www.example.com should match.
+  const char* kAllowedURLQueryInfo = "[{\"url\": \"*://www.example.com/*\"}]";
+  base::ListValue allowed_tabs =
+      RunQueryFunction(extension.get(), kAllowedURLQueryInfo);
+  EXPECT_EQ(1u, allowed_tabs.size());
+  if (!allowed_tabs.empty()) {
+    EXPECT_TRUE(allowed_tabs[0].is_dict());
+    EXPECT_EQ(ExtensionTabUtil::GetTabId(web_contentses[1]),
+              allowed_tabs[0].GetDict().FindInt("id"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
+                       QueryExtensionOwnOriginWithoutTabsPermission) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("Extension own origin").Build();
+
+  GURL options_url = extension->GetResourceURL("options.html");
+  tabs::TabInterface* tab = GetTabListInterface()->OpenTab(options_url, -1);
+  content::WebContents* raw_web_contents = tab->GetContents();
+  content::WaitForLoadStop(raw_web_contents);
+
+  std::string query_info = base::StringPrintf(
+      "[{\"url\": \"chrome-extension://%s/*\"}]", extension->id().c_str());
+  base::ListValue tabs_list =
+      RunQueryFunction(extension.get(), query_info.c_str());
+  EXPECT_EQ(1u, tabs_list.size());
+  if (!tabs_list.empty()) {
+    EXPECT_TRUE(tabs_list[0].is_dict());
+    EXPECT_EQ(ExtensionTabUtil::GetTabId(raw_web_contents),
+              tabs_list[0].GetDict().FindInt("id"));
+  }
+}
+
 #if BUILDFLAG(ENABLE_PDF)
 // Test that using the PDF extension for tab updates is treated as a
 // renderer-initiated navigation. crbug.com/40085816
@@ -4329,7 +4660,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, TabsMoveNonExistentTab) {
                 function.get(),
                 base::StringPrintf(R"([%d, {"index": 0}])", kNonExistentTabId),
                 profile()),
-            base::StringPrintf("No tab with id: %d.", kNonExistentTabId));
+            ErrorUtils::FormatErrorMessage(
+                kTabNotFoundError, base::NumberToString(kNonExistentTabId)));
 }
 
 // Test that the tabs.move() function correctly rearranges sets of tabs within a
@@ -5120,6 +5452,40 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest,
             error);
 }
 
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, CannotDuplicateAppPopupWindows) {
+  // Create app popup browser.
+  BrowserWindowInterface* app_popup_browser =
+      CreateBrowserWindowWithType(BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  TabListInterface* app_popup_tab_list =
+      TabListInterface::From(app_popup_browser);
+
+  // Ensure we have a tab.
+  if (app_popup_tab_list->GetTabCount() == 0) {
+    app_popup_tab_list->OpenTab(GURL(url::kAboutBlankURL), -1);
+  }
+  ASSERT_GE(app_popup_tab_list->GetTabCount(), 1);
+  content::WebContents* web_contents =
+      app_popup_tab_list->GetTab(0)->GetContents();
+  ASSERT_NE(web_contents, nullptr);
+  int app_popup_tab_id = ExtensionTabUtil::GetTabId(web_contents);
+  ASSERT_GT(app_popup_tab_id, 0);
+
+  // Attempt to duplicate the app popup tab. This should fail as app popup tabs
+  // are not allowed to be duplicated.
+  auto function = base::MakeRefCounted<TabsDuplicateFunction>();
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("Test").AddAPIPermission("tabs").Build();
+  function->set_extension(extension);
+  std::string args = base::StringPrintf("[%d]", app_popup_tab_id);
+  std::string error = utils::RunFunctionAndReturnError(
+      function.get(), args, app_popup_browser->GetProfile(),
+      utils::FunctionMode::kNone);
+  EXPECT_EQ(
+      ErrorUtils::FormatErrorMessage(keys::kCannotDuplicateTab,
+                                     base::NumberToString(app_popup_tab_id)),
+      error);
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -5609,13 +5975,13 @@ IN_PROC_BROWSER_TEST_P(ExtensionTabsDiscardTest, DiscardEvent) {
                      )";
   }
   test_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
-                     absl::StrFormat(R"(
+                     base::StringPrintf(R"(
       chrome.tabs.create({"url": "about:blank"}, function(created_tab) {
         chrome.tabs.%s.addListener(%s);
         chrome.tabs.discard(created_tab.id);
       });
                                      )",
-                                     event_name, event_listener));
+                                        event_name, event_listener));
 
   ExtensionTestMessageListener success_listener("success");
 

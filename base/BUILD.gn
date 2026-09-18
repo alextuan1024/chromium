@@ -1191,7 +1191,7 @@ component("base") {
     "//base/allocator/partition_allocator:buildflags",
     "//base/allocator/partition_allocator:raw_ptr",
     "//base/logging:log_severity",
-    "//base/numerics:base_numerics",
+    "//base/numerics",
     "//base/third_party/icu",
     "//build:chromecast_buildflags",
     "//build:robolectric_buildflags",
@@ -1280,8 +1280,6 @@ component("base") {
       "android/java_handler_thread.h",
       "android/java_runtime.cc",
       "android/java_runtime.h",
-      "android/locale_utils.cc",
-      "android/locale_utils.h",
       "android/meminfo_dump_provider.cc",
       "android/meminfo_dump_provider.h",
       "android/memory_pressure_listener_android.cc",
@@ -1621,7 +1619,7 @@ component("base") {
       "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.buildinfo:fuchsia.buildinfo_cpp",
       "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.hwinfo:fuchsia.hwinfo_cpp",
       "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.io:fuchsia.io_cpp_hlcpp_conversion",
-      "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.media:fuchsia.media_cpp",
+      "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.scheduler:fuchsia.scheduler_cpp",
       "//third_party/fuchsia-sdk/sdk/pkg/async-default",
       "//third_party/fuchsia-sdk/sdk/pkg/async-loop-cpp",
       "//third_party/fuchsia-sdk/sdk/pkg/async-loop-default",
@@ -2943,7 +2941,7 @@ if (is_linux || is_chromeos) {
     deps = [
       ":compiler_specific",
       "//base/allocator/partition_allocator:raw_ptr",
-      "//base/numerics:base_numerics",
+      "//base/numerics",
       "//base/third_party/symbolize",
     ]
 
@@ -3159,6 +3157,7 @@ static_library("base_static") {
     "immediate_crash.h",
   ]
 
+  public_deps = [ ":compiler_specific" ]
   deps = [ ":fuzzing_buildflags" ]
 
   if (is_win) {
@@ -3167,7 +3166,7 @@ static_library("base_static") {
       "win/static_constants.h",
     ]
 
-    public_deps = [ "//base/win:pe_image" ]
+    public_deps += [ "//base/win:pe_image" ]
 
     # Disable sanitizer coverage in win/pe_image.cc. It is called by the sandbox
     # before sanitizer coverage can initialize. http://crbug.com/484711
@@ -3288,6 +3287,14 @@ component("i18n") {
   if (is_win) {
     public_deps += [ "//base/i18n:win_i18n" ]
   }
+
+  if (is_android) {
+    sources += [
+      "i18n/android_locale.cc",
+      "i18n/android_locale.h",
+    ]
+    deps += [ ":base_jni" ]
+  }
 }
 
 executable("containers_memory_benchmark") {
@@ -3300,6 +3307,7 @@ test("base_perftests") {
   sources = [
     "byte_conversions_perftest.cc",
     "hash/hash_perftest.cc",
+    "i18n/language_tag_perftest.cc",
     "json/json_perftest.cc",
     "memory/shared_memory_region_perftest.cc",
     "message_loop/message_pump_perftest.cc",
@@ -3321,21 +3329,13 @@ test("base_perftests") {
   deps = [
     ":base",
     ":debugging_buildflags",
+    ":i18n",
     "//base/test:test_support",
     "//base/test:test_support_perf",
     "//testing/gtest",
     "//testing/perf",
     "//third_party/google_benchmark",
   ]
-
-  # TODO(crbug.com/40158212): Move partition_alloc tests into its repository.
-  if (use_partition_alloc) {
-    sources += [
-      "allocator/partition_allocator/src/partition_alloc/partition_alloc_perftest.cc",
-      "allocator/partition_allocator/src/partition_alloc/partition_lock_perftest.cc",
-    ]
-    deps += [ "allocator/partition_allocator/src/partition_alloc:test_support" ]
-  }
 
   data_deps = [
     # Needed for isolate script to execute.
@@ -3364,6 +3364,36 @@ test("base_perftests") {
 
   if (build_allocation_stack_trace_recorder) {
     sources += [ "debug/allocation_trace_perftest.cc" ]
+  }
+}
+
+test("partition_alloc_perftests") {
+  deps = [
+    "//base/allocator/partition_allocator/src/partition_alloc:perftests",
+    "//testing/gtest:gtest_main",
+    "//testing/perf",
+  ]
+
+  data_deps = [
+    # Needed for isolate script to execute.
+    "//testing:run_perf_test",
+  ]
+
+  if (is_apple) {
+    frameworks = [
+      "CoreFoundation.framework",
+      "Foundation.framework",
+    ]
+  }
+
+  if (is_android) {
+    deps += [ "//testing/android/native_test:native_test_native_code" ]
+    shard_timeout = 600
+  }
+
+  if (is_fuchsia) {
+    # Run these performance tests against the actual system.
+    run_as_chromium_system_test = true
   }
 }
 
@@ -3650,9 +3680,10 @@ if (is_fuchsia) {
       ":base",
       "//base/test:test_support",
       "//testing/gtest",
+      "//third_party/fuchsia-sdk/sdk/pkg/component_incoming_cpp",
     ]
     public_deps = [
-      "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.logger:fuchsia.logger_hlcpp",
+      "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.logger:fuchsia.logger_cpp",
     ]
   }
 }
@@ -4024,6 +4055,7 @@ test("base_unittests") {
     "task/thread_pool/thread_pool_impl_unittest.cc",
     "task/thread_pool/tracked_ref_unittest.cc",
     "task/thread_pool/worker_thread_set_unittest.cc",
+    "task/thread_pool/worker_thread_unittest.cc",
     "task/thread_pool_unittest.cc",
     "test/gmock_callback_support_unittest.cc",
     "test/gmock_expected_support_unittest.cc",
@@ -5301,7 +5333,6 @@ if (is_android) {
     deps = [
       ":build_info_java",
       ":command_line_java",
-      ":supplier_java",
       ":tasks_java",
     ]
   }
@@ -5447,7 +5478,6 @@ if (is_android) {
       ":log_java",
       ":metrics_java",
       ":resetters_java",
-      ":supplier_java",
       ":tasks_java",
       ":time_utils_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
@@ -5526,9 +5556,7 @@ if (is_android) {
       ":callback_java",
       ":lifetime_java",
       ":promise_java",
-      ":resetters_java",
       ":tasks_java",
-      ":unowned_user_data_java",
       "//third_party/android_deps:com_google_errorprone_error_prone_annotations_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
     ]
@@ -5554,7 +5582,6 @@ if (is_android) {
     deps = [
       ":callback_jni_java",
       "//third_party/android_deps:com_google_code_findbugs_jsr305_java",
-      "//third_party/android_deps:com_google_errorprone_error_prone_annotations_java",
       "//third_party/androidx:androidx_annotation_annotation_experimental_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/jni_zero:jni_zero_java",
@@ -5777,7 +5804,7 @@ if (is_android) {
       ":log_java",
       ":resetters_java",
       ":tasks_java",
-      "//base/version_info/android:version_constants_java",
+      "//base/version_info/android:channel_enum_java",
       "//third_party/android_deps:com_google_code_findbugs_jsr305_java",
       "//third_party/androidx:androidx_annotation_annotation_experimental_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
@@ -5836,10 +5863,8 @@ if (is_android) {
       sources = [ "android/java/src/org/chromium/base/ui/KeyboardUtils.java" ]
       deps = [
         ":base_java",
-        ":build_info_java",
         ":log_java",
         ":tasks_java",
-        "//third_party/androidx:androidx_annotation_annotation_java",
         "//third_party/androidx:androidx_core_core_java",
       ]
     }
@@ -5861,7 +5886,6 @@ if (is_android) {
     ]
 
     deps = [
-      ":base_switches_java",
       ":callback_java",
       ":command_line_java",
       ":library_loader_jni_java",
@@ -5934,7 +5958,6 @@ if (is_android) {
   android_library("base_cached_flags_java") {
     deps = [
       ":base_java",
-      ":base_shared_preferences_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
     ]
 
@@ -5946,10 +5969,7 @@ if (is_android) {
   android_library("holder_java") {
     sources = [ "android/java/src/org/chromium/base/Holder.java" ]
 
-    deps = [
-      ":callback_java",
-      ":supplier_java",
-    ]
+    deps = [ ":callback_java" ]
   }
 
   android_aidl("build_info_aidl") {
@@ -6062,7 +6082,6 @@ if (is_android) {
 
     deps = [
       ":base_java",
-      "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/jni_zero:jni_zero_java",
       "//third_party/junit",
     ]
@@ -6165,6 +6184,7 @@ if (is_android) {
       "test/android/javatests/src/org/chromium/base/test/util/PayloadCallbackHelper.java",
       "test/android/javatests/src/org/chromium/base/test/util/RawFailureHandler.java",
       "test/android/javatests/src/org/chromium/base/test/util/RequiresRestart.java",
+      "test/android/javatests/src/org/chromium/base/test/util/ResetSharedPrefsRule.java",
       "test/android/javatests/src/org/chromium/base/test/util/Restriction.java",
       "test/android/javatests/src/org/chromium/base/test/util/RestrictionSkipCheck.java",
       "test/android/javatests/src/org/chromium/base/test/util/ScalableTimeout.java",
@@ -6254,6 +6274,7 @@ if (is_android) {
     deps = [
       ":base_java",
       ":base_java_test_support",
+      "//base/version_info/android:version_constants_java",
       "//testing/android/junit:junit_test_support",
       "//third_party/androidx:androidx_test_core_java",
       "//third_party/androidx:androidx_test_monitor_java",

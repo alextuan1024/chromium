@@ -62,6 +62,7 @@
 #include "ui/views/test/test_widget_observer.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/native_widget_private.h"
 #include "ui/views/widget/widget_observer.h"
@@ -229,6 +230,14 @@ class NativeWidgetMacTest : public WidgetTest {
         DialogDelegateView::CreatePassKey());
     dialog->SetModalType(modal_type);
     return dialog.release();
+  }
+
+  // Waits for the widget's minimized state to match `minimized`.
+  static void WaitForMinimized(Widget* widget, bool minimized = true) {
+    views::test::PropertyWaiter waiter(
+        base::BindRepeating(&Widget::IsMinimized, base::Unretained(widget)),
+        minimized, base::Seconds(5));
+    EXPECT_TRUE(waiter.Wait());
   }
 
   // Make an NSWindow with a close button and a title bar to use as a parent.
@@ -836,6 +845,215 @@ TEST_F(NativeWidgetMacTest, MinimizeByNativeShow) {
   }
 
   EXPECT_TRUE(widget->IsMinimized());
+}
+
+class NativeWidgetMacCompositorVisibilityTest
+    : public NativeWidgetMacTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  NativeWidgetMacCompositorVisibilityTest() {
+    feature_list_.InitWithFeatureState(
+        features::kNotifyCompositorOfWindowVisibilityOnMacOs,
+        NotifyCompositorOfVisibility());
+  }
+
+  bool NotifyCompositorOfVisibility() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that minimizing a window updates compositor visibility according to
+// whether kNotifyCompositorOfWindowVisibilityOnMacOs is enabled, and restoring
+// it marks the compositor as visible again and resumes painting.
+TEST_P(NativeWidgetMacCompositorVisibilityTest,
+       CompositorVisibilityOnMiniaturize) {
+  const bool notify_enabled = NotifyCompositorOfVisibility();
+
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams init_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  widget->Init(std::move(init_params));
+
+  auto* view = widget->GetContentsView()->AddChildView(
+      std::make_unique<PaintCountView>());
+  NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+
+  widget->SetBounds(gfx::Rect(100, 100, 300, 300));
+  {
+    views::test::PropertyWaiter visibility_waiter(
+        base::BindRepeating(&Widget::IsVisible, base::Unretained(widget.get())),
+        true);
+    widget->Show();
+    EXPECT_TRUE(visibility_waiter.Wait());
+  }
+
+  ASSERT_NE(nullptr, widget->GetCompositor());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  view->WaitForPaintCount(1);
+
+  // 1. Minimize externally via Cocoa AppKit (performMiniaturize:).
+  [ns_window performMiniaturize:nil];
+  WaitForMinimized(widget.get());
+  EXPECT_TRUE(widget->IsMinimized());
+  EXPECT_EQ(widget->GetCompositor()->IsVisible(), !notify_enabled);
+
+  // Deminiaturize and verify compositor resumes and paints successfully.
+  [ns_window deminiaturize:nil];
+  WaitForMinimized(widget.get(), /*minimized=*/false);
+  EXPECT_FALSE(widget->IsMinimized());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  view->WaitForPaintCount(2);
+
+  // 2. Also test views::Widget::Minimize() and views::Widget::Restore().
+  widget->Minimize();
+  WaitForMinimized(widget.get());
+  EXPECT_TRUE(widget->IsMinimized());
+  EXPECT_EQ(widget->GetCompositor()->IsVisible(), !notify_enabled);
+
+  widget->Restore();
+  WaitForMinimized(widget.get(), /*minimized=*/false);
+  EXPECT_FALSE(widget->IsMinimized());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  view->WaitForPaintCount(3);
+}
+
+// Tests that a video capture lock keeps the compositor visible and unsuspended
+// while the window is minimized, both when acquired before and while minimized,
+// and that the lock is reference counted.
+TEST_P(NativeWidgetMacCompositorVisibilityTest, VideoCaptureLock) {
+  const bool notify_enabled = NotifyCompositorOfVisibility();
+
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams init_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  widget->Init(std::move(init_params));
+
+  NativeWidgetMacNSWindowHost* host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget->GetNativeWindow());
+  ASSERT_NE(nullptr, host);
+
+  widget->SetBounds(gfx::Rect(100, 100, 300, 300));
+  {
+    views::test::PropertyWaiter visibility_waiter(
+        base::BindRepeating(&Widget::IsVisible, base::Unretained(widget.get())),
+        true);
+    widget->Show();
+    EXPECT_TRUE(visibility_waiter.Wait());
+  }
+
+  ASSERT_NE(nullptr, widget->GetCompositor());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+
+  // Acquire a lock while the window is still visible. Note that this test
+  // deliberately performs a single minimize and never restores: a
+  // restore-then-minimize sequence races with the AppKit deminiaturize
+  // animation, which causes the subsequent miniaturize request to be dropped.
+  base::ScopedClosureRunner lock1 = host->CreateVideoCaptureLock();
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+
+  // Minimizing while the lock is held keeps the compositor visible and
+  // unsuspended, even when the window visibility notification feature is
+  // enabled.
+  widget->Minimize();
+  WaitForMinimized(widget.get());
+  EXPECT_TRUE(widget->IsMinimized());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+
+  // Releasing the last lock while minimized suspends and hides the compositor.
+  lock1.RunAndReset();
+  EXPECT_EQ(widget->GetCompositor()->IsVisible(), !notify_enabled);
+  EXPECT_TRUE(widget->GetCompositor()->IsLocked());
+
+  // Acquiring a lock while already minimized unsuspends the compositor and
+  // makes it visible.
+  base::ScopedClosureRunner lock2 = host->CreateVideoCaptureLock();
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+
+  // Locks are reference counted: a second lock, then releasing only one of
+  // them, keeps the compositor visible and unsuspended.
+  base::ScopedClosureRunner lock3 = host->CreateVideoCaptureLock();
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+  lock2.RunAndReset();
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  EXPECT_FALSE(widget->GetCompositor()->IsLocked());
+
+  // Releasing the final lock returns the compositor to its suspended state.
+  lock3.RunAndReset();
+  EXPECT_EQ(widget->GetCompositor()->IsVisible(), !notify_enabled);
+  EXPECT_TRUE(widget->GetCompositor()->IsLocked());
+}
+
+// Tests that destroying the Widget while a video capture lock is still held
+// does not crash, and that releasing the stale lock afterwards is a safe no-op.
+TEST_P(NativeWidgetMacCompositorVisibilityTest, WidgetDestroyedWhileLockHeld) {
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams init_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  widget->Init(std::move(init_params));
+
+  NativeWidgetMacNSWindowHost* host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget->GetNativeWindow());
+  ASSERT_NE(nullptr, host);
+
+  widget->SetBounds(gfx::Rect(100, 100, 300, 300));
+  {
+    views::test::PropertyWaiter visibility_waiter(
+        base::BindRepeating(&Widget::IsVisible, base::Unretained(widget.get())),
+        true);
+    widget->Show();
+    EXPECT_TRUE(visibility_waiter.Wait());
+  }
+
+  // Hold a lock across the destruction of the widget and its window host.
+  base::ScopedClosureRunner lock = host->CreateVideoCaptureLock();
+  EXPECT_TRUE(lock);
+
+  widget->CloseNow();
+  widget.reset();
+
+  // The lock now refers to a destroyed NativeWidgetMacNSWindowHost. Running it
+  // must be a safe no-op thanks to the weak pointer bound into the closure.
+  lock.RunAndReset();
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         NativeWidgetMacCompositorVisibilityTest,
+                         ::testing::Bool());
+
+// Tests that closing a window while it is minimized with an invisible
+// compositor cleans up cleanly without assertions or crashes.
+TEST_F(NativeWidgetMacTest, CloseWhileMinimized) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kNotifyCompositorOfWindowVisibilityOnMacOs);
+
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams init_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  widget->Init(std::move(init_params));
+
+  NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+  widget->SetBounds(gfx::Rect(100, 100, 300, 300));
+  widget->Show();
+
+  ASSERT_NE(nullptr, widget->GetCompositor());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+
+  [ns_window performMiniaturize:nil];
+  WaitForMinimized(widget.get());
+  EXPECT_TRUE(widget->IsMinimized());
+  EXPECT_FALSE(widget->GetCompositor()->IsVisible());
+
+  // Close the widget while minimized and invisible.
+  widget->CloseNow();
 }
 
 TEST_F(NativeWidgetMacTest, MiniaturizeFramelessWindow) {
@@ -2239,7 +2457,8 @@ TEST_F(NativeWidgetMacTest, InvalidateShadow) {
   widget->CloseNow();
 }
 
-// Test that the contentView opacity corresponds to the window type.
+// Test that the contentView opacity corresponds to the window type and reflects
+// dynamic changes to the hosting window's opacity after creation.
 TEST_F(NativeWidgetMacTest, ContentOpacity) {
   NativeWidgetMacTestWindow* window;
   Widget::InitParams init_params =
@@ -2255,6 +2474,11 @@ TEST_F(NativeWidgetMacTest, ContentOpacity) {
   init_params.opacity = Widget::InitParams::WindowOpacity::kTranslucent;
   widget = CreateWidgetWithTestWindow(std::move(init_params), &window);
   EXPECT_FALSE([[window contentView] isOpaque]);
+
+  // Updating the NSWindow opaqueness directly should dynamically update the
+  // contentView's isOpaque reporting.
+  [window setOpaque:YES];
+  EXPECT_TRUE([[window contentView] isOpaque]);
   widget->CloseNow();
 
   // Test opaque explicitly.
@@ -2296,6 +2520,114 @@ TEST_F(NativeWidgetMacTest, ChangeOpacity) {
   EXPECT_DOUBLE_EQ(.7f, [ns_window alphaValue]);
 
   widget->CloseNow();
+}
+
+// Test that hiding and showing a window with kAlphaInsteadOfCATransaction
+// restores the configured opacity when hidden, and triggers opacity fix on
+// subsequent show only when `prevent_stale_content_after_hide` is set.
+TEST_F(NativeWidgetMacTest, HideAndShowOpacityWithAlphaFeature) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(::features::kAlphaInsteadOfCATransaction);
+
+  // Case 1: Window without prevent_stale_content_after_hide (default).
+  // Once the first frame arrives, subsequent hide-then-show does not reset
+  // alpha.
+  {
+    Widget* widget = CreateTopLevelPlatformWidget();
+    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+
+    widget->SetOpacity(0.7f);
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Showing the widget should set alphaValue to 0 until a compositor frame
+    // arrives.
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    // Frame arrives, restoring opacity.
+    BridgedNativeWidgetTestApi(widget).SimulateFrameSwap(
+        widget->GetClientAreaBoundsInScreen().size());
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Hiding the widget.
+    widget->Hide();
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Showing it again does not reset alpha to 0 since
+    // prevent_stale_content_after_hide is false and frame size didn't change.
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    widget->CloseNow();
+  }
+
+  // Case 2: Window with prevent_stale_content_after_hide = true.
+  // Hide-then-show sets alpha to 0 until a new compositor frame arrives.
+  {
+    auto widget = std::make_unique<Widget>();
+    Widget::InitParams params =
+        CreateParams(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                     Widget::InitParams::TYPE_WINDOW);
+    params.prevent_stale_content_after_hide = true;
+    params.native_widget = new TestWindowNativeWidgetMac(widget.get());
+    widget->Init(std::move(params));
+    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+
+    widget->SetOpacity(0.7f);
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Showing the widget should set alphaValue to 0 until a compositor frame
+    // arrives.
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    // Initial frame arrives.
+    BridgedNativeWidgetTestApi(widget.get())
+        .SimulateFrameSwap(widget->GetClientAreaBoundsInScreen().size());
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Hiding the widget.
+    widget->Hide();
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    // Showing it again sets alphaValue to 0 because
+    // prevent_stale_content_after_hide is true.
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    // Fresh frame arrives, restoring opacity.
+    BridgedNativeWidgetTestApi(widget.get())
+        .SimulateFrameSwap(widget->GetClientAreaBoundsInScreen().size());
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    widget->CloseNow();
+  }
+
+  // Case 3: Window hidden before initial frame arrives.
+  {
+    Widget* widget = CreateTopLevelPlatformWidget();
+    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+
+    widget->SetOpacity(0.7f);
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    // Hide before any frame arrives.
+    widget->Hide();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    // Showing it again and receiving a frame restores opacity.
+    widget->Show();
+    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
+
+    BridgedNativeWidgetTestApi(widget).SimulateFrameSwap(
+        widget->GetClientAreaBoundsInScreen().size());
+    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
+
+    widget->CloseNow();
+  }
 }
 
 // Ensure traversing NSView focus correctly updates the views::FocusManager.

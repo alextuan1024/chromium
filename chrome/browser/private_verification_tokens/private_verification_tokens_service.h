@@ -37,6 +37,7 @@ class SharedURLLoaderFactory;
 
 class GURL;
 class HostContentSettingsMap;
+class Profile;
 
 class PrivateVerificationTokensService : public KeyedService {
  public:
@@ -49,6 +50,8 @@ class PrivateVerificationTokensService : public KeyedService {
    public:
     virtual void OnInitializationComplete() {}
     virtual void OnTokensStored() {}
+    virtual void OnTokensDeleted() {}
+    virtual void OnShutdown() {}
   };
 
   void AddObserver(Observer* observer);
@@ -59,6 +62,11 @@ class PrivateVerificationTokensService : public KeyedService {
   // Retrieve all token issuer origins asynchronously.
   void GetTokenIssuers(
       base::OnceCallback<void(std::vector<url::Origin>)> callback);
+
+  // Retrieve all stored tokens across all issuers asynchronously.
+  void GetAllTokens(
+      base::OnceCallback<void(
+          std::vector<private_verification_tokens::TokenWithId>)> callback);
 
   // Delete tokens within a time range [delete_begin, delete_end) and/or
   // matching specific origins.
@@ -95,7 +103,8 @@ class PrivateVerificationTokensService : public KeyedService {
   // (token_id, base64_encoded_token) if available. Does not delete or remove
   // the token from storage.
   std::optional<std::pair<int64_t, std::string>> GetTokenForRedemption(
-      const url::Origin& redeemer_origin);
+      const url::Origin& redeemer_origin,
+      Profile* profile = nullptr);
 
   // Deletes the token with `token_id` from the cache and database.
   void DeleteToken(int64_t token_id, base::OnceClosure callback);
@@ -115,6 +124,8 @@ class PrivateVerificationTokensService : public KeyedService {
   issuer_config() const {
     return issuer_config_;
   }
+
+  void TrackerInsert(Profile* profile, const url::Origin& redeemer_origin);
 
  private:
   explicit PrivateVerificationTokensService(

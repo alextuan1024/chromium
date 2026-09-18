@@ -1626,6 +1626,10 @@ inline constexpr char kNtpAndroidCustomBackgroundDict[] =
 // Boolean pref for whether the custom background is local to device.
 inline constexpr char kNtpAndroidCustomBackgroundLocalToDevice[] =
     "ntp.android_custom_background_local_to_device";
+
+// Dictionary pref for the selected Chrome color information.
+inline constexpr char kNtpAndroidChromeColorDict[] =
+    "ntp.android_chrome_color_dict";
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Keeps track of which sessions are collapsed in the Other Devices menu.
@@ -2104,17 +2108,6 @@ inline constexpr char kAuthNegotiateDelegateByKdcPolicy[] =
 // Boolean that specifies whether NTLMv2 is enabled.
 inline constexpr char kNtlmV2Enabled[] = "auth.ntlm_v2_enabled";
 #endif  // BUILDFLAG(IS_POSIX)
-
-#if BUILDFLAG(IS_CHROMEOS)
-
-// Holds URL patterns that specify origins that will be allowed to call
-// `subApps.{add|remove|list}())` without prior user gesture and that will skip
-// the user dialog authorization.
-inline constexpr char
-    kSubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins[] =
-        "profile.isolated_web_app.sub_apps_allowed_without_user_gesture_and_"
-        "authorization";
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 // The integer value of the CloudAPAuthEnabled policy.

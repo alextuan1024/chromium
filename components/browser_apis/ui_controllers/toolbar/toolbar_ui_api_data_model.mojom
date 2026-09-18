@@ -27,6 +27,7 @@ enum ContextMenuType {
   kForward,
   kHome,
   kBatterySaver,
+  kMedia,
 
   // Pinned toolbar action buttons
   kPinnedActionNewIncognitoWindow,
@@ -63,6 +64,8 @@ enum ContextMenuType {
 
 struct BackForwardButtonState {
   bool enabled;
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
   bool is_context_menu_visible;
 };
@@ -95,6 +98,11 @@ struct OmniboxActionFocusChange {
   // If true, requests that zero suggest be started. Applies only if
   // `has_focus` = true.
   bool start_zero_suggest = false;
+
+  // The version of the input on the browser side, incremented when the
+  // state is reset due to navigation or selection from completion popup.
+  // (Wraparound is OK, it looks for equality).
+  uint32 browser_version;
 
   gfx.mojom.Range selection;
 };
@@ -208,6 +216,8 @@ struct ReloadControlState {
 struct SplitTabsControlState {
   bool is_current_tab_split;
   SplitTabActiveLocation location;
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
   bool is_context_menu_visible;
 
@@ -225,17 +235,40 @@ struct BackForwardControlState {
 };
 
 struct HomeControlState {
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
   bool is_context_menu_visible;
 };
 
 struct PerformanceInterventionControlState {
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
   // Boolean that keeps track if the intervention button icon should be shown
   // in the active color. The intervention button should show the active color
   // when it becomes visible and stay in the active color until the user clicks
   // on the button.
   bool is_active;
+};
+
+// State of media button that shows up in toolbar when a tab is playing media.
+struct MediaControlState {
+  // If disabled, the icon is drawn grey.
+  bool enabled = true;
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
+  bool should_be_shown = false;
+  // Whether the context menu is currently showing.
+  bool is_context_menu_visible = false;
+};
+
+// State of the battery saver button that shows up in toolbar when battery saver
+// mode is active.
+struct BatterySaverControlState {
+  // Whether the button should be shown.
+  // Corresponds to `OverflowableButtonState.shouldBeShown`.
+  bool should_be_shown;
 };
 
 // The type of icon state for the app menu. These values drive the visual
@@ -442,6 +475,21 @@ enum PageActionTrigger {
   kGesture = 2,
 };
 
+// Dictates the animation style used when expanding, collapsing,
+// or transitioning a page action chip.
+enum PageActionAnimationStyle {
+  // Standard animation style used by most page actions (e.g. Translate, Lens,
+  // Bookmark, Memory Saver) where the label slides out horizontally beside the
+  // leading icon as the button expands or collapses.
+  kStandard = 0,
+
+  // Animation style used by chips such as AI Mode (AIM) where the leading icon
+  // fades out and collapses while a trailing icon (e.g. an arrow indicator)
+  // crossfades in as the label slides when user typing begins or ends in the
+  // omnibox.
+  kSlideAndCrossfade = 1,
+};
+
 // These fields correspond to PageActionModel accessors.
 struct PageActionState {
   // The specific page action icon button to display, described by this state.
@@ -486,8 +534,19 @@ struct PageActionState {
   bool is_active;
 
   // Token that changes when the active tab or URL navigation changes. Used to
-  // suppress tab-switching and navigation icon animations in the WebUI.
-  uint32 icon_animation_token;
+  // suppress tab-switching and navigation icon animations and synchronize state
+  // in the WebUI.
+  uint32 tab_switch_token;
+
+  // The animation style to use for this chip.
+  PageActionAnimationStyle animation_style;
+
+  // Optional trailing icon handle to display (e.g. arrow icon for
+  // slide-and-crossfade).
+  IconHandle? trailing_icon;
+
+  // Whether the trailing icon should currently be shown.
+  bool show_trailing_icon;
 };
 
 // Colors used by the omnibox.
@@ -713,6 +772,18 @@ struct PermissionChipState {
   PermissionPromptStyle prompt_style;
   bool is_fully_collapsed;
   mojo_base.mojom.String16 accessibility_name;
+
+  // A generation counter incremented on the browser side whenever the chip
+  // visibility changes or its animation state is reset (which occurs on tab
+  // switches, navigations, and prompt dismissal/destruction).
+  //
+  // When a click event is sent back from WebUI, this token is echoed back to
+  // ensure the click is dropped if the chip state has changed in the meantime
+  // (e.g., dropping stale clicks queued before a tab switch).
+  //
+  // Note that this is a best-effort staleness check within the browser process,
+  // not a security boundary against a compromised renderer.
+  uint32 state_token;
 };
 
 struct PermissionDashboardState {
@@ -782,7 +853,8 @@ struct NavigationControlsState {
   AppMenuControlState app_menu_control_state;
   AvatarControlState avatar_control_state;
   OverflowButtonControlState overflow_button_control_state;
-  bool battery_saver_button_visible;
+  MediaControlState media_control_state;
+  BatterySaverControlState battery_saver_control_state;
   LocationBarState location_bar_state;
   // State of extensions.
   array<extensions_bar.mojom.ExtensionActionInfo> extensions_state;

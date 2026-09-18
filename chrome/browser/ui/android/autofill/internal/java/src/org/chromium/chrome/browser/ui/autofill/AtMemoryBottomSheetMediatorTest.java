@@ -56,6 +56,7 @@ import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.Fly
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.HomeProperties;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.IllustrationCardItemProperties;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.ScreenId;
+import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.TitleItemProperties;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.components.autofill.Acceptability;
 import org.chromium.components.autofill.AtMemoryPayload;
@@ -109,7 +110,7 @@ public class AtMemoryBottomSheetMediatorTest {
     }
 
     @Test
-    public void testOnSuggestionClicked() {
+    public void testOnSuggestionAccepted() {
         List<AutofillSuggestion> suggestions =
                 List.of(
                         new AutofillSuggestion.Builder()
@@ -135,7 +136,7 @@ public class AtMemoryBottomSheetMediatorTest {
         PropertyModel itemModel1 = mModelList.get(0).model;
         itemModel1.get(ON_SUGGESTION_CLICKED).run();
 
-        verify(mDelegate).onSuggestionClicked(/* position= */ 0);
+        verify(mDelegate).onSuggestionAccepted(/* position= */ 0);
     }
 
     @Test
@@ -146,7 +147,7 @@ public class AtMemoryBottomSheetMediatorTest {
     }
 
     @Test
-    public void testOnSuggestionClicked_unacceptable() {
+    public void testOnSuggestionAccepted_unacceptable() {
         List<AutofillSuggestion> suggestions =
                 List.of(
                         new AutofillSuggestion.Builder()
@@ -162,7 +163,7 @@ public class AtMemoryBottomSheetMediatorTest {
         PropertyModel itemModel1 = mModelList.get(0).model;
         itemModel1.get(ON_SUGGESTION_CLICKED).run();
 
-        verify(mDelegate, never()).onSuggestionClicked(/* position= */ 0);
+        verify(mDelegate, never()).onSuggestionAccepted(/* position= */ 0);
     }
 
     @Test
@@ -759,5 +760,21 @@ public class AtMemoryBottomSheetMediatorTest {
                         .get(
                                 AtMemoryBottomSheetProperties.NoticeItemProperties
                                         .IS_LOGGING_ALLOWED));
+    }
+
+    @Test
+    public void testPreviouslyFilledTitle() {
+        AutofillSuggestion suggestion =
+                new AutofillSuggestion.Builder()
+                        .setSuggestionType(SuggestionType.TITLE)
+                        .setLabel("Previously filled")
+                        .setSubLabel("")
+                        .build();
+
+        mMediator.show(List.of(suggestion));
+
+        assertEquals(1, mModelList.size());
+        assertEquals(HomeProperties.ItemType.TITLE, mModelList.get(0).type);
+        assertEquals("Previously filled", mModelList.get(0).model.get(TitleItemProperties.TITLE));
     }
 }

@@ -10,6 +10,7 @@ import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isHisto
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoBookmarksPageOverrideEnabled;
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoNtpOverrideEnabled;
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isNtpOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isWebUiNtpOverrideEnabled;
 
 import android.app.Activity;
 import android.content.Context;
@@ -59,14 +60,15 @@ import org.chromium.chrome.browser.pdf.PdfPage;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
 import org.chromium.chrome.browser.printing.PrintHelper;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsPage;
 import org.chromium.chrome.browser.settings.SettingsPageFragmentDelegateImpl;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
 import org.chromium.chrome.browser.toolbar.top.Toolbar;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
@@ -451,7 +453,6 @@ public class NativePageFactory {
         }
 
         protected NativePage buildSettingsPage(Tab tab, String url) {
-            assert SettingsInTab.isEnabled();
             // The fragment delegate acts both as a delegate and as a back press handler.
             var fragmentDelegate =
                     new SettingsPageFragmentDelegateImpl(
@@ -575,7 +576,9 @@ public class NativePageFactory {
         String host = url.getHost();
         return switch (host) {
             case UrlConstants.NTP_HOST ->
-                    isIncognito ? isIncognitoNtpOverrideEnabled() : isNtpOverrideEnabled();
+                    isIncognito
+                            ? isIncognitoNtpOverrideEnabled()
+                            : (isNtpOverrideEnabled() || isWebUiNtpOverrideEnabled());
             case UrlConstants.BOOKMARKS_HOST ->
                     isIncognito
                             ? isIncognitoBookmarksPageOverrideEnabled()
@@ -655,7 +658,8 @@ public class NativePageFactory {
     }
 
     /** Simple implementation of NativePageHost backed by a {@link Tab} */
-    private static class TabShim implements NativePageHost {
+    @VisibleForTesting
+    static class TabShim implements NativePageHost {
         private final Tab mTab;
         private final BrowserControlsStateProvider mBrowserControlsStateProvider;
         private final TabModelSelector mTabModelSelector;
@@ -732,6 +736,19 @@ public class NativePageFactory {
                 return;
             }
             DownloadController.downloadUrl(url, mTab);
+        }
+
+        @Override
+        public void selectTab() {
+            if (mTab.isDestroyed() || mTab.isClosing() || isVisible()) return;
+            TabModel model = mTabModelSelector.getModelForTabId(mTab.getId());
+            if (model != null) {
+                int index = TabModelUtils.getTabIndexById(model, mTab.getId());
+                if (index != TabModel.INVALID_TAB_INDEX) {
+                    mTabModelSelector.selectModel(model.isIncognito());
+                    TabModelUtils.setIndex(model, index);
+                }
+            }
         }
     }
 

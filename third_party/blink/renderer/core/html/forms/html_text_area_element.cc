@@ -57,6 +57,7 @@
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/adjust_for_absolute_zoom.h"
 #include "third_party/blink/renderer/core/layout/forms/layout_text_control_multi_line.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_item.h"
@@ -77,6 +78,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -164,7 +166,9 @@ void HTMLTextAreaElement::DidAddUserAgentShadowRoot(ShadowRoot& root) {
   auto* inner_editor = CreateInnerEditorElement();
   // We need a placeholder break for an empty value in order to provide one
   // line-height and a baseline even if this element is not editable.
-  inner_editor->AppendChild(CreatePlaceholderBreakElement());
+  auto* placeholder_break = CreatePlaceholderBreakElement();
+  placeholder_break->setAttribute(html_names::kAriaHiddenAttr, keywords::kTrue);
+  inner_editor->AppendChild(placeholder_break);
   root.AppendChild(inner_editor);
 }
 
@@ -535,21 +539,37 @@ String HTMLTextAreaElement::FilterBeforeTextInserted(const String& text) {
   return result;
 }
 
-String HTMLTextAreaElement::SanitizeUserInputValue(const String& proposed_value,
-                                                   unsigned max_length) {
+// Computes how many leading UTF-16 code units of `characters` may be kept
+// under `max_length`, collapsing CRLF pairs into a single unit as it goes.
+template <typename CharType>
+static wtf_size_t ComputeSanitizedLength(base::span<const CharType> characters,
+                                         unsigned max_length) {
   unsigned submission_length = 0;
-  unsigned i = 0;
-  for (; i < proposed_value.length(); ++i) {
-    if (proposed_value[i] == '\r' && i + 1 < proposed_value.length() &&
-        proposed_value[i + 1] == '\n')
+  wtf_size_t i = 0;
+  for (; i < characters.size(); ++i) {
+    if (characters[i] == '\r' && i + 1 < characters.size() &&
+        characters[i + 1] == '\n') {
       continue;
+    }
     ++submission_length;
     if (submission_length == max_length) {
       ++i;
       break;
     }
-    if (submission_length > max_length)
+    if (submission_length > max_length) {
       break;
+    }
+  }
+  return i;
+}
+
+String HTMLTextAreaElement::SanitizeUserInputValue(const String& proposed_value,
+                                                   unsigned max_length) {
+  wtf_size_t i = 0;
+  if (!proposed_value.empty()) {
+    i = VisitCharacters(proposed_value, [max_length](auto chars) {
+      return ComputeSanitizedLength(chars, max_length);
+    });
   }
   if (i > 0 && U16_IS_LEAD(proposed_value[i - 1]))
     --i;
@@ -711,8 +731,7 @@ void HTMLTextAreaElement::setDefaultValue(const String& default_value) {
 
 void HTMLTextAreaElement::SetSuggestedValue(const String& value) {
   String sanitized_value = value;
-  if (IsInCanvasSubtree() &&
-      RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext())) {
+  if (IsInCanvasSubtree()) {
     // Hide suggested values when under canvas, to prevent leaking this
     // information to javascript.
     sanitized_value = String();
@@ -727,8 +746,7 @@ void HTMLTextAreaElement::SetSuggestedValue(const String& value) {
 
 void HTMLTextAreaElement::DidChangeIsInCanvasSubtree() {
   TextControlElement::DidChangeIsInCanvasSubtree();
-  if (IsInCanvasSubtree() &&
-      RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext())) {
+  if (IsInCanvasSubtree()) {
     // Hide suggested values when under canvas, to prevent leaking this
     // information to javascript.
     SetSuggestedValue(String());

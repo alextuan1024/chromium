@@ -15,6 +15,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/profiles/profile_view_utils.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/common/webui_url_constants.h"
@@ -139,6 +140,8 @@ std::string_view LayoutConstantToCssVarName(LayoutConstant layout_constant) {
       return "--toolbar-element-padding";
     case kToolbarIconDefaultMargin:
       return "--toolbar-icon-default-margin";
+    case kToolbarButtonRefreshExpandedMargin:
+      return "--toolbar-button-refresh-expanded-margin";
     case kToolbarCornerRadius:
       return "--toolbar-corner-radius";
     case kSidePanelInset:
@@ -241,6 +244,12 @@ std::string WebUIToolbarLayoutCssHelper::GenerateLayoutConstantsCss() {
   base::StrAppend(&css_string,
                   {"--avatar-chip-icon-label-spacing:",
                    base::NumberToString(kAvatarChipIconLabelSpacing), "px;"});
+  const int avatar_size =
+      GetLayoutConstant(LayoutConstant::kToolbarButtonIconSize);
+  const int ring_delta = kAvatarRingGapDip + GetAvatarRingThickness(avatar_size);
+  base::StrAppend(
+      &css_string,
+      {"--avatar-ring-delta:", base::NumberToString(ring_delta), "px;"});
 
   // Add fonts.
   const auto& typography_provider = views::TypographyProvider::Get();

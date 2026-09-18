@@ -20,11 +20,9 @@
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/common/extensions/api/odfs_config_private.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/dependency_graph.h"
 #include "components/keyed_service/core/keyed_service_base_factory.h"
@@ -60,10 +58,6 @@ class OneDrivePrefObserverBrowserTest
   OneDrivePrefObserverBrowserTest() {
     std::vector<base::test::FeatureRefAndParams> features_to_enable =
         apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
-    features_to_enable.push_back(
-        {chromeos::features::kUploadOfficeToCloud, {}});
-    features_to_enable.push_back(
-        {chromeos::features::kMicrosoftOneDriveIntegrationForEnterprise, {}});
     feature_list_.InitWithFeaturesAndParameters(features_to_enable, {});
   }
   ~OneDrivePrefObserverBrowserTest() override = default;

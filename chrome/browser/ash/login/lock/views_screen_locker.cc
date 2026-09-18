@@ -37,6 +37,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/ime/ash/ime_keyboard.h"
 
 // TODO(b/228873153): Remove after figuring out the root cause of the bug
@@ -110,11 +111,12 @@ void ViewsScreenLocker::HandleAuthenticateUserWithPasswordOrPin(
     const std::string& password,
     bool authenticated_by_pin,
     base::OnceCallback<void(bool)> callback) {
-  DCHECK_EQ(account_id.GetUserEmail(),
-            gaia::SanitizeEmail(account_id.GetUserEmail()));
+  CHECK_EQ(account_id.GetUserEmail(),
+           gaia::SanitizeEmail(account_id.GetUserEmail()),
+           base::NotFatalUntil::M160);
   const user_manager::User* const user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
   auto user_context = std::make_unique<UserContext>(*user);
   user_context->SetKey(
       Key(Key::KEY_TYPE_PASSWORD_PLAIN, std::string(), password));

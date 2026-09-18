@@ -13,7 +13,6 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -30,6 +29,7 @@
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/common/color_parser.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/prefs_helper.h"
 #include "extensions/browser/api/declarative_net_request/utils.h"
@@ -42,7 +42,6 @@
 #include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/error_utils.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/image_util.h"
 #include "extensions/common/manifest_constants.h"
@@ -68,7 +67,6 @@ namespace {
 // Errors.
 const char kNoExtensionActionError[] =
     "This extension has no action specified.";
-const char kNoTabError[] = "No tab with id: *.";
 constexpr char kOpenPopupError[] =
     "Failed to show popup either because there is an existing popup or another "
     "error occurred.";
@@ -203,7 +201,8 @@ ExtensionFunction::ResponseAction ExtensionActionFunction::Run() {
                                  include_incognito_information(),
                                  &contents_out_param);
     if (!contents_out_param) {
-      return RespondNow(Error(kNoTabError, base::NumberToString(tab_id_)));
+      return RespondNow(
+          Error(kTabNotFoundError, base::NumberToString(tab_id_)));
     }
     contents_ = contents_out_param;
   } else {
@@ -380,18 +379,10 @@ ExtensionActionSetBadgeTextFunction::RunExtensionAction() {
 
   const std::string* badge_text = details_->FindString("text");
 
-  // Log badge text length to determine future length limit.
-  // TODO(crbug.com/491158086): After determining suitable length limit, remove
-  // histogram and add special case handling of excessively long badges.
-  base::UmaHistogramCounts1000("Extensions.Action.SetBadgeTextLength",
-                               badge_text ? badge_text->length() : 0);
-
   if (badge_text) {
     // The maximum size (in bytes) for values passed to action.setBadgeText().
     constexpr size_t kMaxBadgeTextSize = 100;
-    if ((badge_text->length() > kMaxBadgeTextSize) &&
-        base::FeatureList::IsEnabled(
-            extensions_features::kApiActionSetBadgeTextByteLimit)) {
+    if (badge_text->length() > kMaxBadgeTextSize) {
       return RespondNow(Error(base::StringPrintf(
           kSetBadgeMaximumSizeError, badge_text->length(), kMaxBadgeTextSize)));
     }

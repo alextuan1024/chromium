@@ -119,7 +119,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
     public static void onJavascriptOptimizerLinkClicked(Context context) {
         Bundle extras = new Bundle();
         extras.putString(SingleCategorySettings.EXTRA_CATEGORY, "javascript_optimizer");
-        SettingsNavigation navigation = SettingsNavigationFactory.createSettingsNavigation();
+        SettingsNavigation navigation = SettingsNavigationFactory.createSettingsNavigation(context);
         navigation.startSettings(
                 context, SingleCategorySettings.class, extras, /* addToBackStack= */ true);
     }
@@ -395,14 +395,12 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                             : R.string.text_off);
         }
 
-        if (shouldShowUniversalOptOutSettings(getProfile())) {
-            Preference universalOptOutPref = findPreference(PREF_UNIVERSAL_OPT_OUT);
-            if (universalOptOutPref != null) {
-                universalOptOutPref.setSummary(
-                        UserPrefs.get(getProfile()).getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
-                                ? R.string.text_on
-                                : R.string.text_off);
-            }
+        Preference universalOptOutPref = findPreference(PREF_UNIVERSAL_OPT_OUT);
+        if (universalOptOutPref != null) {
+            universalOptOutPref.setSummary(
+                    UserPrefs.get(getProfile()).getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
+                            ? R.string.text_on
+                            : R.string.text_off);
         }
 
         Preference preloadPagesPreference = findPreference(PREF_PRELOAD_PAGES);

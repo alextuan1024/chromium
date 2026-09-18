@@ -8,7 +8,6 @@
 
 #include <optional>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/containers/span.h"
@@ -53,14 +52,8 @@ TpmParseErrorOr<void> MapResponseStatus(const ResponseStatus& status) {
     case ParseResult::TpmErrorResponse:
       return base::unexpected(TpmParseError(
           TpmParseError::Type::kTpmErrorResponse, status.tpm_response_code));
-    case ParseResult::BadMagicNumber:
-      return base::unexpected(
-          TpmParseError(TpmParseError::Type::kBadMagicNumber));
     case ParseResult::WrongType:
       return base::unexpected(TpmParseError(TpmParseError::Type::kWrongType));
-    case ParseResult::ChallengeMismatch:
-      return base::unexpected(
-          TpmParseError(TpmParseError::Type::kChallengeMismatch));
   }
   NOTREACHED();
 }
@@ -197,27 +190,21 @@ std::optional<SignatureAlgorithms> ToSignatureAlgorithms(
 
 }  // namespace
 
-std::vector<uint8_t> BuildCertifyCommand(
-    uint32_t object_handle,
-    uint32_t sign_handle,
-    base::span<const uint8_t> qualifying_data) {
-  return base::ToVector(build_certify_command(
-      object_handle, sign_handle, base::SpanToRustSlice(qualifying_data)));
-}
-
-TpmParseErrorOr<CertifyResponse> ParseCertifyResponse(
-    base::span<const uint8_t> response_blob,
-    base::span<const uint8_t> expected_extra_data) {
-  RawCertifyResponse raw_response =
-      parse_certify_response(base::SpanToRustSlice(response_blob),
-                             base::SpanToRustSlice(expected_extra_data));
-
-  return MapResponseStatus(raw_response.status).transform([&] {
-    return CertifyResponse{
-        .statement = base::ToVector(raw_response.statement),
-        .signature = base::ToVector(raw_response.signature),
-    };
-  });
+// A nonexistent handle is reported in more than one way: response codes are
+// stored unmasked, so TPM_RC_HANDLE may carry the handle-index qualifier
+// TPM_RC_1, and a handle that is absent from the resource manager is reported
+// as the warning TPM_RC_REFERENCE_H0 instead (TPM 2.0 Part 2, Table 17).
+bool IsHandleError(const TpmParseError& error) {
+  // `tpm_error_code` is only set for `kTpmErrorResponse`, and a TPM error
+  // response never carries code 0, so the fallback below cannot match.
+  switch (error.tpm_error_code.value_or(0)) {
+    case 0x08B:  // TPM_RC_HANDLE
+    case 0x18B:  // TPM_RC_HANDLE | TPM_RC_1
+    case 0x910:  // TPM_RC_REFERENCE_H0
+      return true;
+    default:
+      return false;
+  }
 }
 
 std::optional<std::vector<uint8_t>> BuildCreateAikCommand(
@@ -239,6 +226,22 @@ TpmParseErrorOr<CreateResponse> ParseCreateResponse(
     return CreateResponse{
         .out_private = base::ToVector(raw_response.out_private),
         .out_public = base::ToVector(raw_response.out_public),
+    };
+  });
+}
+
+std::vector<uint8_t> BuildCreatePrimaryEccSrkCommand() {
+  return base::ToVector(build_create_primary_ecc_srk_command());
+}
+
+TpmParseErrorOr<CreatePrimaryResponse> ParseCreatePrimaryResponse(
+    base::span<const uint8_t> response_blob) {
+  RawCreatePrimaryResponse raw_response =
+      parse_create_primary_response(base::SpanToRustSlice(response_blob));
+
+  return MapResponseStatus(raw_response.status).transform([&] {
+    return CreatePrimaryResponse{
+        .object_handle = raw_response.object_handle,
     };
   });
 }

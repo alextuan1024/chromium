@@ -60,7 +60,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
 import org.chromium.chrome.browser.share.ShareUtils;
-import org.chromium.chrome.browser.supervised_user.SupervisedUserServiceBridge;
+import org.chromium.chrome.browser.supervised_user.AndroidParentalControlsBridge;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -76,7 +76,6 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.chrome.browser.ui.lens.LensOverlayTabHelper;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
@@ -560,10 +559,10 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             AppMenuItemUtils.maybeAddDividerLine(modelList, R.id.managed_by_divider_line_id);
             modelList.add(buildManagedByItem(currentTab));
         }
-        if (shouldShowContentFilterHelpCenterMenuItem(currentTab)) {
+        if (shouldShowContentFilterHelpCenterMenuItem()) {
             AppMenuItemUtils.maybeAddDividerLine(
                     modelList, R.id.menu_item_content_filter_divider_line_id);
-            modelList.add(buildContentFilterHelpCenterMenuItem(currentTab));
+            modelList.add(buildContentFilterHelpCenterMenuItem());
         }
 
         // Default browser promo
@@ -746,10 +745,10 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             AppMenuItemUtils.maybeAddDividerLine(modelList, R.id.managed_by_divider_line_id);
             modelList.add(buildManagedByItem(currentTab));
         }
-        if (shouldShowContentFilterHelpCenterMenuItem(currentTab)) {
+        if (shouldShowContentFilterHelpCenterMenuItem()) {
             AppMenuItemUtils.maybeAddDividerLine(
                     modelList, R.id.menu_item_content_filter_divider_line_id);
-            modelList.add(buildContentFilterHelpCenterMenuItem(currentTab));
+            modelList.add(buildContentFilterHelpCenterMenuItem());
         }
 
         // Default browser promo menu item (entry point).
@@ -1147,12 +1146,6 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             return false;
         }
 
-        // Check if sharing (which includes printing) is generally enabled for this tab's content.
-        boolean canShareTab = ShareUtils.shouldEnableShare(currentTab);
-        if (!canShareTab) {
-            return false;
-        }
-
         // Check if printing is specifically enabled in user preferences for the current profile.
         Profile profile = currentTab.getProfile();
         boolean isPrintingEnabled = UserPrefs.get(profile).getBoolean(Pref.PRINTING_ENABLED);
@@ -1161,11 +1154,13 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         }
 
         // The print functionality is enabled if:
-        // 1. The device is running Desktop Android, OR
-        // 2. The current tab is a PDF page.
-        NativePage nativePage = currentTab.getNativePage();
-        boolean isPdf = nativePage != null && nativePage.isPdf();
-        return DeviceInfo.isDesktop() || isPdf;
+        // 1. The current tab is a PDF page (mobile and desktop), OR
+        // 2. The device is running Desktop Android and the tab is a printable WebContents page
+        //    (non-PDF native pages like NTP, Bookmarks, and History cannot be printed).
+        boolean isPdf =
+                currentTab.isNativePage() && assumeNonNull(currentTab.getNativePage()).isPdf();
+        return isPdf
+                || (DeviceInfo.isDesktop() && shouldShowWebContentsDependentMenuItem(currentTab));
     }
 
     private ListItem buildPrintItem(Tab currentTab) {
@@ -1651,10 +1646,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         return currentTab != null && ManagedBrowserUtils.isBrowserManaged(currentTab.getProfile());
     }
 
-    @Contract("null -> false")
-    protected boolean shouldShowContentFilterHelpCenterMenuItem(@Nullable Tab currentTab) {
-        return currentTab != null
-                && SupervisedUserServiceBridge.isSupervisedLocally(currentTab.getProfile());
+    protected boolean shouldShowContentFilterHelpCenterMenuItem() {
+        return AndroidParentalControlsBridge.isSupervisedLocally();
     }
 
     private ListItem buildManagedByItem(Tab currentTab) {
@@ -1670,8 +1663,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
                         isMenuIconAtStart()));
     }
 
-    private ListItem buildContentFilterHelpCenterMenuItem(Tab currentTab) {
-        assert shouldShowContentFilterHelpCenterMenuItem(currentTab);
+    private ListItem buildContentFilterHelpCenterMenuItem() {
+        assert shouldShowContentFilterHelpCenterMenuItem();
         return new ListItem(
                 AppMenuHandler.AppMenuItemType.STANDARD,
                 AppMenuItemUtils.buildModelForStandardMenuItem(

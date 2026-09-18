@@ -184,13 +184,6 @@ constexpr std::string_view kMaskedBankAccountsMetadataTable =
 // kInstrumentId = "instrument_id"
 // kUseCount = "use_count"
 // kUseDate = "use_date"
-constexpr std::initializer_list<
-    const std::pair<const std::string_view, const std::string_view>>
-    kMaskedBankAccountsMetadataColumnNamesAndTypes = {
-        {kInstrumentId, "INTEGER NOT NULL"},
-        {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
-        {kUseDate, "INTEGER NOT NULL DEFAULT 0"}};
-
 constexpr std::string_view kMaskedBankAccountsTable = "masked_bank_accounts";
 // kInstrumentId = "instrument_id"
 // kBankName = "bank_name"
@@ -198,15 +191,6 @@ constexpr std::string_view kAccountNumberSuffix = "account_number_suffix";
 constexpr std::string_view kAccountType = "account_type";
 // kNickname = "nickname"
 constexpr std::string_view kDisplayIconUrl = "display_icon_url";
-constexpr std::initializer_list<
-    const std::pair<const std::string_view, const std::string_view>>
-    kMaskedBankAccountsColumnNamesAndTypes = {
-        {kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
-        {kBankName, "VARCHAR"},
-        {kAccountNumberSuffix, "VARCHAR"},
-        {kAccountType, "INTEGER DEFAULT 0"},
-        {kDisplayIconUrl, "VARCHAR"},
-        {kNickname, "VARCHAR"}};
 
 constexpr std::string_view kMaskedCreditCardBenefitsTable =
     "masked_credit_card_benefits";
@@ -217,37 +201,17 @@ constexpr std::string_view kBenefitCategory = "benefit_category";
 constexpr std::string_view kBenefitDescription = "benefit_description";
 constexpr std::string_view kStartTime = "start_time";
 constexpr std::string_view kEndTime = "end_time";
-constexpr std::initializer_list<
-    const std::pair<const std::string_view, const std::string_view>>
-    kMaskedCreditCardBenefitsColumnNamesAndTypes = {
-        {kBenefitId, "VARCHAR PRIMARY KEY NOT NULL"},
-        {kInstrumentId, "INTEGER NOT NULL DEFAULT 0"},
-        {kBenefitType, "INTEGER NOT NULL DEFAULT 0"},
-        {kBenefitCategory, "INTEGER NOT NULL DEFAULT 0"},
-        {kBenefitDescription, "VARCHAR NOT NULL"},
-        {kStartTime, "INTEGER"},
-        {kEndTime, "INTEGER"}};
 
 constexpr std::string_view kBenefitMerchantDomainsTable =
     "benefit_merchant_domains";
 // kBenefitId = "benefit_id"
 // kMerchantDomain = "merchant_domain";
-constexpr std::initializer_list<
-    const std::pair<const std::string_view, const std::string_view>>
-    kBenefitMerchantDomainsColumnNamesAndTypes = {
-        {kBenefitId, "VARCHAR NOT NULL"},
-        {kMerchantDomain, "VARCHAR NOT NULL"}};
 
 constexpr std::string_view kGenericPaymentInstrumentsTable =
     "generic_payment_instruments";
 // kInstrumentId = "instrument_id"
 constexpr std::string_view kSerializedValueEncrypted =
     "serialized_value_encrypted";
-constexpr std::initializer_list<
-    const std::pair<const std::string_view, const std::string_view>>
-    kGenericPaymentInstrumentsColumnNamesAndTypes = {
-        {kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
-        {kSerializedValueEncrypted, "VARCHAR NOT NULL"}};
 
 constexpr std::string_view kPaymentInstrumentCreationOptionsTable =
     "payment_instrument_creation_options";
@@ -495,6 +459,48 @@ T CheckedToEnum(std::underlying_type_t<T> raw_int) {
   return IsKnownEnumValue(e) ? e : T::kMinValue;
 }
 
+bool RemoveAutofillOfferRows(sql::Database& db, int64_t offer_id) {
+  return sql::DeleteWhereColumnEq(db, kOfferDataTable, kOfferId, offer_id) &&
+         sql::DeleteWhereColumnEq(db, kOfferEligibleInstrumentTable, kOfferId,
+                                  offer_id) &&
+         sql::DeleteWhereColumnEq(db, kOfferMerchantDomainTable, kOfferId,
+                                  offer_id);
+}
+
+bool InsertOffer(sql::Database& db, const AutofillOfferData& offer) {
+  sql::Statement insert_offer;
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, db, insert_offer, kOfferDataTable,
+      {kOfferId, kOfferRewardAmount, kExpiry, kOfferDetailsUrl, kPromoCode,
+       kValuePropText, kSeeDetailsText, kUsageInstructionsText});
+  insert_offer.BindInt64(0, offer.GetOfferId());
+  insert_offer.BindString(1, offer.GetOfferRewardAmount());
+  insert_offer.BindInt64(
+      2, offer.GetExpiry().ToDeltaSinceWindowsEpoch().InMilliseconds());
+  insert_offer.BindString(3, offer.GetOfferDetailsUrl().spec());
+  insert_offer.BindString(4, offer.GetPromoCode());
+  insert_offer.BindString(5, offer.GetDisplayStrings().value_prop_text);
+  insert_offer.BindString(6, offer.GetDisplayStrings().see_details_text);
+  insert_offer.BindString(7, offer.GetDisplayStrings().usage_instructions_text);
+  if (!insert_offer.Run()) {
+    return false;
+  }
+
+  sql::Statement insert_merchant_domain;
+  sql::CachedInsertBuilder(SQL_FROM_HERE, db, insert_merchant_domain,
+                           kOfferMerchantDomainTable,
+                           {kOfferId, kMerchantDomain});
+  for (const GURL& merchant_origin : offer.GetMerchantOrigins()) {
+    insert_merchant_domain.BindInt64(0, offer.GetOfferId());
+    insert_merchant_domain.BindString(1, merchant_origin.spec());
+    if (!insert_merchant_domain.Run()) {
+      return false;
+    }
+    insert_merchant_domain.Reset(/*clear_bound_vars=*/true);
+  }
+  return true;
+}
+
 }  // namespace
 
 PaymentsAutofillTable::PaymentsAutofillTable() = default;
@@ -625,6 +631,9 @@ bool PaymentsAutofillTable::MigrateToVersion(int version,
     case 153:
       *update_compatible_version = true;
       return MigrateToVersion153ReplaceOriginWithIsUserConfirmed();
+    case 156:
+      *update_compatible_version = false;
+      return MigrateToVersion156ClearLegacyOffers();
   }
   return true;
 }
@@ -1415,53 +1424,38 @@ void PaymentsAutofillTable::SetAutofillOffers(
   sql::DeleteAllRows(*db(), kOfferMerchantDomainTable);
 
   // Insert new values.
-  sql::Statement insert_offers;
-  sql::CachedInsertBuilder(
-      SQL_FROM_HERE, *db(), insert_offers, kOfferDataTable,
-      {kOfferId, kOfferRewardAmount, kExpiry, kOfferDetailsUrl, kPromoCode,
-       kValuePropText, kSeeDetailsText, kUsageInstructionsText});
-
-  sql::Statement insert_offer_eligible_instruments;
-  sql::CachedInsertBuilder(
-      SQL_FROM_HERE, *db(), insert_offer_eligible_instruments,
-      kOfferEligibleInstrumentTable, {kOfferId, kInstrumentId});
-
-  sql::Statement insert_offer_merchant_domains;
-  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert_offer_merchant_domains,
-                           kOfferMerchantDomainTable,
-                           {kOfferId, kMerchantDomain});
-
   for (const AutofillOfferData& data : autofill_offer_data) {
-    insert_offers.BindInt64(0, data.GetOfferId());
-    insert_offers.BindString(1, data.GetOfferRewardAmount());
-    insert_offers.BindInt64(
-        2, data.GetExpiry().ToDeltaSinceWindowsEpoch().InMilliseconds());
-    insert_offers.BindString(3, data.GetOfferDetailsUrl().spec());
-    insert_offers.BindString(4, data.GetPromoCode());
-    insert_offers.BindString(5, data.GetDisplayStrings().value_prop_text);
-    insert_offers.BindString(6, data.GetDisplayStrings().see_details_text);
-    insert_offers.BindString(7,
-                             data.GetDisplayStrings().usage_instructions_text);
-    insert_offers.Run();
-    insert_offers.Reset(/*clear_bound_vars=*/true);
-
-    for (const int64_t instrument_id : data.GetEligibleInstrumentIds()) {
-      // Insert new offer_eligible_instrument values.
-      insert_offer_eligible_instruments.BindInt64(0, data.GetOfferId());
-      insert_offer_eligible_instruments.BindInt64(1, instrument_id);
-      insert_offer_eligible_instruments.Run();
-      insert_offer_eligible_instruments.Reset(/*clear_bound_vars=*/true);
-    }
-
-    for (const GURL& merchant_origin : data.GetMerchantOrigins()) {
-      // Insert new offer_merchant_domain values.
-      insert_offer_merchant_domains.BindInt64(0, data.GetOfferId());
-      insert_offer_merchant_domains.BindString(1, merchant_origin.spec());
-      insert_offer_merchant_domains.Run();
-      insert_offer_merchant_domains.Reset(/*clear_bound_vars=*/true);
+    if (!InsertOffer(*db(), data)) {
+      return;
     }
   }
   transaction.Commit();
+}
+
+bool PaymentsAutofillTable::AddOrUpdateAutofillOffer(
+    const AutofillOfferData& autofill_offer_data) {
+  sql::Transaction transaction(db());
+  // An offer already stored under the same id is removed before the new one is
+  // inserted.
+  return transaction.Begin() &&
+         RemoveAutofillOfferRows(*db(), autofill_offer_data.GetOfferId()) &&
+         InsertOffer(*db(), autofill_offer_data) && transaction.Commit();
+}
+
+bool PaymentsAutofillTable::RemoveAutofillOffer(int64_t offer_id) {
+  sql::Transaction transaction(db());
+  return transaction.Begin() && RemoveAutofillOfferRows(*db(), offer_id) &&
+         transaction.Commit();
+}
+
+bool PaymentsAutofillTable::AutofillOfferExists(int64_t offer_id) {
+  sql::Statement s;
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kOfferDataTable, {kOfferId},
+      /*modifiers=*/
+      base::StrCat({"WHERE ", kOfferId, " = ", sql::kPlaceholder}));
+  s.BindInt64(0, offer_id);
+  return s.Step();
 }
 
 bool PaymentsAutofillTable::GetAutofillOffers(
@@ -1473,12 +1467,6 @@ bool PaymentsAutofillTable::GetAutofillOffers(
       SQL_FROM_HERE, *db(), s, kOfferDataTable,
       {kOfferId, kOfferRewardAmount, kExpiry, kOfferDetailsUrl, kPromoCode,
        kValuePropText, kSeeDetailsText, kUsageInstructionsText});
-
-  sql::Statement s_offer_eligible_instrument;
-  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s_offer_eligible_instrument,
-                           kOfferEligibleInstrumentTable,
-                           {kOfferId, kInstrumentId},
-                           /*modifiers=*/"WHERE offer_id = ?");
 
   sql::Statement s_offer_merchant_domain;
   sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s_offer_merchant_domain,
@@ -1499,17 +1487,7 @@ bool PaymentsAutofillTable::GetAutofillOffers(
     std::string usage_instructions_text = s.ColumnString(index++);
     DisplayStrings display_strings = {value_prop_text, see_details_text,
                                       usage_instructions_text};
-    std::vector<int64_t> eligible_instrument_id;
     std::vector<GURL> merchant_origins;
-
-    s_offer_eligible_instrument.BindInt64(0, offer_id);
-    while (s_offer_eligible_instrument.Step()) {
-      const int64_t instrument_id = s_offer_eligible_instrument.ColumnInt64(1);
-      if (instrument_id != 0) {
-        eligible_instrument_id.push_back(instrument_id);
-      }
-    }
-    s_offer_eligible_instrument.Reset(/*clear_bound_vars=*/true);
 
     s_offer_merchant_domain.BindInt64(0, offer_id);
     while (s_offer_merchant_domain.Step()) {
@@ -1521,19 +1499,10 @@ bool PaymentsAutofillTable::GetAutofillOffers(
     }
     s_offer_merchant_domain.Reset(/*clear_bound_vars=*/true);
 
-    if (promo_code.empty()) {
-      auto data = std::make_unique<AutofillOfferData>(
-          AutofillOfferData::GPayCardLinkedOffer(
-              offer_id, expiry, merchant_origins, offer_details_url,
-              display_strings, eligible_instrument_id, offer_reward_amount));
-      autofill_offer_data->emplace_back(std::move(data));
-    } else {
-      auto data = std::make_unique<AutofillOfferData>(
-          AutofillOfferData::GPayPromoCodeOffer(
-              offer_id, expiry, merchant_origins, offer_details_url,
-              display_strings, promo_code));
-      autofill_offer_data->emplace_back(std::move(data));
-    }
+    autofill_offer_data->emplace_back(std::make_unique<AutofillOfferData>(
+        offer_id, expiry, std::move(merchant_origins),
+        std::move(offer_details_url), std::move(display_strings),
+        std::move(promo_code), std::move(offer_reward_amount)));
   }
 
   return s.Succeeded();
@@ -2158,9 +2127,16 @@ bool PaymentsAutofillTable::
          sql::AddColumn(*db(), kMaskedCreditCardsTable, kProductTermsUrl,
                         "VARCHAR") &&
          sql::CreateTable(*db(), kMaskedCreditCardBenefitsTable,
-                          kMaskedCreditCardBenefitsColumnNamesAndTypes) &&
+                          {{kBenefitId, "VARCHAR PRIMARY KEY NOT NULL"},
+                           {kInstrumentId, "INTEGER NOT NULL DEFAULT 0"},
+                           {kBenefitType, "INTEGER NOT NULL DEFAULT 0"},
+                           {kBenefitCategory, "INTEGER NOT NULL DEFAULT 0"},
+                           {kBenefitDescription, "VARCHAR NOT NULL"},
+                           {kStartTime, "INTEGER"},
+                           {kEndTime, "INTEGER"}}) &&
          sql::CreateTable(*db(), kBenefitMerchantDomainsTable,
-                          kBenefitMerchantDomainsColumnNamesAndTypes) &&
+                          {{kBenefitId, "VARCHAR NOT NULL"},
+                           {kMerchantDomain, "VARCHAR NOT NULL"}}) &&
          transaction.Commit();
 }
 
@@ -2173,9 +2149,16 @@ bool PaymentsAutofillTable::
          DropTableIfExists(db(), "bank_accounts") &&
          DropTableIfExists(db(), "payment_instrument_supported_rails") &&
          sql::CreateTable(*db(), kMaskedBankAccountsTable,
-                          kMaskedBankAccountsColumnNamesAndTypes) &&
+                          {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
+                           {kBankName, "VARCHAR"},
+                           {kAccountNumberSuffix, "VARCHAR"},
+                           {kAccountType, "INTEGER DEFAULT 0"},
+                           {kDisplayIconUrl, "VARCHAR"},
+                           {kNickname, "VARCHAR"}}) &&
          sql::CreateTable(*db(), kMaskedBankAccountsMetadataTable,
-                          kMaskedBankAccountsMetadataColumnNamesAndTypes) &&
+                          {{kInstrumentId, "INTEGER NOT NULL"},
+                           {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+                           {kUseDate, "INTEGER NOT NULL DEFAULT 0"}}) &&
          transaction.Commit();
 }
 
@@ -2186,7 +2169,8 @@ bool PaymentsAutofillTable::MigrateToVersion125DeleteFullServerCardsTable() {
 bool PaymentsAutofillTable::
     MigrateToVersion129AddGenericPaymentInstrumentsTable() {
   return sql::CreateTable(*db(), kGenericPaymentInstrumentsTable,
-                          kGenericPaymentInstrumentsColumnNamesAndTypes);
+                          {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
+                           {kSerializedValueEncrypted, "VARCHAR NOT NULL"}});
 }
 
 bool PaymentsAutofillTable::
@@ -2250,6 +2234,20 @@ bool PaymentsAutofillTable::
     return false;
   }
 
+  return transaction.Commit();
+}
+
+bool PaymentsAutofillTable::MigrateToVersion156ClearLegacyOffers() {
+  sql::Transaction transaction(db());
+  if (!transaction.Begin()) {
+    return false;
+  }
+  for (std::string_view table : {kOfferDataTable, kOfferEligibleInstrumentTable,
+                                 kOfferMerchantDomainTable}) {
+    if (db()->DoesTableExist(table) && !sql::DeleteAllRows(*db(), table)) {
+      return false;
+    }
+  }
   return transaction.Commit();
 }
 
@@ -2459,28 +2457,46 @@ bool PaymentsAutofillTable::InitVirtualCardUsageDataTable() {
 }
 
 bool PaymentsAutofillTable::InitMaskedBankAccountsTable() {
-  return CreateTableIfNotExists(db(), kMaskedBankAccountsTable,
-                                kMaskedBankAccountsColumnNamesAndTypes);
+  return CreateTableIfNotExists(
+      db(), kMaskedBankAccountsTable,
+      {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
+       {kBankName, "VARCHAR"},
+       {kAccountNumberSuffix, "VARCHAR"},
+       {kAccountType, "INTEGER DEFAULT 0"},
+       {kDisplayIconUrl, "VARCHAR"},
+       {kNickname, "VARCHAR"}});
 }
 
 bool PaymentsAutofillTable::InitMaskedBankAccountsMetadataTable() {
   return CreateTableIfNotExists(db(), kMaskedBankAccountsMetadataTable,
-                                kMaskedBankAccountsMetadataColumnNamesAndTypes);
+                                {{kInstrumentId, "INTEGER NOT NULL"},
+                                 {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+                                 {kUseDate, "INTEGER NOT NULL DEFAULT 0"}});
 }
 
 bool PaymentsAutofillTable::InitMaskedCreditCardBenefitsTable() {
-  return CreateTableIfNotExists(db(), kMaskedCreditCardBenefitsTable,
-                                kMaskedCreditCardBenefitsColumnNamesAndTypes);
+  return CreateTableIfNotExists(
+      db(), kMaskedCreditCardBenefitsTable,
+      {{kBenefitId, "VARCHAR PRIMARY KEY NOT NULL"},
+       {kInstrumentId, "INTEGER NOT NULL DEFAULT 0"},
+       {kBenefitType, "INTEGER NOT NULL DEFAULT 0"},
+       {kBenefitCategory, "INTEGER NOT NULL DEFAULT 0"},
+       {kBenefitDescription, "VARCHAR NOT NULL"},
+       {kStartTime, "INTEGER"},
+       {kEndTime, "INTEGER"}});
 }
 
 bool PaymentsAutofillTable::InitBenefitMerchantDomainsTable() {
   return CreateTableIfNotExists(db(), kBenefitMerchantDomainsTable,
-                                kBenefitMerchantDomainsColumnNamesAndTypes);
+                                {{kBenefitId, "VARCHAR NOT NULL"},
+                                 {kMerchantDomain, "VARCHAR NOT NULL"}});
 }
 
 bool PaymentsAutofillTable::InitGenericPaymentInstrumentsTable() {
-  return CreateTableIfNotExists(db(), kGenericPaymentInstrumentsTable,
-                                kGenericPaymentInstrumentsColumnNamesAndTypes);
+  return CreateTableIfNotExists(
+      db(), kGenericPaymentInstrumentsTable,
+      {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
+       {kSerializedValueEncrypted, "VARCHAR NOT NULL"}});
 }
 
 bool PaymentsAutofillTable::InitPaymentInstrumentCreationOptionsTable() {

@@ -138,26 +138,26 @@ public class KeyboardAccessoryData {
      * example hereof is the "Generate Password" action.
      */
     public static final class Action {
-        private final Callback<Action> mActionCallback;
-        private final @Nullable Callback<Action> mLongPressCallback;
+        private final Runnable mActionCallback;
+        private final @Nullable Runnable mLongPressCallback;
         private final @Nullable Callback<Boolean> mHoverCallback;
         private final @AccessoryAction int mType;
 
-        public Action(@AccessoryAction int type, Callback<Action> actionCallback) {
+        public Action(@AccessoryAction int type, Runnable actionCallback) {
             this(type, actionCallback, /* longPressCallback= */ null);
         }
 
         public Action(
                 @AccessoryAction int type,
-                Callback<Action> actionCallback,
-                @Nullable Callback<Action> longPressCallback) {
+                Runnable actionCallback,
+                @Nullable Runnable longPressCallback) {
             this(type, actionCallback, longPressCallback, /* hoverCallback= */ null);
         }
 
         public Action(
                 @AccessoryAction int type,
-                Callback<Action> actionCallback,
-                @Nullable Callback<Action> longPressCallback,
+                Runnable actionCallback,
+                @Nullable Runnable longPressCallback,
                 @Nullable Callback<Boolean> hoverCallback) {
             mActionCallback = actionCallback;
             mLongPressCallback = longPressCallback;
@@ -165,11 +165,11 @@ public class KeyboardAccessoryData {
             mType = type;
         }
 
-        public Callback<Action> getCallback() {
+        public Runnable getCallback() {
             return mActionCallback;
         }
 
-        public @Nullable Callback<Action> getLongPressCallback() {
+        public @Nullable Runnable getLongPressCallback() {
             return mLongPressCallback;
         }
 

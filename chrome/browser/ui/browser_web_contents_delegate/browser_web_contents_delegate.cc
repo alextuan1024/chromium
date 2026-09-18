@@ -44,8 +44,10 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tab_dialogs.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/status_bubble_views.h"
@@ -79,6 +81,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/common/url_constants.h"
@@ -88,6 +91,7 @@
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
@@ -99,6 +103,8 @@
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/origin.h"
 
 #if defined(USE_AURA)
@@ -1364,17 +1370,31 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
   permissions::PermissionRequestManager* permission_request_manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents);
   if (permission_request_manager) {
+    // ForSecurityDropFullscreen() can exit fullscreen across related
+    // WebContents, which can execute observers or spin a nested event pump that
+    // synchronously destroys the requesting frame (e.g. if an iframe is
+    // detached). Track the frame weakly and ensure it is still alive and active
+    // before adding the request.
+    content::WeakDocumentPtr weak_document =
+        requesting_frame->GetWeakDocumentPtr();
     auto blocker = web_contents->ForSecurityDropFullscreen(
         /*display_id=*/display::kInvalidDisplayId);
-    if (!blocker) {
+    content::RenderFrameHost* rfh = weak_document.AsRenderFrameHostIfValid();
+    if (!blocker || !rfh || !rfh->IsActive()) {
       return;
     }
 
+    // The permission prompt must attribute the request to the initiator frame
+    // that called navigator.registerProtocolHandler, rather than the target
+    // handler URL. For web pages these are always same-origin, but extensions
+    // can register cross-origin HTTPS endpoints; attributing the prompt to the
+    // target URL would allow an extension to spoof the prompt as coming from
+    // the target origin.
     permission_request_manager->AddRequest(
-        requesting_frame,
-        std::make_unique<
-            custom_handlers::RegisterProtocolHandlerPermissionRequest>(
-            registry, handler, url, std::move(*blocker)));
+        rfh, std::make_unique<
+                 custom_handlers::RegisterProtocolHandlerPermissionRequest>(
+                 registry, handler, rfh->GetLastCommittedOrigin(),
+                 std::move(*blocker)));
   }
 }
 

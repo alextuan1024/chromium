@@ -146,6 +146,8 @@ void ReadAloudPlaybackController::InitializeAudio(
 
   audio_resources_ = std::move(resources);
   decoder_sequencer_.SetAudioQueue(audio_resources_->audio_segment_queue.get());
+
+  MaybePlayOnReady();
 }
 
 void ReadAloudPlaybackController::SetTextContent(
@@ -198,7 +200,7 @@ void ReadAloudPlaybackController::SetTextContent(
   // Setting new text content invalidates pending audio synthesis buffers from
   // the previous document segment, so FlushBuffers() resets internal queues.
   FlushBuffers();
-  if (client_.is_bound()) {
+  if (!MaybePlayOnReady() && client_.is_bound()) {
     // When new text content is loaded, playback defaults to paused until the
     // user explicitly triggers Play(). Notify client to synchronize UI state.
     client_->OnPlaybackStateChanged(read_aloud::mojom::PlaybackState::kPaused);
@@ -207,14 +209,72 @@ void ReadAloudPlaybackController::SetTextContent(
 
 void ReadAloudPlaybackController::Play() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!PlayIfReady()) {
+    play_on_ready_ = true;
+    // Restart watchdog timer on each Play() call to grant a fresh 10s window
+    // from the last click.
+    play_on_ready_timer_.Start(
+        FROM_HERE, kPlayOnReadyTimeout,
+        base::BindOnce(&ReadAloudPlaybackController::OnPlayOnReadyTimeout,
+                       base::Unretained(this)));
+  }
+}
+
+void ReadAloudPlaybackController::OnPlayOnReadyTimeout() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!play_on_ready_) {
+    return;
+  }
+  play_on_ready_ = false;
+
+  // Defensive Guard: Do not emit kPaused if playback is actively pumping audio.
+  if (client_.is_bound() && !decoder_sequencer_.is_pumping()) {
+    client_->OnPlaybackStateChanged(
+        read_aloud::mojom::PlaybackState::kPaused);
+  }
+}
+
+bool ReadAloudPlaybackController::IsReadyToPlay() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return IsTextSet() && IsAudioInitialized();
+}
+
+bool ReadAloudPlaybackController::IsTextSet() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return !segments_.empty();
+}
+
+bool ReadAloudPlaybackController::IsAudioInitialized() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return audio_resources_ && audio_resources_->audio_output_stream.is_bound();
+}
+
+bool ReadAloudPlaybackController::PlayIfReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsReadyToPlay()) {
+    return false;
+  }
+  play_on_ready_ = false;
+  play_on_ready_timer_.Stop();
   if (audio_resources_ && audio_resources_->audio_output_stream.is_bound()) {
     audio_resources_->audio_output_stream->Play();
   }
   decoder_sequencer_.StartPumping();
+  return true;
+}
+
+bool ReadAloudPlaybackController::MaybePlayOnReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (play_on_ready_) {
+    return PlayIfReady();
+  }
+  return false;
 }
 
 void ReadAloudPlaybackController::Pause() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  play_on_ready_ = false;
+  play_on_ready_timer_.Stop();
   if (audio_resources_ && audio_resources_->audio_output_stream.is_bound()) {
     audio_resources_->audio_output_stream->Pause();
   }
@@ -311,6 +371,8 @@ void ReadAloudPlaybackController::ResetSession() {
   audio_resources_.reset();
   segments_.clear();
   playback_rate_ = 1.0f;
+  play_on_ready_ = false;
+  play_on_ready_timer_.Stop();
   session_weak_factory_.InvalidateWeakPtrs();
 }
 
@@ -352,14 +414,17 @@ void ReadAloudPlaybackController::OnSpeechSynthesisResponse(
     return;
   }
 
-  std::u16string_view chunk_text;
   const std::vector<TextChunk>& timeline = prefetch_manager_.GetTimelineChunks();
-  if (chunk_index < timeline.size()) {
-    chunk_text = timeline[chunk_index].text;
+  if (chunk_index >= timeline.size()) {
+    prefetch_manager_.OnSynthesisResponse(sequence_id, chunk_index, nullptr,
+                                          {});
+    decoder_sequencer_.ReplenishBuffer();
+    return;
   }
+  const TextChunk& chunk = timeline[chunk_index];
 
   ParsedSynthesisResult result =
-      ParseAndValidateSynthesisResponse(std::move(response_bytes), chunk_text);
+      ParseAndValidateSynthesisResponse(std::move(response_bytes), chunk);
 
   prefetch_manager_.OnSynthesisResponse(
       sequence_id, chunk_index, std::move(result.audio_buffer),

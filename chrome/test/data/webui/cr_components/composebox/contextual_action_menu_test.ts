@@ -1321,6 +1321,177 @@ suite('ContextualActionMenu', () => {
     assertTrue(imageUpload!.textContent.includes(imageUploadLabel));
   });
 
+  test(
+      'Shows tool and model tooltips when config provides them and ' +
+          'feature is enabled',
+      async () => {
+        const deepSearchTooltip = 'Deep search tooltip content';
+        const regularModelTooltip = 'Gemini Regular tooltip content';
+
+        actionMenu.contextMenuTooltipsEnabled = true;
+        actionMenu.inputState = new MockInputState({
+          allowedTools: [ToolMode.kDeepSearch, ToolMode.kImageGen],
+          toolConfigs: [
+            {
+              tool: ToolMode.kDeepSearch,
+              menuLabel: 'Deep Search',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: deepSearchTooltip,
+              icon: 0,
+            },
+            {
+              tool: ToolMode.kImageGen,
+              menuLabel: 'Generate Image',
+              disableActiveModelSelection: false,
+              chipLabel: '',
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+              icon: 0,
+            },
+          ],
+          toolsSectionConfig: {header: ''},
+          allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+          modelConfigs: [
+            {
+              model: ModelMode.kGeminiRegular,
+              menuLabel: 'Gemini Regular',
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: regularModelTooltip,
+              icon: 0,
+            },
+            {
+              model: ModelMode.kGeminiPro,
+              menuLabel: 'Gemini Pro',
+              hintText: '',
+              aimUrlParams: [],
+              menuTooltip: '',
+              icon: 0,
+            },
+          ],
+          modelSectionConfig: {header: ''},
+        });
+
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const deepSearchEl =
+            $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+        assertTrue(!!deepSearchEl);
+        assertEquals(deepSearchTooltip, deepSearchEl.getAttribute('title'));
+
+        const imageGenEl =
+            $$(actionMenu, `[data-mode="${ToolMode.kImageGen}"]`);
+        assertTrue(!!imageGenEl);
+        assertEquals('', imageGenEl.getAttribute('title') || '');
+
+        const regularModelEl =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiRegular}"]`);
+        assertTrue(!!regularModelEl);
+        assertEquals(regularModelTooltip, regularModelEl.getAttribute('title'));
+
+        const proModelEl =
+            $$(actionMenu, `[data-model="${ModelMode.kGeminiPro}"]`);
+        assertTrue(!!proModelEl);
+        assertEquals('', proModelEl.getAttribute('title') || '');
+      });
+
+  test('Hides tool and model tooltips when feature is disabled', async () => {
+    actionMenu.contextMenuTooltipsEnabled = false;
+    actionMenu.inputState = new MockInputState({
+      allowedTools: [ToolMode.kDeepSearch],
+      toolConfigs: [
+        {
+          tool: ToolMode.kDeepSearch,
+          menuLabel: 'Deep Search',
+          disableActiveModelSelection: false,
+          chipLabel: '',
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: 'Deep search tooltip content',
+          icon: 0,
+        },
+      ],
+      allowedModels: [ModelMode.kGeminiRegular],
+      modelConfigs: [
+        {
+          model: ModelMode.kGeminiRegular,
+          menuLabel: 'Gemini Regular',
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: 'Gemini Regular tooltip content',
+          icon: 0,
+        },
+      ],
+    });
+
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    const deepSearchEl =
+        $$(actionMenu, `[data-mode="${ToolMode.kDeepSearch}"]`);
+    assertTrue(!!deepSearchEl);
+    assertEquals('', deepSearchEl.getAttribute('title') || '');
+
+    const regularModelEl =
+        $$(actionMenu, `[data-model="${ModelMode.kGeminiRegular}"]`);
+    assertTrue(!!regularModelEl);
+    assertEquals('', regularModelEl.getAttribute('title') || '');
+  });
+
+  test(
+      'Shows add tabs tooltip based on selected tabs when tooltips enabled',
+      async () => {
+        actionMenu.contextManagementInComposeboxEnabled = true;
+        actionMenu.contextMenuTooltipsEnabled = true;
+        const tabInfo = createTabSuggestion({tabId: 101, title: 'Tab 1'});
+        actionMenu.tabSuggestions = [tabInfo];
+        actionMenu.inputState = new MockInputState({
+          allowedInputTypes: [InputType.kBrowserTab],
+        });
+
+        actionMenu.showAt(actionMenu);
+        await microtasksFinished();
+
+        const shareTabsTrigger =
+            actionMenu.$.menu.querySelector<HTMLButtonElement>(
+                '#shareTabsTrigger')!;
+        assertTrue(!!shareTabsTrigger);
+        assertEquals(
+            actionMenu.i18n('addOpenTabsToAskAnything'),
+            shareTabsTrigger.getAttribute('title'));
+
+        // Select a tab.
+        actionMenu.selectedTabIds = new Map([[101, 'uuid-101']]);
+        await microtasksFinished();
+
+        assertEquals(
+            actionMenu.i18n('sharingTabsWithGoogle'),
+            shareTabsTrigger.getAttribute('title'));
+      });
+
+  test('Hides add tabs tooltip when tooltips disabled', async () => {
+    actionMenu.contextManagementInComposeboxEnabled = true;
+    actionMenu.contextMenuTooltipsEnabled = false;
+    const tabInfo = createTabSuggestion({tabId: 101, title: 'Tab 1'});
+    actionMenu.tabSuggestions = [tabInfo];
+    actionMenu.inputState = new MockInputState({
+      allowedInputTypes: [InputType.kBrowserTab],
+    });
+
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    const shareTabsTrigger = actionMenu.$.menu.querySelector<HTMLButtonElement>(
+        '#shareTabsTrigger')!;
+    assertTrue(!!shareTabsTrigger);
+    assertEquals('', shareTabsTrigger.getAttribute('title') || '');
+  });
+
   test('Toggling smart tab sharing fires event', async () => {
     actionMenu.remove();
     actionMenu = document.createElement('cr-composebox-contextual-action-menu');
@@ -1857,6 +2028,79 @@ suite('ContextualActionMenu', () => {
     triggerKeyDown(firstItem, 'ArrowUp');
     await actionMenu.updateComplete;
     assertEquals(thirdItem, actionMenu.shadowRoot.activeElement);
+  });
+
+  test('Attached tabs stay deselectable at the input limit', async () => {
+    actionMenu.remove();
+    actionMenu = document.createElement('cr-composebox-contextual-action-menu');
+    actionMenu.contextManagementInComposeboxEnabled = true;
+    const tab1 = createTabSuggestion({tabId: 1, title: 'Tab 1'});
+    const tab2 = createTabSuggestion({tabId: 2, title: 'Tab 2'});
+
+    actionMenu.tabSuggestions = [tab1, tab2];
+    // Attaching tab1 reaches the limit of one total input. The browser then
+    // reports every allowed input type as disabled.
+    actionMenu.selectedTabIds = new Map([[1, 'uuid1']]);
+    actionMenu.inputState = new MockInputState({
+      allowedInputTypes: [InputType.kBrowserTab],
+      disabledInputTypes: [InputType.kBrowserTab],
+      maxTotalInputs: 1,
+    });
+    document.body.appendChild(actionMenu);
+    await microtasksFinished();
+
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    // The entry point must stay actionable so the flyout can be opened.
+    const trigger = $$<HTMLButtonElement>(actionMenu, '#shareTabsTrigger');
+    assertTrue(!!trigger);
+    assertTrue(isVisible(trigger));
+    assertFalse(trigger.disabled);
+
+    const flyout = $$(actionMenu, '.share-tabs-flyout') as HTMLElement;
+    assertTrue(!!flyout);
+    triggerKeyDown(trigger, 'ArrowRight');
+    await actionMenu.updateComplete;
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    await microtasksFinished();
+
+    const buttons = Array.from(
+        flyout.querySelectorAll<HTMLButtonElement>('button.dropdown-item'));
+    assertEquals(2, buttons.length);
+    assertFalse(buttons[0]!.disabled);  // tab1 (attached) -> deselectable
+    assertTrue(buttons[1]!.disabled);   // tab2 (unattached) -> at the limit
+
+    // Clicking the attached tab removes it from the context.
+    const deleteEvent = eventToPromise<CustomEvent<{tabId: number}>>(
+        'delete-tab-context', actionMenu);
+    buttons[0]!.click();
+    const event = await deleteEvent;
+    assertEquals(1, event.detail.tabId);
+  });
+
+  test('Tab entry point stays disabled when no tabs are attached', async () => {
+    actionMenu.remove();
+    actionMenu = document.createElement('cr-composebox-contextual-action-menu');
+    actionMenu.contextManagementInComposeboxEnabled = true;
+    actionMenu.tabSuggestions = [createTabSuggestion({tabId: 1, title: 'Tab'})];
+    actionMenu.selectedTabIds = new Map();
+    // Tabs are unavailable for a reason unrelated to the input limit, e.g. the
+    // active tool does not support them.
+    actionMenu.inputState = new MockInputState({
+      allowedInputTypes: [InputType.kBrowserTab],
+      disabledInputTypes: [InputType.kBrowserTab],
+    });
+    document.body.appendChild(actionMenu);
+    await microtasksFinished();
+
+    actionMenu.showAt(actionMenu);
+    await microtasksFinished();
+
+    const trigger = $$<HTMLButtonElement>(actionMenu, '#shareTabsTrigger');
+    assertTrue(!!trigger);
+    assertTrue(isVisible(trigger));
+    assertTrue(trigger.disabled);
   });
 
   test('focuses Share Tabs when opening the + menu via keydown', async () => {

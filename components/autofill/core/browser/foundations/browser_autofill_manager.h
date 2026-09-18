@@ -85,6 +85,17 @@ enum class ValuePatternsMetric {
   kMaxValue = kAchRoutingNumber,
 };
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(JavaScriptDropdownType)
+enum class JavaScriptDropdownType {
+  kNone = 0,
+  kEmail = 1,
+  kAddress = 2,
+  kMaxValue = kAddress,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillJavaScriptDropdownType)
+
 class BrowserAutofillManager;
 
 // Manages saving and restoring the user's personal information entered into web
@@ -372,8 +383,8 @@ class BrowserAutofillManager : public AutofillManager {
   void OnDidDetectJavaScriptAutofillImpl(
       const FormData& form,
       const FieldGlobalId& trigger_field_id,
-      const std::vector<JavaScriptFieldModification>& field_modifications)
-      override;
+      const std::vector<JavaScriptFieldModification>& field_modifications,
+      base::TimeTicks detection_start_timestamp) override;
   void OnFormSubmittedImpl(const FormData& form,
                            mojom::SubmissionSource source) override;
   void OnFormWithEmailVerificationTokenSubmittedImpl(
@@ -545,11 +556,6 @@ class BrowserAutofillManager : public AutofillManager {
       const AutofillField* trigger_field,
       AutofillSuggestionTriggerSource trigger_source);
 
-  // Combines identity credential suggestions and existing suggestions into a
-  // single list, prioritizing identity credential suggestions first.
-  static void MergeIdentityCredentialsAndAddressSuggestions(
-      std::vector<Suggestion>& suggestions,
-      std::vector<Suggestion> identity_credential_suggestions);
 
   // Combines autocomplete suggestions and existing suggestions into a
   // single list, prioritizing address suggestions and filtering out

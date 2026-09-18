@@ -18,8 +18,6 @@
 #include "base/threading/sequence_bound.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
 #include "mojo/public/cpp/system/message_pipe.h"
@@ -33,7 +31,6 @@
 #include "remoting/host/mojom/remoting_host.mojom.h"
 #include "remoting/protocol/desktop_capturer.h"
 #include "remoting/protocol/mouse_cursor_monitor.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 
 namespace base {

@@ -206,9 +206,11 @@ void ToolbarUIService::OnPageActionClick(
 
 void ToolbarUIService::OnPageActionChipShowingChanged(
     ::toolbar_ui_api::mojom::PageActionId action_id,
+    bool is_showing,
     OnPageActionChipShowingChangedCallback callback) {
   if (delegate_) {
-    delegate_->OnPageActionChipShowingChanged(action_id, std::move(callback));
+    delegate_->OnPageActionChipShowingChanged(action_id, is_showing,
+                                              std::move(callback));
   } else {
     std::move(callback).Run(base::unexpected(Error::New(
         Code::kFailedPrecondition,
@@ -271,9 +273,10 @@ void ToolbarUIService::OnLhsChipMousePressed(
 
 void ToolbarUIService::OnLhsChipClicked(
     toolbar_ui_api::mojom::LhsChipIdentifier identifier,
-    bool is_mouse_interaction) {
+    bool is_mouse_interaction,
+    uint32_t state_token) {
   if (delegate_) {
-    delegate_->OnLhsChipClicked(identifier, is_mouse_interaction);
+    delegate_->OnLhsChipClicked(identifier, is_mouse_interaction, state_token);
   }
 }
 
@@ -331,14 +334,21 @@ void ToolbarUIService::OnToolbarDropFile(const gfx::PointF& drop_position) {
   }
 }
 
-void ToolbarUIService::ShowAvatarMenu(ShowAvatarMenuCallback callback) {
+void ToolbarUIService::ShowAvatarMenu(bool is_pointer_interaction,
+                                      ShowAvatarMenuCallback callback) {
   if (delegate_) {
-    delegate_->ShowAvatarMenu();
+    delegate_->ShowAvatarMenu(is_pointer_interaction);
     std::move(callback).Run({});
   } else {
     std::move(callback).Run(base::unexpected(Error::New(
         Code::kFailedPrecondition,
         "ToolbarUIService: cannot show avatar menu without delegate_")));
+  }
+}
+
+void ToolbarUIService::OnAvatarButtonMousePressed() {
+  if (delegate_) {
+    delegate_->OnAvatarButtonMousePressed();
   }
 }
 
@@ -388,9 +398,17 @@ void ToolbarUIService::OnAppMenuFocusChanged(bool focused) {
   }
 }
 
-void ToolbarUIService::ExecuteExtensionAction(const std::string& extension_id) {
+void ToolbarUIService::ExecuteExtensionAction(const std::string& extension_id,
+                                              bool is_pointer_interaction) {
   if (delegate_) {
-    delegate_->ExecuteExtensionAction(extension_id);
+    delegate_->ExecuteExtensionAction(extension_id, is_pointer_interaction);
+  }
+}
+
+void ToolbarUIService::OnExtensionActionPointerDown(
+    const std::string& extension_id) {
+  if (delegate_) {
+    delegate_->OnExtensionActionPointerDown(extension_id);
   }
 }
 
@@ -426,6 +444,18 @@ void ToolbarUIService::OnPerformanceInterventionButtonClicked(
 void ToolbarUIService::OnPerformanceInterventionButtonMousePressed() {
   if (delegate_) {
     delegate_->OnPerformanceInterventionButtonMousePressed();
+  }
+}
+
+void ToolbarUIService::OnMediaButtonClicked(bool is_mouse_interaction) {
+  if (delegate_) {
+    delegate_->OnMediaButtonClicked(is_mouse_interaction);
+  }
+}
+
+void ToolbarUIService::OnMediaButtonMousePressed() {
+  if (delegate_) {
+    delegate_->OnMediaButtonMousePressed();
   }
 }
 }  // namespace toolbar_ui_api

@@ -66,6 +66,9 @@
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/browser_delegate/keyed_service_provider/desk_sync_service_provider_impl.h"
+#include "chrome/browser/ash/browser_delegate/keyed_service_provider/favicon_service_provider_impl.h"
+#include "chrome/browser/ash/browser_delegate/keyed_service_provider/feature_engagement_tracker_provider_impl.h"
+#include "chrome/browser/ash/browser_delegate/keyed_service_provider/history_service_provider_impl.h"
 #include "chrome/browser/ash/browser_delegate/keyed_service_provider/identity_manager_provider_impl.h"
 #include "chrome/browser/ash/browser_delegate/keyed_service_provider/sync_service_provider_impl.h"
 #include "chrome/browser/ash/browser_delegate/keyed_service_provider/template_url_service_provider_impl.h"
@@ -263,6 +266,7 @@
 #include "chromeos/services/machine_learning/public/cpp/service_connection.h"
 #include "chromeos/version/version_loader.h"
 #include "components/account_id/account_id.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/device_event_log/device_event_log.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/metrics/metrics_service.h"
@@ -296,6 +300,7 @@
 #include "net/base/network_change_notifier_passive.h"
 #include "printing/backend/print_backend.h"
 #include "services/audio/public/cpp/sounds/global_sounds_manager.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "third_party/cros_system_api/dbus/vm_launch/dbus-constants.h"
 #include "third_party/cros_system_api/dbus/vm_wl/dbus-constants.h"
@@ -960,6 +965,10 @@ void ChromeBrowserMainPartsAsh::PreProfileInit() {
   // List of instances providing KeyedService related services.
   app_service_registry_ = std::make_unique<apps::AppServiceRegistry>();
   desk_sync_service_provider_ = std::make_unique<DeskSyncServiceProviderImpl>();
+  favicon_service_provider_ = std::make_unique<FaviconServiceProviderImpl>();
+  feature_engagement_tracker_provider_ =
+      std::make_unique<FeatureEngagementTrackerProviderImpl>();
+  history_service_provider_ = std::make_unique<HistoryServiceProviderImpl>();
   identity_manager_provider_ = std::make_unique<IdentityManagerProviderImpl>();
   sync_service_provider_ = std::make_unique<SyncServiceProviderImpl>();
   template_url_service_provider_ =
@@ -1036,18 +1045,11 @@ void ChromeBrowserMainPartsAsh::PreProfileInit() {
   if (immediate_login) {
     // Redirects Chrome logging to the user data dir.
     RedirectChromeLogging(*base::CommandLine::ForCurrentProcess());
-
-    // Load the default app order synchronously for restarting case.
-    app_order_loader_ =
-        std::make_unique<chromeos::default_app_order::ExternalLoader>(
-            false /* async */);
   }
-
-  if (!app_order_loader_) {
-    app_order_loader_ =
-        std::make_unique<chromeos::default_app_order::ExternalLoader>(
-            true /* async */);
-  }
+  app_order_loader_ =
+      std::make_unique<chromeos::default_app_order::ExternalLoader>(
+          g_browser_process->GetFeatures()->application_locale_storage()->Get(),
+          /*async=*/!immediate_login);
 
   audio::GlobalSoundsManager::Create(
       content::GetAudioServiceStreamFactoryBinder());
@@ -1233,7 +1235,10 @@ void ChromeBrowserMainPartsAsh::PreProfileInit() {
 #endif
 
   ash_web_ui_config_manager_ = std::make_unique<AshWebUIConfigManager>(
-      g_browser_process->GetFeatures()->application_locale_storage());
+      g_browser_process->local_state(),
+      g_browser_process->GetFeatures()->application_locale_storage(),
+      g_browser_process->platform_part()->browser_policy_connector_ash(),
+      g_browser_process->shared_url_loader_factory());
 }
 
 class GuestLanguageSetCallbackData {
@@ -1458,26 +1463,10 @@ void ChromeBrowserMainPartsAsh::PostProfileInit(Profile* profile,
         base::BindOnce(ShillSetPropertyErrorCallback,
                        shill::kEnableSingleCACertVerificationPhase2Property));
 
-    ash::ShillManagerClient::Get()->SetProperty(
-        shill::kDisconnectWiFiOnEthernetProperty,
-        base::Value(base::FeatureList::IsEnabled(
-                        features::kDisconnectWiFiOnEthernetConnected)
-                        ? shill::kDisconnectWiFiOnEthernetConnected
-                        : shill::kDisconnectWiFiOnEthernetOff),
-        base::DoNothing(),
-        base::BindOnce(ShillSetPropertyErrorCallback,
-                       shill::kDisconnectWiFiOnEthernetProperty));
-
     // Notify patchpanel and shill about QoS feature enabled flag.
-    bool wifi_qos_enabled =
-        base::FeatureList::IsEnabled(features::kEnableWifiQos);
-    if (InstallAttributes::Get()->IsEnterpriseManaged()) {
-      // For an Enterprise enrolled device, enable the feature only if the
-      // separate flag for enterprise is also on.
-      wifi_qos_enabled =
-          wifi_qos_enabled &&
-          base::FeatureList::IsEnabled(features::kEnableWifiQosEnterprise);
-    }
+    // WiFi QoS is enabled by default for non-enterprise devices.
+    const bool wifi_qos_enabled =
+        !InstallAttributes::Get()->IsEnterpriseManaged();
     ash::PatchPanelClient::Get()->SetFeatureFlag(
         patchpanel::SetFeatureFlagRequest::WIFI_QOS, wifi_qos_enabled);
     ash::ShillManagerClient::Get()->SetProperty(
@@ -1893,6 +1882,9 @@ void ChromeBrowserMainPartsAsh::PostMainMessageLoopRun() {
   template_url_service_provider_.reset();
   sync_service_provider_.reset();
   identity_manager_provider_.reset();
+  history_service_provider_.reset();
+  feature_engagement_tracker_provider_.reset();
+  favicon_service_provider_.reset();
   desk_sync_service_provider_.reset();
   app_service_registry_.reset();
   services_customization_document_.reset();

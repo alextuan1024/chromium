@@ -49,8 +49,6 @@ class WindowController;
 // Provides various utility functions that help manipulate tabs.
 class ExtensionTabUtil {
  public:
-  static constexpr char kTabNotFoundError[] = "No tab with id: *.";
-
   static constexpr char kNoCrashBrowserError[] =
       "I'm sorry. I'm afraid I can't do that.";
   static constexpr char kCanOnlyMoveTabsWithinNormalWindowsError[] =
@@ -81,7 +79,6 @@ class ExtensionTabUtil {
 
   enum ScrubTabBehaviorType {
     kScrubTabFully,
-    kScrubTabUrlToOrigin,
     kDontScrubTab,
   };
 
@@ -243,12 +240,6 @@ class ExtensionTabUtil {
   static std::vector<content::WebContents*> GetAllActiveWebContentsForContext(
       content::BrowserContext* browser_context,
       bool include_incognito);
-
-  // Determines if the `web_contents` is in `browser_context` or it's OTR
-  // BrowserContext if `include_incognito` is true.
-  static bool IsWebContentsInContext(content::WebContents* web_contents,
-                                     content::BrowserContext* browser_context,
-                                     bool include_incognito);
 
   // Takes `url_string` and returns a GURL which is either valid and absolute
   // or invalid. If `url_string` is not directly interpretable as a valid (it is

@@ -566,9 +566,10 @@ class GnParser:
                     )
         elif target.type == "rust_bindgen":
             # rust_bindgen is a supported module in Soong but GN depend on actions
-            # so we need to copy the action fields (sources, outputs and args) in
+            # so we need to copy the action fields (sources, inputs, outputs and args) in
             # order to correctly generate the `rust_bindgen` module.
             target.arch[arch].sources.update(desc.get('sources', []))
+            target.arch[arch].inputs.update(desc.get('inputs', []))
             outs = [_remove_out_prefix(x) for x in desc['outputs']]
             target.arch[arch].outputs.update(outs)
             target.arch[arch].args = desc['args']
@@ -613,6 +614,16 @@ class GnParser:
         elif target.type == 'group':
             # Group targets are bubbled upward without creating an equivalent GN target.
             pass
+        elif target.type == 'generated_file':
+            # generated_file() targets are evaluated by GN at `gn gen` time:
+            # they write a file (e.g. jni_zero's `*__type_catalogs.json`) by
+            # walking the metadata of their deps. They have no Ninja build step
+            # and no Soong equivalent, so we never emit a module for them (see
+            # create_modules_from_target). Their deps merely define the scope of
+            # that metadata walk rather than describing real build inputs, so
+            # stop the traversal here instead of pulling targets that Soong does
+            # not need into the graph.
+            return target
         elif target.type == 'copy':
             # Copy targets, except for a few exception (see handling of action
             # targets above), are bubbled upward without creating an equivalent
@@ -746,6 +757,14 @@ class GnParser:
                     target.update(dep, arch)
                     target.transitive_jni_java_sources.update(
                         dep.transitive_jni_java_sources)
+                elif dep.type == 'generated_file':
+                    # generated_file() targets must not contribute anything to
+                    # their dependents - see parse_gn_desc(), which stops
+                    # traversing at them, so they have no deps to propagate in
+                    # the first place. `continue` (as opposed to `pass`) also
+                    # skips the transitive static_library/source_set bubbling
+                    # below, which must not run for a dep we never traversed.
+                    continue
                 elif dep.type in ['action', 'action_foreach']:
                     arch_obj.deps.add(dep.name)
                     target.transitive_jni_java_sources.update(

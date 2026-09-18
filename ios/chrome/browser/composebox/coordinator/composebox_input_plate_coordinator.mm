@@ -374,6 +374,11 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   [_mediator processContextLibraryWebpageSignalWithURL:url title:title];
 }
 
+- (void)updateTheme:(ComposeboxTheme*)theme {
+  _theme = theme;
+  [_viewController updateTheme:theme];
+}
+
 #pragma mark - ComposeboxInputPlateViewControllerDelegate
 
 - (void)composeboxViewController:
@@ -771,6 +776,8 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
                     didPickImages:
                         (NSArray<ComposeboxPickerImageResult*>*)results {
+  [presenter dismissPicker];
+
   // Gallery picker results (PHPickerViewController) return the complete set of
   // selected gallery items. Reconcile preselected asset IDs so that any gallery
   // photo deselected by the user is removed from attachments. Camera picker
@@ -859,7 +866,17 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
                  completion:stopAccessScopedResourcesIfNeeded];
 }
 
-- (void)composeboxPickerPresenterDidDissmissCamera:
+- (void)composeboxPickerPresenterDidDismissCamera:
+    (ComposeboxPickerPresenter*)presenter {
+  [self focusComposebox];
+}
+
+- (void)composeboxPickerPresenterDidCancelDrivePicker:
+    (ComposeboxPickerPresenter*)presenter {
+  [self focusComposebox];
+}
+
+- (void)composeboxPickerPresenterDidCancelTabPicker:
     (ComposeboxPickerPresenter*)presenter {
   [self focusComposebox];
 }
@@ -876,9 +893,6 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
   if (diff.added.size() > 0) {
     [_metricsRecorder recordTabPickerTabsAttached:diff.added.size()];
-    [_metricsRecorder
-        recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
-          forAttachmentType:MobileFuseboxPickerAttachmentType::kTabs];
   }
 
   [_mediator attachSelectedTabsWithWebStateIDs:selectedWebStateIDs
@@ -893,9 +907,6 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   }
 
   [_metricsRecorder recordDriveFilesAttached:results.count];
-  [_metricsRecorder
-      recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
-        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
 
   for (ComposeboxPickerDriveResult* result in results) {
     [_mediator processDriveFileWithIdentifier:result.identifier

@@ -57,6 +57,22 @@ AutofillOfferData AutofillOfferData::WalletDirectOffer(
                            promo_code);
 }
 
+AutofillOfferData::AutofillOfferData(int64_t offer_id,
+                                     base::Time expiry,
+                                     std::vector<GURL> merchant_origins,
+                                     GURL offer_details_url,
+                                     DisplayStrings display_strings,
+                                     std::string promo_code,
+                                     std::string offer_reward_amount)
+    : offer_type_(OfferType::WALLET_DIRECT_OFFER),
+      offer_id_(offer_id),
+      expiry_(expiry),
+      offer_details_url_(std::move(offer_details_url)),
+      merchant_origins_(std::move(merchant_origins)),
+      display_strings_(std::move(display_strings)),
+      offer_reward_amount_(std::move(offer_reward_amount)),
+      promo_code_(std::move(promo_code)) {}
+
 AutofillOfferData::AutofillOfferData() = default;
 
 AutofillOfferData::~AutofillOfferData() = default;
@@ -73,12 +89,12 @@ bool AutofillOfferData::operator==(
 
 int AutofillOfferData::Compare(
     const AutofillOfferData& other_offer_data) const {
-  int comparison = offer_id_ - other_offer_data.offer_id_;
-  if (comparison != 0) {
-    return comparison;
+  // Note that the difference of two int64 ids does not fit into an int.
+  if (offer_id_ != other_offer_data.offer_id_) {
+    return offer_id_ < other_offer_data.offer_id_ ? -1 : 1;
   }
 
-  comparison =
+  int comparison =
       offer_reward_amount_.compare(other_offer_data.offer_reward_amount_);
   if (comparison != 0) {
     return comparison;
@@ -148,18 +164,6 @@ int AutofillOfferData::Compare(
   }
 
   return 0;
-}
-
-bool AutofillOfferData::IsCardLinkedOffer() const {
-  return GetOfferType() == OfferType::GPAY_CARD_LINKED_OFFER;
-}
-
-bool AutofillOfferData::IsGPayPromoCodeOffer() const {
-  return GetOfferType() == OfferType::GPAY_PROMO_CODE_OFFER;
-}
-
-bool AutofillOfferData::IsWalletDirectOffer() const {
-  return GetOfferType() == OfferType::WALLET_DIRECT_OFFER;
 }
 
 bool AutofillOfferData::IsActiveAndEligibleForOrigin(const GURL& origin) const {

@@ -98,6 +98,7 @@
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/core/style/style_base_data.h"
 #include "third_party/blink/renderer/core/style/style_timeline_scope.h"
 #include "third_party/blink/renderer/core/style_property_shorthand.h"
 #include "third_party/blink/renderer/platform/animation/timing_function.h"
@@ -2190,6 +2191,30 @@ void UpdateAnimationFlagsForAnimation(const Animation& animation,
   UpdateAnimationFlagsForEffect(effect, builder);
 }
 
+// Records this element as the source of tracked properties animated on it.
+// Mirrors the cascade: transitions beat everything, animations lose to
+// !important.
+void UpdateAnimatedSources(const CSSAnimationUpdate& update,
+                           Element& animating_element,
+                           ComputedStyleBuilder& builder) {
+  // Set by ApplyAnimatedStyle() before interpolations are applied.
+  const StyleBaseData* base_data = builder.BaseData();
+  const CSSBitset* important_set =
+      base_data ? base_data->GetBaseImportantSet() : nullptr;
+  for (const auto& entry : update.ActiveInterpolationsForAnimations()) {
+    const CSSPropertyID id = entry.key.GetCSSProperty().PropertyID();
+    if (important_set && important_set->Has(id)) {
+      continue;
+    }
+    builder.SetAnimatedSource(id, animating_element);
+  }
+  // Transitions replace the value outright, so they override the above.
+  for (const auto& entry : update.ActiveInterpolationsForTransitions()) {
+    builder.SetAnimatedSource(entry.key.GetCSSProperty().PropertyID(),
+                              animating_element);
+  }
+}
+
 }  // namespace
 
 void CSSAnimations::UpdateAnimationFlags(Element& animating_element,
@@ -2267,6 +2292,10 @@ void CSSAnimations::UpdateAnimationFlags(Element& animating_element,
           effect_stack.HasActiveAnimationsOnCompositor(
               PropertyHandle(GetCSSPropertyBackdropFilter())));
     }
+  }
+
+  if (RuntimeEnabledFeatures::TrackAnimatedSourcesEnabled()) {
+    UpdateAnimatedSources(update, animating_element, builder);
   }
 }
 
@@ -2614,9 +2643,9 @@ void CSSAnimations::CalculateTransitionUpdateForPropertyHandle(
   }
 
   InterpolationTypesMap map(registry, state.animating_element.GetDocument());
-  CSSInterpolationEnvironment old_environment(map, *state.before_change_style,
-                                              after_change_style);
-  CSSInterpolationEnvironment new_environment(map, after_change_style,
+  CSSInterpolationEnvironment old_environment(
+      property, map, *state.before_change_style, after_change_style);
+  CSSInterpolationEnvironment new_environment(property, map, after_change_style,
                                               after_change_style);
   const InterpolationType* transition_type = nullptr;
   InterpolationValue start = nullptr;
@@ -2664,7 +2693,7 @@ void CSSAnimations::CalculateTransitionUpdateForPropertyHandle(
     const Document& document = state.animating_element.GetDocument();
     CSSPropertyName property_name = property.GetCSSPropertyName();
     CSSPropertyRef custom_ref(&property_name, document);
-    CSSVariableData* old_data = state.old_style.GetVariableData(
+    CSSVariableData* old_data = before_change_style.GetVariableData(
         property.CustomPropertyName(), custom_ref.GetProperty().IsInherited());
     CSSVariableData* new_data = after_change_style.GetVariableData(
         property.CustomPropertyName(), custom_ref.GetProperty().IsInherited());
@@ -2705,14 +2734,12 @@ void CSSAnimations::CalculateTransitionUpdateForPropertyHandle(
     }
     start = InterpolationValue(
         MakeGarbageCollected<InterpolableList>(0),
-        MakeGarbageCollected<CSSDefaultNonInterpolableValue>(
-            start_css_value,
-            CSSDefaultNonInterpolableValue::AttrTainted(is_attr_tainted)));
+        MakeGarbageCollected<CSSDefaultNonInterpolableValue>(start_css_value),
+        is_attr_tainted);
     end = InterpolationValue(
         MakeGarbageCollected<InterpolableList>(0),
-        MakeGarbageCollected<CSSDefaultNonInterpolableValue>(
-            end_css_value,
-            CSSDefaultNonInterpolableValue::AttrTainted(is_attr_tainted)));
+        MakeGarbageCollected<CSSDefaultNonInterpolableValue>(end_css_value),
+        is_attr_tainted);
   }
 
   // If the interpolated transform lists contain any singular matrices, a
@@ -2774,18 +2801,18 @@ void CSSAnimations::CalculateTransitionUpdateForPropertyHandle(
       MakeGarbageCollected<TransitionKeyframe>(property);
   start_keyframe->SetValue(MakeGarbageCollected<TypedInterpolationValue>(
       transition_type, start.interpolable_value->Clone(),
-      start.non_interpolable_value));
+      start.non_interpolable_value, start.is_attr_tainted || is_attr_tainted));
   start_keyframe->SetOffset(0);
-  start_keyframe->SetIsAttrTainted(is_attr_tainted);
+  start_keyframe->SetIsAttrTainted(start.is_attr_tainted || is_attr_tainted);
   keyframes.push_back(start_keyframe);
 
   TransitionKeyframe* end_keyframe =
       MakeGarbageCollected<TransitionKeyframe>(property);
   end_keyframe->SetValue(MakeGarbageCollected<TypedInterpolationValue>(
       transition_type, end.interpolable_value->Clone(),
-      end.non_interpolable_value));
+      end.non_interpolable_value, end.is_attr_tainted || is_attr_tainted));
   end_keyframe->SetOffset(1);
-  end_keyframe->SetIsAttrTainted(is_attr_tainted);
+  end_keyframe->SetIsAttrTainted(end.is_attr_tainted || is_attr_tainted);
   keyframes.push_back(end_keyframe);
 
   if (property.GetCSSProperty().IsCompositableProperty() &&

@@ -401,7 +401,21 @@ bool HasGuid(const Suggestion::Payload& payload) {
   }
 
   if (suggestion.type == SuggestionType::kAutocompleteAtMemoryButton) {
-    [self.delegate showAtMemory];
+    if (_webState) {
+      web::WebFrame* frame =
+          AutofillJavaScriptFeature::GetInstance()
+              ->GetWebFramesManager(_webState)
+              ->GetFrameWithId(base::SysNSStringToUTF8(frameID));
+      if (frame &&
+          GURL::SchemeIsCryptographic(frame->GetSecurityOrigin().scheme())) {
+        if (autofill::AutofillDriverIOS* driver =
+                autofill::AutofillDriverIOS::FromWebStateAndWebFrame(_webState,
+                                                                     frame)) {
+          FieldGlobalId fieldId(driver->GetFrameToken(), fieldRendererID);
+          [self.delegate showAtMemoryForField:fieldId];
+        }
+      }
+    }
     if (SuggestionHandledCompletion c =
             std::exchange(_suggestionHandledCompletion, nil)) {
       c();
@@ -684,6 +698,7 @@ bool HasGuid(const Suggestion::Payload& payload) {
       case SuggestionType::kFillPassword:
       case SuggestionType::kFreeformFooter:
       case SuggestionType::kGeneratePasswordEntry:
+      case SuggestionType::kGmailOneTimePasswordEntry:
       case SuggestionType::kIbanEntry:
       case SuggestionType::kIdentityCredential:
       case SuggestionType::kInsecureContextPaymentDisabledMessage:
@@ -697,10 +712,12 @@ bool HasGuid(const Suggestion::Payload& payload) {
       case SuggestionType::kManageCreditCard:
       case SuggestionType::kManageIban:
       case SuggestionType::kManageLoyaltyCard:
+      case SuggestionType::kManageOffers:
       case SuggestionType::kManageEnhancedAutofill:
       case SuggestionType::kMaximizeCreditCardBenefitsEntry:
       case SuggestionType::kMerchantPromoCodeEntry:
       case SuggestionType::kOneTimePasswordEntry:
+      case SuggestionType::kOpenGmailForOtps:
       case SuggestionType::kPasswordEntry:
       case SuggestionType::kPasswordFieldByFieldFilling:
       case SuggestionType::kPendingStateSignin:

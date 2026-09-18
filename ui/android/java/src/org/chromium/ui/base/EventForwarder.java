@@ -25,6 +25,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
@@ -542,7 +543,8 @@ public class EventForwarder {
                 isTrackpadToMouseEventConversionEnabled()
                         && isTrackpadToMouseConversionEvent(event);
 
-        mPointerLockEventHelper.onNonCapturedPointerEvent(event.getX(), event.getY());
+        mPointerLockEventHelper.onNonCapturedPointerEvent(
+                event.getX(), event.getY(), event.getRawX(), event.getRawY());
 
         EventForwarderJni.get()
                 .onMouseEvent(
@@ -697,11 +699,18 @@ public class EventForwarder {
             mimeTypes[i] = clipDescription.getMimeType(i);
         }
 
+        boolean hasFiles = false;
+        if (UiAndroidFeatureMap.isEnabled(UiAndroidFeatures.HAS_CONTENT_URI)) {
+            AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+            if (delegate != null && clipDescription != null) {
+                hasFiles = delegate.hasContentUri(clipDescription);
+            }
+        }
+
         if (event.getAction() == DragEvent.ACTION_DRAG_STARTED) {
             return mIsDragDropEnabled;
         }
 
-        String content = "";
         List<String[]> filenames = new ArrayList<String[]>();
         String text = null;
         String html = null;
@@ -748,14 +757,12 @@ public class EventForwarder {
                         html = temp.toString();
                     }
                 }
-                content = "";
             } catch (UndeclaredThrowableException e) {
                 // When dropped item is not successful for whatever reason, catch before we crash.
                 // While ClipData.Item does capture most common failures, there could be exceptions
                 // that's wrapped by Chrome classes (e.g. ServiceTracingProxyProvider) which changed
                 // the exception signiture. See crbug.com/1406777.
                 Log.e(TAG, "Parsing clip data content failed.", e);
-                content = "";
             }
             RecordHistogram.recordCount100Histogram(
                     "Android.DragDrop.Files.Count", filenames.size());
@@ -779,7 +786,7 @@ public class EventForwarder {
                         screenX,
                         screenY,
                         mimeTypes,
-                        content,
+                        hasFiles,
                         filenames.toArray(new String[][] {}),
                         text,
                         html,
@@ -848,6 +855,16 @@ public class EventForwarder {
         boolean shouldConvertToMouseEvent =
                 isTrackpadToMouseEventConversionEnabled()
                         && event.isFromSource(InputDevice.SOURCE_TOUCHPAD);
+        // The MotionEvent.obtain() overload used by transformCapturedPointerEvent() does not
+        // preserve actionButton. Save it before transforming physical mouse events. A captured
+        // trackpad may also use SOURCE_MOUSE_RELATIVE, but is identified by TOOL_TYPE_FINGER and
+        // must continue passing 0 so WebMouseEventBuilder::Build() in
+        // web_input_event_builders_android.cc derives the changed button from buttonState.
+        int actionButton =
+                event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+                                && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE
+                        ? getMouseEventActionButton(event)
+                        : 0;
         event = mPointerLockEventHelper.transformCapturedPointerEvent(event, deviceRotation);
 
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) {
@@ -879,7 +896,8 @@ public class EventForwarder {
         }
 
         // Update the last event position
-        mPointerLockEventHelper.updateLastPointerPosition(event.getX(), event.getY());
+        mPointerLockEventHelper.updateLastPointerPosition(
+                event.getX(), event.getY(), event.getRawX(), event.getRawY());
 
         if (event.getAction() == MotionEvent.ACTION_SCROLL) {
             return EventForwarderJni.get()
@@ -895,7 +913,7 @@ public class EventForwarder {
                             event,
                             MotionEventUtils.getEventTimeNanos(event),
                             event.getActionMasked(),
-                            getMouseEventActionButton(event),
+                            actionButton,
                             shouldConvertToMouseEvent
                                     ? MotionEvent.TOOL_TYPE_MOUSE
                                     : event.getToolType(0));
@@ -1055,7 +1073,7 @@ public class EventForwarder {
                 float screenX,
                 float screenY,
                 String[] mimeTypes,
-                String content,
+                boolean hasFiles,
                 String[][] filenames,
                 @Nullable String text,
                 @Nullable String html,

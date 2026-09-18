@@ -448,6 +448,8 @@ class CONTENT_EXPORT NavigationRequest
   const blink::mojom::LCPCriticalPathPredictorNavigationTimeHintPtr&
   GetLCPPNavigationHint() override;
   const net::HttpResponseHeaders* GetResponseHeaders() override;
+  network::mojom::DeviceBoundSessionUsage GetDeviceBoundSessionUsage()
+      const override;
   const network::mojom::DeclarativePerformanceObserverPolicy*
   GetDeclarativePerformanceObserverPolicy() override;
   net::HttpConnectionInfo GetConnectionInfo() override;
@@ -477,6 +479,7 @@ class CONTENT_EXPORT NavigationRequest
   const std::string& GetHrefTranslate() override;
   const std::optional<blink::LocalFrameToken>& GetInitiatorFrameToken()
       override;
+  const std::string& GetScriptInjectorHost() const override;
   ChildProcessId GetInitiatorProcessId() override;
   const std::optional<url::Origin>& GetInitiatorOrigin() override;
   const std::optional<GURL>& GetInitiatorBaseUrl() override;
@@ -1898,6 +1901,27 @@ class CONTENT_EXPORT NavigationRequest
 
   void set_before_unload_execution_mode(BeforeUnloadExecutionMode mode) {
     before_unload_execution_mode_ = mode;
+  }
+
+  // Returns the NetworkIsolationKey for the Renderer-Accessible HTTP Cache if
+  // this navigation qualifies to access the shared cache from the renderer
+  // process, or std::nullopt otherwise.
+  //
+  // For security and isolation, this checks that the storage partition supports
+  // the renderer-accessible HTTP cache, that the partition is not in-memory,
+  // that the document is not sandboxed, guest, fenced, PDF, cross-origin
+  // isolated, or origin-keyed agent clustered, and that the NetworkIsolationKey
+  // is not transient.
+  std::optional<net::NetworkIsolationKey>
+  GetNetworkIsolationKeyForRendererAccessibleHttpCache();
+
+  void set_site_info_for_testing(const SiteInfo& site_info) {
+    site_info_ = site_info;
+  }
+  const SiteInfo& site_info_for_testing() const { return site_info_; }
+  void set_isolation_info_for_testing(
+      const net::IsolationInfo& isolation_info) {
+    isolation_info_ = isolation_info;
   }
 
   // Returns a token that will be used to retrieve the InitiatorNavigationState

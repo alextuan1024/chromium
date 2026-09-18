@@ -15,6 +15,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.AccessorySheetData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.Action;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.FooterCommand;
@@ -140,6 +141,26 @@ class ManualFillingComponentBridge {
         if (getManualFillingComponent() != null) {
             getManualFillingComponent().showAccessorySheetTab(tabType);
         }
+    }
+
+    @CalledByNative
+    private void setSelectedSuggestion(
+            @JniType("std::optional<int>") @Nullable Integer suggestionIndex) {
+        ManualFillingComponent component = getManualFillingComponent();
+        if (component == null) {
+            return;
+        }
+        component.setSelectedSuggestion(suggestionIndex);
+    }
+
+    @CalledByNative
+    private boolean navigateSuggestions(
+            @JniType("autofill::NavigationDirection") @NavigationDirection int direction) {
+        ManualFillingComponent component = getManualFillingComponent();
+        if (component == null) {
+            return false;
+        }
+        return component.navigateSuggestions(direction);
     }
 
     @CalledByNative
@@ -413,7 +434,7 @@ class ManualFillingComponentBridge {
     }
 
     private Action[] createSingleAction(@AccessoryAction int actionType) {
-        return new Action[] {new Action(actionType, this::onActionSelected)};
+        return new Action[] {new Action(actionType, () -> onActionSelected(actionType))};
     }
 
     private Provider<Action[]> getOrCreateActionProvider(@AccessoryAction int actionType) {
@@ -428,10 +449,10 @@ class ManualFillingComponentBridge {
         return actionProvider;
     }
 
-    private void onActionSelected(Action action) {
+    private void onActionSelected(@AccessoryAction int actionType) {
         if (mNativeView == 0) return; // Component was destroyed already.
-        ManualFillingMetricsRecorder.recordActionSelected(action.getActionType());
-        ManualFillingComponentBridgeJni.get().onOptionSelected(mNativeView, action.getActionType());
+        ManualFillingMetricsRecorder.recordActionSelected(actionType);
+        ManualFillingComponentBridgeJni.get().onOptionSelected(mNativeView, actionType);
     }
 
     static void onOptionSelectedForWebContents(WebContents webContents, int accessoryAction) {

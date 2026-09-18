@@ -30,6 +30,8 @@
 #import "ios/chrome/common/channel_info.h"
 #import "ios/components/security_interstitials/safe_browsing/fake_safe_browsing_service.h"
 #import "ios/public/provider/chrome/browser/additional_features/additional_features_api.h"
+#import "ios/public/provider/chrome/browser/device_attestation/device_attestation_api.h"
+#import "ios/public/provider/chrome/browser/device_attestation/device_integrity_service.h"
 #import "ios/public/provider/chrome/browser/push_notification/push_notification_api.h"
 #import "ios/public/provider/chrome/browser/signin/signin_identity_api.h"
 #import "ios/public/provider/chrome/browser/signin/signin_sso_api.h"
@@ -383,6 +385,14 @@ TestingApplicationContext::GetAdditionalFeaturesController() {
         ios::provider::CreateAdditionalFeaturesController();
   }
   return additional_features_controller_.get();
+}
+
+DeviceIntegrityService* TestingApplicationContext::GetDeviceIntegrityService() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!device_integrity_service_) {
+    device_integrity_service_ = ios::provider::CreateDeviceIntegrityService();
+  }
+  return device_integrity_service_.get();
 }
 
 auto_deletion::AutoDeletionService*

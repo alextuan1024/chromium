@@ -34,7 +34,6 @@ import android.widget.TextView;
 
 import androidx.appcompat.widget.PopupMenu;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -51,6 +50,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.task_manager.ui.TaskManagerProperties.Category;
 import org.chromium.chrome.browser.task_manager.ui.TaskManagerProperties.RowType;
 import org.chromium.chrome.browser.task_manager.ui.TaskManagerProperties.SortDescriptor;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
@@ -105,14 +105,13 @@ public class TaskManagerCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void testTaskProperties() {
         PropertyModel task =
                 new PropertyModel.Builder(mTaskModelKeys)
                         .with(TASK_ID, 1)
                         .with(TASK_NAME, "foo")
-                        .with(MEMORY_FOOTPRINT, 1024_000)
-                        .with(CPU, 0.5F)
+                        .with(MEMORY_FOOTPRINT, 100L * 1024L * 1024L)
+                        .with(CPU, 10F)
                         .with(NETWORK_USAGE, 0)
                         .with(PROCESS_ID, 1234)
                         .with(IS_SELECTED, false)
@@ -132,8 +131,8 @@ public class TaskManagerCoordinatorTest {
         TextView processId = taskView.findViewById(R.id.process_id);
 
         assertEquals("foo", taskName.getText().toString());
-        assertEquals("1,000K", memoryFootprint.getText().toString());
-        assertEquals("0.5", cpu.getText().toString());
+        assertEquals("100 MB", memoryFootprint.getText().toString());
+        assertEquals("10.0%", cpu.getText().toString());
         assertEquals("0", networkUsage.getText().toString());
         assertEquals("1234", processId.getText().toString());
 
@@ -145,7 +144,6 @@ public class TaskManagerCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void testSelectedRowColor() {
         mTasksModel.add(
                 new ListItem(
@@ -156,29 +154,31 @@ public class TaskManagerCoordinatorTest {
 
         mRecyclerView.layout(0, 0, 1024, 640);
 
+        View itemView = mRecyclerView.findViewHolderForAdapterPosition(0).itemView;
+        assertNotNull(itemView.getBackground());
+        assertFalse(itemView.isSelected());
+
+        ColorDrawable unselectedDrawable = (ColorDrawable) itemView.getBackground().getCurrent();
         assertEquals(
-                0,
-                ((ColorDrawable)
-                                mRecyclerView
-                                        .findViewHolderForAdapterPosition(0)
-                                        .itemView
-                                        .getBackground())
-                        .getColor());
+                SemanticColorUtils.getColorSurfaceContainer(mActivity),
+                unselectedDrawable.getColor());
 
         mTasksModel.get(0).model.set(IS_SELECTED, true);
 
-        assertNotEquals(
-                0,
-                ((ColorDrawable)
-                                mRecyclerView
-                                        .findViewHolderForAdapterPosition(0)
-                                        .itemView
-                                        .getBackground())
-                        .getColor());
+        assertTrue(itemView.isSelected());
+        ColorDrawable selectedDrawable = (ColorDrawable) itemView.getBackground().getCurrent();
+        assertEquals(
+                SemanticColorUtils.getColorSecondaryContainer(mActivity),
+                selectedDrawable.getColor());
     }
 
     @Test
-    @SmallTest
+    public void testHeaderDividers() {
+        assertEquals(LinearLayout.SHOW_DIVIDER_MIDDLE, mHeaderView.getShowDividers());
+        assertNotNull(mHeaderView.getDividerDrawable());
+    }
+
+    @Test
     public void testSortIndicator() {
         TextView taskNameHeader = mHeaderView.findViewById(R.id.task_name);
         String defaultText = taskNameHeader.getText().toString();
@@ -190,7 +190,6 @@ public class TaskManagerCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void testOnCreateContextMenu() {
         mHeaderModel.set(COLUMNS, new PropertyKey[] {TASK_NAME, CPU});
 
@@ -211,7 +210,6 @@ public class TaskManagerCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void testCategoryChips_click() {
         ChipView tabsChip = mActivity.findViewById(R.id.category_chip_tabs);
         ChipView browserChip = mActivity.findViewById(R.id.category_chip_browser);
@@ -232,7 +230,6 @@ public class TaskManagerCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void testCategoryChips_selectionChange() {
         ChipView tabsChip = mActivity.findViewById(R.id.category_chip_tabs);
         ChipView browserChip = mActivity.findViewById(R.id.category_chip_browser);

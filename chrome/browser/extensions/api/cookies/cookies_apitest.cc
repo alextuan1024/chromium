@@ -5,10 +5,14 @@
 #include "base/command_line.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/cookies/cookies_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
+#include "chrome/browser/extensions/extension_management_test_util.h"
+#include "chrome/browser/extensions/extension_with_management_policy_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "components/content_settings/core/common/content_settings.h"
@@ -18,12 +22,16 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/api_test_utils.h"
+#include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_options.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/default_handlers.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -223,6 +231,116 @@ IN_PROC_BROWSER_TEST_P(CookiesApiTest, TestGetPartitionKey) {
   ASSERT_TRUE(RunTest("cookies/get_partition_key")) << message_;
 }
 
+IN_PROC_BROWSER_TEST_P(CookiesApiTest, TestGetPartitionKeyContextIsolation) {
+  // Set up an off-the-record window with a cross-site subframe.
+  const std::string default_response = "/defaultresponse";
+  content::WebContents* incognito_contents = PlatformOpenURLOffTheRecord(
+      profile(), embedded_test_server()->GetURL("a.com", default_response));
+  ASSERT_TRUE(incognito_contents);
+
+  const GURL cross_site_url =
+      embedded_test_server()->GetURL("b.com", default_response);
+  std::string script =
+      "var f = document.createElement('iframe');\n"
+      "f.src = '" +
+      cross_site_url.spec() +
+      "';\n"
+      "document.body.appendChild(f);\n";
+  EXPECT_TRUE(ExecJs(incognito_contents, script));
+  EXPECT_TRUE(WaitForLoadStop(incognito_contents));
+
+  content::RenderFrameHost* incognito_subframe =
+      content::ChildFrameAt(incognito_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(incognito_subframe);
+  int incognito_frame_id =
+      ExtensionApiFrameIdMap::GetFrameId(incognito_subframe);
+  std::string incognito_document_id =
+      ExtensionApiFrameIdMap::GetDocumentId(incognito_subframe).ToString();
+
+  // Load an extension in the regular profile without off-the-record access.
+  static constexpr char kManifest[] = R"({
+    "name": "Cookies Partition Key Isolation Test",
+    "version": "1.0",
+    "manifest_version": 3,
+    "permissions": ["cookies"],
+    "host_permissions": ["*://*/*"],
+    "background": {"service_worker": "background.js"}
+  })";
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), "// background");
+
+  const Extension* extension =
+      LoadExtension(test_dir.UnpackedPath(), {.allow_in_incognito = false});
+  ASSERT_TRUE(extension);
+
+  // Attempting to query the partition key for the off-the-record frame by
+  // frameId from the regular profile extension must be rejected.
+  {
+    auto function = base::MakeRefCounted<CookiesGetPartitionKeyFunction>();
+    function->set_extension(extension);
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(),
+        base::StringPrintf(R"([{"frameId": %d}])", incognito_frame_id),
+        profile(), api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ("Invalid `frameId`.", error);
+  }
+
+  // Attempting to query the partition key for the off-the-record frame by
+  // documentId from the regular profile extension must be rejected.
+  {
+    auto function = base::MakeRefCounted<CookiesGetPartitionKeyFunction>();
+    function->set_extension(extension);
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(),
+        base::StringPrintf(R"([{"documentId": "%s"}])",
+                           incognito_document_id.c_str()),
+        profile(), api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ("Invalid `documentId`.", error);
+  }
+
+  // Also verify that an extension without host permissions receives the same
+  // rejection error without any URL details.
+  static constexpr char kRestrictedManifest[] = R"({
+    "name": "Cookies Partition Key Restricted Test",
+    "version": "1.0",
+    "manifest_version": 3,
+    "permissions": ["cookies"],
+    "background": {"service_worker": "background.js"}
+  })";
+
+  TestExtensionDir restricted_test_dir;
+  restricted_test_dir.WriteManifest(kRestrictedManifest);
+  restricted_test_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
+                                "// background");
+
+  const Extension* restricted_extension = LoadExtension(
+      restricted_test_dir.UnpackedPath(), {.allow_in_incognito = false});
+  ASSERT_TRUE(restricted_extension);
+
+  {
+    auto function = base::MakeRefCounted<CookiesGetPartitionKeyFunction>();
+    function->set_extension(restricted_extension);
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(),
+        base::StringPrintf(R"([{"frameId": %d}])", incognito_frame_id),
+        profile(), api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ("Invalid `frameId`.", error);
+  }
+
+  {
+    auto function = base::MakeRefCounted<CookiesGetPartitionKeyFunction>();
+    function->set_extension(restricted_extension);
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(),
+        base::StringPrintf(R"([{"documentId": "%s"}])",
+                           incognito_document_id.c_str()),
+        profile(), api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ("Invalid `documentId`.", error);
+  }
+}
+
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OTRReceiverMojoConnectionError) {
   // Test that simulates a mojo connection error with an existing OTR profile.
   // This test verifies that the fix for crbug.com/472076020 works correctly:
@@ -400,6 +518,70 @@ IN_PROC_BROWSER_TEST_F(CookiesCrashApiTest, CookiesRemoveNetworkServiceCrash) {
       chrome.test.sendMessage('api_called');
     });
   )");
+}
+
+using CookiesPolicyApiTest = ExtensionApiTestWithManagementPolicy;
+
+// Tests that cookies.onChanged is not dispatched for hosts blocked by the
+// ExtensionSettings `runtime_blocked_hosts` policy. The cookies API functions
+// already reject such hosts. Regression test for https://crbug.com/517094892.
+IN_PROC_BROWSER_TEST_F(CookiesPolicyApiTest,
+                       OnChangedRespectsPolicyBlockedHosts) {
+  {
+    ExtensionManagementPolicyUpdater pref(&policy_provider_);
+    pref.AddPolicyBlockedHost("*", "*://blocked.example");
+  }
+
+  static constexpr char kManifest[] = R"({
+    "name": "Cookies policy test",
+    "version": "1.0",
+    "manifest_version": 3,
+    "permissions": ["cookies"],
+    "host_permissions": ["<all_urls>"],
+    "background": {"service_worker": "background.js"}
+  })";
+  static constexpr char kBackgroundJs[] = R"(
+    chrome.cookies.onChanged.addListener((changeInfo) => {
+      chrome.test.sendMessage('changed:' + changeInfo.cookie.domain);
+    });
+    chrome.test.sendMessage('ready');
+  )";
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+
+  ExtensionTestMessageListener ready_listener("ready");
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  ExtensionTestMessageListener blocked_listener("changed:blocked.example");
+  ExtensionTestMessageListener allowed_listener("changed:allowed.example");
+
+  auto set_cookie = [this](const GURL& url) {
+    std::unique_ptr<net::CanonicalCookie> cookie = net::CanonicalCookie::Create(
+        url, "sid=secret; Path=/; HttpOnly", base::Time::Now(),
+        /*server_time=*/std::nullopt, /*cookie_partition_key=*/std::nullopt,
+        net::CookieSourceType::kOther, /*status=*/nullptr);
+    ASSERT_TRUE(cookie);
+    base::test::TestFuture<net::CookieAccessResult> future;
+    profile()
+        ->GetDefaultStoragePartition()
+        ->GetCookieManagerForBrowserProcess()
+        ->SetCanonicalCookie(*cookie, url,
+                             net::CookieOptions::MakeAllInclusive(),
+                             future.GetCallback());
+    EXPECT_TRUE(future.Take().status.IsInclude());
+  };
+
+  // Cookie changes reach the extension in the order they happen, so once the
+  // event for the allowed host has arrived, the event for the blocked host
+  // would have arrived too if it had leaked.
+  set_cookie(GURL("http://blocked.example/"));
+  set_cookie(GURL("http://allowed.example/"));
+
+  EXPECT_TRUE(allowed_listener.WaitUntilSatisfied());
+  EXPECT_FALSE(blocked_listener.was_satisfied());
 }
 
 }  // namespace extensions

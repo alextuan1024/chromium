@@ -379,9 +379,6 @@ bool CanvasRenderingContext2D::WritePixels(const SkImageInfo& orig_info,
     }
   }
 
-  // WritePixels content is not saved in the recording. Calling WritePixels
-  // therefore invalidates the last recording because it's now
-  // missing that information.
   bool result = false;
   if (shared_image_provider_) {
     result =
@@ -390,7 +387,12 @@ bool CanvasRenderingContext2D::WritePixels(const SkImageInfo& orig_info,
     result = bitmap_provider_->WritePixels(orig_info, pixels, row_bytes, x, y);
   }
   if (result) {
+    // WritePixels content is not saved in the recording. Thus, WritePixels()
+    // must invalidate the last recording and ensure that any subsequent
+    // recording is not treated as a full-frame recording, as it would be
+    // missing this pixel data.
     last_recording_ = std::nullopt;
+    set_clear_frame(false);
   }
   return result;
 }
@@ -499,42 +501,16 @@ MemoryManagedPaintCanvas* CanvasRenderingContext2D::GetOrCreatePaintCanvas() {
   return &Recorder()->getRecordingCanvas();
 }
 
-const MemoryManagedPaintCanvas* CanvasRenderingContext2D::GetPaintCanvas()
-    const {
-  if (isContextLost()) [[unlikely]] {
-    return nullptr;
-  }
-  const MemoryManagedPaintRecorder* recorder = Recorder();
-  if (!recorder) [[unlikely]] {
-    return nullptr;
-  }
-  return &recorder->getRecordingCanvas();
+std::unique_ptr<MemoryManagedPaintRecorder>
+CanvasRenderingContext2D::ReleaseRecorder() {
+  return BaseRenderingContext2D::ReleaseRecorder();
 }
 
-const MemoryManagedPaintRecorder* CanvasRenderingContext2D::Recorder() const {
-  if (!canvas()) {
-    return nullptr;
-  }
+void CanvasRenderingContext2D::RecordingCleared() {
+  BaseRenderingContext2D::RecordingCleared();
   if (shared_image_provider_) {
-    return &shared_image_provider_->Recorder();
+    shared_image_provider_->RecordingCleared();
   }
-  if (bitmap_provider_) {
-    return &bitmap_provider_->Recorder();
-  }
-  return nullptr;
-}
-
-MemoryManagedPaintRecorder* CanvasRenderingContext2D::Recorder() {
-  if (!canvas()) {
-    return nullptr;
-  }
-  if (shared_image_provider_) {
-    return &shared_image_provider_->Recorder();
-  }
-  if (bitmap_provider_) {
-    return &bitmap_provider_->Recorder();
-  }
-  return nullptr;
 }
 
 void CanvasRenderingContext2D::WillDraw(
@@ -557,34 +533,6 @@ void CanvasRenderingContext2D::WillDraw(
   if (layer_count_ == 0) [[likely]] {
     // TODO(crbug.com/1246486): Make auto-flushing layer friendly.
     FlushIfRecordingLimitExceeded();
-  }
-}
-
-void CanvasRenderingContext2D::FlushIfRecordingLimitExceeded() {
-  if (shared_image_provider_) {
-    if (Host()->IsPrinting() && shared_image_provider_->clear_frame()) {
-      return;
-    }
-    const MemoryManagedPaintRecorder* recorder = Recorder();
-    CHECK(recorder);
-    if (recorder->ReleasableOpBytesUsed() >
-            shared_image_provider_->max_recorded_op_bytes() ||
-        recorder->ReleasableImageBytesUsed() >
-            shared_image_provider_->max_pinned_image_bytes()) [[unlikely]] {
-      FlushCanvas(FlushReason::kOther);
-    }
-  } else if (bitmap_provider_) {
-    if (Host()->IsPrinting() && bitmap_provider_->clear_frame()) {
-      return;
-    }
-    const MemoryManagedPaintRecorder* recorder = Recorder();
-    CHECK(recorder);
-    if (recorder->ReleasableOpBytesUsed() >
-            bitmap_provider_->max_recorded_op_bytes() ||
-        recorder->ReleasableImageBytesUsed() >
-            bitmap_provider_->max_pinned_image_bytes()) [[unlikely]] {
-      FlushCanvas(FlushReason::kOther);
-    }
   }
 }
 
@@ -614,8 +562,7 @@ void CanvasRenderingContext2D::DidFlushRecording(
 void CanvasRenderingContext2D::OnFlushForImage(
     cc::PaintImage::ContentId content_id) {
   if (shared_image_provider_ && !shared_image_provider_->IsSoftware()) {
-    if (shared_image_provider_->Recorder().getRecordingCanvas().IsCachingImage(
-            content_id)) {
+    if (Recorder()->getRecordingCanvas().IsCachingImage(content_id)) {
       FlushCanvas(FlushReason::kOther);
     }
     shared_image_provider_->OnFlushForImage(content_id);
@@ -1203,21 +1150,23 @@ void CanvasRenderingContext2D::CreateProvider() {
   // If using GPU compositing, try to create a SharedImage-backed provider if
   // either (a) using GPU raster or (b) using CPU raster and want to use
   // mappable SharedImage for Canvas2D.
-  // The layoutsubtree check is so that html-in-canvas uses the shared image
+  // The content=drawable check is so that html-in-canvas uses the shared image
   // codepath to enable same-frame updates. This could be changed in the future.
   if (is_gpu_compositing_enabled &&
       (use_gpu_raster || UseMappableSharedImagesForCanvas2D() ||
-       canvas()->layoutSubtree())) {
+       canvas()->IsContentDrawable())) {
     RasterMode raster_mode =
         use_gpu_raster ? RasterMode::kGPU : RasterMode::kCPU;
     gpu::SharedImageUsageSet shared_image_usage_flags =
         gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
 
     // Configure this SharedImage for scanout and concurrent read/write as
-    // appropriate.
-    bool low_latency_supported =
-        canvas()->LowLatencyEnabled() &&
-        LowLatencyUsageSupportedForCanvas2D(raster_mode);
+    // appropriate. Concurrent read/write only makes sense if raster writes are
+    // happening via the GPU.
+
+    bool low_latency_supported = canvas()->LowLatencyEnabled() &&
+                                 raster_mode == RasterMode::kGPU &&
+                                 LowLatencyUsageSupportedForCanvas2D();
     if (low_latency_supported || UseOverlaysForCanvas2D()) {
       shared_image_usage_flags |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
       if (low_latency_supported) {
@@ -1246,6 +1195,10 @@ void CanvasRenderingContext2D::CreateProvider() {
     bitmap_provider_ = Canvas2DBitmapProvider::CreateWithClear(
         canvas()->Size(), format, alpha_type, color_space, hdr_metadata,
         canvas());
+  }
+  if (shared_image_provider_ || bitmap_provider_) {
+    CreateRecorder(canvas()->Size(), shared_image_provider_ &&
+                                         shared_image_provider_->IsGraphite());
   }
 }
 
@@ -1350,6 +1303,7 @@ bool CanvasRenderingContext2D::InitializeResourceProvider() {
 void CanvasRenderingContext2D::ResetResourceProvider() {
   auto old_shared = std::move(shared_image_provider_);
   auto old_bitmap = std::move(bitmap_provider_);
+  ResetRecorder();
   last_recording_ = std::nullopt;
   if (canvas()) {
     canvas()->UpdateMemoryUsage();
@@ -1374,12 +1328,7 @@ void CanvasRenderingContext2D::DropAndRecreateExistingResourceProvider() {
   if (!image) {
     return;
   }
-  std::unique_ptr<MemoryManagedPaintRecorder> recorder;
-  if (shared_image_provider_) {
-    recorder = shared_image_provider_->ReleaseRecorder();
-  } else {
-    recorder = bitmap_provider_->ReleaseRecorder();
-  }
+  std::unique_ptr<MemoryManagedPaintRecorder> recorder = ReleaseRecorder();
   canvas()->ResetLayer();
   ResetResourceProvider();
 
@@ -1397,11 +1346,12 @@ void CanvasRenderingContext2D::DropAndRecreateExistingResourceProvider() {
   if (shared_image_provider_) {
     shared_image_provider_->RestoreBackBuffer(
         image->PaintImageForCurrentFrame());
-    shared_image_provider_->SetRecorder(std::move(recorder));
+
   } else {
     bitmap_provider_->RestoreBackBuffer(image->PaintImageForCurrentFrame());
-    bitmap_provider_->SetRecorder(std::move(recorder));
   }
+  SetRecorder(std::move(recorder),
+              shared_image_provider_ && shared_image_provider_->IsGraphite());
 
   canvas()->UpdateMemoryUsage();
 }
@@ -1467,11 +1417,12 @@ void CanvasRenderingContext2D::WakeUpFromHibernation() {
   builder.set_id(PaintImage::GetNextId());
   if (shared_image_provider_) {
     shared_image_provider_->RestoreBackBuffer(builder.TakePaintImage());
-    shared_image_provider_->SetRecorder(hibernation_handler->ReleaseRecorder());
+
   } else if (bitmap_provider_) {
     bitmap_provider_->RestoreBackBuffer(builder.TakePaintImage());
-    bitmap_provider_->SetRecorder(hibernation_handler->ReleaseRecorder());
   }
+  SetRecorder(hibernation_handler->ReleaseRecorder(),
+              shared_image_provider_ && shared_image_provider_->IsGraphite());
   // The hibernation image is no longer valid, clear it.
   hibernation_handler->Clear();
   DCHECK(!hibernation_handler->IsHibernating());
@@ -1488,6 +1439,9 @@ void CanvasRenderingContext2D::SetCanvas2DResourceProviderForTesting(
   hibernation_handler_ = std::make_unique<CanvasHibernationHandler>(*this);
   ResetResourceProvider();
   shared_image_provider_ = std::move(provider);
+  if (shared_image_provider_) {
+    CreateRecorder(size, shared_image_provider_->IsGraphite());
+  }
 }
 
 void CanvasRenderingContext2D::SetBitmapProviderForTesting(
@@ -1498,6 +1452,9 @@ void CanvasRenderingContext2D::SetBitmapProviderForTesting(
   hibernation_handler_ = std::make_unique<CanvasHibernationHandler>(*this);
   ResetResourceProvider();
   bitmap_provider_ = std::move(provider);
+  if (bitmap_provider_) {
+    CreateRecorder(size, /*is_graphite=*/false);
+  }
 }
 
 void CanvasRenderingContext2D::SetCanvas2DResourceProviderForTesting(

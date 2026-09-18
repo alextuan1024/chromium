@@ -15,13 +15,14 @@ import static org.mockito.Mockito.when;
 import android.appwidget.AppWidgetManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.SizeF;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -34,6 +35,7 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.quickactionsearchwidget.QuickActionSearchWidgetProvider.QuickActionSearchWidgetProviderDino;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferences;
 import org.chromium.url.GURL;
@@ -97,7 +99,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     public void testAppWidgetInstallationCreatesWidgets() {
         mIntent.setAction(AppWidgetManager.ACTION_APPWIDGET_UPDATE);
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
@@ -119,7 +120,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     public void testAppWidgetResizeUpdatesWidgets() {
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
         updateReportedWidgetSizes(mOptionsWidgetB, new SizeF(30, 10), new SizeF(100, 30));
@@ -163,7 +163,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     @Config(sdk = Build.VERSION_CODES.S)
     public void testCreateWidgetsFromFallbackValues_missingSizes() {
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
@@ -178,7 +177,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     @Config(sdk = Build.VERSION_CODES.S)
     public void testCreateWidgetFromFallbackValues_emptySizes() {
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
@@ -196,7 +194,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     @Config(sdk = Build.VERSION_CODES.S)
     public void testCreateWidgetFromSizeSpecs() {
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
@@ -212,7 +209,6 @@ public class QuickActionSearchWidgetProviderTest {
     }
 
     @Test
-    @SmallTest
     @Config(sdk = Build.VERSION_CODES.R)
     public void testCreateWidgetFromLegacyMeasurements() {
         updateReportedWidgetSizes(mOptionsWidgetA, new SizeF(80, 80), new SizeF(400, 40));
@@ -229,5 +225,28 @@ public class QuickActionSearchWidgetProviderTest {
         verify(mWidgetProvider).createWidget(any(), any(), eq(400), eq(40));
         verify(mWidgetProvider).createWidget(any(), any(), eq(80), eq(80));
         verify(mWidgetProvider, times(2)).createWidget(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    public void testSearchWidgetDimensions() {
+        Resources res = mContext.getResources();
+        float density = res.getDisplayMetrics().density;
+        int minWidthDp =
+                Math.round(res.getDimension(R.dimen.quick_action_search_widget_width) / density);
+        int minHeightDp =
+                Math.round(
+                        res.getDimension(R.dimen.quick_action_search_widget_xsmall_height)
+                                / density);
+        int maxWidthDp =
+                Math.round(
+                        res.getDimension(R.dimen.quick_action_search_widget_max_width) / density);
+        int maxHeightDp =
+                Math.round(
+                        res.getDimension(R.dimen.quick_action_search_widget_max_height) / density);
+
+        Assert.assertTrue(maxWidthDp > minWidthDp);
+        Assert.assertTrue(maxHeightDp > minHeightDp);
+        Assert.assertEquals(624, maxWidthDp);
+        Assert.assertEquals(155, maxHeightDp);
     }
 }

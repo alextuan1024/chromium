@@ -43,6 +43,9 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.UnownedUserDataHost;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -126,6 +129,54 @@ public class TabBottomSheetWebUiUnitTest {
                         /* readLaterOpener= */ null,
                         mMockContentView);
         TabBottomSheetWebUi.setInTestModeForTesting();
+    }
+
+    @Test
+    public void testConstructor_WithComponentProvider() {
+        Context context =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        CoBrowseComponentProvider mockProvider = mock(CoBrowseComponentProvider.class);
+        View containerView = new View(context);
+        TabBottomSheetWebUi webUi =
+                new TabBottomSheetWebUi(
+                        context,
+                        containerView,
+                        mWindowAndroid,
+                        mContextMenuPopulatorFactory,
+                        mSelectionDropdownMenuDelegate,
+                        Color.WHITE,
+                        TabBottomSheetClientType.UNKNOWN,
+                        CoBrowseContainerType.BOTTOM_SHEET,
+                        null,
+                        null,
+                        mockProvider);
+        assertEquals(
+                mockProvider, webUi.getWebViewResizingHelper().getComponentProviderForTesting());
+    }
+
+    @Test
+    public void testConstructor_WithNullComponentProvider() {
+        Context context =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        View containerView = new View(context);
+        TabBottomSheetWebUi webUi =
+                new TabBottomSheetWebUi(
+                        context,
+                        containerView,
+                        mWindowAndroid,
+                        mContextMenuPopulatorFactory,
+                        mSelectionDropdownMenuDelegate,
+                        Color.WHITE,
+                        TabBottomSheetClientType.UNKNOWN,
+                        CoBrowseContainerType.BOTTOM_SHEET,
+                        null,
+                        null,
+                        null);
+        assertNull(webUi.getWebViewResizingHelper().getComponentProviderForTesting());
     }
 
     @Test
@@ -766,6 +817,26 @@ public class TabBottomSheetWebUiUnitTest {
         verify(thinWindow).setAndroidPermissionDelegate(mWindowAndroid);
     }
 
+    @Test
+    public void testSetWebContents_forwardsTabModelSelectorSupplier() {
+        WindowAndroid thinWindow = mock(WindowAndroid.class);
+        when(mWebContents.getTopLevelNativeWindow()).thenReturn(thinWindow);
+
+        UnownedUserDataHost hostWindowHost = new UnownedUserDataHost();
+        when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(hostWindowHost);
+
+        UnownedUserDataHost thinWindowHost = new UnownedUserDataHost();
+        when(thinWindow.getUnownedUserDataHost()).thenReturn(thinWindowHost);
+
+        MonotonicObservableSupplier<TabModelSelector> selectorSupplier =
+                ObservableSuppliers.createMonotonic(mock(TabModelSelector.class));
+        TabModelSelectorSupplier.attach(hostWindowHost, selectorSupplier);
+
+        mWebUi.setWebContents(mWebContents, true);
+
+        assertEquals(selectorSupplier, TabModelSelectorSupplier.from(thinWindow));
+    }
+
     private static class TestTabBottomSheetWebUi extends TabBottomSheetWebUi {
         private final ContentView mMockContentView;
         private boolean mDisableActionModeSelectionMenuCalled;
@@ -792,7 +863,8 @@ public class TabBottomSheetWebUiUnitTest {
                     clientType,
                     containerType,
                     ephemeralTabOpener,
-                    readLaterOpener);
+                    readLaterOpener,
+                    mock(CoBrowseComponentProvider.class));
             mMockContentView = mockContentView;
         }
 

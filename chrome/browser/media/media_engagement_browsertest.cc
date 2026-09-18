@@ -297,6 +297,7 @@ class MediaEngagementBrowserTest : public InProcessBrowserTest {
   // class.
   void InjectTimerTaskRunnerToService(MediaEngagementService* service) {
     service->clock_ = &test_clock_;
+    service->task_runner_for_test_ = task_runner_;
 
     for (auto observer : service->contents_observers_)
       observer.second->SetTaskRunnerForTest(task_runner_);
@@ -306,6 +307,7 @@ class MediaEngagementBrowserTest : public InProcessBrowserTest {
   void InjectTimerTaskRunner() {
     if (!injected_clock_) {
       GetService()->clock_ = &test_clock_;
+      GetService()->task_runner_for_test_ = task_runner_;
       injected_clock_ = true;
     }
 
@@ -884,15 +886,8 @@ IN_PROC_BROWSER_TEST_F(MediaEngagementSessionRestoreBrowserTest,
   ExpectScores(MediaEngagementService::Get(browser->GetProfile()), url, 1, 0);
 }
 
-// TODO(crbug.com/541174985): Flaky on LSAN builders.
-// TODO(crbug.com/551552509): Flaky on Linux.
-#if defined(LEAK_SANITIZER) || BUILDFLAG(IS_LINUX)
-#define MAYBE_RestoredSession_Playback_MEI DISABLED_RestoredSession_Playback_MEI
-#else
-#define MAYBE_RestoredSession_Playback_MEI RestoredSession_Playback_MEI
-#endif
 IN_PROC_BROWSER_TEST_F(MediaEngagementSessionRestoreBrowserTest,
-                       MAYBE_RestoredSession_Playback_MEI) {
+                       RestoredSession_Playback_MEI) {
   const GURL& url = http_server().GetURL("/engagement_test.html");
 
   LoadTestPageAndWaitForPlayAndAudible(url, false);
@@ -1062,107 +1057,3 @@ IN_PROC_BROWSER_TEST_F(
   base::RunLoop().RunUntilIdle();
 }
 
-class MediaEngagementContentsObserverFencedFrameBrowserTest
-    : public MediaEngagementContentsObserverMPArchBrowserTest {
- public:
-  MediaEngagementContentsObserverFencedFrameBrowserTest() = default;
-  ~MediaEngagementContentsObserverFencedFrameBrowserTest() override = default;
-  MediaEngagementContentsObserverFencedFrameBrowserTest(
-      const MediaEngagementContentsObserverFencedFrameBrowserTest&) = delete;
-
-  MediaEngagementContentsObserverFencedFrameBrowserTest& operator=(
-      const MediaEngagementContentsObserverFencedFrameBrowserTest&) = delete;
-
-  void SetUpOnMainThread() override {
-    host_resolver()->AddRule("*", "127.0.0.1");
-    MediaEngagementContentsObserverMPArchBrowserTest::SetUpOnMainThread();
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    MediaEngagementBrowserTest::SetUpCommandLine(command_line);
-    // |fenced_frame_helper_| has a ScopedFeatureList so we needed to delay its
-    // creation until now because MediaEngagementBrowserTest also uses a
-    // ScopedFeatureList and initialization order matters.
-    fenced_frame_helper_ =
-        std::make_unique<content::test::FencedFrameTestHelper>();
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return *fenced_frame_helper_;
-  }
-
- private:
-  std::unique_ptr<content::test::FencedFrameTestHelper> fenced_frame_helper_;
-};
-
-// TODO(crbug.com/349253812): Flaky on Linux.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_SendEngagementLevelToRenderFrameOnFencedFrame \
-  DISABLED_SendEngagementLevelToRenderFrameOnFencedFrame
-#else
-#define MAYBE_SendEngagementLevelToRenderFrameOnFencedFrame \
-  SendEngagementLevelToRenderFrameOnFencedFrame
-#endif
-IN_PROC_BROWSER_TEST_F(MediaEngagementContentsObserverFencedFrameBrowserTest,
-                       MAYBE_SendEngagementLevelToRenderFrameOnFencedFrame) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  const GURL& initial_url =
-      embedded_test_server()->GetURL("a.com", "/empty.html");
-  SetScores(url::Origin::Create(initial_url), 24, 20);
-  content::TestNavigationManager navigation_manager(GetWebContents(),
-                                                    initial_url);
-
-  content::NavigationController::LoadURLParams params(initial_url);
-  params.transition_type = ui::PAGE_TRANSITION_LINK;
-  params.frame_tree_node_id =
-      GetWebContents()->GetPrimaryMainFrame()->GetFrameTreeNodeId();
-  GetWebContents()->GetController().LoadURLWithParams(params);
-
-  EXPECT_TRUE(navigation_manager.WaitForResponse());
-
-  MockAutoplayConfigurationClient client;
-  OverrideInterface(
-      navigation_manager.GetNavigationHandle()->GetRenderFrameHost(), &client);
-  // AddAutoplayFlags should be called once after navigating |initial_url| in
-  // the main frame.
-  EXPECT_CALL(client, AddAutoplayFlags(testing::_, testing::_)).Times(1);
-
-  navigation_manager.ResumeNavigation();
-  EXPECT_TRUE(navigation_manager.WaitForNavigationFinished());
-
-  // Create a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-
-  // AddAutoplayFlags should be called on the fenced frame.
-  GURL fenced_frame_navigate_url =
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/title2.html");
-  content::TestNavigationManager navigation_manager2(GetWebContents(),
-                                                     fenced_frame_navigate_url);
-  EXPECT_TRUE(ExecJs(
-      fenced_frame_host,
-      content::JsReplace("location.href = $1;", fenced_frame_navigate_url)));
-
-  EXPECT_TRUE(navigation_manager2.WaitForResponse());
-  MockAutoplayConfigurationClient fenced_frame_client;
-  OverrideInterface(
-      navigation_manager2.GetNavigationHandle()->GetRenderFrameHost(),
-      &fenced_frame_client);
-  // AddAutoplayFlags should be called once after navigating |initial_url| in
-  // the main frame.
-  base::RunLoop run_loop;
-  EXPECT_CALL(fenced_frame_client,
-              AddAutoplayFlags(url::Origin::Create(fenced_frame_navigate_url),
-                               testing::_))
-      .Times(1)
-      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
-
-  navigation_manager2.ResumeNavigation();
-  EXPECT_TRUE(navigation_manager2.WaitForNavigationFinished());
-  run_loop.Run();
-}

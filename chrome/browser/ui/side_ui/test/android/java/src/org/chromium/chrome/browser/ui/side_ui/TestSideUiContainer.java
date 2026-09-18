@@ -4,11 +4,13 @@
 
 package org.chromium.chrome.browser.ui.side_ui;
 
+import android.content.res.Resources;
 import android.util.ArrayMap;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
 
 import androidx.annotation.Px;
+import androidx.annotation.StringRes;
 
 import com.google.errorprone.annotations.DoNotMock;
 
@@ -72,14 +74,47 @@ public final class TestSideUiContainer implements SideUiContainer {
      */
     public boolean mRequestUiUpdateOnWillAutoClose;
 
+    /** Number of times {@link #onUiUpdateStarting} is called. */
+    public int mNumOnUiUpdateStartingReceived;
+
+    /** The last {@code oldWidth} received by {@link #onUiUpdateStarting}. */
+    public @Nullable @Px Integer mLastOldWidthOnUpdateStarting;
+
+    /** The last {@code newWidth} received by {@link #onUiUpdateStarting}. */
+    public @Nullable @Px Integer mLastNewWidthOnUpdateStarting;
+
+    /** The last {@code oldHeightType} received by {@link #onUiUpdateStarting}. */
+    public @HeightType int mLastOldHeightTypeOnUpdateStarting;
+
+    /** The last {@code newHeightType} received by {@link #onUiUpdateStarting}. */
+    public @HeightType int mLastNewHeightTypeOnUpdateStarting;
+
     /** Number of times {@link #onUiUpdateCompleted} is called. */
     public int mNumOnUiUpdateCompletedReceived;
 
     /** The last {@code oldWidth} received by {@link #onUiUpdateCompleted}. */
-    public @Nullable @Px Integer mLastOldWidth;
+    public @Nullable @Px Integer mLastOldWidthOnUpdateCompleted;
 
     /** The last {@code newWidth} received by {@link #onUiUpdateCompleted}. */
-    public @Nullable @Px Integer mLastNewWidth;
+    public @Nullable @Px Integer mLastNewWidthOnUpdateCompleted;
+
+    /** The last {@code oldHeightType} received by {@link #onUiUpdateCompleted}. */
+    public @HeightType int mLastOldHeightTypeOnUpdateCompleted;
+
+    /** The last {@code newHeightType} received by {@link #onUiUpdateCompleted}. */
+    public @HeightType int mLastNewHeightTypeOnUpdateCompleted;
+
+    /** Whether this container reports that it supports manual resizing. */
+    public boolean mSupportsManualResize;
+
+    /** The content description resource id returned for the resize handle. */
+    public @StringRes int mResizeHandleContentDescriptionRes = Resources.ID_NULL;
+
+    /** The last width received by {@link #onResizeLive}. */
+    public @Nullable @Px Integer mLastResizeLiveWidth;
+
+    /** The last width received by {@link #onResizeCommitted}. */
+    public @Nullable @Px Integer mLastResizeCommittedWidth;
 
     private final SideUiCoordinator mSideUiCoordinator;
     private final View mSideUiContainerView;
@@ -152,14 +187,29 @@ public final class TestSideUiContainer implements SideUiContainer {
     }
 
     @Override
+    public void onUiUpdateStarting(
+            @Px int oldWidth,
+            @Px int newWidth,
+            @HeightType int oldHeightType,
+            @HeightType int newHeightType) {
+        mNumOnUiUpdateStartingReceived++;
+        mLastOldWidthOnUpdateStarting = oldWidth;
+        mLastNewWidthOnUpdateStarting = newWidth;
+        mLastOldHeightTypeOnUpdateStarting = oldHeightType;
+        mLastNewHeightTypeOnUpdateStarting = newHeightType;
+    }
+
+    @Override
     public void onUiUpdateCompleted(
             @Px int oldWidth,
             @Px int newWidth,
             @HeightType int oldHeightType,
             @HeightType int newHeightType) {
         mNumOnUiUpdateCompletedReceived++;
-        mLastOldWidth = oldWidth;
-        mLastNewWidth = newWidth;
+        mLastOldWidthOnUpdateCompleted = oldWidth;
+        mLastNewWidthOnUpdateCompleted = newWidth;
+        mLastOldHeightTypeOnUpdateCompleted = oldHeightType;
+        mLastNewHeightTypeOnUpdateCompleted = newHeightType;
     }
 
     @Override
@@ -175,5 +225,25 @@ public final class TestSideUiContainer implements SideUiContainer {
     @Override
     public void onWillAutoRestore() {
         mNumOnWillAutoRestoreReceived++;
+    }
+
+    @Override
+    public boolean supportsManualResize() {
+        return mSupportsManualResize;
+    }
+
+    @Override
+    public @StringRes int getResizeHandleContentDescriptionRes() {
+        return mResizeHandleContentDescriptionRes;
+    }
+
+    @Override
+    public void onResizeLive(@Px int proposedWidthPx) {
+        mLastResizeLiveWidth = proposedWidthPx;
+    }
+
+    @Override
+    public void onResizeCommitted(@Px int finalWidthPx) {
+        mLastResizeCommittedWidth = finalWidthPx;
     }
 }

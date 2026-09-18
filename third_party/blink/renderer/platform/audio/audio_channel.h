@@ -34,7 +34,6 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_span.h"
-#include "base/numerics/checked_math.h"
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 
@@ -49,12 +48,10 @@ class PLATFORM_EXPORT AudioChannel final {
   // AudioFloatArray.
 
   // Manage storage for us.
-  explicit AudioChannel(uint32_t length) : silent_(true) {
-    CHECK(TryAllocate(length));
-  }
+  explicit AudioChannel(uint32_t length) { CHECK(TryAllocate(length)); }
 
   // A "blank" audio channel -- must call Set() before it's useful...
-  AudioChannel() : silent_(true) {}
+  AudioChannel() = default;
 
   // Methods for internal allocation.
   bool TryAllocate(uint32_t length);
@@ -67,10 +64,6 @@ class PLATFORM_EXPORT AudioChannel final {
 
   // How many sample-frames do we contain?
   uint32_t length() const { return static_cast<uint32_t>(data_span_.size()); }
-
-  // ResizeSmaller() can only be called with a new length <= the current length.
-  // The data stored in the bus will remain undisturbed.
-  void ResizeSmaller(uint32_t new_length);
 
   // Direct access to PCM sample data. Non-const accessor clears silent flag.
   base::span<float> MutableSpan() {
@@ -109,13 +102,10 @@ class PLATFORM_EXPORT AudioChannel final {
   // Sums (with unity gain) from the source channel.
   void SumFrom(const AudioChannel* source_channel);
 
-  // Returns maximum absolute value (useful for normalization).
-  float MaxAbsValue() const;
-
  private:
   std::unique_ptr<AudioFloatArray> mem_buffer_;
   base::raw_span<float> data_span_;
-  bool silent_;
+  bool silent_ = true;
 };
 
 }  // namespace blink

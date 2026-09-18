@@ -39,8 +39,13 @@
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
+@protocol AtMemoryCommands;
 @protocol AutofillCommands;
 @class UIViewController;
+
+namespace affiliations {
+class AffiliationService;
+}
 
 namespace personal_context {
 enum class PersonalContextEligibilityState;
@@ -99,6 +104,11 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   }
   id<AutofillCommands> commands_handler() const { return commands_handler_; }
 
+  void set_at_memory_handler(id<AtMemoryCommands> at_memory_handler) {
+    at_memory_handler_ = at_memory_handler;
+  }
+  id<AtMemoryCommands> at_memory_handler() const { return at_memory_handler_; }
+
   // AutofillClient:
   base::WeakPtr<AutofillClient> GetWeakPtr() override;
   const std::string& GetAppLocale() const override;
@@ -140,6 +150,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   signin::IdentityManager* GetIdentityManager() override;
   const signin::IdentityManager* GetIdentityManager() const override;
   metrics::ProfileMetricsService* GetProfileMetricsService() override;
+  affiliations::AffiliationService* GetAffiliationService() override;
   const GoogleGroupsManager* GetGoogleGroupsManager() const override;
   FormDataImporter* GetFormDataImporter() override;
   FormPredictionsTracker* GetFormPredictionsTracker() override;
@@ -166,6 +177,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
       const PopupOpenArgs& open_args,
       base::WeakPtr<AutofillSuggestionDelegate> delegate) override;
   void UpdateAutofillDataListValues(
+      const LocalFrameToken& frame_token,
       base::span<const SelectOption> datalist) override;
   void HideSuggestions(SuggestionHidingReason reason,
                        std::optional<FillingProduct> product) override;
@@ -198,6 +210,7 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
       EntityInstance new_entity,
       std::optional<EntityInstance> old_entity,
       bool save_is_synchronous,
+      LegalMessageLines public_passes_notice,
       EntityImportPromptResultCallback prompt_result_callback) override;
   void CloseEntityImportBubble() override;
   void ShowAutofillAiLocalSaveNotification() override;
@@ -268,6 +281,8 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   __weak UIViewController* base_view_controller_;
 
   __weak id<AutofillCommands> commands_handler_;
+
+  __weak id<AtMemoryCommands> at_memory_handler_;
 
   // Holds a weak reference to the delegate driving the active suggestions
   // popup.

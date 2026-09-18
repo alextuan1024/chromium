@@ -367,10 +367,8 @@ MemorySearchStatus MapContextMemoryError(
 }
 
 // Ranks `local_results` and `remote_results` search results.
-// - Local and remote results are sorted by confidence score descending.
-// - If all results are dynamic transaction types, remote
-//   results are prioritized on top of local results.
-// - Otherwise, local results take priority over remote results.
+// Autofill-sourced results take priority over remote results, and within each
+// group results are sorted by confidence score descending.
 std::vector<MemorySearchResult> RankResults(
     std::vector<MemorySearchResult> local_results,
     std::vector<MemorySearchResult> remote_results) {
@@ -380,23 +378,8 @@ std::vector<MemorySearchResult> RankResults(
   };
   std::ranges::stable_sort(local_results, compare_confidence);
   std::ranges::stable_sort(remote_results, compare_confidence);
-
-  bool all_dynamic =
-      std::ranges::all_of(local_results, IsDynamicTransactionType,
-                          &MemorySearchResult::type) &&
-      std::ranges::all_of(remote_results, IsDynamicTransactionType,
-                          &MemorySearchResult::type);
-
-  std::vector<MemorySearchResult> ranked_results;
-  if (all_dynamic) {
-    ranked_results = std::move(remote_results);
-    base::Extend(ranked_results, std::move(local_results));
-  } else {
-    ranked_results = std::move(local_results);
-    base::Extend(ranked_results, std::move(remote_results));
-  }
-
-  return ranked_results;
+  base::Extend(local_results, std::move(remote_results));
+  return local_results;
 }
 
 // Combines local and remote results, deduplicates them, and reorders secondary
@@ -755,9 +738,6 @@ void AtMemoryQueryService::Query(
     const GURL& url,
     std::u16string_view title,
     base::RepeatingCallback<void(MemorySearchResults)> callback) {
-  // Invalidate any in-flight queries.
-  query_weak_ptr_factory_.InvalidateWeakPtrs();
-
   if (net::NetworkChangeNotifier::IsOffline()) {
     callback.Run(MemorySearchResults(MemorySearchStatus::kNoConnectionFailure));
     return;
@@ -836,13 +816,7 @@ void AtMemoryQueryService::OnPersonalContextRetrieved(
   };
 
   if (!result.response.has_value()) {
-    personal_context::ContextMemoryError::ExecutionError error =
-        result.response.error().error();
-    if (error ==
-        personal_context::ContextMemoryError::ExecutionError::kCancelled) {
-      return;
-    }
-    run_callback(MapContextMemoryError(error));
+    run_callback(MapContextMemoryError(result.response.error().error()));
     return;
   }
 

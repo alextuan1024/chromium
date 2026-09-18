@@ -110,7 +110,7 @@ void PasswordExpiryNotificationDelegate::Click(
 // static
 void PasswordExpiryNotification::Show(const user_manager::User& user,
                                       base::TimeDelta time_until_expiry) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // NotifierId for histogram reporting.
   NotifierId notifier_id(NotifierType::SYSTEM_COMPONENT, kNotificationId,
@@ -123,9 +123,6 @@ void PasswordExpiryNotification::Show(const user_manager::User& user,
   // ie "Chromium OS" or similar.
   static const base::NoDestructor<std::u16string> kEmptyDisplaySource;
 
-  // No origin URL is needed since the notification comes from the system.
-  static const base::NoDestructor<GURL> kEmptyOriginUrl;
-
   const std::u16string title = GetTitleText(time_until_expiry);
   const std::u16string body = GetBodyText();
   const RichNotificationData rich_notification_data = GetRichNotificationData();
@@ -134,8 +131,7 @@ void PasswordExpiryNotification::Show(const user_manager::User& user,
 
   auto notification = CreateSystemNotificationPtr(
       kNotificationType, notification_id, title, body, *kEmptyDisplaySource,
-      *kEmptyOriginUrl, notifier_id, rich_notification_data, delegate,
-      GetIcon(), kWarningLevel);
+      notifier_id, rich_notification_data, delegate, GetIcon(), kWarningLevel);
 
   // Calling remove before add ensures that the notification pops up again
   // even if it is already shown.
@@ -160,7 +156,7 @@ std::u16string PasswordExpiryNotification::GetTitleText(
 
 // static
 void PasswordExpiryNotification::Dismiss(const user_manager::User& user) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   message_center::MessageCenter::Get()->RemoveNotification(
       CreateUserScopedNotificationId(kNotificationId, user.username_hash()),
       /*by_user=*/false);

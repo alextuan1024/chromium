@@ -190,6 +190,7 @@
 #include "third_party/blink/public/mojom/permissions/permission.mojom.h"
 #include "third_party/blink/public/mojom/render_accessibility.mojom.h"
 #include "third_party/blink/public/mojom/renderer_preference_watcher.mojom.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/mojom/widget/platform_widget.mojom.h"
 #include "third_party/blink/public/platform/file_path_conversion.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
@@ -2588,9 +2589,7 @@ void RenderFrameImpl::AllowBindings(int64_t enabled_bindings_flags) {
   enabled_bindings_.PutAll(new_bindings);
 
   if (new_bindings.Has(BindingsPolicyValue::kMojoWebUi)) {
-    // If mojo web UI is being enabled, update the protected memory bool to
-    // allow MojoJS binding in this process.
-    blink::WebV8Features::AllowMojoJSForProcess();
+    blink::WebV8Features::AllowMojoJSPerContextForProcess();
   }
 }
 
@@ -2599,16 +2598,14 @@ void RenderFrameImpl::EnableMojoJsBindings(
   enable_mojo_js_bindings_ = true;
   mojo_js_features_ = std::move(features);
 
-  // Update the protected memory bool to allow MojoJS binding in this process.
-  blink::WebV8Features::AllowMojoJSForProcess();
+  blink::WebV8Features::AllowMojoJSPerContextForProcess();
 }
 
 void RenderFrameImpl::EnableMojoJsBindingsWithBroker(
     mojo::PendingRemote<blink::mojom::BrowserInterfaceBroker> broker) {
   mojo_js_interface_broker_ = std::move(broker);
 
-  // Update the protected memory bool to allow MojoJS binding in this process.
-  blink::WebV8Features::AllowMojoJSForProcess();
+  blink::WebV8Features::AllowMojoJSPerContextForProcess();
 }
 
 void RenderFrameImpl::BindWebUI(
@@ -3566,6 +3563,10 @@ bool RenderFrameImpl::IsPluginHandledExternally(
 
 bool RenderFrameImpl::IsDomStorageDisabled() const {
   return GetContentClient()->renderer()->IsDomStorageDisabled();
+}
+
+bool RenderFrameImpl::AreDedicatedWorkersDisabled() const {
+  return GetContentClient()->renderer()->AreDedicatedWorkersDisabled();
 }
 
 v8::Local<v8::Object> RenderFrameImpl::GetScriptableObject(
@@ -4999,11 +5000,12 @@ void RenderFrameImpl::WillReleaseScriptContext(v8::Local<v8::Context> context,
   }
 }
 
-void RenderFrameImpl::DidChangeScrollOffset() {
+void RenderFrameImpl::DidChangeScrollOffset(
+    blink::mojom::ScrollType scroll_type) {
   StartDelayedSyncTimer();
 
   for (auto& observer : observers_) {
-    observer.DidChangeScrollOffset();
+    observer.DidChangeScrollOffset(scroll_type);
   }
 }
 
@@ -6496,7 +6498,7 @@ void RenderFrameImpl::BeginNavigationInternal(
           /*started_by_ad=*/
           (info->initiator_frame_is_ad || info->is_ad_script_in_stack),
           info->is_container_initiated, info->has_rel_opener,
-          info->script_tool_invocation_id);
+          info->script_tool_invocation_id, info->script_injector_host.Utf8());
 
   bool current_frame_has_download_sandbox_flag = !frame_->IsAllowedToDownload();
   bool has_download_sandbox_flag =

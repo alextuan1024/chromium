@@ -6,6 +6,7 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/unguessable_token.h"
 #import "components/autofill/core/browser/at_memory/at_memory_manager.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
@@ -37,6 +38,34 @@ namespace {
 
 NSString* const kTestContent = @"John Doe";
 NSString* const kObfuscatedContent = @"AA123456";
+
+// Returns a valid FieldGlobalId for testing.
+FieldGlobalId CreateTestFieldGlobalId() {
+  return FieldGlobalId(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FieldRendererId(42));
+}
+
+// Returns a standard non-obfuscated AtMemory suggestion for testing.
+Suggestion CreateTestSuggestion() {
+  Suggestion suggestion(base::SysNSStringToUTF16(kTestContent),
+                        SuggestionType::kAtMemorySearchResult);
+  suggestion.payload = Suggestion::AtMemoryPayload(
+      base::SysNSStringToUTF16(kTestContent), MemoryDataType::kNameFull);
+  return suggestion;
+}
+
+// Returns an obfuscated AtMemory suggestion for testing.
+Suggestion CreateObfuscatedSuggestion() {
+  Suggestion suggestion(base::SysNSStringToUTF16(kObfuscatedContent),
+                        SuggestionType::kAtMemorySearchResult);
+  Suggestion::AtMemoryPayload payload(
+      base::SysNSStringToUTF16(kObfuscatedContent),
+      MemoryDataType::kPassportNumber);
+  payload.is_personal_context_sourced = true;
+  suggestion.payload = std::move(payload);
+  return suggestion;
+}
 
 }  // namespace
 
@@ -70,15 +99,7 @@ class AtMemoryMediatorTest : public PlatformTest {
     mock_injector_ = OCMProtocolMock(@protocol(ManualFillContentInjector));
     mock_at_memory_handler_ = OCMProtocolMock(@protocol(AtMemoryCommands));
 
-    BrowserAutofillManager* autofill_manager =
-        static_cast<BrowserAutofillManager*>(
-            autofill_client_->GetAutofillManagerForPrimaryMainFrame());
-    mediator_ = [[AtMemoryMediator alloc]
-        initWithAtMemoryManager:at_memory_manager_.get()
-                autofillManager:autofill_manager
-                contentInjector:mock_injector_
-                        fieldId:FieldGlobalId()];
-    mediator_.atMemoryHandler = mock_at_memory_handler_;
+    mediator_ = CreateMediatorWithFieldId(FieldGlobalId());
   }
 
   void TearDown() override {
@@ -88,6 +109,50 @@ class AtMemoryMediatorTest : public PlatformTest {
     at_memory_manager_.reset();
     autofill_client_.reset();
     PlatformTest::TearDown();
+  }
+
+  // Creates and configures an AtMemoryMediator with the specified `field_id`.
+  AtMemoryMediator* CreateMediatorWithFieldId(FieldGlobalId field_id) {
+    BrowserAutofillManager* autofill_manager =
+        static_cast<BrowserAutofillManager*>(
+            autofill_client_->GetAutofillManagerForPrimaryMainFrame());
+    AtMemoryMediator* mediator = [[AtMemoryMediator alloc]
+        initWithAtMemoryManager:at_memory_manager_.get()
+                autofillManager:autofill_manager
+                contentInjector:mock_injector_
+                        fieldId:field_id];
+    mediator.atMemoryHandler = mock_at_memory_handler_;
+    return mediator;
+  }
+
+  // Sets OCMock expectations for filling `content` and dismissing AtMemory.
+  void ExpectSuccessfulFillAndDismiss(NSString* content) {
+    OCMExpect([mock_injector_
+        userDidPickContent:content
+             passwordField:NO
+             requiresHTTPS:YES
+           jumpToNextField:NO
+                actionType:autofill::mojom::FieldActionType::
+                               kReplaceSelectionForAtMemory]);
+    OCMExpect([mock_at_memory_handler_ dismissAtMemory]);
+  }
+
+  // Asserts that no content is injected, i.e. that the fill is performed
+  // exclusively through `AtMemoryManager`.
+  void RejectContentInjection() {
+    [[mock_injector_ reject]
+        userDidPickContent:[OCMArg any]
+             passwordField:NO
+             requiresHTTPS:YES
+           jumpToNextField:NO
+                actionType:autofill::mojom::FieldActionType::
+                               kReplaceSelectionForAtMemory];
+  }
+
+  // Verifies all OCMock expectations for injector and AtMemory handler.
+  void VerifyMocks() {
+    EXPECT_OCMOCK_VERIFY(mock_injector_);
+    EXPECT_OCMOCK_VERIFY(mock_at_memory_handler_);
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -100,62 +165,81 @@ class AtMemoryMediatorTest : public PlatformTest {
   AtMemoryMediator* mediator_;
 };
 
-// Tests that fillWithContent: forwards to the content injector.
-TEST_F(AtMemoryMediatorTest, FillWithContentCallsInjector) {
-  OCMExpect([mock_injector_
-      userDidPickContent:kTestContent
-           passwordField:NO
-           requiresHTTPS:YES
-         jumpToNextField:NO
-              actionType:autofill::mojom::FieldActionType::
-                             kReplaceSelectionForAtMemory]);
+// Tests that fillWithContent: forwards to the content injector and dismisses
+// AtMemory.
+TEST_F(AtMemoryMediatorTest, FillWithContentCallsInjectorAndDismisses) {
+  ExpectSuccessfulFillAndDismiss(kTestContent);
 
   [mediator_ fillWithContent:kTestContent];
 
-  EXPECT_OCMOCK_VERIFY(mock_injector_);
+  VerifyMocks();
 }
 
-// Tests that fillWithSuggestion: with a non-obfuscated suggestion uses simple
-// filling via the content injector.
+// Tests that fillWithSuggestion: with a non-obfuscated suggestion fills via
+// AtMemoryManager only, without also injecting the value a second time.
 TEST_F(AtMemoryMediatorTest, FillWithSuggestionNonObfuscatedFillsValue) {
-  Suggestion suggestion(base::SysNSStringToUTF16(kTestContent),
-                        SuggestionType::kAtMemorySearchResult);
-  Suggestion::AtMemoryPayload payload(base::SysNSStringToUTF16(kTestContent),
-                                      MemoryDataType::kNameFull);
-  suggestion.payload = std::move(payload);
+  RejectContentInjection();
+  OCMExpect([mock_at_memory_handler_ dismissAtMemory]);
 
-  OCMExpect([mock_injector_
-      userDidPickContent:kTestContent
-           passwordField:NO
-           requiresHTTPS:YES
-         jumpToNextField:NO
-              actionType:autofill::mojom::FieldActionType::
-                             kReplaceSelectionForAtMemory]);
+  [mediator_ fillWithSuggestion:CreateTestSuggestion()];
 
-  [mediator_ fillWithSuggestion:suggestion];
-
-  EXPECT_OCMOCK_VERIFY(mock_injector_);
+  VerifyMocks();
 }
 
 // Tests that fillWithSuggestion: with an obfuscated suggestion delegates to
-// AtMemoryManager without simple injection.
-TEST_F(AtMemoryMediatorTest, FillWithSuggestionObfuscatedFills) {
-  Suggestion suggestion(base::SysNSStringToUTF16(kObfuscatedContent),
-                        SuggestionType::kAtMemorySearchResult);
-  Suggestion::AtMemoryPayload payload(
-      base::SysNSStringToUTF16(kObfuscatedContent),
-      MemoryDataType::kPassportNumber);
-  payload.is_personal_context_sourced = true;
-  suggestion.payload = std::move(payload);
+// AtMemoryManager and dismisses AtMemory directly without simple injection.
+TEST_F(AtMemoryMediatorTest, FillWithSuggestionObfuscatedFillsAndDismisses) {
+  RejectContentInjection();
+  OCMExpect([mock_at_memory_handler_ dismissAtMemory]);
 
-  [[mock_injector_ reject] userDidPickContent:[OCMArg any]
-                                passwordField:NO
-                                requiresHTTPS:YES
-                              jumpToNextField:NO
-                                   actionType:autofill::mojom::FieldActionType::
-                                                  kReplaceSelectionForAtMemory];
+  [mediator_ fillWithSuggestion:CreateObfuscatedSuggestion()];
 
-  [mediator_ fillWithSuggestion:suggestion];
+  VerifyMocks();
+}
+
+// Tests that fillWithSuggestion: with an obfuscated suggestion succeeds when
+// initialized with a valid FieldGlobalId.
+TEST_F(AtMemoryMediatorTest, FillWithSuggestionObfuscatedWithValidFieldId) {
+  AtMemoryMediator* mediator =
+      CreateMediatorWithFieldId(CreateTestFieldGlobalId());
+
+  RejectContentInjection();
+
+  [mediator fillWithSuggestion:CreateObfuscatedSuggestion()];
 
   EXPECT_OCMOCK_VERIFY(mock_injector_);
+  [mediator disconnect];
+}
+
+// Tests that fillWithSuggestion: records the suggestion in AtMemoryManager
+// when kAutofillAtMemorySearchStatefulness is enabled.
+TEST_F(AtMemoryMediatorTest, FillWithSuggestionRecordsInAtMemoryManager) {
+  base::test::ScopedFeatureList statefulness_feature;
+  statefulness_feature.InitWithFeatures(
+      /*enabled_features=*/
+      {autofill::features::kAutofillAtMemorySearchStatefulness,
+       autofill::features::kAutofillAtMemoryPreviouslyFilled},
+      /*disabled_features=*/{});
+
+  FieldGlobalId field_id = CreateTestFieldGlobalId();
+  AtMemoryMediator* mediator = CreateMediatorWithFieldId(field_id);
+
+  RejectContentInjection();
+  OCMExpect([mock_at_memory_handler_ dismissAtMemory]);
+
+  at_memory_manager_->GetStateForField(field_id, url::Origin());
+  [mediator fillWithSuggestion:CreateTestSuggestion()];
+
+  VerifyMocks();
+
+  std::vector<Suggestion> empty_query_suggestions =
+      at_memory_manager_->GetEmptyQuerySuggestions();
+  ASSERT_GE(empty_query_suggestions.size(), 2u);
+  EXPECT_EQ(empty_query_suggestions[0].type, SuggestionType::kTitle);
+  EXPECT_EQ(empty_query_suggestions[1].type,
+            SuggestionType::kAtMemorySearchResult);
+  EXPECT_EQ(empty_query_suggestions[1].main_text.value,
+            base::SysNSStringToUTF16(kTestContent));
+
+  [mediator disconnect];
 }

@@ -425,6 +425,7 @@ ci.builder(
                 ),
             ),
             "browser_tests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     # Move to faster machine types to reduce capacity impact.
                     # TODO(crbug.com/541675870): Can remove this if/when
@@ -559,7 +560,7 @@ ci.thin_tester(
                     "--disable-features=InitialWebUI,WebUIReloadButton,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit",
                 ],
                 swarming = targets.swarming(
-                    shards = 14,
+                    shards = 24,
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
@@ -1025,6 +1026,12 @@ ci.builder(
             ),
             "grit_python_unittests": targets.remove(
                 reason = "TODO: crbug.com/346921029 - fix broken tests.",
+            ),
+            "browser_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # Shadow Win10 Tests x64's shard count
+                    shards = 55,
+                ),
             ),
             "interactive_ui_tests": targets.mixin(
                 # Shadow Win10 Tests x64

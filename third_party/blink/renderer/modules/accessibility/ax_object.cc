@@ -125,6 +125,7 @@
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/svg/svg_desc_element.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
+#include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
 #include "third_party/blink/renderer/core/svg/svg_g_element.h"
 #include "third_party/blink/renderer/core/svg/svg_style_element.h"
 #include "third_party/blink/renderer/core/svg/svg_title_element.h"
@@ -577,7 +578,7 @@ void AXObject::Detach() {
     // Shutting down a11y, just clear the children.
     children_.clear();
   } else {
-    // Clear children and call DetachFromParent() on them so that
+    // Clear children and call DetachFromParentNoNotify() on them so that
     // no children are left with dangling pointers to their parent.
     ClearChildren();
   }
@@ -7070,7 +7071,7 @@ bool AXObject::ShouldDestroyWhenDetachingFromParent() const {
   return false;
 }
 
-void AXObject::DetachFromParent() {
+void AXObject::DetachFromParentNoNotify() {
   if (IsDetached()) {
     return;
   }
@@ -7078,8 +7079,13 @@ void AXObject::DetachFromParent() {
   CHECK(!AXObjectCache().IsFrozen())
       << "Do not detach parent while tree is frozen: " << this;
   if (ShouldDestroyWhenDetachingFromParent()) {
-    if (GetNode()) {
-      AXObjectCache().RemoveSubtree(GetNode());
+    if (Node* node = GetNode()) {
+      // Check if a node is connected, as removing a disconnected subtree
+      // caused crashes (crrev.com/c/4614327)
+      if (node->isConnected()) {
+        AXObjectCache().RemoveSubtree(node, /*remove_root=*/true,
+                                      /*notify_parent=*/false);
+      }
     } else {
       // This is rare, but technically a pseudo-element descendant can have a
       // subtree, and they do not have nodes.
@@ -7147,7 +7153,7 @@ void AXObject::ClearChildren() {
     // Another case where the parent is not the same is when the child has been
     // reparented using aria-owns.
     if (child->ParentObjectIfPresent() == this) {
-      child->DetachFromParent();
+      child->DetachFromParentNoNotify();
     }
   }
 
@@ -7171,7 +7177,7 @@ void AXObject::ClearChildren() {
     AXObject* ax_child_from_node = AXObjectCache().Get(child_node);
     if (ax_child_from_node &&
         ax_child_from_node->ParentObjectIfPresent() == this) {
-      ax_child_from_node->DetachFromParent();
+      ax_child_from_node->DetachFromParentNoNotify();
     }
   }
 
@@ -7574,7 +7580,7 @@ const Node* AXObject::GetParentNodeAcrossFrames(const Node* node) {
   return node->GetDocument().LocalOwner();
 }
 
-// Elements under a <canvas layoutsubtree> should only have geometry/layout
+// Elements under a <canvas content=drawable> should only have geometry/layout
 // bounds in the accessibility tree if they have a set canvas element
 // transform, or are descendants of a drawable element with a set canvas
 // element transform.
@@ -7600,7 +7606,7 @@ bool AXObject::IsInCanvasSubtreeWithoutCanvasTransform() const {
       }
     }
     if (auto* canvas = DynamicTo<HTMLCanvasElement>(curr)) {
-      return canvas->layoutSubtree();
+      return canvas->IsContentDrawable();
     }
   }
   NOTREACHED();
@@ -8643,7 +8649,6 @@ bool AXObject::SupportsNameFromContents(bool recursive,
     case ax::mojom::blink::Role::kPluginObject:
     case ax::mojom::blink::Role::kRootWebArea:
     case ax::mojom::blink::Role::kScrollView:
-    case ax::mojom::blink::Role::kSvgRoot:
     case ax::mojom::blink::Role::kVideo:
       return false;
 
@@ -8657,7 +8662,14 @@ bool AXObject::SupportsNameFromContents(bool recursive,
       // objects should return false for now.
       // TODO(crbug.com/443106926): investigate whether other Group objects
       // should be eligible in the future.
-      if (!GetNode()->HasTagName(html_names::kAddressTag)) {
+      if (GetNode()) {
+        if (!GetNode()->HasTagName(html_names::kAddressTag) &&
+            !IsA<SVGForeignObjectElement>(GetNode()) &&
+            !GetNode()->IsSVGElement()) {
+          return false;
+        }
+      } else if (!GetLayoutObject() ||
+                 !GetLayoutObject()->IsSVGForeignObject()) {
         return false;
       }
       [[fallthrough]];
@@ -8696,6 +8708,7 @@ bool AXObject::SupportsNameFromContents(bool recursive,
     case ax::mojom::blink::Role::kStrong:
     case ax::mojom::blink::Role::kSubscript:
     case ax::mojom::blink::Role::kSuperscript:
+    case ax::mojom::blink::Role::kSvgRoot:
     case ax::mojom::blink::Role::kTime: {
       // Usually these items don't have a name, but Blink provides one if they
       // are tabbable, as a repair, so that if a user navigates to one, screen

@@ -61,14 +61,13 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_bridge.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "chromeos/components/disks/disks_prefs.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -363,7 +362,7 @@ class DeviceEventRouterImpl : public DeviceEventRouter {
   void OnDeviceEvent(fmp::DeviceEventType type,
                      const std::string& device_path,
                      const std::string& device_label) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     fmp::DeviceEvent event;
     event.type = type;
@@ -608,7 +607,7 @@ EventRouter::EventRouter(PrefService* local_state, Profile* profile)
       dispatch_directory_change_event_impl_(
           base::BindRepeating(&EventRouter::DispatchDirectoryChangeEventImpl,
                               base::Unretained(this))) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Notification manager can call into Drive FS for dialog handling.
   notification_manager_->SetDriveFSEventRouter(drivefs_event_router_.get());
   ObserveEvents();
@@ -618,14 +617,15 @@ EventRouter::~EventRouter() = default;
 
 void EventRouter::OnIntentFiltersUpdated(
     const std::optional<std::string>& package_name) {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI),
+        base::NotFatalUntil::M160);
   BroadcastEvent(profile_,
                  extensions::events::FILE_MANAGER_PRIVATE_ON_APPS_UPDATED,
                  fmp::OnAppsUpdated::kEventName, fmp::OnAppsUpdated::Create());
 }
 
 void EventRouter::Shutdown() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (ArcIntentHelperBridge* const bridge =
           arc::ArcIntentHelperBridge::GetForBrowserContext(profile_)) {
@@ -638,7 +638,7 @@ void EventRouter::Shutdown() {
       << "Not all file watchers are "
       << "removed. This can happen when the Files app is open during shutdown.";
   file_watchers_.clear();
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   pref_change_registrar_->RemoveAll();
 
@@ -683,7 +683,7 @@ void EventRouter::Shutdown() {
 }
 
 void EventRouter::ObserveEvents() {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   if (!LoginState::IsInitialized() || !LoginState::Get()->IsUserLoggedIn()) {
     return;
@@ -765,7 +765,7 @@ void EventRouter::ObserveEvents() {
   if (AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_)) {
     AppServiceProxy* const proxy =
         AppServiceProxyFactory::GetForProfile(profile_);
-    DCHECK(proxy);
+    CHECK(proxy, base::NotFatalUntil::M160);
     app_registry_cache_observer_.Observe(&proxy->AppRegistryCache());
   }
 
@@ -781,8 +781,8 @@ void EventRouter::AddFileWatch(const base::FilePath& local_path,
                                const base::FilePath& virtual_path,
                                const url::Origin& listener_origin,
                                BoolCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!callback.is_null());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
 
   auto iter = file_watchers_.find(local_path);
   if (iter == file_watchers_.end()) {
@@ -804,7 +804,7 @@ void EventRouter::AddFileWatch(const base::FilePath& local_path,
 
 void EventRouter::RemoveFileWatch(const base::FilePath& local_path,
                                   const url::Origin& listener_origin) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto iter = file_watchers_.find(local_path);
   if (iter == file_watchers_.end()) {
@@ -844,8 +844,8 @@ void EventRouter::TimezoneChanged(const icu::TimeZone& timezone) {
 }
 
 void EventRouter::OnFileManagerPrefsChanged() {
-  DCHECK(profile_);
-  DCHECK(extensions::EventRouter::Get(profile_));
+  CHECK(profile_, base::NotFatalUntil::M160);
+  CHECK(extensions::EventRouter::Get(profile_), base::NotFatalUntil::M160);
 
   BroadcastEvent(
       profile_, extensions::events::FILE_MANAGER_PRIVATE_ON_PREFERENCES_CHANGED,
@@ -855,7 +855,7 @@ void EventRouter::OnFileManagerPrefsChanged() {
 
 void EventRouter::HandleFileWatchNotification(const base::FilePath& local_path,
                                               bool got_error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto iter = file_watchers_.find(local_path);
   if (iter == file_watchers_.end()) {
@@ -877,7 +877,7 @@ void EventRouter::DispatchDirectoryChangeEventImpl(
     const base::FilePath& virtual_path,
     bool got_error,
     const std::vector<url::Origin>& listeners) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   for (const url::Origin& origin : listeners) {
     FileDefinition file_definition;
@@ -926,28 +926,28 @@ void EventRouter::DispatchDirectoryChangeEventWithEntryDefinition(
 }
 
 void EventRouter::OnDiskAdded(const Disk& disk, bool mounting) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnDiskRemoved(const Disk& disk) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnDeviceAdded(const std::string& device_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnDeviceRemoved(const std::string& device_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnVolumeMounted(ash::MountError error_code,
                                   const Volume& volume) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // profile_ is NULL if ShutdownOnUIThread() is called earlier. This can
   // happen at shutdown. This should be removed after removing Drive mounting
   // code in addMount. (addMount -> OnFileSystemMounted -> OnVolumeMounted is
@@ -970,7 +970,7 @@ void EventRouter::OnVolumeMounted(ash::MountError error_code,
 
 void EventRouter::OnVolumeUnmounted(ash::MountError error_code,
                                     const Volume& volume) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   DispatchMountCompletedEvent(fmp::MountCompletedEventType::kUnmount,
                               error_code, volume);
 
@@ -1000,42 +1000,28 @@ void EventRouter::DispatchMountCompletedEvent(
 void EventRouter::OnFormatStarted(const std::string& device_path,
                                   const std::string& device_label,
                                   bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnFormatCompleted(const std::string& device_path,
                                     const std::string& device_label,
                                     bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  // Do nothing.
-}
-
-void EventRouter::OnPartitionStarted(const std::string& device_path,
-                                     const std::string& device_label,
-                                     bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  // Do nothing.
-}
-
-void EventRouter::OnPartitionCompleted(const std::string& device_path,
-                                       const std::string& device_label,
-                                       bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnRenameStarted(const std::string& device_path,
                                   const std::string& device_label,
                                   bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
 void EventRouter::OnRenameCompleted(const std::string& device_path,
                                     const std::string& device_label,
                                     bool success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Do nothing.
 }
 
@@ -1175,8 +1161,8 @@ void EventRouter::OnDisplayTabletStateChanged(display::TabletState state) {
 }
 
 void EventRouter::NotifyDriveConnectionStatusChanged() {
-  DCHECK(profile_);
-  DCHECK(extensions::EventRouter::Get(profile_));
+  CHECK(profile_, base::NotFatalUntil::M160);
+  CHECK(extensions::EventRouter::Get(profile_), base::NotFatalUntil::M160);
 
   BroadcastEvent(profile_,
                  extensions::events::
@@ -1215,26 +1201,24 @@ void EventRouter::OnIOTaskStatus(const io_task::ProgressStatus& status) {
   // If copying to/from ODFS, mark the provider's request manager
   // as "interacting with user" to prevent long operation warnings when
   // progress UI is already displayed.
-  if (chromeos::features::IsUploadOfficeToCloudEnabled()) {
-    if (status.IsCompleted()) {
-      office_tasks_->odfs_interactions.erase(status.task_id);
-    } else {
-      auto it = office_tasks_->odfs_interactions.find(status.task_id);
-      if (it == office_tasks_->odfs_interactions.end()) {
-        auto interaction = MaybeStartInteractionWithODFS(
-            status.GetDestinationFolder(), profile_);
-        if (!interaction) {
-          for (const io_task::EntryStatus& entry : status.sources) {
-            interaction = MaybeStartInteractionWithODFS(entry.url, profile_);
-            if (interaction) {
-              break;
-            }
+  if (status.IsCompleted()) {
+    office_tasks_->odfs_interactions.erase(status.task_id);
+  } else {
+    auto it = office_tasks_->odfs_interactions.find(status.task_id);
+    if (it == office_tasks_->odfs_interactions.end()) {
+      auto interaction = MaybeStartInteractionWithODFS(
+          status.GetDestinationFolder(), profile_);
+      if (!interaction) {
+        for (const io_task::EntryStatus& entry : status.sources) {
+          interaction = MaybeStartInteractionWithODFS(entry.url, profile_);
+          if (interaction) {
+            break;
           }
         }
-        if (interaction) {
-          office_tasks_->odfs_interactions[status.task_id] =
-              std::move(interaction);
-        }
+      }
+      if (interaction) {
+        office_tasks_->odfs_interactions[status.task_id] =
+            std::move(interaction);
       }
     }
   }
@@ -1514,8 +1498,8 @@ void EventRouter::OnUnregistered(
 }
 
 void EventRouter::BroadcastOnAppsUpdatedEvent() {
-  DCHECK(profile_);
-  DCHECK(extensions::EventRouter::Get(profile_));
+  CHECK(profile_, base::NotFatalUntil::M160);
+  CHECK(extensions::EventRouter::Get(profile_), base::NotFatalUntil::M160);
 
   BroadcastEvent(profile_,
                  extensions::events::FILE_MANAGER_PRIVATE_ON_APPS_UPDATED,

@@ -144,6 +144,7 @@ export class ContextualActionMenuElement extends
         attribute: 'unbounded-menu-enabled',
       },
       isOpen_: {type: Boolean},
+      contextMenuTooltipsEnabled: {type: Boolean},
     };
   }
 
@@ -157,6 +158,8 @@ export class ContextualActionMenuElement extends
   accessor smartTabSharingActive: boolean = false;
   accessor smartTabSharingVisible: boolean = false;
   accessor contextManagementInComposeboxEnabled: boolean = false;
+  accessor contextMenuTooltipsEnabled: boolean =
+      getLoadTimeBoolean('composeboxContextMenuTooltipsEnabled', false);
   accessor disableAutoReposition: boolean = false;
   accessor uploadButtonDisabled: boolean = false;
   accessor isSidePanel: boolean = false;
@@ -693,6 +696,41 @@ export class ContextualActionMenuElement extends
     }
   }
 
+  protected getToolTooltip_(tool: ToolMode): string {
+    if (!this.contextMenuTooltipsEnabled) {
+      return '';
+    }
+    if (this.inputState) {
+      const config = this.inputState.toolConfigs.find(c => c.tool === tool);
+      if (config && config.menuTooltip) {
+        return config.menuTooltip;
+      }
+    }
+    return '';
+  }
+
+  protected getModelTooltip_(model: ModelMode): string {
+    if (!this.contextMenuTooltipsEnabled) {
+      return '';
+    }
+    if (this.inputState) {
+      const config = this.inputState.modelConfigs.find(c => c.model === model);
+      if (config && config.menuTooltip) {
+        return config.menuTooltip;
+      }
+    }
+    return '';
+  }
+
+  protected getShareTabsTooltip_(): string {
+    if (!this.contextMenuTooltipsEnabled) {
+      return '';
+    }
+    return this.getSelectedTabs_().length > 0 ?
+        this.i18n('sharingTabsWithGoogle') :
+        this.i18n('addOpenTabsToAskAnything');
+  }
+
   protected getToolHeader_(): string {
     if (this.inputState && this.inputState.toolsSectionConfig) {
       return this.inputState.toolsSectionConfig.header;
@@ -754,15 +792,13 @@ export class ContextualActionMenuElement extends
   }
 
   protected isShareTabsTriggerDisabled_(): boolean {
-    return (this.inputState?.disabledInputTypes || [])
-        .includes(InputType.kBrowserTab);
+    return this.selectedTabIds.size === 0 &&
+        (this.inputState?.disabledInputTypes ||
+         []).includes(InputType.kBrowserTab);
   }
 
   // Checks if a tab item in the context menu should be disabled.
   protected isTabDisabled_(tab: TabInfo): boolean {
-    if (this.isShareTabsTriggerDisabled_()) {
-      return true;
-    }
     const isRestored = this.contextManagementInComposeboxEnabled &&
         (this.aimThreadRestoredTabs || [])
             .some(

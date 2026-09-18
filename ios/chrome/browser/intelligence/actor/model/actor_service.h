@@ -15,6 +15,9 @@
 #import "base/memory/weak_ptr.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
+#import "components/origin_gating/core/origin_gating_checker.h"
+#import "ios/chrome/app/background_mode_buildflags.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_origin_gating_checker_delegate_ios.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 #import "ios/web/public/web_state_id.h"
 
@@ -113,6 +116,9 @@ class ActorService : public KeyedService {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
+  // Returns the OriginGatingChecker instance for gating navigation actions.
+  origin_gating::OriginGatingChecker* GetOriginGatingChecker();
+
  private:
   friend class ActorServiceTest;
 
@@ -125,6 +131,10 @@ class ActorService : public KeyedService {
 
   // Journal used for logging task tools, state transitions, and results.
   std::unique_ptr<AggregatedJournal> journal_;
+
+  // Delegate and checker for origin gating.
+  ActorOriginGatingCheckerDelegateIOS origin_gating_delegate_;
+  std::unique_ptr<origin_gating::OriginGatingChecker> origin_gating_checker_;
 
   // Map of active tasks, keyed by their task ID.
   std::map<ActorTaskId, std::unique_ptr<ActorTask>> active_tasks_;
@@ -158,8 +168,19 @@ class ActorService : public KeyedService {
   web::WebState* GetWebState(web::WebStateID web_state_id,
                              bool allows_incognito);
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+  // Creates and registers a background continued processing task with the
+  // system for `task`, and sets the context on `task` if available. Returns
+  // whether registration was successful (does not guarantee the task will be
+  // executed by the system).
+  bool RegisterBackgroundTask(ActorTask* task);
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+
   // Generator for unique task IDs.
   ActorTaskId::Generator next_task_id_;
+
+  // Helper to build the configuration and custom predicates for the checker.
+  static origin_gating::OriginGatingConfiguration CreateOriginGatingConfig();
 
   // Weak pointer factory.
   base::WeakPtrFactory<ActorService> weak_ptr_factory_{this};

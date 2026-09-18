@@ -509,6 +509,27 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
   // clang-format on
 }
 
+IN_PROC_BROWSER_TEST_P(
+    DictationSessionUiImplBrowserTest,
+    TabSwitchAfterDoneButtonDoesNotShowDictationStoppedToast) {
+  // Add a second tab with the first tab in the foreground.
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  // clang-format off
+  RunTestSequence(
+    StartSession(),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    // Press "Done" to finish voice input.
+    PressButton(DictationBubbleUi::kToggleButtonElementIdForTesting),
+    // Switch to the second tab and verify that the Dictation stopped toast
+    // is not shown
+    SelectTab(kTabStripElementId, 1),
+    WaitForHide(DictationBubbleUi::kViewElementIdForTesting),
+    CheckShowingDictationStoppedToast(false)
+  );
+  // clang-format on
+}
+
 IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
                        SwitchBackToDictatingTabDuringFinalization) {
   // Add a second tab with the first tab in the foreground.
@@ -718,6 +739,87 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
     CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
                              target_bounds)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       OverlayButtonStaysWithinTargetInputField) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textinput.html");
+  gfx::Rect target_bounds;
+
+  if (GetParam()) {
+    // clang-format off
+    RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, url),
+      StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+      ObserveSessionStateChanges(),
+      InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+      LookupTargetElementBounds(kWebContentsElementId, "#text_id",
+                                target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+      ExtensionAPIUpdateTranscription(
+          ExtensionTranscriptionType::kFinal,
+          "This string is longer than the size of the input element."),
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+      WaitForSessionState(SessionState::kInactive),
+      InAnyContext(WaitForHide(DictationOverlayView::kViewElementIdForTesting))
+    );
+    // clang-format on
+  } else {
+    // clang-format off
+    RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, url),
+      StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+      ObserveSessionStateChanges(),
+      InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+      LookupTargetElementBounds(kWebContentsElementId, "#text_id",
+                                target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+      ExtensionAPIUpdateTranscription(
+          ExtensionTranscriptionType::kFinal,
+          "This string is longer than the size of the input element."),
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+      WaitForSessionState(SessionState::kInactive),
+      // Lingering UI case: verify it is still visible and within bounds.
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds)
+    );
+    // clang-format on
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       AutoSessionEndDelayedShutdownOnAttachedStreamComplete) {
+  if (!GetParam()) {
+    GTEST_SKIP() << "Auto session end only applies to this config.";
+  }
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textinput.html");
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    ObserveSessionStateChanges(),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+    ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+    WaitForSessionState(SessionState::kTranscribing),
+    ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+    WaitForSessionState(SessionState::kInactive),
+    InAnyContext(WaitForHide(DictationOverlayView::kViewElementIdForTesting)),
+    CheckHasSession(false)
   );
   // clang-format on
 }

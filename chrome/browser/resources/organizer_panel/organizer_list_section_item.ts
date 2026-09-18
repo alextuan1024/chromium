@@ -5,6 +5,9 @@
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
+import './organizer_list_section_item_description.js';
+import './organizer_list_section_item_title.js';
+import './stacked_favicons.js';
 
 import type {CrIconElement} from '//resources/cr_elements/cr_icon/cr_icon.js';
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
@@ -12,15 +15,33 @@ import type {CrUrlListItemElement, CrUrlListItemSize} from '//resources/cr_eleme
 import {MouseHoverableMixinLit} from '//resources/cr_elements/mouse_hoverable_mixin_lit.js';
 import type {TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {Range} from '/tab_group_shared/search.js';
 
 import {getCss} from './organizer_list_section_item.css.js';
 import {getHtml} from './organizer_list_section_item.html.js';
+import type {OrganizerListSectionItemDescriptionElement, OrganizerListSectionItemDescriptionPart} from './organizer_list_section_item_description.js';
+import type {OrganizerListSectionItemTitleElement} from './organizer_list_section_item_title.js';
+import {sliceRangesForParts} from './search_utils.js';
+
+export type {OrganizerListSectionItemDescriptionPart};
+
+// Stacked favicons configuration for an organizer list section item.
+export interface OrganizerListSectionItemStackedFavicons {
+  // URLs to display favicons for.
+  urls: [string, string];
+
+  // Whether to stack multiple favicons vertically.
+  stackVertically: boolean;
+}
 
 // Icon for an organizer list section item. Only one of these fields should be
 // defined.
 export interface OrganizerListSectionItemIcon {
-  // URLs to display favicons for.
-  urls?: string[];
+  // Displays a single favicon.
+  url?: string;
+
+  // Displays two overlapping favicons, with customizable orientation.
+  stackedFavicons?: OrganizerListSectionItemStackedFavicons;
 
   // Custom element to render as the icon (e.g., a tab group dot).
   element?: TemplateResult;
@@ -38,10 +59,10 @@ export interface OrganizerListSectionItemActionButton {
 // Model for a single item in an organizer list section.
 export interface OrganizerListSectionItem<T> {
   // Title (main line) of the item.
-  title: string;
+  title: string[];
 
   // Description (secondary line) of the item.
-  description?: string[];
+  description?: OrganizerListSectionItemDescriptionPart[];
 
   // Icon displayed at the beginning of the item.
   prefixIcon?: OrganizerListSectionItemIcon;
@@ -61,10 +82,23 @@ export interface OrganizerListSectionItem<T> {
   data?: T;
 }
 
+// Search metadata attached to an item for highlighting matching ranges.
+export interface HighlightableItem {
+  highlightRanges?: {
+    title?: Range[],
+    description?: Range[],
+  };
+}
+
+export type HighlightableOrganizerListSectionItem<T = unknown> =
+    OrganizerListSectionItem<T>&HighlightableItem;
+
 export interface OrganizerListSectionItemElement {
   $: {
     actionButton: CrIconButtonElement,
     crUrlListItem: CrUrlListItemElement,
+    description: OrganizerListSectionItemDescriptionElement,
+    title: OrganizerListSectionItemTitleElement,
     trailingIcon: CrIconElement,
   };
 }
@@ -92,17 +126,22 @@ export class OrganizerListSectionItemElement extends
     };
   }
 
-  accessor item: OrganizerListSectionItem<unknown> = {
-    title: '',
+  accessor item: HighlightableOrganizerListSectionItem<unknown> = {
+    title: [],
   };
 
-  protected getDescription_(): string {
-    return this.item.description?.join(' · ') || '';
+  protected getAriaLabel_(): string {
+    // TODO(crbug.com/560308768): Update to use a GRD string.
+    return this.item.title.join(' | ');
   }
 
-  protected getUrl_(): string|undefined {
-    // TODO(b/549786784): Support multiple URLs for stacked favicons.
-    return this.item.prefixIcon?.urls?.[0];
+  protected getAriaDescription_(): string {
+    // TODO(crbug.com/560308768): Update to use a GRD string.
+    return this.item.description?.map(d => d.text).join(' · ') || '';
+  }
+
+  protected hasDescription_(): boolean {
+    return !!this.item.description && this.item.description.length > 0;
   }
 
   protected hasSuffix_(): boolean {
@@ -119,6 +158,17 @@ export class OrganizerListSectionItemElement extends
       item: this.item,
       buttonElement: e.currentTarget as HTMLElement,
     });
+  }
+
+  protected titleHighlightRanges_(): Range[][] {
+    return sliceRangesForParts(
+        this.item.title, this.item.highlightRanges?.title);
+  }
+
+  protected descriptionHighlightRanges_(): Range[][] {
+    return sliceRangesForParts(
+        this.item.description?.map(d => d.text) || [],
+        this.item.highlightRanges?.description);
   }
 }
 

@@ -23,6 +23,7 @@ import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingProper
 
 import android.content.res.Resources;
 import android.graphics.RectF;
+import android.net.Uri;
 import android.util.SparseArray;
 import android.view.Surface;
 import android.view.View;
@@ -30,6 +31,7 @@ import android.view.ViewGroup;
 
 import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
+import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Callback;
@@ -43,6 +45,8 @@ import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.autofill.settings.SettingsNavigationHelper;
+import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -99,6 +103,8 @@ import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyObservable;
 import org.chromium.ui.mojom.VirtualKeyboardMode;
+import org.chromium.ui.text.ChromeClickableSpan;
+import org.chromium.ui.text.SpanApplier;
 
 import java.util.HashSet;
 import java.util.List;
@@ -387,6 +393,20 @@ class ManualFillingMediator
         mKeyboardAccessory.setSuggestions(suggestions, delegate);
     }
 
+    void setSelectedSuggestion(@Nullable Integer suggestionIndex) {
+        if (!isInitialized() || mKeyboardAccessory == null) {
+            return;
+        }
+        mKeyboardAccessory.setSelectedSuggestion(suggestionIndex);
+    }
+
+    boolean navigateSuggestions(@NavigationDirection int direction) {
+        if (!isInitialized() || mKeyboardAccessory == null) {
+            return false;
+        }
+        return mKeyboardAccessory.navigateSuggestions(direction);
+    }
+
     void setFieldBounds(RectF bounds) {
         mModel.set(FIELD_BOUNDS, bounds);
     }
@@ -416,8 +436,8 @@ class ManualFillingMediator
         mWindowAndroid = null;
         mActivity = null;
         // The dialog holds the Activity as its Context; clear it to avoid leaking the Activity.
+        dismissConfirmationDialogIfShown();
         mActionConfirmationDialog = null;
-        mConfirmationDialogDismissHandler = null;
     }
 
     boolean onBackPressed() {
@@ -483,9 +503,7 @@ class ManualFillingMediator
         // close (e.g. a scene changed or the screen was turned off).
         mKeyboardAccessory.skipClosingAnimationOnce();
         mModel.set(KEYBOARD_EXTENSION_STATE, HIDDEN);
-        if (mConfirmationDialogDismissHandler != null) {
-            mConfirmationDialogDismissHandler.dismiss(DialogDismissalCause.UNKNOWN);
-        }
+        dismissConfirmationDialogIfShown();
     }
 
     private void onOrientationChange() {
@@ -829,17 +847,79 @@ class ManualFillingMediator
         if (isInitialized() && mAccessorySheet.isShown()) onCloseAccessorySheet();
     }
 
+    @VisibleForTesting
+    CharSequence formatDeletionMessage(String body, String bodyLink) {
+        if (mActivity == null) {
+            return body;
+        }
+        if (!bodyLink.isEmpty() && body.contains("<link>") && body.contains("</link>")) {
+            ChromeClickableSpan span =
+                    new ChromeClickableSpan(
+                            mActivity,
+                            view ->
+                                    new CustomTabsIntent.Builder()
+                                            .setShowTitle(true)
+                                            .build()
+                                            .launchUrl(mActivity, Uri.parse(bodyLink)));
+            try {
+                return SpanApplier.applySpans(
+                        body, new SpanApplier.SpanInfo("<link>", "</link>", span));
+            } catch (IllegalArgumentException e) {
+                return body;
+            }
+        }
+        return body;
+    }
+
+    @VisibleForTesting
+    CharSequence formatAutofillAiSuppressionMessage(String body) {
+        if (mActivity == null) {
+            return body;
+        }
+        if (body.contains("<src_link>")
+                && body.contains("</src_link>")
+                && body.contains("<manage_link>")
+                && body.contains("</manage_link>")) {
+            ChromeClickableSpan attributionSpan =
+                    new ChromeClickableSpan(
+                            mActivity,
+                            view -> {
+                                // TODO(crbug.com/391950346): Open attribution bottom sheet in
+                                // follow-ups.
+                            });
+            ChromeClickableSpan manageSpan =
+                    new ChromeClickableSpan(
+                            mActivity,
+                            view ->
+                                    SettingsNavigationHelper.showAutofillPersonalContextSettings(
+                                            mActivity,
+                                            AutofillOptionsReferrer
+                                                    .PERSONAL_CONTEXT_AMBIENT_AUTOFILL_NOTICE));
+            try {
+                return SpanApplier.applySpans(
+                        body,
+                        new SpanApplier.SpanInfo("<src_link>", "</src_link>", attributionSpan),
+                        new SpanApplier.SpanInfo("<manage_link>", "</manage_link>", manageSpan));
+            } catch (IllegalArgumentException e) {
+                return body;
+            }
+        }
+        return body;
+    }
+
     void confirmDeletionOperation(
             String title,
-            CharSequence message,
+            String body,
+            String bodyLink,
             String confirmButtonText,
             Runnable confirmedCallback,
             Runnable declinedCallback) {
+        dismissConfirmationDialogIfShown();
         mConfirmationDialogDismissHandler =
                 mActionConfirmationDialog.show(
                         new ConfirmationDialogParams.Builder(mActivity)
                                 .withTitle(title)
-                                .withDescription(message)
+                                .withDescription(formatDeletionMessage(body, bodyLink))
                                 .withPositiveButton(confirmButtonText)
                                 .withNegativeButton(R.string.cancel)
                                 .withSupportStopShowing(false)
@@ -847,6 +927,39 @@ class ManualFillingMediator
                         (handler, result, stopShowing) ->
                                 onConfirmationDialogInteracted(
                                         result, confirmedCallback, declinedCallback));
+    }
+
+    void showAutofillAiSuggestionDetails(
+            String title,
+            String body,
+            String confirmButtonText,
+            String primaryButtonText,
+            Runnable confirmedCallback,
+            Runnable declinedCallback) {
+        dismissConfirmationDialogIfShown();
+        ConfirmationDialogParams params =
+                new ConfirmationDialogParams.Builder(mActivity)
+                        .withTitle(title)
+                        .withDescription(formatAutofillAiSuppressionMessage(body))
+                        .withSupportStopShowing(false)
+                        .withPositiveButton(primaryButtonText)
+                        .withNegativeButton(confirmButtonText)
+                        .build();
+        mConfirmationDialogDismissHandler =
+                mActionConfirmationDialog.show(
+                        params,
+                        (handler, result, stopShowing) -> {
+                            mConfirmationDialogDismissHandler = null;
+                            // The positive button ("Got it") merely dismisses the dialog,
+                            // while the negative button ("Remove from Chrome") triggers
+                            // the suggestion suppression.
+                            if (result == ButtonClickResult.NEGATIVE) {
+                                confirmedCallback.run();
+                            } else {
+                                declinedCallback.run();
+                            }
+                            return DialogDismissType.DISMISS_IMMEDIATELY;
+                        });
     }
 
     private @DialogDismissType int onConfirmationDialogInteracted(
@@ -860,6 +973,13 @@ class ManualFillingMediator
             declinedCallback.run();
         }
         return DialogDismissType.DISMISS_IMMEDIATELY;
+    }
+
+    private void dismissConfirmationDialogIfShown() {
+        if (mConfirmationDialogDismissHandler != null) {
+            mConfirmationDialogDismissHandler.dismiss(DialogDismissalCause.UNKNOWN);
+            mConfirmationDialogDismissHandler = null;
+        }
     }
 
     /**
@@ -1356,8 +1476,15 @@ class ManualFillingMediator
         return mActionConfirmationDialog;
     }
 
-    @VisibleForTesting
-    KeyboardAccessoryCoordinator getKeyboardAccessory() {
+    void setActionConfirmationDialogForTesting(ActionConfirmationDialog actionConfirmationDialog) {
+        mActionConfirmationDialog = actionConfirmationDialog;
+    }
+
+    @Nullable DialogHandle getConfirmationDialogDismissHandlerForTesting() {
+        return mConfirmationDialogDismissHandler;
+    }
+
+    KeyboardAccessoryCoordinator getKeyboardAccessoryForTesting() {
         return mKeyboardAccessory;
     }
 

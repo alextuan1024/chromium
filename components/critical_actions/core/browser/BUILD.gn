@@ -23,7 +23,6 @@ static_library("browser") {
     "//components/strings:components_strings",
     "//sql",
     "//ui/base",
-    "//url",
   ]
 }
 
@@ -43,6 +42,7 @@ source_set("unit_tests") {
     "//components/history/core/browser",
     "//components/strings:components_strings",
     "//sql:test_support",
+    "//testing/gmock",
     "//testing/gtest",
     "//third_party/sqlite",
     "//ui/base",

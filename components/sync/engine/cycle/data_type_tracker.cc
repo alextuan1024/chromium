@@ -74,7 +74,6 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case AUTOFILL_WALLET_CREDENTIAL:
     case AUTOFILL_WALLET_DATA:
     case AUTOFILL_WALLET_METADATA:
-    case AUTOFILL_WALLET_OFFER:
     case AUTOFILL_WALLET_USAGE:
     case COLLABORATION_GROUP:
     case CONTACT_INFO:
@@ -103,7 +102,6 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case SHARED_TAB_GROUP_DATA:
     case WIFI_CONFIGURATIONS:
     case WEB_APPS:
-    case WEB_APKS:
     case OS_PREFERENCES:
     case OS_PRIORITY_PREFERENCES:
     case WORKSPACE_DESK:
@@ -154,7 +152,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case AUTOFILL_WALLET_CREDENTIAL:
     case AUTOFILL_WALLET_DATA:
     case AUTOFILL_WALLET_METADATA:
-    case AUTOFILL_WALLET_OFFER:
     case AUTOFILL_WALLET_USAGE:
     case THEMES:
     case THEMES_IOS:
@@ -178,7 +175,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case SECURITY_EVENTS:
     case WIFI_CONFIGURATIONS:
     case WEB_APPS:
-    case WEB_APKS:
     case OS_PREFERENCES:
     case OS_PRIORITY_PREFERENCES:
     case WORKSPACE_DESK:

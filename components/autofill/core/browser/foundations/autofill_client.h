@@ -7,7 +7,6 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +27,8 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "components/autofill/core/browser/studies/hats_surveys_util.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/unique_ids.h"
@@ -43,6 +44,10 @@ class SchemefulSite;
 class GoogleGroupsManager;
 class GURL;
 class PrefService;
+
+namespace affiliations {
+class AffiliationService;
+}
 
 namespace consent_auditor {
 class ConsentAuditor;
@@ -168,6 +173,7 @@ class FormInteractionsUkmLogger;
 
 namespace payments {
 class PaymentsAutofillClient;
+class WalletReminderNoticeManager;
 }
 
 // A client interface that needs to be supplied to the Autofill component by the
@@ -195,6 +201,7 @@ class AutofillClient {
     kTravel,
     // Autofill AI shopping details (e.g. orders, shipments).
     kShopping,
+    kMaxValue = kShopping,
   };
   // LINT.ThenChange(//components/autofill/core/browser/permissions/autofill_policy_service.cc:AutofillPolicyDataCategory,//components/autofill/core/browser/permissions/autofill_policy_service_unittest.cc:AutofillPolicyDataCategory)
 
@@ -282,7 +289,7 @@ class AutofillClient {
   // Required arguments to create a dropdown showing autofill suggestions.
   struct PopupOpenArgs {
     PopupOpenArgs();
-    PopupOpenArgs(LocalFrameToken frame_token,
+    PopupOpenArgs(LocalFrameToken anchor_frame_token,
                   const gfx::RectF& element_bounds,
                   base::i18n::TextDirection text_direction,
                   std::vector<Suggestion> suggestions,
@@ -297,9 +304,9 @@ class AutofillClient {
     PopupOpenArgs& operator=(const PopupOpenArgs&);
     PopupOpenArgs& operator=(PopupOpenArgs&&);
     ~PopupOpenArgs();
-    // The frame in which the popup is anchored. Typically this is the frame of
+    // The frame which the popup is anchored to. Typically this is the frame of
     // the field on which the user triggered Autofill.
-    LocalFrameToken frame_token;
+    LocalFrameToken anchor_frame_token;
     // TODO(crbug.com/340817507): Update this member name since bounds can now
     // refer to the caret bounds and elements gives the idea of HTML elements
     // only.
@@ -449,6 +456,10 @@ class AutofillClient {
   virtual FieldClassificationModelHandler*
   GetPasswordManagerFieldClassificationModelHandler();
 
+  // Gets the AffiliationService instance associated with the client, if there
+  // is one.
+  virtual affiliations::AffiliationService* GetAffiliationService();
+
   // Handles routing single-field form filling requests, such as for
   // Autocomplete and merchant promo codes.
   virtual SingleFieldFillRouter& GetSingleFieldFillRouter() = 0;
@@ -567,6 +578,13 @@ class AutofillClient {
   virtual payments::PaymentsAutofillClient* GetPaymentsAutofillClient();
   const payments::PaymentsAutofillClient* GetPaymentsAutofillClient() const;
 
+  // Returns the WalletReminderNoticeManager for showing the legal reminder
+  // notice when required.
+  virtual payments::WalletReminderNoticeManager*
+  GetWalletReminderNoticeManager();
+  const payments::WalletReminderNoticeManager*
+  GetWalletReminderNoticeManager() const;
+
   // Gets the StrikeDatabase associated with the client. Note: Nullptr may be
   // returned so check before use.
   // TODO(crbug.com/40926442): Make sure all strike database usages check for
@@ -656,6 +674,7 @@ class AutofillClient {
 
   // Update the data list values shown by the Autofill suggestions, if visible.
   virtual void UpdateAutofillDataListValues(
+      const LocalFrameToken& frame_token,
       base::span<const SelectOption> datalist) = 0;
 
   // Returns the identifier of the suggestion UI that is currently showing or
@@ -692,7 +711,7 @@ class AutofillClient {
   // displayed.
   virtual void TriggerUserPerceptionOfAutofillSurvey(
       FillingProduct filling_product,
-      const std::map<std::string, std::string>& field_filling_stats_data);
+      const HatsSurveyStringData& field_filling_stats_data);
 
   // Triggers a survey to ask the user why they declined saving an address.
   virtual void TriggerDeclinedSaveAddressReasonSurvey();
@@ -858,10 +877,14 @@ class AutofillClient {
   // `save_is_synchronous` indicates whether accepting the prompt requires a
   // (notably) asynchronous operation. The UI can use this information to decide
   // whether to close the prompt upon acceptance.
+  // `public_passes_notice` contains the Wallet legal disclosure messages to
+  // show in the prompt's footer. It is empty if no disclosure is required, or
+  // if fetching the disclosure from the Wallet backend failed.
   virtual void ShowEntityImportBubble(
       EntityInstance new_entity,
       std::optional<EntityInstance> old_entity,
       bool save_is_synchronous,
+      LegalMessageLines public_passes_notice,
       EntityImportPromptResultCallback prompt_result_callback);
 
   // Hides the Autofill AI import bubble if it is currently showing.
@@ -890,8 +913,6 @@ class AutofillClient {
   // default.
   virtual void ShowAutofillAiPrivateInferenceNotice();
 
-  virtual void ShowEmailVerifiedToast(const GURL& issuer);
-
   // Shows a yes/no prompt asking the user to confirm that they want to verify
   // their email. The prompt is anchored on the field at `element_bounds`.
   // `issuer_site` is the site that issued the assertion.
@@ -902,6 +923,26 @@ class AutofillClient {
       const net::SchemefulSite& issuer_site,
       const std::u16string& email,
       base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback);
+
+  // Dismisses the email verification permission prompt popup if currently
+  // showing. Called when token verification completes (on success or error) to
+  // dismiss the first-run prompt while its verify button was displaying an
+  // in-button loading spinner.
+  virtual void HideEmailVerificationPopup();
+
+  // Displays a loading toast indicating that email verification is in progress.
+  // Called for subsequent-run requests where permission was already granted,
+  // so the permission prompt popup is bypassed while the token request is in
+  // flight.
+  virtual void ShowEmailVerificationLoadingToast();
+
+  // Displays a toast notifying the user that email verification succeeded for
+  // `issuer`. Called upon receiving a valid verification token.
+  virtual void ShowEmailVerifiedToast(const GURL& issuer);
+
+  // Displays an error toast notifying the user that email verification failed.
+  // Called when token verification fails or returns an error.
+  virtual void ShowEmailVerificationErrorToast();
 
   // May return null on platforms where OTPs are not supported.
   virtual OtpFieldDetector* GetOtpFieldDetector();

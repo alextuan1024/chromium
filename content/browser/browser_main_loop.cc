@@ -102,6 +102,7 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/startup_data_impl.h"
 #include "content/browser/startup_task_runner.h"
+#include "content/browser/tracing/background_tracing_manager_impl.h"
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/browser/webrtc/webrtc_internals.h"
 #include "content/browser/webui/content_web_ui_configs.h"
@@ -112,7 +113,6 @@
 #include "content/common/skia_utils.h"
 #include "content/common/thread_pool_util.h"
 #include "content/public/browser/audio_service.h"
-#include "content/public/browser/background_tracing.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -123,6 +123,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/service_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
+#include "content/public/browser/tracing_delegate.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
@@ -440,18 +441,6 @@ uint32_t GenerateBrowserSalt() {
   return salt;
 }
 
-std::string GetRelatedWebsiteSetSwitch() {
-  // `kUseFirstPartySet` switch is being deprecated in favor of
-  // `kUseRelatedWebsiteSet` switch. Both switches are supported during the
-  // transition period with `kUseRelatedWebsiteSet` taking precedence.
-  base::CommandLine* commandLine = base::CommandLine::ForCurrentProcess();
-  if (commandLine->HasSwitch(network::switches::kUseRelatedWebsiteSet)) {
-    return commandLine->GetSwitchValueASCII(
-        network::switches::kUseRelatedWebsiteSet);
-  }
-  return commandLine->GetSwitchValueASCII(network::switches::kUseFirstPartySet);
-}
-
 }  // namespace
 
 // The currently-running BrowserMainLoop.  There can be one or zero.
@@ -527,6 +516,10 @@ void BrowserMainLoop::Init() {
 
     CHECK(!mojo_ipc_support_, base::NotFatalUntil::M159);
     mojo_ipc_support_ = std::move(startup_data->mojo_ipc_support);
+
+    CHECK(!background_tracing_manager_);
+    background_tracing_manager_ =
+        std::move(startup_data->background_tracing_manager);
 
     // The StartupDataImpl was destined to BrowserMainLoop, do not pass it
     // forward.
@@ -790,9 +783,8 @@ int BrowserMainLoop::PreCreateThreads() {
   // This must occur before metrics recording initialization in
   // ChromeBrowserMainParts::PreCreateThreads() because it's used in
   // BackgroundTracingMetricsProvider.
-  tracing_controller_ = std::make_unique<TracingControllerImpl>();
-  background_tracing_manager_ =
-      CreateBackgroundTracingManager(tracing_controller_->tracing_delegate());
+  tracing_controller_ = std::make_unique<TracingControllerImpl>(
+      *background_tracing_manager_->delegate());
 
   // Make sure no accidental call to initialize GpuDataManager earlier.
   CHECK(!GpuDataManagerImpl::Initialized(), base::NotFatalUntil::M159);
@@ -1074,9 +1066,7 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
   // to access this directory, hence triggering after this stage has run.
   if (result_code_ == RESULT_CODE_NORMAL_EXIT) {
     FirstPartySetsHandlerImpl::GetInstance()->Init(
-        GetContentClient()->browser()->GetFirstPartySetsDirectory(),
-        FirstPartySetParser::ParseFromCommandLine(
-            GetRelatedWebsiteSetSwitch()));
+        GetContentClient()->browser()->GetFirstPartySetsDirectory());
   }
 
   variations::MaybeScheduleFakeCrash();

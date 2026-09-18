@@ -19,6 +19,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.RelativeLayout;
 import android.widget.ViewFlipper;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IdRes;
 import androidx.annotation.Px;
 import androidx.annotation.StringRes;
@@ -34,7 +35,10 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetListViewBase;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.bottomsheet.ItemDividerBase;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 
 import java.util.Set;
 
@@ -45,6 +49,10 @@ import java.util.Set;
  */
 @NullMarked
 class TouchToFillPaymentMethodView extends BottomSheetListViewBase {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.TOUCH_TO_FILL_PAYMENT_METHOD)
+                    .build();
 
     private @StringRes int mSheetContentDescriptionId;
     private @StringRes int mSheetFullHeightDescriptionId;
@@ -68,6 +76,11 @@ class TouchToFillPaymentMethodView extends BottomSheetListViewBase {
     private static class HorizontalDividerItemDecoration extends ItemDividerBase {
         HorizontalDividerItemDecoration(Context context) {
             super(context);
+        }
+
+        @Override
+        protected @ColorInt int getBackgroundTintColor() {
+            return SemanticColorUtils.getColorSurfaceContainer(mContext);
         }
 
         @Override
@@ -120,6 +133,11 @@ class TouchToFillPaymentMethodView extends BottomSheetListViewBase {
     public void destroy() {
         removeObserver(mBottomSheetFullStateObserver);
         super.destroy();
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
     }
 
     void setCurrentScreen(@ScreenId int screenId) {

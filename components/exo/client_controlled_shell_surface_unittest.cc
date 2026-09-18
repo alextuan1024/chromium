@@ -60,7 +60,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/shadow.h"
 #include "ui/display/display.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/display/types/display_constants.h"
@@ -2323,7 +2323,7 @@ TEST_F(ClientControlledShellSurfaceTest,
   shell_surface->SetGeometry(gfx::Rect(gfx::Point(20, 50), kBufferSize));
   surface->Commit();
   EXPECT_EQ(gfx::Rect(20, 50, 256, 256), window->bounds());
-  window_state->DeleteDragDetails();
+  event_generator->ReleaseLeftButton();
   ASSERT_FALSE(window_state->is_dragged());
 
   ash::Shell::Get()->pip_controller()->TuckWindow(/*left=*/true);

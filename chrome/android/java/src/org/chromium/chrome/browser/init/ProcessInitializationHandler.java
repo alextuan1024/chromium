@@ -40,7 +40,6 @@ import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.R;
 import org.chromium.chrome.browser.AppHooks;
 import org.chromium.chrome.browser.BrowserExitReasonTracker;
 import org.chromium.chrome.browser.ChromeActivitySessionTracker;
@@ -77,7 +76,6 @@ import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.media.MediaCaptureNotificationServiceImpl;
 import org.chromium.chrome.browser.media.MediaViewerUtils;
 import org.chromium.chrome.browser.metrics.LaunchMetrics;
-import org.chromium.chrome.browser.metrics.PackageMetrics;
 import org.chromium.chrome.browser.metrics.UmaUtils;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
 import org.chromium.chrome.browser.notifications.TrampolineActivityTracker;
@@ -91,6 +89,7 @@ import org.chromium.chrome.browser.photo_picker.DecoderService;
 import org.chromium.chrome.browser.preferences.AllPreferenceKeyRegistries;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -102,12 +101,13 @@ import org.chromium.chrome.browser.quickactionsearchwidget.QuickActionSearchWidg
 import org.chromium.chrome.browser.rlz.RevenueStats;
 import org.chromium.chrome.browser.searchwidget.SearchWidgetProvider;
 import org.chromium.chrome.browser.share.send_tab_to_self.OtherDevicesShortcutControllerFactory;
-import org.chromium.chrome.browser.signin.SigninCheckerProvider;
+import org.chromium.chrome.browser.sync.SyncErrorNotifier;
 import org.chromium.chrome.browser.tab.state.PersistedTabData;
 import org.chromium.chrome.browser.tab.state.ShoppingPersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.chrome.browser.ui.cars.DrivingRestrictionsManager;
 import org.chromium.chrome.browser.ui.color.ColorProviderBridgeImpl;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerAckSyncer;
 import org.chromium.chrome.browser.ui.hats.SurveyClientFactory;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferencesManager;
 import org.chromium.chrome.browser.usb.UsbNotificationManager;
@@ -118,7 +118,6 @@ import org.chromium.chrome.browser.webapps.WebappRegistry;
 import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
 import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
 import org.chromium.components.browser_ui.photo_picker.DecoderServiceHost;
-import org.chromium.components.browser_ui.photo_picker.PhotoPickerDialog;
 import org.chromium.components.browser_ui.share.ClipboardImageFileProvider;
 import org.chromium.components.browser_ui.share.ShareImageFileUtils;
 import org.chromium.components.content_capture.PlatformContentCaptureController;
@@ -140,9 +139,7 @@ import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.accessibility.ApplicationStatusAccessibilityStateVisibilityManager;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.SelectFileDialog;
-import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.color.ColorProviderBridgeFactory;
-import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.ui.native_theme.OsSettingsProviderAndroidBridge;
 import org.chromium.url.GURL;
 
@@ -409,23 +406,7 @@ public class ProcessInitializationHandler {
         DecoderServiceHost.setIntentSupplier(
                 () -> new Intent(ContextUtils.getApplicationContext(), DecoderService.class));
 
-        SelectFileDialog.setPhotoPickerDelegate(
-                (windowAndroid, listener, allowMultiple, mimeTypes) -> {
-                    Context context = windowAndroid.getContext().get();
-                    assumeNonNull(context);
-                    PhotoPickerDialog dialog =
-                            new PhotoPickerDialog(
-                                    windowAndroid,
-                                    context.getContentResolver(),
-                                    listener,
-                                    allowMultiple,
-                                    mimeTypes,
-                                    shouldDialogPadForContent(windowAndroid));
-                    assumeNonNull(dialog.getWindow()).getAttributes().windowAnimations =
-                            R.style.PickerDialogAnimation;
-                    dialog.show();
-                    return dialog;
-                });
+        SelectFileDialog.setPhotoPickerDelegate(new PhotoPickerDelegateImpl());
 
         ContactsPickerDelegateProvider.initialize();
 
@@ -690,7 +671,10 @@ public class ProcessInitializationHandler {
 
         tasks.add(
                 () -> {
-                    mDevToolsServer = new DevToolsServer(DEV_TOOLS_SERVER_SOCKET_PREFIX);
+                    mDevToolsServer =
+                            new DevToolsServer(
+                                    DEV_TOOLS_SERVER_SOCKET_PREFIX,
+                                    assumeNonNull(LocalStatePrefs.get()));
                     mDevToolsServer.setRemoteDebuggingEnabled(
                             true, DevToolsServer.Security.ALLOW_DEBUG_PERMISSION);
                 });
@@ -741,8 +725,9 @@ public class ProcessInitializationHandler {
         // initialization order.
         tasks.add(() -> IncognitoTabLauncher.updateComponentEnabledState(profile));
 
-        // Initialize the SigninChecker.
-        tasks.add(() -> SigninCheckerProvider.get(profile));
+        // SyncErrorNotifier must be explicitly initialized.
+        // TODO(crbug.com/40736034): Move the initializations elsewhere.
+        tasks.add(() -> SyncErrorNotifier.getForProfile(profile));
 
         // Initialize the OtherDevicesShortcutController.
         tasks.add(() -> OtherDevicesShortcutControllerFactory.getForProfile(profile));
@@ -765,6 +750,7 @@ public class ProcessInitializationHandler {
                 });
 
         tasks.add(() -> FeedbackPolicyManager.getInstance().onFinishNativeInitialization(profile));
+        tasks.add(() -> EnterpriseSignalsDisclaimerAckSyncer.initialize(profile));
     }
 
     private void initChannelsAsync() {
@@ -812,7 +798,6 @@ public class ProcessInitializationHandler {
                     // instance is initialized.
                     WebappRegistry.warmUpSharedPrefs();
 
-                    PackageMetrics.recordPackageStats();
                     return null;
                 } finally {
                     TraceEvent.end("ChromeBrowserInitializer.onDeferredStartup.doInBackground");
@@ -974,9 +959,5 @@ public class ProcessInitializationHandler {
             return;
         }
         ChildProcessLauncherHelper.startBindingManagement(ContextUtils.getApplicationContext());
-    }
-
-    private static boolean shouldDialogPadForContent(WindowAndroid windowAndroid) {
-        return EdgeToEdgeStateProvider.isEdgeToEdgeEnabledForWindow(windowAndroid);
     }
 }

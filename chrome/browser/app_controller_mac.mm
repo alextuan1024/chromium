@@ -2168,11 +2168,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     return dockMenu;
   }
 
-  bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile);
-
-  if (IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
-      policy::IncognitoModeAvailability::kDisabled) {
+  if (IncognitoModePrefs::GetIncognitoModeType(profile) ==
+      IncognitoModePrefs::IncognitoModeType::kStandard) {
     titleStr = l10n_util::GetNSStringWithFixup(IDS_NEW_INCOGNITO_WINDOW_MAC);
     item = [[NSMenuItem alloc] initWithTitle:titleStr
                                       action:@selector(commandFromDock:)
@@ -2183,7 +2180,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     [dockMenu addItem:item];
   }
 
-  if (isolated_mode_enabled) {
+  if (IncognitoModePrefs::GetIncognitoModeType(profile) ==
+      IncognitoModePrefs::IncognitoModeType::kEnterprise) {
     titleStr = l10n_util::GetNSStringWithFixup(IDS_NEW_ISOLATED_WINDOW_MAC);
     item = [[NSMenuItem alloc] initWithTitle:titleStr
                                       action:@selector(commandFromDock:)
@@ -2614,12 +2612,18 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 
 - (void)setLastProfileForTesting:(Profile*)profile {
   _lastProfile = profile;
+  if (!profile) {
+    _lastActiveBrowser.reset();
+    return;
+  }
   ProfileBrowserCollection* collection =
       ProfileBrowserCollection::GetForProfile(profile);
   if (!collection) {
+    _lastActiveBrowser.reset();
     return;
   }
-  _lastActiveBrowser = collection->GetLastActiveBrowser()->GetWeakPtr();
+  BrowserWindowInterface* browser = collection->GetLastActiveBrowser();
+  _lastActiveBrowser = browser ? browser->GetWeakPtr() : nullptr;
 }
 
 @end  // @implementation AppController

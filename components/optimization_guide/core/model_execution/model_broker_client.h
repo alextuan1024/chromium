@@ -23,7 +23,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/on_device_model/public/mojom/download_observer.mojom.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -202,6 +201,12 @@ class ModelBrokerClient final {
   void AddModelDownloadProgressObserver(
       const std::string& use_case,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer);
+
+  // The logger for this client. Callers outside of //components should use
+  // this rather than OptimizationGuideLogger::GetInstance(): in component
+  // builds each shared library links its own copy of the singleton, and only
+  // the one owned by the browser layer is observed by the internals page.
+  base::WeakPtr<OptimizationGuideLogger> logger() const { return logger_; }
 
  private:
   mojo::Remote<mojom::ModelBroker> remote_;

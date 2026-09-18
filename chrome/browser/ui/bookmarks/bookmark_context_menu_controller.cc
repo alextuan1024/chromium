@@ -55,6 +55,7 @@
 #include "components/undo/bookmark_undo_service.h"
 #include "content/public/browser/page_navigator.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/window_open_disposition.h"
 
 using base::UserMetricsAction;
 using bookmarks::BookmarkNode;
@@ -704,24 +705,23 @@ bool BookmarkContextMenuController::IsCommandIdEnabled(int command_id) const {
       });
 
   policy::IncognitoModeAvailability incognito_avail =
-      IncognitoModePrefs::GetAvailability(prefs);
-
-  bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile_);
+      IncognitoModePrefs::GetAvailability(profile_);
 
   switch (command_id) {
     case IDC_BOOKMARK_BAR_OPEN_INCOGNITO:
       return !profile_->IsOffTheRecord() &&
-             incognito_avail != policy::IncognitoModeAvailability::kDisabled &&
-             !isolated_mode_enabled;
+             IncognitoModePrefs::GetIncognitoModeType(profile_) ==
+                 IncognitoModePrefs::IncognitoModeType::kStandard;
 
     case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
       return bookmarks::IsOpenInIncognitoAllowed(selection_, profile_) &&
-             !isolated_mode_enabled;
+             IncognitoModePrefs::GetIncognitoModeType(profile_) ==
+                 IncognitoModePrefs::IncognitoModeType::kStandard;
 
     case IDC_BOOKMARK_BAR_OPEN_ALL_ISOLATED:
       return bookmarks::IsOpenInIncognitoAllowed(selection_, profile_) &&
-             isolated_mode_enabled;
+             IncognitoModePrefs::GetIncognitoModeType(profile_) ==
+                 IncognitoModePrefs::IncognitoModeType::kEnterprise;
 
     case IDC_BOOKMARK_BAR_OPEN_ALL:
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:

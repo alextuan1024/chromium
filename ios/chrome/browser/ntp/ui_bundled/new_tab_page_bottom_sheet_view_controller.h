@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+@class MagicStackCollectionViewController;
 @class NewTabPageBottomSheetViewController;
 
 // Delegate for events in the bottom sheet view controller.
@@ -37,6 +38,13 @@
 
 @end
 
+// Snapping states for the bottom sheet.
+enum class BottomSheetSnappingState {
+  kCollapsed,
+  kResting,
+  kExpanded,
+};
+
 // View controller managing the bottom sheet card, gestures, and subviews for
 // the NTP Redesign.
 @interface NewTabPageBottomSheetViewController
@@ -50,7 +58,8 @@
 @property(nonatomic, strong) UIViewController* feedViewController;
 
 // The magic stack view controller.
-@property(nonatomic, strong) UIViewController* magicStackViewController;
+@property(nonatomic, strong)
+    MagicStackCollectionViewController* magicStackViewController;
 
 // Embeds the Most Visited view.
 - (void)embedMostVisitedView:(UIView*)mostVisitedView;
@@ -76,6 +85,18 @@
 
 // Updates the bottom sheet position to match its current snapping state.
 - (void)updateBottomSheetPositionAnimated:(BOOL)animated;
+
+// Scrolls the bottom sheet (or feed) back to the top resting position.
+- (void)scrollToTopAnimated:(BOOL)animated;
+
+// Returns YES if the bottom sheet is scrolled to the top.
+- (BOOL)isScrolledToTop;
+
+// Collapses the bottom sheet back to its resting position.
+- (void)collapseToRestingAnimated:(BOOL)animated;
+
+// Updates the layout mode and constraints for the current trait collection.
+- (void)updateLayoutModeForCurrentTraitCollection;
 
 @end
 

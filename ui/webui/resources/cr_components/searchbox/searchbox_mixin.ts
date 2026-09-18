@@ -13,7 +13,7 @@ import {NavigationPredictor} from '//resources/mojo/components/omnibox/browser/o
 import type {AutocompleteMatch, AutocompleteResult, InputKeywordModel, OmniboxPopupSelection, PageCallbackRouter, PageHandlerInterface} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {InputMethod, SelectionDirection, SelectionLineState, SelectionStep} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 
-import {KeywordModeManager} from './keyword_mode_manager.js';
+import {KeywordModeEntryMethod, KeywordModeManager} from './keyword_mode_manager.js';
 import {SearchboxBrowserProxy} from './searchbox_browser_proxy.js';
 import type {SearchboxDropdownElement} from './searchbox_dropdown.js';
 import type {SearchboxInputElement} from './searchbox_input.js';
@@ -167,6 +167,7 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
     private callbackRouter_: PageCallbackRouter =
         SearchboxBrowserProxy.getInstance().callbackRouter;
     private keywordSpaceTriggeringListenerId_: number|null = null;
+    private availableKeywordModelsListenerId_: number|null = null;
 
     override connectedCallback() {
       super.connectedCallback();
@@ -176,6 +177,12 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
               (enabled: boolean) => {
                 this.keywordModeManager_.keywordSpaceTriggeringEnabled =
                     enabled;
+              });
+
+      this.availableKeywordModelsListenerId_ =
+          this.callbackRouter_.setAvailableKeywordModels.addListener(
+              (models: InputKeywordModel[]) => {
+                this.keywordModeManager_.availableKeywordModels = models;
               });
 
       // On user interaction, freeze the current results to avoid result updates
@@ -205,6 +212,11 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
         this.callbackRouter_.removeListener(
             this.keywordSpaceTriggeringListenerId_);
         this.keywordSpaceTriggeringListenerId_ = null;
+      }
+      if (this.availableKeywordModelsListenerId_ !== null) {
+        this.callbackRouter_.removeListener(
+            this.availableKeywordModelsListenerId_);
+        this.availableKeywordModelsListenerId_ = null;
       }
     }
 
@@ -320,7 +332,7 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
       const match = this.result!.matches[matchIndex];
       assert(match);
       this.pageHandler().openAutocompleteMatch(
-          matchIndex, match.destinationUrl,
+          this.result!.sequenceId, matchIndex, match.destinationUrl,
           /*areMatchesShowing=*/ this.dropdownIsVisible,
           /*mouseButton=*/ (e as MouseEvent).button || 0, {
             altKey: e.altKey,
@@ -363,12 +375,24 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
       this.clearAutocompleteMatches();
     }
 
+    openContextMenu(): void {
+      // Overridden by embedders with contextual entrypoints (e.g. Full WebUI
+      // popup).
+    }
+
     isAutocompleteResultStale(result: AutocompleteResult): boolean {
       return result.queryId !== this.activeQueryId;
     }
 
     updateDropdownVisibility(): void {
       this.dropdownIsVisible = this.hasMatches();
+
+      if (this.multiLineEnabled && this.dropdownIsVisible) {
+        const isUserTyping = (this.result?.input.length ?? 0) > 0;
+        if (isUserTyping && this.getInputElement()?.isMultiline()) {
+          this.dropdownIsVisible = false;
+        }
+      }
     }
 
     async onAutocompleteResultChanged(result: AutocompleteResult) {
@@ -446,16 +470,32 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
           input, /*preventInlineAutocomplete=*/ false, isOnFocus);
     }
 
-    onSearchboxInputTextUpdated(
-        e: CustomEvent<{value: string, isComposing: boolean}>) {
+    onSearchboxInputTextUpdated(e: CustomEvent<{
+      value: string,
+      isComposing: boolean,
+      event?: Event,
+    }>) {
       const input = e.detail.value;
       const cursorPosition =
           this.getInputElement().inputElement?.selectionStart ?? null;
+      const event = e.detail.event ?? null;
 
-      if (this.keywordModeManager_.acceptInputTrigger(input, cursorPosition)) {
-        this.getInputElement().setInputText('');
+      if (this.keywordModeManager_.acceptInputTrigger(
+              input, cursorPosition, event)) {
+        const isSpaceInMiddle = this.keywordModeManager_.entryMethod ===
+            KeywordModeEntryMethod.SPACE_IN_MIDDLE;
+        const remainingText = isSpaceInMiddle ?
+            input.slice(
+                cursorPosition ??
+                (this.keywordModeManager_.activeKeyword.length + 1)) :
+            '';
+        this.getInputElement().setInputText(remainingText);
+        if (isSpaceInMiddle) {
+          this.getInputElement().setSelectionRange(0, 0);
+        }
         this.queryAutocomplete(
-            '', /*preventInlineAutocomplete=*/ false, /*isOnFocus=*/ false);
+            remainingText, /*preventInlineAutocomplete=*/ false,
+            /*isOnFocus=*/ false);
         return;
       }
 
@@ -571,8 +611,10 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
       if (path.length === 0) {
         return true;
       }
-      return path.includes(this.getInputElement()) ||
-          path.includes(this.getDropdownElement()) || path.some(el => {
+      const inputEl = this.getInputElement()?.inputElement;
+      const isInput = inputEl ? path.includes(inputEl) : false;
+      return isInput || path.includes(this.getDropdownElement()) ||
+          path.some(el => {
             const node = el as HTMLElement;
             return node.tagName === 'CR-SEARCHBOX-COMPOSE-BUTTON';
           });
@@ -625,6 +667,12 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
         return true;
       }
 
+      if (this.isContextEntrypointVirtualFocused()) {
+        e.preventDefault();
+        this.openContextMenu();
+        return true;
+      }
+
       if (this.selection.state === SelectionLineState.kKeywordMode) {
         e.preventDefault();
         this.getInputElement().focus();
@@ -652,7 +700,9 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
           moveCursorToEnd: newInline.length === 0,
         });
 
-        if (key === 'ArrowDown' || key === 'ArrowUp') {
+        if (key === 'ArrowDown' || key === 'ArrowUp' || key === 'PageDown' ||
+            key === 'PageUp') {
+          this.pageHandler().stopAutocomplete(/*clearResult=*/ false);
           this.pageHandler().onNavigationLikely(
               nextSelection.line, this.selectedMatch.destinationUrl,
               NavigationPredictor.kUpOrDownArrowButton);
@@ -720,7 +770,8 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
           return;
         }
 
-        if (!this.virtualFocusEnabled || !this.isVirtualFocusEventTarget_(e)) {
+        if (!this.virtualFocusEnabled || !this.dropdownIsVisible ||
+            !this.isVirtualFocusEventTarget_(e)) {
           return;
         }
       }
@@ -729,6 +780,9 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
       // visible.
       if (!this.dropdownIsVisible) {
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          if (this.multiLineEnabled && this.getInputElement()?.isMultiline()) {
+            return;
+          }
           const inputValue = this.getInputElement().inputElement.value;
           if (inputValue.trim() || !inputValue) {
             this.queryAutocomplete(
@@ -751,6 +805,16 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
         }));
       }
 
+      // Do not handle the following keys if inside an IME composition session.
+      if (e.isComposing) {
+        return;
+      }
+
+      if (this.virtualFocusEnabled && e.key === 'Enter' &&
+          this.handleVirtualFocusEnter_(e)) {
+        return;
+      }
+
       // Do not handle the following keys if there are no matches available.
       if (!this.result || this.result.matches.length === 0) {
         return;
@@ -769,22 +833,13 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
         return;
       }
 
-      // Do not handle the following keys if inside an IME composition session.
-      if (e.isComposing) {
-        return;
-      }
-
       if (this.virtualFocusEnabled) {
-        if (e.key === 'Enter' && this.handleVirtualFocusEnter_(e)) {
-          return;
-        }
-
         let step = SelectionStep.kStateOrLine;
         let direction = SelectionDirection.kForward;
         let valid = false;
 
         if (!e.altKey && !e.ctrlKey && !e.metaKey) {
-          if (e.key === 'Tab') {
+          if (e.key === 'Tab' && this.dropdownIsVisible) {
             step = SelectionStep.kStateOrLine;
             direction = e.shiftKey ? SelectionDirection.kBackward :
                                      SelectionDirection.kForward;
@@ -864,6 +919,11 @@ export const SearchboxMixin = <T extends Constructor<CrLitElement>>(
       }
       // Legacy fallback for Arrow keys and Tab. (Tab does nothing).
       e.preventDefault();
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
+          e.key === 'PageDown' || e.key === 'PageUp') {
+        this.pageHandler().stopAutocomplete(/*clearResult=*/ false);
+      }
 
       if (e.key === 'ArrowDown') {
         await this.getDropdownElement().selectNext();
@@ -1047,9 +1107,13 @@ export interface SearchboxMixinInterface extends
   onMatchClick(): void;
   onMatchFocusin(e: CustomEvent<number>): void;
   onKeywordClick(e: Event): void;
+  openContextMenu(): void;
   openCtrlEnterMatch(matchIndex: number): void;
-  onSearchboxInputTextUpdated(
-      e: CustomEvent<{value: string, isComposing: boolean}>): void;
+  onSearchboxInputTextUpdated(e: CustomEvent<{
+    value: string,
+    isComposing: boolean,
+    event?: Event,
+  }>): void;
   onSelectedMatchIndexChanged(e: CustomEvent<{value: number}>): void;
   pageHandler(): PageHandlerInterface;
   queryAutocomplete(

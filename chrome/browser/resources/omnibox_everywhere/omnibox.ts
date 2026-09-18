@@ -23,6 +23,7 @@ import type {SearchboxDropdownElement} from '//resources/cr_components/searchbox
 import type {SearchboxInputElement} from '//resources/cr_components/searchbox/searchbox_input.js';
 import type {SearchboxMixinInterface} from '//resources/cr_components/searchbox/searchbox_mixin.js';
 import {SearchboxMixin} from '//resources/cr_components/searchbox/searchbox_mixin.js';
+import type {AutocompleteResult, OmniboxPopupSelection, SelectionDirection, SelectionStep} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
 import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
@@ -60,7 +61,11 @@ export class OmniboxEverywhereOmniboxElement extends
   }
 
   override get showContextEntrypoint(): boolean {
-    return false;
+    return this.isFuseboxEnabled;
+  }
+
+  override openContextMenu(): void {
+    this.onContextMenuEntrypointClick_();
   }
 
   static get is() {
@@ -77,6 +82,10 @@ export class OmniboxEverywhereOmniboxElement extends
 
   static override get properties() {
     return {
+      multiLineEnabled: {
+        type: Boolean,
+        reflect: true,
+      },
       virtualFocusEnabled: {
         type: Boolean,
       },
@@ -134,9 +143,17 @@ export class OmniboxEverywhereOmniboxElement extends
         reflect: true,
         attribute: 'is-context-menu-open',
       },
+      isActive: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-active',
+      },
     };
   }
 
+  accessor isActive: boolean = true;
+  override accessor multiLineEnabled: boolean =
+      loadTimeData.getBoolean('searchboxMultiline');
   override accessor virtualFocusEnabled: boolean =
       loadTimeData.valueExists('omniboxEverywhereVirtualFocusNavigation') &&
       loadTimeData.getBoolean('omniboxEverywhereVirtualFocusNavigation');
@@ -157,7 +174,7 @@ export class OmniboxEverywhereOmniboxElement extends
   accessor contextManagementInComposeboxEnabled: boolean =
       loadTimeData.getBoolean('contextManagementInComposeboxEnabled');
   protected accessor searchboxIcon_: string =
-      '//resources/cr_components/searchbox/icons/google_g.svg';
+      '//resources/cr_components/searchbox/icons/google_g_gradient.svg';
   protected accessor searchboxVoiceSearchEnabled_: boolean =
       loadTimeData.getBoolean('searchboxVoiceSearch');
   protected accessor searchboxLensSearchEnabled_: boolean =
@@ -206,10 +223,8 @@ export class OmniboxEverywhereOmniboxElement extends
     this.aimPopupEligibilityListenerId_ =
         this.callbackRouter_.updateAimPopupEligibility.addListener(
             (aiModePrefEnabled: boolean) => {
-              this.composeButtonEnabled = aiModePrefEnabled &&
-                  loadTimeData.getBoolean('searchboxShowComposeEntrypoint');
-              this.isFuseboxEnabled = aiModePrefEnabled &&
-                  loadTimeData.getBoolean('isFuseboxEnabled');
+              this.composeButtonEnabled = aiModePrefEnabled;
+              this.isFuseboxEnabled = aiModePrefEnabled;
             });
     this.screenshotMenuClosedListenerId_ =
         this.callbackRouter_.onScreenshotMenuClosed.addListener(() => {
@@ -243,7 +258,6 @@ export class OmniboxEverywhereOmniboxElement extends
 
   override firstUpdated(changedProperties: PropertyValues<this>) {
     super.firstUpdated(changedProperties);
-    this.initialInputScrollHeight = this.$.input.scrollHeight;
     const lensButton =
         this.shadowRoot?.querySelector<HTMLElement>('#lensSearchButton');
     if (lensButton) {
@@ -324,6 +338,13 @@ export class OmniboxEverywhereOmniboxElement extends
     this.pageHandler_.onFocusChanged(true);
   }
 
+  override stepCyclesSelection(
+      _result: AutocompleteResult|null, _from: OmniboxPopupSelection,
+      _direction: SelectionDirection, _step: SelectionStep): boolean {
+    // In Omnibox, cycle within the popup matches rather than exiting.
+    return false;
+  }
+
   isInputEmpty(): boolean {
     // If this is called before first render, the input element will not exist.
     if (!this.shadowRoot?.querySelector('#input') || !this.$.input) {
@@ -365,7 +386,27 @@ export class OmniboxEverywhereOmniboxElement extends
         new Event('open-voice-search', {bubbles: true, composed: true}));
   }
 
+  private wasScreenshotMenuOpenOnPointerDown_: boolean = false;
+
+  protected onLensSearchPointerdown_(e: PointerEvent) {
+    if (e.button !== 0) {
+      return;
+    }
+    this.wasScreenshotMenuOpenOnPointerDown_ = this.isScreenshotMenuOpen;
+  }
+
+  protected onLensSearchPointercancel_() {
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+  }
+
   protected onLensSearchClick_(e: Event) {
+    const wasOpen =
+        this.wasScreenshotMenuOpenOnPointerDown_ || this.isScreenshotMenuOpen;
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+    if (wasOpen) {
+      this.isScreenshotMenuOpen = false;
+      return;
+    }
     this.notifyHelpBubbleAnchorActivated(
         'kOmniboxEverywhereLensButtonElementId');
     this.isScreenshotMenuOpen = true;

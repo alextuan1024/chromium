@@ -42,12 +42,13 @@
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/skills/skills_ui_window_controller.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "chrome/browser/ttc/core/entrypoint_controller.h"
+#include "chrome/browser/ttc/core/ttc_keyed_service.h"
 #include "chrome/browser/ui/ai_overlay_dialog/ai_overlay_dialog_controller_views.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/bookmarks/bookmarks_service_feature.h"
 #include "chrome/browser/ui/breadcrumb_manager_browser_agent.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_command_controller.h"
@@ -90,7 +91,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/sync/browser_synced_window_delegate.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/most_recent_shared_tab_update_store.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/session_service_tab_group_sync_observer.h"
@@ -105,15 +106,17 @@
 #include "chrome/browser/ui/tabs/tab_strip_api/controllers/tab_strip_ui_controller_injector_impl.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl/tab_strip_model_injector.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_service_feature.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/vertical_tab_iph_controller.h"
-#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/browser/ui/toasts/toast_service.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_controller_factory.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/animations/organizer_panel_animations.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
 #include "chrome/browser/ui/views/color_provider_browser_helper.h"
@@ -195,7 +198,9 @@
 #include "components/saved_tab_groups/public/features.h"
 #include "components/search/ntp_features.h"
 #include "components/search/search.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/common/content_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
 #include "ui/views/interaction/element_highlighter_views.h"
 
@@ -340,6 +345,8 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
       std::make_unique<SidePanelAnimations>());
   browser_animation_controller_->AddAnimationProvider(
       std::make_unique<TabStripAnimations>());
+  browser_animation_controller_->AddAnimationProvider(
+      std::make_unique<OrganizerPanelAnimations>());
 
   if (webui_browser::IsWebUIBrowserEnabled() &&
       browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
@@ -619,9 +626,9 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
     }
 
     if (organizer_panel::IsOrganizerPanelFeatureEnabled()) {
-      organizer_panel_state_controller_ =
-          GetUserDataFactory().CreateInstance<OrganizerPanelStateController>(
-              *browser, browser, browser_actions_->root_action_item());
+      organizer_panel_controller_ =
+          GetUserDataFactory().CreateInstance<OrganizerPanelController>(
+              *browser, *browser, browser_actions_->root_action_item());
     }
 
     std::optional<bool> restored_state_collapsed =
@@ -641,8 +648,8 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
 
     vertical_tab_strip_state_controller_ =
         GetUserDataFactory()
-            .CreateInstance<tabs::VerticalTabStripStateController>(
-                *browser, browser, profile->GetPrefs(),
+            .CreateInstance<tabs::VerticalTabStripStateControllerImpl>(
+                *browser, *browser, profile->GetPrefs(),
                 browser_actions_->root_action_item(),
                 SessionServiceFactory::GetForProfile(browser_->GetProfile()),
                 browser_->GetSessionID(), restored_state_collapsed,
@@ -691,14 +698,6 @@ void BrowserWindowFeatures::InitPostWindowConstruction(
   // BrowserView and WebUIBrowserWindow implementations of the same role are
   // co-located via inline if/else dispatch; dependency exceptions are called
   // out with `// Must be after X.` / `// Must be before X.` comments):
-
-  if (browser_view) {
-    // BrowserView is an AcceleratorProvider.
-    accelerator_provider_ = browser_view;
-  } else if (webui_browser_window) {
-    // WebUIBrowserWindow is an AcceleratorProvider.
-    accelerator_provider_ = webui_browser_window;
-  }
 
   if (browser_view) {
     bookmark_bar_controller_->SetDelegate(browser_view);
@@ -1097,6 +1096,13 @@ void BrowserWindowFeatures::InitPostWindowConstruction(
                                                                       browser);
     }
 
+    if (ttc::TtcKeyedService* ttc_service =
+            ttc::TtcKeyedService::Get(profile)) {
+      ttc_entrypoint_controller_ =
+          GetUserDataFactory().CreateInstance<ttc::EntrypointController>(
+              *browser, *browser, *ttc_service);
+    }
+
     if (base::FeatureList::IsEnabled(
             feature_engagement::kIPHVerticalTabstripTutorialFeature)) {
       vertical_tab_iph_controller_ =
@@ -1143,6 +1149,7 @@ void BrowserWindowFeatures::TearDownPreBrowserWindowDestruction() {
   // TYPE_NORMAL members.
   send_tab_to_self_iph_controller_.reset();
   vertical_tab_iph_controller_.reset();
+  ttc_entrypoint_controller_.reset();
   split_view_iph_controller_.reset();
   split_tab_highlight_controller_.reset();
   sharing_window_controller_.reset();
@@ -1224,7 +1231,6 @@ void BrowserWindowFeatures::TearDownPreBrowserWindowDestruction() {
   browser_select_file_dialog_controller_.reset();
   browser_focus_controller_.reset();
   bookmark_bar_controller_->SetDelegate(nullptr);
-  accelerator_provider_ = nullptr;
 
   // ---------------------------------------------------------------------------
   // Init (reverse).
@@ -1259,10 +1265,6 @@ void BrowserWindowFeatures::TearDownPreBrowserWindowDestruction() {
   }
   browser_animation_controller_.reset();
   actor_border_view_controller_.reset();
-}
-
-actions::ActionItem* BrowserWindowFeatures::GetRootActionItem() {
-  return browser_actions_ ? browser_actions_->root_action_item() : nullptr;
 }
 
 LocationBar* BrowserWindowFeatures::location_bar() {

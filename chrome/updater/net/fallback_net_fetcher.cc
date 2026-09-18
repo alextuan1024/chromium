@@ -4,7 +4,8 @@
 
 #include "chrome/updater/net/fallback_net_fetcher.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -134,7 +135,9 @@ void FallbackNetFetcher::DownloadToFileDone(
     int64_t content_size) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   cancellation_->Clear();
-  const bool should_fallback = net_error || (http_status_code_ != 200);
+  // A cancelled download is not retried by the next fetcher.
+  const bool should_fallback = (net_error || (http_status_code_ != 200)) &&
+                               !cancellation_->IsCancelled();
   if (should_fallback && next_) {
     VLOG(1) << __func__ << " Falling back to next NetFetcher for " << url;
     cancellation_->OnCancel(next_->DownloadToFile(

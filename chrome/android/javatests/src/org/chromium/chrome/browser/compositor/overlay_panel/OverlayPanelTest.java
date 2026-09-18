@@ -32,7 +32,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
@@ -40,6 +39,7 @@ import org.chromium.chrome.browser.compositor.layouts.Layout;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.overlay_panel.PanelState;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.TestProfile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -52,7 +52,6 @@ import org.chromium.ui.test.util.BlankUiTestActivity;
 /** Tests logic in the OverlayPanel. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@NullMarked
 public class OverlayPanelTest {
     private static final int MOCK_VIEWPORT_WIDTH = 400;
     private static final int MOCK_VIEWPORT_HEIGHT = 1000;
@@ -67,25 +66,21 @@ public class OverlayPanelTest {
     public static BaseActivityTestRule<BlankUiTestActivity> activityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    private final TestProfile mProfile = TestProfile.createRegular();
 
     @Mock private LayoutManagerImpl mLayoutManager;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private ViewGroup mCompositorViewHolder;
-    @Mock private Profile mProfile;
     @Mock private Tab mTab;
     @Mock private InsetObserver mInsetObserver;
     @Mock private DesktopWindowStateManager mDesktopWindowStateManager;
     @Mock private BottomControlsStacker mBottomControlsStacker;
     @Mock private OverlayPanelContent mMockContent;
 
-    @SuppressWarnings("NullAway.Init")
     Activity mActivity;
-
-    @SuppressWarnings("NullAway.Init")
     ActivityWindowAndroid mWindowAndroid;
-
-    @SuppressWarnings("NullAway.Init")
     TestOverlayPanel mPanel;
 
     private static class TestOverlayPanel extends OverlayPanel {

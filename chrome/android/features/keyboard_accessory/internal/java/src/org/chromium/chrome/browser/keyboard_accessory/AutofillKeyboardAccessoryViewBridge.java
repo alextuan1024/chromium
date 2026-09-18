@@ -4,13 +4,9 @@
 
 package org.chromium.chrome.browser.keyboard_accessory;
 
-import android.app.Activity;
 import android.graphics.RectF;
-import android.net.Uri;
-import android.text.style.ClickableSpan;
-import android.view.View;
 
-import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
@@ -28,26 +24,22 @@ import org.chromium.components.autofill.SuggestionType;
 import org.chromium.components.autofill.autofill_ai.EntityTypeName;
 import org.chromium.ui.DropdownItem;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.ui.text.SpanApplier;
 import org.chromium.url.GURL;
 
-import java.lang.ref.WeakReference;
 import java.util.List;
-import java.util.Objects;
 
 /** JNI call glue between C++ (AutofillKeyboardAccessoryViewImpl) and Java objects. */
 @JNINamespace("autofill")
 public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
     private long mNativeAutofillKeyboardAccessory;
-    private WeakReference<Activity> mActivity;
     private @Nullable MonotonicObservableSupplier<ManualFillingComponent>
             mManualFillingComponentSupplier;
     private @Nullable ManualFillingComponent mManualFillingComponent;
     private final Callback<ManualFillingComponent> mFillingComponentObserver =
             this::connectToFillingComponent;
-    private @Nullable Integer mSelectedListIndex;
 
-    private AutofillKeyboardAccessoryViewBridge() {}
+    @VisibleForTesting
+    AutofillKeyboardAccessoryViewBridge() {}
 
     @CalledByNative
     private static AutofillKeyboardAccessoryViewBridge create() {
@@ -56,7 +48,6 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
 
     @Override
     public void dismissed() {
-        mSelectedListIndex = null;
         if (mNativeAutofillKeyboardAccessory == 0) return;
         AutofillKeyboardAccessoryViewBridgeJni.get()
                 .viewDismissed(mNativeAutofillKeyboardAccessory);
@@ -69,7 +60,6 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
 
     @Override
     public void suggestionAccepted(int listIndex, boolean showLoadingOnAcceptance) {
-        mSelectedListIndex = null;
         if (mManualFillingComponent != null) {
             if (showLoadingOnAcceptance) {
                 mManualFillingComponent.setWaitingForFetch(true);
@@ -85,28 +75,21 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
 
     @Override
     public void deleteSuggestion(int listIndex) {
-        mSelectedListIndex = null;
         if (mNativeAutofillKeyboardAccessory == 0) return;
         AutofillKeyboardAccessoryViewBridgeJni.get()
                 .deletionRequested(mNativeAutofillKeyboardAccessory, listIndex);
     }
 
     @Override
-    public void suggestionSelectionStateChanged(int listIndex, boolean isSelected) {
-        if (mNativeAutofillKeyboardAccessory == 0) {
-            return;
-        }
-        // Return early if the selection state for this item is already up-to-date.
-        // Ignore if this item is already selected.
-        if (isSelected && Objects.equals(mSelectedListIndex, listIndex)) {
-            return;
-        }
-        // Ignore unhover if this item is not currently selected.
-        if (!isSelected && !Objects.equals(mSelectedListIndex, listIndex)) {
-            return;
-        }
+    public void showAutofillAiSuggestionDetails(int listIndex) {
+        if (mNativeAutofillKeyboardAccessory == 0) return;
+        AutofillKeyboardAccessoryViewBridgeJni.get()
+                .autofillAiSuggestionDetailsRequested(mNativeAutofillKeyboardAccessory, listIndex);
+    }
 
-        mSelectedListIndex = isSelected ? listIndex : null;
+    @Override
+    public void suggestionSelectionStateChanged(int listIndex, boolean isSelected) {
+        if (mNativeAutofillKeyboardAccessory == 0) return;
         AutofillKeyboardAccessoryViewBridgeJni.get()
                 .suggestionSelectionStateChanged(
                         mNativeAutofillKeyboardAccessory, listIndex, isSelected);
@@ -128,22 +111,10 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
                 .onDeletionDialogClosed(mNativeAutofillKeyboardAccessory, confirmed);
     }
 
-    private CharSequence createMessageWithLink(String body, String link) {
-        if (mActivity.get() == null) {
-            return body;
-        }
-        ClickableSpan span =
-                new ClickableSpan() {
-                    @Override
-                    public void onClick(View view) {
-                        assert mActivity.get() != null;
-                        new CustomTabsIntent.Builder()
-                                .setShowTitle(true)
-                                .build()
-                                .launchUrl(mActivity.get(), Uri.parse(link));
-                    }
-                };
-        return SpanApplier.applySpans(body, new SpanApplier.SpanInfo("<link>", "</link>", span));
+    private void onAutofillAiSuppressionDialogClosed(boolean confirmed) {
+        if (mNativeAutofillKeyboardAccessory == 0) return;
+        AutofillKeyboardAccessoryViewBridgeJni.get()
+                .onAutofillAiSuppressionDialogClosed(mNativeAutofillKeyboardAccessory, confirmed);
     }
 
     /**
@@ -162,14 +133,12 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
             connectToFillingComponent(currentFillingComponent);
         }
 
-        mActivity = windowAndroid.getActivity();
         mNativeAutofillKeyboardAccessory = nativeAutofillKeyboardAccessory;
     }
 
     /** Clears the reference to the native view. */
     @CalledByNative
     private void resetNativeViewPointer() {
-        mSelectedListIndex = null;
         mNativeAutofillKeyboardAccessory = 0;
     }
 
@@ -197,7 +166,6 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
      */
     @CalledByNative
     private void show(@JniType("std::vector") List<AutofillSuggestion> suggestions, RectF bounds) {
-        mSelectedListIndex = null;
         if (mManualFillingComponent != null) {
             mManualFillingComponent.setFieldBounds(bounds);
             mManualFillingComponent.setSuggestions(suggestions, this);
@@ -227,19 +195,43 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
             @JniType("std::u16string") String body,
             @JniType("std::u16string") String bodyLink,
             @JniType("std::u16string") String confirmButtonText) {
-
-        CharSequence message = body;
-        if (!bodyLink.isEmpty() && mActivity.get() != null) {
-            message = createMessageWithLink(body, bodyLink);
-        }
-
         assert mManualFillingComponent != null;
         mManualFillingComponent.confirmDeletionOperation(
                 title,
-                message,
+                body,
+                bodyLink,
                 confirmButtonText,
                 () -> this.onDeletionDialogClosed(/* confirmed= */ true),
                 () -> this.onDeletionDialogClosed(/* confirmed= */ false));
+    }
+
+    /**
+     * Shows an Autofill AI suggestion details / suppression confirmation dialog. The body of the
+     * dialog may contain &lt;src_link&gt; and &lt;manage_link&gt; tags.
+     *
+     * @param title The title for the dialog.
+     * @param body The body of the dialog.
+     * @param confirmButtonText The text displayed on the negative suppression button (e.g., "Remove
+     *     from Chrome").
+     * @param primaryButtonText The text displayed on the primary acknowledgment button (e.g., "Got
+     *     it").
+     */
+    @CalledByNative
+    private void showAutofillAiSuggestionDetails(
+            @JniType("std::u16string") String title,
+            @JniType("std::u16string") String body,
+            @JniType("std::u16string") String confirmButtonText,
+            @JniType("std::u16string") String primaryButtonText) {
+        if (mManualFillingComponent == null) {
+            return;
+        }
+        mManualFillingComponent.showAutofillAiSuggestionDetails(
+                title,
+                body,
+                confirmButtonText,
+                primaryButtonText,
+                () -> this.onAutofillAiSuppressionDialogClosed(/* confirmed= */ true),
+                () -> this.onAutofillAiSuppressionDialogClosed(/* confirmed= */ false));
     }
 
     /**
@@ -325,6 +317,12 @@ public class AutofillKeyboardAccessoryViewBridge implements AutofillDelegate {
         void deletionRequested(long nativeAutofillKeyboardAccessoryViewImpl, int listIndex);
 
         void onDeletionDialogClosed(
+                long nativeAutofillKeyboardAccessoryViewImpl, boolean confirmed);
+
+        void autofillAiSuggestionDetailsRequested(
+                long nativeAutofillKeyboardAccessoryViewImpl, int listIndex);
+
+        void onAutofillAiSuppressionDialogClosed(
                 long nativeAutofillKeyboardAccessoryViewImpl, boolean confirmed);
 
         void openSettingsForEntityType(

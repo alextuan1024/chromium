@@ -78,6 +78,9 @@ class FwupdDownloadClientImpl;
 class GnubbyNotification;
 class HatsBluetoothRevampTriggerImpl;
 class DeskSyncServiceProvider;
+class FaviconServiceProvider;
+class FeatureEngagementTrackerProvider;
+class HistoryServiceProvider;
 class IdentityManagerProvider;
 class SyncServiceProvider;
 class TemplateURLServiceProvider;
@@ -225,6 +228,10 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
 
   std::unique_ptr<apps::AppServiceRegistry> app_service_registry_;
   std::unique_ptr<DeskSyncServiceProvider> desk_sync_service_provider_;
+  std::unique_ptr<FaviconServiceProvider> favicon_service_provider_;
+  std::unique_ptr<FeatureEngagementTrackerProvider>
+      feature_engagement_tracker_provider_;
+  std::unique_ptr<HistoryServiceProvider> history_service_provider_;
   std::unique_ptr<IdentityManagerProvider> identity_manager_provider_;
   std::unique_ptr<SyncServiceProvider> sync_service_provider_;
   std::unique_ptr<TemplateURLServiceProvider> template_url_service_provider_;

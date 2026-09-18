@@ -12,7 +12,6 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/system/sys_info.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/views/chrome_web_dialog_view.h"
@@ -28,6 +27,7 @@
 #include "chrome/grit/supervision_resources_map.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/signin/identity_manager_provider.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/google/core/common/google_util.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
@@ -36,6 +36,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/webui/web_ui_util.h"
 #include "ui/resources/grit/ui_resources.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
 #include "ui/webui/webui_util.h"
@@ -155,15 +156,30 @@ AddSupervisionDialog::AddSupervisionDialog()
 
 AddSupervisionDialog::~AddSupervisionDialog() = default;
 
+AddSupervisionUIConfig::AddSupervisionUIConfig(
+    const ApplicationLocaleStorage* application_locale_storage)
+    : WebUIConfig(content::kChromeUIScheme, ash::kChromeUIAddSupervisionHost),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)) {}
+
+AddSupervisionUIConfig::~AddSupervisionUIConfig() = default;
+
+std::unique_ptr<content::WebUIController>
+AddSupervisionUIConfig::CreateWebUIController(content::WebUI* web_ui,
+                                              const GURL& url) {
+  return std::make_unique<AddSupervisionUI>(web_ui,
+                                            application_locale_storage_->Get());
+}
+
 // AddSupervisionUI implementations.
 
 // static
 signin::IdentityManager* AddSupervisionUI::test_identity_manager_ = nullptr;
 
-AddSupervisionUI::AddSupervisionUI(content::WebUI* web_ui)
+AddSupervisionUI::AddSupervisionUI(content::WebUI* web_ui,
+                                   const std::string& app_locale)
     : ui::MojoWebUIController(web_ui) {
   // Set up the basic page framework.
-  SetUpResources();
+  SetUpResources(app_locale);
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(AddSupervisionUI)
@@ -203,7 +219,7 @@ void AddSupervisionUI::BindInterface(
       std::move(receiver), web_ui(), identity_manager, this);
 }
 
-void AddSupervisionUI::SetUpResources() {
+void AddSupervisionUI::SetUpResources(const std::string& app_locale) {
   Profile* profile = Profile::FromWebUI(web_ui());
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, ash::kChromeUIAddSupervisionHost);
@@ -222,17 +238,16 @@ void AddSupervisionUI::SetUpResources() {
   source->AddResourcePaths(kAddSupervisionResources);
   source->AddResourcePaths(kSupervisionResources);
 
-  source->AddLocalizedString("pageTitle", IDS_ADD_SUPERVISION_PAGE_TITLE);
-  source->AddLocalizedString("webviewLoadingMessage",
-                             IDS_ADD_SUPERVISION_WEBVIEW_LOADING_MESSAGE);
-  source->AddLocalizedString("supervisedUserErrorDescription",
-                             IDS_SUPERVISED_USER_ERROR_DESCRIPTION);
-  source->AddLocalizedString("supervisedUserErrorTitle",
-                             IDS_SUPERVISED_USER_ERROR_TITLE);
-  source->AddLocalizedString("supervisedUserOfflineDescription",
-                             IDS_SUPERVISED_USER_OFFLINE_DESCRIPTION);
-  source->AddLocalizedString("supervisedUserOfflineTitle",
-                             IDS_SUPERVISED_USER_OFFLINE_TITLE);
+  static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"pageTitle", IDS_ADD_SUPERVISION_PAGE_TITLE},
+      {"webviewLoadingMessage", IDS_ADD_SUPERVISION_WEBVIEW_LOADING_MESSAGE},
+      {"supervisedUserErrorDescription", IDS_SUPERVISED_USER_ERROR_DESCRIPTION},
+      {"supervisedUserErrorTitle", IDS_SUPERVISED_USER_ERROR_TITLE},
+      {"supervisedUserOfflineDescription",
+       IDS_SUPERVISED_USER_OFFLINE_DESCRIPTION},
+      {"supervisedUserOfflineTitle", IDS_SUPERVISED_USER_OFFLINE_TITLE},
+  };
+  source->AddLocalizedStrings(kLocalizedStrings);
 
   source->UseStringsJs();
   source->SetDefaultResource(IDR_ADD_SUPERVISION_ADD_SUPERVISION_HTML);
@@ -243,9 +258,7 @@ void AddSupervisionUI::SetUpResources() {
   source->AddString("flowType", kAddSupervisionFlowType);
 
   // Forward the browser language code.
-  source->AddString(
-      "languageCode",
-      google_util::GetGoogleLocale(g_browser_process->GetApplicationLocale()));
+  source->AddString("languageCode", google_util::GetGoogleLocale(app_locale));
 }
 
 // Returns the URL of the Add Supervision flow from the command-line switch,

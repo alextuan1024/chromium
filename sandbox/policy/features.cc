@@ -32,6 +32,8 @@ BASE_FEATURE(kNetworkServiceSyscallFilter, base::FEATURE_ENABLED_BY_DEFAULT);
 // is disabled, a file path allowlist will still be applied, but the policy will
 // allow everything.
 BASE_FEATURE(kNetworkServiceFileAllowlist, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kOnDeviceModelExecutionMultiThreadedSandbox,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_FUCHSIA)
 
@@ -93,11 +95,6 @@ BASE_FEATURE(kEnableCsrssLockdown, base::FEATURE_DISABLED_BY_DEFAULT);
 // EXCEPTION_INVALID_HANDLE exception to be raised. See
 // https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_strict_handle_check_policy.
 BASE_FEATURE(kWinSboxStrictHandleChecks, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Raise the job memory limit for the GPU process sandbox to 1TB. When disabled,
-// the GPU process will use a physical-memory-based scaling heuristic with a
-// maximum of 64GB.
-BASE_FEATURE(kWinSboxHighGPUJobMemoryLimits, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables Module Tampering Protection for CIG processes. When enabled, the
 // loader remaps a clean main image if IAT tampering is detected, preventing

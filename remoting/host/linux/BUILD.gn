@@ -104,6 +104,7 @@ source_set("gvariant") {
     "//remoting/host/base",
   ]
 }
+
 pkg_config("pipewire_config") {
   packages = [ "libpipewire-0.3" ]
 
@@ -231,6 +232,8 @@ source_set("platform_impls") {
     "desktop_resizer_x11.h",
     "desktop_session_factory_linux.cc",
     "desktop_session_factory_linux.h",
+    "desktop_session_linux.cc",
+    "desktop_session_linux.h",
     "ei_input_injector.cc",
     "ei_input_injector.h",
     "ei_keyboard_layout_monitor.cc",
@@ -448,6 +451,7 @@ source_set("unit_tests") {
     "peer_connection_bpf_policy_linux_unittest.cc",
     "pipewire_audio_capturer_unittest.cc",
     "pipewire_mouse_cursor_capturer_unittest.cc",
+    "remote_display_session_manager_unittest.cc",
     "systemd_utils_unittest.cc",
     "test_util.cc",
     "test_util.h",

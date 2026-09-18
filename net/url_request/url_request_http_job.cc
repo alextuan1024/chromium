@@ -558,9 +558,13 @@ void URLRequestHttpJob::CloseConnectionOnDestruction() {
 }
 
 int URLRequestHttpJob::NotifyConnectedCallback(
+    base::WeakPtr<URLRequestHttpJob> job,
     const TransportInfo& info,
     CompletionOnceCallback callback) {
-  return URLRequestJob::NotifyConnected(info, std::move(callback));
+  if (!job) {
+    return ERR_ABORTED;
+  }
+  return job->NotifyConnected(info, std::move(callback));
 }
 
 PrivacyMode URLRequestHttpJob::DeterminePrivacyMode() const {
@@ -747,8 +751,9 @@ void URLRequestHttpJob::StartTransactionInternal() {
     }
 
     if (rv == OK) {
-      transaction_->SetConnectedCallback(base::BindRepeating(
-          &URLRequestHttpJob::NotifyConnectedCallback, base::Unretained(this)));
+      transaction_->SetConnectedCallback(
+          base::BindRepeating(&URLRequestHttpJob::NotifyConnectedCallback,
+                              weak_factory_.GetWeakPtr()));
       transaction_->SetRequestHeadersCallback(request_headers_callback_);
       transaction_->SetEarlyResponseHeadersCallback(
           early_response_headers_callback_);
@@ -944,8 +949,7 @@ void URLRequestHttpJob::SetCookieHeaderAndStart(
   if (service) {
     device_bound_sessions::DbscRequest request(request_);
     std::optional<device_bound_sessions::SessionService::DeferralParams>
-        deferral = service->ShouldDefer(request, &request_info_.extra_headers,
-                                        first_party_set_metadata_);
+        deferral = service->ShouldDefer(request, &request_info_.extra_headers);
     // If the request needs to be deferred while waiting for refresh, do not
     // start the transaction at this time. This may also kick off a refresh.
     if (deferral) {
@@ -963,14 +967,27 @@ void URLRequestHttpJob::SetCookieHeaderAndStart(
 
     base::UmaHistogramCounts100("Net.DeviceBoundSessions.RequestDeferralCount",
                                 device_bound_session_deferral_count_);
-    base::UmaHistogramEnumeration(
-        "Net.DeviceBoundSessions.RequestDeferralDecision3",
+    device_bound_sessions::SessionUsage max_usage =
         net::device_bound_sessions::GetMaxUsage(
-            request_->device_bound_session_usage()));
+            request_->device_bound_session_usage());
+    base::UmaHistogramEnumeration(
+        "Net.DeviceBoundSessions.RequestDeferralDecision3", max_usage);
     if (device_bound_session_deferral_count_ > 0) {
       base::UmaHistogramTimes(
           "Net.DeviceBoundSessions.TotalRequestDeferredDuration",
           base::TimeTicks::Now() - device_bound_session_first_deferral_);
+    }
+
+    if (device_bound_sessions::IsInScope(max_usage)) {
+      bool was_deferred =
+          (max_usage == device_bound_sessions::SessionUsage::kDeferred);
+      base::UmaHistogramBoolean(
+          "Net.DeviceBoundSessions.InScopeRequestWasDeferred", was_deferred);
+      if (request_info_.is_main_frame_navigation) {
+        base::UmaHistogramBoolean(
+            "Net.DeviceBoundSessions.InScopeNavigationRequestWasDeferred",
+            was_deferred);
+      }
     }
   }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
@@ -1176,8 +1193,7 @@ void URLRequestHttpJob::ProcessDeviceBoundSessionsHeader() {
   }
 
   device_bound_sessions::DbscRequest request(request_);
-  service->HandleResponseHeaders(request, GetResponseHeaders(),
-                                 first_party_set_metadata_);
+  service->HandleResponseHeaders(request, GetResponseHeaders());
 }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 

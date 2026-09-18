@@ -79,6 +79,7 @@ public class TabbedAppMenuPTTest {
      */
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562155107
     public void testOpenNewIncognitoTabOrWindow() {
         // openNewIncognitoTab() opens either an incognito tab or an incognito window.
         var incognitoNewTabPageStation =
@@ -170,7 +171,7 @@ public class TabbedAppMenuPTTest {
     @Feature({"RenderTest"})
     public void testNewTabPageIncognitoAppMenuItems() throws IOException {
         IncognitoNewTabPageStation incognitoNewTabPage =
-                mCtaTestRule.startOnBlankPage().openRegularTabAppMenu().openNewIncognitoTab();
+                mCtaTestRule.startOnBlankPage().openNewIncognitoTabOrWindowFast();
         IncognitoNewTabPageAppMenuFacility menu = incognitoNewTabPage.openAppMenu();
 
         String appMenuGoldenId =

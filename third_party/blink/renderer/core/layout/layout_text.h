@@ -73,7 +73,7 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
   void Trace(Visitor*) const override;
 
-  static LayoutText* CreateEmptyAnonymous(Document&, const ComputedStyle*);
+  static LayoutText* CreateEmptyAnonymous(Document&, const ComputedStyle&);
 
   const char* GetName() const override {
     NOT_DESTROYED();
@@ -273,7 +273,7 @@ class CORE_EXPORT LayoutText : public LayoutObject {
     SetNeedsCollectInlines();
   }
 
-  virtual UChar PreviousCharacter() const;
+  virtual UChar32 PreviousCharacter() const;
 
   // Returns the OffsetMapping object when the current text is laid out with
   // LayoutNG.

@@ -28,11 +28,13 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/ttc/tool_controller.h"
+#include "chrome/browser/ttc/core/session_controller.h"
+#include "chrome/browser/ttc/core/tool_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/ai_overlay_dialog/tools/generated_tool_definitions.h"
@@ -150,8 +152,22 @@ void AiOverlayTools::OpenUrl(const std::string& url_string,
                              OpenUrlCallback callback) {
   RecordToolCallInvoked("OpenUrl");
   if (tool_controller_) {
-    tool_controller_->OpenUrl(browser_, url_string, new_tab,
-                              std::move(callback));
+    ToolRequest request;
+    request.name = "open_url";
+    request.arguments.Set("url", url_string);
+    request.arguments.Set("new_tab", new_tab);
+    tool_controller_->ProcessToolCall(
+        std::move(request),
+        base::BindOnce(
+            [](OpenUrlCallback callback, ToolResponse response) {
+              const std::string* error = response.FindString("error");
+              if (error) {
+                std::move(callback).Run(base::unexpected(*error));
+              } else {
+                std::move(callback).Run(std::monostate());
+              }
+            },
+            std::move(callback)));
     return;
   }
 
@@ -483,6 +499,28 @@ void AiOverlayTools::OpenGeminiPanel(const std::string& prompt,
   glic_service->InvokeWithAutoSubmit(
       glic::InvokeWithAutoSubmitPasskeyProvider::GetPassKey(),
       std::move(options));
+}
+
+void AiOverlayTools::CloseGeminiPanel(CloseGeminiPanelCallback callback) {
+  RecordToolCallInvoked("CloseGeminiPanel");
+  glic::GlicKeyedService* glic_service =
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(
+          browser_->GetProfile());
+
+  if (!glic_service) {
+    std::move(callback).Run(base::unexpected("Glic service not available"));
+    return;
+  }
+
+  if (glic_service->instance_coordinator().IsPanelShowingForBrowser(
+          *browser_)) {
+    // TODO(gklassen): Use a dedicated invocation source for tool calls when
+    // productionizing.
+    glic_service->instance_coordinator().Toggle(
+        browser_, /*prevent_close=*/false,
+        glic::mojom::InvocationSource::kOsButton);
+  }
+  std::move(callback).Run(std::monostate());
 }
 
 void AiOverlayTools::SeekToTimestamp(const std::string& timecode,

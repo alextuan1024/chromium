@@ -72,7 +72,6 @@ BASE_DECLARE_FEATURE(kContextualTasksSendContextualInputUploadType);
 // contextual tasks URL and redirect to aim URL.
 BASE_DECLARE_FEATURE(kContextualTasksUrlRedirectToAimUrl);
 
-
 // If enabled, animates the caret.
 BASE_DECLARE_FEATURE(kContextualTasksAnimatedCaret);
 
@@ -227,6 +226,10 @@ extern const base::FeatureParam<base::TimeDelta> kPreviousTabRecencyThreshold;
 // Whether Smart Tab Sharing is enabled for the ContextualTasksContext feature.
 extern const base::FeatureParam<bool> kContextualTasksContextSmartTabSharing;
 
+// Whether Smart Tab Sharing should toggle off after query submission.
+extern const base::FeatureParam<bool>
+    kContextualTasksContextToggleOffAfterSubmit;
+
 // Option for smart tab sharing IPH first time prompt.
 enum class SmartTabSharingIphFirstTimePromptOption {
   kIphFirstTimePromptV1,
@@ -281,6 +284,15 @@ extern const base::FeatureParam<bool>
 // Controls whether the contextual task page action should show
 extern const base::FeatureParam<EntryPointOption, true> kShowEntryPoint;
 
+// Returns whether the right hand contextual tasks ephemeral button is enabled
+// when the side panel is right-aligned.
+extern bool GetEnableRightHandContextualTasksEphemeralButton();
+
+// Controls whether the contextual tasks ephemeral button is placed as a regular
+// circular button with drop shadow next to the battery saver button.
+BASE_DECLARE_FEATURE_PARAM(bool,
+                           kEnableCircularEphemeralButtonNextToBatterySaver);
+
 // UI Options to expand the contextual tasks side panel to tab.
 extern const base::FeatureParam<ExpandButtonOption, true> kExpandButtonOptions;
 
@@ -332,14 +344,6 @@ extern int GetContextualTasksShowOnboardingTooltipSessionImpressionCap();
 // user before it no longer shows up.
 extern int GetContextualTasksOnboardingTooltipDismissedCap();
 
-// The maximum number of times the lens search tooltip can be dismissed by the
-// user before it no longer shows up.
-extern int GetContextualTasksLensSearchTooltipDismissedCap();
-
-// The maximum number of times the lens search tooltip can be shown to the user
-// in a single session before it no longer shows up.
-extern int GetContextualTasksLensSearchTooltipSessionImpressionCap();
-
 // The maximum number of times the AskG tooltip can be dismissed by the
 // user before it no longer shows up.
 extern int GetContextualTasksAskGTooltipDismissedCap();
@@ -354,7 +358,6 @@ extern int GetContextualTasksOnboardingTooltipImpressionDelay();
 // The number of seconds inactive side panel WebContents should keep in cache.
 // Expired side panel WebContents will be destroyed.
 extern int ContextualTasksInactiveSidePanelKeepInCacheMinutes();
-
 
 // Returns if the protected page error is enabled.
 extern bool GetIsProtectedPageErrorEnabled();
@@ -405,6 +408,8 @@ extern bool GetIsContextualTasksSuggestionsEnabled();
 // Returns the timeout for smart tab sharing tab selection.
 extern base::TimeDelta GetSmartTabSharingTabSelectionTimeout();
 
+// Returns whether Smart Tab Sharing should toggle off after query submission.
+extern bool ShouldToggleOffAfterSubmit();
 
 // Enables tab auto-chip for contextual tasks. When disabled, no suggested
 // chips will be shown in the composebox automatically.
@@ -451,7 +456,6 @@ extern bool GetEnableContextualTasksSmartCompose();
 // zero state suggestions are enabled for Contextual Tasks.
 extern bool GetEnableNativeZeroStateSuggestions();
 
-
 // Returns whether basic mode should be enabled.
 extern bool GetIsBasicModeEnabled();
 
@@ -468,7 +472,6 @@ extern bool ShouldEnableCookiePrefetch();
 // Returns whether the input plate can be locked and unlocked by a message
 // from AIM.
 extern bool ShouldEnableLockAndUnlockInputCapability();
-
 
 // Returns whether the file hint is enabled in the composebox.
 extern bool GetEnableFileHint();

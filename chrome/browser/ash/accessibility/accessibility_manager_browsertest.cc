@@ -281,14 +281,6 @@ bool IsSelectToSpeakEnabled() {
   return AccessibilityManager::Get()->IsSelectToSpeakEnabled();
 }
 
-void SetSwitchAccessEnabled(bool enabled) {
-  AccessibilityManager::Get()->SetSwitchAccessEnabled(enabled);
-}
-
-void SetMagnifierEnabled(bool enabled) {
-  MagnificationManager::Get()->SetMagnifierEnabled(enabled);
-}
-
 void SetDictationEnabled(bool enabled) {
   AccessibilityManager::Get()->SetDictationEnabled(enabled);
 }
@@ -504,10 +496,7 @@ class AccessibilityManagerTest : public MixinBasedInProcessBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     scoped_feature_list_.InitWithFeatures(
-        {features::kOnDeviceSpeechRecognition,
-         ::features::kAccessibilityReducedAnimations,
-         ::features::kAccessibilityMouseKeys},
-        {});
+        {features::kOnDeviceSpeechRecognition}, {});
     MixinBasedInProcessBrowserTest::SetUpCommandLine(command_line);
   }
 
@@ -1877,12 +1866,7 @@ class AccessibilityManagerLoginTest : public OobeBaseTest {
  protected:
   AccessibilityManagerLoginTest()
       : disable_animations_(
-            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
-    scoped_feature_list_.InitWithFeatures(
-        {::features::kAccessibilityReducedAnimations,
-         ::features::kAccessibilityMouseKeys},
-        {});
-  }
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {}
 
   AccessibilityManagerLoginTest(const AccessibilityManagerLoginTest&) = delete;
   AccessibilityManagerLoginTest& operator=(
@@ -1944,7 +1928,6 @@ class AccessibilityManagerLoginTest : public OobeBaseTest {
 
  private:
   gfx::ScopedAnimationDurationScaleMode disable_animations_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(AccessibilityManagerLoginTest, BrailleOnLoginScreen) {
@@ -2208,39 +2191,6 @@ IN_PROC_BROWSER_TEST_P(AccessibilityManagerUserTypeTest, BrailleWhenLoggedIn) {
       "Accessibility.CrosSpokenFeedback.BrailleDisplayConnected."
       "ConnectionDuration",
       1);
-}
-
-
-
-class AccessibilityManagerWithManifestV3Test : public AccessibilityManagerTest {
- public:
-  AccessibilityManagerWithManifestV3Test() = default;
-  AccessibilityManagerWithManifestV3Test(
-      const AccessibilityManagerWithManifestV3Test&) = delete;
-  AccessibilityManagerWithManifestV3Test& operator=(
-      const AccessibilityManagerWithManifestV3Test&) = delete;
-  ~AccessibilityManagerWithManifestV3Test() override = default;
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(
-        ::switches::kEnableExperimentalAccessibilityManifestV3);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(AccessibilityManagerWithManifestV3Test, DoesNotCrash) {
-  SetSpokenFeedbackEnabled(true);
-  SetSelectToSpeakEnabled(true);
-  SetSwitchAccessEnabled(true);
-  SetAutoclickEnabled(true);
-  SetDictationEnabled(true);
-  SetMagnifierEnabled(true);
-
-  SetSpokenFeedbackEnabled(false);
-  SetSelectToSpeakEnabled(false);
-  SetSwitchAccessEnabled(false);
-  SetAutoclickEnabled(false);
-  SetDictationEnabled(false);
-  SetMagnifierEnabled(false);
 }
 
 enum class DictationKeyboardShortcutType { kKey, kKeyboardCombo };

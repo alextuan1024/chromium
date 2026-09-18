@@ -175,8 +175,7 @@ ExtensionTabUtil::ScrubTabBehaviorType GetScrubTabBehaviorImpl(
       // Tab-specific permission (e.g. activeTab) allowed, and the origin
       // matches.
       has_permission = true;
-    } else if (permissions->active_permissions().HasExplicitAccessToOrigin(
-                   url)) {
+    } else if (permissions->HasHostPermission(url)) {
       // Explicit host permission allows access.
       has_permission = true;
     }
@@ -517,9 +516,6 @@ void ExtensionTabUtil::ScrubTabForExtension(
       tab->title.reset();
       tab->fav_icon_url.reset();
       break;
-    case kScrubTabUrlToOrigin:
-      tab->url = GURL(*tab->url).DeprecatedGetOriginAsURL().spec();
-      break;
     case kDontScrubTab:
       break;
   }
@@ -529,10 +525,6 @@ void ExtensionTabUtil::ScrubTabForExtension(
     switch (scrub_tab_behavior.pending_info) {
       case kScrubTabFully:
         tab->pending_url.reset();
-        break;
-      case kScrubTabUrlToOrigin:
-        tab->pending_url =
-            GURL(*tab->pending_url).DeprecatedGetOriginAsURL().spec();
         break;
       case kDontScrubTab:
         break;
@@ -1046,24 +1038,6 @@ ExtensionTabUtil::GetAllActiveWebContentsForContext(
       });
 
   return active_contents;
-}
-
-// static
-bool ExtensionTabUtil::IsWebContentsInContext(
-    content::WebContents* web_contents,
-    content::BrowserContext* browser_context,
-    bool include_incognito) {
-  // Look at the WebContents BrowserContext and see if it is the same.
-  content::BrowserContext* web_contents_browser_context =
-      web_contents->GetBrowserContext();
-  if (web_contents_browser_context == browser_context)
-    return true;
-
-  // If not it might be to include the incognito mode, so we if the profiles
-  // are the same or the parent.
-  return include_incognito && Profile::FromBrowserContext(browser_context)
-                                  ->IsSameOrParent(Profile::FromBrowserContext(
-                                      web_contents_browser_context));
 }
 
 GURL ExtensionTabUtil::ResolvePossiblyRelativeURL(const std::string& url_string,

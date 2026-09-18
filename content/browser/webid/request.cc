@@ -40,6 +40,7 @@
 #include "content/browser/webid/user_info_request.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/connection_allowlist_util.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
@@ -658,6 +659,12 @@ void Request::OnAccountsResultsReceived(
     if (result.show_active_mode_modal_dialog) {
       MaybeShowActiveModeModalDialog(result.idp_config_url,
                                      result.idp_info->metadata.idp_login_url);
+      continue;
+    }
+
+    if (result.use_native_app_ui) {
+      CHECK_EQ(results.size(), 1u);
+      MaybeShowNativeAppUi(std::move(result.idp_info));
       continue;
     }
 
@@ -1430,6 +1437,12 @@ void Request::OnDismissErrorDialog(
     const GURL& idp_config_url,
     FetchStatus status,
     IdentityRequestDialogController::DismissReason dismiss_reason) {
+  // If the request has already completed (e.g. if the error URL popup was
+  // blocked), ignore any subsequent dismissals.
+  if (!request_token_callback_) {
+    return;
+  }
+
   bool has_url = token_error_ && !token_error_->url.is_empty();
   ErrorDialogResult result =
       DismissReasonToErrorDialogResult(dismiss_reason, has_url);
@@ -1507,6 +1520,20 @@ void Request::OnDialogDismissed(
 void Request::ShowModalDialog(DialogType dialog_type,
                               const GURL& idp_config_url,
                               const GURL& url_to_show) {
+  if (!content::FrameConnectionAllowlistAllowsRequestAndReportIfNeeded(
+          &render_frame_host(), url_to_show, /*is_redirect=*/false)) {
+    CompleteRequestWithError(
+        FederatedRequestResult::kPopupBlockedByConnectionAllowlist,
+        RequestIdTokenStatus::kPopupBlockedByConnectionAllowlist,
+        /*should_delay_callback=*/false);
+    return;
+  }
+
+  if (dialog_type == DialogType::kContinueOnPopup) {
+    fedcm_metrics_->RecordContinueOnPopupStatus(
+        ContinueOnPopupStatus::kPopupOpened);
+  }
+
   // Reset dialog type, since we are typically not showing a FedCM dialog while
   // the popup window is open. When using the active flow the dialog may
   // still be up in some cases, but we do not expect that browser automation
@@ -1609,8 +1636,6 @@ void Request::OnContinueOnResponseReceived(
     return;
   }
 
-  fedcm_metrics_->RecordContinueOnPopupStatus(
-      ContinueOnPopupStatus::kPopupOpened);
   ShowModalDialog(DialogType::kContinueOnPopup, idp->config->config_url,
                   continue_on);
 }
@@ -1892,10 +1917,15 @@ void Request::CompleteRequest(
     // request, even if the callback is delayed.
     RecordMetricsAndConsoleError(result, token_status, selected_idp_config_url);
 
+    std::optional<url::Origin> idp_origin;
+    if (selected_idp_config_url) {
+      idp_origin = url::Origin::Create(*selected_idp_config_url);
+    }
+
     RenderFrameHostImpl::From(&render_frame_host())
         ->delegate()
         ->OnFedCmFederatedLogin(
-            FederatedRequestResultToFederatedLoginResult(result));
+            FederatedRequestResultToFederatedLoginResult(result), idp_origin);
 
     if (token_received_callback_for_autofill_) {
       std::move(token_received_callback_for_autofill_)
@@ -2228,6 +2258,41 @@ void Request::OnIntentResolved(const std::string& token) {
   OnResolve(config_url_, std::nullopt, std::move(params));
 }
 
+void Request::OnNativeAppUiResult(
+    const GURL& idp_config_url,
+    IdentityRequestDialogController::NativeAppResult result) {
+  if (!request_token_callback_) {
+    return;
+  }
+  if (result.type ==
+      IdentityRequestDialogController::NativeAppResult::Type::kToken) {
+    // TODO(crbug.com/549228397): Add a dedicated TokenStatus type for
+    // native app UI success (e.g. kSuccessUsingNativeAppToken) instead of
+    // reusing kSuccessUsingTokenInHttpResponse.
+    CompleteRequest(FederatedRequestResult::kSuccess,
+                    TokenStatus::kSuccessUsingTokenInHttpResponse,
+                    /*token_error=*/std::nullopt, idp_config_url,
+                    base::Value(result.token),
+                    /*should_delay_callback=*/false);
+    return;
+  }
+  if (result.type ==
+      IdentityRequestDialogController::NativeAppResult::Type::kError) {
+    if (result.error) {
+      token_error_ = result.error;
+    }
+    CompleteRequestWithError(FederatedRequestResult::kIdTokenIdpErrorResponse,
+                             TokenStatus::kIdTokenIdpErrorResponse,
+                             /*should_delay_callback=*/false);
+    return;
+  }
+  // kLoginFinished is not expected for native app UI. Complete with error to
+  // ensure the request does not hang.
+  CompleteRequestWithError(FederatedRequestResult::kError,
+                           TokenStatus::kLoginPopupClosedWithoutSignin,
+                           /*should_delay_callback=*/false);
+}
+
 void Request::OnNativeAppResult(
     DialogType dialog_type,
     const GURL& idp_config_url,
@@ -2244,6 +2309,14 @@ void Request::OnNativeAppResult(
       return;
     }
     OnIntentResolved(result.token);
+  } else if (result.type ==
+             IdentityRequestDialogController::NativeAppResult::Type::kError) {
+    if (result.error) {
+      token_error_ = result.error;
+    }
+    CompleteRequestWithError(FederatedRequestResult::kIdTokenIdpErrorResponse,
+                             TokenStatus::kIdTokenIdpErrorResponse,
+                             /*should_delay_callback=*/false);
   } else if (result.type == IdentityRequestDialogController::NativeAppResult::
                                 Type::kLoginFinished) {
     if (dialog_type != DialogType::kLoginToIdpPopup) {
@@ -2531,6 +2604,38 @@ void Request::RecordErrorMetrics(
     // This is used to determine if we need to use the cross-site specific
     // devtools issue when failing the request.
     error_url_type_ = error_url_type;
+  }
+}
+
+void Request::MaybeShowNativeAppUi(
+    std::unique_ptr<IdentityProviderInfo> idp_info) {
+  CHECK(idp_info);
+  const GURL& idp_config_url = idp_info->provider->config->config_url;
+  idp_infos_[idp_config_url] = std::move(idp_info);
+  IdentityProviderInfo* info = idp_infos_[idp_config_url].get();
+
+  const std::string idp_for_display = FormatUrlToSite(idp_config_url);
+  info->data = base::MakeRefCounted<IdentityProviderData>(
+      idp_for_display, info->metadata,
+      ClientMetadata{GURL(), GURL(), GURL(), gfx::Image()}, info->rp_context,
+      info->format, GetDisclosureFields(info->provider->fields),
+      /*has_login_status_mismatch=*/false);
+  idp_data_for_display_ = {info->data};
+
+  RelyingPartyData rp_data = CreateRpData(/*client_metadata_received=*/false);
+
+  auto dismiss_callback = base::BindOnce(&Request::OnDialogDismissed,
+                                         weak_ptr_factory_.GetWeakPtr());
+  auto result_callback =
+      base::BindOnce(&Request::OnNativeAppUiResult,
+                     weak_ptr_factory_.GetWeakPtr(), idp_config_url);
+
+  if (!GetDialogController()->ShowNativeAppUi(rp_data, *info->data,
+                                              std::move(dismiss_callback),
+                                              std::move(result_callback))) {
+    CompleteRequestWithError(FederatedRequestResult::kError,
+                             TokenStatus::kUnhandledRequest,
+                             /*should_delay_callback=*/false);
   }
 }
 

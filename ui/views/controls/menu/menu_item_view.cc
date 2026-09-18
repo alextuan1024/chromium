@@ -489,18 +489,19 @@ MenuItemView* MenuItemView::AppendSubMenu(int item_id,
   return AppendMenuItemImpl(item_id, label, icon, Type::kSubMenu);
 }
 
-void MenuItemView::AppendSeparator() {
-  AppendMenuItemImpl(0, std::u16string(), ui::ImageModel(), Type::kSeparator);
+MenuSeparator* MenuItemView::AppendSeparator(ui::MenuSeparatorType type) {
+  const size_t index = submenu_ ? submenu_->children().size() : size_t{0};
+  return AddSeparatorAt(index, type);
 }
 
-void MenuItemView::AddSeparatorAt(size_t index) {
-  AddMenuItemAt(index, /*item_id=*/0, /*label=*/std::u16string(),
-                /*secondary_label=*/std::u16string(),
-                /*minor_text=*/std::u16string(),
-                /*minor_icon=*/ui::ImageModel(),
-                /*icon=*/ui::ImageModel(),
-                /*type=*/Type::kSeparator,
-                /*separator_style=*/ui::NORMAL_SEPARATOR);
+MenuSeparator* MenuItemView::AddSeparatorAt(size_t index,
+                                            ui::MenuSeparatorType type) {
+  if (!submenu_) {
+    CreateSubmenu();
+  }
+  DCHECK_LE(index, submenu_->children().size());
+  auto separator = std::make_unique<MenuSeparator>(type);
+  return submenu_->AddChildViewAt(std::move(separator), index);
 }
 
 MenuItemView* MenuItemView::AppendMenuItemImpl(int item_id,
@@ -738,6 +739,9 @@ const MenuItemView::MenuItemDimensions& MenuItemView::GetDimensions() const {
 }
 
 int MenuItemView::GetContentStart() const {
+  if (GetBorder()) {
+    return GetInsets().left();
+  }
   const MenuConfig& config = MenuConfig::instance();
   const auto* const controller = GetMenuController();
   return GetItemHorizontalBorder() +
@@ -913,11 +917,12 @@ ProposedLayout MenuItemView::CalculateProposedLayout(
     }
 
     if (submenu_arrow_image_view_) {
-      const int x = layout.host_size.width() - GetItemHorizontalBorder() -
-                    (type_ == Type::kActionableSubMenu
-                         ? config.actionable_submenu_arrow_to_edge_padding
-                         : config.arrow_to_edge_padding) -
-                    config.arrow_size;
+      const int right_border =
+          submenu->item_horizontal_border() +
+          (type_ == Type::kActionableSubMenu
+               ? config.actionable_submenu_arrow_to_edge_padding
+               : config.arrow_to_edge_padding);
+      const int x = layout.host_size.width() - right_border - config.arrow_size;
       const int y = (layout.host_size.height() - config.arrow_size) / 2;
       layout.child_layouts.emplace_back(
           submenu_arrow_image_view_.get(),
@@ -970,6 +975,9 @@ bool MenuItemView::IsTraversableByKeyboard() const {
 }
 
 int MenuItemView::GetItemHorizontalBorder() const {
+  if (GetBorder()) {
+    return GetInsets().right() - MenuConfig::instance().item_horizontal_padding;
+  }
   const auto* const controller = GetMenuController();
   const MenuConfig& config = MenuConfig::instance();
   return (controller && controller->use_ash_system_ui_layout())
@@ -1240,8 +1248,10 @@ void MenuItemView::PaintBackground(gfx::Canvas* canvas,
                                    bool paint_as_selected) {
   if (menu_item_background_.has_value()) {
     MenuItemBackground background_info = menu_item_background_.value();
+    const int horizontal_margin =
+        background_info.horizontal_margin.value_or(GetItemHorizontalBorder());
     gfx::Rect bounds = GetLocalBounds();
-    bounds.Inset(gfx::Insets::VH(0, GetItemHorizontalBorder()));
+    bounds.Inset(gfx::Insets::VH(0, horizontal_margin));
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
@@ -1293,7 +1303,10 @@ void MenuItemView::PaintBackground(gfx::Canvas* canvas,
     gfx::RectF highlight_bounds(GetLocalBounds());
     SkVector radii[4]{{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     if (menu_item_background_.has_value()) {
-      highlight_bounds.Inset(gfx::InsetsF::VH(0, GetItemHorizontalBorder()));
+      const int horizontal_margin =
+          menu_item_background_->horizontal_margin.value_or(
+              GetItemHorizontalBorder());
+      highlight_bounds.Inset(gfx::InsetsF::VH(0, horizontal_margin));
       const SkScalar top_r = SkIntToScalar(menu_item_background_->top_radius);
       const SkScalar bot_r =
           SkIntToScalar(menu_item_background_->bottom_radius);
@@ -1314,7 +1327,10 @@ void MenuItemView::PaintBackground(gfx::Canvas* canvas,
   } else if (paint_as_selected) {
     gfx::Rect item_bounds = GetLocalBounds();
     if (menu_item_background_.has_value()) {
-      item_bounds.Inset(gfx::Insets::VH(0, GetItemHorizontalBorder()));
+      const int horizontal_margin =
+          menu_item_background_->horizontal_margin.value_or(
+              GetItemHorizontalBorder());
+      item_bounds.Inset(gfx::Insets::VH(0, horizontal_margin));
     }
     if (type_ == Type::kActionableSubMenu) {
       if (submenu_area_of_actionable_submenu_selected_) {
@@ -1799,7 +1815,7 @@ int MenuItemView::CalculateIconX(const ImageView* icon_view) const {
   if (icon_view == radio_check_image_view_) {
     // The check/radio icon is always placed at the start of the content area
     // (the gutter), aligned left.
-    return GetContentStart();
+    return submenu->content_start();
   }
 
   // Case 2: The standard icon (icon_view_).
@@ -1823,7 +1839,7 @@ int MenuItemView::CalculateIconX(const ImageView* icon_view) const {
     icon_area_start_x = submenu->label_start();
   } else {
     // Icons start at the beginning of the content area (the gutter).
-    icon_area_start_x = GetContentStart();
+    icon_area_start_x = submenu->content_start();
   }
 
   // Center the icon within the designated icon area width for the submenu.
@@ -2015,6 +2031,7 @@ void MenuItemActionViewInterface::ActionItemChangedImpl(
   if (!action_item->GetImage().IsEmpty()) {
     menu_item_view->SetIcon(action_item->GetImage());
   }
+  menu_item_view->RefreshCheckmarkState();
 }
 
 BEGIN_METADATA(MenuItemView)

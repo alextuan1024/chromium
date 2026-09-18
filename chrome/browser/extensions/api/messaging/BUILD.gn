@@ -217,6 +217,7 @@ if (!is_android) {
       "//base/test:test_support",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/startup",
       "//chrome/test:test_support",
       "//extensions:test_support",
@@ -228,6 +229,29 @@ if (!is_android) {
     if (enable_background_mode) {
       deps += [ "//chrome/browser/background/extensions" ]
     }
+  }
+}
+
+if (enable_desktop_android_extensions) {
+  source_set("android_browsertests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+    sources = [ "native_messaging_apitest_android.cc" ]
+
+    deps = [
+      ":messaging",
+      ":test_support",
+      "//base",
+      "//base/test:test_support",
+      "//chrome/browser/extensions",
+      "//chrome/test:test_support",
+      "//content/test:test_support",
+      "//extensions:test_support",
+      "//extensions/browser",
+      "//extensions/common",
+      "//testing/gtest",
+    ]
   }
 }
 

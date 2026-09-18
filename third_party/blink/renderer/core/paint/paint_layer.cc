@@ -1936,7 +1936,8 @@ PaintLayer* PaintLayer::HitTestChildren(
             GetLayoutObject().GetDocument().GetExecutionContext())) {
       return nullptr;
     }
-    if (!To<HTMLCanvasElement>(GetLayoutObject().GetNode())->layoutSubtree()) {
+    if (!To<HTMLCanvasElement>(GetLayoutObject().GetNode())
+             ->IsContentDrawable()) {
       return nullptr;
     }
     if (children_to_visit != kNormalFlowChildren) {
@@ -2553,9 +2554,7 @@ FilterOperations PaintLayer::FilterOperationsIncludingReflection() const {
   if (GetLayoutObject().HasReflection() && GetLayoutObject().IsBox()) {
     BoxReflection reflection = BoxReflectionForPaintLayer(*this, style);
 
-    if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-            GetLayoutObject().GetDocument().GetExecutionContext()) &&
-        GetLayoutObject().IsInCanvasSubtree()) {
+    if (GetLayoutObject().IsInCanvasSubtree()) {
       if (const auto* reflect_style = style.BoxReflect()) {
         if (auto* style_image = reflect_style->Mask().GetImage()) {
           // Strip the mask image if it is being rendered into a canvas and it

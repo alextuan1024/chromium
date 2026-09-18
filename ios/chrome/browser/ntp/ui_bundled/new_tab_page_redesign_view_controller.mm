@@ -6,11 +6,16 @@
 
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_redesign_view_controller.h"
 
+#import <algorithm>
+
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/content_suggestions/magic_stack/public/magic_stack_constants.h"
+#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view.h"
 #import "ios/chrome/browser/content_suggestions/model/content_suggestions_metrics_recorder.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_item.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_collection_view.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_config.h"
+#import "ios/chrome/browser/content_suggestions/public/ntp_home_constants.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_collection_utils.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_framing_coordinates.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_image_view.h"
@@ -30,10 +35,14 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_trait.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_utils.h"
 #import "ios/chrome/browser/ntp/ui_bundled/ntp_identity_disc_button.h"
+#import "ios/chrome/browser/popup_menu/overflow_menu/public/features.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
+#import "ios/chrome/browser/shared/ui/elements/new_feature_badge_view.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/common/NSString+Chromium.h"
 #import "ios/chrome/common/material_timing.h"
@@ -45,6 +54,16 @@
 namespace {
 // Animation duration for wallpaper transition.
 constexpr CGFloat kBackgroundImageAnimationDuration = 0.25;
+
+// Offset for positioning the 'New' badge on the customization button.
+constexpr CGFloat kCustomizationNewBadgeOffset = 14.0;
+
+// Top margin for header buttons (customization menu and identity disc).
+constexpr CGFloat kHeaderButtonTopMargin = 12.0;
+
+// New feature badge layout constants for customization menu button.
+constexpr CGFloat kCustomizationNewBadgeSize = 20.0;
+constexpr CGFloat kCustomizationNewBadgeFontSize = 10.0;
 
 // Spacing from the top of the bottom sheet to the MVTs container when
 // resting/collapsed.
@@ -73,7 +92,12 @@ constexpr CGFloat kFakeboxPlusLeadingSpace = 18.0;
 constexpr CGFloat kLogoViewYOffset = 1.0;
 constexpr CGFloat kHintLabelYOffset = -1.0;
 
-const CGFloat kMinDragHandleHeight = 24.0;
+constexpr CGFloat kMinDragHandleHeight = 24.0;
+
+// iPad Form Sheet sizing constants.
+constexpr CGFloat kPadFormSheetMaxHeight = 900.0;
+constexpr CGFloat kPadFormSheetVerticalMargin = 120.0;
+constexpr CGFloat kPadFormSheetMinHeight = 300.0;
 }  // namespace
 
 @interface NTPRedesignTouchAreaOverflowStackView : UIStackView
@@ -114,6 +138,10 @@ const CGFloat kMinDragHandleHeight = 24.0;
   FakeLocationBarView* _fakeLocationBar;
   UIView* _mostVisitedContainerView;
   UIView* _mostVisitedView;
+  UIView* _magicStackContainerView;
+  NSArray<NSLayoutConstraint*>* _magicStackConstraints;
+  UIVisualEffectView* _backdropBlurView;
+  UITapGestureRecognizer* _backdropTapRecognizer;
   NSLayoutConstraint* _fakeLocationBarTopConstraint;
   NTPIdentityDiscButton* _identityDiscButton;
 
@@ -134,6 +162,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
   UIImageView* _logoView;
   ExtendedTouchTargetButton* _voiceSearchButton;
   UIView* _voiceAndLensDivider;
+  NSLayoutConstraint* _dividerWidthConstraint;
   ExtendedTouchTargetButton* _lensButton;
   UILabel* _hintLabel;
   UIImage* _dseLogo;
@@ -147,8 +176,14 @@ const CGFloat kMinDragHandleHeight = 24.0;
   NSLayoutConstraint* _fakeLocationBarWidthConstraint;
   NSLayoutConstraint* _fakeLocationBarHeightConstraint;
   NSLayoutConstraint* _hintLabelLeadingConstraint;
-  NSLayoutConstraint* _dividerWidthConstraint;
   BOOL _isBottomOmnibox;
+
+  // Customization menu button and badge
+  __weak LayoutGuideCenter* _layoutGuideCenter;
+  ExtendedTouchTargetButton* _customizationMenuButton;
+  NewFeatureBadgeView* _customizationNewFeatureBadge;
+  BOOL _didNotifyCustomizationBadgeDisplay;
+  BOOL _useNewBadgeForCustomizationMenu;
 }
 
 - (void)viewDidLoad {
@@ -164,8 +199,6 @@ const CGFloat kMinDragHandleHeight = 24.0;
       [[NewTabPageBottomSheetViewController alloc] init];
   _bottomSheetViewController.delegate = self;
   _bottomSheetViewController.feedViewController = _feedViewController;
-  _bottomSheetViewController.magicStackViewController =
-      _magicStackViewController;
   [self addChildViewController:_bottomSheetViewController];
   [self.view addSubview:_bottomSheetViewController.view];
   [_bottomSheetViewController didMoveToParentViewController:self];
@@ -265,13 +298,18 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 
   // Add Most Visited Tiles (MVTs) container if not in bottom sheet.
-  if (!IsMVTInBottomSheetEnabled()) {
+  if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
     _mostVisitedContainerView = [[UIView alloc] init];
     _mostVisitedContainerView.translatesAutoresizingMaskIntoConstraints = NO;
     // Insert BELOW the sheet.
     [self.view insertSubview:_mostVisitedContainerView
                 belowSubview:_bottomSheetViewController.view];
   }
+
+  _magicStackContainerView = [[UIView alloc] init];
+  _magicStackContainerView.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view insertSubview:_magicStackContainerView
+              belowSubview:_bottomSheetViewController.view];
 
   // Configure layout constraints
   _fakeLocationBarTopConstraint = [_fakeLocationBar.topAnchor
@@ -333,7 +371,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
     ]];
   }
 
-  if (!IsMVTInBottomSheetEnabled()) {
+  if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
     [NSLayoutConstraint activateConstraints:@[
       [_mostVisitedContainerView.widthAnchor
           constraintEqualToAnchor:_fakeLocationBar.widthAnchor],
@@ -344,7 +382,8 @@ const CGFloat kMinDragHandleHeight = 24.0;
     UIView* anchorView = self.quickActionsVisible
                              ? _quickActionsViewController.view
                              : _fakeLocationBar;
-    CGFloat constant = content_suggestions::MostVisitedTopPadding();
+    CGFloat constant =
+        content_suggestions::MostVisitedTopPadding(self.traitCollection);
 
     _mvtTopConstraint = [_mostVisitedContainerView.topAnchor
         constraintEqualToAnchor:anchorView.bottomAnchor
@@ -360,7 +399,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
   [self updateHintLabel];
 
   if (_mostVisitedView) {
-    if (IsMVTInBottomSheetEnabled()) {
+    if (IsMVTInBottomSheetEnabled() && ![self isIPadRegularLayout]) {
       [_bottomSheetViewController embedMostVisitedView:_mostVisitedView];
     } else {
       [self embedMostVisitedView];
@@ -377,12 +416,13 @@ const CGFloat kMinDragHandleHeight = 24.0;
   [_identityDiscButton addTarget:self
                           action:@selector(identityDiscButtonTapped:)
                 forControlEvents:UIControlEventTouchUpInside];
-  [self.view addSubview:_identityDiscButton];
+  [self.view insertSubview:_identityDiscButton
+              belowSubview:_bottomSheetViewController.view];
 
   [NSLayoutConstraint activateConstraints:@[
     [_identityDiscButton.topAnchor
         constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
-                       constant:12.0],
+                       constant:kHeaderButtonTopMargin],
   ]];
   [_identityDiscButton
       setupConstraintsWithTrailingAnchor:self.view.safeAreaLayoutGuide
@@ -398,6 +438,63 @@ const CGFloat kMinDragHandleHeight = 24.0;
       [_identityDiscButton setSignedOutAccountImage];
     }
   }
+
+  // Add customization menu button.
+  if (!IsOverflowMenuHomeCustomizationEntrypointEnabled()) {
+    ExtendedTouchTargetButton* customizationButton =
+        self.customizationMenuButton;
+
+    _customizationNewFeatureBadge = [[NewFeatureBadgeView alloc]
+        initWithBadgeSize:kCustomizationNewBadgeSize
+                 fontSize:kCustomizationNewBadgeFontSize];
+    _customizationNewFeatureBadge.translatesAutoresizingMaskIntoConstraints =
+        NO;
+    _customizationNewFeatureBadge.userInteractionEnabled = NO;
+    _customizationNewFeatureBadge.alpha =
+        self.useNewBadgeForCustomizationMenu ? 1.0 : 0.0;
+
+    [self.view addSubview:customizationButton];
+    [self.view addSubview:_customizationNewFeatureBadge];
+
+    [NSLayoutConstraint activateConstraints:@[
+      [customizationButton.topAnchor
+          constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
+                         constant:kHeaderButtonTopMargin],
+      [customizationButton.leadingAnchor
+          constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
+                         constant:(ntp_home::kIdentityAvatarPadding +
+                                   ntp_home::kHeaderIconMargin)],
+      [customizationButton.widthAnchor
+          constraintEqualToConstant:ntp_home::kNTPMenuButtonDimension],
+      [customizationButton.heightAnchor
+          constraintEqualToConstant:ntp_home::kNTPMenuButtonDimension],
+      [_customizationNewFeatureBadge.centerXAnchor
+          constraintEqualToAnchor:customizationButton.centerXAnchor
+                         constant:kCustomizationNewBadgeOffset],
+      [_customizationNewFeatureBadge.centerYAnchor
+          constraintEqualToAnchor:customizationButton.centerYAnchor
+                         constant:-kCustomizationNewBadgeOffset],
+    ]];
+
+    [self.layoutGuideCenter referenceView:customizationButton
+                                underName:kFeedIPHNamedGuide];
+  }
+
+  UIBlurEffect* blurEffect =
+      [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+  _backdropBlurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
+  _backdropBlurView.translatesAutoresizingMaskIntoConstraints = NO;
+  _backdropBlurView.alpha = 0.0;
+  _backdropBlurView.userInteractionEnabled = NO;
+  _backdropTapRecognizer = [[UITapGestureRecognizer alloc]
+      initWithTarget:self
+              action:@selector(backdropTapped:)];
+  [_backdropBlurView addGestureRecognizer:_backdropTapRecognizer];
+  [self.view insertSubview:_backdropBlurView
+              belowSubview:_bottomSheetViewController.view];
+  AddSameConstraints(_backdropBlurView, self.view);
+
+  [self updateMagicStackHierarchy];
   [self registerForTraitChanges:@[
     UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
     UITraitPreferredContentSizeCategory.class, UITraitUserInterfaceStyle.class
@@ -427,6 +524,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 
   [self maybeNotifyLensBadgeDisplayed];
+  [self maybeNotifyCustomizationBadgeDisplayed];
 }
 
 - (void)maybeNotifyLensBadgeDisplayed {
@@ -437,9 +535,31 @@ const CGFloat kMinDragHandleHeight = 24.0;
   }
 }
 
+- (void)maybeNotifyCustomizationBadgeDisplayed {
+  if (self.viewDidAppear && _customizationMenuButton &&
+      !_customizationMenuButton.hidden &&
+      self.useNewBadgeForCustomizationMenu &&
+      !_didNotifyCustomizationBadgeDisplay) {
+    [self.mutator notifyCustomizationBadgeDisplayed];
+    _didNotifyCustomizationBadgeDisplay = YES;
+  }
+}
+
 - (void)handleTraitChanges {
+  [self updateMagicStackHierarchy];
+  if (_bottomSheetViewController) {
+    [_bottomSheetViewController updateLayoutModeForCurrentTraitCollection];
+  }
   [self updateLogoConstraints];
   _fakeLocationBarTopConstraint.constant = [self centeredFakeOmniboxTop];
+  _fakeLocationBarWidthConstraint.constant = [self fakeLocationBarWidth];
+  if (_qaTopConstraint) {
+    _qaTopConstraint.constant = content_suggestions::QuickActionsTopPadding();
+  }
+  if (_mvtTopConstraint) {
+    _mvtTopConstraint.constant =
+        content_suggestions::MostVisitedTopPadding(self.traitCollection);
+  }
   if (_dividerWidthConstraint) {
     _dividerWidthConstraint.constant = 1.0 / self.traitCollection.displayScale;
   }
@@ -492,10 +612,12 @@ const CGFloat kMinDragHandleHeight = 24.0;
 }
 
 - (void)invalidate {
+  [self.layoutGuideCenter referenceView:nil underName:kFeedIPHNamedGuide];
   self.mutator = nil;
   self.searchEngineLogoView = nil;
   self.NTPContentDelegate = nil;
   self.NTPShortcutsHandler = nil;
+  self.headerCommandsHandler = nil;
   _mostVisitedView = nil;
   self.magicStackViewController = nil;
   [self setFeedViewController:nil];
@@ -508,6 +630,20 @@ const CGFloat kMinDragHandleHeight = 24.0;
     [self detachChildViewController:_bottomSheetViewController];
     _bottomSheetViewController = nil;
   }
+  _customizationMenuButton = nil;
+  _customizationNewFeatureBadge = nil;
+  if (_backdropTapRecognizer) {
+    [_backdropBlurView removeGestureRecognizer:_backdropTapRecognizer];
+    _backdropTapRecognizer = nil;
+  }
+  [_backdropBlurView removeFromSuperview];
+  _backdropBlurView = nil;
+  if (_magicStackConstraints) {
+    [NSLayoutConstraint deactivateConstraints:_magicStackConstraints];
+    _magicStackConstraints = nil;
+  }
+  [_magicStackContainerView removeFromSuperview];
+  _magicStackContainerView = nil;
   _identityDiscButton = nil;
   _avatarImage = nil;
   _avatarName = nil;
@@ -528,6 +664,62 @@ const CGFloat kMinDragHandleHeight = 24.0;
   [self.NTPContentDelegate focusOmnibox];
 }
 
+- (ExtendedTouchTargetButton*)customizationMenuButton {
+  if (!_customizationMenuButton) {
+    _customizationMenuButton =
+        [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
+    _customizationMenuButton.translatesAutoresizingMaskIntoConstraints = NO;
+    _customizationMenuButton.accessibilityIdentifier =
+        kNTPCustomizationMenuButtonIdentifier;
+    _customizationMenuButton.accessibilityLabel =
+        l10n_util::GetNSString(IDS_IOS_HOME_CUSTOMIZATION_ACCESSIBILITY_LABEL);
+    [_customizationMenuButton
+               addTarget:self
+                  action:@selector(customizationMenuButtonTapped:)
+        forControlEvents:UIControlEventTouchUpInside];
+
+    UIButtonConfiguration* configuration =
+        [UIButtonConfiguration plainButtonConfiguration];
+    configuration.image = SymbolTemplateWithPointSize(
+        SymbolPencil, ntp_home::kNTPMenuButtonIconSize);
+    configuration.background.cornerRadius =
+        ntp_home::kNTPMenuButtonCornerRadius;
+    _customizationMenuButton.configuration = configuration;
+
+    UIColor* unthemedTintColor =
+        [UIColor colorNamed:kNTPRedesignCustomizationMenuButtonIconColor];
+    _customizationMenuButton.configurationUpdateHandler =
+        CreateThemedButtonConfigurationUpdateHandler(
+            unthemedTintColor, ^UIColor*(NewTabPageColorPalette* palette) {
+              if (palette) {
+                return palette.headerButtonColor;
+              }
+
+              return [UIColor colorWithDynamicProvider:^UIColor*(
+                                  UITraitCollection* traits) {
+                if (traits.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                  return [UIColor colorNamed:kSurfaceContainerLowColor];
+                }
+                return [[UIColor colorNamed:kSolidWhiteColor]
+                    colorWithAlphaComponent:
+                        ntp_home::kNTPMenuButtonLightUnthemedAlpha];
+              }];
+            });
+  }
+  return _customizationMenuButton;
+}
+
+- (void)scrollToTopAnimated:(BOOL)animated {
+  [_bottomSheetViewController scrollToTopAnimated:animated];
+}
+
+- (BOOL)isScrolledToTop {
+  if (!_bottomSheetViewController) {
+    return YES;
+  }
+  return [_bottomSheetViewController isScrolledToTop];
+}
+
 #pragma mark - Action Targets
 
 - (void)fakeLocationBarTapped {
@@ -539,7 +731,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
 - (CGFloat)restingOffsetForBottomSheetViewController:
     (NewTabPageBottomSheetViewController*)viewController {
   CGFloat offset = [self centeredFakeOmniboxTop] + [self topContentHeight];
-  if (!IsMVTInBottomSheetEnabled()) {
+  if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
     offset += kRestingSheetMVTTopMargin;
   }
 
@@ -554,6 +746,10 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 - (CGFloat)collapsedOffsetForBottomSheetViewController:
     (NewTabPageBottomSheetViewController*)viewController {
+  if ([self isIPadRegularLayout]) {
+    // Collapsed state is disabled on iPad Regular; return resting offset.
+    return [self restingOffsetForBottomSheetViewController:viewController];
+  }
   UIView* superview = self.view;
   CGFloat safeAreaBottom = superview.safeAreaInsets.bottom;
   if ([self isCompactHeight]) {
@@ -565,6 +761,14 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 - (CGFloat)expandedOffsetForBottomSheetViewController:
     (NewTabPageBottomSheetViewController*)viewController {
+  if ([self isIPadRegularLayout]) {
+    CGFloat availableHeight =
+        self.view.bounds.size.height - kPadFormSheetVerticalMargin;
+    CGFloat modalHeight =
+        std::max(kPadFormSheetMinHeight,
+                 std::min(kPadFormSheetMaxHeight, availableHeight));
+    return (self.view.bounds.size.height - modalHeight) / 2.0;
+  }
   CGFloat safeAreaTop = self.view.safeAreaInsets.top;
   if (_isBottomOmnibox && !CanShowTabStrip(self)) {
     return safeAreaTop;
@@ -584,6 +788,24 @@ const CGFloat kMinDragHandleHeight = 24.0;
     progress = MIN(1.0, MAX(0.0, progress));
   }
 
+  if ([self isIPadRegularLayout]) {
+    CGFloat expansionProgress = 1.0 - progress;
+    _backdropBlurView.alpha = expansionProgress;
+    _backdropBlurView.userInteractionEnabled = (expansionProgress > 0.0);
+
+    // Synchronize tablet omnibox scroll progress with feed expansion.
+    [self.NTPContentDelegate
+        didUpdateNTPTabOmniboxScrollProgress:expansionProgress];
+
+    const BOOL isExpanded = (progress == 0.0);
+    [self setTopContentAccessibilityElementsHidden:isExpanded];
+    return;
+  }
+
+  _backdropBlurView.alpha = 0.0;
+  _backdropBlurView.userInteractionEnabled = NO;
+  [self setTopContentAccessibilityElementsHidden:NO];
+
   if (topOffset > restingOffset) {
     // Collapsed range: Move top content down with sheet
     CGFloat downwardDelta = topOffset - restingOffset;
@@ -600,12 +822,17 @@ const CGFloat kMinDragHandleHeight = 24.0;
         didUpdateNTPTabOmniboxScrollProgress:expansionProgress];
   }
 
-  // Opacity for Logo, MVT, Identity Disc, and Quick Actions
+  // Opacity for Logo, MVT, Identity Disc, Customization Button, and Quick
+  // Actions
   _searchEngineLogoView.alpha = progress;
   if (!IsMVTInBottomSheetEnabled()) {
     _mostVisitedContainerView.alpha = progress;
   }
   _identityDiscButton.alpha = progress;
+  _customizationMenuButton.alpha = progress;
+  if (_customizationNewFeatureBadge && self.useNewBadgeForCustomizationMenu) {
+    _customizationNewFeatureBadge.alpha = progress;
+  }
   if (_quickActionsViewController) {
     _quickActionsViewController.view.alpha = progress;
   }
@@ -615,6 +842,9 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 - (void)bottomSheetViewControllerDidEscape:
     (NewTabPageBottomSheetViewController*)bottomSheetViewController {
+  if ([self isIPadRegularLayout]) {
+    [self setTopContentAccessibilityElementsHidden:NO];
+  }
   if (_fakeLocationBar) {
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification,
                                     _fakeLocationBar);
@@ -635,7 +865,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
   MostVisitedTilesCollectionView* collectionView =
       [[MostVisitedTilesCollectionView alloc] initWithConfig:config];
 
-  if (!IsMVTInBottomSheetEnabled()) {
+  if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
     __weak __typeof(_bottomSheetViewController) weakBottomSheetViewController =
         _bottomSheetViewController;
     collectionView.onContentSizeChanged = ^(CGSize) {
@@ -645,7 +875,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
   _mostVisitedView = CreateMostVisitedContainerView(collectionView, YES);
 
-  if (IsMVTInBottomSheetEnabled()) {
+  if (IsMVTInBottomSheetEnabled() && ![self isIPadRegularLayout]) {
     if (_bottomSheetViewController) {
       [_bottomSheetViewController embedMostVisitedView:_mostVisitedView];
     }
@@ -718,6 +948,23 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 #pragma mark - Setters
 
+- (void)setLayoutGuideCenter:(LayoutGuideCenter*)layoutGuideCenter {
+  _layoutGuideCenter = layoutGuideCenter;
+  if (_customizationMenuButton && _layoutGuideCenter) {
+    [_layoutGuideCenter referenceView:_customizationMenuButton
+                            underName:kFeedIPHNamedGuide];
+  }
+}
+
+- (void)setUseNewBadgeForCustomizationMenu:(BOOL)useNewBadge {
+  if (_useNewBadgeForCustomizationMenu == useNewBadge) {
+    return;
+  }
+  _useNewBadgeForCustomizationMenu = useNewBadge;
+  _customizationNewFeatureBadge.alpha = useNewBadge ? 1.0 : 0.0;
+  [self maybeNotifyCustomizationBadgeDisplayed];
+}
+
 - (void)setSearchEngineLogoView:(UIView*)searchEngineLogoView {
   if (_searchEngineLogoView == searchEngineLogoView) {
     return;
@@ -742,22 +989,120 @@ const CGFloat kMinDragHandleHeight = 24.0;
 }
 
 - (void)setMagicStackViewController:
-    (UIViewController*)magicStackViewController {
+    (MagicStackCollectionViewController*)magicStackViewController {
   if (_magicStackViewController == magicStackViewController) {
     return;
   }
+  if (_magicStackViewController &&
+      _magicStackViewController.parentViewController == self) {
+    [self detachChildViewController:_magicStackViewController];
+  }
   _magicStackViewController = magicStackViewController;
+  [self updateMagicStackHierarchy];
   if (_bottomSheetViewController) {
-    _bottomSheetViewController.magicStackViewController =
-        magicStackViewController;
+    [_bottomSheetViewController updateBottomSheetPositionAnimated:NO];
   }
 }
 
 #pragma mark - Private
 
+- (BOOL)isIPadRegularLayout {
+  return self.traitCollection.horizontalSizeClass ==
+         UIUserInterfaceSizeClassRegular;
+}
+
+- (void)backdropTapped:(UITapGestureRecognizer*)recognizer {
+  if (recognizer.state == UIGestureRecognizerStateEnded) {
+    [_bottomSheetViewController collapseToRestingAnimated:YES];
+  }
+}
+
+- (void)setTopContentAccessibilityElementsHidden:(BOOL)hidden {
+  _fakeLocationBar.accessibilityElementsHidden = hidden;
+  _searchEngineLogoView.accessibilityElementsHidden = hidden;
+  _mostVisitedContainerView.accessibilityElementsHidden = hidden;
+  _magicStackContainerView.accessibilityElementsHidden = hidden;
+  _identityDiscButton.accessibilityElementsHidden = hidden;
+  if (_quickActionsViewController) {
+    _quickActionsViewController.view.accessibilityElementsHidden = hidden;
+  }
+}
+
+- (UIView*)topContentAnchorViewForMagicStack {
+  if (_mostVisitedContainerView && _mostVisitedView) {
+    return _mostVisitedContainerView;
+  }
+  if (self.quickActionsVisible && _quickActionsViewController) {
+    return _quickActionsViewController.view;
+  }
+  return _fakeLocationBar;
+}
+
+- (void)updateMagicStackConstraints {
+  if (_magicStackConstraints) {
+    [NSLayoutConstraint deactivateConstraints:_magicStackConstraints];
+    _magicStackConstraints = nil;
+  }
+  if (!_magicStackContainerView || _magicStackContainerView.hidden ||
+      ![self isIPadRegularLayout] || !_magicStackViewController) {
+    return;
+  }
+  UIView* topAnchorView = [self topContentAnchorViewForMagicStack];
+  CGFloat spacing = content_suggestions::ReducedModuleSpacing();
+  _magicStackConstraints = @[
+    [_magicStackContainerView.topAnchor
+        constraintEqualToAnchor:topAnchorView.bottomAnchor
+                       constant:spacing],
+    [_magicStackContainerView.centerXAnchor
+        constraintEqualToAnchor:self.view.centerXAnchor],
+    [_magicStackContainerView.widthAnchor
+        constraintEqualToAnchor:_fakeLocationBar.widthAnchor],
+    [_magicStackContainerView.heightAnchor
+        constraintEqualToConstant:kMagicStackHeight],
+  ];
+  [NSLayoutConstraint activateConstraints:_magicStackConstraints];
+}
+
+- (void)updateMagicStackHierarchy {
+  if (!self.isViewLoaded) {
+    return;
+  }
+  if (!_magicStackViewController) {
+    _magicStackContainerView.hidden = YES;
+    if (_magicStackConstraints) {
+      [NSLayoutConstraint deactivateConstraints:_magicStackConstraints];
+      _magicStackConstraints = nil;
+    }
+    _bottomSheetViewController.magicStackViewController = nil;
+    return;
+  }
+  if ([self isIPadRegularLayout]) {
+    if (_bottomSheetViewController.magicStackViewController ==
+        _magicStackViewController) {
+      _bottomSheetViewController.magicStackViewController = nil;
+    }
+    [self containChildViewController:_magicStackViewController
+                        insideParent:self
+                       containerView:_magicStackContainerView];
+    _magicStackContainerView.hidden = NO;
+    [self updateMagicStackConstraints];
+  } else {
+    if (_magicStackViewController.parentViewController == self) {
+      [self detachChildViewController:_magicStackViewController];
+    }
+    _magicStackContainerView.hidden = YES;
+    if (_magicStackConstraints) {
+      [NSLayoutConstraint deactivateConstraints:_magicStackConstraints];
+      _magicStackConstraints = nil;
+    }
+    _bottomSheetViewController.magicStackViewController =
+        _magicStackViewController;
+  }
+}
+
 // Add _mostVisitedView to the view hierarchy.
 - (void)embedMostVisitedView {
-  if (IsMVTInBottomSheetEnabled()) {
+  if (IsMVTInBottomSheetEnabled() && ![self isIPadRegularLayout]) {
     return;
   }
   if (!_mostVisitedView || !_mostVisitedContainerView) {
@@ -766,6 +1111,9 @@ const CGFloat kMinDragHandleHeight = 24.0;
   _mostVisitedView.translatesAutoresizingMaskIntoConstraints = NO;
   [_mostVisitedContainerView addSubview:_mostVisitedView];
   AddSameConstraints(_mostVisitedView, _mostVisitedContainerView);
+  if ([self isIPadRegularLayout]) {
+    [self updateMagicStackConstraints];
+  }
   [self.view setNeedsLayout];
   [self.view layoutIfNeeded];
   if (_bottomSheetViewController) {
@@ -777,8 +1125,9 @@ const CGFloat kMinDragHandleHeight = 24.0;
   if (!_searchEngineLogoView || !_bottomSheetViewController.view) {
     return;
   }
-  [self.view insertSubview:_searchEngineLogoView
-              belowSubview:_bottomSheetViewController.view];
+  UIView* belowView =
+      _backdropBlurView ? _backdropBlurView : _bottomSheetViewController.view;
+  [self.view insertSubview:_searchEngineLogoView belowSubview:belowView];
   _searchEngineLogoView.translatesAutoresizingMaskIntoConstraints = NO;
   [self updateLogoConstraints];
 }
@@ -803,7 +1152,7 @@ const CGFloat kMinDragHandleHeight = 24.0;
     [_searchEngineLogoView.bottomAnchor
         constraintEqualToAnchor:_fakeLocationBar.topAnchor
                        constant:-content_suggestions::LogoToFakeboxPadding(
-                                    _logoState)],
+                                    _logoState, self.traitCollection)],
     [_searchEngineLogoView.widthAnchor constraintEqualToConstant:width],
     [_searchEngineLogoView.heightAnchor constraintEqualToConstant:height]
   ];
@@ -816,14 +1165,19 @@ const CGFloat kMinDragHandleHeight = 24.0;
   if (self.quickActionsVisible && _quickActionsViewController) {
     height += content_suggestions::QuickActionsTopPadding();
     height += _quickActionsViewController.preferredContentSize.height;
-    height += content_suggestions::MostVisitedTopPadding();
+    height += content_suggestions::MostVisitedTopPadding(self.traitCollection);
   } else {
-    height += content_suggestions::MostVisitedTopPadding();
+    height += content_suggestions::MostVisitedTopPadding(self.traitCollection);
   }
 
-  if (!IsMVTInBottomSheetEnabled()) {
+  if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
     height +=
         MostVisitedContainerHeight(_mostVisitedContainerView, _mostVisitedView);
+  }
+
+  if ([self isIPadRegularLayout] && _magicStackViewController) {
+    height += content_suggestions::ReducedModuleSpacing();
+    height += kMagicStackHeight;
   }
 
   return height;
@@ -846,7 +1200,8 @@ const CGFloat kMinDragHandleHeight = 24.0;
       content_suggestions::DoodleHeight(_logoState, self.traitCollection);
   CGFloat logoTopMargin = [self logoTopPaddingForCurrentOrientation];
   return safeAreaTop + logoTopMargin + logoHeight +
-         content_suggestions::LogoToFakeboxPadding(_logoState);
+         content_suggestions::LogoToFakeboxPadding(_logoState,
+                                                   self.traitCollection);
 }
 
 
@@ -900,6 +1255,18 @@ const CGFloat kMinDragHandleHeight = 24.0;
 
 #pragma mark - Actions
 
+- (void)customizationMenuButtonTapped:(UIButton*)sender {
+  if (self.useNewBadgeForCustomizationMenu && _customizationNewFeatureBadge) {
+    _useNewBadgeForCustomizationMenu = NO;
+    NewFeatureBadgeView* badge = _customizationNewFeatureBadge;
+    [UIView animateWithDuration:kMaterialDuration1
+                     animations:^{
+                       badge.alpha = 0;
+                     }];
+  }
+  [self.headerCommandsHandler customizationMenuWasTapped:sender];
+}
+
 - (void)identityDiscButtonTapped:(UIButton*)sender {
   [self.headerCommandsHandler identityDiscWasTapped:sender];
 }
@@ -944,17 +1311,22 @@ const CGFloat kMinDragHandleHeight = 24.0;
     BOOL isVisible = self.quickActionsVisible;
     _quickActionsViewController.view.hidden = !isVisible;
 
-    if (!IsMVTInBottomSheetEnabled()) {
+    if (!IsMVTInBottomSheetEnabled() || [self isIPadRegularLayout]) {
       _mvtTopConstraint.active = NO;
 
       UIView* anchorView =
           isVisible ? _quickActionsViewController.view : _fakeLocationBar;
-      CGFloat constant = content_suggestions::MostVisitedTopPadding();
+      CGFloat constant =
+          content_suggestions::MostVisitedTopPadding(self.traitCollection);
 
       _mvtTopConstraint = [_mostVisitedContainerView.topAnchor
           constraintEqualToAnchor:anchorView.bottomAnchor
                          constant:constant];
       _mvtTopConstraint.active = YES;
+    }
+
+    if ([self isIPadRegularLayout]) {
+      [self updateMagicStackConstraints];
     }
 
     [self.view layoutIfNeeded];

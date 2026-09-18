@@ -17,6 +17,11 @@ namespace features {
 BASE_DECLARE_FEATURE(kGlicAndroidSidePanel);
 BASE_DECLARE_FEATURE(kGlicDragAndDropFileUploadAndroid);
 
+// Enables attaching the Glic WebUI WebContents to the offscreen rendering
+// manager on Android, so it keeps executing JavaScript, servicing Mojo IPC and
+// scheduling frames while Chrome is not in the foreground.
+BASE_DECLARE_FEATURE(kGlicAndroidOffscreenRendering);
+
 BASE_DECLARE_FEATURE(kGlicClearTurnIdOnPanelWillOpen);
 BASE_DECLARE_FEATURE(kGlicChromeStatusIcon);
 extern const base::FeatureParam<int> kGlicChromeStatusIconSizePx;
@@ -50,6 +55,8 @@ extern const base::FeatureParam<bool> kGlicSelectionPromptSkills;
 extern const base::FeatureParam<std::string> kGlicSelectionDefaultBlockedSites;
 base::flat_set<std::string> GetGlicSelectionDefaultBlockedSites();
 
+BASE_DECLARE_FEATURE(kGlicSelectionOverlayPrompt);
+
 BASE_DECLARE_FEATURE(kGlicSelectionSmallChip);
 extern const base::FeatureParam<bool> kGlicSelectionSmallChipOnTop;
 
@@ -58,10 +65,6 @@ BASE_DECLARE_FEATURE(kGlicCreateTabAdjacent);
 BASE_DECLARE_FEATURE(kGlicDynamicChromeTools);
 
 BASE_DECLARE_FEATURE(kGlicLiveMode);
-
-BASE_DECLARE_FEATURE(kGlicDefaultToLastActiveConversation);
-extern const base::FeatureParam<base::TimeDelta>
-    kGlicDefaultToLastActiveConversationMaxRecency;
 
 BASE_DECLARE_FEATURE(kGlicSummarizeVideoSuggestion);
 
@@ -76,6 +79,9 @@ BASE_DECLARE_FEATURE(kGlicContextMenuBelowSearch);
 BASE_DECLARE_FEATURE(kGlicTextSelectionContextMenu);
 extern const base::FeatureParam<bool>
     kGlicTextSelectionContextMenuMessageFirstFre;
+// Whether the selected text is auto-submitted with a default prompt instead of
+// only being attached to the input area for the user to submit manually.
+extern const base::FeatureParam<bool> kGlicTextSelectionContextMenuAutoSubmit;
 
 BASE_DECLARE_FEATURE(kGlicTieredRolloutV2);
 extern const base::FeatureParam<std::string> kGlicTieredRolloutV2EligibleTiers;
@@ -113,6 +119,7 @@ BASE_DECLARE_FEATURE(kGlicCookieSyncOnError);
 extern const base::FeatureParam<base::TimeDelta>
     kGlicCookieSyncOnErrorMinInterval;
 BASE_DECLARE_FEATURE(kGlicCookieSyncOnOpenEvenIfNoSyncNeeded);
+BASE_DECLARE_FEATURE(kGlicCookieSyncEarlyNoStartup);
 
 BASE_DECLARE_FEATURE(kGlicWebClientLoadTimes);
 extern const base::FeatureParam<int> kGlicPreLoadingTimeMs;
@@ -149,13 +156,14 @@ BASE_DECLARE_FEATURE(kGlicPasteEligibilityCheck);
 BASE_DECLARE_FEATURE(kGlicWebPasteEligibilityCheck);
 
 BASE_DECLARE_FEATURE(kGlicTabGroups);
-extern const base::FeatureParam<bool> kGlicTabGroupsUseFullTabEmbedder;
 BASE_DECLARE_FEATURE(kGlicSparkSettingsAccessibleLabels);
 
 BASE_DECLARE_FEATURE(kGlicOptInDialogA11yFix);
 BASE_DECLARE_FEATURE(kGlicStructuredYieldMetadata);
 
 BASE_DECLARE_FEATURE(kGlicNoWebview);
+// Returns true if both kGlicNoWebview and kPrivilegedWebContents are enabled.
+bool IsGlicNoWebviewEnabled();
 BASE_DECLARE_FEATURE(kGlicDisconnectedWebview);
 
 BASE_DECLARE_FEATURE(kGlicShakeTrigger);
@@ -168,6 +176,10 @@ BASE_DECLARE_FEATURE(kGlicActionFirstFRE);
 BASE_DECLARE_FEATURE(kGlicWarmOnNudge);
 
 BASE_DECLARE_FEATURE(kGlicWarmOnIph);
+
+BASE_DECLARE_FEATURE(kGlicBackfillWarmingUsePerformanceManager);
+
+BASE_DECLARE_FEATURE(kGlicColdWarmingUsePerformanceManager);
 }  // namespace features
 
 #endif  // CHROME_BROWSER_GLIC_PUBLIC_FEATURES_H_

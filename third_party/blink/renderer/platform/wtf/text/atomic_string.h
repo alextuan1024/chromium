@@ -83,7 +83,7 @@ class WTF_EXPORT AtomicString {
     return AtomicString(converter.Span());
   }
 
-  static AtomicString Number(double, unsigned precision = 6);
+  static AtomicString Number(double, wtf_size_t precision = 6);
 
   // [string.cons] --------------------------------------------------
 
@@ -105,7 +105,11 @@ class WTF_EXPORT AtomicString {
   explicit AtomicString(
       base::span<const UChar> chars,
       AtomicStringUCharEncoding encoding = AtomicStringUCharEncoding::kUnknown);
-  explicit AtomicString(const UChar* chars);
+  template <size_t kLength>
+  explicit AtomicString(const UChar (&chars)[kLength])
+      : AtomicString(base::span(chars).template first<kLength - 1>()) {
+    DCHECK_EQ(chars[kLength - 1], 0);
+  }
 
   explicit AtomicString(const StringView& view) : string_(Add(view)) {}
 
@@ -140,7 +144,7 @@ class WTF_EXPORT AtomicString {
   operator const String&() const { return string_; }
   const String& GetString() const { return string_; }
 
-  unsigned Hash() const { return string_.Impl()->ExistingHash(); }
+  uint32_t Hash() const { return string_.Impl()->ExistingHash(); }
 
   // Returns an LChar span of the underlying representation of the string.
   // This function must only be called on 8-bit strings.

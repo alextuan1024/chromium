@@ -109,16 +109,6 @@ namespace glic {
 
 namespace {
 
-base::TimeDelta GetWarmingDelay(GlicWarmingTrigger trigger) {
-  switch (trigger) {
-    case GlicWarmingTrigger::kStartup:
-      return base::Milliseconds(features::kGlicWarmingDelayMs.Get());
-    case GlicWarmingTrigger::kNudge:
-    case GlicWarmingTrigger::kIph:
-      return base::TimeDelta();
-  }
-}
-
 std::string_view GlicWarmingTriggerToString(GlicWarmingTrigger trigger) {
   switch (trigger) {
     case GlicWarmingTrigger::kStartup:
@@ -187,10 +177,14 @@ GlicKeyedService::GlicKeyedService(
           enabling_.get(),
           contextual_cueing_service)),
       auth_controller_(
-          base::FeatureList::IsEnabled(features::kGlicNoWebview)
+          features::IsGlicNoWebviewEnabled()
               ? nullptr
               : std::make_unique<AuthController>(profile, identity_manager)),
-
+      cold_warming_scheduler_(GlicWarmingScheduler::Options{
+          .use_performance_manager = base::FeatureList::IsEnabled(
+              features::kGlicColdWarmingUsePerformanceManager),
+          .delay = base::Milliseconds(features::kGlicWarmingDelayMs.Get()),
+      }),
       tab_data_observer_(std::make_unique<GlicTabDataObserver>(profile)),
       tab_favicon_observer_(std::make_unique<GlicTabFaviconObserver>(profile)) {
   CHECK(GlicEnabling::IsProfileEligible(Profile::FromBrowserContext(profile)));
@@ -274,6 +268,7 @@ GlicKeyedService* GlicKeyedService::Get(content::BrowserContext* context) {
 }
 
 void GlicKeyedService::Shutdown() {
+  cold_warming_scheduler_.Cancel();
   if (experimental_triggering_transport_handler_factory_) {
     browser_actuator::BrowserActuatorService* actuator_service =
         browser_actuator::BrowserActuatorServiceFactory::GetForProfile(
@@ -480,23 +475,15 @@ void GlicKeyedService::AddPreloadCallback(base::OnceCallback<void()> callback) {
 }
 
 void GlicKeyedService::TryPreload(GlicWarmingTrigger trigger) {
-  base::TimeDelta delay = GetWarmingDelay(trigger);
-
-  // TODO(b/411100559): Ideally we'd use post delayed task in all cases,
-  // but this requires a refactor of tests that are currently brittle. For now,
-  // just synchronously call ShouldPreloadForProfile if there is no delay.
-  if (delay.is_zero()) {
-    ShouldPreloadForProfile(profile_, trigger,
-                            base::BindOnce(&GlicKeyedService::FinishPreload,
-                                           GetWeakPtr(), trigger));
-  } else {
-    content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-        ->PostDelayedTask(
-            FROM_HERE,
-            base::BindOnce(&GlicKeyedService::TryPreloadAfterDelay,
-                           GetWeakPtr(), trigger),
-            delay);
+  if (trigger == GlicWarmingTrigger::kStartup) {
+    cold_warming_scheduler_.Schedule(base::BindOnce(
+        &GlicKeyedService::TryPreloadAfterDelay, GetWeakPtr(), trigger));
+    return;
   }
+
+  ShouldPreloadForProfile(
+      profile_, trigger,
+      base::BindOnce(&GlicKeyedService::FinishPreload, GetWeakPtr(), trigger));
 }
 
 void GlicKeyedService::TryPreloadAfterDelay(GlicWarmingTrigger trigger) {
@@ -603,5 +590,13 @@ void GlicKeyedService::OnBrowserWindowClosed(BrowserWindowInterface* browser) {
   window_close_subscriptions_.erase(browser);
 }
 #endif
+
+void GlicKeyedService::ShowExperimentalOptInDialogForTesting(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return;
+  }
+  opt_in_controller().ShowDialog(web_contents, base::DoNothing());
+}
 
 }  // namespace glic

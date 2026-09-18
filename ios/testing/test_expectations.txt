@@ -55,7 +55,7 @@ crbug.com/523267238 SmokeTestCase/testFlakyPassingMethod [ Pass Failure ]
 crbug.com/523267238 SmokeTestCase/testFlakyCrashPassingMethod [ Pass Crash ]
 
 # Gardening surpression 2026-07-09
-crbug.com/533057223 [ iPad Simulator ] SigninCoordinatorTestCase/testSyncOnWhenPassphraseIntroducedAfterSignIn [ Pass Failure ]
+crbug.com/533057223 [ iPad ] SigninCoordinatorTestCase/testSyncOnWhenPassphraseIntroducedAfterSignIn [ Pass Failure ]
 crbug.com/533075931 [ iPad Simulator ] GeminiCopresenceTestCase/testConversationPersistenceOnSignOut [ Pass Failure ]
 
 # Gardening suppression 2026-07-24
@@ -121,3 +121,29 @@ crbug.com/557277880 [ iPad Simulator ] FeatureEngagementTestCase/testRequestDesk
 crbug.com/557278187 [ iPad Simulator ] TabStripGroupTestCase/testDragLastTabOutOfGroupCancel [ Pass Failure ]
 crbug.com/557278123 [ iPhone Simulator ] PinnedTabsDragDropTestCase/testDragRegularTabInPinnedView [ Pass Failure ]
 crbug.com/557276970 [ iPhone Simulator ] PinnedTabsGenericConsistencyTestCase/testCloseAllPinnedThenRegularTabs [ Pass Failure ]
+
+# Gardening suppression 2026-09-08
+crbug.com/556842646 [ Simulator ] AutofillAIEGTest/testWalletFailureShowsErrorDialog [ Pass Failure ]
+
+# Gardening suppression 2026-09-09
+crbug.com/559221484 TabGroupsTestCase/testGroupCreationFromAnotherGroupInSelectionMode [ Pass Failure ]
+
+# Gardening suppression 2026-09-10
+crbug.com/521844463 OmniboxPopupWithFakeSuggestionTestCase/testScrollingDismissesKeyboard [ Pass Failure ]
+
+# Gardening suppression 2026-09-14
+crbug.com/561644215 ComposeboxTestCase/testComposeboxAIModeEmptyTextStartsCobrowse [ Pass Failure ]
+crbug.com/561644215 AssistantAIMTestCase/testAssistantDoesNotReappearAfterExplicitClose [ Pass Failure ]
+crbug.com/561644215 AssistantAIMTestCase/testAssistantPersistsOnBackground [ Pass Failure ]
+crbug.com/561662655 SafeBrowsingTestCase/testEnterpriseWarningPageRefreshedThenBypass [ Pass Failure ]
+
+# Gardening suppression 2026-09-17
+crbug.com/562885431 BookmarksFolderChooserAccountTestCase/testMoveAndUndoAccountToLocal [ Pass Failure ]
+crbug.com/562885431 BookmarksFolderChooserLocalTestCase/testMoveAndUndoLocalToAccount [ Pass Failure ]
+crbug.com/562885431 BookmarksFolderChooserAccountTestCase/testMoveAndUndoAccount [ Pass Failure ]
+
+# Stage Manager on iPad prevents backgrounding Chrome
+crbug.com/462071614 [ iPad ] InactiveTabsTestCase [ Pass Failure ]
+
+# Gardening suppression 2026-09-18
+crbug.com/563223568 GeminiContainerTestCase/testOpenAndCloseGeminiTwice [ Pass Failure ]

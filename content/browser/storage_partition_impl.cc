@@ -89,6 +89,7 @@
 #include "content/browser/push_messaging/push_messaging_context.h"
 #include "content/browser/quota/quota_context.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/indexed_db_client_state_checker_factory.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigation_state_keep_alive.h"
 #include "content/browser/service_worker/service_worker_client.h"
@@ -133,6 +134,7 @@
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/cookie_setting_override.h"
+#include "net/disk_cache/backend_experiment.h"
 #include "net/disk_cache/buildflags.h"
 #include "net/ssl/client_cert_store.h"
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
@@ -1469,7 +1471,8 @@ void StoragePartitionImpl::Initialize(
           path, browser_context_->GetSpecialStoragePolicy(),
           quota_manager_proxy,
           ChromeBlobStorageContext::GetRemoteFor(browser_context_),
-          std::move(file_system_access_context), GetIOThreadTaskRunner({}));
+          std::move(file_system_access_context), GetIOThreadTaskRunner({}),
+          IndexedDBClientStateCheckerFactory::GetClientStateCheckerCallback());
 
   cache_storage_control_wrapper_ = std::make_unique<CacheStorageControlWrapper>(
       GetIOThreadTaskRunner({}), path,
@@ -1586,7 +1589,9 @@ void StoragePartitionImpl::Initialize(
                             .Append(relative_partition_path_)
                             .AppendASCII("Code Cache");
     }
-    CHECK_GE(settings.size_in_bytes(), 0, base::NotFatalUntil::M159);
+    // TODO(crbug.com/562462615): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_GE(settings.size_in_bytes(), 0);
     GetGeneratedCodeCacheContext()->Initialize(code_cache_path,
                                                settings.size_in_bytes());
   }
@@ -3380,12 +3385,9 @@ StoragePartitionImpl::GetStorageService() {
 void StoragePartitionImpl::BindIndexedDB(
     const storage::BucketLocator& bucket_locator,
     const storage::BucketClientInfo& client_info,
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
-  indexed_db_control_wrapper_->BindIndexedDB(
-      bucket_locator, client_info, std::move(client_state_checker_remote),
-      std::move(receiver));
+  indexed_db_control_wrapper_->BindIndexedDB(bucket_locator, client_info,
+                                             std::move(receiver));
 }
 
 void StoragePartitionImpl::BindLockManager(
@@ -3527,6 +3529,14 @@ void StoragePartitionImpl::InitNetworkContext() {
   context_params->cors_exempt_header_list.push_back("Last-Event-ID");
   variations::UpdateCorsExemptHeaderForVariations(context_params.get());
   cors_exempt_header_list_ = context_params->cors_exempt_header_list;
+
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+  supports_renderer_accessible_http_cache_ =
+      !context_params->enable_encrypted_http_cache &&
+      context_params->file_paths &&
+      context_params->file_paths->http_cache_directory &&
+      disk_cache::InSqlBackendExperimentGroup();
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
   if (base::FeatureList::IsEnabled(
           network::features::kCompressionDictionaryTransport) &&
@@ -3794,6 +3804,24 @@ void StoragePartitionImpl::OnScenarioMatchChanged(
   if (matches_pattern && network_context_owner_->network_context.get()) {
     network_context_owner_->network_context->NotifyBrowserIdle();
   }
+}
+
+bool StoragePartitionImpl::SupportsRendererAccessibleHttpCache() {
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+  if (!base::FeatureList::IsEnabled(
+          net::features::kRendererAccessibleHttpCache)) {
+    return false;
+  }
+  // Ensure NetworkContext (and thus `supports_renderer_accessible_http_cache_`)
+  // is initialized.
+  if (!supports_renderer_accessible_http_cache_) {
+    GetNetworkContext();
+  }
+  CHECK(supports_renderer_accessible_http_cache_.has_value());
+  return *supports_renderer_accessible_http_cache_;
+#else
+  return false;
+#endif  // BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
 }
 
 StoragePartitionImpl::URLLoaderNetworkContext::URLLoaderNetworkContext(

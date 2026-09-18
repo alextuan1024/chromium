@@ -14,15 +14,22 @@ export function getHtml(this: TodoItemElement) {
 ${this.variant === TodoItemVariant.TAB ?
       html`
       <div class="todo-content tab-todo-content">
-        ${
-          this.groupType !== AutoTodoGroup.kReadingList ? html`
-          <cr-icon-button id="check-circle"
+        ${this.status === AutoTodoStatus.kDismissed ? html`
+          <cr-button class="tonal-button mark-active-button"
+              id="markActiveButton"
               ?disabled="${this.disable_state_mgmt}"
-              iron-icon="cr:check-circle"
-              @click="${this.onCheckCircleClick_}">
-          </cr-icon-button>
-        ` :
-                                                          ''}
+              @click="${this.onMarkActiveClick_}">
+            Mark active
+          </cr-button>
+        ` : html`
+          ${this.groupType !== AutoTodoGroup.kReadingList ? html`
+            <cr-icon-button id="check-circle"
+                ?disabled="${this.disable_state_mgmt}"
+                iron-icon="cr:check-circle"
+                @click="${this.onCheckCircleClick_}">
+            </cr-icon-button>
+          ` : ''}
+        `}
         <div class="todo-info">
           <h3 title="${this.heading}">${this.heading}</h3>
           <p class="description">${this.description}</p>
@@ -57,16 +64,18 @@ ${this.variant === TodoItemVariant.TAB ?
         </button>
         ${
           this.groupType !== AutoTodoGroup.kReadingList &&
-                  this.status !== AutoTodoStatus.kCompleted ?
+          this.status === AutoTodoStatus.kActive ?
               html`
         <button class="dropdown-item" @click="${this.onSaveClick_}">
           Add to Reading List
         </button>
         ` :
               ''}
+        ${this.status !== AutoTodoStatus.kDismissed ? html`
         <button class="dropdown-item" @click="${this.onDismissClick_}">
           Dismiss Todo
         </button>
+        ` : ''}
       </cr-action-menu>
     ` :
       html`
@@ -74,11 +83,20 @@ ${this.variant === TodoItemVariant.TAB ?
         ?expanded="${this.expanded_}"
         @expanded-changed="${this.onExpandedChanged_}">
       <div class="todo-content">
-        <cr-icon-button id="check-circle"
-            ?disabled="${this.disable_state_mgmt}"
-            iron-icon="cr:check-circle"
-            @click="${this.onCheckCircleClick_}">
-        </cr-icon-button>
+        ${this.status === AutoTodoStatus.kDismissed ? html`
+          <cr-button class="tonal-button mark-active-button"
+              id="markActiveButton"
+              ?disabled="${this.disable_state_mgmt}"
+              @click="${this.onMarkActiveClick_}">
+            Mark active
+          </cr-button>
+        ` : html`
+          <cr-icon-button id="check-circle"
+              ?disabled="${this.disable_state_mgmt}"
+              iron-icon="cr:check-circle"
+              @click="${this.onCheckCircleClick_}">
+          </cr-icon-button>
+        `}
         <div class="todo-info">
           <h3>${this.heading}</h3>
           <p class="description">${this.description}</p>
@@ -121,11 +139,13 @@ ${this.variant === TodoItemVariant.TAB ?
             </div>
           </div>
         </div>
+        ${this.status !== AutoTodoStatus.kDismissed ? html`
         <cr-button class="dismiss-button"
             ?disabled="${this.disable_state_mgmt}"
             @click="${this.onDismissClick_}">
           Dismiss Todo
         </cr-button>
+        ` : ''}
       </div>
     ` :
                            ''}

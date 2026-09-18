@@ -15,6 +15,7 @@
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/process/process.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_browser_window_handler.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_metrics_service.h"
@@ -57,27 +58,32 @@ void RebootDevice() {
 
 // Sends a SIGFPE signal to plugin subprocesses that matches `child_ids`
 // to trigger a dump.
-void DumpPluginProcess(const std::set<int>& child_ids) {
+void DumpPluginProcess(const std::set<content::ChildProcessId>& child_ids) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   bool dump_requested = false;
 
-  content::BrowserChildProcessHostIterator iter(
-      content::PROCESS_TYPE_PPAPI_PLUGIN_DEPRECATED);
-  while (!iter.Done()) {
+  for (content::BrowserChildProcessHostIterator iter(
+           content::PROCESS_TYPE_PPAPI_PLUGIN_DEPRECATED);
+       !iter.Done(); ++iter) {
     const content::ChildProcessData& data = iter.GetData();
-    if (child_ids.count(data.id) == 1) {
+    if (child_ids.contains(data.GetChildProcessId())) {
+      const base::Process& process = iter.GetProcess();
+      if (!process.IsValid()) {
+        LOG(WARNING) << "Plugin process is not valid, skipping dump for: "
+                     << data.name;
+        continue;
+      }
       // Send a signal to dump the plugin process.
-      if (kill(data.GetProcess().Handle(), SIGFPE) == 0) {
+      if (kill(process.Handle(), SIGFPE) == 0) {
         dump_requested = true;
       } else {
         PLOG(WARNING) << "Failed to send SIGFPE to plugin process"
-                      << ", pid=" << data.GetProcess().Pid()
+                      << ", pid=" << process.Pid()
                       << ", type=" << data.process_type
                       << ", name=" << data.name;
       }
     }
-    ++iter;
   }
 
   // Wait a bit to let dump finish (if requested) before rebooting the device.
@@ -153,7 +159,8 @@ class KioskBrowserSession::PluginHandlerDelegateImpl
     return false;
   }
 
-  void OnPluginHung(const std::set<int>& hung_plugins) override {
+  void OnPluginHung(
+      const std::set<content::ChildProcessId>& hung_plugins) override {
     if (owner_->is_shutting_down()) {
       return;
     }

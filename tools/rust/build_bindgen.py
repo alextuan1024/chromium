@@ -21,7 +21,12 @@ from build_rust import (
     RustTargetTriple,
     RUST_HOST_LLVM_INSTALL_DIR,
 )
-from update_rust import RUST_TOOLCHAIN_OUT_DIR, THIRD_PARTY_DIR
+
+from update_rust import (
+    RUST_TOOLCHAIN_OUT_DIR,
+    THIRD_PARTY_DIR,
+    BINDGEN_REVISION,
+)
 
 # Get variables and helpers from Clang update script
 sys.path.append(
@@ -39,9 +44,7 @@ from build import (
 )
 from update import RmTree
 
-# The git hash to use.  See https://github.com/rust-lang/rust-bindgen/tags.
-# The current hash below corresponds to 0.72.1
-BINDGEN_GIT_VERSION = 'd874de8d646d9b8a3e7ba2db2bcd52f2fba8f1f5'
+BINDGEN_GIT_VERSION = BINDGEN_REVISION
 BINDGEN_GIT_REPO = (
     'https://chromium.googlesource.com/external/'
     + 'github.com/rust-lang/rust-bindgen'
@@ -62,15 +65,10 @@ NCURSESW_CIPD_LINUX_AMD_VERSION = '6.0.chromium.1'
 
 EXE = '.exe' if sys.platform == 'win32' else ''
 
-# TODO(crbug.com/440975178) Not all tests pass.
+# TODO(crbug.com/558838938) Not all tests pass.
 EXCLUDED_TESTS = [
-    'emit_depfile',
-    'header_allowlist_file_hpp',
-    'header_blocklist_file_hpp',
-    'header_constified_enum_module_overflow_hpp',
-    'header_issue_544_stylo_creduce_2_hpp',
-    'header_nsbasehashtable_hpp',
-    'header_typedef_pointer_overlap_h',
+    'header_issue_753_h',
+    'header_macro_fallback_include_builtin_h',
 ]
 
 

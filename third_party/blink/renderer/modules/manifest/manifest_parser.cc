@@ -90,7 +90,12 @@ bool IsValidMimeType(const String& mime_type) {
   if (mime_type.starts_with('.')) {
     return true;
   }
-  return net::ParseMimeTypeWithoutParameter(mime_type.Utf8(), nullptr, nullptr);
+  std::string top_level_mime_type;
+  std::string subtype;
+  return net::ParseMimeTypeWithoutParameter(mime_type.Utf8(),
+                                            &top_level_mime_type, &subtype) &&
+         ((top_level_mime_type == "*" && subtype == "*") ||
+          net::IsValidTopLevelMimeType(top_level_mime_type));
 }
 
 bool VerifyFiles(const Vector<mojom::blink::ManifestFileFilterPtr>& files) {
@@ -484,21 +489,18 @@ bool ManifestParser::Parse() {
     UseCounter::Count(execution_context_,
                       WebFeature::kWebAppManifestPrefer_Related_Applications);
   }
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    manifest_->migrate_from = ParseMigrateFrom(root_object.get());
-    manifest_->migrate_to = ParseMigrateTo(root_object.get());
-    if (!manifest_->migrate_from.empty()) {
-      UseCounter::Count(execution_context_,
-                        WebFeature::kWebAppManifestMigrateFrom);
-    }
-    if (manifest_->migrate_to) {
-      UseCounter::Count(execution_context_,
-                        WebFeature::kWebAppManifestMigrateTo);
-    }
-    if (!manifest_->migrate_from.empty() || manifest_->migrate_to) {
-      UseCounter::CountWebDXFeature(execution_context_,
-                                    WebDXFeature::kAppMigration);
-    }
+  manifest_->migrate_from = ParseMigrateFrom(root_object.get());
+  manifest_->migrate_to = ParseMigrateTo(root_object.get());
+  if (!manifest_->migrate_from.empty()) {
+    UseCounter::Count(execution_context_,
+                      WebFeature::kWebAppManifestMigrateFrom);
+  }
+  if (manifest_->migrate_to) {
+    UseCounter::Count(execution_context_, WebFeature::kWebAppManifestMigrateTo);
+  }
+  if (!manifest_->migrate_from.empty() || manifest_->migrate_to) {
+    UseCounter::CountWebDXFeature(execution_context_,
+                                  WebDXFeature::kAppMigration);
   }
 
   manifest_->theme_color = ParseThemeColor(root_object.get());
@@ -1805,9 +1807,10 @@ bool ManifestParser::ParseFileHandlerAcceptExtension(const JSONValue* extension,
     return false;
   }
 
-  if (!output->starts_with('.')) {
+  if (!output->starts_with('.') || output->length() <= 1) {
     AddErrorInfo(
-        "property 'accept' file extension ignored, must start with a '.'.");
+        "property 'accept' file extension ignored, must start with a '.' and "
+        "contain at least one extension character.");
     return false;
   }
 

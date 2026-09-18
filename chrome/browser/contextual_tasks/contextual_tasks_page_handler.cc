@@ -469,10 +469,14 @@ void ContextualTasksPageHandler::OpenOverflowMenuHelpUi() {
       WindowOpenDisposition::NEW_FOREGROUND_TAB, browser);
 }
 
-void ContextualTasksPageHandler::OpenUrl(const GURL& url,
-                                         WindowOpenDisposition disposition) {
-  OpenUrlWithDisposition(web_ui_controller_->GetProfile(), url, disposition,
-                         web_ui_controller_->GetBrowser());
+void ContextualTasksPageHandler::OpenAskGHelpUi() {
+  BrowserWindowInterface* browser = web_ui_controller_->GetBrowser();
+  if (!browser) {
+    return;
+  }
+  OpenUrlWithDisposition(web_ui_controller_->GetProfile(),
+                         GURL(contextual_tasks::GetContextualTasksTabHelpUrl()),
+                         WindowOpenDisposition::NEW_FOREGROUND_TAB, browser);
 }
 
 void ContextualTasksPageHandler::MoveTaskUiToNewTab() {
@@ -622,15 +626,6 @@ void ContextualTasksPageHandler::OnboardingTooltipDismissed() {
   prefs->SetInteger(
       contextual_tasks::kContextualTasksSessionCountPostOnboarding, 0);
 #endif  // !BUILDFLAG(IS_ANDROID)
-}
-
-void ContextualTasksPageHandler::LensSearchTooltipDismissed() {
-  PrefService* prefs = web_ui_controller_->GetProfile()->GetPrefs();
-  int count = prefs->GetInteger(
-      contextual_tasks::kContextualTasksLensSearchTooltipDismissedCount);
-  prefs->SetInteger(
-      contextual_tasks::kContextualTasksLensSearchTooltipDismissedCount,
-      count + 1);
 }
 
 void ContextualTasksPageHandler::AskGTooltipDismissed() {

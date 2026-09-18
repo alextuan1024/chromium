@@ -197,6 +197,7 @@ class FakeContextualTasksUIInterface
   void OnSidePanelStateChanged() override {}
   void OnActiveTabContextStatusChanged() override {}
   void SyncAutoSuggestedTabContext() override {}
+  void ResetForNewThread(const base::Uuid& task_id, const GURL& url) override {}
   void OnLensOverlayStateChanged(
       bool is_showing,
       std::optional<lens::LensOverlayInvocationSource> invocation_source)
@@ -2458,10 +2459,11 @@ TEST_F(ContextualSearchboxHandlerTest, OpenAutocompleteMatch_ZeroSuggestClick) {
             &MockContextualSearchMetricsRecorder::RecordZeroSuggestClickBase));
 
     auto modifiers = searchbox::mojom::ActionModifiers::New();
-    handler().OpenAutocompleteMatch(0, GURL("https://www.google.com"),
-                                    /*are_matches_showing=*/true,
-                                    /*mouse_button=*/0, std::move(modifiers),
-                                    /*via_keyboard=*/false);
+    handler().OpenAutocompleteMatch(
+        handler().autocomplete_controller()->result().sequence_id(), 0,
+        GURL("https://www.google.com"), /*are_matches_showing=*/true,
+        /*mouse_button=*/0, std::move(modifiers),
+        /*via_keyboard=*/false);
 
     histogram_tester().ExpectBucketCount(
         "ContextualSearch.ZeroSuggestClickV2.IsContextual.NewTabPage", false,
@@ -2494,10 +2496,11 @@ TEST_F(ContextualSearchboxHandlerTest, OpenAutocompleteMatch_ZeroSuggestClick) {
             &MockContextualSearchMetricsRecorder::RecordZeroSuggestClickBase));
 
     auto modifiers = searchbox::mojom::ActionModifiers::New();
-    handler().OpenAutocompleteMatch(0, GURL("https://www.contextual.com"),
-                                    /*are_matches_showing=*/true,
-                                    /*mouse_button=*/0, std::move(modifiers),
-                                    /*via_keyboard=*/false);
+    handler().OpenAutocompleteMatch(
+        handler().autocomplete_controller()->result().sequence_id(), 0,
+        GURL("https://www.contextual.com"), /*are_matches_showing=*/true,
+        /*mouse_button=*/0, std::move(modifiers),
+        /*via_keyboard=*/false);
 
     histogram_tester().ExpectBucketCount(
         "ContextualSearch.ZeroSuggestClickV2.IsContextual.NewTabPage", true, 1);
@@ -2543,10 +2546,11 @@ TEST_F(ContextualSearchboxHandlerTest,
                                       RecordTypedSuggestNavigationBase));
 
     auto modifiers = searchbox::mojom::ActionModifiers::New();
-    handler().OpenAutocompleteMatch(0, GURL("https://www.google.com"),
-                                    /*are_matches_showing=*/true,
-                                    /*mouse_button=*/0, std::move(modifiers),
-                                    /*via_keyboard=*/false);
+    handler().OpenAutocompleteMatch(
+        handler().autocomplete_controller()->result().sequence_id(), 0,
+        GURL("https://www.google.com"), /*are_matches_showing=*/true,
+        /*mouse_button=*/0, std::move(modifiers),
+        /*via_keyboard=*/false);
 
     histogram_tester().ExpectBucketCount(
         "ContextualSearch.TypedSuggestNavigation.IsVerbatim.NewTabPage", true,
@@ -2584,7 +2588,8 @@ TEST_F(ContextualSearchboxHandlerTest,
 
     auto modifiers = searchbox::mojom::ActionModifiers::New();
     handler().OpenAutocompleteMatch(
-        1, GURL("https://www.google.com/search?q=suggestion"),
+        handler().autocomplete_controller()->result().sequence_id(), 1,
+        GURL("https://www.google.com/search?q=suggestion"),
         /*are_matches_showing=*/true, /*mouse_button=*/0, std::move(modifiers),
         /*via_keyboard=*/false);
 
@@ -4252,7 +4257,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 #if !BUILDFLAG(IS_ANDROID)
 class MockScreenshareDelegate
-    : public ContextualSearchboxHandler::ScreenshareDelegate {
+    : public ContextualSearchboxScreenshareController::Delegate {
  public:
   MOCK_METHOD(void,
               ShowScreenshotMenu,
@@ -4264,14 +4269,14 @@ class MockScreenshareDelegate
 TEST_F(ContextualSearchboxHandlerTest, ShowScreenshotMenu_ForwardsToDelegate) {
   MockScreenshareDelegate delegate;
   EXPECT_CALL(delegate, ShowScreenshotMenu(gfx::Rect(1, 2, 3, 4), testing::_));
-  handler().set_screenshare_delegate(&delegate);
+  handler().set_screenshare_delegate_for_testing(&delegate);
 
   handler().ShowScreenshotMenu(gfx::Rect(1, 2, 3, 4));
 }
 
 TEST_F(ContextualSearchboxHandlerTest,
        ShowScreenshotMenu_NoDelegate_NotifiesClosed) {
-  handler().set_screenshare_delegate(nullptr);
+  handler().set_screenshare_delegate_for_testing(nullptr);
   EXPECT_CALL(mock_searchbox_page_, OnScreenshotMenuClosed());
   handler().ShowScreenshotMenu(gfx::Rect(1, 2, 3, 4));
   mock_searchbox_page_.FlushForTesting();

@@ -66,6 +66,7 @@ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
+import org.chromium.chrome.browser.ui.extensions.ExtensionUi;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
@@ -274,7 +275,7 @@ class AutocompleteMediator
         mDropdownViewInfoListBuilder.setShareDelegateSupplier(shareDelegateSupplier);
         mDropdownViewInfoListManager =
                 new DropdownItemViewInfoListManager(
-                        mSuggestionModels, mContext, mRoundSidesSupplier, mResourceProvider);
+                        mSuggestionModels, mContext, mRoundSidesSupplier);
         mLifecycleDispatcher = lifecycleDispatcher;
         mLifecycleDispatcher.register(this);
         Activity activity = windowAndroid.getActivity().get();
@@ -470,6 +471,11 @@ class AutocompleteMediator
         mIgnoreOmniboxItemSelection = false;
     }
 
+    /** Notify the mediator that an item selection was cancelled or failed. */
+    void ignorePendingItemSelection() {
+        mIgnoreOmniboxItemSelection = true;
+    }
+
     /** Signals that native initialization has completed. */
     void onNativeInitialized() {
         mDropdownViewInfoListManager.onNativeInitialized();
@@ -636,7 +642,15 @@ class AutocompleteMediator
     }
 
     private void installAutocompleteObservers() {
-        if (mAutocomplete == null || !mActivityWindowFocused) return;
+        if (mAutocomplete == null) return;
+        // Hub and Tab Search overlays can be invoked in multi-window / split-screen before the
+        // target window acquires system focus. Allow attaching observers so suggestions can
+        // populate.
+        boolean isHubOrTabSearch =
+                mAutocompleteInput != null
+                        && PageClassificationUtils.isHubOrTabSearch(
+                                mAutocompleteInput.getPageClassification());
+        if (!mActivityWindowFocused && !isHubOrTabSearch) return;
         mAutocomplete.addOnSuggestionsReceivedListener(this);
     }
 
@@ -1693,8 +1707,8 @@ class AutocompleteMediator
     }
 
     /**
-     * Potentially adjust the given URL based on the current request type (e.g. AIM mode, Image
-     * Generation) and model picker flag, and invoke the callback with that URL.
+     * Potentially adjust the given URL based on the input state, and invoke the callback with that
+     * URL.
      *
      * @param url The base {@link GURL} to potentially be adjusted.
      * @param callback The callback to be invoked with the potentially adjusted URL.
@@ -1715,16 +1729,7 @@ class AutocompleteMediator
             return;
         }
 
-        if (OmniboxFeatures.sShowModelPicker.getValue()) {
-            bridge.getAimUrlFromInputState(url, callback);
-        } else {
-            switch (requestType) {
-                case AutocompleteRequestType.AI_MODE -> bridge.getAimUrl(url, callback);
-                case AutocompleteRequestType.IMAGE_GENERATION ->
-                        bridge.getImageGenerationUrl(url, callback);
-                default -> callback.onResult(url);
-            }
-        }
+        bridge.getAimUrlFromInputState(url, callback);
     }
 
     private void finishLoadUrlForOmniboxMatch(
@@ -1736,6 +1741,20 @@ class AutocompleteMediator
             int transition) {
         try (TraceEvent e =
                 TraceEvent.scoped("AutocompleteMediator.finishLoadUrlForOmniboxMatch")) {
+            if (suggestion.isExtensionMatch()) {
+                Tab tab = mDataProvider.getTab();
+                WebContents webContents = tab != null ? tab.getWebContents() : null;
+                if (webContents != null) {
+                    ExtensionUi.onOmniboxExtensionInputEntered(
+                            webContents, url.getSpec(), openInNewTab, openInNewWindow);
+                }
+                // Dismiss the suggestions list and clear focus immediately. This is an extension
+                // match, so an event is fired to the extension rather than having any kind of
+                // page navigation.
+                finishInteraction();
+                return;
+            }
+
             // Kick off an action to clear focus and dismiss the suggestions list.
             // This normally happens when the target site loads and focus is moved to the
             // webcontents. On Android T we occasionally observe focus events to be lost, resulting
@@ -2190,21 +2209,6 @@ class AutocompleteMediator
         }
     }
 
-    /** Returns the current AutocompleteInput instance. */
-    @Nullable AutocompleteInput getAutocompleteInputForTesting() {
-        return mAutocompleteInput;
-    }
-
-    /** Returns whether Omnibox session is active (the user is interacting with the Omnibox). */
-    boolean isOmniboxSessionActiveForTesting() {
-        return isInInputSession();
-    }
-
-    /** Returns the current Animation Driver instance. */
-    SuggestionsListAnimation getAnimationDriverForTesting() {
-        return mAnimationDriver;
-    }
-
     /**
      * @see FuseboxAttachmentChangeListener#onAttachmentListChanged()
      */
@@ -2232,18 +2236,22 @@ class AutocompleteMediator
         boolean showSuggestionsContainer = isTopResumedActivity;
 
         if (isInInputSession()) {
+            boolean isHubOrTabSearch =
+                    PageClassificationUtils.isHubOrTabSearch(
+                            mAutocompleteInput.getPageClassification());
+
             // Always set the window activity focused property to true for hub search so that the
             // dropdown container persists when search activity is dismissed.
             // TODO(crbug.com/390011136): Find a better way to create a seamless animation when
             // exiting hub search that dismisses the URL bar and suggestions list together.
-            showSuggestionsContainer |=
-                    PageClassificationUtils.isHubOrTabSearch(
-                            mAutocompleteInput.getPageClassification());
+            showSuggestionsContainer |= isHubOrTabSearch;
 
             if (isTopResumedActivity) {
                 installAutocompleteObservers();
                 onInputChanged();
-            } else {
+            } else if (!isHubOrTabSearch) {
+                // Hub and Tab Search manage their own dismissal lifecycle and retain observers
+                // and requests when inactive in multi-window mode or across window transitions.
                 dismissDeleteDialog(DialogDismissalCause.NAVIGATE_BACK_OR_TOUCH_OUTSIDE);
                 stopAutocomplete(AutocompleteStopReason.CLOBBERED);
                 removeAutocompleteObservers();
@@ -2333,5 +2341,20 @@ class AutocompleteMediator
         if (!isInInputSession()) return false;
         FuseboxAttachmentModelList attachments = mSessionState.getFuseboxAttachmentModelList();
         return attachments != null && !attachments.isEmpty();
+    }
+
+    /** Returns the current AutocompleteInput instance. */
+    @Nullable AutocompleteInput getAutocompleteInputForTesting() {
+        return mAutocompleteInput;
+    }
+
+    /** Returns whether Omnibox session is active (the user is interacting with the Omnibox). */
+    boolean isOmniboxSessionActiveForTesting() {
+        return isInInputSession();
+    }
+
+    /** Returns the current Animation Driver instance. */
+    SuggestionsListAnimation getAnimationDriverForTesting() {
+        return mAnimationDriver;
     }
 }

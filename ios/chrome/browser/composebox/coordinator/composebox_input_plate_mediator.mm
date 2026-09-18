@@ -103,6 +103,7 @@
 #import "ios/chrome/common/NSString+Chromium.h"
 #import "ios/chrome/common/ui/favicon/favicon_attributes.h"
 #import "ios/chrome/common/ui/util/image_util.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_delegate_bridge.h"
 #import "ios/web/public/web_state_observer_bridge.h"
@@ -269,6 +270,10 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
                      web::WebStateID,
                      base::UnguessableTokenHash>
       _latestTabSelectionMapping;
+
+  // Tracks WebStates that were explicitly removed by the user so they are not
+  // automatically re-attached in Co-browse mode.
+  std::set<web::WebStateID> _removedWebStateIDs;
 
   // Delegate for the query contextualizer.
   std::unique_ptr<QueryContextualizerDelegateBridge>
@@ -455,6 +460,9 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   _webStateList = nullptr;
   [self stopObservingActiveWebState];
   _items = nil;
+  _latestTabSelectionMapping.clear();
+  _removedWebStateIDs.clear();
+  _pageContextWrappers.clear();
   _URLLoader = nil;
   _consumer = nil;
   _prefService = nullptr;
@@ -732,7 +740,19 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
 // Removes an item from the collection.
 - (void)removeItem:(ComposeboxInputItem*)item {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  if (item.type == ComposeboxInputItemType::kComposeboxInputItemTypeTab) {
+    web::WebStateID webStateID = _latestTabSelectionMapping[item.identifier];
+    if (webStateID.valid()) {
+      _removedWebStateIDs.insert(webStateID);
+    }
+  }
+  [self removeItemInternal:item];
+  _latestTabSelectionMapping.erase(item.identifier);
+}
 
+// Internal helper to remove an item from the collection and session without
+// marking it as explicitly user-removed.
+- (void)removeItemInternal:(ComposeboxInputItem*)item {
   [self.debugLogger
       logEvent:[ComposeboxDebuggerEvent
                    queryAttachmentEvent:composebox_debugger::event::
@@ -788,7 +808,9 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   search_url_request_info->query_text = base::SysNSStringToUTF8(text);
   search_url_request_info->query_start_time = base::Time::Now();
   search_url_request_info->aim_entry_point =
-      omnibox::IOS_CHROME_FUSEBOX_ENTRY_POINT;
+      [self shouldInvokeAssistantForAIMQuery]
+          ? omnibox::IOS_CHROME_COBROWSE_OMNIBOX_TAB_SEARCH
+          : omnibox::IOS_CHROME_FUSEBOX_ENTRY_POINT;
   search_url_request_info->additional_params = additionalParams;
 
   __weak __typeof(self) weakSelf = self;
@@ -1117,12 +1139,16 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
 
 // Removes input items matching the deselected WebState IDs.
 - (void)removeDeselectedIDs:(std::set<web::WebStateID>)deselectedIDs {
+  for (const web::WebStateID& webStateID : deselectedIDs) {
+    if (webStateID.valid()) {
+      _removedWebStateIDs.insert(webStateID);
+    }
+  }
   NSArray<ComposeboxInputItem*>* items = [_items.containedItems copy];
   for (ComposeboxInputItem* item in items) {
     web::WebStateID webStateID = _latestTabSelectionMapping[item.identifier];
     if (webStateID.valid() && deselectedIDs.contains(webStateID)) {
       [self removeItem:item];
-      _latestTabSelectionMapping.erase(item.identifier);
     }
   }
 }
@@ -1333,11 +1359,16 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   }
 
   if (autoAdded) {
+    if (_removedWebStateIDs.contains(webState->GetUniqueIdentifier())) {
+      return;
+    }
     // Only the currently active tab should be automatically tracked. Remove
     // any previously auto-attached item so that active tab navigations cleanly
     // replace the dynamic slot without polluting the input plate with stale
     // tabs or erasing user-attached tabs.
     [self removeAutoAddedItems];
+  } else {
+    _removedWebStateIDs.erase(webState->GetUniqueIdentifier());
   }
 
   [self.metricsRecorder
@@ -1359,7 +1390,7 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   NSArray<ComposeboxInputItem*>* items = [_items.containedItems copy];
   for (ComposeboxInputItem* item in items) {
     if (item.isAutoAdded) {
-      [self removeItem:item];
+      [self removeItemInternal:item];
       _latestTabSelectionMapping.erase(item.identifier);
     }
   }
@@ -1588,6 +1619,9 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   // auto-attached, promote it to a user attachment (`isAutoAdded = NO`). This
   // ensures the tab is preserved when subsequent active tab navigations occur.
   if (!autoAdded) {
+    for (const web::WebStateID& webStateID : selectedWebStateIDs) {
+      _removedWebStateIDs.erase(webStateID);
+    }
     for (ComposeboxInputItem* item in _items.containedItems) {
       web::WebStateID webStateID = _latestTabSelectionMapping[item.identifier];
       if (webStateID.valid() && selectedWebStateIDs.contains(webStateID)) {
@@ -1676,27 +1710,32 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
       webState->GetUniqueIdentifier());
 }
 
+// Returns YES if an AIM query should invoke the Assistant directly
+// instead of routing through the standard search navigation flow.
+- (BOOL)shouldInvokeAssistantForAIMQuery {
+  return _modeHolder.mode == ComposeboxMode::kAIM &&
+         IsAimCobrowseEligible(_profile) && [self isActiveTabAttached];
+}
+
 // Loads the aim query once the URL is generated by the Contextual search
 // session.
 - (void)didCreateSearchURL:(GURL)URL {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   [self recordNavigationInitiated];
 
-  if (_modeHolder.mode == ComposeboxMode::kAIM) {
-    // If the active tab is attached to the composebox, an AIM query should
-    // invoke the Assistant directly using the query URL instead of routing
-    // through the standard search navigation flow.
-    if (IsAimCobrowseEligible(_profile) && [self isActiveTabAttached]) {
-      CobrowseContext* context = [[CobrowseContext alloc] initWithURL:URL];
-      context.attachedItems = _items.containedItems;
-      if (_cobrowseBrowserAgent) {
-        _cobrowseBrowserAgent->SetCobrowseContext(context);
-        _cobrowseBrowserAgent->SetSessionActive(true);
-      }
-      [_browserCoordinatorHandler hideComposebox];
-      [_sceneHandler showAssistant];
-      return;
+  // If the active tab is attached to the composebox, an AIM query should
+  // invoke the Assistant directly using the query URL instead of routing
+  // through the standard search navigation flow.
+  if ([self shouldInvokeAssistantForAIMQuery]) {
+    CobrowseContext* context = [[CobrowseContext alloc] initWithURL:URL];
+    context.attachedItems = _items.containedItems;
+    if (_cobrowseBrowserAgent) {
+      _cobrowseBrowserAgent->SetCobrowseContext(context);
+      _cobrowseBrowserAgent->SetSessionActive(true);
     }
+    [_browserCoordinatorHandler hideComposebox];
+    [_sceneHandler showAssistant];
+    return;
   }
 
   UrlLoadParams params = CreateOmniboxUrlLoadParams(
@@ -2196,7 +2235,8 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
                                   title:[self
                                             attachmentEventTitleForItem:item]]];
 
-  [self removeItem:item];
+  [self removeItemInternal:item];
+  _latestTabSelectionMapping.erase(identifier);
 }
 
 /// Updates the consumer items.
@@ -2546,6 +2586,10 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
   if (_entrypoint != ComposeboxEntrypoint::kCobrowse) {
     return;
   }
+  if (!navigationContext || (navigationContext->HasCommitted() &&
+                             !navigationContext->IsSameDocument())) {
+    _removedWebStateIDs.erase(webState->GetUniqueIdentifier());
+  }
   [self updateAutoAttachedCurrentTabIfNeeded];
 }
 
@@ -2557,7 +2601,14 @@ lens::ImageEncodingOptions GetDefaultImageEncodingOptions() {
 }
 
 - (void)webStateDestroyed:(web::WebState*)webState {
+  _removedWebStateIDs.erase(webState->GetUniqueIdentifier());
   [self updateActiveWebStateObserver];
+}
+
+#pragma mark - Testing
+
+- (BOOL)isWebStateIDRemoved:(web::WebStateID)webStateID {
+  return _removedWebStateIDs.contains(webStateID);
 }
 
 @end

@@ -5,10 +5,10 @@
 #include "chrome/browser/facilitated_payments/ui/android/facilitated_payments_controller.h"
 
 #include <memory>
+#include <string>
 #include <tuple>
 #include <vector>
 
-#include "base/android/jni_string.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -54,7 +54,10 @@ class MockFacilitatedPaymentsBottomSheetBridge
        std::unique_ptr<payments::facilitated::FacilitatedPaymentsAppInfoList>
            app_suggestions),
       (override));
-  MOCK_METHOD(void, ShowProgressScreen, (), (override));
+  MOCK_METHOD(void,
+              ShowProgressScreen,
+              (payments::facilitated::ProgressScreenType),
+              (override));
   MOCK_METHOD(void, ShowErrorScreen, (), (override));
   MOCK_METHOD(void, Dismiss, (), (override));
   MOCK_METHOD(void, OnDismissed, (), (override));
@@ -144,9 +147,12 @@ TEST_F(FacilitatedPaymentsControllerTest, onBankAccountSelected) {
 
 // Test controller forwards call for showing the progress screen to the view.
 TEST_F(FacilitatedPaymentsControllerTest, ShowProgressScreen) {
-  EXPECT_CALL(*mock_view_, ShowProgressScreen);
+  EXPECT_CALL(
+      *mock_view_,
+      ShowProgressScreen(payments::facilitated::ProgressScreenType::kPayment));
 
-  controller_->ShowProgressScreen();
+  controller_->ShowProgressScreen(
+      payments::facilitated::ProgressScreenType::kPayment);
 }
 
 // Test controller forwards call for showing the progress screen to the view.
@@ -358,10 +364,13 @@ TEST_F(FacilitatedPaymentsControllerTest,
 TEST_F(FacilitatedPaymentsControllerTest,
        ViewIsAbleToProcessBackToBackShowRequests) {
   EXPECT_CALL(*mock_view_, RequestShowContent);
-  EXPECT_CALL(*mock_view_, ShowProgressScreen);
+  EXPECT_CALL(
+      *mock_view_,
+      ShowProgressScreen(payments::facilitated::ProgressScreenType::kPayment));
 
   controller_->Show(bank_accounts_, base::DoNothing());
-  controller_->ShowProgressScreen();
+  controller_->ShowProgressScreen(
+      payments::facilitated::ProgressScreenType::kPayment);
 }
 
 // Test controller forwards call for closing the bottom sheet to the view.
@@ -510,10 +519,7 @@ TEST_F(FacilitatedPaymentsControllerTest, OnPaymentAppSelected) {
           testing::Field(&payments::facilitated::SelectedFopData::activity_name,
                          activity_name))));
 
-  JNIEnv* env = base::android::AttachCurrentThread();
-  controller_->OnPaymentAppSelected(
-      env, base::android::ConvertUTF8ToJavaString(env, package_name),
-      base::android::ConvertUTF8ToJavaString(env, activity_name));
+  controller_->OnPaymentAppSelected(package_name, activity_name);
 }
 
 class FacilitatedPaymentsControllerTestForAccountLinkingType

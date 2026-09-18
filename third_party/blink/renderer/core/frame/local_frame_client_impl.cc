@@ -49,6 +49,7 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/fetch_later.mojom-blink.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider_client.h"
@@ -309,9 +310,10 @@ void LocalFrameClientImpl::WillReleaseScriptContext(
   }
 }
 
-void LocalFrameClientImpl::DidChangeScrollOffset() {
+void LocalFrameClientImpl::DidChangeScrollOffset(
+    mojom::blink::ScrollType scroll_type) {
   if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangeScrollOffset();
+    web_frame_->Client()->DidChangeScrollOffset(scroll_type);
   }
 }
 
@@ -636,7 +638,8 @@ void LocalFrameClientImpl::BeginNavigation(
     bool has_rel_opener,
     mojo::PendingReceiver<mojom::blink::NavigationResumeDeferredCommitListener>
         resume_defer_commit_listener,
-    std::optional<base::UnguessableToken> script_tool_invocation_id) {
+    std::optional<base::UnguessableToken> script_tool_invocation_id,
+    const String& script_injector_host) {
   if (!web_frame_->Client()) {
     return;
   }
@@ -657,6 +660,7 @@ void LocalFrameClientImpl::BeginNavigation(
   navigation_info->is_unfenced_top_navigation = is_unfenced_top_navigation;
   navigation_info->frame_load_type = frame_load_type;
   navigation_info->is_client_redirect = is_client_redirect;
+  navigation_info->script_injector_host = script_injector_host;
 
   if (script_tool_invocation_id.has_value()) {
     navigation_info->script_tool_invocation_id =
@@ -1286,6 +1290,10 @@ void LocalFrameClientImpl::BindDevToolsAgent(
 
 bool LocalFrameClientImpl::IsDomStorageDisabled() const {
   return web_frame_->Client()->IsDomStorageDisabled();
+}
+
+bool LocalFrameClientImpl::AreDedicatedWorkersDisabled() const {
+  return web_frame_->Client()->AreDedicatedWorkersDisabled();
 }
 
 bool LocalFrameClientImpl::IsForInitialWebUI() const {

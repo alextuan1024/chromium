@@ -38,6 +38,7 @@
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
+#include "chrome/browser/pwc/privileged_web_contents.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "chrome/browser/serial/serial_chooser_context.h"
 #include "chrome/browser/serial/serial_chooser_context_factory.h"
@@ -119,7 +120,9 @@
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "components/contextual_tasks/public/features.h"
 #include "extensions/common/constants.h"
+#include "extensions/common/extension_features.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
@@ -776,10 +779,22 @@ std::optional<GURL> ChromePermissionsClient::GetCanonicalOriginOverride(
     return requesting_origin;
   }
 
+  bool requester_is_delegatable_extension = false;
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  requester_is_delegatable_extension =
+      requester.scheme() == extensions::kExtensionScheme &&
+      requester.host() == extension_misc::kContextualTasksExtensionId &&
+      base::FeatureList::IsEnabled(
+          extensions_features::kApiContextualTasksPrivate) &&
+      base::FeatureList::IsEnabled(
+          contextual_tasks::kContextualTasksRearchitecture);
+#endif
+
   // Contextual Tasks:
   // Transform chrome:// origins to the DSE origin so that permissions are
   // stored under and shared with the DSE.
-  if (embedder == requester && embedder == GetContextualTasksOrigin()) {
+  if (embedder == GetContextualTasksOrigin() &&
+      (embedder == requester || requester_is_delegatable_extension)) {
     return GURL(UIThreadSearchTermsData().GoogleBaseURLValue())
         .DeprecatedGetOriginAsURL();
   }
@@ -799,6 +814,14 @@ std::optional<GURL> ChromePermissionsClient::GetCanonicalOriginOverride(
   // should remove this at some point, but for now always use the requesting
   // origin for embedded extensions. https://crbug.com/40435309.
   if (requesting_origin.SchemeIs(extensions::kExtensionScheme)) {
+    // Exception: The Contextual Tasks component extension is allowed to
+    // delegate permissions to the embedding origin so that permissions (such as
+    // microphone for voice search) are shared with the embedder (e.g. Google
+    // Search) when both kApiContextualTasksPrivate and
+    // kContextualTasksRearchitecture are enabled.
+    if (requester_is_delegatable_extension) {
+      return std::nullopt;
+    }
     return requesting_origin;
   }
 #endif
@@ -864,6 +887,37 @@ std::optional<GURL> ChromePermissionsClient::GetEmbeddingOriginOverride(
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
 
   return std::nullopt;
+}
+
+std::optional<content::PermissionResult>
+ChromePermissionsClient::GetPermissionResultOverride(
+    content::RenderFrameHost* render_frame_host,
+    const GURL& requesting_origin,
+    ContentSettingsType permission) {
+  if (!render_frame_host || url::Origin::Create(requesting_origin) !=
+                                render_frame_host->GetLastCommittedOrigin()) {
+    return std::nullopt;
+  }
+  auto override_result = pwc::PrivilegedWebContents::GetPermissionStatus(
+      render_frame_host, permission);
+  if (!override_result) {
+    return std::nullopt;
+  }
+  // Callers such as GeolocationServiceImpl::GetPermissionLevel and permission
+  // subscription handlers CHECK that `retrieved_permission_setting` is
+  // populated when status is GRANTED (e.g. GeolocationSetting when approximate
+  // geolocation is enabled).
+  if (override_result->status == blink::mojom::PermissionStatus::GRANTED &&
+      !override_result->retrieved_permission_setting.has_value()) {
+    const content_settings::PermissionSettingsInfo* info =
+        content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+            permission);
+    if (info) {
+      override_result->retrieved_permission_setting =
+          info->delegate().ToPermissionSetting(CONTENT_SETTING_ALLOW);
+    }
+  }
+  return override_result;
 }
 
 // Considers any `new tab page` or `new tab` origins as being from the new tab

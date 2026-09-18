@@ -115,6 +115,7 @@
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
 #include "third_party/blink/renderer/core/style/shadow_list.h"
 #include "third_party/blink/renderer/core/style/style_overflow_clip_margin.h"
+#include "third_party/blink/renderer/core/style/style_position_anchor.h"
 #include "third_party/blink/renderer/platform/geometry/float_rounded_rect.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 #include "third_party/blink/renderer/platform/geometry/physical_offset.h"
@@ -288,10 +289,12 @@ LayoutUnit FileUploadControlIntrinsicInlineSize(const HTMLInputElement& input,
       WritingMode mode = button_style.GetWritingMode();
       ConstraintSpaceBuilder builder(mode, button_style.GetWritingDirection(),
                                      /* is_new_fc */ true);
-      LayoutUnit max = BlockNode(button_box)
-                           .ComputeMinMaxSizes(mode, SizeType::kIntrinsic,
-                                               builder.ToConstraintSpace())
-                           .sizes.max_size;
+      LayoutUnit max =
+          BlockNode(button_box)
+              .ComputeMinMaxSizes(mode, SizeType::kIntrinsic,
+                                  builder.ToConstraintSpace(),
+                                  MinMaxSizesInput::Unconstrained())
+              .sizes.max_size;
       default_label_width +=
           max + (kAfterButtonSpacing * box.StyleRef().EffectiveZoom());
     }
@@ -2123,7 +2126,7 @@ void LayoutBox::ImageChanged(WrappedImagePtr image,
 
   if (!BackgroundTransfersToView()) {
     for (const FillLayer* layer = &StyleRef().BackgroundLayers(); layer;
-         layer = layer->Next()) {
+         layer = layer->NextForUsedValue()) {
       if (layer->GetImage() && image == layer->GetImage()->Data()) {
         bool maybe_animated =
             layer->GetImage()->CachedImage() &&
@@ -3990,7 +3993,7 @@ void LayoutBox::InvalidatePaintForTickmarks() {
   Scrollbar* scrollbar = scrollable_area->VerticalScrollbar();
   if (!scrollbar)
     return;
-  scrollbar->SetNeedsPaintInvalidation(static_cast<ScrollbarPart>(~kThumbPart));
+  scrollbar->SetNeedsPaintInvalidation(~kThumbPart);
 }
 
 static bool HasInsetBoxShadow(const ComputedStyle& style) {
@@ -4107,14 +4110,14 @@ BackgroundPaintLocation LayoutBox::ComputeBackgroundPaintLocation(
   Color background_color = ResolveColor(GetCSSPropertyBackgroundColor());
 
   const FillLayer* layer = &(StyleRef().BackgroundLayers());
-  for (; layer; layer = layer->Next()) {
+  for (; layer; layer = layer->NextForUsedValue()) {
     if (layer->Attachment() == EFillAttachment::kLocal)
       continue;
 
     // The background color is either the only background or it's the
     // bottommost value from the background property (see final-bg-layer in
     // https://drafts.csswg.org/css-backgrounds/#the-background).
-    if (!layer->GetImage() && !layer->Next() &&
+    if (!layer->GetImage() && !layer->NextForUsedValue() &&
         !background_color.IsFullyTransparent() &&
         StyleRef().IsScrollbarGutterAuto()) {
       // Solid color layers with an effective background clip of the padding box
@@ -4373,6 +4376,24 @@ const LayoutObject* LayoutBox::AcceptableImplicitAnchor() const {
   return is_acceptable_anchor ? anchor_layout_object : nullptr;
 }
 
+const LayoutObject* LayoutBox::FindDefaultAnchor() const {
+  NOT_DESTROYED();
+  DCHECK(IsOutOfFlowPositioned());
+  const DefaultAnchorData default_anchor_data =
+      StyleRef().GetDefaultAnchorData();
+  using Type = StylePositionAnchor::Type;
+  switch (default_anchor_data.GetType()) {
+    case Type::kNone:
+      return nullptr;
+    case Type::kAuto:
+      return AcceptableImplicitAnchor();
+    case Type::kName:
+      return FindTargetAnchor(default_anchor_data.GetName());
+    case Type::kNormal:
+      NOTREACHED();
+  }
+}
+
 const GCedHeapVector<NonOverflowingScrollRange>*
 LayoutBox::NonOverflowingScrollRanges() const {
   NOT_DESTROYED();
@@ -4477,6 +4498,20 @@ bool LayoutBox::NeedsAnchorPositionScrollAdjustmentInY() const {
   });
 #endif
   return layout_results.front()->NeedsAnchorPositionScrollAdjustmentInY();
+}
+
+std::optional<PhysicalRect> LayoutBox::InsetModifiedContainingBlockRect()
+    const {
+  NOT_DESTROYED();
+  if (!IsOutOfFlowPositioned()) {
+    return std::nullopt;
+  }
+  const auto& layout_results = GetLayoutResults();
+  if (layout_results.empty()) {
+    return std::nullopt;
+  }
+  // TODO(layout-dev): Devtools support when there are multiple fragments.
+  return layout_results.front()->InsetModifiedContainingBlock();
 }
 
 WritingModeConverter LayoutBox::CreateWritingModeConverter() const {

@@ -291,8 +291,8 @@ ExtensionsBrowserClient::GetSafeBrowsingDatabaseManager() const {
   return nullptr;
 }
 
-std::optional<safe_browsing::V4ProtocolConfig>
-ExtensionsBrowserClient::GetV4ProtocolConfig() const {
+std::optional<safe_browsing::SBProtocolConfig>
+ExtensionsBrowserClient::GetSBProtocolConfig() const {
   return std::nullopt;
 }
 
@@ -414,6 +414,10 @@ ExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
 gfx::NativeWindow ExtensionsBrowserClient::GetNativeWindowForFunction(
     ExtensionFunction& function) {
   return gfx::NativeWindow();
+}
+
+bool ExtensionsBrowserClient::IsLazyKeyedServiceInstantiationEnabled() const {
+  return false;
 }
 
 }  // namespace extensions

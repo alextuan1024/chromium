@@ -746,7 +746,9 @@ class CONTENT_EXPORT WebContentsImpl
       RenderFrameHostImpl* render_frame_host) override;
   void WebAuthnAssertionRequestSucceeded(
       RenderFrameHostImpl* render_frame_host) override;
-  void OnFedCmFederatedLogin(webid::FederatedLoginResult result) override;
+  void OnFedCmFederatedLogin(
+      webid::FederatedLoginResult result,
+      const std::optional<url::Origin>& idp_origin) override;
   void BindDisplayCutoutHost(
       RenderFrameHostImpl* render_frame_host,
       mojo::PendingAssociatedReceiver<blink::mojom::DisplayCutoutHost> receiver)
@@ -928,7 +930,9 @@ class CONTENT_EXPORT WebContentsImpl
       RenderFrameHost* rfh,
       mojo::PendingAssociatedReceiver<device::mojom::ScreenOrientation>
           receiver) override;
-  bool IsTransientActivationRequiredForHtmlFullscreen() override;
+  bool IsTransientActivationRequiredForHtmlFullscreen(
+      RenderFrameHostImpl* requesting_frame,
+      bool is_xr_overlay) override;
   bool IsBackForwardCacheSupported() override;
   RenderWidgetHostImpl* CreateNewPopupWidget(
       base::SafeRef<SiteInstanceGroup> site_instance_group,
@@ -1017,6 +1021,7 @@ class CONTENT_EXPORT WebContentsImpl
                          int widget_route_id,
                          const gfx::Rect& initial_rect,
                          const gfx::Rect& initial_anchor_rect) override;
+  gfx::Rect ConstrainPopupBounds(const gfx::Rect& bounds) override;
   void CreateMediaPlayerHostForRenderFrameHost(
       RenderFrameHostImpl* frame_host,
       mojo::PendingAssociatedReceiver<media::mojom::MediaPlayerHost> receiver)
@@ -1281,6 +1286,7 @@ class CONTENT_EXPORT WebContentsImpl
       bool* proceed_to_fire_unload) override;
   void CancelModalDialogsForRenderManager() override;
   void NotifyPrimaryPageWillBeDeactivated(PageImpl& page) override;
+  void PrepareToSwapRenderFrameHosts() override;
   void NotifySwappedFromRenderManager(RenderFrameHostImpl* old_frame,
                                       RenderFrameHostImpl* new_frame) override;
   void NotifySwappedFromRenderManagerWithoutFallbackContent(
@@ -1587,10 +1593,15 @@ class CONTENT_EXPORT WebContentsImpl
                                const GURL& scope,
                                AllowServiceWorkerResult allowed);
 
+  // Returns true if a dialog that should defer navigations is open. Callbacks
+  // passed to NotifyOnJavaScriptDialogDismiss(), which can be used to resume
+  // any deferred navigations, will be posted after this becomes false.
   bool JavaScriptDialogDefersNavigations() {
     return javascript_dialog_dismiss_notifier_.get();
   }
 
+  // Adds a callback that will be posted to the UI thread when all Javascript
+  // dialogs that should defer navigations are dismissed.
   void NotifyOnJavaScriptDialogDismiss(base::OnceClosure callback);
 
   bool has_persistent_video() { return has_persistent_video_; }
@@ -2340,6 +2351,8 @@ class CONTENT_EXPORT WebContentsImpl
 
   void OnFocusSelectionBoundsChangedSubscriptionRemoved();
 
+  void UpdateVisibilityPreFocus();
+
   // Data for core operation ---------------------------------------------------
 
   // Delegate for notifying our owner about stuff. Not owned by us.
@@ -2911,6 +2924,12 @@ class CONTENT_EXPORT WebContentsImpl
 #if BUILDFLAG(IS_ANDROID)
   bool supports_forward_transition_animation_ = true;
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+  // True while any frame in this WebContents is changing RenderFrameHosts
+  // during a navigation commit, including while the RenderFrameHostManager is
+  // preparing to swap frames. Notably, this will be true while dispatching
+  // RenderFrameHostChanged() and RenderViewHostChanged() events.
+  bool is_swapping_render_frame_hosts_ = false;
 
   void SetDragSource(const DragId& drag_id,
                      const GlobalRenderFrameHostToken& source_rfh_token);

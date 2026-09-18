@@ -108,12 +108,35 @@ void GmailOtpBackendImpl::OnIncomingOneTimeTokenBackendNotification(
 
   LOG_OTT(log_sink_) << "Tickle received";
 
+  if (!notification.email_delivered_timestamp.is_null()) {
+    base::TimeDelta latency = notification.notification_received_timestamp -
+                              notification.email_delivered_timestamp;
+    if (!latency.is_negative()) {
+      base::UmaHistogramCustomTimes(kEmailSavedToTickleLatencyHistogram,
+                                    latency, base::Milliseconds(10),
+                                    kNotificationExpirationDuration, 50);
+    }
+  }
+
+  if (!notification.notification_sent_timestamp.is_null()) {
+    base::TimeDelta latency = notification.notification_received_timestamp -
+                              notification.notification_sent_timestamp;
+    if (!latency.is_negative()) {
+      base::UmaHistogramCustomTimes(kTickleTransmissionLatencyHistogram,
+                                    latency, base::Milliseconds(10),
+                                    kNotificationExpirationDuration, 50);
+    }
+  }
+
   if (base::TimeTicks::Now() - notification.notification_received_timeticks >
       kNotificationExpirationDuration) {
     LOG_OTT(log_sink_) << "Incoming tickle ignored: expired";
     if (base::FeatureList::IsEnabled(features::kGmailOtpRetrievalService)) {
       base::UmaHistogramEnumeration(kTickleArrivalHistogram,
                                     TickleArrival::kExpiredOnArrival);
+      // UKM metric cannot be recorded for `kExpiredOnArrival` because the push
+      // message was delivered outside the context of a page, so we cannot
+      // reliably establish the URL.
     }
     return;
   }
@@ -188,12 +211,11 @@ void GmailOtpBackendImpl::RetrieveGmailOtp(
   CHECK(inserted);
 
   LOG_OTT(log_sink_) << "Starting EmailOneTimeTokenFetcher for notification.";
-  // TODO(b/543374607): Consider using email_received_timestamp as the source of
-  // truth instead.
   it->second = std::make_unique<EmailOneTimeTokenFetcher>(
       url_loader_factory_, *identity_manager_,
       notification.encrypted_message_reference.value(),
-      notification.notification_received_timeticks, log_sink_);
+      notification.notification_received_timeticks,
+      notification.email_received_timestamp, log_sink_);
 
   it->second->Start(base::BindOnce(
       &GmailOtpBackendImpl::OnResponseFromGmailOtpBackend,

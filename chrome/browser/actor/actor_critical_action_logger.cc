@@ -4,7 +4,6 @@
 
 #include "chrome/browser/actor/actor_critical_action_logger.h"
 
-#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,8 +15,6 @@
 #include "base/feature_list.h"
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
-#include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/tools/attempt_form_filling_tool_request.h"
@@ -126,8 +123,7 @@ void ActorCriticalActionLogger::MaybeLogAction(
   }
 
   LogAgentSelfReportedAction(profile, task.source_info().id.value_or(""),
-                             action_type, action.GetURLForJournal(),
-                             navigation_id, task.id(),
+                             action_type, navigation_id, task.id(),
                              GetActionMetadata(action, action_type));
 }
 
@@ -135,7 +131,6 @@ void ActorCriticalActionLogger::LogAgentSelfReportedAction(
     Profile* profile,
     std::string conversation_id,
     critical_actions::ActionType action_type,
-    const GURL& url,
     int64_t navigation_id,
     TaskId actor_task_id,
     std::string metadata) {
@@ -155,7 +150,7 @@ void ActorCriticalActionLogger::LogAgentSelfReportedAction(
   }
 
   LogEntry(*service, action_type, std::move(conversation_id), actor_task_id,
-           url, std::move(metadata), navigation_id);
+           std::move(metadata), navigation_id);
 
   if (feature_engagement::Tracker* tracker =
           feature_engagement::TrackerFactory::GetForBrowserContext(profile)) {
@@ -168,22 +163,19 @@ void ActorCriticalActionLogger::LogEntry(
     critical_actions::ActionType action_type,
     std::string conversation_id,
     TaskId actor_task_id,
-    const GURL& url,
     std::string metadata,
     int64_t navigation_id) {
-  critical_actions::CriticalActionEntry entry;
-  entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  entry.timestamp = base::Time::Now();
-  entry.action_source = critical_actions::ActionSource::kActor;
-  entry.action_type = action_type;
-  entry.conversation_id = std::move(conversation_id);
-  entry.actor_task_id = actor_task_id.is_null()
-                            ? ""
-                            : base::NumberToString(actor_task_id.value());
-  entry.url = url;
-  entry.metadata = std::move(metadata);
-
-  service.AddCriticalActionWithNavigationId(entry, navigation_id);
+  service.AddCriticalActionWithNavigationId(
+      critical_actions::CriticalActionEntry::Builder()
+          .SetActionType(action_type)
+          .SetActionSource(critical_actions::ActionSource::kActor)
+          .SetConversationId(std::move(conversation_id))
+          .SetActorTaskId(actor_task_id.is_null()
+                              ? ""
+                              : base::NumberToString(actor_task_id.value()))
+          .SetMetadata(std::move(metadata))
+          .Build(),
+      navigation_id);
 }
 
 }  // namespace actor

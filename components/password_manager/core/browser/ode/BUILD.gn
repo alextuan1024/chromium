@@ -4,6 +4,8 @@
 
 source_set("ode") {
   sources = [
+    "on_device_encryption_data_type_specific_metrics_reporter.cc",
+    "on_device_encryption_data_type_specific_metrics_reporter.h",
     "on_device_encryption_metrics_reporter.cc",
     "on_device_encryption_metrics_reporter.h",
     "on_device_encryption_state_tracker.cc",
@@ -15,10 +17,22 @@ source_set("ode") {
   public_deps = [
     "//base",
     "//components/keyed_service/core",
+    "//components/prefs",
     "//components/sync/service",
   ]
 
-  deps = [ "//components/sync/base" ]
+  deps = [
+    "//components/password_manager/core/common",
+    "//components/sync/base",
+  ]
+
+  if (!is_android) {
+    sources += [
+      "passkey_on_device_encryption_state_tracker.cc",
+      "passkey_on_device_encryption_state_tracker.h",
+    ]
+    public_deps += [ "//components/webauthn/core/browser:passkey_model" ]
+  }
 }
 
 source_set("unit_tests") {
@@ -26,6 +40,7 @@ source_set("unit_tests") {
   sources = [
     "mock_on_device_encryption_state_tracker_observer.cc",
     "mock_on_device_encryption_state_tracker_observer.h",
+    "on_device_encryption_data_type_specific_metrics_reporter_unittest.cc",
     "on_device_encryption_metrics_reporter_unittest.cc",
     "on_device_encryption_state_tracker_unittest.cc",
     "password_trusted_vault_on_device_encryption_state_tracker_unittest.cc",
@@ -33,8 +48,15 @@ source_set("unit_tests") {
   deps = [
     ":ode",
     "//base/test:test_support",
+    "//components/password_manager/core/common",
+    "//components/prefs:test_support",
     "//components/sync:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]
+
+  if (!is_android) {
+    sources += [ "passkey_on_device_encryption_state_tracker_unittest.cc" ]
+    deps += [ "//components/webauthn/core/browser:test_support" ]
+  }
 }

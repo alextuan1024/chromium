@@ -20,11 +20,11 @@
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
@@ -33,6 +33,7 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -194,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(OfdsConfigPrivateApiBrowserTest,
   EXPECT_EQ(
       GURL(kExampleUrl),
       browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
-  EXPECT_EQ(ErrorUtils::FormatErrorMessage(ExtensionTabUtil::kTabNotFoundError,
+  EXPECT_EQ(ErrorUtils::FormatErrorMessage(kTabNotFoundError,
                                            base::NumberToString(tab_id)),
             error);
 }

@@ -144,6 +144,14 @@ class CORE_EXPORT GridSizingTree {
   // (the subtree's root is at index 0 in the returned tree).
   const GridLayoutTree* FinalizeSubtreeAt(wtf_size_t subtree_root) const;
 
+  void ReleaseTrackSizingData() {
+    for (auto& tree_node : tree_data_) {
+      if (tree_node.layout_data) {
+        tree_node.layout_data->ReleaseTrackSizingData();
+      }
+    }
+  }
+
   SubgriddedItemData LookupSubgriddedItemData(
       const GridItemData& grid_item) const;
 
@@ -154,6 +162,9 @@ class CORE_EXPORT GridSizingTree {
   wtf_size_t SubtreeSize(wtf_size_t index) const {
     return At(index).subtree_size;
   }
+
+  // Includes baseline alignment in descendant subgrids, not just the root.
+  bool HasBaselines() const { return tree_has_baselines_; }
 
   bool HasSubgridWithIndefiniteStandaloneAxis() const {
     return has_subgrid_with_indefinite_standalone_axis_;

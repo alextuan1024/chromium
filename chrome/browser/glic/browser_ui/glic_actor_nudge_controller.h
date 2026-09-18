@@ -17,7 +17,7 @@ class BrowserWindowInterface;
 namespace glic {
 
 class GlicSplitButtonController;
-class GlicSplitButtonDelegate;
+class GlicSplitButtonViewDelegate;
 
 // Controller that handles Glic Actor notification/nudge handling.
 // TODO(crbug.com/431015299): Move GlicNudgeController logic into this
@@ -38,8 +38,8 @@ class GlicActorNudgeController {
 
   // TODO(crbug.com/511309088): Remove these and have the split button
   // controller keep the delegates.
-  void SetHorizontalTabsDelegate(GlicSplitButtonDelegate* delegate);
-  void SetVerticalTabsDelegate(GlicSplitButtonDelegate* delegate);
+  void SetHorizontalTabsDelegate(GlicSplitButtonViewDelegate* delegate);
+  void SetVerticalTabsDelegate(GlicSplitButtonViewDelegate* delegate);
 
   base::WeakPtr<GlicActorNudgeController> GetWeakPtr();
 
@@ -56,7 +56,7 @@ class GlicActorNudgeController {
   virtual void ShowGlicActorTaskIcon();
   virtual void HideGlicActorTaskIcon();
   virtual void SetGlicActorNudgeLabel(const std::u16string& nudge_label);
-  virtual void TriggerGlicActorNudge(const std::u16string& nudge_text);
+  virtual void TriggerGlicActorNudge(const std::u16string& nudge_label);
   virtual void ShowBubble();
   virtual void CloseBubble();
   virtual bool IsShowingNudge();
@@ -68,10 +68,11 @@ class GlicActorNudgeController {
 
   // Only update the nudge label if it's already showing, otherwise retrigger
   // the nudge. Shows the task list bubble after if show_bubble is true.
-  void UpdateNudgeLabelOrRetrigger(std::u16string nudge_label_text,
+  void UpdateNudgeLabelOrRetrigger(std::u16string nudge_label,
                                    bool show_bubble);
 
-  void CallOnBoth(base::RepeatingCallback<void(GlicSplitButtonDelegate&)> fn);
+  void CallOnBoth(
+      base::RepeatingCallback<void(GlicSplitButtonViewDelegate&)> fn);
 
   raw_ptr<Profile> profile_;
   raw_ptr<BrowserWindowInterface> browser_;

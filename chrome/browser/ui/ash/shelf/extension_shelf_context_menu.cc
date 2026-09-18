@@ -30,6 +30,7 @@
 #include "extensions/browser/management_policy.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -166,11 +167,11 @@ bool ExtensionShelfContextMenu::IsCommandIdEnabled(int command_id) const {
       return UninstallAllowed(item().id.app_id, profile);
     case ash::APP_CONTEXT_MENU_NEW_WINDOW:
       // "Normal" windows are not allowed when incognito is enforced.
-      return IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
+      return IncognitoModePrefs::GetAvailability(profile) !=
              policy::IncognitoModeAvailability::kForced;
     case ash::APP_CONTEXT_MENU_NEW_INCOGNITO_WINDOW:
       // Incognito windows are not allowed when incognito is disabled.
-      return IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
+      return IncognitoModePrefs::GetAvailability(profile) !=
              policy::IncognitoModeAvailability::kDisabled;
     default:
       if (command_id < ash::COMMAND_ID_COUNT) {

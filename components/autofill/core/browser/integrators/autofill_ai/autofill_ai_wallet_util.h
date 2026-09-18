@@ -7,14 +7,16 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/memory/weak_ptr.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/consent_auditor/consent_auditor.h"
 
 namespace autofill {
 
-class EntityInstance;
 class EntityDataManager;
 
 // Reacts to the response of a Wallet upsert request by writing to EDM and
@@ -39,6 +41,10 @@ void HandleWalletUpsertResponse(
 // Returns the URL of a Wallet `entity`'s management page on wallet.google.com.
 std::string GetWalletManagementURL(const EntityInstance& entity);
 
+// Returns true if `url_string` is a valid, secure Google Wallet management URL
+// (i.e. valid GURL, HTTPS scheme, Google domain, and standard port).
+bool IsValidWalletManagementUrl(std::string_view url_string);
+
 // Logs a `sync_pb::UserConsentTypes::WalletPrivatePassConsent` with
 // `accepted_consent_string_id` and `accept_button_string_id` as its consent
 // details to the `consent_auditor` . This is required when saving a new Wallet
@@ -49,6 +55,13 @@ consent_auditor::ConsentAuditor::SessionId RecordWalletPrivatePassConsent(
     int accept_button_string_id,
     consent_auditor::ConsentAuditor& consent_auditor,
     signin::IdentityManager& identity_manager);
+
+// Returns true if an entity with `type` and `record_type` is eligible for a
+// Google Wallet notice (i.e. it is a public pass stored in Google Wallet and
+// its type is not read-only).
+bool IsEligibleForWalletNotice(const EntityType& type,
+                               const EntityInstance::RecordType& record_type);
+
 }  // namespace autofill
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_INTEGRATORS_AUTOFILL_AI_AUTOFILL_AI_WALLET_UTIL_H_

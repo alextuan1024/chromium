@@ -95,7 +95,6 @@ export class AppElement extends AppElementBase implements SpeechListener,
       lineFocusStyle_: {type: Object},
       lineFocusEnabled_: {type: Boolean},
       lineFocusMovement_: {type: Number},
-      isDocsLoadMoreButtonVisible_: {type: Boolean},
       hasValidSelection_: {type: Boolean},
       isReadAnythingPinned_: {type: Boolean},
     };
@@ -108,7 +107,6 @@ export class AppElement extends AppElementBase implements SpeechListener,
   protected accessor lineFocusEnabled_: boolean = false;
   protected accessor lineFocusMovement_: LineFocusMovement|null = null;
 
-  protected accessor isDocsLoadMoreButtonVisible_: boolean = false;
   protected accessor hasValidSelection_: boolean = false;
   protected accessor isReadAnythingPinned_: boolean = false;
   protected isReadAnythingImprovedUiEnabled_: boolean = false;
@@ -160,6 +158,10 @@ export class AppElement extends AppElementBase implements SpeechListener,
       SelectionController.getInstance();
   private lineFocusController_: LineFocusController =
       LineFocusController.getInstance();
+  // Animation frame handle for scheduling text block extraction after DOM
+  // layout. Tracked so rapid consecutive calls to updateContent can cancel
+  // pending frames to avoid desynchronizing text node mapping with the AXTree.
+  private renderedTextBlocksAnimationFrameHandle_: number|null = null;
   protected accessor settingsPrefs_: SettingsPrefs = DEFAULT_SETTINGS;
 
   protected accessor isSpeechActive_: boolean = false;
@@ -303,6 +305,7 @@ export class AppElement extends AppElementBase implements SpeechListener,
     // it is called in tests, and the speech extension timeout can cause
     // flakiness.
     this.voiceLanguageController_.stopWaitingForSpeechExtension();
+    this.cancelRenderedTextBlocksAnimationFrame_();
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -365,14 +368,13 @@ export class AppElement extends AppElementBase implements SpeechListener,
   }
 
   showLoading() {
+    this.cancelRenderedTextBlocksAnimationFrame_();
     this.contentController_.setState(ContentType.LOADING);
     this.speechController_.resetForNewContent();
   }
 
   updateContent() {
     this.willDrawAgainSoon_ = this.contentBrowserProxy_.requiresDistillation();
-    this.isDocsLoadMoreButtonVisible_ =
-        this.contentBrowserProxy_.isDocsLoadMoreButtonVisible();
     this.hasValidSelection_ = this.contentBrowserProxy_.hasValidSelection();
 
     // Remove all children from container. Use `replaceChildren` rather than
@@ -386,7 +388,9 @@ export class AppElement extends AppElementBase implements SpeechListener,
     // Wait for the next animation frame to ensure the DOM is visible and then
     // send rendered text blocks to the controller so that it can map the
     // rendered text to the AXTree.
-    requestAnimationFrame(() => {
+    this.cancelRenderedTextBlocksAnimationFrame_();
+    this.renderedTextBlocksAnimationFrameHandle_ = requestAnimationFrame(() => {
+      this.renderedTextBlocksAnimationFrameHandle_ = null;
       this.onRenderedTextBlocksAvailable_();
     });
 
@@ -435,6 +439,13 @@ export class AppElement extends AppElementBase implements SpeechListener,
         this.getSelection(), this.$.container);
   }
 
+  private cancelRenderedTextBlocksAnimationFrame_() {
+    if (this.renderedTextBlocksAnimationFrameHandle_ !== null) {
+      cancelAnimationFrame(this.renderedTextBlocksAnimationFrameHandle_);
+      this.renderedTextBlocksAnimationFrameHandle_ = null;
+    }
+  }
+
   private onRenderedTextBlocksAvailable_() {
     this.contentController_.onRenderedTextBlocksAvailable(this.$.container);
   }
@@ -444,10 +455,6 @@ export class AppElement extends AppElementBase implements SpeechListener,
     this.logger_.setHidden(
         presentationState ===
         this.visualBrowserProxy_.getInHiddenPresentationState());
-  }
-
-  protected onDocsLoadMoreButtonClick_() {
-    this.contentBrowserProxy_.onScrolledToBottom();
   }
 
   protected onLanguageMenuOpen_() {

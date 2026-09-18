@@ -460,6 +460,7 @@ if (enable_pdf) {
       "//ui/gfx/range",
       "//v8",
     ]
+    check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
   }
 
   source_set("pdf_test_utils") {
@@ -679,6 +680,7 @@ if (enable_pdf) {
   # depend on it.
   group("features") {
   }
+
   group("pdf") {
   }
 }

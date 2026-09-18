@@ -68,6 +68,7 @@ void ApplyChromeSettingsRefresh2026ColorOverrides(ui::ColorMixer& mixer) {
   mixer[kColorSettingsNavMenuItemForegroundSelected] = {
       ui::kColorSysOnTonalContainer};
   mixer[kColorSettingsNavMenuItemIcon] = {ui::kColorSysOnSurfaceSubtle};
+  mixer[kColorToolbarSearchFieldTextColor] = {ui::kColorSysOnSurfaceSubtle};
 }
 
 }  // namespace
@@ -194,18 +195,26 @@ void AddMaterialChromeColorMixer(ui::ColorProvider* provider,
       ui::kColorSysTonalContainer};
 
   // App Menu colors.
-  mixer[kColorAppMenuYourChromeBackground] = {ui::kColorSysTonalContainer};
+  mixer[kColorAppMenuChipBackground] = {ui::kColorSysTonalContainer};
+  mixer[kColorAppMenuChipBackgroundHovered] = {ui::GetResultingPaintColor(
+      ui::kColorSysStateHoverOnSubtle, kColorAppMenuChipBackground)};
+  mixer[kColorAppMenuChipForeground] = {ui::kColorSysOnTonalContainer};
+  mixer[kColorAppMenuYourChromeBackground] = {ui::kColorSysBaseContainer};
   mixer[kColorAppMenuToolsAndActionsBackground] = {
       ui::kColorSysNeutralContainer};
   mixer[kColorAppMenuBlockButtonBackground] = {ui::kColorSysSurface};
   mixer[kColorAppMenuBlockButtonBackgroundHovered] = {
-      ui::kColorSysTonalContainer};
+      ui::kColorSysStateHoverOnSubtle};
   mixer[kColorAppMenuBlockButtonBorder] = {ui::kColorSysInversePrimary};
   mixer[kColorAppMenuBlockButtonForeground] = {ui::kColorSysPrimary};
   mixer[kColorAppMenuFooterButtonForeground] = {ui::kColorSysPrimary};
   mixer[kColorAppMenuFooterButtonForegroundHovered] = {ui::kColorSysPrimary};
   mixer[kColorAppMenuFooterButtonBackgroundHovered] = {
       ui::kColorSysStateHoverOnSubtle};
+  mixer[kColorAppMenuZoomButtonBackground] = {
+      ui::kColorSysBaseContainerElevated};
+  mixer[kColorAppMenuZoomButtonHover] = {ui::kColorSysStateHoverOnSubtle};
+  mixer[kColorAppMenuZoomSeparator] = {ui::kColorSysNeutralOutline};
 
   // Signin bubble colors. Main background color uses the same color as the
   // profle menu background.

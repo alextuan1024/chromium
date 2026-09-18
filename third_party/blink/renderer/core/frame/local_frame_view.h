@@ -39,10 +39,10 @@
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-blink.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/ad_tracker/overlay_interstitial_ad_detector.h"
-#include "third_party/blink/renderer/core/ad_tracker/sticky_ad_detector.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/document_lifecycle.h"
 #include "third_party/blink/renderer/core/dom/document_resize_options.h"
@@ -336,7 +336,7 @@ class CORE_EXPORT LocalFrameView final
   // Scale used to convert incoming input events.
   float InputEventsScaleFactor() const;
 
-  void DidChangeScrollOffset();
+  void DidChangeScrollOffset(mojom::blink::ScrollType);
 
   void ViewportSizeChanged();
   void InvalidateLayoutForViewportConstrainedObjects();
@@ -485,6 +485,7 @@ class CORE_EXPORT LocalFrameView final
   void DisableAutoSizeMode();
   bool IsAutoSizeModeEnabled() const { return auto_size_info_; }
   bool IsBeingAutoSized() const { return is_being_auto_sized_; }
+  void SetNeedsAutoSizeForOverflow() { needs_autosize_for_overflow_ = true; }
 
   void ForceLayoutForPagination(float maximum_shrink_factor);
 
@@ -1076,8 +1077,8 @@ class CORE_EXPORT LocalFrameView final
 
   void SetLayoutSizeInternal(const gfx::Size&, DocumentResizeOptions = {});
 
-  void CollectDraggableRegions(LayoutObject&,
-                               Vector<DraggableRegionValue>&) const;
+  static bool CollectDraggableRegions(LayoutObject&,
+                                      Vector<DraggableRegionValue>&);
 
   void ForAllChildViewsAndPlugins(
       base::FunctionRef<void(EmbeddedContentView&)>);
@@ -1144,9 +1145,6 @@ class CORE_EXPORT LocalFrameView final
   // Return the interstitial-ad detector for this frame, creating it if
   // necessary.
   OverlayInterstitialAdDetector& EnsureOverlayInterstitialAdDetector();
-
-  // Return the sticky-ad detector for this frame, creating it if necessary.
-  StickyAdDetector& EnsureStickyAdDetector();
 
   // Returns true if we should paint the color adjust background from the
   // StyleEngine instead of the base background color.
@@ -1217,6 +1215,8 @@ class CORE_EXPORT LocalFrameView final
   bool layout_size_fixed_to_frame_size_;
 
   bool is_being_auto_sized_ = false;
+  // Preserve overflow invalidation across style updates that do not lay out.
+  bool needs_autosize_for_overflow_ = false;
 
   bool needs_update_geometries_;
 
@@ -1350,8 +1350,6 @@ class CORE_EXPORT LocalFrameView final
 
   std::unique_ptr<OverlayInterstitialAdDetector>
       overlay_interstitial_ad_detector_;
-
-  std::unique_ptr<StickyAdDetector> sticky_ad_detector_;
 
   // These tasks will be run at the beginning of the next lifecycle.
   Vector<base::OnceClosure> start_of_lifecycle_tasks_;

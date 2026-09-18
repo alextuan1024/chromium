@@ -59,6 +59,7 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
         OnPageActionClickCallback callback) = 0;
     virtual void OnPageActionChipShowingChanged(
         ::toolbar_ui_api::mojom::PageActionId action_id,
+        bool is_showing,
         OnPageActionChipShowingChangedCallback callback) = 0;
     virtual void OnPageInitialized() = 0;
     virtual void InvokePinnedToolbarAction(
@@ -79,7 +80,8 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
         bool is_middle_click) = 0;
     virtual void OnLhsChipClicked(
         toolbar_ui_api::mojom::LhsChipIdentifier identifier,
-        bool is_mouse_interaction) = 0;
+        bool is_mouse_interaction,
+        uint32_t state_token) = 0;
     virtual void OnLhsChipPointerEntered(
         toolbar_ui_api::mojom::LhsChipIdentifier identifier) = 0;
     virtual void OnLhsChipPointerExited(
@@ -96,12 +98,16 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
     virtual void OnToolbarDropFile(const gfx::PointF& drop_position) = 0;
     virtual base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
     OnOmniboxAction(toolbar_ui_api::mojom::OmniboxActionPtr action) = 0;
-    virtual void ShowAvatarMenu() = 0;
+    virtual void ShowAvatarMenu(bool is_pointer_interaction) = 0;
+    virtual void OnAvatarButtonMousePressed() = 0;
     virtual void SetAvatarButtonHovered(bool hovered) = 0;
     virtual void SetAvatarButtonFocused(bool focused) = 0;
     virtual void SetAvatarButtonIPHPromoShowing(bool showing) = 0;
     virtual void OnAppMenuFocusChanged(bool focused) = 0;
-    virtual void ExecuteExtensionAction(const std::string& extension_id) = 0;
+    virtual void ExecuteExtensionAction(const std::string& extension_id,
+                                        bool is_pointer_interaction) = 0;
+    virtual void OnExtensionActionPointerDown(
+        const std::string& extension_id) = 0;
     virtual void ShowExtensionContextMenu(const std::string& extension_id,
                                           ui::mojom::MenuSourceType source) = 0;
     virtual base::expected<
@@ -112,6 +118,8 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
     virtual void OnPerformanceInterventionButtonClicked(
         bool is_mouse_interaction) = 0;
     virtual void OnPerformanceInterventionButtonMousePressed() = 0;
+    virtual void OnMediaButtonClicked(bool is_mouse_interaction) = 0;
+    virtual void OnMediaButtonMousePressed() = 0;
   };
 
   ToolbarUIService(
@@ -162,6 +170,7 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
                          OnPageActionClickCallback callback) override;
   void OnPageActionChipShowingChanged(
       ::toolbar_ui_api::mojom::PageActionId action_id,
+      bool is_showing,
       OnPageActionChipShowingChangedCallback callback) override;
   void InvokePinnedToolbarAction(
       toolbar_ui_api::mojom::PinnedToolbarAction action_id) override;
@@ -180,7 +189,8 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
       toolbar_ui_api::mojom::LhsChipIdentifier identifier,
       bool is_middle_click) override;
   void OnLhsChipClicked(toolbar_ui_api::mojom::LhsChipIdentifier identifier,
-                        bool is_mouse_interaction) override;
+                        bool is_mouse_interaction,
+                        uint32_t state_token) override;
   void OnLhsChipPointerEntered(
       toolbar_ui_api::mojom::LhsChipIdentifier identifier) override;
   void OnLhsChipPointerExited(
@@ -194,7 +204,9 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
   void OnHomeButtonDropUrl(const GURL& url) override;
   void OnHomeButtonDropFile(const gfx::PointF& drop_position) override;
   void OnToolbarDropFile(const gfx::PointF& drop_position) override;
-  void ShowAvatarMenu(ShowAvatarMenuCallback callback) override;
+  void ShowAvatarMenu(bool is_pointer_interaction,
+                      ShowAvatarMenuCallback callback) override;
+  void OnAvatarButtonMousePressed() override;
   void SetAvatarButtonHovered(bool hovered,
                               SetAvatarButtonHoveredCallback callback) override;
   void SetAvatarButtonFocused(bool focused,
@@ -203,7 +215,9 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
       bool showing,
       SetAvatarButtonIphPromoShowingCallback callback) override;
   void OnAppMenuFocusChanged(bool focused) override;
-  void ExecuteExtensionAction(const std::string& extension_id) override;
+  void ExecuteExtensionAction(const std::string& extension_id,
+                              bool is_pointer_interaction) override;
+  void OnExtensionActionPointerDown(const std::string& extension_id) override;
   void ShowExtensionContextMenu(const std::string& extension_id,
                                 ui::mojom::MenuSourceType source) override;
   void AdjustOmniboxTextForCopy(
@@ -213,6 +227,8 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
   void OnPerformanceInterventionButtonClicked(
       bool is_mouse_interaction) override;
   void OnPerformanceInterventionButtonMousePressed() override;
+  void OnMediaButtonClicked(bool is_mouse_interaction) override;
+  void OnMediaButtonMousePressed() override;
 
  private:
   mojo::Receiver<toolbar_ui_api::mojom::ToolbarUIService> service_;

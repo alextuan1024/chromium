@@ -42,6 +42,7 @@
 #include "third_party/blink/public/web/web_autofill_state.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/frozen_array.h"
+#include "third_party/blink/renderer/bindings/core/v8/js_event_handler_for_content_attribute.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_aria_notification_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -62,11 +63,12 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_scrollintoviewoptions.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_keyframeanimationoptions_unrestricteddouble.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_keyframeeffectoptions_unrestricteddouble.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_union_sethtmlunsafeoptions_trustedparseroptions.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_sethtmlunsafeoptions_trustedhtmlparseroptions.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_string_timelinerangeoffset.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_stringlegacynulltoemptystring_trustedhtml.h"
 #include "third_party/blink/renderer/core/accessibility/ax_context.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
+#include "third_party/blink/renderer/core/ad_tracker/display_ad_element_monitor.h"
 #include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/animation/css/css_animations.h"
 #include "third_party/blink/renderer/core/animation/document_animations.h"
@@ -195,7 +197,6 @@
 #include "third_party/blink/renderer/core/html/custom/custom_element.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/custom/element_internals.h"
-#include "third_party/blink/renderer/core/html/display_ad_element_monitor.h"
 #include "third_party/blink/renderer/core/html/forms/html_button_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_data_list_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_field_set_element.h"
@@ -285,7 +286,7 @@
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
-#include "third_party/blink/renderer/core/trustedtypes/trusted_parser_options.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_html_parser_options.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_names.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_util.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_pseudo_element_base.h"
@@ -673,6 +674,27 @@ void InvalidateForCanvasTransformChange(LayoutObject* layout_object) {
       }
     }
   }
+}
+
+inline bool ShouldBlockInlineScriptAttributeSet(
+    ExecutionContext* context,
+    Element* target,
+    const EventListener* listener,
+    Element::AttributeModificationReason reason) {
+  if (!RuntimeEnabledFeatures::CheckCSPOnInlineScriptAttributeSetEnabled()) {
+    return false;
+  }
+
+  bool modified_by_author =
+      reason == Element::AttributeModificationReason::kDirectly ||
+      reason == Element::AttributeModificationReason::kByParser;
+  ContentSecurityPolicy* csp =
+      context ? context->GetContentSecurityPolicy() : nullptr;
+  return listener && modified_by_author && csp &&
+         !csp->AllowInline(ContentSecurityPolicy::InlineType::kScriptAttribute,
+                           target, listener->ScriptBody(), String(),
+                           context->Url().GetString(),
+                           TextPosition::BelowRangePosition());
 }
 
 }  // namespace
@@ -2714,15 +2736,6 @@ double Element::scrollTop() {
     return 0;
   }
 
-  // Don't disclose scroll position in preview state. See crbug.com/1261689.
-  if (!RuntimeEnabledFeatures::SelectAutofillPopoverPreviewEnabled()) {
-    auto* select_element = DynamicTo<HTMLSelectElement>(this);
-    if (select_element && !select_element->UsesMenuList() &&
-        select_element->IsPreviewed()) {
-      return 0;
-    }
-  }
-
   LayoutBox* box = GetLayoutBoxForScrolling();
   if (!box) {
     return 0;
@@ -4236,17 +4249,12 @@ Node::InsertionNotificationRequest Element::InsertedInto(
 
   RecomputeDirectionFromParent();
 
-  // Do not call ComputeIsInCanvasSubtree from here because during
-  // slot assignment it will cause DCHECK failures. If an element is slotted
-  // the checks will be re-run when slot assignment completes.
   auto* parent = ParentOrShadowHostElement();
   if (parent && parent->IsCanvasOrInCanvasSubtree()) {
-    const bool is_light_dom_child_of_shadow_host =
-        parent->GetShadowRoot() && &insertion_point == parent;
     const auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(*parent);
     const bool is_inactive_fallback_content =
         slot && !slot->AssignedNodesNoRecalc().empty();
-    if (!is_light_dom_child_of_shadow_host && !is_inactive_fallback_content) {
+    if (!IsChildOfShadowHost() && !is_inactive_fallback_content) {
       SetIsInCanvasSubtree(true);
     }
   } else if (!parent && insertion_point.IsDocumentNode()) {
@@ -4475,12 +4483,16 @@ void Element::SetIsInCanvasSubtree(bool value) {
     for (Element& child : ElementTraversal::ChildrenOf(*shadow_root)) {
       child.SetIsInCanvasSubtree(value);
     }
-  } else if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(*this);
-             slot && !slot->AssignedNodesNoRecalc().empty()) {
+  } else if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(*this)) {
     for (Node* node : slot->AssignedNodesNoRecalc()) {
       if (auto* child = DynamicTo<Element>(node)) {
         child->SetIsInCanvasSubtree(value);
       }
+    }
+    // Fallback content
+    for (Element& child : ElementTraversal::ChildrenOf(*this)) {
+      child.SetIsInCanvasSubtree(value &&
+                                 slot->AssignedNodesNoRecalc().empty());
     }
   } else {
     for (Element& child : ElementTraversal::ChildrenOf(*this)) {
@@ -4492,27 +4504,6 @@ void Element::SetIsInCanvasSubtree(bool value) {
       pseudo_element->SetIsInCanvasSubtree(value);
     }
   }
-}
-
-bool Element::ComputeIsInCanvasSubtree() const {
-  auto& document = GetDocument();
-  const Element* parent = nullptr;
-  if (document.IsFlatTreeTraversalForbidden() ||
-      document.IsInSlotAssignmentRecalc()) {
-    parent = GetStyleRecalcParent();
-  } else {
-    parent = FlatTreeTraversal::ParentElementSkippingSlots(*this);
-  }
-  if (parent) {
-    return parent->IsCanvasOrInCanvasSubtree();
-  }
-
-  if (!isConnected() || !IsDocumentElement()) {
-    return false;
-  }
-
-  auto* owner = document.LocalOwner();
-  return owner && owner->IsCanvasOrInCanvasSubtree();
 }
 
 bool Element::IsCanvasOrInCanvasSubtree() const {
@@ -4892,8 +4883,6 @@ void Element::AttachLayoutTree(AttachContext& context) {
 }
 
 void Element::DetachLayoutTree(bool performing_reattach) {
-  HTMLFrameOwnerElement::PluginDisposeSuspendScope suspend_plugin_dispose;
-
   // Pseudo-elements that may have child pseudo-elements (such as ::column) must
   // be cleared before clearing the rare data vector below.
   ClearColumnPseudoElements();
@@ -4924,6 +4913,7 @@ void Element::DetachLayoutTree(bool performing_reattach) {
     data->RemoveAnchorPositionScrollData();
   }
 
+  ContainerQueryListController::InvalidateSelectorCacheFor(*this);
   DetachColumnPseudoElements(performing_reattach);
   DetachPrecedingPseudoElements(performing_reattach);
 
@@ -5229,12 +5219,13 @@ bool Element::SkipStyleRecalcForContainer(
 
 const ComputedStyle* Element::ParentComputedStyle() const {
   if (IsSkeletonPseudoElement()) {
-    return GetDocument().GetStyleResolver().InitialStyleForElement();
+    return &GetDocument().GetStyleResolver().InitialStyleForElement();
   }
   Element* parent = LayoutTreeBuilderTraversal::ParentElement(*this);
   auto is_rendered_as_sibling = [this] {
     return IsBackdropPseudoElement() || IsScrollButtonPseudoElement() ||
-           IsScrollMarkerGroupPseudoElement();
+           IsScrollMarkerGroupPseudoElement() ||
+           IsInterestButtonPseudoElement();
   };
   if (parent && (parent->ChildrenCanHaveStyle() || is_rendered_as_sibling())) {
     const ComputedStyle* parent_style = parent->GetComputedStyle();
@@ -5894,6 +5885,7 @@ StyleRecalcChange Element::RecalcOwnStyle(
     child_change = ApplyComputedStyleDiff(child_change, diff);
     if (ComputedStyle::DiffAffectsContainerQueries(old_style, new_style)) {
       child_change = child_change.ForceRecalcDescendantContainers();
+      ContainerQueryListController::InvalidateSelectorCache(GetDocument());
     }
     UpdateCallbackSelectors(old_style, new_style);
     NotifyIfMatchedDocumentRulesSelectorsChanged(old_style, new_style);
@@ -6048,7 +6040,7 @@ StyleRecalcChange Element::RecalcOwnStyle(
     if (needs_reinsert) {
       layout_object->Remove();
     }
-    layout_object->SetStyle(layout_style, apply_changes);
+    layout_object->SetStyle(*layout_style, apply_changes);
     if (needs_reinsert) {
       LayoutTreeBuilderTraversal::ParentLayoutObject(*this)->AddChild(
           layout_object,
@@ -6143,6 +6135,7 @@ void Element::RebuildLayoutTree(WhitespaceAttacher& whitespace_attacher) {
                                        local_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdScrollButtonBlockStart,
                                        local_attacher);
+        RebuildPseudoElementLayoutTree(kPseudoIdInterestButton, local_attacher);
       }
       LayoutObject* layout_object = GetLayoutObject();
       if (layout_object || !HasDisplayContentsStyle()) {
@@ -6159,8 +6152,6 @@ void Element::RebuildLayoutTree(WhitespaceAttacher& whitespace_attacher) {
       RebuildPseudoElementLayoutTree(kPseudoIdSkeleton, *child_attacher);
       RebuildOverscrollAreaLayoutTree(*child_attacher);
       if (has_pseudo_elements) {
-        RebuildPseudoElementLayoutTree(kPseudoIdInterestButton,
-                                       *child_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdAfter, *child_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdExpandIcon, *child_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdPickerIcon, *child_attacher);
@@ -6766,7 +6757,6 @@ ShadowRoot& Element::CreateAndAttachShadowRoot(ShadowRootMode type,
   NestingLevelIncrementer slot_assignment_recalc_forbidden_scope(
       GetDocument().SlotAssignmentRecalcForbiddenRecursionDepth());
 #endif
-  HTMLFrameOwnerElement::PluginDisposeSuspendScope suspend_plugin_dispose;
   EventDispatchForbiddenScope assert_no_event_dispatch;
   ScriptForbiddenScope forbid_script;
 
@@ -9268,9 +9258,42 @@ void Element::SetIsAdRelated(AdProvenance ad_provenance) {
       .RefreshNodeAndUnwrap(*this);
 }
 
+void Element::UpdateToVideoAd() {
+  auto& monitor = EnsureRareData()
+                      .EnsureDisplayAdElementMonitor(
+                          this, GetAdProvenance().value_or(NoProvenance{}))
+                      .RefreshNodeAndUnwrap(*this);
+  if (!monitor.IsVideoAd()) {
+    // For display ad tracking, we only need to tag the root ad element rather
+    // than every ancestor in the renderer. However, we tag this monitor here
+    // regardless to prevent redundant IPCs from the same frame.
+    monitor.UpdateToVideoAd();
+
+    if (LocalFrame* frame = GetDocument().GetFrame()) {
+      if (frame->IsAdFrame()) {
+        // Notify the browser process of a video within an ad frame so it can
+        // tag the root ad frame. This assumes the iframe lineage up to the
+        // root exists primarily to host the video. While we could optimize by
+        // walking the local frame tree first (e.g., if we never encounter an
+        // OOPIF), we skip this for simplicity.
+        frame->GetLocalFrameHostRemote().UpdateToVideoAdFrame();
+      }
+    }
+  }
+}
+
 bool Element::IsAdRelated() const {
   if (const NodeRareData* data = RareData()) {
     return data->GetDisplayAdElementMonitor();
+  }
+  return false;
+}
+
+bool Element::IsVideoAd() const {
+  if (const NodeRareData* data = RareData()) {
+    if (auto* monitor = data->GetDisplayAdElementMonitor()) {
+      return monitor->IsVideoAd();
+    }
   }
   return false;
 }
@@ -10614,7 +10637,7 @@ HTMLCanvasElement* Element::CanvasForDrawing() const {
   // immediate children as well.
   Element* ancestor = FlatTreeTraversal::ParentElementSkippingSlots(*this);
   if (auto* ancestor_canvas = DynamicTo<HTMLCanvasElement>(ancestor)) {
-    return ancestor_canvas->layoutSubtree() ? ancestor_canvas : nullptr;
+    return ancestor_canvas->IsContentDrawable() ? ancestor_canvas : nullptr;
   }
   if (!FastHasAttribute(html_names::kDrawableAttr)) {
     return nullptr;
@@ -10622,7 +10645,7 @@ HTMLCanvasElement* Element::CanvasForDrawing() const {
   while (ancestor) {
     ancestor = FlatTreeTraversal::ParentElementSkippingSlots(*ancestor);
     if (auto* ancestor_canvas = DynamicTo<HTMLCanvasElement>(ancestor)) {
-      return ancestor_canvas->layoutSubtree() ? ancestor_canvas : nullptr;
+      return ancestor_canvas->IsContentDrawable() ? ancestor_canvas : nullptr;
     }
   }
   return nullptr;
@@ -11391,6 +11414,27 @@ const ComputedStyle* Element::UncachedStyleForPseudoElement(
       request);
 }
 
+const ComputedStyle* Element::StyleForFirstLineInherited(
+    const StyleRecalcContext& style_recalc_context,
+    const StyleRequest& request) {
+  StyleRequest first_line_inherited_request = request;
+  first_line_inherited_request.pseudo_id =
+      IsPseudoElement() ? To<PseudoElement>(this)->GetPseudoIdForStyling()
+                        : kPseudoIdNone;
+  first_line_inherited_request.can_trigger_animations = false;
+  StyleRecalcContext local_recalc_context(style_recalc_context);
+  local_recalc_context.old_style = PostStyleUpdateScope::GetOldStyle(*this);
+  Element* target = IsPseudoElement() ? parentElement() : this;
+  const ComputedStyle* result = GetDocument().GetStyleResolver().ResolveStyle(
+      target, local_recalc_context, first_line_inherited_request);
+  if (result) {
+    ComputedStyleBuilder builder(*result);
+    builder.SetStyleType(kPseudoIdFirstLineInherited);
+    result = builder.TakeStyle();
+  }
+  return result;
+}
+
 const ComputedStyle* Element::StyleForPseudoElement(
     const StyleRecalcContext& style_recalc_context,
     const StyleRequest& request) {
@@ -11400,65 +11444,8 @@ const ComputedStyle* Element::StyleForPseudoElement(
                            ? GetPseudoIdForStyling()
                            : request.pseudo_id;
 
-  const bool is_before_or_after_like =
-      pseudo_id == kPseudoIdCheckMark || pseudo_id == kPseudoIdBefore ||
-      pseudo_id == kPseudoIdAfter || pseudo_id == kPseudoIdExpandIcon ||
-      pseudo_id == kPseudoIdPickerIcon || pseudo_id == kPseudoIdInterestButton;
-
-  if (is_before_or_after_like) {
-    DCHECK(request.parent_override);
-    DCHECK(request.layout_parent_override);
-
-    const ComputedStyle* layout_parent_style = request.parent_override;
-    if (layout_parent_style->Display() == EDisplay::kContents) {
-      // TODO(futhark@chromium.org): Calling getComputedStyle for elements
-      // outside the flat tree should return empty styles, but currently we do
-      // not. See issue https://crbug.com/831568. We can replace the if-test
-      // with DCHECK(layout_parent) when that issue is fixed.
-      if (Element* layout_parent =
-              LayoutTreeBuilderTraversal::LayoutParentElement(*this)) {
-        layout_parent_style = layout_parent->GetComputedStyle();
-      }
-    }
-    StyleRequest before_after_request = request;
-    before_after_request.layout_parent_override = layout_parent_style;
-    const ComputedStyle* result = GetDocument().GetStyleResolver().ResolveStyle(
-        this, style_recalc_context, before_after_request);
-    if (result) {
-      if (result->GetCounterDirectives()) {
-        SetPseudoElementStylesChangeCounters(true);
-      }
-      Element* originating_element_or_self =
-          IsPseudoElement()
-              ? &To<PseudoElement>(this)->UltimateOriginatingElement()
-              : this;
-      if (auto* quote =
-              DynamicTo<HTMLQuoteElement>(originating_element_or_self)) {
-        ComputedStyleBuilder builder(*result);
-        quote->AdjustPseudoStyleLocale(builder);
-        result = builder.TakeStyle();
-      }
-    }
-    return result;
-  }
-
   if (pseudo_id == kPseudoIdFirstLineInherited) {
-    StyleRequest first_line_inherited_request = request;
-    first_line_inherited_request.pseudo_id =
-        IsPseudoElement() ? To<PseudoElement>(this)->GetPseudoIdForStyling()
-                          : kPseudoIdNone;
-    first_line_inherited_request.can_trigger_animations = false;
-    StyleRecalcContext local_recalc_context(style_recalc_context);
-    local_recalc_context.old_style = PostStyleUpdateScope::GetOldStyle(*this);
-    Element* target = IsPseudoElement() ? parentElement() : this;
-    const ComputedStyle* result = GetDocument().GetStyleResolver().ResolveStyle(
-        target, local_recalc_context, first_line_inherited_request);
-    if (result) {
-      ComputedStyleBuilder builder(*result);
-      builder.SetStyleType(kPseudoIdFirstLineInherited);
-      result = builder.TakeStyle();
-    }
-    return result;
+    return StyleForFirstLineInherited(style_recalc_context, request);
   }
 
   StyleRequest style_request = request;
@@ -11474,12 +11461,38 @@ const ComputedStyle* Element::StyleForPseudoElement(
       layout_parent_style = layout_grand_parent->GetComputedStyle();
     }
     style_request.layout_parent_override = layout_parent_style;
+  } else if (request.layout_parent_override &&
+             request.layout_parent_override->Display() == EDisplay::kContents) {
+    Element* layout_parent =
+        LayoutTreeBuilderTraversal::LayoutParentElement(*this);
+    CHECK(layout_parent);
+    style_request.layout_parent_override = layout_parent->GetComputedStyle();
   }
 
   const ComputedStyle* result = GetDocument().GetStyleResolver().ResolveStyle(
       this, style_recalc_context, style_request);
-  if (result && result->GetCounterDirectives()) {
-    SetPseudoElementStylesChangeCounters(true);
+
+  if (result) {
+    if (result->GetCounterDirectives()) {
+      SetPseudoElementStylesChangeCounters(true);
+    }
+    if (pseudo_id == kPseudoIdBefore || pseudo_id == kPseudoIdAfter) {
+      // We currently choose generated auto quotes from the originating element
+      // language for HTML quote elements which use ::before/::after to
+      // implement quote rendering. When we start supporting 'match-parent',
+      // this needs to handle other pseudo elements which generate 'open-quote'
+      // and 'close-quote' too.
+      Element* originating_element_or_self =
+          IsPseudoElement()
+              ? &To<PseudoElement>(this)->UltimateOriginatingElement()
+              : this;
+      if (auto* quote =
+              DynamicTo<HTMLQuoteElement>(originating_element_or_self)) {
+        ComputedStyleBuilder builder(*result);
+        quote->AdjustPseudoStyleLocale(builder);
+        result = builder.TakeStyle();
+      }
+    }
   }
   return result;
 }
@@ -11574,15 +11587,20 @@ bool Element::CanGeneratePseudoElement(PseudoId pseudo_id) const {
   return false;
 }
 
+bool Element::HasInterestButtonPseudo() const {
+  return GetPseudoElement(kPseudoIdInterestButton) != nullptr;
+}
+
 bool Element::HasSiblingBoxPseudoElements() const {
   const NodeRareData* rare_data = RareData();
   if (!rare_data) {
     return false;
   }
   for (PseudoId pseudo_id :
-       {kPseudoIdScrollButtonBlockStart, kPseudoIdScrollButtonInlineStart,
-        kPseudoIdScrollButtonInlineEnd, kPseudoIdScrollButtonBlockEnd,
-        kPseudoIdScrollMarkerGroupAfter, kPseudoIdScrollMarkerGroupBefore}) {
+       {kPseudoIdInterestButton, kPseudoIdScrollButtonBlockStart,
+        kPseudoIdScrollButtonInlineStart, kPseudoIdScrollButtonInlineEnd,
+        kPseudoIdScrollButtonBlockEnd, kPseudoIdScrollMarkerGroupAfter,
+        kPseudoIdScrollMarkerGroupBefore}) {
     if (rare_data->GetPseudoElement(pseudo_id)) {
       return true;
     }
@@ -11984,7 +12002,7 @@ inline void Element::UpdateId(const AtomicString& old_id,
 inline void Element::UpdateId(TreeScope& scope,
                               const AtomicString& old_id,
                               const AtomicString& new_id) {
-  DCHECK(IsInTreeScope());
+  DCHECK(IsInTreeScope() || scope.RootNode().IsInShadowTree());
   DCHECK_NE(old_id, new_id);
 
   if (!old_id.empty()) {
@@ -14092,7 +14110,7 @@ void Element::setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
 }
 
 void Element::setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
-                            TrustedParserOptions* options,
+                            TrustedHTMLParserOptions* options,
                             ExceptionState& exception_state) {
   CHECK(RuntimeEnabledFeatures::TrustedTypesCreateParserOptionsEnabled());
   UseCounter::Count(GetDocument(), WebFeature::kHTMLUnsafeMethods);
@@ -14188,6 +14206,48 @@ bool Element::SupportsBaseAppearance(AppearanceValue appearance_value) const {
     return SupportsBaseAppearanceInternal(*base_appearance_value);
   }
   return false;
+}
+
+void Element::SetElementAttributeEventListenerFromScriptBody(
+    const AtomicString& event_type_name,
+    const QualifiedName& attribute_name,
+    const AtomicString& script_body,
+    AttributeModificationReason reason,
+    JSEventHandler::HandlerType type) {
+  ExecutionContext* context = GetExecutionContext();
+  EventListener* listener = JSEventHandlerForContentAttribute::Create(
+      context, attribute_name, script_body, type);
+  if (!ShouldBlockInlineScriptAttributeSet(context, this, listener, reason)) {
+    SetAttributeEventListener(event_type_name, listener);
+  }
+}
+
+void Element::SetDocumentAttributeEventListenerFromScriptBody(
+    const AtomicString& event_type_name,
+    const QualifiedName& attribute_name,
+    const AtomicString& script_body,
+    AttributeModificationReason reason,
+    JSEventHandler::HandlerType type) {
+  ExecutionContext* context = GetExecutionContext();
+  EventListener* listener = JSEventHandlerForContentAttribute::Create(
+      context, attribute_name, script_body, type);
+  if (!ShouldBlockInlineScriptAttributeSet(context, this, listener, reason)) {
+    GetDocument().SetAttributeEventListener(event_type_name, listener);
+  }
+}
+
+void Element::SetWindowAttributeEventListenerFromScriptBody(
+    const AtomicString& event_type_name,
+    const QualifiedName& attribute_name,
+    const AtomicString& script_body,
+    AttributeModificationReason reason,
+    JSEventHandler::HandlerType type) {
+  ExecutionContext* context = GetExecutionContext();
+  EventListener* listener = JSEventHandlerForContentAttribute::Create(
+      context, attribute_name, script_body, type);
+  if (!ShouldBlockInlineScriptAttributeSet(context, this, listener, reason)) {
+    GetDocument().SetWindowAttributeEventListener(event_type_name, listener);
+  }
 }
 
 OverscrollAreaTracker& Element::EnsureOverscrollAreaTracker() {

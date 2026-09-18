@@ -44,10 +44,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "base/system/sys_info.h"
-#endif
-
 namespace autofill {
 
 namespace {
@@ -94,9 +90,17 @@ const base::TimeDelta kPrefetchCacheTTL =
 const base::TimeDelta kUnmaskedSpiiCacheTTL =
     features::kAutofillAmbientAutofillUnmaskedSpiiCacheTTL.default_value;
 
+// Supported entity types configured for Ambient Autofill in unit tests.
+constexpr char kSupportedEntityTypes[] =
+    "Passport,Driver's license,Vehicle,National Id Card,Flight "
+    "Reservation,Order,Shipment";
+
 constexpr EntityType kPassportType{EntityTypeName::kPassport};
 constexpr EntityType kOrderType{EntityTypeName::kOrder};
 constexpr EntityType kDriversLicenseType{EntityTypeName::kDriversLicense};
+constexpr EntityType kVehicleType{EntityTypeName::kVehicle};
+constexpr EntityType kKnownTravelerNumberType{
+    EntityTypeName::kKnownTravelerNumber};
 
 // Checks that ContextMemoryAmbientAutofillRequest matches the `expected_types`
 // and `expected_presence`.
@@ -186,6 +190,10 @@ personal_context::proto::Date TodayWithDelta(
 class AutofillAiPersonalContextAccessManagerImplTest : public testing::Test {
  public:
   AutofillAiPersonalContextAccessManagerImplTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        features::kAutofillAmbientAutofill,
+        {{features::kAutofillAmbientAutofillSupportedEntityTypes.name,
+          kSupportedEntityTypes}});
     personal_context::prefs::RegisterProfilePrefs(pref_service_.registry());
     pref_service_.registry()->RegisterIntegerPref(
         subscription_eligibility::prefs::kAiSubscriptionTier, 0);
@@ -345,8 +353,7 @@ class AutofillAiPersonalContextAccessManagerImplTest : public testing::Test {
 
  private:
   base::HistogramTester histogram_tester_;
-  base::test::ScopedFeatureList feature_list_{
-      features::kAutofillAmbientAutofill};
+  base::test::ScopedFeatureList feature_list_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   MockPersonalContextService mock_personal_context_service_;
@@ -1472,7 +1479,9 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
       features::kAutofillAmbientAutofill,
       {{features::kAutofillAmbientAutofillPrefetchedEntitiesAndSignalsCacheTTL
             .name,
-        "10m"}});
+        "10m"},
+       {features::kAutofillAmbientAutofillSupportedEntityTypes.name,
+        kSupportedEntityTypes}});
 
   // 1. Initial prefetch at T = 0.
   PrefetchMaskedPassportAndGetGuid();
@@ -1599,42 +1608,6 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
       "Autofill.Ai.PersonalContext.NonEligibilityReason",
       personal_context::PersonalContextNonEligibilityReason::kEligible, 2);
 }
-
-#if BUILDFLAG(IS_ANDROID)
-// Tests that `Autofill.Ai.PersonalContext.NonEligibilityReason` logs
-// `kEligible` when the Android device is supported, even if the user's
-// subscription tier is not in the eligible tiers list.
-TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
-       LogsAmbientEligibilityReasonOnAndroidPremiumDevice) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{features::kAutofillAmbientAutofill,
-        {{features::kAutofillAmbientAutofillEligibleTiers.name, "1,2"},
-         {features::kAutofillAmbientAutofillEnabledDevices.name,
-          base::SysInfo::HardwareModelName()}}}},
-      {});
-
-  // Set tier to an eligible tier (1) before startup delay.
-  pref_service_.SetInteger(subscription_eligibility::prefs::kAiSubscriptionTier,
-                           1);
-
-  // Fast forward past startup delay to complete startup logging.
-  FastForwardBy(kNonEligibilityLoggingDelayOnStartup + base::Seconds(1));
-
-  histogram_tester().ExpectBucketCount(
-      "Autofill.Ai.PersonalContext.NonEligibilityReason",
-      personal_context::PersonalContextNonEligibilityReason::kEligible, 1);
-
-  // Then change tier to an ineligible tier (99). Since the Android device is
-  // supported, the user remains eligible (`kEligible`), so no duplicate sample
-  // is logged.
-  pref_service_.SetInteger(subscription_eligibility::prefs::kAiSubscriptionTier,
-                           99);
-  histogram_tester().ExpectBucketCount(
-      "Autofill.Ai.PersonalContext.NonEligibilityReason",
-      personal_context::PersonalContextNonEligibilityReason::kEligible, 1);
-}
-#endif
 
 // Tests that `PrefetchContext` populates the `client_id` field of
 // `ContextMemoryAmbientAutofillRequest` using the cache GUID retrieved from
@@ -2155,14 +2128,14 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 
   personal_context::proto::ContextMemoryAmbientAutofillResponse spii_response;
   *spii_response.add_entities() = CreateDriversLicenseProto(
-      {.number = u"VALID", .expiration_date = u"01/06/2025"});
+      {.number = u"VALID", .expiration_date = u"2025-06-01"});
   *spii_response.add_entities() = CreateDriversLicenseProto(
-      {.number = u"EXPIRED", .expiration_date = u"31/05/2025"});
+      {.number = u"EXPIRED", .expiration_date = u"2025-05-31"});
   *spii_response.add_entities() = CreateDriversLicenseProto(
       {.number = u"NO_EXPIRATION_DATE", .expiration_date = nullptr});
   // Missing import constraint (number).
   *spii_response.add_entities() = CreateDriversLicenseProto(
-      {.number = nullptr, .expiration_date = u"01/06/2025"});
+      {.number = nullptr, .expiration_date = u"2025-06-01"});
 
   std::vector<EntityInstance> entities;
   EXPECT_CALL(mock_observer(),
@@ -2192,14 +2165,14 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 
   personal_context::proto::ContextMemoryAmbientAutofillResponse spii_response;
   *spii_response.add_entities() =
-      CreateNationalIdProto({.number = u"VALID", .expiry_date = u"01/06/2025"});
+      CreateNationalIdProto({.number = u"VALID", .expiry_date = u"2025-06-01"});
   *spii_response.add_entities() = CreateNationalIdProto(
-      {.number = u"EXPIRED", .expiry_date = u"31/05/2025"});
+      {.number = u"EXPIRED", .expiry_date = u"2025-05-31"});
   *spii_response.add_entities() = CreateNationalIdProto(
       {.number = u"NO_EXPIRY_DATE", .expiry_date = nullptr});
   // Missing import constraint (number).
   *spii_response.add_entities() =
-      CreateNationalIdProto({.number = nullptr, .expiry_date = u"01/06/2025"});
+      CreateNationalIdProto({.number = nullptr, .expiry_date = u"2025-06-01"});
 
   std::vector<EntityInstance> entities;
   EXPECT_CALL(mock_observer(),
@@ -2369,6 +2342,153 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
       .Times(0);
 
   PrefetchContextSync(requested_types, /*expected_spii_types=*/{}, response);
+}
+
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsEntityValidationResultMetrics) {
+  SetClockToDate("2025-06-01 12:00:00");
+
+  personal_context::proto::ContextMemoryAmbientAutofillResponse
+      presence_response;
+  presence_response.add_entities()->mutable_sensitive_pii_presence()->set_type(
+      SensitivePiiPresence::PASSPORT);
+
+  // Non-SPII response (first request).
+  // 1. Expired Order -> kFailedTtlExpired
+  *presence_response.add_entities() = CreateOrderProto(
+      {.id = u"EXPIRED", .date = u"2025-02-01", .merchant_name = u"Store"});
+  // 2. Order with malformed date -> kFailedTtlInvalidDate
+  personal_context::proto::Entity malformed_order =
+      CreateOrderProto({.id = u"MALFORMED", .merchant_name = u"Store"});
+  malformed_order.mutable_order()->mutable_order_date()->set_year(2025);
+  malformed_order.mutable_order()->mutable_order_date()->set_month(6);
+  malformed_order.mutable_order()->mutable_order_date()->set_day(32);
+  *presence_response.add_entities() = std::move(malformed_order);
+  // 3. Vehicle missing import constraints (no VIN and no plate) ->
+  // kFailedImportConstraints
+  *presence_response.add_entities() =
+      CreateVehicleProto({.plate = nullptr, .number = nullptr});
+  // 4. Unsupported Entity (KTN) -> kUnsupportedEntityType
+  personal_context::proto::Entity* ktn = presence_response.add_entities();
+  ktn->mutable_known_traveler_number()->set_number("KTN123");
+  ktn->mutable_known_traveler_number()->set_name("Alice");
+
+  // SPII response (second request).
+  personal_context::proto::ContextMemoryAmbientAutofillResponse spii_response;
+  // 5. Passport missing expiry date -> kFailedTtlMissingDate
+  *spii_response.add_entities() =
+      CreatePassportProto({.number = u"NO_EXPIRY", .expiry_date = nullptr});
+  // 6. Valid Passport -> kValid
+  *spii_response.add_entities() =
+      CreatePassportProto({.number = u"VALID", .expiry_date = u"2025-06-01"});
+
+  std::vector<EntityInstance> entities;
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(IsEmpty())));
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(Not(IsEmpty()))))
+      .WillOnce(SaveOptSpanToVector<1>(&entities));
+
+  PrefetchContextSync(
+      {kPassportType, kOrderType, kVehicleType, kKnownTravelerNumberType},
+      {kPassportType}, presence_response, spii_response);
+
+  // Only the valid passport should survive.
+  ASSERT_EQ(entities.size(), 1u);
+  EXPECT_EQ(entities[0].type(), kPassportType);
+
+  using Result = PersonalContextPrefetchEntityValidationResult;
+  static constexpr std::string_view kBaseMetric =
+      "Autofill.Ai.PersonalContext.Prefetch.EntityValidationResult";
+
+  // Verify Aggregate Metric
+  histogram_tester().ExpectBucketCount(kBaseMetric, Result::kValid, 1);
+  histogram_tester().ExpectBucketCount(kBaseMetric, Result::kFailedTtlExpired,
+                                       1);
+  histogram_tester().ExpectBucketCount(kBaseMetric,
+                                       Result::kFailedTtlInvalidDate, 1);
+  histogram_tester().ExpectBucketCount(kBaseMetric,
+                                       Result::kFailedTtlMissingDate, 1);
+  histogram_tester().ExpectBucketCount(kBaseMetric,
+                                       Result::kFailedImportConstraints, 1);
+  histogram_tester().ExpectBucketCount(kBaseMetric,
+                                       Result::kUnsupportedEntityType, 1);
+  histogram_tester().ExpectTotalCount(kBaseMetric, 6);
+
+  // Verify Type-Specific Metric Breakdown
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Passport"}),
+                                       Result::kValid, 1);
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Passport"}),
+                                       Result::kFailedTtlMissingDate, 1);
+  histogram_tester().ExpectTotalCount(base::StrCat({kBaseMetric, ".Passport"}),
+                                      2);
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
+                                       Result::kFailedTtlExpired, 1);
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
+                                       Result::kFailedTtlInvalidDate, 1);
+  histogram_tester().ExpectTotalCount(base::StrCat({kBaseMetric, ".Order"}), 2);
+  histogram_tester().ExpectUniqueSample(base::StrCat({kBaseMetric, ".Vehicle"}),
+                                        Result::kFailedImportConstraints, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({kBaseMetric, ".KnownTravelerNumber"}),
+      Result::kUnsupportedEntityType, 1);
+}
+
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_FiltersEntitiesWithoutSourceWhenFlagEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillAmbientAutofillFilterEntitiesWithoutSource};
+  SetClockToDate("2025-06-01 12:00:00");
+
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+
+  // 1. Order without any source_references -> kFailedMissingSource
+  *response.add_entities() = CreateOrderProto(
+      {.id = u"NO_SOURCE", .date = u"2025-06-01", .merchant_name = u"Store"});
+
+  // 2. Order with only an unsupported source reference (Drive) ->
+  // kFailedMissingSource
+  personal_context::proto::Entity drive_order =
+      CreateOrderProto({.id = u"DRIVE_SOURCE",
+                        .date = u"2025-06-01",
+                        .merchant_name = u"Store"});
+  drive_order.add_source_references()->mutable_drive();
+  *response.add_entities() = std::move(drive_order);
+
+  // 3. Order with a valid Gmail source reference -> kValid
+  personal_context::proto::Entity valid_order =
+      CreateOrderProto({.id = u"VALID_SOURCE",
+                        .date = u"2025-06-01",
+                        .merchant_name = u"Store"});
+  valid_order.add_source_references()->mutable_gmail()->set_message_url(
+      "https://mail.google.com/mail/u/0/#inbox/123");
+  *response.add_entities() = std::move(valid_order);
+
+  std::vector<EntityInstance> entities;
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(Not(IsEmpty()))))
+      .WillOnce(SaveOptSpanToVector<1>(&entities));
+
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  ASSERT_EQ(entities.size(), 1u);
+  EXPECT_THAT(entities[0], HasAttributeWithValue(AttributeTypeName::kOrderId,
+                                                 u"VALID_SOURCE"));
+
+  using Result = PersonalContextPrefetchEntityValidationResult;
+  static constexpr std::string_view kBaseMetric =
+      "Autofill.Ai.PersonalContext.Prefetch.EntityValidationResult";
+
+  histogram_tester().ExpectBucketCount(kBaseMetric, Result::kValid, 1);
+  histogram_tester().ExpectBucketCount(kBaseMetric,
+                                       Result::kFailedMissingSource, 2);
+  histogram_tester().ExpectTotalCount(kBaseMetric, 3);
+
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
+                                       Result::kValid, 1);
+  histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
+                                       Result::kFailedMissingSource, 2);
+  histogram_tester().ExpectTotalCount(base::StrCat({kBaseMetric, ".Order"}), 3);
 }
 
 }  // namespace

@@ -3110,7 +3110,8 @@ IN_PROC_BROWSER_TEST_F(NavigationRequestBrowserTest,
                             GURL(blink::kChromeUIKillURL),
                             GURL(blink::kChromeUIHangURL),
                             GURL(blink::kChromeUIShorthangURL),
-                            GURL(blink::kChromeUIMemoryExhaustURL)};
+                            GURL(blink::kChromeUIMemoryExhaustURL),
+                            GURL(blink::kChromeUIV8OOMURL)};
 
   for (const auto& test_url : kTestUrls) {
     SCOPED_TRACE(testing::Message() << "renderer_debug_url = " << test_url);
@@ -4679,29 +4680,6 @@ class NavigationRequestFencedFrameBrowserTest
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
 };
 
-IN_PROC_BROWSER_TEST_F(
-    NavigationRequestFencedFrameBrowserTest,
-    ShouldRespectOutermostFrameCOEPParentAndChildOnInsecureContent) {
-  // Navigate |untrustworthy_url| to test if a fenced frame sets the outermost
-  // main frame's COEP.
-  GURL untrustworthy_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  EXPECT_TRUE(NavigateToURL(shell(), untrustworthy_url));
-
-  // Create a fenced frame on an insecure content and its document should have
-  // the COEP of the outermost main frame.
-  GURL fenced_frame_url = embedded_test_server()->GetURL(
-      "a.test",
-      "/set-header?"
-      "Supports-Loading-Mode: fenced-frame&"
-      "Cross-Origin-Embedder-Policy: require-corp");
-  RenderFrameHostImpl* fenced_frame_host = static_cast<RenderFrameHostImpl*>(
-      fenced_frame_test_helper().CreateFencedFrame(
-          shell()->web_contents()->GetPrimaryMainFrame(), fenced_frame_url));
-  ASSERT_TRUE(fenced_frame_host);
-  EXPECT_EQ(network::mojom::CrossOriginEmbedderPolicyValue::kNone,
-            fenced_frame_host->cross_origin_embedder_policy().value);
-}
 
 IN_PROC_BROWSER_TEST_F(
     NavigationRequestFencedFrameBrowserTest,

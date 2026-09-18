@@ -324,6 +324,46 @@ chromium-metrics-reviews@google.com.
   <int value="393228" label="6.12"/>
 </enum>
 
+<enum name="AndroidMinidumpLossReason">
+  <int value="0" label="Transmission Failure (Binder IPC failed)">
+    Logged when transmitting minidumps from the client app to the WebView
+    Receiver Service fails because of a Binder exception (e.g. service death,
+    transaction too large, or too many open files).
+  </int>
+  <int value="1" label="File Size Limit Exceeded (&gt;1MB)">
+    Logged if the file descriptor copies more than 1MB of data (the size limit
+    for a minidump in WebView).
+  </int>
+  <int value="2" label="UID Limit Exceeded (per-app cap)">
+    Logged if a package's User ID exceeds the maximum allowed files per app (10
+    files) and the oldest one is deleted.
+  </int>
+  <int value="3" label="Global Limit Exceeded (total cap)">
+    Logged if the global WebView crash directory exceeds the maximum allowed
+    files overall (20 files) and the oldest one is deleted.
+  </int>
+  <int value="4" label="Age Limit Exceeded (deleted &gt;30 days old)">
+    Logged if an un-uploaded minidump is deleted during a startup/periodical
+    cleanup because it is older than 30 days.
+  </int>
+  <int value="5" label="Saved Limit Exceeded (deleted overall kept cap)">
+    Logged if an un-uploaded minidump is deleted during a startup/periodical
+    cleanup to enforce the overall keep limit (10 files).
+  </int>
+  <int value="6" label="Copy Failed (directories, rename, or IOException)">
+    Logged if copying the file descriptor fails due to directory missing errors,
+    rename failure, or any IOException during stream reading.
+  </int>
+  <int value="7" label="Log File Write Failed">
+    Logged if we were unable to write the minidump to the log file, possibly
+    because it was missing or there were other filesystem issues.
+  </int>
+  <int value="8" label="Left Over Temp Files">
+    Logged if, after copying the minidumps to WebView's own directory, there are
+    more than 1 temporary files left in the temp directory.
+  </int>
+</enum>
+
 <!-- LINT.IfChange(AndroidPdfHyperlinkClickResult) -->
 
 <enum name="AndroidPdfHyperlinkClickResult">
@@ -434,6 +474,21 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Feature Enabled"/>
   <int value="4" label="Sandbox Engaged"/>
 </enum>
+
+<!-- LINT.IfChange(AndroidSideUiResizeHandleTouchState) -->
+
+<enum name="AndroidSideUiResizeHandleTouchState">
+  <int value="0" label="Drag started"/>
+  <int value="1" label="ACTION_MOVE with a drag in progress"/>
+  <int value="2" label="Drag committed on ACTION_UP"/>
+  <int value="3" label="Drag committed on ACTION_CANCEL"/>
+  <int value="4" label="Drag started while a stale drag was in progress"/>
+  <int value="5" label="ACTION_MOVE without a drag in progress"/>
+  <int value="6" label="ACTION_UP without a drag in progress"/>
+  <int value="7" label="ACTION_CANCEL without a drag in progress"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/side_ui/internal/android/java/src/org/chromium/chrome/browser/ui/side_ui/SideUiResizeHandler.java:AndroidSideUiResizeHandleTouchState) -->
 
 <enum name="AndroidThemeSettingsEntry">
   <summary>See Android.DarkTheme.ThemeSettingsEntry.</summary>
@@ -629,24 +684,19 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="IOException"/>
 </enum>
 
-<enum name="AndroidWebViewRenderProcessGoneResult">
+<enum name="AndroidWebViewRenderProcessGoneResult3">
   <int value="0" label="Java Exception thrown inside onRenderProcessGone()"/>
-  <int value="1" label="Renderer crash not handled (deprecated)"/>
+  <int value="1" label="Renderer crash was handled for all WebViews"/>
   <int value="2"
-      label="Renderer kill (OOM or update) not handled (deprecated)"/>
-  <int value="3"
-      label="Crash or kill was handled for all WebViews (deprecated)"/>
-  <int value="4" label="Renderer crash was handled for all WebViews"/>
-  <int value="5"
       label="Renderer kill (OOM or update) was handled for all WebViews"/>
-  <int value="6"
-      label="Renderer crash not handled (app process visible to user)"/>
-  <int value="7"
+  <int value="3"
+      label="Renderer crash not handled (app process in foreground)"/>
+  <int value="4"
       label="Renderer crash not handled (app process in background)"/>
-  <int value="8"
-      label="Renderer kill (OOM or update) not handled (app process visible
-             to user)"/>
-  <int value="9"
+  <int value="5"
+      label="Renderer kill (OOM or update) not handled (app process in
+             foreground)"/>
+  <int value="6"
       label="Renderer kill (OOM or update) not handled (app process in
              background)"/>
 </enum>
@@ -939,14 +989,9 @@ chromium-metrics-reviews@google.com.
   <int value="205" label="Profile.getCrossOriginIsolatedAllowList"/>
   <int value="206" label="Navigation.getResponseHeaders"/>
   <int value="207" label="WebViewProviderFactory.buildWebContent"/>
+  <int value="208" label="Navigation.getNavigationStartUptimeMillis"/>
 <!-- LINT.ThenChange(/android_webview/support_library/java/src/org/chromium/support_lib_glue/SupportLibWebViewChromiumFactory.java:ApiCall) -->
 
-</enum>
-
-<enum name="AsyncTaskStatus">
-  <int value="0" label="PENDING">AsyncTask was not started when waited on.</int>
-  <int value="1" label="RUNNING">AsyncTask was running when waited on.</int>
-  <int value="2" label="FINISHED">AsyncTask is done.</int>
 </enum>
 
 <!-- LINT.IfChange(AwPrefetchApiCallResult) -->
@@ -1028,7 +1073,7 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="(20) TAB_HISTORY"/>
   <int value="13" label="(XX) TAB_RETURN_TO_CHROME_START_SURFACE (Deprecated)"/>
   <int value="14" label="(22) SHOW_READING_LIST"/>
-  <int value="15" label="(23) MINIMIZE_APP_AND_CLOSE_TAB"/>
+  <int value="15" label="(24) MINIMIZE_APP_AND_CLOSE_TAB"/>
   <int value="16" label="(18) FIND_TOOLBAR"/>
   <int value="17" label="(12) LOCATION_BAR"/>
   <int value="18" label="(01) XR_DELEGATE"/>
@@ -1043,6 +1088,7 @@ chromium-metrics-reviews@google.com.
   <int value="27" label="(04) FUSEBOX_POPUP"/>
   <int value="28" label="(13) REALBOX"/>
   <int value="29" label="(16) TAB_SEARCH_OVERLAY"/>
+  <int value="30" label="(23) SEND_TAB_TO_SELF"/>
 </enum>
 
 <!-- LINT.IfChange(BackPressTabCloseType) -->
@@ -1235,16 +1281,6 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Desktop windowing mode is supported and active."/>
 </enum>
 
-<enum name="DeviceAuthSource">
-  <int value="0" label="Password Manager"/>
-  <int value="1" label="Autofill"/>
-  <int value="2" label="Icognito"/>
-  <int value="3" label="Device Lock Page"/>
-  <int value="4" label="Settings Batch Upload"/>
-  <int value="5" label="Bookmark Batch Upload"/>
-  <int value="6" label="Passwords CSV Download"/>
-</enum>
-
 <enum name="DeviceLockDialogAction">
   <int value="0" label="Create device lock dialog shown"/>
   <int value="1" label="Existing device lock dialog shown"/>
@@ -1259,14 +1295,6 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="START"/>
   <int value="1" label="UPDATE"/>
   <int value="2" label="STOP"/>
-</enum>
-
-<enum name="DownloadNotificationInteractions">
-  <int value="0" label="CLICKED"/>
-  <int value="1" label="OPEN"/>
-  <int value="2" label="CANCEL"/>
-  <int value="3" label="PAUSE"/>
-  <int value="4" label="RESUME"/>
 </enum>
 
 <enum name="DownloadNotificationServiceStopped">
@@ -1500,22 +1528,6 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/multiwindow/MultiWindowUtils.java:LaunchInInstanceEarlyFailureReason) -->
 
-<enum name="LockRetryResult">
-  <int value="0" label="Succeeded the first time"/>
-  <int value="1"
-      label="Succeeded with one retry, no OverlappingFileLockException"/>
-  <int value="2"
-      label="Succeeded with one retry, saw OverlappingFileLockException"/>
-  <int value="3"
-      label="Succeeded with 2-3 retries, no OverlappingFileLockException"/>
-  <int value="4"
-      label="Succeeded with 2-3 retries, saw OverlappingFileLockException"/>
-  <int value="5"
-      label="Succeeded with 4+ retries, no OverlappingFileLockException"/>
-  <int value="6"
-      label="Succeeded with 4+ retries, saw OverlappingFileLockException"/>
-</enum>
-
 <enum name="MainFrameIntentLaunch">
   <int value="0" label="Not from external app, to intent scheme"/>
   <int value="1" label="Not from external app, to custom scheme"/>
@@ -1721,6 +1733,7 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="Crash recovery"/>
   <int value="13" label="Relaunch"/>
   <int value="14" label="Settings"/>
+  <int value="15" label="Account menu"/>
 </enum>
 
 <enum name="NTPImpressionType">
@@ -2968,15 +2981,6 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Compatibility Mode"/>
 </enum>
 
-<enum name="WebViewNavigationType">
-  <int value="0" label="Initial"/>
-  <int value="1" label="Same-document"/>
-  <int value="2" label="Browser-initiated same-origin"/>
-  <int value="3" label="Browser-initiated cross-origin"/>
-  <int value="4" label="Renderer-initiated same-origin"/>
-  <int value="5" label="Renderer-initiated cross-origin"/>
-</enum>
-
 <!-- LINT.IfChange(WebViewRendererKeepAliveEvent) -->
 
 <enum name="WebViewRendererKeepAliveEvent">
@@ -3157,6 +3161,10 @@ chromium-metrics-reviews@google.com.
   <int value="142" label="profileGetHttpCacheManager"/>
   <int value="143" label="profileSetCrossOriginIsolatedAllowList"/>
   <int value="144" label="profileGetCrossOriginIsolatedAllowList"/>
+  <int value="145" label="webViewInstanceAddDocumentStartJavaScript"/>
+  <int value="146" label="webViewInstanceAddJavaScriptOnEvent"/>
+  <int value="147" label="webViewInstanceGetJavaScriptWorld"/>
+  <int value="148" label="webViewInstanceGetProfile"/>
 </enum>
 
 <!-- LINT.ThenChange(//base/tracing/protos/chrome_track_event.proto:WebViewStartup,//android_webview/java/src/org/chromium/android_webview/StartupCallSite.java:StartupCallSite) -->

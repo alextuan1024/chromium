@@ -210,11 +210,11 @@ void OpenDialogInOriginalProfileBookmarksManager(
 
   CHECK(!browser->GetProfile()->IsOffTheRecord());
   // Open BookmarksManager page.
-  browser->OpenURL(content::OpenURLParams(
-                       GURL(chrome::kChromeUIBookmarksURL), content::Referrer(),
-                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                       ui::PAGE_TRANSITION_LINK, false),
-                   /*navigation_handle_callback=*/{});
+  browser->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(chrome::kChromeUIBookmarksURL),
+          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
+      /*navigation_handle_callback=*/{});
 
   ShowDialogOnRegularProfile(browser, node, target_folder, index, dialog_type,
                              std::move(closed_callback));
@@ -232,8 +232,7 @@ void ShowDialog(BrowserWindowInterface* browser,
     // we do not do this, a new empty incognito browser opens as result of
     // `profiles::OpenBrowserWindowForProfile()`, which is confusing, so it is
     // better to exit early.
-    if (IncognitoModePrefs::GetAvailability(
-            browser->GetProfile()->GetPrefs()) ==
+    if (IncognitoModePrefs::GetAvailability(browser->GetProfile()) ==
         policy::IncognitoModeAvailability::kForced) {
       return;
     }

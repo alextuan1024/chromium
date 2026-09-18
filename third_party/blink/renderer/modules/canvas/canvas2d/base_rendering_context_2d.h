@@ -27,6 +27,7 @@
 #include "third_party/blink/renderer/platform/graphics/canvas_2d_color_params.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_deferred_paint_record.h"
 #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
+#include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/forward.h"  // IWYU pragma: keep (blink::Visitor)
@@ -74,9 +75,27 @@ class V8CanvasFontVariantCaps;
 class V8UnionElementOrElementImage;
 enum class PredefinedColorSpace;
 
-class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
-                                              public Canvas2DRecorderContext {
+class MODULES_EXPORT BaseRenderingContext2D
+    : public CanvasRenderingContext,
+      public Canvas2DRecorderContext,
+      public MemoryManagedPaintRecorder::Client {
  public:
+  // MemoryManagedPaintRecorder::Client implementation.
+  void InitializeForRecording(cc::PaintCanvas* canvas) const override;
+  void RecordingCleared() override;
+
+  using Canvas2DRecorderContext::Recorder;
+  const MemoryManagedPaintRecorder* Recorder() const final;
+
+  using Canvas2DRecorderContext::GetPaintCanvas;
+  const MemoryManagedPaintCanvas* GetPaintCanvas() const final;
+
+  bool clear_frame() const { return clear_frame_; }
+  void set_clear_frame(bool clear_frame) { clear_frame_ = clear_frame; }
+
+  size_t max_recorded_op_bytes() const { return max_recorded_op_bytes_; }
+  size_t max_pinned_image_bytes() const { return max_pinned_image_bytes_; }
+
   static constexpr unsigned kFallbackToCPUAfterReadbacks = 2;
 
   // Try to restore context 4 times in the event that the context is lost. If
@@ -133,6 +152,8 @@ class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
 
   virtual bool CanCreateResourceProvider() = 0;
   virtual bool InitializeResourceProvider() = 0;
+
+  std::optional<cc::PaintRecord> FlushCanvas(FlushReason) override = 0;
 
   String lang() const;
   void setLang(const String&);
@@ -258,7 +279,6 @@ class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
   }
   void DisableAccelerationForCanvas2D() final { DisableAcceleration(); }
   void PageVisibilityChanged() override {}
-  void RestoreCanvasMatrixClipStack(cc::PaintCanvas* c) const final;
   void Reset() override;
   void DidFlush() override;
 
@@ -278,6 +298,14 @@ class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
       Canvas2DResourceProvider* shared_image_provider,
       Canvas2DBitmapProvider* bitmap_provider,
       FlushReason reason);
+
+  void FlushIfRecordingLimitExceeded();
+
+  void CreateRecorder(const gfx::Size& size, bool is_graphite);
+  void ResetRecorder();
+  std::unique_ptr<MemoryManagedPaintRecorder> ReleaseRecorder();
+  void SetRecorder(std::unique_ptr<MemoryManagedPaintRecorder> recorder,
+                   bool is_graphite);
 
   explicit BaseRenderingContext2D(
       CanvasRenderingContextHost* canvas,
@@ -326,6 +354,7 @@ class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
   Canvas2DColorParams color_params_;
 
  private:
+  void UpdateRecordingLimits(bool is_graphite);
   virtual bool IsHibernating() const { return false; }
   virtual void EnableAccelerationIfPossible() {}
   void DrawTextInternal(const String& text,
@@ -345,6 +374,10 @@ class MODULES_EXPORT BaseRenderingContext2D : public CanvasRenderingContext,
 
   void WillUseCurrentFont() const;
 
+  std::unique_ptr<MemoryManagedPaintRecorder> recorder_;
+  bool clear_frame_ = true;
+  size_t max_recorded_op_bytes_ = 0;
+  size_t max_pinned_image_bytes_ = 0;
   int num_readbacks_performed_ = 0;
   unsigned read_count_ = 0;
   base::RepeatingClosure on_restore_failed_callback_for_testing_;

@@ -49,6 +49,7 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.ValueChangedCallback;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -227,6 +228,7 @@ import org.chromium.chrome.browser.ui.appmenu.MenuButtonDelegate;
 import org.chromium.chrome.browser.ui.bottombar.AiModeActionCoordinator;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarUtils;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeatureKey;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
@@ -258,11 +260,11 @@ import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
-import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.omnibox.AutocompleteInput;
+import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.page_info.PageInfoController.OpenedFromSource;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -384,7 +386,7 @@ public class ToolbarManager
     private final OneshotSupplierImpl<OmniboxStub> mOmniboxStubSupplier =
             new OneshotSupplierImpl<>();
     private final Supplier<LocationBar> mLocationBarSupplier = () -> mLocationBar;
-    private FindToolbarManager mFindToolbarManager;
+    private @Nullable FindToolbarManager mFindToolbarManager;
 
     private @MonotonicNonNull LayoutManagerImpl mLayoutManager;
 
@@ -747,7 +749,7 @@ public class ToolbarManager
      * @param scrimManager A means of showing the scrim.
      * @param toolbarActionModeCallback Callback that communicates changes in the conceptual mode of
      *     toolbar interaction.
-     * @param findToolbarManager The manager for the find in page function.
+     * @param findToolbarManagerSupplier Supplier of the manager for the find in page function.
      * @param profileSupplier Supplier of the currently applicable profile.
      * @param bookmarkModelSupplier Supplier of the bookmark bridge for the current profile.
      *     TODO(crbug.com/40131776): Use OneShotSupplier once it is ready.
@@ -809,7 +811,7 @@ public class ToolbarManager
             ActivityTabProvider tabProvider,
             ScrimManager scrimManager,
             ToolbarActionModeCallback toolbarActionModeCallback,
-            FindToolbarManager findToolbarManager,
+            LazyOneshotSupplier<FindToolbarManager> findToolbarManagerSupplier,
             MonotonicObservableSupplier<Profile> profileSupplier,
             NullableObservableSupplier<BookmarkModel> bookmarkModelSupplier,
             OneshotSupplier<LayoutStateProvider> layoutStateProviderSupplier,
@@ -1833,8 +1835,12 @@ public class ToolbarManager
                     }
                 };
 
-        mFindToolbarManager = findToolbarManager;
-        mFindToolbarManager.addObserver(mFindToolbarObserver);
+        findToolbarManagerSupplier.onAvailable(
+                mCallbackController.makeCancelable(
+                        findToolbarManager -> {
+                            mFindToolbarManager = findToolbarManager;
+                            mFindToolbarManager.addObserver(mFindToolbarObserver);
+                        }));
 
         Callback<@Nullable Profile> profileObserver =
                 new Callback<@Nullable Profile>() {
@@ -1895,6 +1901,23 @@ public class ToolbarManager
     }
 
     /**
+     * Sets the {@link FindToolbarManager} and attaches the observer.
+     *
+     * @param findToolbarManager The {@link FindToolbarManager} to set.
+     */
+    public void setFindToolbarManager(FindToolbarManager findToolbarManager) {
+        if (mIsDestroyed || mFindToolbarManager == findToolbarManager) {
+            return;
+        }
+
+        if (mFindToolbarManager != null) {
+            mFindToolbarManager.removeObserver(mFindToolbarObserver);
+        }
+        mFindToolbarManager = findToolbarManager;
+        mFindToolbarManager.addObserver(mFindToolbarObserver);
+    }
+
+    /**
      * Sets the supplier for the {@link SideUiStateProvider}. Will only be called if the
      * EnableAndroidSidePanel feature flag is enabled.
      *
@@ -1931,7 +1954,7 @@ public class ToolbarManager
 
         mProgressBarSideUiObserver =
                 new ViewMarginAdjusterForSideUi(
-                        mProgressBarContainer, /* forToolbarElement= */ true);
+                        mProgressBarContainer, /* forToolbarElement= */ false);
         mProgressBarSideUiObserver.onSideUiSpecsChanged(currentSideUiSpecs);
         mSideUiStateProvider.addObserver(mProgressBarSideUiObserver);
     }
@@ -2463,6 +2486,16 @@ public class ToolbarManager
         return mLocationBar.getOmniboxStub().isUrlBarFocused();
     }
 
+    /**
+     * Focuses the UrlBar and selects all of its text, preserving any in-progress input session.
+     *
+     * @param focusReason The focus reason to start a session with, if none is in progress.
+     */
+    public void focusAndSelectAllUrlBarText(@OmniboxFocusReason int focusReason) {
+        if (mIsDestroyed || mLocationBar == null || mLocationBar.getOmniboxStub() == null) return;
+        mLocationBar.getOmniboxStub().focusAndSelectAllText(focusReason);
+    }
+
     /** Returns the UrlBar text excluding the autocomplete text. */
     public String getUrlBarTextWithoutAutocomplete() {
         assert mLocationBar instanceof LocationBarCoordinator
@@ -2525,7 +2558,9 @@ public class ToolbarManager
                         mActivityTabProvider.asObservable(),
                         (ScrollingBottomViewResourceFrameLayout) tabGroupUiContainer,
                         LayerType.TABSTRIP_TOOLBAR,
-                        R.dimen.tab_group_ui_height,
+                        mActivity
+                                .getResources()
+                                .getDimensionPixelSize(R.dimen.tab_group_ui_height),
                         SupplierUtils.upcast(
                                 mTabGroupUiOneshotSupplier, BottomControlsContentDelegate.class),
                         mTabObscuringHandler,
@@ -2590,7 +2625,7 @@ public class ToolbarManager
                         mActivityTabProvider.asObservable(),
                         (ScrollingBottomViewResourceFrameLayout) bottomAppBarContainer,
                         LayerType.BOTTOM_APP_BAR,
-                        R.dimen.bottom_bar_height,
+                        BottomBarUtils.getBottomBarHeight(mActivity),
                         bottomBarContainerOneshotSupplier,
                         mTabObscuringHandler,
                         mLayoutManager.getOverlayPanelManager().getPanelStateSupplier(),
@@ -2964,9 +2999,6 @@ public class ToolbarManager
         }
         mLocationBar.removeOmniboxSuggestionsDropdownScrollListener(mStatusBarColorController);
 
-        if (mInitializedWithNative) {
-            mFindToolbarManager.removeObserver(mFindToolbarObserver);
-        }
         if (mTabModelSelectorSupplier != null) {
             mTabModelSelectorSupplier = null;
         }
@@ -3928,10 +3960,14 @@ public class ToolbarManager
         mSuppressToolbarSceneLayerSupplier.set(mIsXrFsm || mIsVerticalTabsHiddenDueToNarrow);
     }
 
-    private void onToolbarRightMarginChanged(int rightMargin) {
-        // When Vertical Tabs is in auto-hidden mode, keep the right margin intact. It is
-        // required only for VT - HT switching.
-        if (mIsVerticalTabsHiddenDueToNarrow) return;
+    @VisibleForTesting
+    void onToolbarRightMarginChanged(int rightMargin) {
+        // When Vertical Tabs is in auto-hidden mode, keep the right margin intact on the layout
+        // and update the margin to be restored when Vertical Tabs un-hides.
+        if (mIsVerticalTabsHiddenDueToNarrow) {
+            mRestoredRightMargin = rightMargin;
+            return;
+        }
 
         if (mControlContainer == null) return;
         View toolbarTabletLayout = mControlContainer.findViewById(R.id.toolbar_tablet_layout);
@@ -4105,11 +4141,7 @@ public class ToolbarManager
         public @AppInstallState int getAppInstallState(@Nullable Tab tab) {
             if (tab == null) return AppInstallState.NOT_INSTALLED;
 
-            Origin origin = Origin.create(tab.getUrl().getSpec());
-            if (origin != null
-                    && WebappRegistry.getInstance()
-                            .getOriginsWithInstalledApp()
-                            .contains(origin.toString())) {
+            if (WebappRegistry.getInstance().isAppInstalledForUrl(tab.getUrl())) {
                 return AppInstallState.INSTALLED;
             }
 
@@ -4133,6 +4165,11 @@ public class ToolbarManager
 
         @Override
         public void onOriginsWithInstalledAppChanged() {
+            // Note: This observer is notified when WebAPKs are registered or unregistered,
+            // as well as when verified TWAs are uninstalled (via InstalledWebappBroadcastReceiver
+            // and InstalledWebappPermissionStore). However, external TWA installs (and uninstalls
+            // of TWAs not yet verified in Chrome) are not received via broadcast events; their
+            // state is evaluated dynamically on each page navigation in isAppInstalled().
             notifyObservers();
         }
 

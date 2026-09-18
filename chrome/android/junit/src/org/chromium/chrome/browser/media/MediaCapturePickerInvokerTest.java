@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.media;
 
+import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -15,7 +16,6 @@ import android.content.Intent;
 import androidx.activity.result.ActivityResult;
 import androidx.fragment.app.FragmentActivity;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -56,6 +56,7 @@ public class MediaCapturePickerInvokerTest {
         private Intent mIntent;
         private Tab mTab;
         private boolean mShouldShareAudio;
+        private WebContents mStoppedWebContents;
 
         @Override
         public Intent createScreenCaptureIntent(Context context, Params params, Delegate delegate) {
@@ -70,6 +71,15 @@ public class MediaCapturePickerInvokerTest {
         @Override
         public boolean shouldShareAudio() {
             return mShouldShareAudio;
+        }
+
+        @Override
+        public void stopAppContentMediaProjection(WebContents webContents) {
+            mStoppedWebContents = webContents;
+        }
+
+        private WebContents getStoppedWebContents() {
+            return mStoppedWebContents;
         }
 
         private void setIntent(Intent intent) {
@@ -115,7 +125,6 @@ public class MediaCapturePickerInvokerTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_cancel() {
         mPickerDelegate.setIntent(new Intent());
         MediaCapturePickerInvoker.show(mActivity, mediaCaptureParams(), mDelegate);
@@ -128,7 +137,6 @@ public class MediaCapturePickerInvokerTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_tabWithAudio() {
         Tab tab = mock(Tab.class);
         doReturn(mTabWebContents).when(tab).getWebContents();
@@ -146,7 +154,6 @@ public class MediaCapturePickerInvokerTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_tabWithoutAudio() {
         Tab tab = mock(Tab.class);
         doReturn(mTabWebContents).when(tab).getWebContents();
@@ -164,26 +171,28 @@ public class MediaCapturePickerInvokerTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_window() {
         mPickerDelegate.setIntent(new Intent());
-        MediaCapturePickerInvoker.show(mActivity, mediaCaptureParams(), mDelegate);
+        Params params = mediaCaptureParams();
+        MediaCapturePickerInvoker.show(mActivity, params, mDelegate);
         MediaCapturePickerHeadlessFragment fragment =
                 MediaCapturePickerHeadlessFragment.getInstance((FragmentActivity) mActivity);
         fragment.mNextDelegate.onPicked(
                 CaptureAction.CAPTURE_WINDOW, new ActivityResult(Activity.RESULT_OK, new Intent()));
         verify(mDelegate).onPickWindow();
+        assertEquals(params.webContents, mPickerDelegate.getStoppedWebContents());
     }
 
     @Test
-    @SmallTest
     public void testShow_screen() {
         mPickerDelegate.setIntent(new Intent());
-        MediaCapturePickerInvoker.show(mActivity, mediaCaptureParams(), mDelegate);
+        Params params = mediaCaptureParams();
+        MediaCapturePickerInvoker.show(mActivity, params, mDelegate);
         MediaCapturePickerHeadlessFragment fragment =
                 MediaCapturePickerHeadlessFragment.getInstance((FragmentActivity) mActivity);
         fragment.mNextDelegate.onPicked(
                 CaptureAction.CAPTURE_SCREEN, new ActivityResult(Activity.RESULT_OK, new Intent()));
         verify(mDelegate).onPickScreen();
+        assertEquals(params.webContents, mPickerDelegate.getStoppedWebContents());
     }
 }

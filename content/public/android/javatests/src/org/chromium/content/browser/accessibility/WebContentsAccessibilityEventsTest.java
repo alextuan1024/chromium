@@ -45,6 +45,7 @@ import java.util.concurrent.TimeoutException;
 @SuppressLint("VisibleForTests")
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
+@DisableFeatures(ContentFeatures.ACCESSIBILITY_REQUEST_SCOPED_CONTENT_CHANGED_EVENTS)
 @EnableFeatures(ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION)
 @TestAnimations.EnableAnimations
 public class WebContentsAccessibilityEventsTest {
@@ -1251,6 +1252,24 @@ public class WebContentsAccessibilityEventsTest {
     @SmallTest
     public void test_liveRegionRemove() {
         performTest("live-region-remove.html", "live-region-remove-expected-android.txt");
+    }
+
+    @Test
+    @SmallTest
+    public void test_liveRegionReparent() {
+        performTest("live-region-reparent.html", "live-region-reparent-expected-android.txt");
+    }
+
+    @Test
+    @SmallTest
+    public void test_liveRegionReparentFromLiveRegion() {
+        performTest("live-region-reparent-from-live-region.html", "live-region-reparent-from-live-region-expected-android.txt");
+    }
+
+    @Test
+    @SmallTest
+    public void test_liveRegionReparentWithinLiveRegion() {
+        performTest("live-region-reparent-within-live-region.html", "live-region-reparent-within-live-region-expected-android.txt");
     }
 
     @Test

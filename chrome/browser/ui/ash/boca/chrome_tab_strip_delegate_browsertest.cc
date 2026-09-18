@@ -9,7 +9,6 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -21,6 +20,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "ui/base/base_window.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 constexpr char kTabUrl1[] = "https://foo/1";
@@ -144,4 +144,19 @@ IN_PROC_BROWSER_TEST_F(ChromeTabStripDelegateBrowserTest,
       swa_browser->GetWindow()->GetNativeWindow());
   // Contains the webui itself.
   EXPECT_EQ(1u, tab_list.size());
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeTabStripDelegateBrowserTest,
+                       NullWindowShouldReturnEmptyData) {
+  auto tab_list = delegate()->GetTabsListForWindow(/*window=*/nullptr);
+  EXPECT_EQ(0u, tab_list.size());
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeTabStripDelegateBrowserTest,
+                       EmptyWindowShouldReturnEmptyData) {
+  BrowserWindowInterface* browser =
+      CreateBrowser(/*urls=*/{}, /*active_url_index=*/std::nullopt);
+  auto tab_list =
+      delegate()->GetTabsListForWindow(browser->GetWindow()->GetNativeWindow());
+  EXPECT_EQ(0u, tab_list.size());
 }

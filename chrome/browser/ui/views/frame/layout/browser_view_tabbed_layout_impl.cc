@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/animations/organizer_panel_animations.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
@@ -41,7 +42,7 @@
 #include "chrome/browser/ui/views/side_panel/side_panel_animation_content_view.h"
 #include "chrome/browser/ui/views/tabs/organizer/layout_constants.h"
 #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
-#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_view.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_tray_view.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/insets.h"
@@ -49,6 +50,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -76,6 +78,8 @@ constexpr double kVerticalTabStripOutlineFadeOnHover = 0.5;
 // The opacity of the vertical tab strip background when the glass frame is
 // enabled and expand-on-hover is active.
 constexpr double kGlassExpandOnHoverOpacity = 0.95;
+
+enum class OrganizerPanelLocation { kNone, kOrganizerTray, kVerticalTabStrip };
 
 // Increases the leading or trailing exclusion padding to `minimum`.
 void IncreasePaddingToMinimum(BrowserLayoutParams& params, int minimum) {
@@ -135,6 +139,12 @@ struct BrowserViewTabbedLayoutImpl::HorizontalLayout {
   bool is_split_view = false;
 
   bool has_side_panel() const { return side_panel_width > 0; }
+};
+
+// Describes how to render the organizer panel.
+struct BrowserViewTabbedLayoutImpl::OrganizerPanelAnimation {
+  OrganizerPanelLocation location = OrganizerPanelLocation::kNone;
+  double reveal_amount = 0.0;
 };
 
 // Describes how to render the top of the vertical tab strip.
@@ -197,6 +207,7 @@ struct BrowserViewTabbedLayoutImpl::TransientLayoutData {
   WindowState window_state;
   TabStripType tab_strip_type;
   HorizontalLayout horizontal_layout;
+  OrganizerPanelAnimation organizer_panel_animation;
   VerticalTabStripAnimation vertical_tab_strip_animation;
   SeparatorInfo separator_info;
   SidePanelContentAnimation side_panel_content_animation;
@@ -523,6 +534,25 @@ BrowserViewTabbedLayoutImpl::CalculateHorizontalLayout(
   return layout;
 }
 
+BrowserViewTabbedLayoutImpl::OrganizerPanelAnimation
+BrowserViewTabbedLayoutImpl::CalculateOrganizerPanelAnimation() const {
+  OrganizerPanelAnimation anim;
+  anim.reveal_amount =
+      delegate()
+          .GetAnimationController()
+          ->GetCurrentValue(OrganizerPanelAnimations::kOrganizerPanel,
+                            OrganizerPanelAnimations::kVisibleWidth)
+          .value_or(0.0);
+  if (anim.reveal_amount > 0.0) {
+    anim.location =
+        organizer_panel::ShouldShowOrganizerPanelInVerticalTabStrip() &&
+                layout_data_->tab_strip_type == TabStripType::kVertical
+            ? OrganizerPanelLocation::kVerticalTabStrip
+            : OrganizerPanelLocation::kOrganizerTray;
+  }
+  return anim;
+}
+
 BrowserViewTabbedLayoutImpl::VerticalTabStripAnimation
 BrowserViewTabbedLayoutImpl::CalculateVerticalTabStripAnimation() {
   // Since the state of the side panel and bookmarks can change outside of
@@ -737,6 +767,47 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   bool needs_exclusion = true;
   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
 
+  if (IsParentedTo(views().organizer_tray, views().browser_view)) {
+    const bool show_organizer_tray =
+        layout_data_->organizer_panel_animation.location ==
+        OrganizerPanelLocation::kOrganizerTray;
+    gfx::Rect organizer_tray_bounds;
+    if (show_organizer_tray) {
+      int target_width = organizer_panel::kOrganizerPanelMinWidth;
+      bool organizer_panel_should_appear_elevated = true;
+      if (layout_data_->tab_strip_type == TabStripType::kVertical) {
+        organizer_panel_should_appear_elevated =
+            horizontal_layout.vertical_tab_strip_width <
+            organizer_panel::kOrganizerPanelMinWidth;
+        if (!organizer_panel_should_appear_elevated) {
+          target_width = std::max(target_width - views::Separator::kThickness,
+                                  horizontal_layout.vertical_tab_strip_width -
+                                      views::Separator::kThickness);
+        }
+      }
+      views().organizer_tray->SetTargetWidth(target_width);
+      views().organizer_tray->SetIsElevated(
+          organizer_panel_should_appear_elevated);
+      views().organizer_tray->SetTopLeadingExclusion(
+          gfx::ToCeiledSize(params.leading_exclusion.ContentWithPadding()));
+
+      const double reveal_amount =
+          delegate()
+              .GetAnimationController()
+              ->GetCurrentValue(OrganizerPanelAnimations::kOrganizerPanel,
+                                OrganizerPanelAnimations::kVisibleWidth)
+              .value_or(0.0);
+      const int visible_width = base::ClampFloor(target_width * reveal_amount);
+
+      organizer_tray_bounds =
+          gfx::Rect(browser_params.visual_client_area.x(),
+                    browser_params.visual_client_area.y(), visible_width,
+                    browser_params.visual_client_area.height());
+    }
+    layout.AddChild(views().organizer_tray, organizer_tray_bounds,
+                    show_organizer_tray);
+  }
+
   // Lay out horizontal tab strip region if present.
   if (IsParentedTo(views().horizontal_tab_strip_region_view,
                    views().browser_view)) {
@@ -812,6 +883,12 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
         vertical_tab_strip_bounds.Inset(
             gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
       }
+
+      views().vertical_tab_strip_region_view->SetOrganizerPanelShowPercent(
+          layout_data_->organizer_panel_animation.location ==
+                  OrganizerPanelLocation::kVerticalTabStrip
+              ? layout_data_->organizer_panel_animation.reveal_amount
+              : 0.0);
 
       const int inset_amount = horizontal_layout.vertical_tab_strip_width -
                                GetVerticalTabStripContentOverlap();
@@ -890,37 +967,6 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     }
     layout.AddChild(views().vertical_tab_strip_bottom_corner, corner_bounds,
                     bottom_corner_visible);
-  }
-
-  // TODO(crbug.com/469425263): Ensure correct layout calculations for the
-  // Organizer Panel Container.
-  if (IsParentedToAndVisible(views().organizer_panel_container,
-                             views().browser_view)) {
-    int target_width = organizer_panel::kOrganizerPanelMinWidth;
-    bool organizer_panel_should_appear_elevated = true;
-    if (layout_data_->tab_strip_type == TabStripType::kVertical) {
-      organizer_panel_should_appear_elevated =
-          horizontal_layout.vertical_tab_strip_width <
-          organizer_panel::kOrganizerPanelMinWidth;
-      if (!organizer_panel_should_appear_elevated) {
-        target_width = std::max(target_width - views::Separator::kThickness,
-                                horizontal_layout.vertical_tab_strip_width -
-                                    views::Separator::kThickness);
-      }
-    }
-    views().organizer_panel_container->SetTargetWidth(target_width);
-    views().organizer_panel_container->SetIsElevated(
-        organizer_panel_should_appear_elevated);
-
-    const double reveal_amount =
-        views().organizer_panel_container->GetResizeAnimationValue();
-    const int visible_width = base::ClampFloor(target_width * reveal_amount);
-
-    gfx::Rect organizer_panel_bounds =
-        gfx::Rect(browser_params.visual_client_area.x(),
-                  browser_params.visual_client_area.y(), visible_width,
-                  browser_params.visual_client_area.height());
-    layout.AddChild(views().organizer_panel_container, organizer_panel_bounds);
   }
 
   // When the tabstrip isn't at the top or in constrained widths, the top
@@ -1466,6 +1512,7 @@ void BrowserViewTabbedLayoutImpl::DoPreLayoutComputations(
   layout_data_->tab_strip_type = delegate().GetTabStripType();
   layout_data_->horizontal_layout =
       CalculateHorizontalLayout(layout_data_->revised_params);
+  layout_data_->organizer_panel_animation = CalculateOrganizerPanelAnimation();
   layout_data_->vertical_tab_strip_animation =
       CalculateVerticalTabStripAnimation();
   layout_data_->separator_info = CalculateSeparatorInfo();
@@ -1482,9 +1529,14 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
   CustomCornersBackground::Cutouts tab_strip_cutout_views;
   int side_panel_start = layout_data_->revised_params.visual_client_area.x();
 
+  const double flyover_panel_opacity =
+      features::kGlassExpandOnHoverEnabled.Get() ? kGlassExpandOnHoverOpacity
+                                                 : 1.0;
+
   // Set vertical tabstrip corners.
   CustomCorners::ColorChoiceWithAlpha frame_color(CustomCorners::FrameTheme(),
                                                   1.0f);
+  CustomCornersBackground* vertical_tabs_background = nullptr;
   if (layout_data_->tab_strip_type == TabStripType::kVertical) {
     side_panel_start = views().vertical_tab_strip_region_view->bounds().right();
 
@@ -1492,10 +1544,9 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
     // collapsed or there are no caption buttons on the leading edge.
     const VerticalTabStripAnimation& animation =
         layout_data_->vertical_tab_strip_animation;
-    auto* const vertical_tabs_background =
-        views()
-            .vertical_tab_strip_region_view->background()
-            ->AsA<CustomCornersBackground>();
+    vertical_tabs_background = views()
+                                   .vertical_tab_strip_region_view->background()
+                                   ->AsA<CustomCornersBackground>();
     CHECK(vertical_tabs_background)
         << "Expected vertical tab strip to have a CustomCornersBackground.";
 
@@ -1507,13 +1558,9 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
       // visible fade. This isn't perfect, but hopefully with glass
       // expand-on-hover it will improve.
       auto vertical_tabs_background_color = frame_color;
-      const double expand_on_hover_opacity =
-          features::kGlassExpandOnHoverEnabled.Get()
-              ? kGlassExpandOnHoverOpacity
-              : 1.0;
       vertical_tabs_background_color.opacity = static_cast<float>(
           (1.0 - animation.expand_on_hover_opacity) * frame_color.opacity +
-          animation.expand_on_hover_opacity * expand_on_hover_opacity);
+          animation.expand_on_hover_opacity * flyover_panel_opacity);
       vertical_tabs_background->SetPrimaryColor(vertical_tabs_background_color);
     } else {
       vertical_tabs_background->SetPrimaryColor(frame_color);
@@ -1558,30 +1605,6 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
     }
 
     vertical_tabs_background->SetCorners(vertical_tabs_corners);
-
-    // When the organizer panel is animating open or closed and does not appear
-    // elevated, the background of vertical tabs should fade to match the
-    // background color of the panel.
-    if (delegate().IsOrganizerPanelVisible()) {
-      CustomFloatingCorner* const vertical_tabs_top_corner =
-          views().vertical_tab_strip_top_corner;
-      CustomFloatingCorner* const vertical_tabs_bottom_corner =
-          views().vertical_tab_strip_bottom_corner;
-      if (!views().organizer_panel_container->is_elevated()) {
-        auto organizer_panel_reveal_amount =
-            views().organizer_panel_container->GetResizeAnimationValue();
-        CustomCorners::ColorChoiceWithAlpha const fade_background{
-            organizer_panel::kOrganizerPanelBackgroundColor,
-            static_cast<float>(organizer_panel_reveal_amount)};
-        vertical_tabs_background->SetFadeBackground(fade_background);
-        vertical_tabs_top_corner->SetFadeBackground(fade_background);
-        vertical_tabs_bottom_corner->SetFadeBackground(fade_background);
-      } else {
-        vertical_tabs_background->SetFadeBackground(std::nullopt);
-        vertical_tabs_top_corner->SetFadeBackground(std::nullopt);
-        vertical_tabs_bottom_corner->SetFadeBackground(std::nullopt);
-      }
-    }
 
     // Apply shadow for expand-on-hover.
     auto* const shadow_frame =
@@ -1658,9 +1681,69 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
             views().vertical_tab_strip_region_view, blur_background_opacity);
       }
     }
+
+    views().vertical_tab_strip_region_view->UpdatePanelClips();
+
   } else if (layout_data_->tab_strip_type == TabStripType::kHorizontal &&
              !is_fullscreen(layout_data_->window_state) && in_glass_mode()) {
     frame_color.opacity = 0.0f;
+  }
+
+  // When the organizer panel is animating open or closed and does not appear
+  // elevated, the background of vertical tabs should fade to match the
+  // background color of the panel.
+  if (IsParentedTo(views().organizer_tray, views().browser_view)) {
+    const bool is_elevated = views().organizer_tray->is_elevated();
+    if (CustomCornersBackground* const background =
+            views()
+                .organizer_tray->background()
+                ->AsA<CustomCornersBackground>();
+        background && views().organizer_tray->GetVisible()) {
+      const bool blur = features::IsGlassFrameEnabled() && is_elevated;
+      background->SetUseBackgroundBlur(blur);
+      background->SetPrimaryColor(CustomCorners::ColorChoiceWithAlpha(
+          organizer_panel::kOrganizerPanelBackgroundColor,
+          blur ? flyover_panel_opacity : 1.0));
+
+      CustomCornersBackground::Corners corners;
+      corners[CornerOrientation::kTopLeading] =
+          background->GetWindowCorner(true);
+      corners[CornerOrientation::kBottomLeading] =
+          background->GetWindowCorner(false);
+      corners[CornerOrientation::kTopTrailing].type =
+          is_elevated ? CustomCornersBackground::CornerType::kRounded
+                      : CustomCornersBackground::CornerType::kSquare;
+      corners[CornerOrientation::kBottomTrailing].type =
+          is_elevated ? CustomCornersBackground::CornerType::kRounded
+                      : CustomCornersBackground::CornerType::kSquare;
+      background->SetCorners(corners);
+    }
+    CustomFloatingCorner* const vertical_tabs_top_corner =
+        views().vertical_tab_strip_top_corner;
+    CustomFloatingCorner* const vertical_tabs_bottom_corner =
+        views().vertical_tab_strip_bottom_corner;
+    if (vertical_tabs_background) {
+      if (views().organizer_tray->GetVisible() && !is_elevated) {
+        CustomCorners::ColorChoiceWithAlpha const fade_background{
+            organizer_panel::kOrganizerPanelBackgroundColor,
+            static_cast<float>(
+                layout_data_->organizer_panel_animation.reveal_amount)};
+        // TODO(https://crbug.com/555248711): Once the organizer panel is
+        // entirely moved into the vertical tab strip region view, the entire
+        // "fade background" system can be removed.
+        vertical_tabs_background->SetFadeBackground(fade_background);
+        vertical_tabs_top_corner->SetFadeBackground(fade_background);
+        vertical_tabs_bottom_corner->SetFadeBackground(fade_background);
+      } else {
+        vertical_tabs_background->SetFadeBackground(std::nullopt);
+        vertical_tabs_top_corner->SetFadeBackground(std::nullopt);
+        vertical_tabs_bottom_corner->SetFadeBackground(std::nullopt);
+      }
+    }
+
+    if (views().organizer_tray->GetVisible()) {
+      views().organizer_tray->UpdatePanelClip();
+    }
   }
 
   auto* const toolbar_background =

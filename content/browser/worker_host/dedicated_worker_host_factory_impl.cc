@@ -92,8 +92,8 @@ DedicatedWorkerHostFactoryImpl::DedicatedWorkerHostFactoryImpl(
       creator_policies_(creator_policies.Clone()),
       creator_coep_reporter_(std::move(creator_coep_reporter)),
       creator_network_restrictions_id_(creator_network_restrictions_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(creator_client_security_state_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(creator_client_security_state_, base::NotFatalUntil::M160);
 }
 
 DedicatedWorkerHostFactoryImpl::~DedicatedWorkerHostFactoryImpl() = default;
@@ -105,13 +105,13 @@ void DedicatedWorkerHostFactoryImpl::CreateWorkerHostAndStartScriptLoad(
     blink::mojom::FetchClientSettingsObjectPtr
         outside_fetch_client_settings_object,
     mojo::PendingRemote<blink::mojom::BlobURLToken> blob_url_token,
-    mojo::PendingRemote<blink::mojom::DedicatedWorkerHostFactoryClient> client,
-    net::StorageAccessApiStatus storage_access_api_status) {
+    mojo::PendingRemote<blink::mojom::DedicatedWorkerHostFactoryClient>
+        client) {
   TRACE_EVENT(
       "loading",
       "DedicatedWorkerHostFactoryImpl::CreateWorkerHostAndStartScriptLoad",
       "script_url", script_url);
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   base::TimeTicks start_time = base::TimeTicks::Now();
 
   // This function is known to be heap allocation heavy and performance
@@ -131,17 +131,13 @@ void DedicatedWorkerHostFactoryImpl::CreateWorkerHostAndStartScriptLoad(
     return;
   }
 
-  // If the renderer claims it has storage access but the browser has no record
-  // of granting the permission then deny the request.
-  if (storage_access_api_status != net::StorageAccessApiStatus::kNone) {
-    RenderFrameHostImpl* ancestor_render_frame_host = RenderFrameHostImpl::From(
-        ancestor_document_.AsRenderFrameHostIfValid());
-    if (!ancestor_render_frame_host ||
-        ancestor_render_frame_host->IsStorageAccessRestricted() ||
-        !ancestor_render_frame_host->IsFullCookieAccessAllowed()) {
-      mojo::ReportBadMessage("DWH_STORAGE_ACCESS_NOT_GRANTED");
-      return;
-    }
+  net::StorageAccessApiStatus storage_access_api_status =
+      net::StorageAccessApiStatus::kNone;
+  if (RenderFrameHostImpl* ancestor_render_frame_host =
+          RenderFrameHostImpl::From(
+              ancestor_document_.AsRenderFrameHostIfValid())) {
+    storage_access_api_status =
+        ancestor_render_frame_host->GetStorageAccessApiStatus();
   }
 
   // TODO(crbug.com/40051700): Compare `creator_storage_key_.origin()` to

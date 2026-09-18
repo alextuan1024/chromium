@@ -7,12 +7,12 @@
 
 #import <tuple>
 
-#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
 #import "components/autofill/core/browser/field_types.h"
+#import "components/autofill/core/browser/filling/field_filling_util.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
@@ -126,17 +126,11 @@ constexpr std::string_view kVehicleOverrideParam =
     "3343056218385819478_3849212670_177";
 
 NSString* PassportSuggestionAccessibilityLabel() {
-  constexpr std::u16string_view kDots = u"\u2022\u2060\u2006\u2060";
-
-  NSString* last_four =
-      [kPassportNumber substringFromIndex:[kPassportNumber length] - 4];
-  std::u16string last_four_u16 = base::SysNSStringToUTF16(last_four);
-
   std::u16string obfuscated_number =
-      base::StrCat({kDots, kDots, kDots, kDots, kDots, last_four_u16});
-  NSString* obfuscated_number_ns = base::SysUTF16ToNSString(obfuscated_number);
-
-  return [NSString stringWithFormat:@"%@, %@ · %@", obfuscated_number_ns,
+      autofill::GetObfuscatedValue(base::SysNSStringToUTF16(kPassportNumber),
+                                   /*visible_suffix_length=*/4);
+  return [NSString stringWithFormat:@"%@, %@ · %@",
+                                    base::SysUTF16ToNSString(obfuscated_number),
                                     kPassportEntityType, kPassportOwnerName];
 }
 
@@ -602,6 +596,12 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 - (void)loadVehiclePage {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/vehicle_form.html")];
   [ChromeEarlGrey waitForWebStateContainingText:"Vehicle"];
+}
+
+// Loads simple contenteditable page on localhost.
+- (void)loadContentEditablePage {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/contenteditable.html")];
+  [ChromeEarlGrey waitForWebStateContainingText:"contenteditable"];
 }
 
 #pragma mark - Tests
@@ -1383,6 +1383,32 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormUsername)];
   [ChromeEarlGrey closeCurrentTab];
+}
+
+// Tests navigation buttons are available for a `contenteditable` element.
+- (void)testDefaultInputViewEnabled {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped for iPad since this feature is iPhone only.");
+  }
+  [self loadContentEditablePage];
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("editor")];
+  id<GREYMatcher> previousButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_PREVIOUS_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  id<GREYMatcher> nextButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_NEXT_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:previousButton];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:nextButton];
 }
 
 @end

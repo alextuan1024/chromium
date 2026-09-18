@@ -291,7 +291,7 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
   void CheckManagementPolicy(content::BrowserContext* context) override;
   scoped_refptr<safe_browsing::SafeBrowsingDatabaseManager>
   GetSafeBrowsingDatabaseManager() const override;
-  std::optional<safe_browsing::V4ProtocolConfig> GetV4ProtocolConfig()
+  std::optional<safe_browsing::SBProtocolConfig> GetSBProtocolConfig()
       const override;
   void OnActiveTabPermissionGranted(
       const Extension* extension,
@@ -343,6 +343,7 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
       std::unique_ptr<InstallPromptData> prompt) override;
   gfx::NativeWindow GetNativeWindowForFunction(
       ExtensionFunction& function) override;
+  bool IsLazyKeyedServiceInstantiationEnabled() const override;
 
   void SetAPIClientForTest(std::unique_ptr<ExtensionsAPIClient> client);
 

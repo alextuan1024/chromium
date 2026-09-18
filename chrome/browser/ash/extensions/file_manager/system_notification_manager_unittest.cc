@@ -30,7 +30,6 @@
 #include "chrome/browser/notifications/notification_display_service_impl.h"
 #include "chrome/browser/notifications/notification_platform_bridge_delegator.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -38,6 +37,7 @@
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "storage/browser/file_system/file_system_url.h"
@@ -396,28 +396,6 @@ TEST_F(SystemNotificationManagerTest, FormatFail) {
 }
 
 constexpr char kPartitionLabel[] = "OEM";
-std::u16string kPartitionTitle = u"Format OEM";
-
-TEST_F(SystemNotificationManagerTest, PartitionFail) {
-  base::HistogramTester histogram_tester;
-  event_router_->OnPartitionCompleted(kDevicePath, kPartitionLabel,
-                                      /*success=*/false);
-  // Get the number of notifications from the NotificationDisplayService.
-  NotificationDisplayServiceFactory::GetForProfile(profile_)->GetDisplayed(
-      BindOnce(&SystemNotificationManagerTest::GetNotificationsCallback,
-               weak_ptr_factory_.GetWeakPtr()));
-  // Check: We have one notification.
-  ASSERT_EQ(1u, notification_count_);
-  // Get the strings for the displayed notification.
-  Strings strings = bridge_->GetStrings("partition_fail");
-  // Check: the expected strings match.
-  std::u16string kPartitionFailMesssage = u"Could not format OEM";
-  EXPECT_EQ(strings.title, kPartitionTitle);
-  EXPECT_EQ(strings.message, kPartitionFailMesssage);
-  histogram_tester.ExpectUniqueSample(kNotificationShowHistogramName,
-                                      DeviceNotificationUmaType::PARTITION_FAIL,
-                                      1);
-}
 
 TEST_F(SystemNotificationManagerTest, RenameFail) {
   base::HistogramTester histogram_tester;

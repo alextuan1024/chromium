@@ -23,6 +23,7 @@
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_enums.h"
 #include "chrome/browser/keyboard_accessory/android/manual_filling_controller.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #include "components/password_manager/core/browser/credential_cache.h"
@@ -245,6 +246,23 @@ void ManualFillingViewAndroid::ShowAccessorySheetTab(
   }
 }
 
+void ManualFillingViewAndroid::SetSelectedSuggestion(
+    std::optional<int> suggestion_index) {
+  if (auto obj = GetOrCreateJavaObject()) {
+    Java_ManualFillingComponentBridge_setSelectedSuggestion(
+        base::android::AttachCurrentThread(), obj, suggestion_index);
+  }
+}
+
+bool ManualFillingViewAndroid::NavigateSuggestions(
+    autofill::NavigationDirection direction) {
+  if (auto obj = GetOrCreateJavaObject()) {
+    return Java_ManualFillingComponentBridge_navigateSuggestions(
+        base::android::AttachCurrentThread(), obj, direction);
+  }
+  return false;
+}
+
 void ManualFillingViewAndroid::OnAccessoryActionAvailabilityChanged(
     ShouldShowAction shouldShowAction,
     autofill::AccessoryAction action) {
@@ -336,8 +354,7 @@ static void JNI_ManualFillingComponentBridge_CachePasswordSheetDataForTesting(
     credentials[i].username_value = base::ASCIIToUTF16(usernames[i]);
     credentials[i].password_value =
         PasswordString(base::ASCIIToUTF16(passwords[i]));
-    credentials[i].match_type =
-        password_manager::PasswordForm::MatchType::kExact;
+    credentials[i].match_type = affiliations::MatchType::kExact;
   }
   return ChromePasswordManagerClient::FromWebContents(web_contents)
       ->GetCredentialCacheForTesting()

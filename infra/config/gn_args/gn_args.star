@@ -1565,7 +1565,7 @@ gn_args.config(
 
 # For Android >=Q, only userdebug/eng
 gn_args.config(
-    name = "webview_trichrome",
+    name = "webview_debug_package_name",
     args = {
         "system_webview_package_name": "com.google.android.webview.debug",
     },
@@ -1631,22 +1631,8 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "high_end_fuzzer_targets",
-    args = {
-        "high_end_fuzzer_targets": True,
-    },
-)
-
-gn_args.config(
     name = "enable_swift_cxx_interop",
     args = {"enable_swift_cxx_interop": True},
-)
-
-gn_args.config(
-    name = "use_typescript_go",
-    args = {
-        "use_typescript_go": True,
-    },
 )
 
 gn_args.config(

@@ -33,12 +33,12 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/image/image_names.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -76,9 +76,8 @@ class SigninPromoViewMediatorTest : public PlatformTest {
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
-    profile_ = std::move(builder).Build();
+        AuthenticationServiceFactory::GetDefaultFactory());
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
   }
 
   void TearDown() override {
@@ -100,6 +99,8 @@ class SigninPromoViewMediatorTest : public PlatformTest {
     EXPECT_OCMOCK_VERIFY((id)close_button_);
     EXPECT_OCMOCK_VERIFY((id)account_settings_presenter_);
     EXPECT_OCMOCK_VERIFY((id)signin_promo_mediator_delegate_);
+    profile_ = nullptr;
+    PlatformTest::TearDown();
   }
 
   void CreateMediator(signin_metrics::AccessPoint access_point) {
@@ -110,11 +111,11 @@ class SigninPromoViewMediatorTest : public PlatformTest {
         OCMStrictProtocolMock(@protocol(AccountSettingsPresenter));
     mediator_ = [[SigninPromoViewMediator alloc]
                   initWithIdentityManager:IdentityManagerFactory::GetForProfile(
-                                              profile_.get())
+                                              profile_)
                     accountManagerService:ChromeAccountManagerServiceFactory::
-                                              GetForProfile(profile_.get())
+                                              GetForProfile(profile_)
                               authService:GetAuthenticationService()
-                              prefService:profile_.get()->GetPrefs()
+                              prefService:profile_->GetPrefs()
                               syncService:GetSyncService()
                               accessPoint:access_point
                                  delegate:signin_promo_mediator_delegate_
@@ -147,11 +148,11 @@ class SigninPromoViewMediatorTest : public PlatformTest {
   }
 
   AuthenticationService* GetAuthenticationService() {
-    return AuthenticationServiceFactory::GetForProfile(profile_.get());
+    return AuthenticationServiceFactory::GetForProfile(profile_);
   }
 
   syncer::SyncService* GetSyncService() {
-    return SyncServiceFactory::GetForProfile(profile_.get());
+    return SyncServiceFactory::GetForProfile(profile_);
   }
 
   // Creates the default identity and adds it into the ChromeIdentityService.
@@ -389,7 +390,8 @@ class SigninPromoViewMediatorTest : public PlatformTest {
   // Task environment.
   WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
-  std::unique_ptr<TestProfileIOS> profile_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
 
   // Mediator used for the tests.
   SigninPromoViewMediator* mediator_;

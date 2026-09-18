@@ -41,7 +41,7 @@ LayoutTable* LayoutTable::CreateAnonymousWithParent(
   // must be generated; otherwise it must be a table box.
   const EDisplay display =
       parent.IsLayoutInline() ? EDisplay::kInlineTable : EDisplay::kTable;
-  const ComputedStyle* new_style =
+  const ComputedStyle& new_style =
       parent.GetDocument().GetStyleResolver().CreateAnonymousStyleWithDisplay(
           parent.StyleRef(), display);
   auto* new_table = MakeGarbageCollected<LayoutTable>(nullptr);

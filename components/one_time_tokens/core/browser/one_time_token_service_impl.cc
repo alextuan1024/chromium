@@ -26,7 +26,8 @@ OneTimeTokenServiceImpl::OneTimeTokenServiceImpl(
     : sms_{.has_pending_request = false, .backend = sms_otp_backend},
       gmail_{.backend = gmail_otp_backend},
       cache_(kCacheDurationForOldTokens,
-             &OneTimeToken::on_device_arrival_time) {
+             &OneTimeToken::on_device_arrival_time,
+             CacheProjection()) {
   if (gmail_.backend) {
     gmail_.backend->SetLogSink(&log_sink_);
   }
@@ -67,9 +68,6 @@ ExpiringSubscription OneTimeTokenServiceImpl::Subscribe(
     base::Time expiration,
     Callback callback,
     base::OnceClosure expiration_callback) {
-  LOG_OTT(&log_sink_) << "Subscription updated: source="
-                      << std::to_underlying(source)
-                      << ", expiration=" << expiration;
   switch (source) {
     case OneTimeTokenSource::kOnDeviceSms: {
       ExpiringSubscription subscription = sms_subscription_manager_.Subscribe(
@@ -93,9 +91,6 @@ ExpiringSubscription OneTimeTokenServiceImpl::SubscribeToTickles(
     OneTimeTokenSource source,
     base::Time expiration,
     TickleCallback callback) {
-  LOG_OTT(&log_sink_) << "Tickle subscription updated: source="
-                      << std::to_underlying(source)
-                      << ", expiration=" << expiration;
   switch (source) {
     case OneTimeTokenSource::kGmail: {
       if (!gmail_.backend) {

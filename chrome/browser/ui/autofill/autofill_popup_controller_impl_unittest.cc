@@ -20,7 +20,9 @@
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/ui/popup_interaction.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table_label_sensitive.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -82,7 +84,7 @@ class AutofillPopupControllerImplTest
     // 1. Set the trigger source inside the delegate.
     manager().external_delegate().OnQuery(
         FormData(), FormFieldData(), gfx::Rect(),
-        AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+        AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
     // 2. Setup the bridge so the mock delegate executes real initialization
     // logic.
@@ -99,7 +101,7 @@ class AutofillPopupControllerImplTest
     // 3. Actually show the suggestions, which triggers the search session
     // initialization in AtMemoryController.
     ShowSuggestions(manager(), {SuggestionType::kAtMemorySearchResult},
-                    AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+                    AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
   }
 
   // Simulates a user typing a query into the AtMemory search bar and explicitly
@@ -614,7 +616,7 @@ INSTANTIATE_TEST_SUITE_P(
     All,
     AutofillPopupControllerImplTestWithTriggerSource,
     ::testing::Values(
-        AutofillSuggestionTriggerSource::kAtMemoryTriggerString,
+        AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl,
         AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut,
         AutofillSuggestionTriggerSource::kAtMemoryContextMenu,
         AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge));
@@ -1093,7 +1095,7 @@ TEST_F(AutofillPopupControllerImplTest,
 TEST_F(AutofillPopupControllerImplTest,
        AtMemory_NoFilter_NoSuggestionsMessageNotShown) {
   ShowSuggestions(manager(), {SuggestionType::kAtMemorySearchResult},
-                  AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+                  AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
   EXPECT_FALSE(
       client().suggestion_controller(manager()).ShouldShowNoSuggestionsMessage(
           AutofillPopupView::SearchBarConfig{
@@ -1241,7 +1243,7 @@ TEST_F(AutofillPopupControllerImplTest,
 TEST_F(AutofillPopupControllerImplTest,
        RemoveLastSuggestion_DoesNotHidePopupForAtMemory) {
   ShowSuggestions(manager(), {SuggestionType::kAtMemorySearchResult},
-                  AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+                  AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
   test::GenerateTestAutofillPopup(&manager().external_delegate());
   EXPECT_CALL(manager().external_delegate(),
@@ -1311,6 +1313,39 @@ TEST_F(AutofillPopupControllerImplTest,
       "Autofill.ProfileDeleted.KeyboardAccessory.Total", 1, 0);
   histogram_tester.ExpectUniqueSample("Autofill.ProfileDeleted.Any.Total", 1,
                                       0);
+}
+
+// Tests that when `kAutofillLabelSensitiveAutocomplete` is enabled,
+// deleting an autocomplete suggestion emits `AUTOCOMPLETE_SUGGESTION_DELETED`
+// to `Autocomplete.Events3` and the corresponding matching-type histogram.
+TEST_F(AutofillPopupControllerImplTest,
+       RemoveAutocompleteSuggestion_LabelSensitiveMetricsEmittedOnSuccess) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  base::HistogramTester histogram_tester;
+  Suggestion suggestion(u"autocomplete", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = AutocompleteSearchResultLabelSensitive(
+      u"autocomplete", MatchingType::kLabel, /*query_name=*/u"name",
+      /*query_label=*/u"label", /*count=*/1);
+  ShowSuggestions(manager(), {std::move(suggestion)});
+  test::GenerateTestAutofillPopup(&manager().external_delegate());
+  EXPECT_CALL(manager().external_delegate(),
+              RemoveSuggestion(
+                  Field(&Suggestion::type, SuggestionType::kAutocompleteEntry)))
+      .WillOnce(Return(true));
+
+  EXPECT_TRUE(client().suggestion_controller(manager()).RemoveSuggestion(0));
+  histogram_tester.ExpectUniqueSample(
+      "Autocomplete.Events3",
+      AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autocomplete.LabelBasedSuggestions",
+      AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED, 1);
+  histogram_tester.ExpectTotalCount("Autocomplete.NameBasedSuggestions", 0);
+  histogram_tester.ExpectTotalCount(
+      "Autocomplete.BothNameAndLabelBasedSuggestions", 0);
 }
 
 TEST_F(AutofillPopupControllerImplTest,

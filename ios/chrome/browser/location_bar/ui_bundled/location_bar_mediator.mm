@@ -302,15 +302,14 @@ const CGFloat kIconPointSize = 16.0;
     return NO;
   }
 
-  BOOL allowedOnDevice =
-      IsComposeboxIOSEnabled() && IsPlusButtonInFakeboxEnabled();
+  BOOL allowedOnDevice = IsPlusButtonInFakeboxEnabled();
   BOOL fuseboxEligible = _aimEligibilityService->IsFuseboxEligible();
   return fuseboxEligible && allowedOnDevice;
 }
 
 /// Returns whether the Lens overlay is currently available for the web state.
 - (BOOL)isLensOverlayAvailable {
-  if (IsChromeNextIaEnabled() && !IsChromeNextIaLensIconVisible()) {
+  if (IsChromeNextIaEnabled()) {
     return NO;
   }
 

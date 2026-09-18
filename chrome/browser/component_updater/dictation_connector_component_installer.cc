@@ -4,8 +4,9 @@
 
 #include "chrome/browser/component_updater/dictation_connector_component_installer.h"
 
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -169,7 +170,12 @@ std::string DictationConnectorComponentInstallerPolicy::GetName() const {
 
 update_client::InstallerAttributes
 DictationConnectorComponentInstallerPolicy::GetInstallerAttributes() const {
-  return update_client::InstallerAttributes();
+  update_client::InstallerAttributes attributes;
+  std::string tag = dictation::kDictationConnectorTag.Get();
+  if (!tag.empty()) {
+    attributes["connector_tag"] = tag;
+  }
+  return attributes;
 }
 
 void RegisterDictationConnectorComponent(ComponentUpdateService* cus) {

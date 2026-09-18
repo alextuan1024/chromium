@@ -32,10 +32,10 @@
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -204,8 +204,8 @@ NotificationPtr CreateSystemNotification(
     message_center::RichNotificationData optional_fields) {
   return ash::CreateSystemNotificationPtr(
       NOTIFICATION_TYPE_SIMPLE, notification_id, title, message,
-      GetStringUTF16(IDS_FILEMANAGER_APP_NAME), GURL(), NotifierId(),
-      optional_fields, std::move(delegate), ash::kFolderIcon,
+      GetStringUTF16(IDS_FILEMANAGER_APP_NAME), NotifierId(), optional_fields,
+      std::move(delegate), ash::kFolderIcon,
       SystemNotificationWarningLevel::NORMAL);
 }
 
@@ -282,7 +282,7 @@ NotificationPtr SystemNotificationManager::CreateProgressNotification(
 
   return ash::CreateSystemNotificationPtr(
       NOTIFICATION_TYPE_PROGRESS, notification_id, title, message, app_name_,
-      GURL(), NotifierId(), rich_data,
+      NotifierId(), rich_data,
       MakeRefCounted<HandleNotificationClickDelegate>(
           BindRepeating(&SystemNotificationManager::HandleProgressClick,
                         weak_ptr_factory_.GetWeakPtr(), notification_id)),
@@ -330,7 +330,7 @@ NotificationPtr SystemNotificationManager::CreateIOTaskProgressNotification(
 
   auto notification = ash::CreateSystemNotificationPtr(
       NOTIFICATION_TYPE_PROGRESS, notification_id, title, message, app_name_,
-      GURL(), NotifierId(), rich_data,
+      NotifierId(), rich_data,
       MakeRefCounted<IOTaskProgressNotificationClickDelegate>(
           std::move(notification_click_handler), paused),
       ash::kFolderIcon, SystemNotificationWarningLevel::NORMAL);
@@ -420,8 +420,7 @@ void SystemNotificationManager::HandleDeviceEvent(
       break;
 
     case fmp::DeviceEventType::kFormatSuccess:
-    case fmp::DeviceEventType::kFormatFail:
-    case fmp::DeviceEventType::kPartitionFail: {
+    case fmp::DeviceEventType::kFormatFail: {
       // Hide the formatting notification.
       GetNotificationDisplayService()->Close(
           NotificationHandler::Type::TRANSIENT,
@@ -435,10 +434,7 @@ void SystemNotificationManager::HandleDeviceEvent(
       } else {
         message = GetStringFUTF16(IDS_FILE_BROWSER_FORMAT_FAILURE_MESSAGE,
                                   UTF8ToUTF16(event.device_label));
-        RecordDeviceNotificationMetric(
-            event.type == fmp::DeviceEventType::kFormatFail
-                ? DeviceNotificationUmaType::FORMAT_FAIL
-                : DeviceNotificationUmaType::PARTITION_FAIL);
+        RecordDeviceNotificationMetric(DeviceNotificationUmaType::FORMAT_FAIL);
       }
       notification = CreateNotification(
           id,
@@ -447,11 +443,6 @@ void SystemNotificationManager::HandleDeviceEvent(
           std::move(message));
       break;
     }
-
-    case fmp::DeviceEventType::kPartitionStart:
-    case fmp::DeviceEventType::kPartitionSuccess:
-      // No-op.
-      break;
 
     case fmp::DeviceEventType::kRenameFail:
       notification = CreateNotification(
@@ -493,7 +484,7 @@ void SystemNotificationManager::HandleBulkPinningNotificationClick() {
 NotificationPtr SystemNotificationManager::MakeBulkPinningErrorNotification(
     const Event& event) {
   // Parse the event args as a bulk-pinning progress struct.
-  DCHECK(!event.args().empty());
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
   auto progress = fmp::BulkPinProgress::FromValue(event.args()[0]);
   if (!progress) {
     LOG(ERROR) << "Cannot parse BulkPinProgress from " << event.args()[0];
@@ -562,7 +553,7 @@ NotificationPtr SystemNotificationManager::MakeBulkPinningErrorNotification(
 
 NotificationPtr SystemNotificationManager::MakeDriveSyncErrorNotification(
     const Event& event) {
-  DCHECK(!event.args().empty());
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
   auto sync_error = fmp::DriveSyncErrorEvent::FromValue(event.args()[0]);
   if (!sync_error) {
     LOG(ERROR) << "Cannot parse DriveSyncErrorEvent from " << event.args()[0];
@@ -648,7 +639,7 @@ void SystemNotificationManager::HandleDriveDialogClick(
 
 NotificationPtr SystemNotificationManager::MakeDriveConfirmDialogNotification(
     const Event& event) {
-  DCHECK(!event.args().empty());
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
   auto dialog_event = fmp::DriveConfirmDialogEvent::FromValue(event.args()[0]);
   if (!dialog_event) {
     LOG(ERROR) << "Cannot parse DriveConfirmDialogEvent from "
@@ -928,7 +919,8 @@ NotificationPtr SystemNotificationManager::MakeMountErrorNotification(
           weak_ptr_factory_.GetWeakPtr(), volume.mount_path().value(),
           uma_types_for_buttons)));
 
-  DCHECK_EQ(buttons.size(), uma_types_for_buttons.size());
+  CHECK_EQ(buttons.size(), uma_types_for_buttons.size(),
+           base::NotFatalUntil::M160);
   notification->set_buttons(buttons);
 
   return notification;
@@ -999,7 +991,7 @@ NotificationPtr SystemNotificationManager::MakeRemovableNotification(
           DeviceNotificationUserActionUmaType::OPEN_MEDIA_DEVICE_NAVIGATION);
     } else {
       const PrefService* const service = profile_->GetPrefs();
-      DCHECK(service);
+      CHECK(service, base::NotFatalUntil::M160);
       bool arc_enabled = service->GetBoolean(arc::prefs::kArcEnabled);
       bool arc_removable_media_access_enabled =
           service->GetBoolean(arc::prefs::kArcHasAccessToRemovableMedia);
@@ -1051,7 +1043,8 @@ NotificationPtr SystemNotificationManager::MakeRemovableNotification(
       notification_buttons.emplace_back(
           GetStringUTF16(IDS_REMOVABLE_DEVICE_OPEN_SETTTINGS_BUTTON_LABEL));
     }
-    DCHECK_EQ(notification_buttons.size(), uma_types_for_buttons.size());
+    CHECK_EQ(notification_buttons.size(), uma_types_for_buttons.size(),
+             base::NotFatalUntil::M160);
     notification->set_buttons(notification_buttons);
   }
   if (volume.device_type() != ash::DeviceType::kUnknown &&

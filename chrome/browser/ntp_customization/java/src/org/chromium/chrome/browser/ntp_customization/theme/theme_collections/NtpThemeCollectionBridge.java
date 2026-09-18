@@ -211,35 +211,6 @@ public class NtpThemeCollectionBridge {
         mOnCustomBackgroundImageUpdatedCallback.onResult(customBackgroundInfo);
     }
 
-    /** Sets the user-selected background image. */
-    public void selectLocalBackgroundImage() {
-        if (mNativeNtpThemeCollectionBridge == 0) return;
-
-        NtpThemeCollectionBridgeJni.get()
-                .selectLocalBackgroundImage(mNativeNtpThemeCollectionBridge);
-    }
-
-    /** Resets the custom background. */
-    public void resetCustomBackground() {
-        if (mNativeNtpThemeCollectionBridge == 0) return;
-
-        NtpThemeCollectionBridgeJni.get().resetCustomBackground(mNativeNtpThemeCollectionBridge);
-    }
-
-    /**
-     * Updates the theme collection background with the primary theme color.
-     *
-     * @param backgroundUrl The URL of the background image.
-     * @param primaryColor The primary color extracted from the theme collection image.
-     */
-    public void updateThemeCollectionBackgroundColor(GURL backgroundUrl, int primaryColor) {
-        if (mNativeNtpThemeCollectionBridge == 0) return;
-
-        NtpThemeCollectionBridgeJni.get()
-                .updateThemeCollectionBackgroundColor(
-                        mNativeNtpThemeCollectionBridge, backgroundUrl, primaryColor);
-    }
-
     /**
      * Factory method called by native code to construct a {@link CustomBackgroundInfo} object.
      *
@@ -248,15 +219,18 @@ public class NtpThemeCollectionBridge {
      * @param isUploadedImage True if the image was uploaded by the user from their local device.
      * @param isDailyRefreshEnabled True if the "Refresh daily" option is enabled for the
      *     collection.
+     * @param attribution The attribution string of the background image.
      */
     @CalledByNative
-    private static CustomBackgroundInfo createCustomBackgroundInfo(
+    @VisibleForTesting
+    static CustomBackgroundInfo createCustomBackgroundInfo(
             GURL backgroundUrl,
             String collectionId,
             boolean isUploadedImage,
-            boolean isDailyRefreshEnabled) {
+            boolean isDailyRefreshEnabled,
+            @Nullable String attribution) {
         return new CustomBackgroundInfo(
-                backgroundUrl, collectionId, isUploadedImage, isDailyRefreshEnabled);
+                backgroundUrl, collectionId, isUploadedImage, isDailyRefreshEnabled, attribution);
     }
 
     @NativeMethods
@@ -288,12 +262,5 @@ public class NtpThemeCollectionBridge {
         void fetchNextThemeCollectionImage(long nativeNtpThemeCollectionBridge);
 
         @Nullable CustomBackgroundInfo getCustomBackgroundInfo(long nativeNtpThemeCollectionBridge);
-
-        void selectLocalBackgroundImage(long nativeNtpThemeCollectionBridge);
-
-        void resetCustomBackground(long nativeNtpThemeCollectionBridge);
-
-        void updateThemeCollectionBackgroundColor(
-                long nativeNtpThemeCollectionBridge, GURL backgroundUrl, int primaryColor);
     }
 }

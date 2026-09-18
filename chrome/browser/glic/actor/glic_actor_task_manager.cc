@@ -11,6 +11,7 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_runner.h"
@@ -26,11 +27,14 @@
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/tab_observation_controller.h"
 #include "chrome/browser/actor/tools/tool_request.h"
-#include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
+#include "chrome/browser/actor/ui/actor_ui_state_manager.h"
+#include "chrome/browser/critical_actions/critical_action_factory.h"
 #include "chrome/browser/glic/actor/glic_actor_journal_handler.h"
+#include "chrome/browser/glic/actor/glic_actor_metrics.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/host/context/glic_tab_data.h"
 #include "chrome/browser/glic/host/glic_mojom_traits.h"
+#include "chrome/browser/glic/public/glic_api_metrics.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
@@ -45,6 +49,7 @@
 #include "components/actor/core/actor_features.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/critical_actions/core/browser/critical_action_service.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/page_content_annotations/content/page_context_fetcher.h"
 #include "components/sessions/core/session_id.h"
@@ -125,40 +130,48 @@ void GlicActorClientSession::LogBeginAsyncEvent(uint64_t event_async_id,
                                                 int32_t task_id,
                                                 const std::string& event,
                                                 const std::string& details) {
+  LogApiRequestCount(GlicHostApiRequestId::kLogBeginAsyncEvent);
   journal_handler_->LogBeginAsyncEvent(event_async_id, task_id, event, details);
 }
 
 void GlicActorClientSession::LogEndAsyncEvent(uint64_t event_async_id,
                                               const std::string& details) {
+  LogApiRequestCount(GlicHostApiRequestId::kLogEndAsyncEvent);
   journal_handler_->LogEndAsyncEvent(event_async_id, details);
 }
 
 void GlicActorClientSession::LogInstantEvent(int32_t task_id,
                                              const std::string& event,
                                              const std::string& details) {
+  LogApiRequestCount(GlicHostApiRequestId::kLogInstantEvent);
   journal_handler_->LogInstantEvent(task_id, event, details);
 }
 
 void GlicActorClientSession::JournalClear() {
+  LogApiRequestCount(GlicHostApiRequestId::kJournalClear);
   journal_handler_->Clear();
 }
 
 void GlicActorClientSession::JournalSnapshot(bool clear_journal,
                                              JournalSnapshotCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kJournalSnapshot);
   journal_handler_->Snapshot(clear_journal, std::move(callback));
 }
 
 void GlicActorClientSession::JournalStart(uint64_t max_bytes,
                                           bool capture_screenshots) {
+  LogApiRequestCount(GlicHostApiRequestId::kJournalStart);
   journal_handler_->Start(max_bytes, capture_screenshots);
 }
 
 void GlicActorClientSession::JournalStop() {
+  LogApiRequestCount(GlicHostApiRequestId::kJournalStop);
   journal_handler_->Stop();
 }
 
 void GlicActorClientSession::JournalRecordFeedback(bool positive,
                                                    const std::string& reason) {
+  LogApiRequestCount(GlicHostApiRequestId::kJournalRecordFeedback);
   journal_handler_->RecordFeedback(positive, reason);
 }
 
@@ -185,6 +198,7 @@ GlicActorTaskManager::~GlicActorTaskManager() = default;
 void GlicActorClientSession::CreateTask(
     actor::webui::mojom::TaskOptionsPtr options,
     CreateTaskCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kCreateTask);
   instance_metrics().OnCreateTask();
   if (!current_task_id_.is_null()) {
     std::move(callback).Run(
@@ -250,9 +264,16 @@ void GlicActorClientSession::CreateTask(
       actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kGlic,
                             conversation_id),
       &actor_policy_checker(), std::move(options), GetWeakPtr(),
-      actor_keyed_service().GetActorUiStateManager(),
+      actor::ui::ActorUiStateManager::Get(&profile()),
       instance_metrics().initial_invocation_source());
   CHECK(!current_task_id_.is_null());
+
+  // TODO(b/561944228): CriticalActionService needs conversation_id, this is a
+  // temporary solution while b/494212836 is in place; remove once fixed.
+  if (!conversation_id.has_value() || conversation_id->empty()) {
+    manager_->pending_conversation_task_ids_.push_back(
+        base::NumberToString(current_task_id_.value()));
+  }
 
   if (manager_->delegate_) {
     manager_->delegate_->OnTaskIdChanged(current_task_id_.value());
@@ -265,6 +286,22 @@ void GlicActorClientSession::CreateTask(
           base::Unretained(this)));
 
   std::move(callback).Run(current_task_id_.value());
+}
+
+// TODO(b/561944228): CriticalActionService needs conversation_id, this is a
+// temporary solution while b/494212836 is in place; remove once fixed.
+void GlicActorTaskManager::OnConversationRegistered(
+    const std::string& conversation_id) {
+  if (pending_conversation_task_ids_.empty() || conversation_id.empty()) {
+    return;
+  }
+
+  if (auto* critical_action_service =
+          critical_actions::CriticalActionFactory::GetForProfile(profile_)) {
+    critical_action_service->SetCriticalActionsConversationId(
+        pending_conversation_task_ids_, conversation_id);
+  }
+  pending_conversation_task_ids_.clear();
 }
 
 void GlicActorClientSession::PerformActionsFinished(
@@ -433,6 +470,7 @@ void GlicActorClientSession::OnPerformActionsComplete(
 void GlicActorClientSession::PerformActions(
     const std::vector<uint8_t>& actions_proto,
     PerformActionsCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kPerformActions);
   instance_metrics().OnPerformActions();
   base::TimeTicks start_time = base::TimeTicks::Now();
   // TODO(bokan): Refactor the actor code in this class into an actor-specific
@@ -462,7 +500,8 @@ void GlicActorClientSession::PerformActions(
   }
 
   actor::TaskId task_id(actions.task_id());
-  if (!ValidateTaskIdMatchesCurrent(task_id, "GlicPerformActions") ||
+  if (!ValidateTaskIdMatchesCurrent(
+          task_id, GlicActorTaskIdMismatchMethod::kPerformActions) ||
       !actor_keyed_service().GetTask(task_id)) {
     actor_keyed_service().GetJournal().Log(GURL::EmptyGURL(), task_id,
                                            "Act Failed",
@@ -511,8 +550,10 @@ void GlicActorClientSession::PerformActions(
 
 void GlicActorClientSession::CancelActions(int32_t task_id,
                                            CancelActionsCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kCancelActions);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "CancelActions")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kCancelActions)) {
     std::move(callback).Run(mojom::CancelActionsResult::kTaskNotFound);
     return;
   }
@@ -533,8 +574,10 @@ void GlicActorClientSession::CancelActions(int32_t task_id,
 void GlicActorClientSession::StopActorTask(
     int32_t task_id,
     mojom::ActorTaskStopReason stop_reason) {
+  LogApiRequestCount(GlicHostApiRequestId::kStopActorTask);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "StopActorTask")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kStopActorTask)) {
     return;
   }
   instance_metrics().OnStopActorTask();
@@ -570,7 +613,7 @@ void GlicActorTaskManager::MaybeShowDeactivationToastUi() {
 #if !BUILDFLAG(IS_ANDROID)
   BrowserWindowInterface* const last_active_bwi =
       GetLastActiveBrowserWindowInterfaceWithAnyProfile();
-  actor_keyed_service_->GetActorUiStateManager()->MaybeShowToast(
+  actor::ui::ActorUiStateManager::Get(profile())->MaybeShowToast(
       last_active_bwi);
 #endif
 }
@@ -579,8 +622,10 @@ void GlicActorClientSession::PauseActorTask(
     int32_t task_id,
     mojom::ActorTaskPauseReason pause_reason,
     std::optional<int32_t> tab_handle) {
+  LogApiRequestCount(GlicHostApiRequestId::kPauseActorTask);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "PauseActorTask")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kPauseActorTask)) {
     return;
   }
   tabs::TabInterface::Handle handle;
@@ -614,8 +659,10 @@ void GlicActorClientSession::ResumeActorTask(
     int32_t task_id,
     mojom::TabContextOptionsPtr context_options,
     ResumeActorTaskCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kResumeActorTask);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "ResumeActorTask")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kResumeActorTask)) {
     std::string error_message = "No such task";
     std::move(callback).Run(mojom::GetContextResultWithActionResultCode::New(
         mojom::GetContextResult::NewErrorReason(error_message), std::nullopt));
@@ -785,8 +832,10 @@ GlicActorTaskManager::AddActuatingChangedCallback(
 void GlicActorClientSession::InterruptActorTask(
     int32_t task_id,
     std::optional<mojom::ActorTaskInterruptReason> interrupt_reason) {
+  LogApiRequestCount(GlicHostApiRequestId::kInterruptActorTask);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "InterruptActorTask")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kInterruptActorTask)) {
     return;
   }
   instance_metrics().InterruptActorTask();
@@ -808,8 +857,11 @@ void GlicActorClientSession::InterruptActorTask(
 }
 
 void GlicActorClientSession::UninterruptActorTask(int32_t task_id) {
+  LogApiRequestCount(GlicHostApiRequestId::kUninterruptActorTask);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "UninterruptActorTask")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id,
+          GlicActorTaskIdMismatchMethod::kUninterruptActorTask)) {
     return;
   }
   instance_metrics().UninterruptActorTask();
@@ -833,9 +885,11 @@ void GlicActorClientSession::UninterruptActorTask(int32_t task_id) {
 void GlicActorClientSession::UpdateActorTaskStepProgress(
     int32_t task_id,
     const std::string& step_progress) {
+  LogApiRequestCount(GlicHostApiRequestId::kUpdateActorTaskStepProgress);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id,
-                                    "UpdateActorTaskStepProgress")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id,
+          GlicActorTaskIdMismatchMethod::kUpdateActorTaskStepProgress)) {
     return;
   }
   actor::ActorTask* task = actor_keyed_service().GetTask(actor_task_id);
@@ -856,8 +910,10 @@ void GlicActorClientSession::CreateActorTab(
     int32_t task_id,
     mojom::CreateActorTabOptionsPtr options,
     CreateActorTabCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kCreateActorTab);
   auto actor_task_id = actor::TaskId(task_id);
-  if (!ValidateTaskIdMatchesCurrent(actor_task_id, "CreateActorTab")) {
+  if (!ValidateTaskIdMatchesCurrent(
+          actor_task_id, GlicActorTaskIdMismatchMethod::kCreateActorTab)) {
     std::move(callback).Run(nullptr);
     return;
   }
@@ -969,14 +1025,35 @@ void GlicActorClientSession::StopTaskImpl(
 
 bool GlicActorClientSession::ValidateTaskIdMatchesCurrent(
     actor::TaskId task_id,
-    std::string_view method_name) {
-  if (current_task_id_.is_null() || task_id != current_task_id_) {
+    GlicActorTaskIdMismatchMethod method) {
+  const bool matches =
+      !current_task_id_.is_null() && task_id == current_task_id_;
+
+  // TODO(crbug.com/557064078): Convert this to terminate the glic renderer on a
+  // task ID mismatch, and obsolete and remove these histograms.
+  RecordTaskIdMatchesCurrent(matches);
+
+  if (!matches) {
+    GlicActorTaskIdMismatchReason reason;
+    if (current_task_id_.is_null() && task_id.is_null()) {
+      reason = GlicActorTaskIdMismatchReason::kBothNull;
+    } else if (current_task_id_.is_null()) {
+      reason = GlicActorTaskIdMismatchReason::kNoCurrentTask;
+    } else if (task_id.is_null()) {
+      reason = GlicActorTaskIdMismatchReason::kProvidedTaskIdNull;
+    } else {
+      reason = GlicActorTaskIdMismatchReason::kTaskIdMismatch;
+    }
+
+    RecordTaskIdMismatch(method, reason);
+
     actor_keyed_service().GetJournal().Log(
-        GURL::EmptyGURL(), task_id, method_name,
+        GURL::EmptyGURL(), task_id, ToString(method),
         actor::JournalDetailsBuilder()
             .AddError("Task ID does not match current task")
             .Add("expected_task_id", current_task_id_.value())
             .Add("provided_task_id", task_id.value())
+            .Add("reason", ToString(reason))
             .Build());
     return false;
   }
@@ -1013,6 +1090,10 @@ base::WeakPtr<GlicActorClientSession> GlicActorClientSession::GetWeakPtr() {
 }
 
 void GlicActorTaskManager::UnbindSession() {
+  // TODO(b/561944228): CriticalActionService needs conversation_id, this is a
+  // temporary solution while b/494212836 is in place; remove once fixed.
+  pending_conversation_task_ids_.clear();
+
   session_.reset();
   MaybeNotifyActuatingChanged();
 }
@@ -1169,6 +1250,8 @@ void GlicActorClientSession::AutofillSuggestionDialogOnFormPresented(
     int32_t task_id,
     actor::webui::mojom::AutofillSuggestionDialogOnFormPresentedParamsPtr
         params) {
+  LogApiRequestCount(
+      GlicHostApiRequestId::kAutofillSuggestionDialogOnFormPresented);
   if (!autofill_selection_event_handler_) {
     return;
   }
@@ -1182,6 +1265,8 @@ void GlicActorClientSession::AutofillSuggestionDialogOnFormPreviewChanged(
     int32_t task_id,
     actor::webui::mojom::AutofillSuggestionDialogOnFormPreviewChangedParamsPtr
         params) {
+  LogApiRequestCount(
+      GlicHostApiRequestId::kAutofillSuggestionDialogOnFormPreviewChanged);
   if (autofill_selection_event_handler_) {
     autofill_selection_event_handler_->OnFormPreviewChanged(std::move(params));
   }
@@ -1191,6 +1276,8 @@ void GlicActorClientSession::AutofillSuggestionDialogOnFormConfirmed(
     int32_t task_id,
     actor::webui::mojom::AutofillSuggestionDialogOnFormConfirmedParamsPtr
         params) {
+  LogApiRequestCount(
+      GlicHostApiRequestId::kAutofillSuggestionDialogOnFormConfirmed);
   if (!autofill_selection_event_handler_) {
     return;
   }
@@ -1222,6 +1309,7 @@ void GlicActorClientSession::GetContextForActorFromTab(
     int32_t tab_id,
     mojom::TabContextOptionsPtr options,
     GetContextForActorFromTabCallback callback) {
+  LogApiRequestCount(GlicHostApiRequestId::kGetContextForActorFromTab);
   GlicKeyedService* glic_service =
       GlicKeyedServiceFactory::GetGlicKeyedService(manager_->profile());
   manager_->sharing_manager_->GetContextForActorFromTab(

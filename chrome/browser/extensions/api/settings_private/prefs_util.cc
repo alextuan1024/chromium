@@ -22,6 +22,7 @@
 #include "chrome/browser/extensions/api/settings_private/generated_prefs.h"
 #include "chrome/browser/extensions/api/settings_private/generated_prefs_factory.h"
 #include "chrome/browser/extensions/settings_api_helpers.h"
+#include "chrome/browser/glic/gemini_enterprise/geic_pref_names.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/metrics/profile_pref_names.h"
 #include "chrome/browser/nearby_sharing/common/nearby_share_prefs.h"
@@ -250,6 +251,10 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[autofill::prefs::kAutofillAtMemoryTriggerInfo] =
       settings_api::PrefType::kDictionary;
+  (*s_allowlist)[autofill::prefs::kAutofillAtMemoryDoubleCtrlTriggerEnabled] =
+      settings_api::PrefType::kBoolean;
+  (*s_allowlist)[autofill::prefs::kAutofillAtMemoryShortcut] =
+      settings_api::PrefType::kString;
   (*s_allowlist)[autofill::prefs::kAutofillAiIdentityEntitiesEnabled] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[autofill::prefs::kAutofillAiShoppingEntitiesEnabled] =
@@ -589,6 +594,10 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kString;
   (*s_allowlist)[omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts] =
       settings_api::PrefType::kNumber;
+  (*s_allowlist)[omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode] =
+      settings_api::PrefType::kBoolean;
+  (*s_allowlist)[omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)[ntp_prefs::kNtpShortcutsVisible] =
       settings_api::PrefType::kBoolean;
 
@@ -1391,6 +1400,10 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kNumber;
   (*s_allowlist)[contextual_tasks::kContextualTasksSmartTabSharingSettings] =
       settings_api::PrefType::kNumber;
+
+  // Geic prefs
+  (*s_allowlist)[geic::prefs::kGeicPinnedToTabstrip] =
+      settings_api::PrefType::kBoolean;
 
   // Glic prefs
   (*s_allowlist)[glic::prefs::kGlicPinnedToTabstrip] =

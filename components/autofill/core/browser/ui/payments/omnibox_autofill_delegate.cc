@@ -12,7 +12,6 @@
 #include "base/check_deref.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -87,6 +86,7 @@ bool IsValidOmniboxAutofillSuggestion(SuggestionType type) {
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIbanEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
@@ -101,9 +101,11 @@ bool IsValidOmniboxAutofillSuggestion(SuggestionType type) {
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
     case SuggestionType::kManageEnhancedAutofill:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -338,14 +340,6 @@ bool OmniboxAutofillDelegate::OnSearchSubmitted(const std::u16string& filter) {
 
 bool OmniboxAutofillDelegate::IsSearching() const {
   return false;
-}
-
-std::variant<AutofillDriver*, password_manager::PasswordManagerDriver*>
-OmniboxAutofillDelegate::GetDriver_DoNotUse() {
-  if (trigger_autofill_manager_) {
-    return &trigger_autofill_manager_->driver();
-  }
-  return static_cast<AutofillDriver*>(nullptr);
 }
 
 void OmniboxAutofillDelegate::OnSuggestionsShown(

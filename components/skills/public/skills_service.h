@@ -21,7 +21,6 @@
 #include "components/skills/proto/skill.pb.h"
 #include "components/skills/public/skills_types.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 class DataTypeControllerDelegate;
@@ -145,7 +144,8 @@ class SkillsService : public KeyedService {
       std::string_view description,
       base::Time creation_time,
       base::Time last_update_time,
-      sync_pb::SkillSource source) = 0;
+      sync_pb::SkillSource source,
+      bool enabled = true) = 0;
 
   // Updates an existing skill locally. Returns a skill if exists, nullptr
   // otherwise.

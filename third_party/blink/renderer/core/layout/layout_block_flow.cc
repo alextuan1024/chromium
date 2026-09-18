@@ -56,6 +56,7 @@
 #include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/logical_box_fragment.h"
+#include "third_party/blink/renderer/core/layout/multicol_break_token_data.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/layout/shapes/shape_outside_info.h"
 #include "third_party/blink/renderer/core/layout/table/layout_table.h"
@@ -143,7 +144,7 @@ LayoutBlockFlow* LayoutBlockFlow::CreateAnonymous(Document& document,
                                                   const ComputedStyle& style) {
   auto* layout_block_flow = MakeGarbageCollected<LayoutBlockFlow>(nullptr);
   layout_block_flow->SetDocumentForAnonymous(document);
-  layout_block_flow->SetStyle(&style);
+  layout_block_flow->SetStyle(style);
   return layout_block_flow;
 }
 
@@ -540,25 +541,28 @@ void LayoutBlockFlow::MakeChildrenNonInline(LayoutObject* insertion_point) {
 
 bool LayoutBlockFlow::ShouldTruncateOverflowingText() const {
   NOT_DESTROYED();
-  const LayoutObject* object_to_check = this;
+  // The object owning the text-overflow style and the object that actually
+  // scrolls the text are usually the same, but not for a <textarea>.
+  const LayoutObject* style_object = this;
   if (IsAnonymousBlockFlow()) {
     const LayoutObject* parent = Parent();
     if (!parent || !parent->BehavesLikeBlockContainer()) {
       return false;
     }
-    object_to_check = parent;
+    style_object = parent;
   }
-  if (!object_to_check->HasNonVisibleOverflow() ||
-      object_to_check->StyleRef().TextOverflow().IsClip()) {
+  const LayoutObject* scroll_object = style_object->ScrollerForTextOverflow();
+  if (!scroll_object->HasNonVisibleOverflow() ||
+      style_object->StyleRef().TextOverflow().IsClip()) {
     return false;
   }
   // If selection focus is inside this element, don't truncate (show full text).
   if (RuntimeEnabledFeatures::TextOverflowClipWithSelectionEnabled() &&
-      object_to_check->ContainsSelectionFocus()) {
+      style_object->ContainsSelectionFocus()) {
     return false;
   }
   if (RuntimeEnabledFeatures::DisableEllipsisWhenScrolledEnabled()) {
-    if (const auto* box = DynamicTo<LayoutBox>(object_to_check)) {
+    if (const auto* box = DynamicTo<LayoutBox>(scroll_object)) {
       if (auto* scrollable_area = box->GetScrollableArea()) {
         auto* snapshot = scrollable_area->GetTextOverflowPostLayoutSnapshot();
         if (!snapshot) {
@@ -805,6 +809,25 @@ void LayoutBlockFlow::InvalidateDisplayItemClients(
       break;
     }
   }
+}
+
+wtf_size_t LayoutBlockFlow::StitchedRowGapIndex(
+    const PhysicalBoxFragment& fragment,
+    wtf_size_t gap_index,
+    std::optional<wtf_size_t>) const {
+  NOT_DESTROYED();
+  if (!IsMulticolContainer()) {
+    return gap_index;
+  }
+
+  if (const BlockBreakToken* previous_break_token =
+          FindPreviousBreakToken(fragment)) {
+    if (const auto* data = DynamicTo<MulticolBreakTokenData>(
+            previous_break_token->TokenData())) {
+      return data->GetFirstUnprocessedRowGapIndex() + gap_index;
+    }
+  }
+  return gap_index;
 }
 
 }  // namespace blink

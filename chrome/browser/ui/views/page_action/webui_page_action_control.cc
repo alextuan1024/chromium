@@ -7,10 +7,11 @@
 #include <utility>
 #include <variant>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
 #include "base/notreached.h"
-#include "base/task/single_thread_task_runner.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -134,7 +135,7 @@ class WebUIPageActionControl::WebUIPageActionDelegate
 
   // Routes a suggestion chip visibility state change notification from WebUI to
   // the controller callback.
-  void NotifyChipShowingChanged();
+  void NotifyChipShowingChanged(bool is_showing);
 
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold) {
     bubble_reopen_suppressor_.SetSuppressionThresholdForTesting(  // IN-TEST
@@ -168,6 +169,12 @@ class WebUIPageActionControl::WebUIPageActionDelegate
   // tasks to destroy the widget and delegate asynchronously, and notifies the
   // controller if the model still requested an anchored message.
   void OnAnchoredMessageWidgetClose(views::Widget::ClosedReason closed_reason);
+
+  void CloseWidgetDeferred(base::WeakPtr<views::Widget> widget_to_close);
+
+  // Clears cached icon handles and any active mojo state sent to WebUI,
+  // notifying the owner if the state changed.
+  void ResetCachedState();
 
   const actions::ActionId action_id_;
   // Safe because the ActionItem tree is owned by BrowserActions (via
@@ -213,10 +220,12 @@ class WebUIPageActionControl::WebUIPageActionDelegate
   toolbar_ui_api::mojom::PageActionStatePtr old_state_;
   bool was_chip_visible_ = false;
   bool was_showing_bubble_ = false;
+  bool was_anchored_message_showing_ = false;
 
   WebUIBubbleReopenSuppressor bubble_reopen_suppressor_;
 
   toolbar_ui_api::IconHandle cached_icon_;
+  toolbar_ui_api::IconHandle cached_trailing_icon_;
 
   // The AnchoredMessageBubbleView is owned and destroyed by the
   // DialogClientView of `anchored_message_widget_`.
@@ -251,6 +260,7 @@ void WebUIPageActionControl::WebUIPageActionDelegate::SetController(
   controller_ = controller;
   was_chip_visible_ = false;
   was_showing_bubble_ = false;
+  was_anchored_message_showing_ = false;
 
   if (controller_) {
     controller_->RegisterCallbacks(page_actions::PageActionPassKey(),
@@ -266,10 +276,16 @@ void WebUIPageActionControl::WebUIPageActionDelegate::SetController(
     anchored_message_expand_callback_ = base::DoNothing();
     anchored_message_collapse_callback_ = base::DoNothing();
     click_callback_ = base::DoNothing();
-    if (old_state_) {
-      old_state_ = nullptr;
-      owner_->NotifyPageActionStateChanged();
-    }
+    ResetCachedState();
+  }
+}
+
+void WebUIPageActionControl::WebUIPageActionDelegate::ResetCachedState() {
+  cached_icon_ = {};
+  cached_trailing_icon_ = {};
+  if (old_state_) {
+    old_state_ = nullptr;
+    owner_->NotifyPageActionStateChanged();
   }
 }
 
@@ -295,9 +311,21 @@ void WebUIPageActionControl::WebUIPageActionDelegate::OnPageActionModelChanged(
   }
   was_chip_visible_ = is_chip_visible;
 
+  const bool is_anchored_message_showing =
+      visible &&
+      (model.ShouldShowAnchoredMessage() || IsAnchoredMessageVisible());
+  const bool anchored_message_changed =
+      (was_anchored_message_showing_ != is_anchored_message_showing);
+  was_anchored_message_showing_ = is_anchored_message_showing;
+
   toolbar_ui_api::mojom::PageActionStatePtr new_state = GetState();
 
-  if (!old_state_.Equals(new_state)) {
+  // An anchored message change alters the relative ordering of page action
+  // icons in GetPageActionStates(), even though the individual icon's
+  // PageActionState fields do not change (unlike chips, which update
+  // `should_show_chip`). Therefore, notify the owner when the anchored message
+  // state changes to re-order icons.
+  if (!old_state_.Equals(new_state) || anchored_message_changed) {
     old_state_ = std::move(new_state);
     owner_->NotifyPageActionStateChanged();
   }
@@ -320,20 +348,16 @@ void WebUIPageActionControl::WebUIPageActionDelegate::OnPageActionModelChanged(
 void WebUIPageActionControl::WebUIPageActionDelegate::
     OnPageActionModelWillBeDeleted(
         const page_actions::PageActionModelInterface& model) {
-  if (anchored_message_widget_ && !anchored_message_widget_->IsClosed()) {
-    anchored_message_widget_->CloseWithReason(
-        views::Widget::ClosedReason::kUnspecified);
-  }
+  anchored_message_ = nullptr;
+  anchored_message_widget_.reset();
   element_shown_subscription_ = {};
   observation_.Reset();
   action_item_subscription_ = {};
   controller_ = nullptr;
   was_chip_visible_ = false;
   was_showing_bubble_ = false;
-  if (old_state_) {
-    old_state_ = nullptr;
-    owner_->NotifyPageActionStateChanged();
-  }
+  was_anchored_message_showing_ = false;
+  ResetCachedState();
 }
 
 toolbar_ui_api::mojom::PageActionStatePtr
@@ -361,25 +385,35 @@ WebUIPageActionControl::WebUIPageActionDelegate::GetState() {
   auto* view = owner_->webui_delegate_->GetView();
   const ui::ColorProvider* color_provider =
       view ? view->GetColorProvider() : nullptr;
-  if (model->GetColorSource() ==
-          page_actions::PageActionColorSource::kCascadingAccent &&
-      image_model.IsVectorIcon()) {
-    const auto& vector_icon_model = image_model.GetVectorIcon();
-    const SkColor default_color =
-        color_provider->GetColor(ui::kColorFocusableBorderFocused);
-    // Page actions are displayed on the toolbar, so `kColorToolbar` is used as
-    // the background color for contrast calculations (matching what
-    // `views::GetCascadingBackgroundColor()` resolves in native Views via
-    // `ToolbarView`).
-    const SkColor background_color = color_provider->GetColor(kColorToolbar);
-    const SkColor blended_color =
-        color_utils::BlendForMinContrast(
-            default_color, background_color, std::nullopt,
-            color_utils::kMinimumVisibleContrastRatio)
-            .color;
-    image_model = ui::ImageModel::FromVectorIcon(
-        *vector_icon_model.vector_icon(), blended_color,
-        vector_icon_model.icon_size(), vector_icon_model.badge_icon());
+  if (color_provider && image_model.IsVectorIcon()) {
+    if (model->GetColorSource() ==
+        page_actions::PageActionColorSource::kCascadingAccent) {
+      const auto& vector_icon_model = image_model.GetVectorIcon();
+      const SkColor default_color =
+          color_provider->GetColor(ui::kColorFocusableBorderFocused);
+      // Page actions are displayed on the toolbar, so `kColorToolbar` is used
+      // as the background color for contrast calculations (matching what
+      // `views::GetCascadingBackgroundColor()` resolves in native Views via
+      // `ToolbarView`).
+      const SkColor background_color = color_provider->GetColor(kColorToolbar);
+      const SkColor blended_color =
+          color_utils::BlendForMinContrast(
+              default_color, background_color, std::nullopt,
+              color_utils::kMinimumVisibleContrastRatio)
+              .color;
+      image_model = ui::ImageModel::FromVectorIcon(
+          *vector_icon_model.vector_icon(), blended_color,
+          vector_icon_model.icon_size(), vector_icon_model.badge_icon());
+    } else if (model->GetColorSource() ==
+                   page_actions::PageActionColorSource::kForeground &&
+               model->ShouldShowSuggestionChip()) {
+      const auto& vector_icon_model = image_model.GetVectorIcon();
+      const SkColor tonal_color =
+          color_provider->GetColor(kColorOmniboxIconForegroundTonal);
+      image_model = ui::ImageModel::FromVectorIcon(
+          *vector_icon_model.vector_icon(), tonal_color,
+          vector_icon_model.icon_size(), vector_icon_model.badge_icon());
+    }
   }
   state->icon = cached_icon_ =
       owner_->webui_delegate_->GetIconTable().RegisterImageModelTryReuse(
@@ -409,9 +443,31 @@ WebUIPageActionControl::WebUIPageActionDelegate::GetState() {
       /*secondary_identifier=*/std::string());
   state->is_active = model->GetActionActive();
 
-  // Pass the current icon animation token to the WebUI so it can detect tab
-  // switches and suppress animations.
-  state->icon_animation_token = owner_->icon_animation_token_;
+  // Pass the current tab switch token to the WebUI so it can detect tab
+  // switches and suppress icon animations.
+  state->tab_switch_token = owner_->tab_switch_token_;
+
+  switch (model->GetAnimationStyle()) {
+    case page_actions::PageActionAnimationStyle::kStandard:
+      state->animation_style =
+          toolbar_ui_api::mojom::PageActionAnimationStyle::kStandard;
+      break;
+    case page_actions::PageActionAnimationStyle::kSlideAndCrossfade:
+      state->animation_style =
+          toolbar_ui_api::mojom::PageActionAnimationStyle::kSlideAndCrossfade;
+      break;
+  }
+
+  state->show_trailing_icon = model->GetShowTrailingIcon();
+
+  if (model->GetTrailingImage().has_value()) {
+    state->trailing_icon = cached_trailing_icon_ =
+        owner_->webui_delegate_->GetIconTable().RegisterImageModelTryReuse(
+            *model->GetTrailingImage(), cached_trailing_icon_);
+  } else {
+    state->trailing_icon = std::nullopt;
+    cached_trailing_icon_ = {};
+  }
   return state;
 }
 
@@ -451,11 +507,10 @@ void WebUIPageActionControl::WebUIPageActionDelegate::NotifyClick(
   action_item_->InvokeAction(std::move(builder).Build());
 }
 
-void WebUIPageActionControl::WebUIPageActionDelegate::
-    NotifyChipShowingChanged() {
+void WebUIPageActionControl::WebUIPageActionDelegate::NotifyChipShowingChanged(
+    bool is_showing) {
   if (observation_.IsObserving()) {
-    bool is_chip_showing = observation_.GetSource()->ShouldShowSuggestionChip();
-    is_chip_showing_changed_callback_.Run(is_chip_showing);
+    is_chip_showing_changed_callback_.Run(is_showing);
   }
 }
 
@@ -573,14 +628,23 @@ void WebUIPageActionControl::WebUIPageActionDelegate::
   }
   CHECK(anchored_message_widget_);
   anchored_message_ = nullptr;
-  if (anchored_message_widget_) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
-        FROM_HERE, std::move(anchored_message_widget_));
-  }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &WebUIPageActionControl::WebUIPageActionDelegate::CloseWidgetDeferred,
+          weak_factory_.GetWeakPtr(), anchored_message_widget_->GetWeakPtr()));
 
   if (observation_.IsObserving() &&
       observation_.GetSource()->ShouldShowAnchoredMessage()) {
     CloseAnchoredMessage();
+  }
+}
+
+void WebUIPageActionControl::WebUIPageActionDelegate::CloseWidgetDeferred(
+    base::WeakPtr<views::Widget> widget_to_close) {
+  if (anchored_message_widget_ &&
+      anchored_message_widget_.get() == widget_to_close.get()) {
+    anchored_message_widget_.reset();
   }
 }
 
@@ -663,14 +727,12 @@ void WebUIPageActionControl::UpdateController(
                              base::Unretained(this)));
     }
 
-    if (features::IsToolbarGlowUpBookmarkEnabled()) {
-      // Increment the icon animation token to signal to the WebUI that the
-      // active tab has changed. This allows the WebUI to suppress transition
-      // icon animations on tab switches.
-      ++icon_animation_token_;
-      last_url_spec_ =
-          web_contents ? web_contents->GetLastCommittedURL().spec() : "";
-    }
+    // Increment the tab switch token to signal to the WebUI that the
+    // active tab has changed. This allows the WebUI to suppress transition
+    // icon animations and update chip states immediately on tab switches.
+    ++tab_switch_token_;
+    last_url_spec_ =
+        web_contents ? web_contents->GetLastCommittedURL().spec() : "";
 
     // Only re-initialize delegates if the tab (and controller) actually
     // changed.
@@ -680,17 +742,16 @@ void WebUIPageActionControl::UpdateController(
     return;
   }
 
-  // Same-tab navigation: only handle animation suppression when bookmark glow
-  // up is enabled.
-  if (features::IsToolbarGlowUpBookmarkEnabled() && web_contents) {
+  // Same-tab navigation: notify WebUI when URL changes.
+  if (web_contents) {
     const std::string current_url = web_contents->GetLastCommittedURL().spec();
     if (current_url != last_url_spec_) {
       last_url_spec_ = current_url;
-      // Increment the icon animation token and notify WebUI immediately on
-      // navigation so that page-load icon changes are suppressed while
+      // Increment the tab switch token and notify WebUI immediately on
+      // navigation so that page-load icon animations are suppressed while
       // subsequent in-page user interactions (e.g. starring/unstarring via
       // the bubble) can animate.
-      ++icon_animation_token_;
+      ++tab_switch_token_;
       for (auto& [action_id, delegate] : delegates_) {
         delegate->UpdateStateAndNotify();
       }
@@ -707,15 +768,45 @@ void WebUIPageActionControl::SetShouldHidePageActions(
 
 std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
 WebUIPageActionControl::GetPageActionStates() {
-  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> states;
+  // Three possible states of page actions: anchored message, chip, icon.
+  // There can be multiple chips and/or icons, but at most one anchored message.
+  // We place the anchored message action (if any) first, followed by chips in
+  // initial-order, then all other icons in initial-order. This matches the
+  // behavior of PageActionContainerView::NormalizePageActionViewOrder().
+  toolbar_ui_api::mojom::PageActionStatePtr anchored_message_state;
+  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> chip_states;
+  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> icon_states;
+
   for (actions::ActionId action_id : page_actions::kActionIds) {
     auto it = delegates_.find(action_id);
     if (it != delegates_.end()) {
       auto state = it->second->GetState();
       if (state) {
-        states.push_back(std::move(state));
+        if (it->second->IsAnchoredMessageVisible() ||
+            (it->second->GetObservedModel() &&
+             it->second->GetObservedModel()->ShouldShowAnchoredMessage())) {
+          CHECK(!anchored_message_state);
+          anchored_message_state = std::move(state);
+        } else if (state->should_show_chip) {
+          chip_states.push_back(std::move(state));
+        } else {
+          icon_states.push_back(std::move(state));
+        }
       }
     }
+  }
+
+  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> states;
+  states.reserve((anchored_message_state ? 1 : 0) + chip_states.size() +
+                 icon_states.size());
+  if (anchored_message_state) {
+    states.push_back(std::move(anchored_message_state));
+  }
+  for (auto& s : chip_states) {
+    states.push_back(std::move(s));
+  }
+  for (auto& s : icon_states) {
+    states.push_back(std::move(s));
   }
   return states;
 }
@@ -755,6 +846,7 @@ void WebUIPageActionControl::SetSuppressionThresholdForTesting(
 
 void WebUIPageActionControl::OnPageActionChipShowingChanged(
     toolbar_ui_api::mojom::PageActionId action_id,
+    bool is_showing,
     toolbar_ui_api::mojom::ToolbarUIService::
         OnPageActionChipShowingChangedCallback callback) {
   auto it =
@@ -765,7 +857,7 @@ void WebUIPageActionControl::OnPageActionChipShowingChanged(
     return;
   }
 
-  it->second->NotifyChipShowingChanged();
+  it->second->NotifyChipShowingChanged(is_showing);
   std::move(callback).Run(std::monostate());
 }
 

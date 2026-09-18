@@ -12,7 +12,7 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
@@ -44,59 +44,6 @@ constexpr ShadowFrameView::ShadowAlpha kPanelShadowAlpha({.light_key = 0.3,
                                                           .dark_key = 0.6,
                                                           .dark_ambient = 0.0});
 }  // namespace
-
-// ------------------------------------------------------------------
-// OrganizerTrayView::Animator
-
-// TODO(dfried): Remove in favor of BrowserAnimationController.
-class OrganizerTrayView::Animator : public gfx::AnimationDelegate {
- public:
-  explicit Animator(OrganizerTrayView& tray) : tray_(tray), animation_(this) {
-    animation_.SetTweenType(gfx::Tween::Type::EASE_IN_OUT_EMPHASIZED);
-  }
-
-  double GetAnimationValue() const { return animation_.GetCurrentValue(); }
-  void SetAnimationValue(double value) {
-    animation_.Reset(value);
-    tray_->InvalidateLayout();
-  }
-
-  void Show() {
-    tray_->SetVisible(true);
-    animation_.SetSlideDuration(kPanelShowAnimationDuration);
-    animation_.Show();
-  }
-
-  void Hide() {
-    animation_.SetSlideDuration(kPanelHideAnimationDuration);
-    animation_.Hide();
-  }
-
-  // gfx::AnimationDelegate:
-  void AnimationProgressed(const gfx::Animation* animation) override {
-    tray_->InvalidateLayout();
-  }
-
-  void AnimationEnded(const gfx::Animation* animation) override {
-    if (animation->GetCurrentValue() == 0.0) {
-      views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
-          kCloseAnimationComplete, &*tray_);
-      tray_->SetVisible(false);
-    } else {
-      views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
-          kOpenAnimationComplete, &*tray_);
-    }
-  }
-
-  void AnimationCanceled(const gfx::Animation* animation) override {
-    AnimationEnded(animation);
-  }
-
- private:
-  // Animation when opening and closing the panel.
-  const raw_ref<OrganizerTrayView> tray_;
-  gfx::SlideAnimation animation_;
-};
 
 // ------------------------------------------------------------------
 // OrganizerTrayView::EventObserver
@@ -166,15 +113,10 @@ class OrganizerTrayView::EventObserver : public ui::EventObserver,
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(OrganizerTrayView, kTrayElementId);
 
-OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser)
+OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser,
+                                     BrowserView* browser_view)
     : browser_(browser),
-      controller_state_subscription_(
-          OrganizerPanelStateController::From(&*browser_)
-              ->RegisterOnStateChanged(base::BindRepeating(
-                  &OrganizerTrayView::OnOrganizerPanelStateChanged,
-                  base::Unretained(this)))),
-      focus_search_(this, /*cycle=*/true, /*accessibility_mode=*/true),
-      animator_(std::make_unique<Animator>(*this)) {
+      focus_search_(this, /*cycle=*/true, /*accessibility_mode=*/true) {
   // TODO(dfried): Remove once we actually set this value.
 #if BUILDFLAG(IS_MAC)
   top_leading_exclusion_ = gfx::Size(target_width_ / 2, 0);
@@ -189,21 +131,10 @@ OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser)
   SetMainAxisAlignment(views::LayoutAlignment::kStart);
 
   // Set up the default background.
-  if (auto* const browser_view =
-          BrowserView::GetBrowserViewForBrowser(&browser)) {
-    auto background = std::make_unique<CustomCornersBackground>(
+  if (browser_view) {
+    SetBackground(std::make_unique<CustomCornersBackground>(
         *this, *browser_view, organizer_panel::kOrganizerPanelBackgroundColor,
-        organizer_panel::kOrganizerPanelBackgroundColor);
-    CustomCornersBackground::Corners corners;
-    corners[CornerOrientation::kTopLeading] = background->GetWindowCorner(true);
-    corners[CornerOrientation::kBottomLeading] =
-        background->GetWindowCorner(false);
-    corners[CornerOrientation::kTopTrailing].type =
-        CustomCornersBackground::CornerType::kRounded;
-    corners[CornerOrientation::kBottomTrailing].type =
-        CustomCornersBackground::CornerType::kRounded;
-    background->SetCorners(corners);
-    SetBackground(std::move(background));
+        organizer_panel::kOrganizerPanelBackgroundColor));
   } else {
     CHECK_IS_TEST() << "Should only happen in unit tests.";
   }
@@ -222,6 +153,14 @@ OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser)
 }
 
 OrganizerTrayView::~OrganizerTrayView() = default;
+
+void OrganizerTrayView::UpdatePanelClip() {
+  if (!background() || !panel_view_) {
+    return;
+  }
+  const auto* const bg = background()->AsA<CustomCornersBackground>();
+  bg->ClipViewToBackground(panel_view_);
+}
 
 bool OrganizerTrayView::IsPositionInWindowCaption(const gfx::Point& point) {
   const auto in_controls =
@@ -249,41 +188,35 @@ void OrganizerTrayView::SetTargetWidth(int target_width) {
   InvalidateLayout(/*avoid_propagate_during_layout=*/true);
 }
 
-void OrganizerTrayView::SetPanelView(std::unique_ptr<views::View> panel_view) {
+void OrganizerTrayView::SetOrganizerPanelView(
+    std::unique_ptr<views::View> panel_view) {
   CHECK(!panel_view_);
+  // Panel view is always visible in the tray; the tray itself is not always
+  // visible.
+  panel_view->SetVisible(true);
+  panel_view->SetProperty(views::kViewIgnoredByLayoutKey, true);
   panel_view_ = AddChildView(std::move(panel_view));
-  panel_view_->SetProperty(views::kViewIgnoredByLayoutKey, true);
 }
 
-std::unique_ptr<views::View> OrganizerTrayView::TakePanelView() {
+std::unique_ptr<views::View> OrganizerTrayView::TakeOrganizerPanelView() {
   CHECK(panel_view_);
   panel_view_->SetProperty(views::kViewIgnoredByLayoutKey, false);
-  auto result = RemoveChildViewT(panel_view_);
-  panel_view_ = nullptr;
-  return result;
+  return RemoveChildViewT(std::exchange(panel_view_, nullptr));
+}
+
+bool OrganizerTrayView::HasOrganizerPanelView() const {
+  return panel_view_;
 }
 
 // ----------------
 // To be removed.
-
-DEFINE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(OrganizerTrayView,
-                                       kOpenAnimationComplete);
-DEFINE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(OrganizerTrayView,
-                                       kCloseAnimationComplete);
-
-double OrganizerTrayView::GetAnimationValue() const {
-  return animator_->GetAnimationValue();
-}
-
-void OrganizerTrayView::SetAnimationValueForTesting(double value) {
-  animator_->SetAnimationValue(value);
-}
 
 // Set whether the panel should appear elevated with rounded borders.
 void OrganizerTrayView::SetIsElevated(bool elevated) {
   if (elevated == elevated_) {
     return;
   }
+  elevated_ = elevated;
   if (auto* const bg = background()->AsA<CustomCornersBackground>()) {
     bg->SetVisible(elevated);
   }
@@ -304,8 +237,9 @@ void OrganizerTrayView::AddedToWidget() {
   // This has to be done after there is a color provider, which happens after
   // attaching to a widget.
   int radius = 8;
-  if (auto* const bg = background()) {
-    radius = bg->AsA<CustomCornersBackground>()->default_radius();
+  if (background()) {
+    auto* const bg = background()->AsA<CustomCornersBackground>();
+    radius = bg->default_radius();
   }
   shadow_frame_->SetShadowCornerRadius(radius);
   shadow_frame_->SetShadowVisible(true);
@@ -317,6 +251,8 @@ void OrganizerTrayView::VisibilityChanged(views::View* from, bool visible) {
     last_focused_view_before_opening_.SetView(
         GetFocusManager()->GetFocusedView());
     GetFocusManager()->SetFocusedView(this);
+    controls_view_->UpdateTooltipText();
+    TooltipTextChanged();
   } else {
     event_observer_.reset();
     if (last_focused_view_before_opening_) {
@@ -359,6 +295,7 @@ void OrganizerTrayView::Layout(PassKey) {
         controls_view_->bounds().bottom() + controls_margins.bottom();
     panel_view_->SetBounds(std::min(0, width() - target_width_), panel_top,
                            target_width_, height() - panel_top);
+    panel_view_->SetVisible(panel_view_->bounds().Intersects(GetLocalBounds()));
   }
 
   // If there's an exclusion for caption buttons and the panel is not at its
@@ -387,8 +324,8 @@ void OrganizerTrayView::Layout(PassKey) {
 
 void OrganizerTrayView::ClosePanel() {
   // Ignore if the panel is already animating closed.
-  if (!GetVisible() || !OrganizerPanelStateController::From(&*browser_)
-                            ->IsOrganizerPanelVisible()) {
+  if (!GetVisible() ||
+      !OrganizerPanelController::From(&*browser_)->IsOrganizerPanelVisible()) {
     return;
   }
 
@@ -396,18 +333,6 @@ void OrganizerTrayView::ClosePanel() {
           kActionToggleOrganizerPanel,
           BrowserActions::From(&*browser_)->root_action_item())) {
     action->InvokeAction();
-  }
-}
-
-void OrganizerTrayView::OnOrganizerPanelStateChanged(
-    OrganizerPanelStateController* state_controller) {
-  controls_view_->UpdateTooltipText();
-  TooltipTextChanged();
-
-  if (state_controller->IsOrganizerPanelVisible()) {
-    animator_->Show();
-  } else {
-    animator_->Hide();
   }
 }
 

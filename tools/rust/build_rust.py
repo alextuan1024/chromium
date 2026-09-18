@@ -88,6 +88,8 @@ from update import (
 )
 
 from update_rust import (
+    BINDGEN_REVISION,
+    CRUBIT_REVISION,
     RUST_REVISION,
     RUST_TOOLCHAIN_OUT_DIR,
     STAGE0_JSON_SHA256,
@@ -122,9 +124,6 @@ EXCLUDED_TESTS_WINDOWS = [
     os.path.join('tests', 'ui', 'sanitizer', 'asan_odr_windows.rs'),
     # Temporarily disabled due to https://crbug.com/400524229
     os.path.join('tests', 'ui', 'process', 'win-command-child-path.rs'),
-    # Temporarily disabled due to https://crbug.com/556516031
-    os.path.join('tests', 'codegen-llvm', 'async-fn-debug-msvc.rs'),
-    os.path.join('tests', 'codegen-llvm', 'coroutine-debug-msvc.rs'),
 ]
 EXCLUDED_TESTS_MAC = []
 EXCLUDED_TESTS_MAC_ARM64 = [
@@ -641,7 +640,11 @@ def MakeVersionStamp(
     else:
         package_version = GetRustClangRevision()
 
-    return f'rustc {rust_version} {rust_hash} ({package_version} chromium)\n'
+    return (
+        f'rustc {rust_version} {rust_hash} ({package_version} chromium)\n'
+        f'crubit: {CRUBIT_REVISION}\n'
+        f'bindgen: {BINDGEN_REVISION}\n'
+    )
 
 
 def GetLatestRustCommit():
@@ -758,32 +761,75 @@ def GitApplyCherryPicks():
     # example, with llvm-project, we could set up a fork of upstream and
     # cherry-pick fixes into it, then point RUST_SRC_DIR at that fork
     # with `GitMoveSubmoduleBranch()`.
+    #
+    # If you need to cherry-pick depending on the LLVM revision, use
+    # GitApplyLLVMDependentCherryPicks() instead.
     #############################
 
-    # TODO(crbug.com/532190486): Remove once
-    # https://github.com/rust-lang/rust/pull/158910 rolls into rust.
-    GitCherryPick(RUST_SRC_DIR, '20a94981b0e8b628152be4d9bfb9dc3537cfcca5',
-                  'https://github.com/rust-lang/rust.git')
-
-    # TODO(crbug.com/532163953): Remove once
-    # https://github.com/rust-lang/rust/pull/158961 rolls into rust.
-    GitCherryPick(RUST_SRC_DIR, 'b8d3a4ac9cfeb81d1e929fe6eab0af4b77ba3bb4',
-                  'https://github.com/rust-lang/rust.git')
-
-    # TODO(crbug.com/534823432): Remove once
-    # https://github.com/rust-lang/rust/pull/159331 rolls into rust.
-    GitCherryPick(RUST_SRC_DIR, '9e25e3aab5f22179038b3c60d3bafa530492d271',
-                  'https://github.com/rust-lang/rust.git')
-
-    # TODO(crbug.com/556516031): Remove once
-    # https://github.com/rust-lang/rust/pull/162230 and
-    # https://github.com/rust-lang/rust/pull/162236 roll into rust.
-    GitCherryPick(RUST_SRC_DIR, 'c5c326ba70147a51f20e6f8ae530c6784ed7f644',
-                  'https://github.com/rust-lang/rust.git')
-    GitCherryPick(RUST_SRC_DIR, 'aa97bab747e287d1fc7cfdc9f8c49333fd9d76f7',
-                  'https://github.com/rust-lang/rust.git')
+    # Examples:
+    #
+    # # TODO(crbug.com/12345678): Remove once
+    # # https://github.com/rust-lang/rust/pull/123456 rolls into rust.
+    # GitCherryPick(
+    #     RUST_SRC_DIR,
+    #     '0123456789abcdef0123456789abcdef01234567',
+    #     'https://github.com/rust-lang/rust.git',
+    # )
+    #
+    # # TODO(crbug.com/12345678): Remove once fixed upstream.
+    # GitRevert(RUST_SRC_DIR, 'fedcba9876543210fedcba9876543210fedcba98')
 
     print('Finished applying cherry-picks.')
+
+
+def GitApplyLLVMDependentCherryPicks():
+    print('Applying LLVM-dependent cherry-picks...')
+
+    ##### LLVM-DEPENDENT CHERRY PICKS HERE #####
+    #
+    # NOTE: These cherry-picks depend on the LLVM revision, so they are
+    # applied here rather than in `GitApplyCherryPicks()`, which runs
+    # before LLVM is checked out.
+    #
+    # Prefer GitApplyCherryPicks() since it fails much earlier and will apply
+    # to more steps, e.g. VendorForStdlib().
+    ############################################
+
+    # Example:
+    #
+    # # TODO(crbug.com/12345678): Remove once
+    # # https://github.com/rust-lang/rust/pull/123456 rolls into rust.
+    # if IsGitAncestorToHead(
+    #     LLVM_DIR, 'fedcba9876543210fedcba9876543210fedcba98'
+    # ):
+    #     GitCherryPick(
+    #         RUST_SRC_DIR,
+    #         '0123456789abcdef0123456789abcdef01234567',
+    #         'https://github.com/rust-lang/rust.git',
+    #     )
+
+    # TODO(crbug.com/561655393): Remove once
+    # https://github.com/rust-lang/rust/pull/162783 rolls into rust.
+    if IsGitAncestorToHead(
+        LLVM_DIR, '105ff16f816ffdce14b1d4895d8584971ef5192c'
+    ):
+        GitCherryPick(
+            RUST_SRC_DIR,
+            'f0843be18bc97a38ae567c2fc620c15fdd5b1fef',
+            'https://github.com/rust-lang/rust.git',
+        )
+    # TODO(crbug.com/562057029): Remove once
+    # https://github.com/rust-lang/rust/pull/162817 rolls into rust.
+    if IsGitAncestorToHead(
+        LLVM_DIR, 'e733cebdf7c9c87bec77547f3c377f514a22c9b3'
+    ):
+        GitCherryPick(
+            RUST_SRC_DIR,
+            '5dd46310416da1074f652d3935956d6b1f03df4e',
+            'https://github.com/rust-lang/rust.git',
+        )
+
+    print('Finished applying LLVM-dependent cherry-picks.')
 
 
 def main():
@@ -1085,6 +1131,9 @@ def main():
 
     if not args.skip_llvm_build:
         BuildLLVMLibraries(args.skip_checkout, args.llvm_force_head_revision)
+
+    if not args.skip_checkout:
+        GitApplyLLVMDependentCherryPicks()
 
     AddCMakeToPath()
 

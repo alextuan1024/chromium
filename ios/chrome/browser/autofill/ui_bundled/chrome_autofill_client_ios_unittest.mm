@@ -14,6 +14,7 @@
 #import "base/test/values_test_util.h"
 #import "base/time/time.h"
 #import "base/values.h"
+#import "components/affiliations/core/browser/fake_affiliation_service.h"
 #import "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
@@ -32,6 +33,8 @@
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_delegate.h"
 #import "components/infobars/core/infobar_manager.h"
+#import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
+#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/model/autofill_agent_delegate.h"
 #import "ios/chrome/browser/autofill/model/autofill_policy_service_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
@@ -87,6 +90,11 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
                               ios::WebDataServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(
+        IOSChromeAffiliationServiceFactory::GetInstance(),
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<affiliations::FakeAffiliationService>();
+        }));
     profile_ = std::move(builder).Build();
 
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
@@ -167,6 +175,10 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
   std::unique_ptr<TestBrowser> browser_;
   SceneState* scene_state_;
 };
+
+TEST_F(ChromeAutofillClientIOSTest, GetAffiliationService) {
+  EXPECT_NE(nullptr, client().GetAffiliationService());
+}
 
 // Tests that GetAutofillManagerForPrimaryMainFrame() returns the main frame's
 // AutofillManager.
@@ -541,6 +553,33 @@ TEST_F(ChromeAutofillClientIOSTest, GetEntitySuppressionManager) {
   base::test::ScopedFeatureList feature_list(
       features::kAutofillAmbientAutofillSuppression);
   EXPECT_NE(client().GetEntitySuppressionManager(), nullptr);
+}
+
+// Test that `HideSuggestions` dismisses AtMemory when product is `kAtMemory`,
+// but not when product is `std::nullopt` or other products.
+TEST_F(ChromeAutofillClientIOSTest, HideSuggestionsDismissesAtMemory) {
+  id mock_at_memory_handler =
+      OCMStrictProtocolMock(@protocol(AtMemoryCommands));
+  client().set_at_memory_handler(mock_at_memory_handler);
+
+  // When product is kAtMemory, dismissAtMemory should be called.
+  OCMExpect([mock_at_memory_handler dismissAtMemory]);
+  client().HideSuggestions(SuggestionHidingReason::kUserAborted,
+                           FillingProduct::kAtMemory);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  // When product is nullopt, dismissAtMemory should not be called.
+  [[mock_at_memory_handler reject] dismissAtMemory];
+  client().HideSuggestions(SuggestionHidingReason::kTabGone, std::nullopt);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  // When product is a different product, dismissAtMemory should not be called.
+  [[mock_at_memory_handler reject] dismissAtMemory];
+  client().HideSuggestions(SuggestionHidingReason::kUserAborted,
+                           FillingProduct::kAddress);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  client().set_at_memory_handler(nil);
 }
 
 }  // namespace autofill

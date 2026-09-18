@@ -500,7 +500,7 @@ TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtree) {
     <div id=div></div>
     <canvas id=canvas>
       <div id=nested_div></div>
-        <canvas id=nested_canvas></canvas>
+      <canvas id=nested_canvas></canvas>
       <input id=nested_input>
     </canvas>
   )HTML");
@@ -561,7 +561,7 @@ TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeSlotted) {
   GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"(
     <div id=slotHost>
       <template shadowrootmode=open>
-        <canvas layoutsubtree>
+        <canvas content=drawable>
           <slot name="slot1"></slot>
         </canvas>
       </template>
@@ -587,7 +587,7 @@ TEST_P(HTMLCanvasElementTest, InCanvasSubtreeUnslotted) {
   GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
     <div id="slotHost">
       <template shadowrootmode="open">
-        <canvas layoutsubtree>
+        <canvas content=drawable>
           <slot name="slot1">
             <button id="target">fallback</button>
           </slot>
@@ -644,40 +644,137 @@ TEST_P(HTMLCanvasElementTest, InCanvasSubtreeUnslottedInIframe) {
 
   auto* unassigned = ChildDocument().getElementById(AtomicString("unassigned"));
   EXPECT_FALSE(unassigned->IsInCanvasSubtree());
-  EXPECT_FALSE(unassigned->ComputeIsInCanvasSubtree());
 }
 
-TEST_P(HTMLCanvasElementTest, LayoutsubtreeInvalidation) {
+TEST_P(HTMLCanvasElementTest, ContentDrawableInvalidation) {
   SetBodyInnerHTML(R"HTML(<canvas id=canvas></canvas>)HTML");
-  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("canvas")));
   UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->IsContentDrawable());
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Adding layoutsubtree should cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  // Adding content=drawable should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
   EXPECT_TRUE(canvas->NeedsStyleRecalc());
 
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Setting layoutsubtree to the same value should not cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  // Setting content to the same value should not cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Setting layoutsubtree to any other value should not cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
+  // Setting content to fallback should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("fallback"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Setting content to an unknown value (which is also not drawable) should not
+  // cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("unknown"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Setting back to drawable should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Removing content attribute should cause a style recalc.
+  canvas->removeAttribute(html_names::kContentAttr);
+  EXPECT_FALSE(canvas->IsContentDrawable());
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Testing legacy layoutsubtree backward compatibility.
+  // Adding layoutsubtree should cause a style recalc.
+  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
   // Removing layoutsubtree should cause a style recalc.
   canvas->removeAttribute(html_names::kLayoutsubtreeAttr);
+  EXPECT_FALSE(canvas->IsContentDrawable());
   EXPECT_TRUE(canvas->NeedsStyleRecalc());
+}
 
-  UpdateAllLifecyclePhasesForTest();
-  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+TEST_P(HTMLCanvasElementTest, ContentAttributePrecedence) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas id="fallback_and_layoutsubtree" content="fallback" layoutsubtree></canvas>
+    <canvas id="foo_and_layoutsubtree" content="foo" layoutsubtree></canvas>
+    <canvas id="empty_and_layoutsubtree" content="" layoutsubtree></canvas>
+    <canvas id="drawable_and_layoutsubtree" content="drawable" layoutsubtree></canvas>
+    <canvas id="layoutsubtree_first_fallback" layoutsubtree content="fallback"></canvas>
+    <canvas id="layoutsubtree_first_foo" layoutsubtree content="foo"></canvas>
+    <canvas id="layoutsubtree_only" layoutsubtree></canvas>
+  )HTML");
 
-  // Adding layoutsubtree back should cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
-  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+  auto* fallback_and_layoutsubtree = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("fallback_and_layoutsubtree")));
+  EXPECT_FALSE(fallback_and_layoutsubtree->IsContentDrawable());
+
+  auto* foo_and_layoutsubtree = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("foo_and_layoutsubtree")));
+  EXPECT_FALSE(foo_and_layoutsubtree->IsContentDrawable());
+
+  auto* empty_and_layoutsubtree = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("empty_and_layoutsubtree")));
+  EXPECT_FALSE(empty_and_layoutsubtree->IsContentDrawable());
+
+  auto* drawable_and_layoutsubtree = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("drawable_and_layoutsubtree")));
+  EXPECT_TRUE(drawable_and_layoutsubtree->IsContentDrawable());
+
+  auto* layoutsubtree_first_fallback =
+      To<HTMLCanvasElement>(GetDocument().getElementById(
+          AtomicString("layoutsubtree_first_fallback")));
+  EXPECT_FALSE(layoutsubtree_first_fallback->IsContentDrawable());
+
+  auto* layoutsubtree_first_foo = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("layoutsubtree_first_foo")));
+  EXPECT_FALSE(layoutsubtree_first_foo->IsContentDrawable());
+
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("layoutsubtree_only")));
+  EXPECT_TRUE(canvas->IsContentDrawable());
+
+  // Setting content=fallback overrides layoutsubtree.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("fallback"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
+
+  // Calling setLayoutSubtree(true) when content=fallback is set should not make
+  // the canvas drawable because content=fallback takes precedence.
+  canvas->setLayoutSubtree(true);
+  EXPECT_FALSE(canvas->IsContentDrawable());
+
+  // Setting an invalid content value ("foo") also resolves to fallback and
+  // takes precedence over layoutsubtree.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("foo"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
+
+  // Removing the content attribute allows layoutsubtree to take effect again.
+  canvas->removeAttribute(html_names::kContentAttr);
+  EXPECT_TRUE(canvas->IsContentDrawable());
+
+  // Setting content=drawable takes precedence over removing layoutsubtree.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
+  canvas->setLayoutSubtree(false);
+  EXPECT_TRUE(canvas->IsContentDrawable());
 }
 
 TEST_P(HTMLCanvasElementTest, HTMLInCanvasUseCounter) {
@@ -685,7 +782,7 @@ TEST_P(HTMLCanvasElementTest, HTMLInCanvasUseCounter) {
   GetDocument().GetSettings()->SetScriptEnabled(true);
 
   SetBodyInnerHTML(R"HTML(
-    <canvas id=cvs layoutsubtree>
+    <canvas id=cvs content=drawable>
       <div id=target>hello world</div>
     </canvas>
   )HTML");
@@ -701,6 +798,88 @@ TEST_P(HTMLCanvasElementTest, HTMLInCanvasUseCounter) {
   GetDocument().body()->appendChild(script);
   RunDocumentLifecycle();
   EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
+}
+
+TEST_P(HTMLCanvasElementTest, StaleSlotAssignmentDoesNotCorruptMovedChild) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas id="c1">
+      <div id="host">
+        <template shadowrootmode="open">
+          <slot id="slot"></slot>
+        </template>
+        <div id="child">Child</div>
+      </div>
+    </canvas>
+    <canvas id="c2"></canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* c2 =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c2")));
+
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  child->remove();
+  c2->appendChild(child);
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  host->remove();
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, AppendHostWithUnslottedChildToCanvas) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas id="c"></canvas>
+  )HTML");
+  auto* c =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+  auto* host = GetDocument().CreateRawElement(html_names::kDivTag);
+  host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  auto* child = GetDocument().CreateRawElement(html_names::kDivTag);
+  host->appendChild(child);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+
+  c->appendChild(host);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, MoveConnectedHostWithSlottedChildIntoCanvas) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="container">
+      <div id="host">
+        <template shadowrootmode="open">
+          <slot id="slot"></slot>
+        </template>
+        <div id="child">
+          <div id="grandchild"></div>
+        </div>
+      </div>
+    </div>
+    <canvas id="c"></canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* grandchild = GetDocument().getElementById(AtomicString("grandchild"));
+  auto* c =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+
+  EXPECT_FALSE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+  EXPECT_FALSE(grandchild->IsInCanvasSubtree());
+
+  c->appendChild(host);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  EXPECT_TRUE(grandchild->IsInCanvasSubtree());
 }
 
 }  // namespace blink

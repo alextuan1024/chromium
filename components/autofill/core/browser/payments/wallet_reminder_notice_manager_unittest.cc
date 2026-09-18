@@ -18,6 +18,7 @@
 #include "base/test/task_environment.h"
 #include "components/autofill/core/browser/data_manager/payments/test_payments_data_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/metrics/payments/wallet_reminder_notice_metrics.h"
@@ -178,31 +179,28 @@ TEST_F(WalletReminderNoticeManagerTest,
   feature_list_.InitAndDisableFeature(
       autofill::features::kAutofillEnableWalletReminderNoticePublicPass);
   EXPECT_FALSE(manager_->IsWalletReminderNoticeEligible(
-      test::GetVehicleEntityInstance(
-          {.record_type = EntityInstance::RecordType::kServerWallet})));
+      EntityType(EntityTypeName::kVehicle),
+      EntityInstance::RecordType::kServerWallet));
 }
 
 TEST_F(WalletReminderNoticeManagerTest,
        IsWalletReminderNoticeEligible_PublicPass_PrivatePass_NotEligible) {
   EXPECT_FALSE(manager_->IsWalletReminderNoticeEligible(
-      test::GetPassportEntityInstance(
-          {.record_type = EntityInstance::RecordType::kServerWallet})));
+      EntityType(EntityTypeName::kPassport),
+      EntityInstance::RecordType::kServerWallet));
 }
 
 TEST_F(WalletReminderNoticeManagerTest,
        IsWalletReminderNoticeEligible_PublicPass_LocalRecord_NotEligible) {
   EXPECT_FALSE(manager_->IsWalletReminderNoticeEligible(
-      test::GetVehicleEntityInstance(
-          {.record_type = EntityInstance::RecordType::kLocal})));
+      EntityType(EntityTypeName::kVehicle), EntityInstance::RecordType::kLocal));
 }
 
 TEST_F(WalletReminderNoticeManagerTest,
        IsWalletReminderNoticeEligible_PublicPass_ReadOnly_NotEligible) {
   EXPECT_FALSE(manager_->IsWalletReminderNoticeEligible(
-      test::GetFlightReservationEntityInstance(
-          {.record_type = EntityInstance::RecordType::kServerWallet,
-           .are_attributes_read_only =
-               EntityInstance::AreAttributesReadOnly(true)})));
+      EntityType(EntityTypeName::kFlightReservation),
+      EntityInstance::RecordType::kServerWallet));
 }
 
 TEST_F(WalletReminderNoticeManagerTest,
@@ -210,8 +208,8 @@ TEST_F(WalletReminderNoticeManagerTest,
   base::HistogramTester histogram_tester;
   prefs::SetHasShownWalletReminderNotice(autofill_client_.GetPrefs());
   EXPECT_FALSE(manager_->IsWalletReminderNoticeEligible(
-      test::GetVehicleEntityInstance(
-          {.record_type = EntityInstance::RecordType::kServerWallet})));
+      EntityType(EntityTypeName::kVehicle),
+      EntityInstance::RecordType::kServerWallet));
   histogram_tester.ExpectUniqueSample(
       "Autofill.WalletReminderNotice.ShowResult",
       autofill_metrics::WalletReminderNoticeShowResult::
@@ -222,8 +220,8 @@ TEST_F(WalletReminderNoticeManagerTest,
 TEST_F(WalletReminderNoticeManagerTest,
        IsWalletReminderNoticeEligible_PublicPass_Eligible) {
   EXPECT_TRUE(manager_->IsWalletReminderNoticeEligible(
-      test::GetVehicleEntityInstance(
-          {.record_type = EntityInstance::RecordType::kServerWallet})));
+      EntityType(EntityTypeName::kVehicle),
+      EntityInstance::RecordType::kServerWallet));
 }
 
 TEST_F(WalletReminderNoticeManagerTest, ShowWalletReminderNotice_CreditCard) {
@@ -239,11 +237,11 @@ TEST_F(WalletReminderNoticeManagerTest, ShowWalletReminderNotice_CreditCard) {
 }
 
 TEST_F(WalletReminderNoticeManagerTest, ShowWalletReminderNotice_PublicPass) {
-  EXPECT_CALL(*payments_network_interface_,
-              GetWalletReminderNotice(
-                  FieldsAre(kAppLocale, kBillingCustomerNumber,
-                            kWalletPassBillableServiceNumber),
-                  _));
+  EXPECT_CALL(
+      *payments_network_interface_,
+      GetWalletReminderNotice(FieldsAre(kAppLocale, kBillingCustomerNumber,
+                                        kWalletPassBillableServiceNumber),
+                              _));
 
   manager_->ShowWalletReminderNotice(
       RecordLegalReminderAcknowledgmentRequestDetails::FlowType::kWalletPass);
@@ -343,16 +341,16 @@ TEST_F(WalletReminderNoticeManagerTest,
   legal_message_lines.push_back(TestLegalMessageLine("Legal message line"));
 
   EXPECT_CALL(*ui_delegate_,
-              ShowWalletReminderNotice(ElementsAre(Property(
-                  &LegalMessageLine::text, u"Legal message line"))));
-  EXPECT_CALL(*payments_network_interface_,
-              RecordLegalReminderAcknowledgment(
-                  FieldsAre(kAppLocale, kBillingCustomerNumber,
-                            kWalletPassBillableServiceNumber,
-                            kAcknowledgementToken,
-                            RecordLegalReminderAcknowledgmentRequestDetails::
-                                FlowType::kWalletPass),
-                  _));
+              ShowWalletReminderNotice(ElementsAre(
+                  Property(&LegalMessageLine::text, u"Legal message line"))));
+  EXPECT_CALL(
+      *payments_network_interface_,
+      RecordLegalReminderAcknowledgment(
+          FieldsAre(kAppLocale, kBillingCustomerNumber,
+                    kWalletPassBillableServiceNumber, kAcknowledgementToken,
+                    RecordLegalReminderAcknowledgmentRequestDetails::FlowType::
+                        kWalletPass),
+          _));
 
   GetWalletReminderNoticeResponseDetails response_details;
   response_details.legal_message_lines = std::move(legal_message_lines);

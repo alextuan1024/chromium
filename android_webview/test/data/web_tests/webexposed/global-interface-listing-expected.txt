@@ -3760,6 +3760,7 @@ interface HTMLButtonElement : HTMLElement
     setter value
 interface HTMLCanvasElement : HTMLElement
     attribute @@toStringTag
+    getter content
     getter height
     getter layoutSubtree
     getter onelementgeometryupdate
@@ -3777,6 +3778,7 @@ interface HTMLCanvasElement : HTMLElement
     method toDataURL
     method transferControlToOffscreen
     method updateElementGeometry
+    setter content
     setter height
     setter layoutSubtree
     setter onelementgeometryupdate
@@ -7887,6 +7889,7 @@ interface RTCRtpSender
     getter transform
     getter transport
     method constructor
+    method createEncodedSource
     method createEncodedStreams
     method getParameters
     method getStats
@@ -9839,15 +9842,21 @@ interface Subscriber
     method error
     method next
 interface SubtleCrypto
+    static method supports
     attribute @@toStringTag
     method constructor
+    method decapsulateBits
+    method decapsulateKey
     method decrypt
     method deriveBits
     method deriveKey
     method digest
+    method encapsulateBits
+    method encapsulateKey
     method encrypt
     method exportKey
     method generateKey
+    method getPublicKey
     method importKey
     method sign
     method unwrapKey
@@ -10160,11 +10169,9 @@ interface TrustedHTML
     method constructor
     method toJSON
     method toString
-interface TrustedParserOptions
+interface TrustedHTMLParserOptions
     attribute @@toStringTag
-    getter runScripts
     method constructor
-    method sanitizer
 interface TrustedScript
     static method fromLiteral
     attribute @@toStringTag

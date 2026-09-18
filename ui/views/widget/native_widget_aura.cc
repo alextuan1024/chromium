@@ -297,7 +297,8 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   gfx::NativeView context = params.context;
 
   if (!params.child) {
-    wm::TransientWindowManager::GetOrCreate(window_)->AddObserver(this);
+    transient_window_observation_.Observe(
+        wm::TransientWindowManager::GetOrCreate(window_));
 
     // Set up the transient child before the window is added. This way the
     // LayoutManager knows the window has a transient parent.
@@ -348,7 +349,7 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
         target_display.value_or(display::kInvalidDisplayId));
   }
 
-  window_->AddObserver(this);
+  window_observation_.Observe(window_);
 
   // Wait to set the bounds until we have a parent. That way we can know our
   // true state/bounds (the LayoutManager may enforce a particular
@@ -742,14 +743,17 @@ void NativeWidgetAura::Close() {
   DCHECK(window_ ||
          ownership_ == Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET ||
          ownership_ == Widget::InitParams::CLIENT_OWNS_WIDGET);
+  auto weak_this = weak_factory.GetWeakPtr();
   if (window_) {
     Hide();
+    if (!weak_this || !window_) {
+      return;
+    }
     window_->SetProperty(aura::client::kModalKey, ui::mojom::ModalType::kNone);
   }
 
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&NativeWidgetAura::CloseNow, weak_factory.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&NativeWidgetAura::CloseNow, weak_this));
 }
 
 void NativeWidgetAura::CloseNow() {
@@ -1210,10 +1214,8 @@ void NativeWidgetAura::OnDeviceScaleFactorChanged(
 }
 
 void NativeWidgetAura::OnWindowDestroying(aura::Window* window) {
-  window_->RemoveObserver(this);
-  if (wm::TransientWindowManager::GetIfExists(window_)) {
-    wm::TransientWindowManager::GetOrCreate(window_)->RemoveObserver(this);
-  }
+  window_observation_.Reset();
+  transient_window_observation_.Reset();
   if (delegate_) {
     delegate_->OnNativeWidgetDestroying();
   }

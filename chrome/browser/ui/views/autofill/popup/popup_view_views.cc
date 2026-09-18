@@ -473,6 +473,7 @@ bool PopupViewViews::Show(
   MaybeAnnounceCurrentTabAndFootnote();
   MaybeAnnouncePasswordRecoveryPopup();
   MaybeAnnounceLoadingState();
+  MaybeAnnounceA11yOverride();
   if (!MaybeA11yFocusInformationalSuggestion()) {
     return false;
   }
@@ -759,16 +760,10 @@ bool PopupViewViews::HandleKeyPressEventForAtMemory(
       }
       return false;
     case ui::VKEY_DOWN:
-      if (GetSelectedCell()) {
+      if (!rows_.empty()) {
         SelectNextRow(PopupCellSelectionSource::kKeyboard);
-        return true;
       }
-      if (HasSelectablePopupInteractiveRowViewAt(0)) {
-        SetSelectedCell(CellIndex(0, PopupRowView::CellType::kContent),
-                        PopupCellSelectionSource::kKeyboard);
-        return true;
-      }
-      return false;
+      return GetSelectedCell().has_value();
     case ui::VKEY_LEFT:
     case ui::VKEY_RIGHT:
       return HandlePopupHorizontalNavigation(event);
@@ -960,6 +955,7 @@ void PopupViewViews::OnSuggestionsChanged(bool prefer_prev_arrow_side) {
 
   MaybeAnnouncePasswordRecoveryPopup();
   MaybeAnnounceLoadingState();
+  MaybeAnnounceA11yOverride();
   if (!MaybeA11yFocusInformationalSuggestion()) {
     return;
   }
@@ -1207,6 +1203,18 @@ void PopupViewViews::MaybeAnnounceLoadingState() {
   }
 }
 
+void PopupViewViews::MaybeAnnounceA11yOverride() {
+  if (!controller_) {
+    return;
+  }
+  for (const Suggestion& suggestion : controller_->GetSuggestions()) {
+    if (suggestion.a11y_announcement) {
+      a11y_announcer_.Run(*suggestion.a11y_announcement, /*polite=*/true);
+      break;
+    }
+  }
+}
+
 void PopupViewViews::MaybeAnnounceCurrentTabAndFootnote() {
   std::u16string announcement;
 
@@ -1282,7 +1290,6 @@ void PopupViewViews::InitViews() {
     search_bar_ = AddChildView(std::make_unique<PopupSearchBarView>(
         search_bar_config_->placeholder, search_bar_config_->initial_value,
         *this,
-        /*show_indicator=*/is_at_memory,
         /*show_search_icon_sparkle=*/is_at_memory,
         /*debounce_delay=*/
         is_at_memory ? base::TimeDelta()

@@ -159,6 +159,52 @@ using experimental_flags::IsSpotlightDebuggingEnabled;
 
 namespace {
 
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+NSString* const kGeminiBrandedLogoSymbol = @"gemini_logo";
+#else
+NSString* const kGeminiNonBrandedLogoSymbol = @"sparkle";
+#endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+
+// Custom symbol names.
+NSString* const kArrowClockWiseSymbol = @"arrow_clockwise";
+NSString* const kCameraLensSymbol = @"camera_lens";
+NSString* const kChromeProductSymbol = @"chrome_product";
+NSString* const kDownTrendSymbol = @"line_downtrend";
+NSString* const kIncognitoSymbol = @"incognito";
+NSString* const kPasswordSymbol = @"password";
+NSString* const kReadingListSymbol = @"square_bullet_square";
+NSString* const kRecentTabsSymbol = @"laptopcomputer_and_phone";
+NSString* const kTranslateSymbol = @"translate";
+NSString* const kTunerSymbol = @"tuner";
+
+// Default symbol names.
+NSString* const kAddBookmarkActionSymbol = @"star";
+NSString* const kBellBadgeSymbol = @"bell.badge";
+NSString* const kBookmarksSymbol = @"star";
+NSString* const kCheckmarkSealSymbol = @"checkmark.seal";
+NSString* const kChevronForwardSymbol = @"chevron.forward";
+NSString* const kDesktopSymbol = @"desktopcomputer";
+NSString* const kDownloadSymbol = @"arrow.down.circle";
+NSString* const kEditActionSymbol = @"pencil";
+NSString* const kExpandSymbol = @"arrow.up.left.and.arrow.down.right";
+NSString* const kFindInPageActionSymbol = @"doc.text.magnifyingglass";
+NSString* const kHelpSymbol = @"questionmark.circle";
+NSString* const kHideActionSymbol = @"eye.slash";
+NSString* const kHistorySymbol = @"clock.arrow.circlepath";
+NSString* const kIPhoneSymbol = @"iphone";
+NSString* const kMagicStackSymbol = @"wand.and.stars.inverse";
+NSString* const kNewWindowActionSymbol = @"square.split.2x1";
+NSString* const kPersonCropCircleSymbol = @"person.crop.circle";
+NSString* const kPlusInCircleSymbol = @"plus.circle";
+NSString* const kReaderModeSymbol = @"text.page";
+NSString* const kReadLaterActionSymbol = @"text.badge.plus";
+NSString* const kSettingsSymbol = @"gearshape";
+NSString* const kShareSymbol = @"square.and.arrow.up";
+NSString* const kTrashSymbol = @"trash";
+NSString* const kWarningSymbol = @"exclamationmark.triangle";
+NSString* const kXMarkSymbol = @"xmark";
+NSString* const kZoomTextActionSymbol = @"plus.magnifyingglass";
+
 // Approximate number of visible page actions by default.
 const unsigned int kDefaultVisiblePageActionCount = 3u;
 
@@ -378,8 +424,6 @@ void GetPresetNTPBackgroundPreview(
 @property(nonatomic, strong) OverflowMenuAction* askBWGAction;
 
 @property(nonatomic, strong) OverflowMenuAction* customizeHomepageAction;
-
-@property(nonatomic, strong) OverflowMenuAction* shareAction;
 
 @end
 
@@ -889,8 +933,6 @@ void GetPresetNTPBackgroundPreview(
 
   self.requestDesktopAction = [self newRequestDesktopAction];
 
-  self.shareAction = [self newShareAction];
-
   NSString* requestMobileHideItemText =
       l10n_util::GetNSString(IDS_IOS_OVERFLOW_MENU_HIDE_ACTION_MOBILE_SITE);
   self.requestMobileAction = [self
@@ -1272,22 +1314,6 @@ void GetPresetNTPBackgroundPreview(
                             hideItemText:hideItemText
                                  handler:^{
                                    [weakSelf requestDesktopSite];
-                                 }];
-}
-
-- (OverflowMenuAction*)newShareAction {
-  __weak __typeof(self) weakSelf = self;
-  return [self
-      createOverflowMenuActionWithNameID:IDS_IOS_TOOLS_MENU_SHARE_THIS_PAGE
-                              actionType:overflow_menu::ActionType::
-                                             ShareThisPage
-                              symbolName:kShareSymbol
-                            systemSymbol:YES
-                        monochromeSymbol:YES
-                         accessibilityID:kToolsMenuShareId
-                            hideItemText:nil
-                                 handler:^{
-                                   [weakSelf shareThisPage];
                                  }];
 }
 
@@ -1840,14 +1866,6 @@ void GetPresetNTPBackgroundPreview(
       return self.readerModeAction;
     case overflow_menu::ActionType::AskBWG:
       return self.askBWGAction;
-    case overflow_menu::ActionType::HideToolbarsDeprecated:
-      NOTREACHED();
-    case overflow_menu::ActionType::TabGroupDeprecated:
-      NOTREACHED();
-    case overflow_menu::ActionType::ShareThisPage:
-      return self.shareAction;
-    case overflow_menu::ActionType::SigninDeprecated:
-      NOTREACHED();
     case overflow_menu::ActionType::Identity:
       return self.identityAction;
     case overflow_menu::ActionType::CustomizeHomePage:
@@ -1971,13 +1989,6 @@ void GetPresetNTPBackgroundPreview(
 
   NSMutableArray<OverflowMenuAction*>* appActions =
       [[NSMutableArray alloc] init];
-
-  if (IsChromeNextIaEnabled() && !IsChromeNextIaShareIconVisible() &&
-      [self isCurrentURLWebURL]) {
-    base::UmaHistogramEnumeration("Mobile.ShareThisPage.Shown",
-                                  ShareThisPageLocation::kOverflowMenu);
-    [appActions addObject:self.shareAction];
-  }
 
   BOOL showReloadStopAction;
   if (IsChromeNextIaEnabled()) {
@@ -2746,8 +2757,6 @@ void GetPresetNTPBackgroundPreview(
     case overflow_menu::ActionType::ShareChrome:
     case overflow_menu::ActionType::DefaultBrowser:
     case overflow_menu::ActionType::EditActions:
-    case overflow_menu::ActionType::ShareThisPage:
-    case overflow_menu::ActionType::SigninDeprecated:
     case overflow_menu::ActionType::Identity:
     case overflow_menu::ActionType::CustomizeHomePage:
       NOTREACHED();
@@ -2775,10 +2784,6 @@ void GetPresetNTPBackgroundPreview(
       return [self toggleReaderModeAction];
     case overflow_menu::ActionType::AskBWG:
       return [self openAskBWGAction];
-    case overflow_menu::ActionType::HideToolbarsDeprecated:
-      NOTREACHED();
-    case overflow_menu::ActionType::TabGroupDeprecated:
-      NOTREACHED();
   }
 }
 
@@ -2902,17 +2907,6 @@ void GetPresetNTPBackgroundPreview(
   }
   [self.helpHandler
       presentInProductHelpWithType:InProductHelpType::kDefaultSiteView];
-}
-
-- (void)shareThisPage {
-  base::UmaHistogramEnumeration("Mobile.ShareThisPage.Used",
-                                ShareThisPageLocation::kOverflowMenu);
-  [self dismissMenu];
-
-  UIView* toolMenuView =
-      [_layoutGuideCenter referencedViewUnderName:kToolsMenuGuide];
-
-  [self.activityServiceHandler showShareSheetFromShareButton:toolMenuView];
 }
 
 // Dismisses the menu and requests the mobile version of the current page

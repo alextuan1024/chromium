@@ -84,9 +84,6 @@ COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOmitCorsClientCert);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kRestrictFrameDestinationsToNavigate);
-
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kReduceAcceptLanguage);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kReduceAcceptLanguageHTTP);
@@ -185,6 +182,13 @@ BASE_DECLARE_FEATURE(kFrameAncestorsHeader);
 // https://fetch.spec.whatwg.org/#http-redirect-fetch
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kUpdateRequestForCorsRedirect);
+
+// https://crbug.com/513518289
+// When enabled, CorsURLLoader handles CORS redirects in-place via
+// network_loader_->FollowRedirect() rather than restarting the request via
+// StartRequest().
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kAvoidCorsURLLoaderRestartOnRedirect);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kBrowsingTopics);
@@ -331,6 +335,12 @@ BASE_DECLARE_FEATURE(kBlockInvalidOriginHeaderModificationOnRedirect);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kBlockInvalidOriginHeader);
 
+// When enabled, the network service will prohibit non-browser processes from
+// removing security-sensitive headers (such as Origin and Sec- headers other
+// than Client Hints) in CorsURLLoader::FollowRedirect.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kBlockSecurityHeaderRemovalOnRedirect);
+
 // If enabled, the variations headers for allowlisted domains will be included
 // in the Reporting API uploads.
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
@@ -375,6 +385,12 @@ BASE_DECLARE_FEATURE(kSafeRevalidation);
 // runner.
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kBindURLLoaderFactoryToHighPriorityTaskRunner);
+
+// When enabled, validates that ResourceRequest::isolated_world_origin matches
+// URLLoaderFactoryParams::isolated_world_origin_lock when
+// ignore_isolated_world_origin is false.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kEnforceIsolatedWorldOriginLock);
 
 }  // namespace network::features
 

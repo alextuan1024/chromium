@@ -4,9 +4,11 @@
 
 package org.chromium.chrome.browser.tab.utilities;
 
+import android.util.SparseArray;
 import android.util.SparseIntArray;
 
 import androidx.annotation.IntDef;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
@@ -17,12 +19,16 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.content_public.browser.NavigationController;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 
 /**
  * Service for queuing and monitoring tabs that need to be loaded on demand. Supports tracking
@@ -35,13 +41,20 @@ public class TabLoadingService {
      * Possible outcomes of a tab load request. Used to indicate the final state of the tab when
      * notifying registered callbacks.
      */
-    @IntDef({LoadResult.SUCCESS, LoadResult.FAILURE, LoadResult.CRASH, LoadResult.DESTROYED})
+    @IntDef({
+        LoadResult.SUCCESS,
+        LoadResult.FAILURE,
+        LoadResult.CRASH,
+        LoadResult.DESTROYED,
+        LoadResult.CANCELLED
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface LoadResult {
         int SUCCESS = 0;
         int FAILURE = 1;
         int CRASH = 2;
         int DESTROYED = 3;
+        int CANCELLED = 4;
     }
 
     /** Callback interface to be notified when a queued tab finishes loading or fails. */
@@ -124,7 +137,22 @@ public class TabLoadingService {
 
     private static @Nullable TabLoadingService sInstanceForTesting;
 
-    private final Map<Integer, ObserverList<LoadIfNeededCallback>> mQueuedTabs = new HashMap<>();
+    private final SparseArray<ObserverList<LoadIfNeededCallback>> mQueuedTabs = new SparseArray<>();
+
+    /** Tabs that are actively occupying a concurrency slot and undergoing loading. */
+    private final List<Tab> mLoadingTabs = new ArrayList<>();
+
+    /**
+     * Tabs that require reloading but are waiting in FIFO order until an active concurrency slot
+     * opens up in {@link #mLoadingTabs}.
+     */
+    private final Deque<Tab> mPendingTabs = new ArrayDeque<>();
+
+    /** Whether the concurrent load limit is enabled via feature flag. */
+    private final boolean mLimitEnabled;
+
+    /** The maximum number of tabs permitted to load concurrently. */
+    private final int mLimit;
 
     /**
      * Maps active tab IDs to strictly increasing generation tokens. Used to invalidate stale
@@ -135,7 +163,11 @@ public class TabLoadingService {
     /** Monotonic generation counter incremented with each new load request. */
     private int mNextGeneration;
 
-    private TabLoadingService() {}
+    @VisibleForTesting
+    TabLoadingService() {
+        mLimitEnabled = OnDemandBackgroundTabCaptureConfig.isLimitConcurrentLoadsEnabled();
+        mLimit = OnDemandBackgroundTabCaptureConfig.getConcurrentLoadLimit();
+    }
 
     /** Returns the singleton instance of {@link TabLoadingService}. */
     public static TabLoadingService getInstance() {
@@ -151,20 +183,37 @@ public class TabLoadingService {
      */
     public boolean queueLoadIfNeeded(Tab tab) {
         ThreadUtils.assertOnUiThread();
-        if (mQueuedTabs.containsKey(tab.getId())) {
+        if (mQueuedTabs.get(tab.getId()) != null) {
             return true;
         }
-        if (!tab.loadIfNeeded(/* forceBackingSize= */ true)) {
-            return false;
+
+        if (!mLimitEnabled) {
+            mQueuedTabs.put(tab.getId(), new ObserverList<>());
+            return startTabLoad(tab, /* notifyOnFailure= */ false);
         }
-        if (!tab.isLoading()) {
+
+        // Do not queue tabs that are already fully loaded and idle. Returning false early
+        // avoids holding a slot in mPendingTabs or blocking other queued tabs when no load
+        // is needed.
+        if (!tab.isLoading()
+                && !tab.isFrozen()
+                && tab.getPendingLoadParams() == null
+                && !tab.needsReload()) {
             return false;
         }
 
-        tab.addObserver(sObserver);
+        // Track in mQueuedTabs before loading or queueing so subsequent caller invocations
+        // of addLoadIfNeededCallback() can register listeners (including for tabs that were
+        // already loading).
         mQueuedTabs.put(tab.getId(), new ObserverList<>());
-        mTabLoadGenerations.put(tab.getId(), ++mNextGeneration);
-        return true;
+
+        if (mPendingTabs.isEmpty() && mLoadingTabs.size() < mLimit) {
+            return startTabLoad(tab, /* notifyOnFailure= */ false);
+        } else {
+            tab.addObserver(sObserver);
+            mPendingTabs.add(tab);
+            return true;
+        }
     }
 
     /**
@@ -208,7 +257,87 @@ public class TabLoadingService {
      */
     public boolean isTabQueuedForLoad(int tabId) {
         ThreadUtils.assertOnUiThread();
-        return mQueuedTabs.containsKey(tabId);
+        return mQueuedTabs.get(tabId) != null;
+    }
+
+    /**
+     * Cancels an in-flight or queued load for the given tab.
+     *
+     * <p>If the tab is actively loading, this aborts the load and sets {@code needsReload} to true
+     * to preserve dirty state for future navigations. Any waiting pending tabs are immediately
+     * scheduled.
+     *
+     * <p>Registered callbacks are notified with {@link LoadResult#CANCELLED} so consumers can tear
+     * down any UI they put up for the load.
+     *
+     * @param tab The tab to cancel loading for.
+     * @return true if an active or pending load for the tab was cancelled.
+     */
+    public boolean cancelLoadIfNeeded(Tab tab) {
+        ThreadUtils.assertOnUiThread();
+        boolean removedPending = mPendingTabs.remove(tab);
+        mTabLoadGenerations.delete(tab.getId());
+        boolean wasQueued = mQueuedTabs.get(tab.getId()) != null;
+        boolean wasLoading = mLoadingTabs.remove(tab);
+
+        // The observer is attached to both actively loading and pending tabs, so it must be
+        // detached in either case to avoid observing tabs the service no longer tracks.
+        if (wasLoading || removedPending) {
+            tab.removeObserver(sObserver);
+        }
+
+        if (wasLoading && !tab.isDestroyed()) {
+            tab.stopLoading();
+            WebContents webContents = tab.getWebContents();
+            if (webContents != null && !webContents.isDestroyed()) {
+                // The load was aborted midway, so the tab holds partially rendered content.
+                // Marking it for reload ensures a later activation re-fetches the page rather
+                // than surfacing that half-loaded state to the user.
+                NavigationController navigationController = webContents.getNavigationController();
+                if (navigationController != null) {
+                    navigationController.setNeedsReload();
+                }
+            }
+        }
+
+        // Notify before scheduling pending tabs so consumers observe the cancellation while the
+        // service state is already consistent. This also clears the tab from mQueuedTabs.
+        removeCallbacksAndNotify(tab, LoadResult.CANCELLED);
+
+        if (wasLoading) {
+            maybeLoadQueuedTabs();
+            return true;
+        }
+        return removedPending || wasQueued;
+    }
+
+    private boolean startTabLoad(Tab tab, boolean notifyOnFailure) {
+        // If tab was destroyed while waiting in the queue, notify destroyed immediately.
+        if (tab.isDestroyed()) {
+            if (notifyOnFailure) {
+                removeCallbacksAndNotify(tab, LoadResult.DESTROYED);
+            } else {
+                mQueuedTabs.delete(tab.getId());
+            }
+            return false;
+        }
+
+        mTabLoadGenerations.put(tab.getId(), ++mNextGeneration);
+        boolean loadIfNeededResult = tab.loadIfNeeded(/* forceBackingSize= */ true);
+        boolean isLoadingResult = tab.isLoading();
+        if (!loadIfNeededResult || !isLoadingResult) {
+            mTabLoadGenerations.delete(tab.getId());
+            if (notifyOnFailure) {
+                int result = tab.isDestroyed() ? LoadResult.DESTROYED : LoadResult.FAILURE;
+                removeCallbacksAndNotify(tab, result);
+            } else {
+                mQueuedTabs.delete(tab.getId());
+            }
+            return false;
+        }
+        tab.addObserver(sObserver);
+        mLoadingTabs.add(tab);
+        return true;
     }
 
     /** Returns the active load generation token for the tab, or -1 if not queued. */
@@ -223,15 +352,34 @@ public class TabLoadingService {
     }
 
     private void onTabLoadFinished(Tab tab, @LoadResult int result) {
+        mLoadingTabs.remove(tab);
+        mPendingTabs.remove(tab);
         mTabLoadGenerations.delete(tab.getId());
-        ObserverList<LoadIfNeededCallback> callbacks = mQueuedTabs.remove(tab.getId());
-        if (callbacks == null) {
+        tab.removeObserver(sObserver);
+
+        removeCallbacksAndNotify(tab, result);
+        maybeLoadQueuedTabs();
+    }
+
+    /** Removes the callbacks for the tab and notifies them of the load result. */
+    private void removeCallbacksAndNotify(Tab tab, @LoadResult int result) {
+        ObserverList<LoadIfNeededCallback> callbacks = mQueuedTabs.get(tab.getId());
+        mQueuedTabs.delete(tab.getId());
+        if (callbacks != null) {
+            for (LoadIfNeededCallback callback : callbacks) {
+                callback.onLoadFinished(tab, result);
+            }
+        }
+    }
+
+    private void maybeLoadQueuedTabs() {
+        if (!mLimitEnabled) {
             return;
         }
 
-        tab.removeObserver(sObserver);
-        for (LoadIfNeededCallback callback : callbacks) {
-            callback.onLoadFinished(tab, result);
+        while (mLoadingTabs.size() < mLimit && !mPendingTabs.isEmpty()) {
+            Tab nextTab = mPendingTabs.removeFirst();
+            startTabLoad(nextTab, /* notifyOnFailure= */ true);
         }
     }
 
@@ -239,6 +387,8 @@ public class TabLoadingService {
         mQueuedTabs.clear();
         mTabLoadGenerations.clear();
         mNextGeneration = 0;
+        mLoadingTabs.clear();
+        mPendingTabs.clear();
     }
 
     static void setInstanceForTesting(@Nullable TabLoadingService service) {

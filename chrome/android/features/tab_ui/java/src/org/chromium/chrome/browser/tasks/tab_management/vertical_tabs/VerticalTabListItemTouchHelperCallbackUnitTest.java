@@ -34,7 +34,6 @@ import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -47,6 +46,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowSystemClock;
 
+import org.chromium.base.Callback;
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -96,6 +96,7 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
 
     @Mock private TabGridItemLongPressOrchestrator mOrchestrator;
     @Mock private VerticalTabListItemTouchHelperCallback.OnDragOutListener mOnDragOutListener;
+    @Mock private Callback<Boolean> mDragStateChangedCallback;
     @Mock private UndoBarThrottle mUndoBarThrottle;
     @Mock private Canvas mCanvas;
     @Mock private View mItemView;
@@ -167,7 +168,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetMovementFlags_RegularTab() {
         // Regular tabs can only move UP or DOWN.
         mPropertyModel.set(TabProperties.IS_PINNED, false);
@@ -182,7 +182,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetMovementFlags_PinnedTab() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.PINNED_TAB);
 
@@ -202,7 +201,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCanDropOver_SameType() {
         // Both tabs are regular: drop allowed.
         mPropertyModel.set(TabProperties.IS_PINNED, false);
@@ -218,7 +216,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetOnLongPressTabItemEventListener_WiresCallbackCorrectly() {
         mCallback.setOnLongPressTabItemEventListener(mOnLongPressListener);
 
@@ -230,7 +227,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_DragStateTriggersOrchestrator() {
         // Set up the callback with a mock orchestrator so we can verify the execution.
         mCallback.setTabGridItemLongPressOrchestratorForTesting(mOrchestrator);
@@ -256,7 +252,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCanDropOver_MixedType() {
         // Pinned dragging over regular: drop denied.
         mPropertyModel.set(TabProperties.IS_PINNED, true);
@@ -272,7 +267,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_StandaloneTab() {
         // Verify onMove appropriately moves the tab in the TabModel based on bounds constraints.
         mPropertyModel.set(TabProperties.TAB_ID, 1);
@@ -294,7 +288,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_StandaloneTabToGroupHeader_Downward_Groups() {
         mPropertyModel.set(TabProperties.TAB_ID, 1);
         mPropertyModel.set(TabProperties.TAB_GROUP_ID, null);
@@ -320,7 +313,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_StandaloneTabToLowestGroupTab_Upward_Groups() {
         mPropertyModel.set(TabProperties.TAB_ID, 1);
         mPropertyModel.set(TabProperties.TAB_GROUP_ID, null);
@@ -350,7 +342,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_ChildTab() {
         // Verify onMove appropriately moves the tab in the TabModel based on bounds constraints.
         mPropertyModel.set(TabProperties.TAB_ID, 1);
@@ -379,7 +370,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_SolitaryChildTab() {
         // Solitary child tab (group of 1) should move as a group via moveRelatedTabs.
         mPropertyModel.set(TabProperties.TAB_ID, 1);
@@ -406,7 +396,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_ChildTab_InsideGroup() {
         // Verify onMove appropriately moves the tab in the TabModel when swapping with another
         // child tab in the same group that has more tabs.
@@ -449,7 +438,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_ChildTabToDifferentGroup_Ungroups() {
         mPropertyModel.set(TabProperties.TAB_ID, 1);
         Token groupId1 = new Token(1L, 2L);
@@ -474,7 +462,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsLongPressDragEnabled() {
         // Mouse input disables long press requirement for instant dragging.
         mCallback.setIsMouseInputSource(true);
@@ -486,7 +473,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_Drag() {
         // Dragging highlights the selected card and activates it.
         when(mViewHolder.getBindingAdapterPosition()).thenReturn(0);
@@ -505,7 +491,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
     public void testOnSelectedChanged_Drag_ClearsMultiSelection() {
         when(mViewHolder.getBindingAdapterPosition()).thenReturn(0);
@@ -521,7 +506,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_StartsUndoBarThrottling() {
         when(mUndoBarThrottle.startThrottling()).thenReturn(THROTTLE_TOKEN);
 
@@ -531,7 +515,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnInterceptTouchEvent_ActionUp_StopsUndoBarThrottling() {
         when(mUndoBarThrottle.startThrottling()).thenReturn(THROTTLE_TOKEN);
 
@@ -548,7 +531,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnInterceptTouchEvent_ActionUpWhenNotThrottled_NeverCallsStopThrottling() {
         RecyclerView.OnItemTouchListener listener =
                 VerticalTabListItemTouchHelperCallback.createBeforeOnItemTouchListener(mCallback);
@@ -559,7 +541,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testClearView_StopsUndoBarThrottling() {
         when(mUndoBarThrottle.startThrottling()).thenReturn(THROTTLE_TOKEN);
         mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
@@ -570,7 +551,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_Idle_StopsUndoBarThrottling() {
         when(mUndoBarThrottle.startThrottling()).thenReturn(THROTTLE_TOKEN);
         mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
@@ -581,7 +561,59 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testOnSelectedChanged_NotifiesOnDragStateChangedCallback() {
+        mCallback.setOnDragStateChangedCallback(mDragStateChangedCallback);
+
+        // Transition to drag state.
+        mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
+        verify(mDragStateChangedCallback).onResult(true);
+
+        // Transition to idle state.
+        mCallback.onSelectedChanged(null, ItemTouchHelper.ACTION_STATE_IDLE);
+        verify(mDragStateChangedCallback).onResult(false);
+    }
+
+    @Test
+    public void testClearView_AbortedByEsc_RevertsSingleTab() {
+        when(mTabModel.getTabById(1)).thenReturn(mTab1);
+        when(mTabModel.indexOf(mTab1)).thenReturn(0);
+
+        // Mimic a drag -> cancel (ESC key).
+        mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
+        mCallback.markDragAbortedByEsc();
+        mCallback.clearView(mRecyclerView, mViewHolder);
+
+        verify(mTabModel).moveTab(1, 0);
+    }
+
+    @Test
+    public void testClearView_AbortedByEsc_RevertsTabGroup() {
+        when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
+        when(mTabModel.getTabById(1)).thenReturn(mTab1);
+        when(mTabModel.indexOf(mTab1)).thenReturn(2);
+
+        // Mimic a drag -> cancel (ESC key).
+        mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
+        mCallback.markDragAbortedByEsc();
+        mCallback.clearView(mRecyclerView, mViewHolder);
+
+        verify(mTabModel).moveRelatedTabs(1, 2);
+    }
+
+    @Test
+    public void testClearView_NotAbortedByEsc_DoesNotRevertTab() {
+        when(mTabModel.getTabById(1)).thenReturn(mTab1);
+        when(mTabModel.indexOf(mTab1)).thenReturn(0);
+
+        // Mimic a drag without cancelling.
+        mCallback.onSelectedChanged(mViewHolder, ItemTouchHelper.ACTION_STATE_DRAG);
+        mCallback.clearView(mRecyclerView, mViewHolder);
+
+        verify(mTabModel, never()).moveTab(anyInt(), anyInt());
+        verify(mTabModel, never()).moveRelatedTabs(anyInt(), anyInt());
+    }
+
+    @Test
     public void testOnSelectedChanged_Idle() {
         // Setup initial drag state.
         when(mViewHolder.getBindingAdapterPosition()).thenReturn(0);
@@ -602,7 +634,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_updatesSelectedTabIndex() {
         // Setup initial drag state.
         when(mViewHolder.getBindingAdapterPosition()).thenReturn(0);
@@ -634,7 +665,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateMouseDragDetector_ActionDownSelectsTab() {
         RecyclerView.OnItemTouchListener listener =
                 mCallback.createMouseDragDetector(mItemTouchHelper);
@@ -657,7 +687,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
     public void testCreateMouseDragDetector_ActionDownSelectsTab_ClearsMultiSelection() {
         RecyclerView.OnItemTouchListener listener =
@@ -681,7 +710,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateMouseDragDetector_ActionMoveTriggersDrag() {
         int touchSlop = ViewConfiguration.get(mContext).getScaledTouchSlop();
 
@@ -716,7 +744,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_TriggersDragStartCallbackOnDisplacement() {
         Runnable dragStartCallback = Mockito.mock(Runnable.class);
         mCallback.setOnDragStartCallback(dragStartCallback);
@@ -758,7 +785,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateMouseDragDetector_CloseButtonClickNoDragNoSelect() {
         RecyclerView.OnItemTouchListener listener =
                 mCallback.createMouseDragDetector(mItemTouchHelper);
@@ -818,7 +844,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateMouseDragDetector_GroupHeaderNoSelectButDrags() {
         int touchSlop = ViewConfiguration.get(mContext).getScaledTouchSlop();
 
@@ -857,7 +882,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateMouseDragDetector_RightClickIgnored() {
         RecyclerView.OnItemTouchListener listener =
                 mCallback.createMouseDragDetector(mItemTouchHelper);
@@ -882,7 +906,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCanDropOver_GroupHeaderOnChild() {
         // Current is a group header.
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
@@ -906,7 +929,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_GroupHeader_Downward() {
         mPropertyModel.set(TabProperties.TAB_ID, 1);
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
@@ -936,7 +958,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMove_GroupHeader_Upward() {
         mPropertyModel.set(TabProperties.TAB_ID, 1);
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
@@ -966,7 +987,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_DragGroupHeader_HighlightsChildren() {
         setupDragGroupHeaderState();
 
@@ -978,7 +998,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_DragGroupHeader_PreservesSelection() {
         when(mViewHolder.getBindingAdapterPosition()).thenReturn(0);
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
@@ -1005,7 +1024,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSelectedChanged_Idle_ClearsHighlight() {
         setupDragGroupHeaderState();
 
@@ -1017,7 +1035,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_DragsGroupChildren() {
         when(mRecyclerView.getPaddingTop()).thenReturn(0);
         when(mRecyclerView.getPaddingBottom()).thenReturn(0);
@@ -1064,7 +1081,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testClearView_RestoresChildren() {
         when(mRecyclerView.getPaddingTop()).thenReturn(0);
         when(mRecyclerView.getPaddingBottom()).thenReturn(0);
@@ -1109,7 +1125,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCanDropOver_StandaloneTabOnGroupChild_ReturnsTrue() {
         mPropertyModel.set(TabProperties.IS_PINNED, false);
         mTargetPropertyModel.set(TabProperties.IS_PINNED, false);
@@ -1126,7 +1141,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetBoundingBox_DraggingGroup_ExpandsTargetGroup() {
         // Initialize mRecyclerViewSupplier in callback.
         mCallback.getMovementFlags(mRecyclerView, mViewHolder);
@@ -1166,7 +1180,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetBoundingBox_DraggingTab_DoesNotExpandTargetGroup() {
         // Initialize mRecyclerViewSupplier in callback.
         mCallback.getMovementFlags(mRecyclerView, mViewHolder);
@@ -1206,7 +1219,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testChooseDropTarget_VerticalDrag_SwapsAtCenter() {
         // Setup currently dragged item (mViewHolder) as a normal tab.
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
@@ -1253,7 +1265,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testChooseDropTarget_VerticalDrag_StandaloneTabToGroupLowestTab_SwapsAt25Percent() {
         // Setup currently dragged item (mViewHolder) as a normal standalone tab.
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
@@ -1300,14 +1311,12 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_GroupHeader() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB_GROUP);
         assertFalse(mCallback.hasDragEscapedBounds(mRecyclerView, mViewHolder, 0, 0, 0, 0));
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_StandaloneTab() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         mPropertyModel.set(TabProperties.TAB_GROUP_ID, null);
@@ -1315,7 +1324,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_SolitaryChild() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         Token groupId = new Token(1L, 2L);
@@ -1330,7 +1338,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_FirstChild_DragUp_ThresholdMet() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         Token groupId = new Token(1L, 2L);
@@ -1354,7 +1361,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_FirstChild_DragUp_ThresholdNotMet() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         Token groupId = new Token(1L, 2L);
@@ -1376,7 +1382,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_LastChild_DragDown_ThresholdMet() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         Token groupId = new Token(1L, 2L);
@@ -1400,7 +1405,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_MiddleChild_DragUpOrDown() {
         when(mViewHolder.getItemViewType()).thenReturn(TabProperties.UiType.TAB);
         Token groupId = new Token(1L, 2L);
@@ -1429,7 +1433,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_TriggersOnDragOutListener() {
         mCallback.setOnDragOutListener(mOnDragOutListener);
 
@@ -1476,7 +1479,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_ClampsVerticalDisplacement() {
         when(mRecyclerView.getPaddingTop()).thenReturn(10);
         when(mRecyclerView.getPaddingBottom()).thenReturn(20);
@@ -1532,7 +1534,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_ClampsHorizontalDisplacement_PinnedTab() {
         // Set the tab as pinned.
         mPropertyModel.set(TabProperties.IS_PINNED, true);
@@ -1585,7 +1586,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_LocksHorizontalDisplacement_RegularTab() {
         // Regular tab should always lock translationX to 0f, regardless of dX.
         mPropertyModel.set(TabProperties.IS_PINNED, false);
@@ -1709,7 +1709,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_Aborted() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1727,7 +1726,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_Reordered() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1755,7 +1753,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_ReorderedBackToStart_Aborted() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1785,7 +1782,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_Grouped() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1814,7 +1810,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_Ungrouped() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1844,7 +1839,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropTimeToUngroup_RecordedWhenUngroupedAfterGroup() {
         var timeToUngroupWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1888,7 +1882,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropTimeToUngroup_NotRecordedWhenUngroupedWithoutPriorGroup() {
         var timeToUngroupWatcher =
                 HistogramWatcher.newBuilder()
@@ -1918,7 +1911,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(shadows = {ShadowSystemClock.class})
     public void testDragDropTimeToUngroup_ExpiredAfter3Minutes_NotRecorded() {
         var timeToUngroupWatcher =
@@ -1967,7 +1959,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_DraggedOut() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -1986,7 +1977,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_NonTabItem_NoRecord() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -2000,7 +1990,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_ReorderedWithinGroup() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -2035,7 +2024,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDragDropResult_MovedBetweenGroups_Grouped() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -2068,7 +2056,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testFindLiveViewHolder_Tab() {
         when(mRecyclerView.getChildCount()).thenReturn(2);
         when(mRecyclerView.getChildAt(0)).thenReturn(mItemView);
@@ -2095,7 +2082,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testFindLiveViewHolder_GroupHeader() {
         Token groupId = new Token(1L, 2L);
         mPropertyModel.set(TabProperties.TAB_GROUP_HEADER_ID, groupId);
@@ -2121,7 +2107,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseAndRestoreDraggedItem() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2168,7 +2153,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_OSNewWindowDrop() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2197,7 +2181,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_OSNewWindowDrop_DetachedBeforeDelay_CancelsRestoration() {
         android.widget.FrameLayout parent =
                 new android.widget.FrameLayout(ApplicationProvider.getApplicationContext());
@@ -2234,7 +2217,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCancelDelayedExternalItemRestoration() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2256,7 +2238,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnExternalDragItemRebound_WhenCollapsed() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2294,7 +2275,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseAndRestore_MultipleCycles() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2334,7 +2314,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_OSNewWindowDrop_Detached_RestoresViewProperties() {
         View realView = new View(ApplicationProvider.getApplicationContext());
         RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(100, 200);
@@ -2419,7 +2398,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseAndRestoreDraggedItem_TabGroup_CollapsesAndRestoresAllGroupViews() {
         Token groupId = new Token(10L, 20L);
         SimpleRecyclerViewAdapter.ViewHolder headerHolder =
@@ -2472,7 +2450,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseDraggedItem_TabGroup_ClearsOverlayAndResetsTranslations() {
         Token groupId = new Token(10L, 20L);
 
@@ -2524,7 +2501,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnChildDraw_WhenCollapsed_DoesNotTranslateOrAddChildrenToOverlay() {
         Token groupId = new Token(10L, 20L);
 
@@ -2586,7 +2562,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void
             testOnExternalDragItemRebound_CollapsedGroupChild_RestoresOldHolderAndCollapsesNewHolder() {
         Token groupId = new Token(10L, 20L);
@@ -2655,7 +2630,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void
             testOnExternalDragItemRebound_CollapsedGroupChild_ReboundToUnrelatedTab_RestoresOldHolder() {
         Token groupId = new Token(10L, 20L);
@@ -2730,7 +2704,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseAndRestore_TabGroup_MultipleCycles() {
         Token groupId = new Token(10L, 20L);
 
@@ -2798,7 +2771,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_OSNewWindowDrop_ChildDetached_RestoresAllGroupViews() {
         Token groupId = new Token(10L, 20L);
 
@@ -2866,7 +2838,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseAndRestoreDraggedItem_PinnedTab_RestoresVisibilityAndDimensions() {
         View pinnedView = new View(ApplicationProvider.getApplicationContext());
         pinnedView.setId(R.id.pinned_tab_item_container);
@@ -2907,7 +2878,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_HiddenPinnedPlaceholder_RemainsGone() {
         View placeholderView = new View(ApplicationProvider.getApplicationContext());
         placeholderView.setId(R.id.hidden_pinned_tab);
@@ -2938,7 +2908,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testChooseDropTarget_WhenCollapsed_ReturnsNull() {
         RecyclerView.ViewHolder selected =
                 createGroupHeaderViewHolder(1, new Token(1L, 2L), 100, 50);
@@ -2952,7 +2921,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testChooseDropTarget_WhenHeightOrWidthZero_ReturnsNull() {
         RecyclerView.ViewHolder selected = createGroupHeaderViewHolder(1, new Token(1L, 2L), 0, 0);
         RecyclerView.ViewHolder target = createGroupChildViewHolder(2, null, 100, 50);
@@ -2962,7 +2930,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHasDragEscapedBounds_WhenCollapsed_ReturnsFalse() {
         SimpleRecyclerViewAdapter.ViewHolder childHolder =
                 createGroupChildViewHolder(2, new Token(1L, 2L), 100, 60);
@@ -2981,7 +2948,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRestoreDraggedItem_AfterRebind_RestoresLiveViewsInRecyclerView() {
         Token groupId = new Token(10L, 20L);
         SimpleRecyclerViewAdapter.ViewHolder headerHolder =
@@ -3020,7 +2986,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void
             testCollapseDraggedItem_TabGroup_OffscreenChildrenAttachedDuringDrag_AreCollapsed() {
         Token groupId = new Token(10L, 20L);
@@ -3063,7 +3028,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseDraggedItem_TabGroup_UnrelatedTabAttachedDuringDrag_IsNotCollapsed() {
         Token groupId = new Token(10L, 20L);
         SimpleRecyclerViewAdapter.ViewHolder headerHolder =
@@ -3091,7 +3055,6 @@ public class VerticalTabListItemTouchHelperCallbackUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCollapseViewHolder_EndsRunningItemAnimations() {
         RecyclerView.ItemAnimator itemAnimator = mock(RecyclerView.ItemAnimator.class);
         when(mRecyclerView.getItemAnimator()).thenReturn(itemAnimator);

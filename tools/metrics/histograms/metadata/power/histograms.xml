@@ -678,7 +678,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.AvgCpuLoad.{ProcessType}" units="%"
-    expires_after="2027-01-03">
+    expires_after="2027-03-07">
   <owner>eseckler@chromium.org</owner>
   <owner>khokhlov@chromium.org</owner>
   <owner>woa-performance@google.com</owner>
@@ -847,7 +847,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.BatteryDischargeRate" units="mW"
-    expires_after="2027-01-03">
+    expires_after="2027-03-07">
   <owner>puthik@chromium.org</owner>
   <owner>chromeos-platform-power@google.com</owner>
   <summary>
@@ -874,7 +874,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 
 <histogram
     name="Power.BatteryDischargeRateMilliwatts6{UsageScenario}{IntervalType}{BatterySaverMode}"
-    units="milliwatts" expires_after="2027-01-10">
+    units="milliwatts" expires_after="2027-03-14">
   <owner>etiennep@chromium.org</owner>
   <owner>olivierli@chromium.org</owner>
   <owner>lgrey@chromium.org</owner>
@@ -1036,7 +1036,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.BatteryLifeWhileSuspended.{BatteryCapacityType}"
-    units="hour" expires_after="2027-01-03">
+    units="hour" expires_after="2027-03-07">
   <owner>puthik@chromium.org</owner>
   <owner>chromeos-platform-power@google.com</owner>
   <summary>
@@ -1150,7 +1150,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.CpuTimeSecondsPerThreadType.{ProcessType}"
-    enum="CpuTimeMetricsThreadType" expires_after="2027-01-03">
+    enum="CpuTimeMetricsThreadType" expires_after="2027-03-07">
   <owner>eseckler@chromium.org</owner>
   <owner>skyostil@chromium.org</owner>
   <owner>woa-performance@google.com</owner>
@@ -1177,7 +1177,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.CpuTimeSecondsPerThreadType.{ProcessType}.{Visibility}"
-    enum="CpuTimeMetricsThreadType" expires_after="2027-01-03">
+    enum="CpuTimeMetricsThreadType" expires_after="2027-03-07">
   <owner>eseckler@chromium.org</owner>
   <owner>mthiesse@chromium.org</owner>
   <owner>woa-performance@google.com</owner>
@@ -1386,6 +1386,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
   <owner>eseckler@chromium.org</owner>
   <owner>skyostil@chromium.org</owner>
   <owner>woa-performance@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
   <summary>
     Periodically samples the battery capacity drained while Chrome is a
     foreground app and the device is on battery power. Sampled every 30 seconds
@@ -1417,6 +1418,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
     units="uAh" expires_after="2027-02-07">
   <owner>kraskevich@google.com</owner>
   <owner>woa-performance@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
   <summary>
     Similar to Power.ForegroundBatteryDrain.30Seconds, with additional Chrome
     usage scenario classification: {LoadingScenario} and {InputScenario}.
@@ -1432,6 +1434,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
   <owner>eseckler@chromium.org</owner>
   <owner>skyostil@chromium.org</owner>
   <owner>woa-performance@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
   <summary>
     Records a sample for every 0.1 milliampere-hours of battery capacity that
     are drained while Chrome is a foreground app and the device is on battery
@@ -1458,9 +1461,10 @@ tools/metrics/histograms/metadata/stability/enums.xml
 
 <histogram
     name="Power.ForegroundEnergyConsumedPerScenario.30Seconds{Exclusive}{LoadingScenario}{InputScenario}{Subsystem}"
-    units="uWh" expires_after="2027-01-03">
+    units="uWh" expires_after="2027-03-07">
   <owner>kraskevich@google.com</owner>
   <owner>woa-performance@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
   <summary>
     Similar to Power.ForegroundBatteryDrain.30Seconds, with additional Chrome
     usage scenario classification: {LoadingScenario} and {InputScenario}, and
@@ -1497,7 +1501,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="Power.HighestFanSpeed" units="100rpm"
-    expires_after="2027-01-10">
+    expires_after="2027-03-14">
   <owner>eshimanovich@google.com</owner>
   <owner>chromeos-platform-power@google.com</owner>
   <summary>
@@ -1930,7 +1934,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="PowerML.ModelDim.Result" enum="PowerMLFinalResult"
-    expires_after="2027-01-10">
+    expires_after="2027-03-14">
   <owner>amoylan@chromium.org</owner>
   <owner>napper@chromium.org</owner>
   <owner>thanhdng@chromium.org</owner>
@@ -1942,7 +1946,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="PowerML.ModelNoDim.Result" enum="PowerMLFinalResult"
-    expires_after="2027-01-03">
+    expires_after="2027-03-07">
   <owner>amoylan@chromium.org</owner>
   <owner>napper@chromium.org</owner>
   <owner>thanhdng@chromium.org</owner>
@@ -1954,7 +1958,7 @@ tools/metrics/histograms/metadata/stability/enums.xml
 </histogram>
 
 <histogram name="PowerML.NonModelDim.Result" enum="PowerMLFinalResult"
-    expires_after="2027-01-03">
+    expires_after="2027-03-07">
   <owner>amoylan@chromium.org</owner>
   <owner>napper@chromium.org</owner>
   <owner>thanhdng@chromium.org</owner>

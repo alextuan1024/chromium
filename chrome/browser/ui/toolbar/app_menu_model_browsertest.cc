@@ -53,6 +53,7 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/skills/features.h"
 #include "components/sync/base/features.h"
 #include "components/sync/test/test_sync_service.h"
 #include "content/public/test/browser_test.h"
@@ -478,6 +479,83 @@ IN_PROC_BROWSER_TEST_P(ExtensionsMenuModelTest, ExtensionsMenu) {
   }
 }
 
+class SkillsMenuModelTest : public AppMenuModelTest {
+ public:
+  SkillsMenuModelTest() {
+    feature_list_.InitWithFeatures(
+        {features::kSkillsEnabled, features::kSkillsAppMenu}, {});
+  }
+  ~SkillsMenuModelTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SkillsMenuModelTest, SkillsMenuStandalone) {
+  AppMenuModel model(this, browser());
+  model.Init();
+
+  ASSERT_TRUE(model.GetIndexOfCommandId(AppMenuModel::kSkillsMenuPlaceholder)
+                  .has_value());
+  ui::MenuModel* skills_submenu = model.GetSubmenuModelAt(
+      model.GetIndexOfCommandId(AppMenuModel::kSkillsMenuPlaceholder).value());
+  ASSERT_NE(skills_submenu, nullptr);
+  ASSERT_EQ(2ul, skills_submenu->GetItemCount());
+  EXPECT_EQ(IDC_MANAGE_SKILLS, skills_submenu->GetCommandIdAt(0));
+  EXPECT_EQ(IDC_BROWSE_SKILLS, skills_submenu->GetCommandIdAt(1));
+  EXPECT_TRUE(skills_submenu->IsEnabledAt(0));
+  EXPECT_TRUE(skills_submenu->IsEnabledAt(1));
+  EXPECT_FALSE(
+      model
+          .GetIconAt(
+              model.GetIndexOfCommandId(AppMenuModel::kSkillsMenuPlaceholder)
+                  .value())
+          .IsEmpty());
+  EXPECT_FALSE(skills_submenu->GetIconAt(0).IsEmpty());
+  EXPECT_FALSE(skills_submenu->GetIconAt(1).IsEmpty());
+}
+
+class SkillsMenuModelDisabledTest : public AppMenuModelTest {
+ public:
+  SkillsMenuModelDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kSkillsAppMenu);
+  }
+  ~SkillsMenuModelDisabledTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SkillsMenuModelDisabledTest, SkillsMenuDisabled) {
+  AppMenuModel model(this, browser());
+  model.Init();
+
+  EXPECT_FALSE(model.GetIndexOfCommandId(AppMenuModel::kSkillsMenuPlaceholder)
+                   .has_value());
+}
+
+class SkillsMenuModelSkillsDisabledTest : public AppMenuModelTest {
+ public:
+  SkillsMenuModelSkillsDisabledTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kSkillsAppMenu},
+        /*disabled_features=*/{features::kSkillsEnabled});
+  }
+  ~SkillsMenuModelSkillsDisabledTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SkillsMenuModelSkillsDisabledTest,
+                       SkillsMenuDisabledWhenSkillsDisabled) {
+  AppMenuModel model(this, browser());
+  model.Init();
+
+  EXPECT_FALSE(model.GetIndexOfCommandId(AppMenuModel::kSkillsMenuPlaceholder)
+                   .has_value());
+}
+
 // Profile row does not show on ChromeOS.
 #if !BUILDFLAG(IS_CHROMEOS)
 class TestAppMenuModelMetricsTest : public AppMenuModelTest,
@@ -587,23 +665,16 @@ IN_PROC_BROWSER_TEST_F(AppMenuModelTest, Feedback_UserFeedbackAllowedPolicy) {
   }
 }
 
-class AppMenuReportUnsafeSiteTest : public base::test::WithFeatureOverride,
-                                    public AppMenuModelTest {
- public:
-  AppMenuReportUnsafeSiteTest()
-      : WithFeatureOverride(features::kReportUnsafeSite) {}
-  ~AppMenuReportUnsafeSiteTest() override = default;
-};
+using AppMenuReportUnsafeSiteTest = AppMenuModelTest;
 
-IN_PROC_BROWSER_TEST_P(AppMenuReportUnsafeSiteTest,
+IN_PROC_BROWSER_TEST_F(AppMenuReportUnsafeSiteTest,
                        ReportUnsafeSite_UserFeedbackAllowedPolicy) {
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kUserFeedbackAllowed,
                                                   true);
   {
     AppMenuModel model(this, browser());
     model.Init();
-    EXPECT_EQ(IsParamFeatureEnabled(),
-              DoesHelpMenuHaveCommand(model, IDC_REPORT_UNSAFE_SITE));
+    EXPECT_TRUE(DoesHelpMenuHaveCommand(model, IDC_REPORT_UNSAFE_SITE));
   }
 
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kUserFeedbackAllowed,
@@ -615,7 +686,7 @@ IN_PROC_BROWSER_TEST_P(AppMenuReportUnsafeSiteTest,
   }
 }
 
-IN_PROC_BROWSER_TEST_P(AppMenuReportUnsafeSiteTest,
+IN_PROC_BROWSER_TEST_F(AppMenuReportUnsafeSiteTest,
                        ReportUnsafeSite_SafeBrowsingDisabled) {
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kUserFeedbackAllowed,
                                                   true);
@@ -624,8 +695,7 @@ IN_PROC_BROWSER_TEST_P(AppMenuReportUnsafeSiteTest,
   {
     AppMenuModel model(this, browser());
     model.Init();
-    EXPECT_EQ(IsParamFeatureEnabled(),
-              DoesHelpMenuHaveCommand(model, IDC_REPORT_UNSAFE_SITE));
+    EXPECT_TRUE(DoesHelpMenuHaveCommand(model, IDC_REPORT_UNSAFE_SITE));
   }
 
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
@@ -637,26 +707,11 @@ IN_PROC_BROWSER_TEST_P(AppMenuReportUnsafeSiteTest,
   }
 }
 
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(AppMenuReportUnsafeSiteTest);
-
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
-class AppMenuModelSigninPromoTest : public base::test::WithFeatureOverride,
-                                    public AppMenuModelTest {
- public:
-  AppMenuModelSigninPromoTest()
-      : WithFeatureOverride(syncer::kReplaceSyncPromosWithSignInPromos) {
-    scoped_feature_list_.InitWithFeatureState(
-        syncer::kReplaceSyncPromosWithSigninPromosNewSignin,
-        IsParamFeatureEnabled());
-  }
-  ~AppMenuModelSigninPromoTest() override = default;
+using AppMenuModelSigninPromoTest = AppMenuModelTest;
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(AppMenuModelSigninPromoTest, SignedIn) {
+IN_PROC_BROWSER_TEST_F(AppMenuModelSigninPromoTest, SignedIn) {
   base::HistogramTester histogram_tester;
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(browser()->GetProfile());
@@ -669,14 +724,13 @@ IN_PROC_BROWSER_TEST_P(AppMenuModelSigninPromoTest, SignedIn) {
   ui::SimpleMenuModel* profile_menu = static_cast<ui::SimpleMenuModel*>(
       model.GetSubmenuModelAt(profile_menu_index));
 
-  EXPECT_EQ(!IsParamFeatureEnabled(),
-            profile_menu->GetIndexOfCommandId(IDC_TURN_ON_SYNC).has_value());
+  EXPECT_FALSE(profile_menu->GetIndexOfCommandId(IDC_TURN_ON_SYNC).has_value());
   EXPECT_FALSE(profile_menu->GetIndexOfCommandId(IDC_SHOW_SIGNIN).has_value());
 
   histogram_tester.ExpectTotalCount("Signin.SignIn.Offered", 0);
 }
 
-IN_PROC_BROWSER_TEST_P(AppMenuModelSigninPromoTest, SignedOut) {
+IN_PROC_BROWSER_TEST_F(AppMenuModelSigninPromoTest, SignedOut) {
   base::HistogramTester histogram_tester;
   AppMenuModel model(this, browser());
   model.Init();
@@ -685,25 +739,15 @@ IN_PROC_BROWSER_TEST_P(AppMenuModelSigninPromoTest, SignedOut) {
   ui::SimpleMenuModel* profile_menu = static_cast<ui::SimpleMenuModel*>(
       model.GetSubmenuModelAt(profile_menu_index));
 
-  EXPECT_EQ(!IsParamFeatureEnabled(),
-            profile_menu->GetIndexOfCommandId(IDC_TURN_ON_SYNC).has_value());
-  EXPECT_EQ(IsParamFeatureEnabled(),
-            profile_menu->GetIndexOfCommandId(IDC_SHOW_SIGNIN).has_value());
+  EXPECT_FALSE(profile_menu->GetIndexOfCommandId(IDC_TURN_ON_SYNC).has_value());
+  EXPECT_TRUE(profile_menu->GetIndexOfCommandId(IDC_SHOW_SIGNIN).has_value());
 
-  if (IsParamFeatureEnabled()) {
-    histogram_tester.ExpectUniqueSample("Signin.SignIn.Offered",
-                                        signin_metrics::AccessPoint::kMenu, 1);
-    histogram_tester.ExpectUniqueSample(
-        "Signin.SignIn.Offered.NewAccountNoExistingAccount",
-        signin_metrics::AccessPoint::kMenu, 1);
-  } else {
-    histogram_tester.ExpectTotalCount("Signin.SignIn.Offered", 0);
-    histogram_tester.ExpectTotalCount(
-        "Signin.SignIn.Offered.NewAccountNoExistingAccount", 0);
-  }
+  histogram_tester.ExpectUniqueSample("Signin.SignIn.Offered",
+                                      signin_metrics::AccessPoint::kMenu, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SignIn.Offered.NewAccountNoExistingAccount",
+      signin_metrics::AccessPoint::kMenu, 1);
 }
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(AppMenuModelSigninPromoTest);
 
 class AppMenuModelBookmarkLimitExceededSyncingTest : public AppMenuModelTest {
  public:

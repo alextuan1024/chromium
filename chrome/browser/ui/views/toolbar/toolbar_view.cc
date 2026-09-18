@@ -59,10 +59,12 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_prefs.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -70,6 +72,7 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_bubble_view.h"
 #include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_button.h"
 #include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_close_tab_button.h"
+#include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_ephemeral_button_controller.h"
 #include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
@@ -137,6 +140,7 @@
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/actions/actions.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -209,11 +213,9 @@ auto& GetViewCommandMap() {
   return kViewCommandMap;
 }
 
-constexpr int kBrowserAppMenuRefreshExpandedMargin = 5;
 constexpr int kBrowserAppMenuRefreshCollapsedMargin = 2;
 constexpr int kLargeSpaceBetweenButtons = 6;
 constexpr int kInsideBorderAroundGlicButtons = 2;
-constexpr int kOutsideBorderAroundGlicButtons = 11;
 constexpr int kGlicButtonMargin = 5;
 
 class IconOnlyToolbarButton : public ToolbarButton {
@@ -256,8 +258,10 @@ bool IsPositionInWindowCaptionForView(const views::View* view,
 void SetRefreshMargins(views::View* button, bool expanded) {
   button->SetProperty(
       views::kMarginsKey,
-      gfx::Insets::VH(0, expanded ? kBrowserAppMenuRefreshExpandedMargin
-                                  : kBrowserAppMenuRefreshCollapsedMargin));
+      gfx::Insets::VH(
+          0, expanded ? GetLayoutConstant(
+                            LayoutConstant::kToolbarButtonRefreshExpandedMargin)
+                      : kBrowserAppMenuRefreshCollapsedMargin));
 }
 
 }  // namespace
@@ -312,6 +316,17 @@ ToolbarView::~ToolbarView() {
 
   for (const auto& view_and_command : GetViewCommandMap()) {
     chrome::RemoveCommandObserver(browser_, view_and_command.second, this);
+  }
+}
+
+// Forwards the early teardown request to both the embedded and detached WebUI
+// toolbar web views to stop renderer script execution before IPC disconnection.
+void ToolbarView::DestroyWebUIToolbarWebContents() {
+  if (toolbar_webview_) {
+    toolbar_webview_->DestroyWebContents();
+  }
+  if (detached_toolbar_webview_) {
+    detached_toolbar_webview_->DestroyWebContents();
   }
 }
 
@@ -488,7 +503,10 @@ void ToolbarView::Init() {
     auto button = std::make_unique<ContextualTasksButton>(browser_);
     auto* vts_controller =
         tabs::VerticalTabStripStateController::From(browser_);
-    if (!vts_controller || !vts_controller->ShouldDisplayVerticalTabs()) {
+    if ((!vts_controller || !vts_controller->ShouldDisplayVerticalTabs()) &&
+        !(contextual_tasks::kEnableCircularEphemeralButtonNextToBatterySaver
+              .Get() &&
+          button->IsSidePanelRightAligned())) {
       button->SetProperty(views::kMarginsKey, gfx::Insets());
     }
     contextual_tasks_button_ = AddChildViewAt(std::move(button), 0);
@@ -642,6 +660,17 @@ void ToolbarView::Init() {
       contextual_tasks::GetExpandButtonOption() ==
           contextual_tasks::ExpandButtonOption::kToolbarCloseButton) {
     AddChildView(std::make_unique<ContextualTasksCloseTabButton>(browser_));
+  }
+
+  if (contextual_tasks_button_) {
+    if (auto* const controller =
+            ContextualTasksEphemeralButtonController::From(browser_)) {
+      contextual_tasks_button_position_subscription_ =
+          controller->RegisterShouldUpdateButtonPosition(
+              base::BindRepeating(&ToolbarView::PositionContextualTasksButton,
+                                  base::Unretained(this)));
+    }
+    PositionContextualTasksButton();
   }
 
   LoadImages();
@@ -893,7 +922,7 @@ void ToolbarView::SetGlicActorNudgeLabel(const std::u16string& nudge_label) {
   }
 }
 
-void ToolbarView::TriggerGlicActorNudge(const std::u16string& nudge_text) {
+void ToolbarView::TriggerGlicActorNudge(const std::u16string& nudge_label) {
   if (!glic_button_ || !glic_actor_task_icon_) {
     return;
   }
@@ -903,17 +932,17 @@ void ToolbarView::TriggerGlicActorNudge(const std::u16string& nudge_text) {
     HideToolbarNudge(glic_button_);
     OnGlicButtonAnimationEnded();
   }
-  ShowGlicActorNudge(nudge_text);
+  ShowGlicActorNudge(nudge_label);
 }
 
-void ToolbarView::ShowGlicActorNudge(const std::u16string nudge_text) {
+void ToolbarView::ShowGlicActorNudge(const std::u16string nudge_label) {
   if (!glic_button_ || !glic_actor_task_icon_) {
     return;
   }
   // Start animation for minimizing the glic button.
   glic_button_->Collapse();
   ShowGlicActorTaskIcon();
-  glic_actor_task_icon_->ShowNudgeLabel(nudge_text);
+  glic_actor_task_icon_->ShowNudgeLabel(nudge_label);
   ShowToolbarNudge(glic_actor_task_icon_);
 }
 
@@ -1034,36 +1063,11 @@ void ToolbarView::FinalizeHideGlicActorTaskIcon() {
 
 void ToolbarView::UpdateGlicActorButtonContainerBorders() {
   CHECK(glic_button_);
-  gfx::Insets glic_border;
 
-  // Ensure buttons look vertically centered by making the top and bottom insets
-  // match.
-  gfx::Insets border_insets = gfx::Insets();
-  int min_vertical_inset =
-      std::min(border_insets.top(), border_insets.bottom());
-  border_insets.set_top_bottom(min_vertical_inset, min_vertical_inset);
-
-  // GlicActorTaskIcon will only ever be shown alongside the GlicButton.
-  if (glic_actor_task_icon_ && glic_actor_task_icon_->IsDrawn()) {
-    gfx::Insets task_icon_border;
-    const gfx::Insets right_icon_border =
-        gfx::Insets().set_left_right(0, kOutsideBorderAroundGlicButtons);
-    const gfx::Insets left_icon_border = gfx::Insets().set_left_right(
-        kOutsideBorderAroundGlicButtons, kInsideBorderAroundGlicButtons);
-    task_icon_border = right_icon_border + border_insets;
-    glic_border = left_icon_border + border_insets;
-    glic_actor_task_icon_->SetBorder(
-        views::CreateEmptyBorder(task_icon_border));
-    // Force a background repaint to account for the new border insets.
+  // Force a background repaint.
+  if (glic_actor_task_icon_) {
     glic_actor_task_icon_->RefreshBackground();
-  } else {
-    // Reset GlicButton border if Task Icon is hidden.
-    glic_border = gfx::Insets().set_left_right(border_insets.top(),
-                                               border_insets.bottom()) +
-                  border_insets;
   }
-  glic_button_->SetBorder(views::CreateEmptyBorder(glic_border));
-  // Force a background repaint to account for the new border insets.
   glic_button_->RefreshBackground();
 }
 
@@ -1332,7 +1336,8 @@ void ToolbarView::RecordHitTestMetrics(bool is_caption_area) {
 }
 
 views::Button* ToolbarView::GetChromeLabsButton() const {
-  return ChromeLabsCoordinator::From(browser_)->GetChromeLabsButton();
+  ChromeLabsCoordinator* coordinator = ChromeLabsCoordinator::From(browser_);
+  return coordinator ? coordinator->GetChromeLabsButton() : nullptr;
 }
 
 ExtensionsToolbarButton* ToolbarView::GetExtensionsButton() const {
@@ -1538,6 +1543,10 @@ void ToolbarView::ChildVisibilityChanged(views::View* child) {
       base::UmaHistogramBoolean("Toolbar.Overflow.HomeButton", true);
     }
   }
+  if (child == glic_button_ || child == glic_actor_button_container_ ||
+      child == avatar_) {
+    PositionContextualTasksButton();
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1701,20 +1710,29 @@ void ToolbarView::LayoutCommon() {
   gfx::Insets interior_margin =
       GetLayoutInsets(LayoutInset::TOOLBAR_INTERIOR_MARGIN);
 
-  // Only zero out the leading interior margin if the contextual tasks button
+  const bool is_trailing_contextual_tasks_visible =
+      IsTrailingContextualTasksButtonVisible();
+  const bool is_leading_contextual_tasks_visible =
+      IsLeadingContextualTasksButtonVisible();
+
+  // Only zero out the interior margin if the contextual tasks button
   // is actually visible and not in vertical tabs mode (where the button does
   // not sit flush at the window edge). When the button is hidden, we must
-  // retain the default interior margin so that the Back button is not
-  // incorrectly shifted to the toolbar's edge. Layout is in logical /
-  // RTL-relative DIPs where `left()` is the leading edge.
-  if (contextual_tasks_button_ && contextual_tasks_button_->GetVisible() &&
-      !should_display_vertical_tabs_) {
-    interior_margin.set_left(0);
+  // retain the default interior margin so that the Back button (or App Menu
+  // button) is not incorrectly shifted to the toolbar's edge. Layout is in
+  // logical / RTL-relative DIPs where `left()` is the leading edge.
+  if (!should_display_vertical_tabs_) {
+    if (is_leading_contextual_tasks_visible) {
+      interior_margin.set_left(0);
+    }
+    if (is_trailing_contextual_tasks_visible) {
+      interior_margin.set_right(0);
+    }
   }
 
   if (app_menu_button_) {
     const bool expanded = app_menu_button_->IsLabelPresentAndVisible();
-    if (expanded) {
+    if (expanded && !is_trailing_contextual_tasks_visible) {
       // The interior margin in an expanded state should be more than in a
       // collapsed state.
       interior_margin.set_right(interior_margin.right() + 1);
@@ -1791,13 +1809,85 @@ void ToolbarView::LayoutCommon() {
     }
   }
 
-  GetAppMenuControl()->SetIsMaximizedOrFullscreen(is_maximized_or_fullscreen);
+  GetAppMenuControl()->SetIsMaximizedOrFullscreen(
+      ShouldAppMenuApplyFittsLaw(is_maximized_or_fullscreen));
 
   if (toolbar_divider_ && extensions_container_) {
     views::ManualLayoutUtil(layout_manager_)
         .SetViewHidden(toolbar_divider_, !extensions_container_->GetVisible());
   }
   // Cast button visibility is controlled externally.
+}
+
+void ToolbarView::PositionContextualTasksButton() {
+  if (!contextual_tasks_button_) {
+    return;
+  }
+  auto* button =
+      static_cast<ContextualTasksButton*>(contextual_tasks_button_.get());
+  if (contextual_tasks::kEnableCircularEphemeralButtonNextToBatterySaver
+          .Get() &&
+      button->IsSidePanelRightAligned()) {
+    const bool is_glic_left_of_profile =
+        features::kGlicToolbarButtonLocationParam.Get() ==
+            features::GlicToolbarButtonLocation::kLeftOfProfileChip ||
+        features::kGlicToolbarButtonLocationParam.Get() ==
+            features::GlicToolbarButtonLocation::
+                kLeftOfProfileChipWithBackground;
+    views::View* anchor = nullptr;
+    if (glic_button_ && glic_button_->GetVisible() && is_glic_left_of_profile) {
+      anchor = (glic_button_->parent() == this)
+                   ? static_cast<views::View*>(glic_button_)
+                   : static_cast<views::View*>(glic_button_->parent());
+    } else if (avatar_) {
+      anchor = avatar_;
+    } else {
+      anchor = app_menu_button_;
+    }
+    if (anchor) {
+      std::optional<size_t> anchor_index = GetIndexOf(anchor);
+      if (anchor_index.has_value()) {
+        const size_t current_index =
+            GetIndexOf(contextual_tasks_button_).value();
+        const size_t target_index =
+            current_index < *anchor_index ? *anchor_index - 1 : *anchor_index;
+        ReorderChildView(contextual_tasks_button_, target_index);
+        return;
+      }
+    }
+  }
+  const size_t target_index = button->IsTrailing() ? children().size() : 0;
+  ReorderChildView(contextual_tasks_button_, target_index);
+}
+
+bool ToolbarView::IsLeadingContextualTasksButtonVisible() const {
+  return contextual_tasks_button_ && contextual_tasks_button_->GetVisible() &&
+         !children().empty() && children().front() == contextual_tasks_button_;
+}
+
+bool ToolbarView::IsTrailingContextualTasksButtonVisible() const {
+  return contextual_tasks_button_ && contextual_tasks_button_->GetVisible() &&
+         !children().empty() && children().back() == contextual_tasks_button_;
+}
+
+bool ToolbarView::ShouldAppMenuApplyFittsLaw(
+    bool is_maximized_or_fullscreen) const {
+  if (!is_maximized_or_fullscreen) {
+    return false;
+  }
+
+  // `SetIsMaximizedOrFullscreen()` informs the app menu control to extend its
+  // hit target to the window edge per Fitts' law when maximized or fullscreen.
+  // When the contextual tasks button is placed at the trailing edge, the app
+  // menu button is no longer flush with the window border, so Fitts' law edge
+  // padding must be suppressed to avoid inserting an unwanted gap between the
+  // two buttons.
+  //
+  // Note: The leading edge (Back button) handles this symmetrically: when the
+  // contextual tasks button is visible on the leading edge, the leading
+  // interior margin is zeroed out, which naturally zeroes out the Back
+  // button's leading margin (see `leading_interior_margin`).
+  return !IsTrailingContextualTasksButtonVisible();
 }
 
 // AppMenuIconController::Delegate:
@@ -1807,6 +1897,13 @@ void ToolbarView::UpdateTypeAndSeverity(
   if (app_menu_control) {
     app_menu_control->SetTypeAndSeverity(type_and_severity);
   }
+  auto* action_item = actions::ActionManager::Get().FindAction(
+      kActionUpgradeDialog, BrowserActions::From(browser_)->root_action_item());
+  CHECK(action_item);
+  action_item->SetVisible(
+      type_and_severity.type ==
+      AppMenuIconController::IconType::kUpgradeNotification);
+  action_item->SetText(AppMenuModel::GetUpgradeDialogTitleText());
 }
 
 ExtensionsContainerViews* ToolbarView::GetExtensionsContainerViews() {
@@ -1910,16 +2007,17 @@ views::BubbleAnchor ToolbarView::GetBubbleAnchor(
   }
 
   // Otherwise attempt to use the location bar.
-  auto anchor = features::IsWebUILocationBarEnabled()
-                    ? views::BubbleAnchor(location_bar_->GetAnchorOrNull())
-                    : views::BubbleAnchor(location_bar_view_);
+  auto anchor = location_bar_view_
+                    ? views::BubbleAnchor(location_bar_view_)
+                    : views::BubbleAnchor(location_bar_->GetAnchorOrNull());
   bool anchor_not_drawn;
   if (views::View* view = anchor.GetIfView()) {
     anchor_not_drawn = !view->IsDrawn();
   } else {
-    anchor_not_drawn = (features::IsWebUILocationBarEnabled() ||
-                        features::IsWebUIPinnedToolbarActionsEnabled()) &&
-                       anchor.IsNull();
+    anchor_not_drawn =
+        (features::IsWebUILocationBarEnabled() ||
+         features::IsWebUIPinnedToolbarActionsEnabled()) &&
+        (anchor.IsNull() || (toolbar_webview_ && !toolbar_webview_->IsDrawn()));
   }
   // In app windows the location bar view may exist but not be drawn. Avoid
   // anchoring bubbles to a non-drawn view (e.g. on Ozone/Wayland) and always
@@ -1974,7 +2072,6 @@ ReloadControl* ToolbarView::GetReloadButton() {
   }
   return reload_;
 }
-
 
 ToolbarButton* ToolbarView::GetDownloadButton() {
   return pinned_toolbar_actions_container_

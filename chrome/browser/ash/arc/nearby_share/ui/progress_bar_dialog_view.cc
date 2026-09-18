@@ -44,7 +44,7 @@ ProgressBarDialogView::ProgressBarDialogView(bool is_multiple_files)
 
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-  border->SetColor(ash::kColorAshDialogBackgroundColor);
+  border->set_background_color(ash::kColorAshDialogBackgroundColor);
   border->set_rounded_corners(gfx::RoundedCornersF(kCornerRadius));
   SetBackground(std::make_unique<views::BubbleBackground>(border.get()));
   SetBorder(std::move(border));
@@ -67,6 +67,7 @@ ProgressBarDialogView::ProgressBarDialogView(bool is_multiple_files)
   progress_bar_->SetPreferredSize(
       gfx::Size(kProgressBarWidth, kProgressBarHeight));
   progress_bar_->SizeToPreferredSize();
+  progress_bar_->SetBackgroundColor(ash::kColorAshDialogBackgroundColor);
 }
 
 ProgressBarDialogView::~ProgressBarDialogView() {
@@ -96,33 +97,25 @@ void ProgressBarDialogView::AddedToWidget() {
   GetWidget()->GetRootView()->GetViewAccessibility().SetName(view_name);
 }
 
-void ProgressBarDialogView::OnThemeChanged() {
-  DCHECK(progress_bar_);
-
-  views::BoxLayoutView::OnThemeChanged();
-  progress_bar_->SetBackgroundColor(
-      GetColorProvider()->GetColor(ash::kColorAshDialogBackgroundColor));
-}
-
 void ProgressBarDialogView::Show(aura::Window* parent,
                                  ProgressBarDialogView* view) {
   NearbyShareOverlayView::Show(parent, view);
 }
 
 void ProgressBarDialogView::UpdateProgressBarValue(double value) {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   progress_bar_->SetValue(value);
 }
 
 double ProgressBarDialogView::GetProgressBarValue() const {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   return progress_bar_->GetValue();
 }
 
 void ProgressBarDialogView::UpdateInterpolatedProgressBarValue() {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   constexpr double kStepSize = 0.075;
   constexpr double kStepFactor = 3;  // Larger value = smaller step progression.

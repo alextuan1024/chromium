@@ -54,7 +54,7 @@ constexpr SystemNotificationWarningLevel kWarningLevel =
 
 // static
 void PasswordChangeSuccessNotification::Show(const user_manager::User& user) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // NotifierId for histogram reporting.
   NotifierId notifier_id(NotifierType::SYSTEM_COMPONENT, kNotificationId,
@@ -66,9 +66,6 @@ void PasswordChangeSuccessNotification::Show(const user_manager::User& user) {
   // Leaving this empty means the notification is attributed to the system -
   // ie "Chromium OS" or similar.
   static const base::NoDestructor<std::u16string> kEmptyDisplaySource;
-
-  // No origin URL is needed since the notification comes from the system.
-  static const base::NoDestructor<GURL> kEmptyOriginUrl;
 
   const std::u16string title =
       l10n_util::GetStringUTF16(IDS_PASSWORD_CHANGE_NOTIFICATION_TITLE);
@@ -83,8 +80,7 @@ void PasswordChangeSuccessNotification::Show(const user_manager::User& user) {
 
   auto notification = CreateSystemNotificationPtr(
       kNotificationType, notification_id, title, body, *kEmptyDisplaySource,
-      *kEmptyOriginUrl, notifier_id, rich_notification_data, delegate,
-      GetIcon(), kWarningLevel);
+      notifier_id, rich_notification_data, delegate, GetIcon(), kWarningLevel);
 
   // Calling remove before add ensures that the notification pops up again
   // even if it is already shown.

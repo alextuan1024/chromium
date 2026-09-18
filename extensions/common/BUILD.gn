@@ -82,8 +82,6 @@ source_set("extension_features") {
 
 mojom("mojom") {
   # We don't want Blink variants of bindings to be generated.
-  disable_variants = true
-
   sources = [
     "mojom/api_permission_id.mojom",
     "mojom/app_window.mojom",
@@ -675,6 +673,8 @@ source_set("test_support") {
     "api/declarative_net_request/test_utils.h",
     "api/extension_action/action_info_test_util.cc",
     "api/extension_action/action_info_test_util.h",
+    "features/feature_test_util.cc",
+    "features/feature_test_util.h",
     "warnings_test_util.cc",
     "warnings_test_util.h",
   ]

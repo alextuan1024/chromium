@@ -9,6 +9,8 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
+#include "chrome/browser/glic/glic_enums.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "content/public/browser/visibility.h"
 
 namespace content {
@@ -58,18 +60,6 @@ class GlicWebContentsManager {
   // Notifies the manager when task tabs visibility changes.
   virtual void OnTaskTabsVisibilityChanged(bool has_visible_tab) = 0;
 
-  // Releases ownership of the underlying WebContents, transferring it to the
-  // caller.
-  // TODO(b/555365681): Only used for tab embedders and slated for removal once
-  // tab embedders are deleted.
-  virtual std::unique_ptr<content::WebContents> ReleaseWebContents() = 0;
-
-  // Reclaims ownership of a previously released WebContents.
-  // TODO(b/555365681): Only used for tab embedders and slated for removal once
-  // tab embedders are deleted.
-  virtual void ReclaimWebContents(
-      std::unique_ptr<content::WebContents> web_contents) = 0;
-
   // Registers a callback to be notified when the active WebContents returned by
   // `web_contents()` changes (e.g. when swapping from loading overlay to
   // guest).
@@ -87,6 +77,10 @@ class GlicWebContentsManager {
   // state (such as a sign-in or policy error panel) that should be presented
   // to the user rather than reloaded.
   virtual bool ShouldReloadOnShow() const = 0;
+
+  // Performs a zoom action (ZoomIn, ZoomOut, Reset) on the managed guest
+  // contents.
+  virtual void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {}
 };
 
 }  // namespace glic

@@ -13,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/check.h"
@@ -246,6 +245,7 @@ bool HasAutofillSuggestionsForA11y(SuggestionType type) {
     case SuggestionType::kCreditCardEntry:
     case SuggestionType::kDevtoolsTestAddresses:
     case SuggestionType::kFillAutofillAi:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIbanEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kLoyaltyCardEntry:
@@ -300,8 +300,10 @@ bool HasAutofillSuggestionsForA11y(SuggestionType type) {
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -351,6 +353,7 @@ bool AutofillExternalDelegate::IsAutofillAndFirstLayerSuggestionId(
     case SuggestionType::kAddressFieldByFieldFilling:
     case SuggestionType::kCreditCardEntry:
     case SuggestionType::kDevtoolsTestAddresses:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kLoyaltyCardEntry:
     case SuggestionType::kOneTimePasswordEntry:
     case SuggestionType::kSaveAndFillCreditCardEntry:
@@ -406,9 +409,11 @@ bool AutofillExternalDelegate::IsAutofillAndFirstLayerSuggestionId(
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -438,7 +443,8 @@ void AutofillExternalDelegate::OnQuery(
                  .field_datalist_options = field.datalist_options()};
   caret_bounds_ = caret_bounds;
   trigger_source_ = trigger_source;
-  manager_->client().UpdateAutofillDataListValues(field.datalist_options());
+  manager_->client().UpdateAutofillDataListValues(field.global_id().frame_token,
+                                                  field.datalist_options());
 }
 
 const AutofillField* AutofillExternalDelegate::GetQueriedField() const {
@@ -658,11 +664,6 @@ void AutofillExternalDelegate::OnAutofillAvailabilityEvent(
       last_query_.field_id, suggestion_availability);
 }
 
-std::variant<AutofillDriver*, password_manager::PasswordManagerDriver*>
-AutofillExternalDelegate::GetDriver_DoNotUse() {
-  return &manager_->driver();
-}
-
 void AutofillExternalDelegate::OnSuggestionsShown(
     base::span<const Suggestion> suggestions,
     const SuggestionUiMetadata& metadata) {
@@ -685,7 +686,7 @@ void AutofillExternalDelegate::OnSuggestionsShown(
       OnAutofillAvailabilityEvent(
           mojom::AutofillSuggestionAvailability::kAutocompleteAvailable);
       if (autofill_metrics::ShouldLogAutofillSuggestionShown(trigger_source_)) {
-        AutofillMetrics::OnAutocompleteSuggestionsShown();
+        AutofillMetrics::OnAutocompleteSuggestionsShown(suggestions);
       }
     }
 
@@ -869,12 +870,13 @@ void AutofillExternalDelegate::DidSelectSuggestion(
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
-    // So far OTP suggestions are only available on Android, so no preview
-    // is needed. This needs to be changed once Desktop suggestions and UI
-    // are implemented.
+    // OTP suggestions and actions do not support previewing values.
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
@@ -958,6 +960,7 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill: {
       manager_->client().ShowAutofillSettings(suggestion.type);
       // Keep the bottom sheet open on Android if triggered from AtMemory.
@@ -978,7 +981,8 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
       break;
     case SuggestionType::kAutocompleteEntry:
       AutofillMetrics::LogAutocompleteEvent(
-          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_SELECTED);
+          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_SELECTED,
+          suggestion);
       autofill_metrics::LogSuggestionAcceptedIndex(
           metadata.row(), FillingProduct::kAutocomplete,
           manager_->client().IsOffTheRecord(), shown_suggestion_types_);
@@ -1155,10 +1159,10 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
     }
     case SuggestionType::kAtMemoryInactivityNudge:
     case SuggestionType::kAutocompleteAtMemoryButton:
-      // TODO(crbug.com/527392582): kAtMemoryTriggerString is the wrong source.
+      // TODO(crbug.com/527392582): kAtMemoryContextMenu is the wrong source.
       manager_->driver().RendererShouldTriggerSuggestions(
           last_query_.field_id,
-          AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+          AutofillSuggestionTriggerSource::kAtMemoryContextMenu);
       break;
     case SuggestionType::kAtMemorySearchResult: {
       const IsAsync is_async =
@@ -1218,6 +1222,14 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
       break;
     case SuggestionType::kAutofillAiSourceAttribution:
       // TODO(crbug.com/541184575): Implement navigation to source URL.
+      NOTIMPLEMENTED();
+      break;
+    case SuggestionType::kGmailOneTimePasswordEntry:
+      // TODO(crbug.com/556170554): Handle acceptance of Gmail OTP suggestion.
+      NOTIMPLEMENTED();
+      break;
+    case SuggestionType::kOpenGmailForOtps:
+      // TODO(crbug.com/556171578): Handle OpenGmail action.
       NOTIMPLEMENTED();
       break;
     case SuggestionType::kAccountStoragePasswordEntry:
@@ -1334,6 +1346,25 @@ bool AutofillExternalDelegate::RemoveSuggestion(const Suggestion& suggestion) {
       }
       return true;
     }
+    case SuggestionType::kFillAutofillAi: {
+      if (!base::FeatureList::IsEnabled(
+              features::kAutofillAmbientAutofillSuppression)) {
+        return false;
+      }
+      if (!std::holds_alternative<Suggestion::AutofillAiPayload>(
+              suggestion.payload)) {
+        return false;
+      }
+      if (const base::optional_ref<const EntityInstance> entity =
+              GetEntityInstance(suggestion)) {
+        if (EntitySuppressionManager* suppression_manager =
+                manager_->client().GetEntitySuppressionManager()) {
+          return suppression_manager->SuppressEntity(*entity) ||
+                 suppression_manager->IsSuppressed(*entity);
+        }
+      }
+      return false;
+    }
     case SuggestionType::kAccountStoragePasswordEntry:
     case SuggestionType::kAddressEntryOnTyping:
     case SuggestionType::kAllLoyaltyCardsEntry:
@@ -1365,10 +1396,10 @@ bool AutofillExternalDelegate::RemoveSuggestion(const Suggestion& suggestion) {
     case SuggestionType::kDevtoolsTestAddressEntry:
     case SuggestionType::kDevtoolsTestAddresses:
     case SuggestionType::kFetchingAmbientData:
-    case SuggestionType::kFillAutofillAi:
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIbanEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
@@ -1382,10 +1413,12 @@ bool AutofillExternalDelegate::RemoveSuggestion(const Suggestion& suggestion) {
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -1460,8 +1493,8 @@ void AutofillExternalDelegate::PreviewAddressFieldByFieldFillingSuggestion(
   const auto& [filling_value, select_text, filling_type] =
       GetFillingValueAndTypeForProfile(
           profile, manager_->client().GetAppLocale(),
-          AutofillType(*suggestion.field_by_field_filling_type_used),
-          *trigger_field, manager_->client().GetAddressNormalizer());
+          *suggestion.field_by_field_filling_type_used, *trigger_field,
+          manager_->client().GetAddressNormalizer());
   if (!filling_value.empty()) {
     manager_->FillOrPreviewField(
         mojom::ActionPersistence::kPreview, mojom::FieldActionType::kReplaceAll,
@@ -1481,8 +1514,8 @@ void AutofillExternalDelegate::FillAddressFieldByFieldFillingSuggestion(
   const auto& [filling_value, select_text, filling_type] =
       GetFillingValueAndTypeForProfile(
           profile, manager_->client().GetAppLocale(),
-          AutofillType(*suggestion.field_by_field_filling_type_used),
-          *trigger_field, manager_->client().GetAddressNormalizer());
+          *suggestion.field_by_field_filling_type_used, *trigger_field,
+          manager_->client().GetAddressNormalizer());
   if (!filling_value.empty()) {
     manager_->FillOrPreviewField(
         mojom::ActionPersistence::kFill, mojom::FieldActionType::kReplaceAll,

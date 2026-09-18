@@ -31,8 +31,6 @@ import android.widget.ImageView;
 
 import androidx.annotation.DrawableRes;
 import androidx.test.core.app.ActivityScenario;
-import androidx.test.filters.MediumTest;
-import androidx.test.filters.SmallTest;
 
 import com.google.android.material.textfield.TextInputLayout;
 
@@ -72,6 +70,7 @@ import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.browser.settings.SettingsIntentUtil;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.components.autofill.AutofillProfile;
+import org.chromium.components.autofill.ScanCreditCardPromptEntryPoint;
 import org.chromium.components.autofill.VirtualCardEnrollmentState;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -316,7 +315,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void nicknameFieldEmpty_cardDoesNotHaveNickname() {
         initFragment(getSampleLocalCard());
 
@@ -325,7 +323,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void nicknameFieldSet_cardHasNickname() {
         CreditCard card = getSampleLocalCard();
         String nickname = "test nickname";
@@ -337,7 +334,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testNicknameFieldIsShown() {
         initFragment(getSampleLocalCard());
         // By default nickname label should be visible.
@@ -345,7 +341,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testInvalidNicknameShowsErrorMessage() {
         initFragment(getSampleLocalCard());
         // "Nickname 123" is an incorrect nickname because it contains digits.
@@ -357,7 +352,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testNicknameLengthCappedAt25Characters() {
         initFragment(getSampleLocalCard());
         String veryLongNickname = "This is a very very long nickname";
@@ -368,7 +362,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDateAndSecurityCodeFieldsAreShown() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -381,7 +374,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void securityCodeFieldSet_cardHasCvc() {
         CreditCard card = getSampleLocalCardWithCvc();
         String cvc = "234";
@@ -393,7 +385,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenAmExCardIsSet_usesAmExCvcHintImage() {
         initFragment(getSampleAmexCardWithCvc());
 
@@ -401,7 +392,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenNonAmExCardIsSet_usesDefaultCvcHintImage() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -409,7 +399,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenCardIsNotSet_usesDefaultCvcHintImage() {
         initFragment(null);
 
@@ -417,7 +406,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenAmExCardNumberIsEntered_usesAmExCvcHintImage() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -427,7 +415,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenNonAmExCardNumberIsEntered_usesDefaultCvcHintImage() {
         initFragment(getSampleAmexCardWithCvc());
 
@@ -437,7 +424,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenNumberIsChangedFromNonAmExToAmEx_usesAmExCvcHintImage() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -448,7 +434,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testSecurityCode_whenNumberIsChangedFromAmExToNonAmEx_usesDefaultCvcHintImage() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -459,7 +444,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void expirationDateFieldSet_cardHasExpirationDate() {
         CreditCard card = getSampleLocalCardWithCvc();
         String validExpirationMonth = "12";
@@ -476,7 +460,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDate_whenInvalidDate_showsErrorMessage() {
         initFragment(getSampleLocalCardWithCvc());
         String invalidExpirationMonth = "14";
@@ -490,7 +473,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDate_whenDateInPast_showsErrorMessage() {
         initFragment(getSampleLocalCardWithCvc());
         String validExpirationMonth = "12";
@@ -505,7 +487,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDate_whenDateIsCorrected_removesErrorMessage() {
         CreditCard card = getSampleLocalCardWithCvc();
         String validExpirationMonth = "12";
@@ -527,7 +508,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDate_whenDateIsEditedFromValidToIncomplete_disablesSaveButton() {
         initFragment(getSampleLocalCardWithCvc());
         String validExpirationMonth = "12";
@@ -548,7 +528,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testExpirationDate_whenDateIsEditedFromValidToEmpty_disablesSaveButton() {
         initFragment(getSampleLocalCardWithCvc());
         String validExpirationMonth = "12";
@@ -568,7 +547,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void
             testExpirationDate_whenCorrectingOnlyNickname_keepsSaveButtonDisabledDueToInvalidDate() {
         initFragment(getSampleLocalCardWithCvc());
@@ -601,7 +579,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void deleteCreditCardConfirmationDialog_deleteEntryCanceled_dialogDismissed() {
         CreditCard card = getSampleLocalCard();
         initFragment(card);
@@ -622,7 +599,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void
             deleteCreditCardConfirmationDialog_deleteEntryConfirmed_dialogDismissedAndEntryDeleted() {
         CreditCard card = getSampleLocalCard();
@@ -644,7 +620,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordHistogram_whenNewCreditCardIsAddedWithCvc() {
         initFragment(null);
 
@@ -677,7 +652,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordHistogram_whenNewCreditCardIsAddedWithoutExistingCards() {
         initFragment(null);
         // Expect histogram to record true for adding a card without existing cards.
@@ -697,7 +671,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenNewCreditCardIsAddedWithCvc() {
         initFragment(null);
         String validExpirationYear = AutofillTestHelper.nextYear();
@@ -713,7 +686,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenExistingCreditCardWithoutCvcIsEditedAndCvcIsLeftBlank() {
         initFragment(getSampleLocalCard());
         String validExpirationYear = AutofillTestHelper.nextYear();
@@ -728,7 +700,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenExistingCreditCardWithoutCvcIsEditedAndCvcIsAdded() {
         initFragment(getSampleLocalCard());
 
@@ -739,7 +710,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenExistingCreditCardWithCvcIsEditedAndCvcIsRemoved() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -751,7 +721,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenExistingCreditCardWithCvcIsEditedAndCvcIsUpdated() {
         initFragment(getSampleLocalCardWithCvc());
 
@@ -763,7 +732,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordUserAction_whenExistingCreditCardWithCvcIsEditedAndCvcIsUnchanged() {
         initFragment(getSampleLocalCardWithCvc());
         String validExpirationYear = AutofillTestHelper.nextYear();
@@ -778,7 +746,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordHistogram_whenAddCardFlowStartedWithoutExistingCards() {
         // Expect histogram to record true for entering the add card flow without existing cards.
         HistogramWatcher addCardFlowWithoutExistingCardsHistogram =
@@ -794,7 +761,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordHistogram_whenAddCardFlowStartedWithExistingCards() {
         when(mMockPersonalDataManager.getCreditCardsForSettings())
                 .thenReturn(List.of(getSampleLocalCard()));
@@ -812,7 +778,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void testRecordHistogram_notRecordedWhenCardEditFlowStarted() {
         // If the editor is opened for editing an existing card, the 'add card' histograms should
         // not be recorded.
@@ -828,64 +793,107 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @SmallTest
     public void getExpirationMonth_whenDoubleDigitMonth_returnsMonth() {
         assertThat(AutofillLocalCardEditor.getExpirationMonth("12/23")).isEqualTo("12");
     }
 
     @Test
-    @SmallTest
     public void getExpirationMonth_whenSingleDigitMonth_returnsMonthWithoutLeadingZero() {
         assertThat(AutofillLocalCardEditor.getExpirationMonth("02/23")).isEqualTo("2");
     }
 
     @Test
-    @SmallTest
     public void getExpirationYear_returnsYearWithPrefix() {
         assertThat(AutofillLocalCardEditor.getExpirationYear("12/23")).isEqualTo("2023");
     }
 
     @Test
-    @SmallTest
     public void testIsAmExCard_whenAmExCardNumberPrefixIsEntered_returnsTrue() {
         // Underlying JNI call is mocked for `isAmExCard` method.
         assertTrue(AutofillLocalCardEditor.isAmExCard(AMEX_CARD_NUMBER_PREFIX));
     }
 
     @Test
-    @SmallTest
     public void testIsAmExCard_whenNonAmExCardNumberPrefixIsEntered_returnsFalse() {
         // Underlying JNI call is mocked for `isAmExCard` method.
         assertFalse(AutofillLocalCardEditor.isAmExCard(NON_AMEX_CARD_NUMBER_PREFIX));
     }
 
     @Test
-    @MediumTest
-    public void scanButtonIsVisible() {
+    public void scanButtonIsVisible_newUser() {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint",
+                                ScanCreditCardPromptEntryPoint.SETTINGS_PAGE)
+                        .build();
         initFragment(null);
         assertEquals(View.VISIBLE, mScanButton.getVisibility());
+        histogramWatcher.assertExpected();
     }
 
     @Test
-    @MediumTest
+    public void scanButtonIsVisible_existingUser() {
+        when(mMockPersonalDataManager.getCreditCardsForSettings())
+                .thenReturn(List.of(getSampleLocalCard()));
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Autofill.ScanCreditCardPrompt.ExistingUser.Shown.EntryPoint",
+                                ScanCreditCardPromptEntryPoint.SETTINGS_PAGE)
+                        .build();
+        initFragment(null);
+        assertEquals(View.VISIBLE, mScanButton.getVisibility());
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void scannerCannotScan_scanButtonIsHidden() {
         when(mMockScanner.canScan()).thenReturn(false);
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(
+                                "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint")
+                        .build();
         initFragment(null);
 
         assertEquals(View.GONE, mScanButton.getVisibility());
+        histogramWatcher.assertExpected();
     }
 
     @Test
-    @MediumTest
-    public void scannerButtonClicked_scanIsCalled() {
+    public void scannerButtonClicked_scanIsCalled_newUser() {
         initFragment(null);
 
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Autofill.ScanCreditCardPrompt.NewUser.Selected.EntryPoint",
+                                ScanCreditCardPromptEntryPoint.SETTINGS_PAGE)
+                        .build();
         mScanButton.performClick();
         verify(mMockScanner).scan(mSettingsActivity.getIntentRequestTracker());
+        histogramWatcher.assertExpected();
     }
 
     @Test
-    @MediumTest
+    public void scannerButtonClicked_scanIsCalled_existingUser() {
+        when(mMockPersonalDataManager.getCreditCardsForSettings())
+                .thenReturn(List.of(getSampleLocalCard()));
+        initFragment(null);
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Autofill.ScanCreditCardPrompt.ExistingUser.Selected.EntryPoint",
+                                ScanCreditCardPromptEntryPoint.SETTINGS_PAGE)
+                        .build();
+        mScanButton.performClick();
+        verify(mMockScanner).scan(mSettingsActivity.getIntentRequestTracker());
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void onScanCompleted_cardDataIsAdded() {
         initFragment(null);
         CreditCard card = getSampleLocalCard();
@@ -910,7 +918,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void paymentSettingsOnScanCompleted_twoDigitMonth() {
         initFragment(null);
         CreditCard card = getSampleLocalCard();
@@ -930,7 +937,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void onFinishPage_scannerManagerFormClosedIsCalled() {
         initFragment(null);
         mCardEditor.setCreditCardScannerManagerForTesting(mMockScannerManager);
@@ -941,7 +947,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void nameFieldEdited_scannerManagerFieldEditedIsCalledWithName() {
         initFragment(null);
         mCardEditor.setCreditCardScannerManagerForTesting(mMockScannerManager);
@@ -951,7 +956,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void numberFieldEdited_scannerManagerFieldEditedIsCalledWithNumber() {
         initFragment(null);
         mCardEditor.setCreditCardScannerManagerForTesting(mMockScannerManager);
@@ -963,7 +967,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void expirationDateFieldEdited_scannerManagerFieldEditedIsCalledWithMonthAndYear() {
         initFragment(null);
         mCardEditor.setCreditCardScannerManagerForTesting(mMockScannerManager);
@@ -975,7 +978,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void cvcFieldEdited_scannerManagerFieldEditedIsCalledWithUnknown() {
         initFragment(null);
         mCardEditor.setCreditCardScannerManagerForTesting(mMockScannerManager);
@@ -986,7 +988,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void saveCard_withBillingAddress() {
         CreditCard card = getSampleLocalCard();
         List<AutofillProfile> profiles = setupBillingAddressProfiles();
@@ -1010,7 +1011,6 @@ public class AutofillLocalCardEditorTest {
     }
 
     @Test
-    @MediumTest
     public void saveCard_noBillingAddressSelected() {
         CreditCard card = getSampleLocalCard();
         setupBillingAddressProfiles();

@@ -25,6 +25,8 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/system/sys_info.h"
+#import "base/task/bind_post_task.h"
+#import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
 #import "base/values.h"
 #import "build/branding_buildflags.h"
@@ -33,6 +35,7 @@
 #import "components/prefs/pref_service.h"
 #import "components/version_info/version_info.h"
 #import "ios/chrome/app/tests_hook.h"
+#import "ios/chrome/browser/omaha/model/omaha_ping.h"
 #import "ios/chrome/browser/omaha/model/omaha_response.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -59,12 +62,6 @@ const int kPostRetryBaseSeconds = 3600;
 // Maximal time to wait between retry requests.
 const int64_t kPostRetryMaxSeconds = 6 * kPostRetryBaseSeconds;
 
-const char kCurrentArch[] = "arm64";
-
-// 2 is used because 0 is a magic value for Time, and 1 was the pre-M29 value
-// which was migrated to a specific date (crbug.com/270124).
-const int64_t kUnknownInstallDate = 2;
-
 // Default last sent application version when none has been sent yet.
 const char kDefaultLastSentVersion[] = "0.0.0.0";
 
@@ -76,75 +73,6 @@ NSString* const kLastSentVersionKey = @"ChromeOmahaServiceLastSentVersion";
 NSString* const kLastSentTimeKey = @"ChromeOmahaServiceLastSentTime";
 NSString* const kRetryRequestIdKey = @"ChromeOmahaServiceRetryRequestId";
 NSString* const kLastServerDateKey = @"ChromeOmahaServiceLastServerDate";
-
-class XmlElement {
- public:
-  XmlElement(XmlWriter& writer, const std::string& name)
-      : writer_(&writer), name_(name) {
-    const bool ok = writer_->StartElement(name_);
-    DCHECK(ok);
-
-    ios::provider::SetOmahaExtraAttributes(
-        name_,
-        base::BindRepeating(&XmlElement::AddAttribute, base::Unretained(this)));
-  }
-
-  ~XmlElement() {
-    if (writer_) {
-      const bool ok = writer_->EndElement();
-      DCHECK(ok);
-    }
-
-    writer_ = nullptr;
-  }
-
-  XmlElement(const XmlElement&) = delete;
-  XmlElement& operator=(const XmlElement&) = delete;
-
-  XmlElement(XmlElement&& other) : writer_(nullptr), name_(other.name_) {
-    std::swap(writer_, other.writer_);
-  }
-
-  XmlElement& operator=(XmlElement&&) = delete;
-
-  XmlElement AddElement(const std::string& name) {
-    return XmlElement(*writer_, name);
-  }
-
-  void AddAttribute(const std::string& name, const std::string& value) {
-    const bool ok = writer_->AddAttribute(name, value);
-    DCHECK(ok);
-  }
-
- private:
-  raw_ptr<XmlWriter> writer_ = nullptr;
-  const std::string name_;
-};
-
-class XmlWrapper {
- public:
-  XmlWrapper() {
-    writer_.StartWriting();
-    writer_.StopIndenting();
-  }
-
-  ~XmlWrapper() = default;
-
-  XmlWrapper(const XmlWrapper&) = delete;
-  XmlWrapper& operator=(const XmlWrapper&) = delete;
-
-  XmlElement AddElement(const std::string& name) {
-    return XmlElement(writer_, name);
-  }
-
-  std::string GetContentAsString() {
-    writer_.StopWriting();
-    return writer_.GetWrittenString();
-  }
-
- private:
-  XmlWriter writer_;
-};
 
 }  // namespace
 
@@ -173,24 +101,29 @@ OmahaService* OmahaService::GetInstance() {
 }
 
 // static
-void OmahaService::Start(std::unique_ptr<network::PendingSharedURLLoaderFactory>
-                             pending_url_loader_factory,
-                         const UpgradeRecommendedCallback& callback) {
-  DCHECK(pending_url_loader_factory);
-  DCHECK(!callback.is_null());
-
+void OmahaService::Start(
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    UpgradeRecommendedCallback upgrade_recommended_callback) {
+  DCHECK(shared_url_loader_factory);
   if (!OmahaService::IsEnabled()) {
     return;
   }
 
-  OmahaService* service = GetInstance();
-  service->StartInternal();
-  service->set_upgrade_recommended_callback(callback);
+  // The OmahaService lives on the IO thread but the client expects the
+  // upgrade_recommended_callback to be called on the current sequence,
+  // so wrap it in base::BindPostTask(...) if not null.
+  if (!upgrade_recommended_callback.is_null()) {
+    upgrade_recommended_callback =
+        base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
+                           std::move(upgrade_recommended_callback));
+  }
 
-  // This should only be called once.
-  DCHECK(!service->pending_url_loader_factory_ ||
-         !service->url_loader_factory_);
-  service->pending_url_loader_factory_ = std::move(pending_url_loader_factory);
+  OmahaService* service = GetInstance();
+  service->StartInternal(
+      base::BindOnce(&network::SharedURLLoaderFactory::Create,
+                     shared_url_loader_factory->Clone()),
+      std::move(upgrade_recommended_callback));
+
   service->locale_lang_ =
       GetApplicationContext()->GetApplicationLocaleStorage()->Get();
   web::GetIOThreadTaskRunner({})->PostTask(
@@ -223,8 +156,10 @@ void OmahaService::CheckNow(OneOffCallback callback) {
 
     web::GetIOThreadTaskRunner({})->PostTask(
         FROM_HERE,
-        base::BindOnce(&OmahaService::CheckNowOnIOThread,
-                       base::Unretained(service), std::move(callback)));
+        base::BindOnce(
+            &OmahaService::CheckNowOnIOThread, base::Unretained(service),
+            base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
+                               std::move(callback))));
   }
 }
 
@@ -260,11 +195,15 @@ OmahaService::~OmahaService() {
   }
 }
 
-void OmahaService::StartInternal() {
+void OmahaService::StartInternal(
+    PendingSharedURLLoaderFactoryCallback pending_url_loader_factory,
+    UpgradeRecommendedCallback upgrade_recommended_callback) {
   if (started_) {
     return;
   }
   started_ = true;
+  pending_url_loader_factory_ = std::move(pending_url_loader_factory);
+  upgrade_recommended_callback_ = std::move(upgrade_recommended_callback);
 
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   next_tries_time_ = base::Time::FromCFAbsoluteTime(
@@ -370,102 +309,36 @@ std::string OmahaService::GetPingContent(const std::string& requestId,
                                          const std::string& versionName,
                                          const std::string& channelName,
                                          base::Time installationTime,
-                                         PingContent pingContent) {
+                                         OmahaPingEvent pingContent) {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  XmlWrapper xml_wrapper;
 
-  {
-    // Set up <request... />
-    XmlElement request_element = xml_wrapper.AddElement("request");
-    request_element.AddAttribute("protocol", "3.0");
-    request_element.AddAttribute("updater", "iOS");
-    request_element.AddAttribute("updaterversion", versionName);
-    request_element.AddAttribute("updaterchannel", channelName);
-    request_element.AddAttribute("ismachine", "1");
-    request_element.AddAttribute("requestid", requestId);
-    request_element.AddAttribute("sessionid", sessionId);
-    request_element.AddAttribute("hardware_class",
-                                 base::SysInfo::HardwareModelName());
+  const base::Version previous_version =
+      last_sent_version_ != base::Version(kDefaultLastSentVersion)
+          ? last_sent_version_
+          : base::Version();
 
-    {
-      // Set up <os platform="ios"... />
-      XmlElement os_element = request_element.AddElement("os");
-      os_element.AddAttribute("platform", "ios");
-      os_element.AddAttribute("version",
-                              base::SysInfo::OperatingSystemVersion());
-      os_element.AddAttribute("arch", kCurrentArch);
-    }
-
-    const bool is_first_install =
-        pingContent == INSTALL_EVENT &&
-        last_sent_version_ == base::Version(kDefaultLastSentVersion);
-
-    {
-      // Set up <app version="" ...>
-      XmlElement app_element = request_element.AddElement("app");
-      if (pingContent == INSTALL_EVENT) {
-        const std::string previous_version =
-            is_first_install ? "" : last_sent_version_.GetString();
-        app_element.AddAttribute("version", previous_version);
-        app_element.AddAttribute("nextversion", versionName);
-      } else {
-        app_element.AddAttribute("version", versionName);
-        app_element.AddAttribute("nextversion", "");
-      }
-      app_element.AddAttribute("ap", channelName);
-      app_element.AddAttribute("lang", locale_lang_);
-      app_element.AddAttribute("client", "");
-
-      std::string install_age;
-      if (is_first_install) {
-        install_age = "-1";
-      } else if (!installationTime.is_null() &&
-                 installationTime.ToTimeT() != kUnknownInstallDate) {
-        install_age = base::StringPrintf(
-            "%d", (base::Time::Now() - installationTime).InDays());
-      }
-
-      // If the install date is unknown, send nothing.
-      if (!install_age.empty()) {
-        app_element.AddAttribute("installage", install_age);
-      }
-
-      if (pingContent == INSTALL_EVENT) {
-        // Add an install complete event.
-        XmlElement event_element = app_element.AddElement("event");
-        if (is_first_install) {
-          event_element.AddAttribute("eventtype", "2");  // install
-        } else {
-          event_element.AddAttribute("eventtype", "3");  // update
-        }
-        event_element.AddAttribute("eventresult", "1");  // succeeded
-      } else {
-        // Set up <updatecheck/>
-        app_element.AddElement("updatecheck");
-      }
-
-      {
-        // Set up <ping ... />
-        const std::string last_server_date =
-            base::StringPrintf("%d", last_server_date_);
-
-        XmlElement ping_element = app_element.AddElement("ping");
-        ping_element.AddAttribute("active", "1");
-        ping_element.AddAttribute("ad", last_server_date);
-        ping_element.AddAttribute("rd", last_server_date);
-      }
-    }
-  }
-
-  return xml_wrapper.GetContentAsString();
+  return FormatOmahaPingEvent(
+      pingContent, OmahaPingData{
+                       .request_id = requestId,
+                       .session_id = sessionId,
+                       .channel_name = channelName,
+                       .locale_lang = locale_lang_,
+                       .hardware_class = base::SysInfo::HardwareModelName(),
+                       .os_version = base::SysInfo::OperatingSystemVersion(),
+                       .current_version = base::Version(versionName),
+                       .previous_version = previous_version,
+                       .installation_time = installationTime,
+                       .last_server_date = last_server_date_,
+                   });
 }
 
 std::string OmahaService::GetCurrentPingContent() {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
   const base::Version& current_version = version_info::GetVersion();
   sending_install_event_ = last_sent_version_ < current_version;
-  PingContent ping_content =
-      sending_install_event_ ? INSTALL_EVENT : USAGE_PING;
+  OmahaPingEvent ping_content = sending_install_event_
+                                    ? OmahaPingEvent::kInstallEvent
+                                    : OmahaPingEvent::kUsagePing;
 
   // An install retry ping only makes sense if an install event must be send.
   DCHECK(sending_install_event_ || !IsNextPingInstallRetry());
@@ -498,8 +371,7 @@ void OmahaService::SendPing() {
   // the test.
   if (pending_url_loader_factory_) {
     DCHECK(!url_loader_factory_);
-    url_loader_factory_ = network::SharedURLLoaderFactory::Create(
-        std::move(pending_url_loader_factory_));
+    url_loader_factory_ = std::move(pending_url_loader_factory_).Run();
     DCHECK(url_loader_factory_);
   } else {
     CHECK(url_loader_factory_);
@@ -547,8 +419,7 @@ void OmahaService::SendOrScheduleNextPing() {
         base::BindOnce(&OmahaService::SendPing, base::Unretained(this)));
     // Once the timer is started, register for
     // applicationWillEnterForeground notifications.
-    if (!foreground_notification_registration_handle_ &&
-        base::FeatureList::IsEnabled(kOmahaResyncTimerOnForeground)) {
+    if (!foreground_notification_registration_handle_) {
       foreground_notification_registration_handle_ =
           [[NSNotificationCenter defaultCenter]
               addObserverForName:@"UIApplicationWillEnterForegroundNotification"
@@ -569,8 +440,6 @@ void OmahaService::SendOrScheduleNextPing() {
 // the expected deadline.
 void OmahaService::ResyncTimerIfNeeded() {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  CHECK(base::FeatureList::IsEnabled(kOmahaResyncTimerOnForeground));
-
   // If the timer isn't already running, nothing needs to be done.
   if (!timer_.IsRunning()) {
     return;
@@ -661,17 +530,15 @@ void OmahaService::OnURLLoadComplete(std::optional<std::string> response_body) {
 
     // Use the correct callback based on if a one-off check is ongoing.
     if (!one_off_check_callback_.is_null()) {
-      web::GetUIThreadTaskRunner({})->PostTask(
-          FROM_HERE, base::BindOnce(std::move(one_off_check_callback_),
-                                    std::move(details)));
       // Do not schedule another ping for one-off checks, unless
       // it canceled a scheduled ping.
       need_to_schedule_ping = scheduled_ping_canceled_;
       scheduled_ping_canceled_ = false;
+      std::move(one_off_check_callback_).Run(details);
     } else if (!details.is_up_to_date) {
-      web::GetUIThreadTaskRunner({})->PostTask(
-          FROM_HERE,
-          base::BindOnce(upgrade_recommended_callback_, std::move(details)));
+      if (!upgrade_recommended_callback_.is_null()) {
+        upgrade_recommended_callback_.Run(details);
+      }
     }
   }
 
@@ -714,16 +581,16 @@ bool OmahaService::IsNextPingInstallRetry() {
              stringForKey:kRetryRequestIdKey] != nil;
 }
 
-std::string OmahaService::GetNextPingRequestId(PingContent ping_content) {
+std::string OmahaService::GetNextPingRequestId(OmahaPingEvent ping_content) {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
   NSString* stored_id =
       [[NSUserDefaults standardUserDefaults] stringForKey:kRetryRequestIdKey];
   if (stored_id) {
-    DCHECK(ping_content == INSTALL_EVENT);
+    DCHECK(ping_content == OmahaPingEvent::kInstallEvent);
     return base::SysNSStringToUTF8(stored_id);
   } else {
     std::string identifier = ios::device_util::GetRandomId();
-    if (ping_content == INSTALL_EVENT) {
+    if (ping_content == OmahaPingEvent::kInstallEvent) {
       OmahaService::SetInstallRetryRequestId(identifier);
     }
     return identifier;
@@ -745,12 +612,6 @@ void OmahaService::ClearInstallRetryRequestId() {
   [defaults removeObjectForKey:kRetryRequestIdKey];
   // Clear critical state information for usage reporting.
   [defaults synchronize];
-}
-
-void OmahaService::InitializeURLLoaderFactory(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  url_loader_factory_ = url_loader_factory;
 }
 
 void OmahaService::ClearPersistentStateForTests() {

@@ -392,8 +392,14 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
           GURL cluster_info_url{
               lens::features::GetLensOverlayClusterInfoEndpointUrl()};
           GURL upload_url{lens::features::GetLensOverlayEndpointURL()};
-          if (url.host() == cluster_info_url.host() &&
-              url.path() == cluster_info_url.path()) {
+          GURL composebox_cluster_info_url{
+              lens::features::GetLensComposeboxClusterInfoEndpointUrl()};
+          GURL composebox_upload_url{
+              lens::features::GetLensComposeboxEndpointUrl()};
+          if ((url.host() == cluster_info_url.host() &&
+               url.path() == cluster_info_url.path()) ||
+              (url.host() == composebox_cluster_info_url.host() &&
+               url.path() == composebox_cluster_info_url.path())) {
             lens::LensOverlayServerClusterInfoResponse response;
             response.set_search_session_id("test_search_session_id");
             std::string response_string;
@@ -403,8 +409,10 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
                 response_string, params->client.get());
             return true;
           }
-          if (url.host() == upload_url.host() &&
-              url.path() == upload_url.path()) {
+          if ((url.host() == upload_url.host() &&
+               url.path() == upload_url.path()) ||
+              (url.host() == composebox_upload_url.host() &&
+               url.path() == composebox_upload_url.path())) {
             lens::LensOverlayServerResponse response;
             std::string response_string;
             CHECK(response.SerializeToString(&response_string));
@@ -1117,8 +1125,8 @@ class ContextualTasksInteractiveUiTest : public InteractiveBrowserTest {
 };
 
 // TODO(crbug.com/500717050): Parameterize this test suite on the feature flag.
-// TODO(crbug.com/524797987): Re-enable this test on ChromeOS.
-#if BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/524797987): Re-enable this test on ChromeOS and Linux.
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #define MAYBE_AddAndRemovePdfChipFromComposebox \
   DISABLED_AddAndRemovePdfChipFromComposebox
 #else
@@ -1175,16 +1183,9 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
                   WaitForComposeboxFilesCount(0));
 }
 
-// TODO(crbug.com/524797987): Re-enable this test on ChromeOS.
-#if BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_AddAndRemoveImageChipFromComposebox \
-  DISABLED_AddAndRemoveImageChipFromComposebox
-#else
-#define MAYBE_AddAndRemoveImageChipFromComposebox \
-  AddAndRemoveImageChipFromComposebox
-#endif
+// TODO(crbug.com/524797987): Re-enable this test.
 IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
-                       MAYBE_AddAndRemoveImageChipFromComposebox) {
+                       DISABLED_AddAndRemoveImageChipFromComposebox) {
   const GURL kInterceptionUrl("https://www.google.com/search?udm=50");
 
   base::FilePath test_data_dir;
@@ -1381,7 +1382,9 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
   RunTestSequence(
       InstrumentTab(kPrimaryTab, 0),
       AddInstrumentedTab(kGenericTab2, kGenericPageUrl2),
+      WaitForWebContentsReady(kGenericTab2, kGenericPageUrl2),
       AddInstrumentedTab(kGenericTab, kGenericPageUrl1),
+      WaitForWebContentsReady(kGenericTab, kGenericPageUrl1),
       SelectTab(kTabStripElementId, 0),
       OpenContextualTasksInCurrentTab(kInterceptionUrl),
       InstrumentInnerWebContents(kInnerWebContentsId, kPrimaryTab, 0),
@@ -1392,18 +1395,19 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       WaitForFaviconGroupWithTitle(kPrimaryTab, "title1.html"),
       WaitForComposeboxFilesCount(1),
 
-      // 2. Add Tab 2 (now shifted to Index 1 since Tab 1 is selected. Menu is
-      // already open!)
+      // 2. Add Tab 2
+      ForceClickAddContextEntrypoint(kPrimaryTab),
       ForceClickMenuButton(kPrimaryTab, 1),
       WaitForFaviconGroupWithTitle(kPrimaryTab, "Title Of Awesomeness"),
       WaitForComposeboxFilesCount(2),
 
-      // 3. Set factory for PDF and upload PDF. Menu is still open!
+      // 3. Set factory for PDF and upload PDF
       Do(base::BindLambdaForTesting([&]() {
         ui::SelectFileDialog::SetFactory(
             std::make_unique<content::FakeSelectFileDialogFactory>(
                 std::vector<base::FilePath>{pdf_path}));
       })),
+      ForceClickAddContextEntrypoint(kPrimaryTab),
       ForceClickMenuButton(kPrimaryTab, "fileUpload"),
       WaitForDocumentChipWithTitle(kPrimaryTab, "download.pdf"),
       WaitForComposeboxFilesCount(3),
@@ -1473,16 +1477,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       WaitForInputCleared(kPrimaryTab));
 }
 
-// TODO(crbug.com/516333831): Re-enable this test on Windows.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_AddAndSubmitMultipleContextsWithTextFromComposebox \
-  DISABLED_AddAndSubmitMultipleContextsWithTextFromComposebox
-#else
-#define MAYBE_AddAndSubmitMultipleContextsWithTextFromComposebox \
-  AddAndSubmitMultipleContextsWithTextFromComposebox
-#endif
 IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
-                       MAYBE_AddAndSubmitMultipleContextsWithTextFromComposebox) {
+                       AddAndSubmitMultipleContextsWithTextFromComposebox) {
   const GURL kInterceptionUrl("https://www.google.com/search?udm=50");
   const GURL kGenericPageUrl1 = embedded_test_server()->GetURL("/title1.html");
   const GURL kGenericPageUrl2 = embedded_test_server()->GetURL("/title2.html");
@@ -1553,6 +1549,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksInteractiveUiTest,
       InputText(kPrimaryTab, "Query with multiple attachments"),
 
       // 6. Submit
+      WaitForSubmitButtonEnabled(kPrimaryTab),
       ClickButton(kPrimaryTab, kSubmitButton),
 
       // 7. Verify multiple inputs + query text in the final message

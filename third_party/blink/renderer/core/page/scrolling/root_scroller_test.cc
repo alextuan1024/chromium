@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/scoped_feature_list.h"
+#include "cc/base/features.h"
+#include "cc/test/scoped_browser_controls_linear_animation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/input/web_coalesced_input_event.h"
 #include "third_party/blink/public/common/input/web_gesture_device.h"
@@ -52,7 +55,10 @@ namespace blink {
 
 namespace {
 
+// TODO(crbug.com/489060623): Fix unit tests when running with snap animation
+// and remove ScopedBrowserControlsLinearAnimation.
 class RootScrollerTest : public testing::Test,
+                         private cc::test::ScopedBrowserControlsLinearAnimation,
                          private ScopedImplicitRootScrollerForTest {
  public:
   RootScrollerTest()
@@ -2790,6 +2796,71 @@ TEST_F(ImplicitRootScrollerSimTest, AppliedAtFractionalZoom) {
   EXPECT_EQ(GetDocument().getElementById(AtomicString("container")),
             GetDocument().GetRootScrollerController().EffectiveRootScroller())
       << "<iframe> should remain promoted when URL bar is hidden";
+}
+
+TEST_F(ImplicitRootScrollerSimTest,
+       FillsViewportAtFractionalZoomWithBottomControls) {
+  // Matches Pixel 6 screen width (1080px) at 2.625 DevicePixelRatio.
+  WebView().SetZoomFactorForDeviceScaleFactor(2.625f, 1.0f);
+  WebView().ResizeWithBrowserControls(gfx::Size(1080, 2087), 0, 56,
+                                      /*browser_controls_shrink_layout=*/true);
+
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+          <!DOCTYPE html>
+          <style>
+            ::-webkit-scrollbar {
+              width: 0px;
+              height: 0px;
+            }
+            body, html {
+              width: 100%;
+              height: 100%;
+              margin: 0px;
+            }
+            #container {
+              width: 100%;
+              height: 100%;
+              overflow: auto;
+            }
+          </style>
+          <div id="container">
+            <div style="height: 2000px;"></div>
+          </div>
+          <script>
+            onresize = () => {
+              document.getElementById("container").style.height =
+                  window.innerHeight + "px";
+            };
+          </script>
+      )HTML");
+
+  Element* container = GetDocument().getElementById(AtomicString("container"));
+  ASSERT_NE(container, nullptr);
+  Compositor().BeginFrame();
+
+  ASSERT_EQ(container,
+            GetDocument().GetRootScrollerController().EffectiveRootScroller());
+
+  // Simulate hiding the bottom controls. The root scroller should remain valid
+  // when bottom controls are hidden despite subpixel quantization differences.
+  WebView().GetPage()->GetBrowserControls().SetShownRatio(0.f, 0.f);
+  WebView().ResizeWithBrowserControls(gfx::Size(1080, 2143), 0, 56,
+                                      /*browser_controls_shrink_layout=*/false);
+  Compositor().BeginFrame();
+
+  EXPECT_EQ(container,
+            GetDocument().GetRootScrollerController().EffectiveRootScroller());
+
+  // An intentional inset (e.g. 2px, exceeding subpixel tolerance) should cause
+  // demotion back to the Document.
+  container->style()->setProperty(GetDocument().GetExecutionContext(), "width",
+                                  "calc(100% - 2px)", String(),
+                                  ASSERT_NO_EXCEPTION);
+  Compositor().BeginFrame();
+  EXPECT_EQ(GetDocument(),
+            GetDocument().GetRootScrollerController().EffectiveRootScroller());
 }
 
 // Ensure that a scrollable fieldset doesn't get promoted to root scroller.

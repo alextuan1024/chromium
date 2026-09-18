@@ -32,7 +32,6 @@ import android.widget.LinearLayout;
 
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.core.widget.ImageViewCompat;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -122,17 +121,16 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testChildViewInflation() {
         assertNotNull(mRailLayout.getRecyclerView());
         assertNotNull(mRailLayout.getPinnedTabsRecyclerView());
+        assertNotNull(mRailLayout.getPinnedTabsSeparatorView());
         assertNotNull(mRailLayout.getHeaderContainer());
         assertNotNull(mRailLayout.getFooterContainer());
         assertNotNull(mRailLayout.getIncognitoButton());
     }
 
     @Test
-    @SmallTest
     public void testHeaderAndNewTabButtonTooltips() {
         View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
         assertNotNull(searchButton);
@@ -158,7 +156,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetCollapseState_ExpandedAndCollapsed() {
         LinearLayout header = mRailLayout.getHeaderContainer();
         View spacer = mRailLayout.findViewById(R.id.header_spacer);
@@ -198,7 +195,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetCollapseState_SkipsUpdateWhenStateUnchanged() {
         int buttonWidth =
                 mActivity
@@ -231,7 +227,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testColdStart_DefaultExpanded_TransitionsToCollapsedOnStateChange() {
         LinearLayout header = mRailLayout.getHeaderContainer();
 
@@ -248,7 +243,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetDesktopWindowSpacerVisible() {
         View spacer = mRailLayout.findViewById(R.id.desktop_window_spacer);
         mRailLayout.setDesktopWindowSpacerVisible(true);
@@ -259,7 +253,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDispatchGenericMotionEvent_HoverInsideAndOutside() {
         FeatureOverrides.overrideParam(
                 ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
@@ -322,7 +315,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindClickListeners() {
         VerticalTabListViewBinder.bind(
                 mModel, mRailLayout, VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER);
@@ -350,7 +342,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindCollapseButtonEnabled() {
         View collapseButton = mRailLayout.findViewById(R.id.collapse_button);
 
@@ -368,7 +359,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindCollapseState() {
         mModel.set(VerticalTabListProperties.COLLAPSE_STATE, RailCollapseState.COLLAPSED);
         VerticalTabListViewBinder.bind(
@@ -382,7 +372,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSearchButtonBackground() {
         View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
         assertEquals(
@@ -391,7 +380,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindIncognitoColors_Regular() {
         mModel.set(VerticalTabListProperties.IS_INCOGNITO, false);
         VerticalTabListViewBinder.bind(mModel, mRailLayout, VerticalTabListProperties.IS_INCOGNITO);
@@ -420,7 +408,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindIncognitoColors_Incognito() {
         mModel.set(VerticalTabListProperties.IS_INCOGNITO, true);
         VerticalTabListViewBinder.bind(mModel, mRailLayout, VerticalTabListProperties.IS_INCOGNITO);
@@ -455,7 +442,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindIncognitoColors_WhenShouldOpenIncognitoAsWindow() {
         IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
 
@@ -477,7 +463,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testButtonDimensions_TabletVsNonTablet() {
         // Touch tablet device (default in setUp, uncollapsed)
         int expectedTouchButtonWidth =
@@ -552,7 +537,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBindIncognitoButtonVisibilityAndLayout() {
         View incognitoButton = mRailLayout.findViewById(R.id.new_incognito_tab_button);
         View newTabButton = mRailLayout.findViewById(R.id.new_tab_button);
@@ -625,7 +609,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testButtonDimensions_TabletVsDesktop() {
         DeviceInfo.setIsDesktopForTesting(false);
         VerticalTabRailLayout tabletLayout =
@@ -671,7 +654,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testPinnedTabsRecyclerViewPadding() {
         int expectedPaddingTop =
                 mActivity
@@ -687,7 +669,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDispatchKeyEvent_DelegatesToKeyEventListener() {
         mRailLayout.setKeyEventListener(mKeyEventListener);
 
@@ -709,7 +690,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMeasure_CapsPinnedTabsRecyclerViewToFiftyPercent() {
         mRailLayout.getPinnedTabsRecyclerView().setVisibility(View.VISIBLE);
 
@@ -746,7 +726,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnMeasure_PinnedTabsRecyclerViewGone_DoesNotEnforceMaxHeight() {
         // Simulate having no pinned tabs.
         mRailLayout.getPinnedTabsRecyclerView().setVisibility(View.GONE);
@@ -767,7 +746,6 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testPinnedTabsRecyclerView_XmlAttributes() {
         TabListRecyclerView pinnedRv = mRailLayout.getPinnedTabsRecyclerView();
         assertNotNull(pinnedRv);
@@ -781,6 +759,67 @@ public class VerticalTabRailLayoutUnitTest {
 
         // Verify app:layout_constrainedHeight="true"
         assertTrue("layout_constrainedHeight must be true", clp.constrainedHeight);
+    }
+
+    @Test
+    public void testPinnedTabsSeparatorViewInflation() {
+        View separator = mRailLayout.getPinnedTabsSeparatorView();
+        assertNotNull(separator);
+        assertEquals(View.GONE, separator.getVisibility());
+
+        // Verify XML attributes (width, height, background drawable).
+        int expectedWidth =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_pinned_separator_width);
+        int expectedHeight =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_pinned_separator_height);
+        ViewGroup.LayoutParams lp = separator.getLayoutParams();
+        assertEquals(expectedWidth, lp.width);
+        assertEquals(expectedHeight, lp.height);
+        assertNotNull(separator.getBackground());
+    }
+
+    @Test
+    public void testSetPinnedTabsSeparatorVisible_True() {
+        View separator = mRailLayout.getPinnedTabsSeparatorView();
+        assertNotNull(separator);
+
+        mRailLayout.setPinnedTabsSeparatorVisible(true);
+
+        assertEquals(View.VISIBLE, separator.getVisibility());
+
+        // Verify top margin was dynamically applied to regular tabs RecyclerView.
+        int expectedMargin =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(
+                                R.dimen.vertical_tabs_pinned_separator_margin_vertical);
+        ViewGroup.MarginLayoutParams lp =
+                (ViewGroup.MarginLayoutParams) mRailLayout.getRecyclerView().getLayoutParams();
+        assertEquals(expectedMargin, lp.topMargin);
+    }
+
+    @Test
+    public void testSetPinnedTabsSeparatorVisible_False() {
+        View separator = mRailLayout.getPinnedTabsSeparatorView();
+        assertNotNull(separator);
+
+        // Turn on first so margin is non-zero.
+        mRailLayout.setPinnedTabsSeparatorVisible(true);
+        assertEquals(View.VISIBLE, separator.getVisibility());
+
+        // Toggle back off.
+        mRailLayout.setPinnedTabsSeparatorVisible(false);
+
+        assertEquals(View.GONE, separator.getVisibility());
+
+        // Verify top margin is reset back to 0.
+        ViewGroup.MarginLayoutParams lp =
+                (ViewGroup.MarginLayoutParams) mRailLayout.getRecyclerView().getLayoutParams();
+        assertEquals(0, lp.topMargin);
     }
 
     private void measureAndLayout(View view, int width, int height) {

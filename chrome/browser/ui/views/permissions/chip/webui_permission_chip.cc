@@ -83,6 +83,7 @@ void WebUIPermissionChip::SetVisible(bool visible) {
   if (is_visible_ == visible) {
     return;
   }
+  ++state_token_;
   is_visible_ = visible;
   NotifyVisibilityChanged();
   UpdateState();
@@ -185,6 +186,7 @@ void WebUIPermissionChip::AnimateToFit(base::TimeDelta duration) {
 }
 
 void WebUIPermissionChip::ResetAnimation(AnimationState state) {
+  ++state_token_;
   bool was_animating = is_animating_;
   is_animating_ = false;
 
@@ -291,14 +293,21 @@ void WebUIPermissionChip::ExecuteForTesting() {
 }
 
 void WebUIPermissionChip::EndAnimationForTesting() {
-  ResetAnimation(AnimationState::kCollapsed);
+  FinishAnimation(should_collapse_ ? AnimationState::kCollapsed
+                                   : AnimationState::kExpanded);
 }
 
 void WebUIPermissionChip::FinishAnimation(AnimationState state) {
   is_animating_ = false;
   is_fully_collapsed_ = (state == AnimationState::kCollapsed);
   if (state == AnimationState::kExpanded) {
-    AnnounceAlert(message_);
+    // Do not announce the chip here. `ChipController` owns the decision of
+    // whether the chip should be announced: the announcement is suppressed
+    // when the prompt bubble starts open, because the bubble fires its own
+    // `ax::mojom::Event::kAlert`. Announcing unconditionally here would make
+    // screen readers speak the permission request twice. See
+    // `ChipController::ShowPermissionUi()` and
+    // `ChipController::AnnouncePermissionRequestForAccessibility()`.
     observers_.Notify(&Observer::OnExpandAnimationEnded);
   } else {
     observers_.Notify(&Observer::OnCollapseAnimationEnded);
@@ -376,6 +385,7 @@ toolbar_ui_api::mojom::PermissionChipStatePtr WebUIPermissionChip::GetState()
   // the frontend to begin its CSS transition.
   state->is_fully_collapsed = should_collapse_;
   state->accessibility_name = accessibility_name_;
+  state->state_token = state_token_;
   return state;
 }
 

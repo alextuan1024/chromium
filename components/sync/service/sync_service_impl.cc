@@ -672,6 +672,8 @@ void SyncServiceImpl::Shutdown() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   TRACE_EVENT0("sync", "SyncServiceImpl::Shutdown");
 
+  is_shutting_down_ = true;
+
   NotifyShutdown();
 
   device_statistics_scheduler_.reset();
@@ -969,6 +971,9 @@ SyncService::UserActionableError SyncServiceImpl::GetUserActionableError()
 }
 
 void SyncServiceImpl::NotifyObservers() {
+  if (is_shutting_down_) {
+    return;
+  }
   CHECK(observers_);
   SyncService::UserActionableError user_actionable_error =
       GetUserActionableError();
@@ -982,13 +987,28 @@ void SyncServiceImpl::NotifyObservers() {
   }
   for (SyncServiceObserver& observer : *observers_) {
     observer.OnStateChanged(this);
+    // Shutdown() can be triggered re-entrantly while this notification loop is
+    // already running. Shutdown destroys data type controllers and clears
+    // `observers_`, so abort remaining iteration to avoid use-after-free.
+    if (is_shutting_down_) {
+      return;
+    }
   }
 }
 
 void SyncServiceImpl::NotifySyncCycleCompleted() {
+  if (is_shutting_down_) {
+    return;
+  }
   CHECK(observers_);
   for (SyncServiceObserver& observer : *observers_) {
     observer.OnSyncCycleCompleted(this);
+    // Shutdown() can be triggered re-entrantly while this notification loop is
+    // already running. Shutdown destroys data type controllers and clears
+    // `observers_`, so abort remaining iteration to avoid use-after-free.
+    if (is_shutting_down_) {
+      return;
+    }
   }
 }
 
@@ -1861,17 +1881,13 @@ void SyncServiceImpl::UpdateDataTypesForInvalidations() {
   DataTypeSet types = Intersection(GetPreferredDataTypes(), ProtocolTypes());
   types.RemoveAll(CommitOnlyTypes());
 
-  bool should_register_sessions = sessions_invalidations_enabled_;
 #if BUILDFLAG(IS_ANDROID)
-  if (!should_register_sessions &&
-      base::FeatureList::IsEnabled(
+  if (!sessions_invalidations_enabled_ &&
+      !base::FeatureList::IsEnabled(
           kAlwaysRegisterSessionsInvalidationsAndroid)) {
-    should_register_sessions = true;
-  }
-#endif
-  if (!should_register_sessions) {
     types.Remove(SESSIONS);
   }
+#endif  // BUILDFLAG(IS_ANDROID)
 
   if (!data_type_manager_->GetDataTypesWithPermanentErrors().empty() &&
       base::FeatureList::IsEnabled(
@@ -2208,18 +2224,18 @@ bool SyncServiceImpl::HasSyncConsent() const {
   return auth_manager_->GetActiveAccountInfo().is_sync_consented;
 }
 
+#if BUILDFLAG(IS_ANDROID)
 void SyncServiceImpl::SetInvalidationsForSessionsEnabled(bool enabled) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   sessions_invalidations_enabled_ = enabled;
-#if BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(
           kAlwaysRegisterSessionsInvalidationsAndroid)) {
     return;
   }
-#endif
   UpdateDataTypesForInvalidations();
 }
+#endif  // BUILDFLAG(IS_ANDROID)
 
 void SyncServiceImpl::SendExplicitPassphraseToPlatformClient() {
   RunOrQueueTaskOnEngineInitialized(base::BindOnce(

@@ -301,7 +301,9 @@ source_set("impl") {
       "nss_service.cc",
       "nss_service_factory.cc",
     ]
-    deps += [ "//chrome/browser/ui:crypto_module_password_dialog" ]
+    if (use_nss_client_certs) {
+      deps += [ "//chrome/browser/ui:crypto_module_password_dialog" ]
+    }
     if (is_chromeos) {
       sources += [
         "nss_service_chromeos.cc",
@@ -318,6 +320,13 @@ source_set("impl") {
       sources += [ "nss_service_linux.cc" ]
     }
     configs += [ "//build/config/linux/nss" ]
+  }
+
+  if (is_android) {
+    deps += [
+      "//components/enterprise/net/content",
+      "//components/tabs:public",
+    ]
   }
 }
 
@@ -447,6 +456,7 @@ source_set("unit_tests") {
       "nss_temp_certs_cache_chromeos_unittest.cc",
     ]
     deps += [
+      "//chrome/browser/ash/login/users",
       "//chrome/browser/prefs",
       "//chromeos/dbus/regmon",
       "//components/account_id:test_support",
@@ -516,6 +526,7 @@ if (!is_android) {
       "//chrome/browser/ui/login",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
+      "//chrome/test/base:browser_test_waiters",
       "//chrome/test/base:test_launcher_utils",
       "//chrome/test/base:web_feature_histogram_tester",
       "//components/component_updater/installer_policies",
@@ -615,6 +626,7 @@ source_set("platform_browser_tests") {
     "//chrome/browser/policy:test_support",
     "//chrome/browser/ui/browser_window",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//content/test:test_support",
   ]
 

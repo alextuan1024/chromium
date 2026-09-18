@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
@@ -50,7 +49,6 @@
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_ui.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/drive_upload_handler.h"
-#include "chrome/browser/ui/webui/ash/cloud_upload/hats_office_trigger.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/one_drive_upload_handler.h"
 #include "chrome/browser/ui/webui/ash/office_fallback/office_fallback_ui.h"
 #include "chrome/grit/generated_resources.h"
@@ -58,8 +56,8 @@
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "extensions/browser/api/file_handlers/mime_util.h"
 #include "extensions/browser/entry_info.h"
 #include "extensions/common/constants.h"
@@ -165,7 +163,6 @@ void ShowUnableToOpenNotification(
       /*message=*/base::UTF8ToUTF16(message),
       /*display_source=*/
       l10n_util::GetStringUTF16(IDS_ASH_MESSAGE_CENTER_SYSTEM_APP_NAME_FILES),
-      /*origin_url=*/GURL(),
       /*notifier_id=*/message_center::NotifierId(),
       /*optional_fields=*/{},
       /*delegate=*/
@@ -294,13 +291,6 @@ void OpenFileFromODFS(
                       std::move(callback).Run(open);
                     },
                     profile, std::move(callback)));
-            if (base::FeatureList::IsEnabled(
-                    ash::features::kHappinessTrackingOffice)) {
-              ash::cloud_upload::HatsOfficeTrigger::Get()
-                  .ShowSurveyAfterAppInactive(
-                      ash::kMicrosoft365AppId,
-                      ash::cloud_upload::HatsOfficeLaunchingApp::kMS365);
-            }
           },
           profile, file_system, std::move(callback)));
 }
@@ -1181,24 +1171,22 @@ void CloudOpenTask::ShowDialog(
   if (resulting_tasks) {
     SetTaskArgs(args, std::move(resulting_tasks));
 
-    if (chromeos::features::IsUploadOfficeToCloudEnabled()) {
-      const auto& file_handler_dialog_args =
-          args->dialog_specific_args->get_file_handler_dialog_args();
-      // When there is only one possible task (Microsoft or Google) and no
-      // further local tasks, skip the file handler page and either show the
-      // OneDrive setup if necessary, or go straight to opening/moving the
-      // files.
-      if ((!file_handler_dialog_args->show_microsoft_office_task ||
-           !file_handler_dialog_args->show_google_workspace_task) &&
-          local_tasks_.empty()) {
-        // Validate that `cloud_provider_` differs from the disabled task.
-        CHECK(!(cloud_provider_ == CloudProvider::kOneDrive &&
-                !file_handler_dialog_args->show_microsoft_office_task));
-        CHECK(!(cloud_provider_ == CloudProvider::kGoogleDrive &&
-                !file_handler_dialog_args->show_google_workspace_task));
-        MaybeRunFixupFlow();
-        return;
-      }
+    const auto& file_handler_dialog_args =
+        args->dialog_specific_args->get_file_handler_dialog_args();
+    // When there is only one possible task (Microsoft or Google) and no
+    // further local tasks, skip the file handler page and either show the
+    // OneDrive setup if necessary, or go straight to opening/moving the
+    // files.
+    if ((!file_handler_dialog_args->show_microsoft_office_task ||
+         !file_handler_dialog_args->show_google_workspace_task) &&
+        local_tasks_.empty()) {
+      // Validate that `cloud_provider_` differs from the disabled task.
+      CHECK(!(cloud_provider_ == CloudProvider::kOneDrive &&
+              !file_handler_dialog_args->show_microsoft_office_task));
+      CHECK(!(cloud_provider_ == CloudProvider::kGoogleDrive &&
+              !file_handler_dialog_args->show_google_workspace_task));
+      MaybeRunFixupFlow();
+      return;
     }
   }
 

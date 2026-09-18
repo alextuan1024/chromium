@@ -976,6 +976,10 @@ void ServiceWorkerMainResourceLoader::DidDispatchFetchEvent(
     network::DocumentIsolationPolicy document_isolation_policy;
     network::mojom::DocumentIsolationPolicyReporter*
         document_isolation_policy_reporter = nullptr;
+    // For main resource navigations, container_host() is not yet created
+    // prior to response commit. Policy container policies will default to
+    // empty, but IsValidStaticRouterResponse will still validate the response
+    // type (e.g. rejecting opaque responses for navigation mode).
     if (service_worker_client_ && service_worker_client_->container_host()) {
       ServiceWorkerContainerHostForClient* container_host =
           service_worker_client_->container_host();
@@ -1210,7 +1214,16 @@ bool ServiceWorkerMainResourceLoader::MaybeStartSyntheticNetworkRequest(
         blink::mojom::ServiceWorkerFetchHandlerBypassOption::
             kSyntheticResponseDryRunMode);
 
-    return false;
+    ResponseHeadUpdateParams head_update_params;
+    head_update_params.load_timing_info = response_head_->load_timing;
+    if (initial_service_worker_status_.has_value()) {
+      head_update_params.initial_service_worker_status =
+          initial_service_worker_status_.value();
+    }
+    head_update_params.is_synthetic_response_dry_run_mode =
+        is_synthetic_response_used_;
+    Fallback(std::move(head_update_params));
+    return true;
   }
 
   is_synthetic_response_used_ = true;
@@ -1329,19 +1342,6 @@ void ServiceWorkerMainResourceLoader::StartResponse(
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
-  // We need to explicitly copy `parsed_headers` here because
-  // `ServiceWorkerLoaderHelpers::SaveResponseInfo()` does not handle the
-  // restoration or copying of this Mojo field.
-  //
-  // For the Static Router 'cache' source path, the headers are already parsed
-  // in the browser process via a Network Service IPC. By cloning them here,
-  // we ensure they are available for immediate checks (like TAO) within this
-  // loader, and more importantly, we prevent the downstream navigation stack
-  // (e.g., `NavigationURLLoaderImpl`) from performing a redundant second IPC
-  // to re-parse the same headers.
-  if (response->parsed_headers) {
-    response_head_->parsed_headers = response->parsed_headers.Clone();
-  }
 
   response_head_->did_service_worker_navigation_preload =
       dispatched_preload_type() == DispatchedPreloadType::kNavigationPreload;
@@ -1356,10 +1356,12 @@ void ServiceWorkerMainResourceLoader::StartResponse(
 
   // Synthetic and same-origin responses are same-origin to the requesting
   // client if the request initiator is same-origin with the request URL, so
-  // the timing allow check trivially passes. Filtered responses wrap a
+  // the timing allow check passes unless the response was fetched via a
+  // redirect chain that failed the TAO check. Filtered responses wrap a
   // cross-origin response for which the timing allow check must not be
-  // assumed to have passed unless the Timing-Allow-Origin check passes.
-  if (resource_request_.request_initiator &&
+  // assumed to have passed unless the response passed the TAO check and the
+  // Timing-Allow-Origin check passes for the request initiator.
+  if (resource_request_.request_initiator && response->timing_allow_passed &&
       ((resource_request_.request_initiator->IsSameOriginWith(
             resource_request_.url) &&
         (response_head_->response_type ==

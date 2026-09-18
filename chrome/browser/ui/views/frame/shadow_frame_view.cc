@@ -10,7 +10,7 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_provider.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/shadow.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/views/view_shadow.h"
 
@@ -33,7 +33,7 @@ void ShadowFrameView::SetShadowVisible(bool visible) {
   if (visible) {
     view_shadow_ = std::make_unique<views::ViewShadow>(this, shadow_elevation_);
     view_shadow_->SetRoundedCornerRadius(corner_radius_);
-    view_shadow_->shadow()->shadow_layer()->SetOpacity(shadow_opacity_);
+    view_shadow_->shadow()->layer()->SetOpacity(shadow_opacity_);
     UpdateShadowColors();
   } else {
     view_shadow_.reset();
@@ -50,7 +50,7 @@ void ShadowFrameView::SetShadowOpacity(double opacity) {
   shadow_opacity_ = opacity;
 
   if (view_shadow_) {
-    view_shadow_->shadow()->shadow_layer()->SetOpacity(opacity);
+    view_shadow_->shadow()->layer()->SetOpacity(opacity);
     SchedulePaint();
   }
 }

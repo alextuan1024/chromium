@@ -17,7 +17,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_config.h"
 #include "content/public/browser/bluetooth_chooser.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/common/child_process_id.h"
@@ -600,7 +600,8 @@ class ExtensionsBrowserClient {
                                             const GURL& url);
 
   // Returns the ProtocolHandlerRegistry instance associated with the user
-  // profile.
+  // profile, or null if the embedder has none; extension protocol_handlers
+  // are then ignored.
   virtual custom_handlers::ProtocolHandlerRegistry* GetProtocolHandlerRegistry(
       content::BrowserContext* context);
 
@@ -613,8 +614,8 @@ class ExtensionsBrowserClient {
   virtual scoped_refptr<safe_browsing::SafeBrowsingDatabaseManager>
   GetSafeBrowsingDatabaseManager() const;
 
-  // Get the default v4 protocol config struct from the safe browsing service.
-  virtual std::optional<safe_browsing::V4ProtocolConfig> GetV4ProtocolConfig()
+  // Get the default SB protocol config struct from the safe browsing service.
+  virtual std::optional<safe_browsing::SBProtocolConfig> GetSBProtocolConfig()
       const;
 
   // Notifies the ExtensionActionRunner that an extension has been granted
@@ -722,6 +723,10 @@ class ExtensionsBrowserClient {
   // is found.
   virtual gfx::NativeWindow GetNativeWindowForFunction(
       ExtensionFunction& function);
+
+  // Returns true if lazy keyed service instantiation is enabled for extension
+  // services.
+  virtual bool IsLazyKeyedServiceInstantiationEnabled() const;
 
  protected:
   std::unique_ptr<ExtensionAssetsManager> assets_manager_;

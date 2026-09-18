@@ -47,7 +47,6 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/events/blink/blink_features.h"
 #include "ui/gfx/switches.h"
-#include "ui/gl/gl_switches.h"
 #include "ui/native_theme/features/native_theme_features.h"
 #include "ui/native_theme/native_theme.h"
 
@@ -173,8 +172,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            kSetOnlyIfOverridden},
           {wf::EnableFencedFrames, features::kPrivacySandboxAdsAPIsM1Override},
           {wf::EnableForcedColors, features::kForcedColors},
-          {wf::EnableFractionalScrollOffsets,
-           features::kFractionalScrollOffsets},
           {wf::EnableSensorExtraClasses, features::kGenericSensorExtraClasses},
 #if BUILDFLAG(IS_ANDROID)
           {wf::EnableGetDisplayMedia, features::kUserMediaScreenCapturing},
@@ -217,8 +214,7 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableWebIdentityDigitalCredentials,
            features::kWebIdentityDigitalCredentials, kDefault},
           {wf::EnableWebIdentityDigitalCredentialsCreation,
-           features::kWebIdentityDigitalCredentialsCreation,
-           kSetOnlyIfOverridden},
+           features::kWebIdentityDigitalCredentialsCreation, kDefault},
           {wf::EnableWebOTP, features::kWebOTP, kSetOnlyIfOverridden},
           {wf::EnableWebOTPAssertionFeaturePolicy,
            features::kWebOTPAssertionFeaturePolicy, kSetOnlyIfOverridden},
@@ -253,8 +249,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
       runtime_feature_name_to_chromium_feature_mapping[] = {
           {"AllowContentInitiatedDataUrlNavigations",
            features::kAllowContentInitiatedDataUrlNavigations},
-          {"AllowSameSiteNoneCookiesInSandbox",
-           net::features::kAllowSameSiteNoneCookiesInSandbox},
           {"AllowURNsInIframes", blink::features::kAllowURNsInIframes},
           {"AllowURNsInIframes", features::kPrivacySandboxAdsAPIsOverride,
            kSetOnlyIfOverridden},
@@ -417,6 +411,21 @@ void SetCustomizedRuntimeFeaturesFromCombinedArgs(
   if (base::android::android_info::sdk_int() <
       base::android::android_info::SDK_VERSION_P) {
     WebRuntimeFeatures::EnableDisplayCutoutAPI(false);
+  }
+  // Unbounded elements rely on
+  // AttachedSurfaceControl.buildReparentTransaction(), which requires Android U
+  // (API level 34) or higher. Disable the feature entirely below that instead
+  // of exposing an API that can only ever reject, so that
+  // 'showUnboundedElement' in HTMLElement.prototype remains a valid feature
+  // detect. This also drops the @supports blink-feature(UnboundedElement) block
+  // from the UA stylesheet, so a stray 'unbounded' attribute cannot hide
+  // content. See HTMLElement::showUnboundedElement().
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_U) {
+    // UnboundedElement is implied_by UnboundedElementOnTheOpenWeb, so both have
+    // to be disabled for UnboundedElementEnabled() to return false.
+    WebRuntimeFeatures::EnableUnboundedElementOnTheOpenWeb(false);
+    WebRuntimeFeatures::EnableUnboundedElement(false);
   }
 #endif
 

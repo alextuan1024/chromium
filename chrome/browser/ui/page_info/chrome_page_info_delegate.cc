@@ -314,7 +314,7 @@ ChromePageInfoDelegate::CreateCookieControlsController() {
           ? CookieSettingsFactory::GetForProfile(profile->GetOriginalProfile())
           : nullptr,
       HostContentSettingsMapFactory::GetForProfile(profile),
-      profile->IsIncognitoProfile());
+      profile->IsPrimaryOTRProfileWithRegularParent());
 }
 
 bool ChromePageInfoDelegate::IsIsolatedWebApp() {
@@ -404,11 +404,11 @@ void ChromePageInfoDelegate::OpenCertificateDialog(
 void ChromePageInfoDelegate::OpenConnectionHelpCenterPage(
     const ui::Event& event) {
   web_contents_->OpenURL(
-      content::OpenURLParams(
-          GURL(chrome::kPageInfoHelpCenterURL), content::Referrer(),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(chrome::kPageInfoHelpCenterURL),
           ui::DispositionFromEventFlags(
               event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
-          ui::PAGE_TRANSITION_LINK, false),
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -453,11 +453,11 @@ void ChromePageInfoDelegate::OpenSafeBrowsingHelpCenterPage(
                               ? chrome::kUnsafeSiteWarningHelpCenterURL
                               : chrome::kSafeBrowsingHelpCenterURL;
   web_contents_->OpenURL(
-      content::OpenURLParams(
-          GURL(url), content::Referrer(),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url),
           ui::DispositionFromEventFlags(
               event_flags, WindowOpenDisposition::NEW_FOREGROUND_TAB),
-          ui::PAGE_TRANSITION_LINK, false),
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -638,7 +638,7 @@ bool ChromePageInfoDelegate::IsHttpsFirstModeEnabledForUrl(const GURL& url) {
 }
 
 bool ChromePageInfoDelegate::IsIncognitoProfile() {
-  return GetProfile()->IsIncognitoProfile();
+  return GetProfile()->IsPrimaryOTRProfileWithRegularParent();
 }
 
 void ChromePageInfoDelegate::SetSecurityStateForTests(

@@ -1956,6 +1956,25 @@ targets.tests.isolated_script_test(
     binary = "chrome_ai_wpt_tests",
 )
 
+# The *_light variants below run the same tests against a pre-built chrome
+# that is downloaded at runtime, so they can be scheduled on bots that don't
+# build chrome (e.g. the google3 model validation integration tests).
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_light_manifest_cpu",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu.json",
+    ],
+    binary = "chrome_ai_wpt_tests_light",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_light_manifest_gpu_high_tier",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier.json",
+    ],
+    binary = "chrome_ai_wpt_tests_light",
+)
+
 targets.tests.gtest_test(
     name = "oobe_only_browser_tests",
     args = [
@@ -2662,8 +2681,12 @@ targets.tests.gpu_telemetry_test(
     name = "vulkan_pixel_skia_gold_test",
     telemetry_test_name = "pixel",
     mixins = [
-        "skia_gold_test",
+        "ci_only",
+        "gpu_integration_test_common_args",
+        "gpu_integration_test_pixel_args",
         "has_native_resultdb_integration",
+        "legacy_gpu_vulkan_pixel_skia_gold_test_args",
+        "skia_gold_test",
     ],
     module_scheme = "flat",
 )
@@ -2855,6 +2878,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl2_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl2_conformance_shards",
     ],
     module_scheme = "flat",
 )
@@ -3045,6 +3069,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl_conformance_shards",
     ],
     module_scheme = "flat",
 )

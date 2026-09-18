@@ -98,8 +98,8 @@
 #include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
 #include "components/safe_browsing/content/common/file_type_policies_test_util.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/test_database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
@@ -154,7 +154,7 @@
 #else
 #include "chrome/browser/safe_browsing/android/download_protection_metrics_data.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_delegate_android.h"
-#include "components/safe_browsing/core/browser/db/v4_test_util.h"
+#include "components/safe_browsing/core/browser/db/sb_test_util.h"
 #endif
 
 using base::RunLoop;
@@ -6125,7 +6125,7 @@ class AndroidDownloadProtectionTest
             sb_service_->GetTestURLLoaderFactory(profile()));
     sb_service_->database_manager()->StopOnUIThread(/*shutdown=*/false);
     sb_service_->database_manager()->StartOnUIThread(
-        test_shared_loader_factory_, GetTestV4ProtocolConfig());
+        test_shared_loader_factory_, GetTestSBProtocolConfig());
   }
 
   bool ShouldAndroidDownloadProtectionBeActive() const {
@@ -6599,7 +6599,7 @@ TEST_F(DownloadProtectionServiceTest,
 
   safe_browsing::V5GetHashProtocolManager v5_protocol_manager(
       /*url_loader_factory=*/nullptr,
-      safe_browsing::V4ProtocolConfig("test", false, "key", "1.0"),
+      safe_browsing::SBProtocolConfig("test", false, "key", "1.0"),
       /*cache=*/nullptr);
 
   NiceMockDownloadItem item;

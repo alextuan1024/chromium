@@ -1019,7 +1019,6 @@ Todos los usuarios deben cerrar sesión para continuar.</translation>
 <translation id="394485226368336402">Configuración de audio</translation>
 <translation id="3945319193631853098">Toca para completar la configuración</translation>
 <translation id="3945867833895287237">Conectándose al punto de acceso...</translation>
-<translation id="3950272133184491871">¿Cerrar sesión ahora?</translation>
 <translation id="3950820424414687140">Iniciar sesión</translation>
 <translation id="3953130726459169782">Aún no hay tareas completadas.</translation>
 <translation id="3957844511978444971">Toca Aceptar para confirmar tu selección de estas opciones de servicios de Google.</translation>
@@ -2397,7 +2396,6 @@ Para apagarlo, mantén pulsado de nuevo el botón de encendido del dispositivo.<
 <translation id="7850320739366109486">No molestar</translation>
 <translation id="7851039877802112575">Mover el enfoque a ventanas emergentes y cuadros de diálogo</translation>
 <translation id="7851768487828137624">Canary</translation>
-<translation id="7862292329216937261">Para usar el dispositivo como invitado, debes cerrar sesión y seleccionar Navegar como invitado en la parte inferior de la pantalla.</translation>
 <translation id="7866482334467279021">activado</translation>
 <translation id="7870790288828963061">No se ha encontrado ninguna aplicación de kiosco con una versión más reciente. No hay nada que actualizar. Extrae el dispositivo USB.</translation>
 <translation id="7872786842639831132">No</translation>
@@ -2540,7 +2538,7 @@ Para apagarlo, mantén pulsado de nuevo el botón de encendido del dispositivo.<
 <translation id="8237964652943995219">Siguiente escritorio: <ph name="DESK_NAME" />. Escritorio <ph name="DESK_INDEX" /> de <ph name="DESK_COUNT" />.</translation>
 <translation id="8238817965863339552">Con una visita rápida puedes aprender cómo funciona tu <ph name="PRODUCT_NAME" />. Empieza a usarlo en 5 pasos.</translation>
 <translation id="8239034820133090126">Activar escritorio de la derecha</translation>
-<translation id="8241650983304689286">Añadir pestaña a la nueva vista dividida</translation>
+<translation id="8241650983304689286">Añadir pestaña a nueva vista dividida</translation>
 <translation id="8244201515061746038">Botón de más información sobre la autocorrección. Accede a la página de configuración de la autocorrección. Pulsa Intro para activar el botón o Escape para salir.</translation>
 <translation id="8247060538831475781"><ph name="CONNECTION_STATUS" />, intensidad de la señal: <ph name="SIGNAL_STRENGTH" />, batería del teléfono: <ph name="BATTERY_STATUS" /></translation>
 <translation id="8249048954461686687">Carpeta OEM</translation>

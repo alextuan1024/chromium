@@ -38,6 +38,8 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_run_loop_timeout.h"
+#include "base/test/test_timeouts.h"
 #include "base/test/with_feature_override.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
@@ -97,6 +99,7 @@
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/prefetch_test_util.h"
 #include "content/public/test/preloading_test_util.h"
+#include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
@@ -3399,7 +3402,10 @@ class CacheStorageSideDataSizeChecker
 class ServiceWorkerV8CodeCacheForCacheStorageTest
     : public ServiceWorkerBrowserTest {
  public:
-  ServiceWorkerV8CodeCacheForCacheStorageTest() = default;
+  ServiceWorkerV8CodeCacheForCacheStorageTest() {
+    feature_list_.InitAndEnableFeature(
+        blink::features::kServiceWorkerCodeCache);
+  }
 
   ServiceWorkerV8CodeCacheForCacheStorageTest(
       const ServiceWorkerV8CodeCacheForCacheStorageTest&) = delete;
@@ -3474,6 +3480,8 @@ class ServiceWorkerV8CodeCacheForCacheStorageTest
         partition->GetCacheStorageControl(), embedded_test_server()->base_url(),
         std::string("cache_name"), embedded_test_server()->GetURL(kScriptUrl));
   }
+
+  base::test::ScopedFeatureList feature_list_;
 };
 
 const char ServiceWorkerV8CodeCacheForCacheStorageTest::kPageUrl[] =
@@ -4875,6 +4883,53 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerFencedFrameBrowserTest,
             EvalJs(fenced_frame, "backgroundFetchFromServiceWorker()"));
 }
 
+// Tests that a service worker registered from a nested iframe within a fenced
+// frame is correctly classified with the kFencedFrame ancestor frame type.
+// This is verified by ensuring the service worker is barred from performing
+// background fetch, which is restricted in fenced frames.
+IN_PROC_BROWSER_TEST_F(ServiceWorkerFencedFrameBrowserTest,
+                       AncestorFrameTypeIsStoredForNestedFrameInFencedFrame) {
+  WorkerRunningStatusObserver observer(public_context());
+
+  // Navigate the main frame to a page that can register service workers.
+  EXPECT_TRUE(NavigateToURL(shell(),
+                            embedded_test_server()->GetURL(
+                                "/service_worker/create_service_worker.html")));
+  const GURL kFencedFrameUrl =
+      embedded_test_server()->GetURL("/service_worker/fenced_frame.html");
+
+  // Create a fenced frame nested inside the main frame.
+  RenderFrameHost* fenced_frame = fenced_frame_test_helper().CreateFencedFrame(
+      shell()->web_contents()->GetPrimaryMainFrame(), kFencedFrameUrl);
+
+  // Inside the fenced frame, programmatically create a nested iframe.
+  EXPECT_TRUE(ExecJs(fenced_frame,
+                     "const iframe = document.createElement('iframe');"
+                     "iframe.src = '/service_worker/fenced_frame.html';"
+                     "document.body.appendChild(iframe);"));
+  WaitForLoadStop(shell()->web_contents());
+
+  // Retrieve the RenderFrameHost of the newly created nested iframe and
+  // verify it is indeed recognized as being nested within a fenced frame.
+  RenderFrameHost* nested_iframe = ChildFrameAt(fenced_frame, 0);
+  ASSERT_TRUE(nested_iframe);
+  EXPECT_TRUE(nested_iframe->IsNestedWithinFencedFrame());
+
+  // Register the service worker from the nested iframe context.
+  EXPECT_EQ("ok - service worker registered",
+            EvalJs(nested_iframe, "RegisterServiceWorker()"));
+  observer.WaitUntilRunning();
+
+  // Verify that the service worker is blocked from calling background
+  // fetch, confirming that the registration stored the kFencedFrame ancestor
+  // frame type for this worker.
+  constexpr char kExpectedError[] =
+      "Failed to execute 'fetch' on 'BackgroundFetchManager': "
+      "backgroundFetch is not allowed in fenced frames.";
+  EXPECT_EQ(kExpectedError,
+            EvalJs(nested_iframe, "backgroundFetchFromServiceWorker()"));
+}
+
 class ServiceWorkerFencedFrameProcessAllocationBrowserTest
     : public ServiceWorkerFencedFrameBrowserTest,
       public testing::WithParamInterface<bool> {
@@ -5674,11 +5729,30 @@ class ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest
   }
 
   int GetRequestCount(const std::string& relative_url) const {
+    base::AutoLock auto_lock(request_log_lock_);
     const auto& it = request_log_.find(relative_url);
     if (it == request_log_.end()) {
       return 0;
     }
     return it->second.size();
+  }
+
+  void WaitForRequest(const std::string& relative_url) {
+    base::RunLoop run_loop;
+    {
+      base::AutoLock auto_lock(request_log_lock_);
+      if (request_log_.contains(relative_url)) {
+        return;
+      }
+      request_quit_closures_[relative_url] = run_loop.QuitClosure();
+    }
+
+    base::test::ScopedRunLoopTimeout timeout(
+        FROM_HERE, TestTimeouts::action_timeout());
+    run_loop.Run();
+
+    base::AutoLock auto_lock(request_log_lock_);
+    request_quit_closures_.erase(relative_url);
   }
 
   net::EmbeddedTestServer* https_server() { return https_server_.get(); }
@@ -5783,7 +5857,19 @@ class ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest
         base::Unretained(this)));
   }
   void MonitorRequestHandler(const net::test_server::HttpRequest& request) {
-    request_log_[request.relative_url].push_back(request);
+    base::OnceClosure quit_closure;
+    {
+      base::AutoLock auto_lock(request_log_lock_);
+      request_log_[request.relative_url].push_back(request);
+      auto it = request_quit_closures_.find(request.relative_url);
+      if (it != request_quit_closures_.end()) {
+        quit_closure = std::move(it->second);
+        request_quit_closures_.erase(it);
+      }
+    }
+    if (quit_closure) {
+      std::move(quit_closure).Run();
+    }
   }
 
   scoped_refptr<ServiceWorkerVersion> RegisterRaceNetworkRequestServiceWorker(
@@ -5809,8 +5895,11 @@ class ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest
     return version;
   }
 
-  std::map<std::string, std::vector<net::test_server::HttpRequest>>
-      request_log_;
+  mutable base::Lock request_log_lock_;
+  std::map<std::string, std::vector<net::test_server::HttpRequest>> request_log_
+      GUARDED_BY(request_log_lock_);
+  std::map<std::string, base::OnceClosure> request_quit_closures_
+      GUARDED_BY(request_log_lock_);
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
 };
@@ -6699,18 +6788,9 @@ IN_PROC_BROWSER_TEST_P(
                    "response.status)"));
 }
 
-// TODO(crbug.com/40263529): Flaky on Fuchsia.
-// TODO(crbug.com/41490535): Flaky on Android.
-#if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_ANDROID)
-#define MAYBE_Subresource_FetchHandler_Wins_Redirect \
-  DISABLED_Subresource_FetchHandler_Wins_Redirect
-#else
-#define MAYBE_Subresource_FetchHandler_Wins_Redirect \
-  Subresource_FetchHandler_Wins_Redirect
-#endif
 IN_PROC_BROWSER_TEST_P(
     ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest,
-    MAYBE_Subresource_FetchHandler_Wins_Redirect) {
+    Subresource_FetchHandler_Wins_Redirect) {
   SetupAndRegisterServiceWorker();
   ReloadBlockUntilNavigationsComplete(shell(), 1);
 
@@ -6722,6 +6802,7 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ("[ServiceWorkerRaceNetworkRequest] Response from the fetch handler",
             EvalJs(GetPrimaryMainFrame(),
                    "fetch('" + path + "').then(response => response.text())"));
+  WaitForRequest(path);
   // The first request is deduped.
   EXPECT_EQ(1, GetRequestCount(path));
   // Fetch handler handles the second request, and respond with a cached
@@ -6956,6 +7037,19 @@ IN_PROC_BROWSER_TEST_P(ServiceWorkerAutoPreloadBrowserTest,
 
   ReloadBlockUntilNavigationsComplete(shell(), 1);
   EXPECT_EQ(2, GetRequestCount(relative_url));
+}
+
+IN_PROC_BROWSER_TEST_P(ServiceWorkerAutoPreloadBrowserTest,
+                       NetworkRequest_Wins_FetchHandler_Fallback_Redirect) {
+  SetupAndRegisterServiceWorker();
+  const std::string relative_url =
+      "/service_worker/mock_response?server_redirect&sw_slow&sw_fallback";
+  NavigateToURLBlockUntilNavigationsComplete(
+      shell(), embedded_test_server()->GetURL(relative_url), 1);
+
+  EXPECT_EQ("[ServiceWorkerRaceNetworkRequest] Response from the network",
+            GetInnerText());
+  EXPECT_EQ(1, GetRequestCount(relative_url));
 }
 
 IN_PROC_BROWSER_TEST_P(ServiceWorkerAutoPreloadBrowserTest,
@@ -7251,6 +7345,7 @@ class ServiceWorkerStaticRouterBrowserTest : public ServiceWorkerBrowserTest {
   ~ServiceWorkerStaticRouterBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "127.0.0.1");
     ServiceWorkerBrowserTest::SetUpOnMainThread();
     test_ukm_recorder_ = std::make_unique<ukm::TestAutoSetUkmRecorder>();
   }
@@ -7347,6 +7442,44 @@ class ServiceWorkerStaticRouterBrowserTest : public ServiceWorkerBrowserTest {
               c.put("/service_worker/cache_with_wrong_name", response.clone());
           });)"));
     }
+  }
+
+  void WaitUntilOpaqueResponseStoredInCache(const std::string& relative_url,
+                                            const GURL& cross_origin_url) {
+    StoragePartition* partition = shell()
+                                      ->web_contents()
+                                      ->GetBrowserContext()
+                                      ->GetDefaultStoragePartition();
+    int retries = 10;
+    while (retries-- > 0) {
+      if (CacheStorageDataChecker::Exist(
+              partition->GetCacheStorageControl(),
+              embedded_test_server()->base_url(), std::string("test"),
+              embedded_test_server()->GetURL(relative_url)) ==
+          CacheStorageDataChecker::Status::kExist) {
+        return;
+      }
+      EXPECT_EQ("opaque", EvalJs(GetPrimaryMainFrame(),
+                                 JsReplace(R"(
+          (async () => {
+            const iframe = document.createElement('iframe');
+            iframe.src = '/empty.html';
+            document.body.appendChild(iframe);
+            await new Promise(resolve => iframe.onload = resolve);
+            const res = await iframe.contentWindow.fetch($1, { mode:'no-cors'});
+            const type = res.type;
+            const c = await iframe.contentWindow.caches.open("test");
+            await c.put($2, res);
+            iframe.remove();
+            return type;
+          })();)",
+                                           cross_origin_url, relative_url)));
+    }
+    ASSERT_EQ(CacheStorageDataChecker::Exist(
+                  partition->GetCacheStorageControl(),
+                  embedded_test_server()->base_url(), std::string("test"),
+                  embedded_test_server()->GetURL(relative_url)),
+              CacheStorageDataChecker::Status::kExist);
   }
 
  private:
@@ -7681,6 +7814,9 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
 
   ukm::TestAutoSetUkmRecorder::EntryHasMetric(
       entry, MainResourceLoadCompletedUkmEntry::kCacheLookupTimeName);
+
+  histogram_tester().ExpectBucketCount(
+      "ServiceWorker.StaticRouter.MainResource.ValidResponse", true, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
@@ -7750,6 +7886,9 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
 
   ukm::TestAutoSetUkmRecorder::EntryHasMetric(
       entry, MainResourceLoadCompletedUkmEntry::kCacheLookupTimeName);
+
+  histogram_tester().ExpectBucketCount(
+      "ServiceWorker.StaticRouter.MainResource.ValidResponse", true, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
@@ -7865,6 +8004,69 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
+                       MainResourceCacheStorageOpaqueResponseBlocked) {
+  SetupAndRegisterServiceWorker(TestType::kNetwork);
+  WorkerRunningStatusObserver observer(public_context());
+  const std::string relative_url = "/service_worker/cache_opaque";
+  const GURL cross_origin_url =
+      embedded_test_server()->GetURL("b.com", "/service_worker/empty.html");
+  WaitUntilOpaqueResponseStoredInCache(relative_url, cross_origin_url);
+
+  // Main resource navigation with an opaque cached response should not succeed.
+  EXPECT_FALSE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL(relative_url)));
+
+  histogram_tester().ExpectBucketCount(
+      "ServiceWorker.StaticRouter.MainResource.ValidResponse", false, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
+                       IframeCacheStorageOpaqueResponseBlocked) {
+  SetupAndRegisterServiceWorker(TestType::kNetwork);
+  WorkerRunningStatusObserver observer(public_context());
+  const std::string relative_url = "/service_worker/cache_opaque";
+  const GURL cross_origin_url =
+      embedded_test_server()->GetURL("b.com", "/service_worker/empty.html");
+  WaitUntilOpaqueResponseStoredInCache(relative_url, cross_origin_url);
+
+  EXPECT_TRUE(ExecJs(GetPrimaryMainFrame(), R"(
+      const iframe = document.createElement('iframe');
+      iframe.id = 'test_iframe';
+      iframe.src = '/service_worker/cache_opaque';
+      document.body.appendChild(iframe);
+  )"));
+
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  histogram_tester().ExpectBucketCount(
+      "ServiceWorker.StaticRouter.MainResource.ValidResponse", false, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
+                       SubresourceCacheStorageOpaqueResponseBlocked) {
+  SetupAndRegisterServiceWorker(TestType::kNetwork);
+  ReloadBlockUntilNavigationsComplete(shell(), 1);
+  StopServiceWorker(version().get());
+
+  const std::string relative_url = "/service_worker/cache_opaque";
+  const GURL cross_origin_url =
+      embedded_test_server()->GetURL("b.com", "/service_worker/empty.html");
+  WaitUntilOpaqueResponseStoredInCache(relative_url, cross_origin_url);
+
+  EXPECT_EQ(
+      "TypeError: Failed to fetch",
+      EvalJs(GetPrimaryMainFrame(),
+             "fetch('" + relative_url +
+                 "').then(() => 'FETCH_SUCCEEDED').catch(e => e.name + ': ' + "
+                 "e.message)"));
+
+  FetchHistogramsFromChildProcesses();
+
+  histogram_tester().ExpectBucketCount(
+      "ServiceWorker.StaticRouter.Subresource.ValidResponse", false, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(ServiceWorkerStaticRouterBrowserTest,
                        FetchEventShouldBeUsedWithFetchHandler) {
   StartServerAndNavigateToSetup();
 
@@ -7961,6 +8163,26 @@ class ServiceWorkerSyntheticResponseBrowserTest
   static constexpr char kHostname[] = "synthetic-response.test";
   static constexpr char kTargetPath[] =
       "/service_worker/synthetic_response?query=";
+  static constexpr std::string_view kWorkerFetchScript = R"(
+    new Promise((resolve, reject) => {
+      const script = `
+        fetch(location.origin + '/service_worker/empty.html')
+          .then(r => r.status)
+          .then(status => postMessage({status}))
+          .catch(err => postMessage({error: err.toString()}));
+      `;
+      const blob = new Blob([script], {type: 'application/javascript'});
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = (e) => {
+        if (e.data.status) {
+          resolve(e.data.status);
+        } else {
+          reject(e.data.error);
+        }
+      };
+      worker.onerror = (err) => reject(err.message);
+    })
+  )";
 
   ServiceWorkerSyntheticResponseBrowserTest()
       : allowed_url_(GURL(base::StrCat({"https://", kHostname, kTargetPath}))) {
@@ -7975,7 +8197,12 @@ class ServiceWorkerSyntheticResponseBrowserTest
             IsUnnecessaryBufferingSkipped() ? "true" : "false"}}},
          {network::features::kURLLoaderUseProvidedResponseBodyStream, {}},
          {network::features::kServiceWorkerSyntheticResponseHeaderCheck, {}}},
-        {});
+        {features::kPrerender2FallbackPrefetchSpecRules,
+         features::kPrefetchPrerenderIntegration});
+    prerender_helper_ = std::make_unique<content::test::PrerenderTestHelper>(
+        base::BindRepeating(
+            &ServiceWorkerSyntheticResponseBrowserTest::web_contents,
+            base::Unretained(this)));
   }
 
   ~ServiceWorkerSyntheticResponseBrowserTest() override = default;
@@ -7988,6 +8215,7 @@ class ServiceWorkerSyntheticResponseBrowserTest
     RegisterRequestHandlerForSlowResponsePage(embedded_test_server());
     https_server_->ServeFilesFromSourceDirectory(GetTestDataFilePath());
     RegisterRequestHandlerForSlowResponsePage(https_server());
+    prerender_helper_->RegisterServerRequestMonitor(https_server());
     ASSERT_TRUE(https_server_->InitializeAndListen());
     https_server_->StartAcceptingConnections();
     ServiceWorkerBrowserTest::SetUpOnMainThread();
@@ -8021,6 +8249,10 @@ class ServiceWorkerSyntheticResponseBrowserTest
 
   EvalJsResult GetInnerText() {
     return EvalJs(GetPrimaryMainFrame(), "document.body.innerText;");
+  }
+
+  content::test::PrerenderTestHelper* prerender_helper() {
+    return prerender_helper_.get();
   }
 
  protected:
@@ -8074,14 +8306,22 @@ class ServiceWorkerSyntheticResponseBrowserTest
           const bool is_slow =
               request.GetURL().GetQuery().contains("server_slow");
 
-          std::string headers =
-              "HTTP/1.1 200 OK\r\n"
-              "Connection: close\r\n"
-              "Content-Type: text/html\r\n"
-              "Service-Worker-Synthetic-Response: ?1\r\n"
-              "Content-Security-Policy: script-src 'unsafe-inline'\r\n"
-              "Date: Fri, 27 Jun 2025 10:50:00 JST\r\n"
-              "Test-Duplicated-Header: x\r\n";
+          std::string csp = "script-src 'unsafe-inline'";
+          if (request.GetURL().GetQuery().contains("allow_worker")) {
+            csp += "; worker-src 'self' blob:";
+          }
+
+          std::string headers = base::StrCat({
+              "HTTP/1.1 200 OK\r\n",
+              "Connection: close\r\n",
+              "Content-Type: text/html\r\n",
+              "Service-Worker-Synthetic-Response: ?1\r\n",
+              "Content-Security-Policy: ",
+              csp,
+              "\r\n",
+              "Date: Fri, 27 Jun 2025 10:50:00 JST\r\n",
+              "Test-Duplicated-Header: x\r\n",
+          });
 
           if (request.GetURL().GetQuery().contains(
                   "header_mismatch_ignored_header")) {
@@ -8110,6 +8350,13 @@ class ServiceWorkerSyntheticResponseBrowserTest
                 "content=\"script-src 'nonce-jDHFShrQe4XmmH47DWyhaQ'\" />"
                 "<script nonce=\"jDHFShrQe4XmmH47DWyhaQ\">"
                 "window.is_inline_script_executed=true;</script>";
+          } else if (request.GetURL().GetQuery().contains("allow_worker")) {
+            content =
+                "<meta http-equiv=\"Content-Security-Policy\" "
+                "content=\"script-src 'unsafe-inline'; worker-src 'self' "
+                "blob:; "
+                "connect-src 'self'\" />"
+                "[SyntheticResponse] Response from the network";
           } else {
             content = is_slow ? "[SyntheticResponse] "
                                 "Slow response from the network"
@@ -8134,6 +8381,7 @@ class ServiceWorkerSyntheticResponseBrowserTest
   GURL allowed_url_;
   ContentMockCertVerifier mock_cert_verifier_;
   base::HistogramTester histogram_tester_;
+  std::unique_ptr<content::test::PrerenderTestHelper> prerender_helper_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -8196,6 +8444,153 @@ IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,
   EXPECT_EQ(true, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
                          "!!navigator.serviceWorker.controller"));
   EXPECT_EQ("[SyntheticResponse] Response from the network", GetInnerText());
+}
+
+IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,
+                       SubresourceAndWorkerSubresourceBypassServiceWorker) {
+  SetUpMockContentBrowserClient();
+  EXPECT_TRUE(NavigateToURL(
+      shell(),
+      https_server()->GetURL(kHostname,
+                             base::StrCat({kTargetPath, "foo&allow_worker"}))));
+  EXPECT_EQ(true, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                         "!!navigator.serviceWorker.controller"));
+
+  // Main frame subresource fetch should succeed and bypass Service Worker.
+  EXPECT_EQ(200,
+            EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                   "fetch('/service_worker/empty.html').then(r => r.status)"));
+
+  // Dedicated Worker subresource fetch should also succeed and bypass Service
+  // Worker.
+  EXPECT_EQ(200, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                        kWorkerFetchScript));
+
+  FetchHistogramsFromChildProcesses();
+  histogram_tester().ExpectTotalCount("ServiceWorker.Subresource.Handled.Type2",
+                                      0);
+  histogram_tester().ExpectTotalCount(
+      "ServiceWorker.Subresource.Fallbacked.Type2", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,
+                       SubresourceBypassServiceWorker_OnReload) {
+  SetUpMockContentBrowserClient();
+  const GURL target_url = https_server()->GetURL(
+      kHostname, base::StrCat({kTargetPath, "foo&allow_worker"}));
+  EXPECT_TRUE(NavigateToURL(shell(), target_url));
+  EXPECT_EQ(true, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                         "!!navigator.serviceWorker.controller"));
+
+  // Reload the page.
+  TestNavigationObserver reload_observer(web_contents());
+  shell()->Reload();
+  reload_observer.Wait();
+  EXPECT_TRUE(reload_observer.last_navigation_succeeded());
+
+  // Main frame subresource fetch should succeed and bypass Service Worker.
+  EXPECT_EQ(200,
+            EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                   "fetch('/service_worker/empty.html').then(r => r.status)"));
+
+  // Dedicated Worker subresource fetch should also succeed and bypass Service
+  // Worker.
+  EXPECT_EQ(200, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                        kWorkerFetchScript));
+
+  FetchHistogramsFromChildProcesses();
+  histogram_tester().ExpectTotalCount("ServiceWorker.Subresource.Handled.Type2",
+                                      0);
+  histogram_tester().ExpectTotalCount(
+      "ServiceWorker.Subresource.Fallbacked.Type2", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,
+                       SubresourceBypassServiceWorker_OnPrefetch) {
+  SetUpMockContentBrowserClient();
+  const GURL target_url = https_server()->GetURL(
+      kHostname, base::StrCat({kTargetPath, "foo&allow_worker"}));
+  EXPECT_TRUE(NavigateToURL(shell(), target_url));
+  EXPECT_EQ(true, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                         "!!navigator.serviceWorker.controller"));
+
+  // Subresource prefetch via <link rel="prefetch"> should succeed and bypass
+  // Service Worker.
+  const std::string_view prefetch_script = R"(
+    new Promise((resolve) => {
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = '/service_worker/empty.html';
+      link.onload = () => resolve('loaded');
+      link.onerror = () => resolve('error');
+      document.head.appendChild(link);
+    })
+  )";
+  EXPECT_EQ("loaded", EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                             prefetch_script));
+
+  // Regular subresource fetch should also succeed and bypass Service Worker.
+  EXPECT_EQ(200,
+            EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                   "fetch('/service_worker/empty.html').then(r => r.status)"));
+
+  // Dedicated Worker subresource fetch should also succeed and bypass Service
+  // Worker.
+  EXPECT_EQ(200, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                        kWorkerFetchScript));
+
+  FetchHistogramsFromChildProcesses();
+  histogram_tester().ExpectTotalCount("ServiceWorker.Subresource.Handled.Type2",
+                                      0);
+  histogram_tester().ExpectTotalCount(
+      "ServiceWorker.Subresource.Fallbacked.Type2", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,
+                       SubresourceBypassServiceWorker_OnPrerender) {
+  SetUpMockContentBrowserClient();
+
+  // Navigate to an initial non-synthetic-response page.
+  const GURL initial_url =
+      https_server()->GetURL(kHostname, "/service_worker/empty.html");
+  EXPECT_TRUE(NavigateToURL(shell(), initial_url));
+
+  // Prerender the synthetic response target URL.
+  const GURL target_url = https_server()->GetURL(
+      kHostname, base::StrCat({kTargetPath, "foo&allow_worker"}));
+  PrerenderHostId host_id = prerender_helper()->AddPrerender(target_url);
+  ASSERT_TRUE(host_id);
+  RenderFrameHost* prerender_rfh =
+      prerender_helper()->GetPrerenderedMainFrameHost(host_id);
+  ASSERT_TRUE(prerender_rfh);
+
+  // Subresource fetch in the prerendered frame before activation should
+  // succeed and bypass Service Worker.
+  EXPECT_EQ(200,
+            EvalJs(prerender_rfh,
+                   "fetch('/service_worker/empty.html').then(r => r.status)"));
+
+  // Activate the prerendered page.
+  prerender_helper()->NavigatePrimaryPage(target_url);
+  EXPECT_EQ(true, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                         "!!navigator.serviceWorker.controller"));
+
+  // Subresource fetch after activation should also succeed and bypass Service
+  // Worker.
+  EXPECT_EQ(200,
+            EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                   "fetch('/service_worker/empty.html').then(r => r.status)"));
+
+  // Dedicated Worker subresource fetch after activation should also succeed and
+  // bypass Service Worker.
+  EXPECT_EQ(200, EvalJs(shell()->web_contents()->GetPrimaryMainFrame(),
+                        kWorkerFetchScript));
+
+  FetchHistogramsFromChildProcesses();
+  histogram_tester().ExpectTotalCount("ServiceWorker.Subresource.Handled.Type2",
+                                      0);
+  histogram_tester().ExpectTotalCount(
+      "ServiceWorker.Subresource.Fallbacked.Type2", 0);
 }
 
 IN_PROC_BROWSER_TEST_P(ServiceWorkerSyntheticResponseBrowserTest,

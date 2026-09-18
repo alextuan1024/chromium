@@ -55,7 +55,6 @@ class PostMessageOptions;
 class ScriptState;
 class SourceLocation;
 class WebServiceWorkerProvider;
-class WorkerClassicScriptLoader;
 struct GlobalScopeCreationParams;
 
 class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
@@ -172,6 +171,13 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
     return token_;
   }
 
+  // Returns the initiator URL for the worker script's ResourceTiming entry.
+  // Used only by the ResourceTimingInitiator feature; returns an empty URL when
+  // the feature is disabled.
+  const KURL& WorkerScriptInitiatorUrl() const {
+    return worker_script_initiator_url_;
+  }
+
   // Returns the ExecutionContextToken that uniquely identifies the parent
   // context that created this dedicated worker.
   std::optional<ExecutionContextToken> GetParentExecutionContextToken()
@@ -189,6 +195,7 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
     DocumentPolicy::DocumentPolicyBundle creator_document_policy;
     bool parent_is_isolated_context = false;
     bool direct_sockets_force_enabled_in_parent = false;
+    KURL dedicated_worker_script_initiator_url;
   };
 
   static ParsedCreationParams ParseCreationParams(
@@ -211,11 +218,6 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
           back_forward_cache_controller_host,
       base::TimeTicks dedicated_worker_start_time);
-
-  void DidReceiveResponseForClassicScript(
-      WorkerClassicScriptLoader* classic_script_loader);
-  void DidFetchClassicScript(WorkerClassicScriptLoader* classic_script_loader,
-                             const v8_inspector::V8StackTraceId& stack_id);
 
   DedicatedWorkerObjectProxy& WorkerObjectProxy() const;
 
@@ -245,11 +247,11 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
   // blob:, data:, filesystem:) to inherit the document policy from the creator.
   DocumentPolicy::DocumentPolicyBundle creator_document_policy_;
 
-  // The timestamp taken when FetchAndRunClassicScript() is called.
-  base::TimeTicks fetch_classic_script_start_time_;
-
   // The timestamp taken when DedicatedWorker::Start() was called.
   base::TimeTicks dedicated_worker_start_time_;
+
+  // Initiator URL for this worker's script ResourceTiming entry.
+  KURL worker_script_initiator_url_;
 };
 
 template <>

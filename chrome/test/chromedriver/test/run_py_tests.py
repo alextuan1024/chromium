@@ -2471,7 +2471,18 @@ class ChromeDriverTest(ChromeDriverBaseTestWithWebServer):
     self.assertEqual('', value)
 
   def testSendKeysToInputFileElement(self):
-    file_name = os.path.join(_TEST_DATA_DIR, 'anchor_download_test.png')
+    host_file_name = os.path.join(_TEST_DATA_DIR, 'anchor_download_test.png')
+    file_name = host_file_name
+    if _ANDROID_PACKAGE_KEY:
+      device_dir = '/data/local/tmp/chromedriver_file_input_%d' % os.getpid()
+      self._device.RemovePath(device_dir, force=True, recursive=True)
+      self._device.RunShellCommand(
+          ['mkdir', '-p', device_dir], check_return=True)
+      self.addCleanup(
+          self._device.RemovePath, device_dir, force=True, recursive=True)
+      file_name = device_dir + '/anchor_download_test.png'
+      self._device.PushChangedFiles([(host_file_name, file_name)])
+
     self._driver.Load(ChromeDriverTest.GetHttpUrlForFile(
         '/chromedriver/file_input.html'))
     elem = self._driver.FindElement('css selector', '#id_file')
@@ -2480,9 +2491,10 @@ class ChromeDriverTest(ChromeDriverBaseTestWithWebServer):
         'var input = document.getElementById("id_file").value;'
         'return input;')
     self.assertEqual('C:\\fakepath\\anchor_download_test.png', text)
+
     if not _ANDROID_PACKAGE_KEY:
       self.assertRaises(chromedriver.InvalidArgument,
-                                  elem.SendKeys, "/blah/blah/blah")
+                        elem.SendKeys, "/blah/blah/blah")
 
   def testSendKeysToNonTypeableInputElement(self):
     self._driver.Load("about:blank")
@@ -6212,83 +6224,6 @@ class ChromeDriverTestLegacy(ChromeDriverBaseTestWithWebServer):
     events = self._driver.FindElement('css selector', '#events')
     self.assertEqual('events: touchstart touchend', events.GetText())
 
-class ChromeDriverFencedFrame(ChromeDriverBaseTestWithWebServer):
-  def setUp(self):
-    super().setUp()
-    self._https_server.SetDataForPath('/main.html', bytes("""
-      <!DOCTYPE html>
-        <html>
-          <body>
-            <fencedframe></fencedframe>
-            <script>
-              const url = new URL("fencedframe.html", location.href);
-              document.querySelector("fencedframe").config =
-                  new FencedFrameConfig(url);
-            </script>
-          </body>
-        </html>
-      """, 'utf-8'))
-
-    self._https_server.SetDataForPath('/nesting.html', bytes("""
-      <!DOCTYPE html>
-        <html>
-          <body>
-            <iframe src="/main.html"></iframe>
-          </body>
-        </html>
-    """, 'utf-8'))
-
-    def respondWithFencedFrameContents(request):
-      return {'Supports-Loading-Mode': 'fenced-frame'}, bytes("""
-        <!DOCTYPE html>
-        <html>
-          <body>
-            <button></button>
-          </body>
-        </html>""", 'utf-8')
-    self._https_server.SetCallbackForPath('/fencedframe.html',
-                                          respondWithFencedFrameContents)
-
-    self._driver = self.CreateDriver(
-        accept_insecure_certs = True,
-        chrome_switches=['--site-per-process',
-          '--enable-features=FencedFrames,PrivacySandboxAdsAPIsOverride,'
-          'FencedFramesAPIChanges,FencedFramesDefaultMode,'
-          'FencedFramesEnforceFocus,SharedStorageAPI'])
-
-  @staticmethod
-  def GetHttpsUrlForFile(file_path):
-    return ChromeDriverFencedFrame._https_server.GetUrl() + file_path
-
-  def tearDown(self):
-    super().tearDown()
-    self._https_server.SetDataForPath('/main.html', None)
-    self._https_server.SetDataForPath('/nesting.html', None)
-    self._https_server.SetCallbackForPath('/fencedframe.html', None)
-
-  def testCanSwitchToFencedFrame(self):
-    self._driver.Load(self.GetHttpsUrlForFile('/main.html'))
-    self._driver.SetTimeouts({'implicit': 2000})
-    fencedframe = self._driver.FindElement('tag name', 'fencedframe')
-    self._driver.SwitchToFrame(fencedframe)
-    button = self._driver.FindElement('tag name', 'button')
-    self.assertIsNotNone(button)
-
-  def testAppendEmptyFencedFrame(self):
-    self._driver.Load(self.GetHttpsUrlForFile('/chromedriver/empty.html'))
-    self._driver.ExecuteScript(
-        'document.body.appendChild(document.createElement("fencedframe"));')
-    fencedframe = self._driver.FindElement('tag name', 'fencedframe')
-    self.assertIsNotNone(fencedframe)
-    self._driver.SwitchToFrame(fencedframe)
-
-  def testFencedFrameInsideIframe(self):
-    self._driver.Load(self.GetHttpsUrlForFile('/nesting.html'))
-    self._driver.SwitchToFrameByIndex(0)
-    fencedframe = self._driver.FindElement('tag name', 'fencedframe')
-    self.assertIsNotNone(fencedframe)
-    self._driver.SwitchToFrame(fencedframe)
-
 
 class ChromeDriverSiteIsolation(ChromeDriverBaseTestWithWebServer):
   """Tests for ChromeDriver with the new Site Isolation Chrome feature.
@@ -6886,6 +6821,76 @@ class ChromeDriverPageLoadTimeoutTest(ChromeDriverBaseTestWithWebServer):
 
 class ChromeDriverAndroidTest(ChromeDriverBaseTestWithWebServer):
   """End to end tests for Android-specific tests."""
+
+  def testSendKeysToInputFileElementRejectsMalformedPaths(self):
+    self._driver = self.CreateDriver()
+    self._driver.Load(self.GetHttpUrlForFile('/chromedriver/file_input.html'))
+    elem = self._driver.FindElement('css selector', '#id_file')
+    self._driver.ExecuteScript(
+        'document.getElementById("id_file").multiple = true;')
+
+    for malformed_path in (
+        'data/local/tmp/file.txt',
+        '/data/local/tmp/../file.txt'):
+      with self.subTest(path=malformed_path):
+        self.assertRaises(chromedriver.InvalidArgument,
+                          elem.SendKeys, malformed_path)
+        self.assertEqual('', elem.GetProperty('value'))
+        self.assertEqual(0, self._driver.ExecuteScript(
+            'return document.getElementById("id_file").files.length;'))
+
+    # Reject the whole request without assigning the valid first path.
+    valid_absolute_path = '/data/local/tmp/file.txt'
+    malformed_path = '/data/local/tmp/../file.txt'
+    self.assertRaises(chromedriver.InvalidArgument, elem.SendKeys,
+                      valid_absolute_path + '\n' + malformed_path)
+    self.assertEqual('', elem.GetProperty('value'))
+    self.assertEqual(0, self._driver.ExecuteScript(
+        'return document.getElementById("id_file").files.length;'))
+
+  def testSendKeysToInputFileElementMultipleDeviceLocalFiles(self):
+    self._driver = self.CreateDriver()
+    host_file = os.path.join(_TEST_DATA_DIR, 'anchor_download_test.png')
+    with open(host_file, 'rb') as file:
+      expected_bytes = list(file.read())
+    device_dir = ('/data/local/tmp/chromedriver_file_input_multiple_%d' %
+                  os.getpid())
+    self._device.RemovePath(device_dir, force=True, recursive=True)
+    self._device.RunShellCommand(
+        ['mkdir', '-p', device_dir], check_return=True)
+    self.addCleanup(
+        self._device.RemovePath, device_dir, force=True, recursive=True)
+    first_file = device_dir + '/first.png'
+    second_file = device_dir + '/second.png'
+    self._device.PushChangedFiles([
+        (host_file, first_file),
+        (host_file, second_file),
+    ])
+
+    self._driver.Load(self.GetHttpUrlForFile('/chromedriver/file_input.html'))
+    elem = self._driver.FindElement('css selector', '#id_file')
+    self._driver.ExecuteScript(
+        'document.getElementById("id_file").multiple = true;')
+
+    elem.SendKeys(first_file + '\n' + second_file)
+    files = self._driver.ExecuteAsyncScript('''
+        const resolve = arguments[0];
+        const files = Array.from(
+            document.getElementById('id_file').files);
+        Promise.all(files.map(async file => ({
+          name: file.name,
+          size: file.size,
+          bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+        }))).then(resolve);
+    ''')
+    expected_file = {
+      'size': len(expected_bytes),
+      'bytes': expected_bytes,
+    }
+    self.assertEqual([
+      dict(expected_file, name='first.png'),
+      dict(expected_file, name='second.png'),
+    ], files)
 
   def testLatestAndroidAppInstalled(self):
     if ('stable' not in _ANDROID_PACKAGE_KEY and

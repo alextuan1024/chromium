@@ -254,10 +254,7 @@ void ReadAloudService::OnArticleReady(
   viewer_handle_.reset();
 
   if (!distillation_succeeded) {
-    Stop();
-    if (delegate_) {
-      delegate_->OnPlaybackError("Distillation failed");
-    }
+    HandlePlaybackError("Distillation failed");
     return;
   }
 
@@ -288,9 +285,12 @@ void ReadAloudService::OnArticleReady(
   std::vector<read_aloud::mojom::TextSegmentPtr> segments;
   segments.reserve(article_proto->pages_size());
   for (int i = 0; i < article_proto->pages_size(); ++i) {
+    const dom_distiller::DistilledPageProto& page = article_proto->pages(i);
     auto segment = read_aloud::mojom::TextSegment::New();
     segment->segment_index = static_cast<uint32_t>(i);
-    segment->text = base::UTF8ToUTF16(article_proto->pages(i).html());
+    if (page.has_text_content()) {
+      segment->text = base::UTF8ToUTF16(page.text_content());
+    }
     segments.push_back(std::move(segment));
   }
   utility_player_->SetTextContent(std::move(segments));
@@ -411,10 +411,7 @@ void ReadAloudService::OnAudioStreamCreated(
     return;
   }
   if (!stream_remote.is_valid() || !data_pipe) {
-    Stop();
-    if (delegate_) {
-      delegate_->OnPlaybackError("Failed to initialize audio output stream");
-    }
+    HandlePlaybackError("Failed to initialize audio output stream");
     return;
   }
 
@@ -423,9 +420,13 @@ void ReadAloudService::OnAudioStreamCreated(
 }
 
 void ReadAloudService::OnUtilityDisconnect() {
+  HandlePlaybackError("Utility process disconnected");
+}
+
+void ReadAloudService::HandlePlaybackError(std::string_view error_message) {
   Stop();
   if (delegate_) {
-    delegate_->OnPlaybackError("Utility process disconnected");
+    delegate_->OnPlaybackError(error_message);
   }
 }
 

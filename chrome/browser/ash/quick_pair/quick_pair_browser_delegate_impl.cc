@@ -11,7 +11,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/services/quick_pair/public/mojom/quick_pair_service.mojom.h"
@@ -43,15 +42,6 @@ QuickPairBrowserDelegateImpl::GetURLLoaderFactory() {
   }
 
   return profile->GetURLLoaderFactory();
-}
-
-signin::IdentityManager* QuickPairBrowserDelegateImpl::GetIdentityManager() {
-  Profile* profile = GetActiveProfile();
-  if (!profile) {
-    return nullptr;
-  }
-
-  return IdentityManagerFactory::GetForProfile(profile);
 }
 
 std::unique_ptr<image_fetcher::ImageFetcher>
@@ -117,7 +107,7 @@ Profile* QuickPairBrowserDelegateImpl::GetActiveProfile() {
 
   user_manager::User* active_user =
       user_manager::UserManager::Get()->GetActiveUser();
-  DCHECK(active_user);
+  CHECK(active_user, base::NotFatalUntil::M160);
 
   return Profile::FromBrowserContext(
       BrowserContextHelper::Get()->GetBrowserContextByUser(active_user));

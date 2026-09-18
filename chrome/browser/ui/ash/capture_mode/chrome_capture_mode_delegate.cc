@@ -89,6 +89,7 @@
 #include "services/network/public/cpp/header_util.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
@@ -795,6 +796,7 @@ void ChromeCaptureModeDelegate::DetectTextInImage(
 void ChromeCaptureModeDelegate::SendLensWebRegionSearch(
     const gfx::Image& image,
     const bool is_standalone_session,
+    const AccountId& account_id,
     ash::OnSearchUrlFetchedCallback search_callback,
     ash::OnTextDetectionComplete text_callback,
     ash::OnLensErrorCallback error_callback) {
@@ -805,15 +807,7 @@ void ChromeCaptureModeDelegate::SendLensWebRegionSearch(
   // Increment the `lens_request_id_` to represent a new request id.
   ++lens_request_id_;
 
-  // TODO: crbug.com/546860700 - This function should take AccountId from
-  // callers instead of looking up the active user here, matching
-  // GetPrimaryAccountAccessToken(). That requires plumbing an AccountId
-  // through the ash::CaptureModeDelegate::SendLensWebRegionSearch() virtual
-  // interface and its callers.
-  const user_manager::User* const active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(active_user);
-  lens_request_account_id_ = active_user->GetAccountId();
+  lens_request_account_id_ = account_id;
 
   GetPrimaryAccountAccessToken(
       lens_request_account_id_,

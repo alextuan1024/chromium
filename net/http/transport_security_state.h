@@ -30,6 +30,7 @@
 #include "net/base/network_anonymization_key.h"
 #include "net/cert/require_ct_delegate.h"
 #include "net/cert/signed_certificate_timestamp_and_status.h"
+#include "net/http/transport_security_state_pins_source.h"
 #include "net/http/transport_security_state_source.h"
 #include "net/log/net_log_with_source.h"
 #include "net/net_buildflags.h"
@@ -45,6 +46,8 @@ class X509Certificate;
 
 void NET_EXPORT_PRIVATE SetTransportSecurityStateSourceForTesting(
     const TransportSecurityStateSource* source);
+void NET_EXPORT_PRIVATE SetTransportSecurityStatePinsSourceForTesting(
+    const TransportSecurityStatePinsSource* source);
 
 // Whether an insecure connection should be upgraded to use SSL. For metrics
 // this includes whether the decision came from static or dynamic state.
@@ -321,7 +324,7 @@ class NET_EXPORT TransportSecurityState {
                      const std::vector<PinSetInfo>& host_pins,
                      base::Time update_time);
 
-  // Clears all dynamic data (e.g. HSTS and HPKP data).
+  // Clears all dynamic HSTS data.
   //
   // Does NOT persist changes using the Delegate, as this function is only
   // used to clear any dynamic data prior to re-loading it from a file.
@@ -336,8 +339,8 @@ class NET_EXPORT TransportSecurityState {
   void AddOrUpdateEnabledSTSHosts(const HashedHost& hashed_host,
                                   const STSState& state);
 
-  // Deletes all dynamic data (e.g. HSTS or HPKP data) created between a time
-  // period  [|start_time|, |end_time|).
+  // Deletes all dynamic HSTS data created between a time period
+  // [|start_time|, |end_time|).
   //
   // If any entries are deleted, the new state will be persisted through
   // the Delegate (if any). Calls |callback| when data is persisted to disk.
@@ -345,10 +348,9 @@ class NET_EXPORT TransportSecurityState {
                                    base::Time end_time,
                                    base::OnceClosure callback);
 
-  // Deletes any dynamic data stored for |host| (e.g. HSTS or HPKP data).
-  // If |host| doesn't have an exact entry then no action is taken. Does
-  // not delete static (i.e. preloaded) data.  Returns true iff an entry
-  // was deleted.
+  // Deletes any dynamic HSTS data stored for |host|. If |host| doesn't have an
+  // exact entry then no action is taken. Does not delete static (i.e.
+  // preloaded) data.  Returns true iff an entry was deleted.
   //
   // If an entry is deleted, the new state will be persisted through
   // the Delegate (if any).

@@ -308,7 +308,6 @@ enum class CrashRepHandlingOutcome {
 constexpr auto kUpdateLoadStatesInterval = base::Milliseconds(250);
 
 using LifecycleState = RenderFrameHost::LifecycleState;
-using LifecycleStateImpl = RenderFrameHostImpl::LifecycleStateImpl;
 
 base::LazyInstance<base::RepeatingCallbackList<void(WebContents*)>>::
     DestructorAtExit g_created_callbacks = LAZY_INSTANCE_INITIALIZER;
@@ -416,11 +415,22 @@ bool AreValidRegisterProtocolHandlerArguments(
     return false;
   }
   url::Origin url_origin = url::Origin::Create(url);
-  if (url_origin.opaque()) {
+  // Opaque handler URLs (e.g. data:, blob:) and opaque requesting origins (e.g.
+  // sandboxed iframes) are not allowed to register protocol handlers. In the
+  // case of web pages, the requesting origin and target origin have to be the
+  // same; however, this is not true for other contexts (e.g. extensions).
+  // Checking both `origin.opaque()` ensures that opaque origins cannot register
+  // handlers.
+  if (url_origin.opaque() || origin.opaque()) {
     return false;
   }
-  if (security_level < blink::ProtocolHandlerSecurityLevel::kUntrustedOrigins &&
-      !origin.IsSameOriginWith(url)) {
+  // At elevated levels the same-origin requirement may be relaxed only for
+  // HTTP(S) handler URLs; non-HTTP(S) handler URLs (e.g. extension or
+  // isolated-app schemes) must always be same-origin with the requester.
+  if (!origin.IsSameOriginWith(url) &&
+      (security_level <
+           blink::ProtocolHandlerSecurityLevel::kUntrustedOrigins ||
+       !url.SchemeIsHTTPOrHTTPS())) {
     return false;
   }
 
@@ -737,9 +747,16 @@ class JavaScriptDialogDismissNotifier {
       const JavaScriptDialogDismissNotifier&) = delete;
 
   ~JavaScriptDialogDismissNotifier() {
-    for (auto& callback : callbacks_) {
-      std::move(callback).Run();
-    }
+    // Post a task to notify all clients, since callbacks could destroy an
+    // object on the stack.
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](std::vector<base::OnceClosure> callbacks) {
+                         for (auto& callback : callbacks) {
+                           std::move(callback).Run();
+                         }
+                       },
+                       std::move(callbacks_)));
   }
 
   void NotifyOnDismiss(base::OnceClosure callback) {
@@ -1850,7 +1867,7 @@ bool WebContentsImpl::IsPrerenderedFrame(FrameTreeNodeId frame_tree_node_id) {
   if (frame_tree_node->GetParentOrOuterDocumentOrEmbedder()) {
     return frame_tree_node->GetParentOrOuterDocumentOrEmbedder()
                ->lifecycle_state() ==
-           RenderFrameHostImpl::LifecycleStateImpl::kPrerendering;
+           RenderFrameHostLifecycleStateImpl::kPrerendering;
   }
   return frame_tree_node->GetFrameType() == FrameType::kPrerenderMainFrame;
 }
@@ -2266,7 +2283,8 @@ void WebContentsImpl::DidCapturedSurfaceControl() {
 }
 
 void WebContentsImpl::OnFedCmFederatedLogin(
-    webid::FederatedLoginResult result) {
+    webid::FederatedLoginResult result,
+    const std::optional<url::Origin>& idp_origin) {
   observers_.NotifyObservers(&WebContentsObserver::OnFedCmFederatedLogin,
                              result == webid::FederatedLoginResult::kSuccess);
 
@@ -2278,7 +2296,10 @@ void WebContentsImpl::OnFedCmFederatedLogin(
 
   webid::FederatedEmbedderLoginRequest* embedder_login_request =
       webid::FederatedEmbedderLoginRequest::Get(this);
-  if (embedder_login_request) {
+  // Continue waiting if the resolved IdP isn't the same IdP from the embedder
+  // request.
+  if (embedder_login_request && idp_origin &&
+      *idp_origin == embedder_login_request->idp_origin()) {
     embedder_login_request->OnFederatedResultReceived(result);
   }
 }
@@ -3362,7 +3383,7 @@ void WebContentsImpl::AttachInnerWebContentsImpl(
 
   // Inner WebContents aren't supported with prerendering. See
   // https://crbug.com/40191159 for details.
-  CHECK_NE(RenderFrameHostImpl::LifecycleStateImpl::kPrerendering,
+  CHECK_NE(RenderFrameHostLifecycleStateImpl::kPrerendering,
            render_frame_host_impl->lifecycle_state());
 
   RenderFrameHostManager* inner_render_manager =
@@ -3396,7 +3417,7 @@ void WebContentsImpl::AttachInnerWebContentsImpl(
     if (RenderWidgetHostViewBase* prev_rwhv =
             static_cast<RenderWidgetHostViewBase*>(rfh->GetView())) {
       if (!prev_rwhv->IsRenderWidgetHostViewChildFrame()) {
-        prev_rwhv->Destroy();
+        prev_rwhv->DestroyOrDefer();
       }
     }
 
@@ -3508,7 +3529,7 @@ void WebContentsImpl::DetachUnownedInnerWebContents(
       if (rvh->GetWidget()->GetView()->IsRenderWidgetHostViewChildFrame()) {
         list_of_rvh_with_rwhv.push_back(rvh);
       }
-      rvh->GetWidget()->GetView()->Destroy();
+      rvh->GetWidget()->GetView()->DestroyOrDefer();
     }
   }
 
@@ -3579,7 +3600,7 @@ void WebContentsImpl::SetSurfaceEmbedConnector(
     if (RenderWidgetHostViewBase* prev_rwhv =
             static_cast<RenderWidgetHostViewBase*>(rfh->GetView())) {
       if (!prev_rwhv->IsRenderWidgetHostViewChildFrame()) {
-        prev_rwhv->Destroy();
+        prev_rwhv->DestroyOrDefer();
       }
     }
   }
@@ -3639,7 +3660,7 @@ void WebContentsImpl::ClearSurfaceEmbedConnector() {
       if (rvh->GetWidget()->GetView()->IsRenderWidgetHostViewChildFrame()) {
         list_of_rvh_with_rwhv.push_back(rvh);
       }
-      rvh->GetWidget()->GetView()->Destroy();
+      rvh->GetWidget()->GetView()->DestroyOrDefer();
     }
   }
 
@@ -3705,7 +3726,7 @@ void WebContentsImpl::AttachGuestPage(
 
   // Guest pages aren't supported with prerendering. See
   // https://crbug.com/40191159 for details.
-  CHECK_NE(RenderFrameHostImpl::LifecycleStateImpl::kPrerendering,
+  CHECK_NE(RenderFrameHostLifecycleStateImpl::kPrerendering,
            outer_render_frame_host_impl->lifecycle_state());
 
   auto* guest_page_impl = static_cast<GuestPageHolderImpl*>(guest_page.get());
@@ -4469,7 +4490,7 @@ void WebContentsImpl::Init(const WebContents::CreateParams& params,
 #endif
 
   SchedulerLoopQuarantineWebContentsObserver::MaybeCreateForWebContents(this);
-  RedirectChainDetector::CreateForWebContents(this);
+  RedirectChainDetector::MaybeCreateForWebContents(this);
   BtmWebContentsObserver::MaybeCreateForWebContents(this);
   DeclarativePerformanceObserverCoordinator::CreateForWebContents(this);
 
@@ -4846,6 +4867,10 @@ void WebContentsImpl::GetRenderWidgetHostAtPointAsynchronously(
     const gfx::PointF& point,
     base::OnceCallback<void(base::WeakPtr<RenderWidgetHostViewBase>,
                             std::optional<gfx::PointF>)> callback) {
+  if (!root_view) {
+    std::move(callback).Run(nullptr, std::nullopt);
+    return;
+  }
   GetInputEventRouter()->GetRenderWidgetHostAtPointAsynchronously(
       root_view, point, base::BindOnce(&RunCallback, std::move(callback)));
 }
@@ -5440,7 +5465,9 @@ void WebContentsImpl::LostPointerLock(
     RenderWidgetHostImpl* render_widget_host) {
   OPTIONAL_TRACE_EVENT1("content", "WebContentsImpl::LostPointerLock",
                         "render_widget_host", render_widget_host);
-  CHECK(pointer_lock_widget_);
+  if (!pointer_lock_widget_) {
+    return;
+  }
 
   if (WebContentsImpl::FromRenderWidgetHostImpl(pointer_lock_widget_) != this) {
     return pointer_lock_widget_->delegate()->LostPointerLock(
@@ -6058,6 +6085,24 @@ WebContents* WebContentsImpl::ShowCreatedWindow(
                                   nullptr);
 }
 
+gfx::Rect WebContentsImpl::ConstrainPopupBounds(const gfx::Rect& bounds) {
+  if (!base::FeatureList::IsEnabled(features::kLimitPopupWidgetHostPosition)) {
+    return bounds;
+  }
+  // Constrain popup bounds so that the top of the popup is at or below the line
+  // of death (the top of the top-level main frame). See crbug.com/424995036.
+  RenderWidgetHostView* view = GetTopLevelRenderWidgetHostView();
+  if (!view) {
+    return bounds;
+  }
+  gfx::Rect constrained_bounds = bounds;
+  int line_of_death = view->GetViewBounds().y();
+  if (constrained_bounds.y() < line_of_death) {
+    constrained_bounds.set_y(line_of_death);
+  }
+  return constrained_bounds;
+}
+
 void WebContentsImpl::ShowCreatedWidget(ChildProcessId process_id,
                                         int widget_route_id,
                                         const gfx::Rect& initial_rect,
@@ -6121,6 +6166,8 @@ void WebContentsImpl::ShowCreatedWidget(ChildProcessId process_id,
         gfx::Rect(origin.x(), origin.y(), bottom_right.x() - origin.x(),
                   bottom_right.y() - origin.y());
   }
+
+  transformed_rect = ConstrainPopupBounds(transformed_rect);
 
   RenderWidgetHostImpl* render_widget_host_impl = widget_host_view->host();
 
@@ -6695,6 +6742,12 @@ const std::optional<gfx::Rect> WebContentsImpl::GetTextSelectionBounds(
       const auto* region = text_input_manager_->GetSelectionRegion(view);
       if (region) {
         gfx::Rect bounds = region->bounding_box;
+        // `bounding_box` is renderer-supplied and is deliberately stored
+        // unclamped, because consumers such as ClipboardHistory rely on it to
+        // describe the full extent of the selection even when that extent is
+        // larger than the viewport. Callers of this method instead use the
+        // result to position UI, so clamp it to the outermost view here.
+        bounds.AdjustToFit(gfx::Rect(root_view->GetVisibleViewportSize()));
         if (!bounds.IsEmpty()) {
           gfx::Point origin = bounds.origin();
           origin += root_view->GetViewBounds().OffsetFromOrigin();
@@ -7141,12 +7194,35 @@ DropData* WebContentsImpl::GetDropData() {
 
 void WebContentsImpl::Focus() {
   OPTIONAL_TRACE_EVENT0("content", "WebContentsImpl::Focus");
+  UpdateVisibilityPreFocus();
   view_->Focus();
 }
 
 void WebContentsImpl::SetInitialFocus() {
   OPTIONAL_TRACE_EVENT0("content", "WebContentsImpl::SetInitialFocus");
+  UpdateVisibilityPreFocus();
   view_->SetInitialFocus();
+}
+
+void WebContentsImpl::UpdateVisibilityPreFocus() {
+  // Typically the view becomes visible when a navigation commits. However, if a
+  // view is focused before navigation commits, it must be made visible or on
+  // some platforms (i.e. Mac) Focus will be rejected.
+  //
+  // If we're in the middle of swapping frames, the timing of making the new
+  // frame visible is very sensitive and managed by the RenderFrameHostManager.
+  // Some clients Focus the new frame upon swapping, so we need to make sure we
+  // don't have that Focus call also set visibility.
+  //
+  // TODO(https://crbug.com/526983047): We should decouple the notions of
+  // rendering and window visibility so that a window can be focused and visible
+  // before navigation commits and the RFH is still hidden.
+  if (base::FeatureList::IsEnabled(
+          features::kRemoveEnsureRFHVisibilityConsistent) &&
+      !is_swapping_render_frame_hosts_ &&
+      GetVisibility() == Visibility::VISIBLE) {
+    SetPrimaryMainFrameViewVisibility(Visibility::VISIBLE);
+  }
 }
 
 void WebContentsImpl::StoreFocus() {
@@ -7225,6 +7301,15 @@ void WebContentsImpl::SaveFrameWithHeaders(
     bool is_subresource) {
   DCHECK(rfh);
   auto& rfhi = *static_cast<RenderFrameHostImpl*>(rfh);
+
+  if (WebContents::FromRenderFrameHost(rfh) != this) {
+    // Note that the PDF viewer can legitimately save from the context of a RFH
+    // outside of this WebContents. The following CHECK guards against the
+    // caller possibly being tricked into providing a RFH with different storage
+    // access. See https://crbug.com/40167434 and https://crbug.com/501790682
+    CHECK_EQ(rfhi.GetStoragePartition(),
+             GetPrimaryMainFrame()->GetStoragePartition());
+  }
 
   OPTIONAL_TRACE_EVENT2("content", "WebContentsImpl::SaveFrameWithHeaders",
                         "url", url, "headers", headers);
@@ -10303,7 +10388,7 @@ WebContentsImpl::GetActiveTopLevelDocumentsInBrowsingContextGroup(
 
     // Filters out inactive documents.
     if (other_render_frame_host->lifecycle_state() !=
-        RenderFrameHostImpl::LifecycleStateImpl::kActive) {
+        RenderFrameHostLifecycleStateImpl::kActive) {
       continue;
     }
 
@@ -11326,6 +11411,10 @@ void WebContentsImpl::NotifyPrimaryPageWillBeDeactivated(PageImpl& page) {
                              page);
 }
 
+void WebContentsImpl::PrepareToSwapRenderFrameHosts() {
+  is_swapping_render_frame_hosts_ = true;
+}
+
 void WebContentsImpl::NotifySwappedFromRenderManager(
     RenderFrameHostImpl* old_frame,
     RenderFrameHostImpl* new_frame) {
@@ -11333,7 +11422,7 @@ void WebContentsImpl::NotifySwappedFromRenderManager(
                "old_render_frame_host", old_frame, "new_render_frame_host",
                new_frame);
   DCHECK_NE(new_frame->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kSpeculative);
+            RenderFrameHostLifecycleStateImpl::kSpeculative);
 
   // Only fire RenderViewHostChanged if it is related to our FrameTree, as
   // observers can not deal with events coming from non-primary FrameTree.
@@ -11373,6 +11462,8 @@ void WebContentsImpl::NotifySwappedFromRenderManager(
   }
 
   NotifyFrameSwapped(old_frame, new_frame);
+
+  is_swapping_render_frame_hosts_ = false;
 }
 
 void WebContentsImpl::PrimaryMainFrameCommitted(
@@ -12439,7 +12530,9 @@ void WebContentsImpl::BindScreenOrientation(
   screen_orientation_provider_->BindScreenOrientation(rfh, std::move(receiver));
 }
 
-bool WebContentsImpl::IsTransientActivationRequiredForHtmlFullscreen() {
+bool WebContentsImpl::IsTransientActivationRequiredForHtmlFullscreen(
+    RenderFrameHostImpl* requesting_frame,
+    bool is_xr_overlay) {
   // Allow fullscreen if the screen orientation changed in the last 1 second.
   static constexpr base::TimeDelta kMaxInterval = base::Seconds(1);
   const base::TimeDelta delta =
@@ -12449,9 +12542,12 @@ bool WebContentsImpl::IsTransientActivationRequiredForHtmlFullscreen() {
   }
 
   // Require transient activation shortly after a same-origin WebContents exit.
-  RenderFrameHostImpl* host = GetPrimaryMainFrame();
+  RenderFrameHostImpl* primary_main_frame = GetPrimaryMainFrame();
+  RenderFrameHostImpl* host =
+      requesting_frame ? requesting_frame : primary_main_frame;
   auto* last_exits = GetFullscreenUserData(GetBrowserContext())->last_exits();
-  auto last_exit = last_exits->find(host->GetLastCommittedOrigin());
+  auto last_exit =
+      last_exits->find(primary_main_frame->GetLastCommittedOrigin());
   constexpr base::TimeDelta kCooldown = base::Seconds(5);
   if (last_exit != last_exits->end() &&
       base::TimeTicks::Now() < last_exit->second + kCooldown) {
@@ -12460,6 +12556,11 @@ bool WebContentsImpl::IsTransientActivationRequiredForHtmlFullscreen() {
 
   // Waive transient activation requirements if Automatic Fullscreen is granted.
   if (IsAutomaticFullscreenGranted(host)) {
+    return false;
+  }
+
+  // Waive transient activation requirements for verified WebXR DOM overlay.
+  if (is_xr_overlay && host->HasSeenRecentXrOverlaySetup()) {
     return false;
   }
 

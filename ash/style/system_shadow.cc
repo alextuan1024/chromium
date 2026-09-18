@@ -12,7 +12,7 @@
 #include "ui/aura/window_observer.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer_nine_patch.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/shadow.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/view_shadow.h"
@@ -212,10 +212,6 @@ ui::Layer* SystemShadow::GetLayer() {
   return shadow()->layer();
 }
 
-ui::LayerNinePatch* SystemShadow::GetNinePatchLayer() {
-  return shadow()->shadow_layer();
-}
-
 void SystemShadow::ObserveColorProviderSource(
     ui::ColorProviderSource* color_provider_source) {
   Observe(color_provider_source);
@@ -228,7 +224,7 @@ void SystemShadow::OnColorProviderChanged() {
 }
 
 const gfx::ShadowValues SystemShadow::GetShadowValuesForTesting() const {
-  return shadow()->details_for_testing()->values;  // IN-TEST
+  return shadow()->details_for_testing()->spec;  // IN-TEST
 }
 
 void SystemShadow::UpdateShadowColors(const ui::ColorProvider* color_provider) {

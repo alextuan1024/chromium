@@ -237,32 +237,12 @@ bool IsDictationOfflineAvailable() {
       ash::features::kOnDeviceSpeechRecognition);
 }
 
-BASE_FEATURE(kAccessibilityReducedAnimations, base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsAccessibilityReducedAnimationsEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kAccessibilityReducedAnimations);
-}
-
-
 BASE_FEATURE(kExperimentalAccessibilityDictationContextChecking,
              base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsExperimentalAccessibilityDictationContextCheckingEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kExperimentalAccessibilityDictationContextChecking);
 }
-
-BASE_FEATURE(kAccessibilityMagnifierFollowsChromeVox,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsAccessibilityMagnifierFollowsChromeVoxEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kAccessibilityMagnifierFollowsChromeVox);
-}
-
-BASE_FEATURE(kAccessibilityMouseKeys, base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsAccessibilityMouseKeysEnabled() {
-  return base::FeatureList::IsEnabled(::features::kAccessibilityMouseKeys);
-}
-
 
 BASE_FEATURE(kAccessibilityInvertedMouseCursor,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -330,6 +310,17 @@ bool IsAccessibilityAndroidMathEnabled() {
 
 bool IsReadAloudNativeEnabled() {
   return base::FeatureList::IsEnabled(ax::mojom::features::kReadAloudNative);
+}
+
+bool IsReadAloudServerSynthesizerEnabled() {
+  std::optional<bool> override_state = base::FeatureList::GetStateIfOverridden(
+      ax::mojom::features::kReadAloudServerSynthesizer);
+  if (override_state.has_value() && !override_state.value()) {
+    return false;
+  }
+  return base::FeatureList::IsEnabled(
+             ax::mojom::features::kReadAloudServerSynthesizer) ||
+         base::FeatureList::IsEnabled(ax::mojom::features::kReadAloudNative);
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -439,13 +430,6 @@ bool IsHatsReadingModeSurveyEnabled() {
 bool IsReadAnythingDocsIntegrationEnabled() {
   return base::FeatureList::IsEnabled(
       ax::mojom::features::kReadAnythingDocsIntegration);
-}
-
-BASE_FEATURE(kReadAnythingDocsLoadMoreButton,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsReadAnythingDocsLoadMoreButtonEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kReadAnythingDocsLoadMoreButton);
 }
 
 BASE_FEATURE(kReadAnythingWithReadability, base::FEATURE_ENABLED_BY_DEFAULT);

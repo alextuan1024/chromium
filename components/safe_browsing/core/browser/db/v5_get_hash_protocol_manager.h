@@ -23,9 +23,9 @@
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_config.h"
 #include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
 #include "components/safe_browsing/core/browser/db/v5_search_hashes_util.h"
 #include "components/safe_browsing/core/common/proto/safebrowsingv5.pb.h"
 #include "net/base/backoff_entry.h"
@@ -81,7 +81,7 @@ class V5GetHashProtocolManager : public KeyedService {
   //  - `cache`: The cache to store and retrieve full hash results.
   V5GetHashProtocolManager(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const V4ProtocolConfig& config,
+      const SBProtocolConfig& config,
       V5SearchHashesCache* cache);
 
   V5GetHashProtocolManager(const V5GetHashProtocolManager&) = delete;
@@ -95,10 +95,9 @@ class V5GetHashProtocolManager : public KeyedService {
   // of threat types.
   // `callback` is the callback that will be run with the threat type and threat
   // metadata once the check completes.
-  virtual void GetFullHashes(
-      const std::map<FullHashStr, std::vector<SBThreatType>>&
-          full_hash_to_threat_types,
-      FullHashCallback callback);
+  virtual void GetFullHashes(std::map<FullHashStr, std::vector<SBThreatType>>
+                                 full_hash_to_threat_types,
+                             FullHashCallback callback);
 
   // KeyedService:
   void Shutdown() override;
@@ -179,7 +178,7 @@ class V5GetHashProtocolManager : public KeyedService {
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   // The config of the client making Pver5 requests.
-  const V4ProtocolConfig config_;
+  const SBProtocolConfig config_;
 
   // The shared cache of V5 full hashes.
   raw_ptr<V5SearchHashesCache> cache_;

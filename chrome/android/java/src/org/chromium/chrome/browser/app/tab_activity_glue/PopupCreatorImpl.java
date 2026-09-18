@@ -17,9 +17,10 @@ import android.os.Bundle;
 import android.util.AndroidRuntimeException;
 import android.util.Pair;
 
-import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
 import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
+
+import org.jni_zero.CalledByNativeForTesting;
 
 import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ContextUtils;
@@ -33,10 +34,8 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
-import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.IncognitoCctCallerId;
-import org.chromium.chrome.browser.customtabs.BaseCustomTabActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabDelegateFactory;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
@@ -52,13 +51,13 @@ import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.util.AndroidTaskUtils;
 import org.chromium.chrome.browser.util.PictureInPictureWindowOptions;
 import org.chromium.chrome.browser.util.WindowFeatures;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.insets.WindowInsetsUtils;
-import org.chromium.url.GURL;
 import org.chromium.url.Origin;
 
 /** Handles launching new popup windows as CCTs and Document Picture-in-Picture windows. */
@@ -73,6 +72,7 @@ public class PopupCreatorImpl implements PopupCreator {
     private static @Nullable Boolean sMoveTabToNewPopupResultForTesting;
     private static @Nullable Boolean sMoveToNewDocumentPiPWindowResultForTesting;
     private static @Nullable Boolean sSetMovableTaskRequiredForPopupsForTesting;
+    private static @Nullable Boolean sTryStartActivityResultForTesting;
 
     @Override
     public boolean createNewPopup(
@@ -86,8 +86,7 @@ public class PopupCreatorImpl implements PopupCreator {
                         startActivityOptions, windowFeatures, /* sourceWindow= */ null);
 
         final Intent intent =
-                createTrustedPopupIntent(
-                        context, windowFeatures, isIncognito, additionalIntentExtras);
+                createTrustedPopupIntent(windowFeatures, isIncognito, additionalIntentExtras);
         return tryStartActivity(context, intent, optionsBundle);
     }
 
@@ -108,7 +107,7 @@ public class PopupCreatorImpl implements PopupCreator {
 
         final Intent intent =
                 createTrustedPopupIntent(
-                        context, windowFeatures, tab.isIncognitoBranded(), additionalIntentExtras);
+                        windowFeatures, tab.isIncognitoBranded(), additionalIntentExtras);
         intent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
 
         boolean success =
@@ -133,8 +132,7 @@ public class PopupCreatorImpl implements PopupCreator {
         }
 
         final Intent intent =
-                createTrustedPopupIntent(
-                        tab.getContext(), windowFeatures, tab.isIncognitoBranded(), null);
+                createTrustedPopupIntent(windowFeatures, tab.isIncognitoBranded(), null);
         intent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
 
         return getReparentingTask(tab).begin(tab.getContext(), intent, optionsBundle, null);
@@ -327,6 +325,9 @@ public class PopupCreatorImpl implements PopupCreator {
     @Override
     public boolean tryStartActivity(
             Context context, Intent intent, @Nullable Bundle activityOptions) {
+        if (sTryStartActivityResultForTesting != null) {
+            return sTryStartActivityResultForTesting;
+        }
         try {
             context.startActivity(intent, activityOptions);
         } catch (SecurityException e) {
@@ -478,30 +479,25 @@ public class PopupCreatorImpl implements PopupCreator {
         ResettersForTesting.register(() -> sSetMovableTaskRequiredForPopupsForTesting = null);
     }
 
+    @CalledByNativeForTesting
+    public static void setTryStartActivityResultForTesting(boolean result) {
+        sTryStartActivityResultForTesting = result;
+        ResettersForTesting.register(() -> sTryStartActivityResultForTesting = null);
+    }
+
     private static Intent createTrustedPopupIntent(
-            @Nullable Context context,
             @Nullable WindowFeatures windowFeatures,
             boolean isIncognito,
             @Nullable Bundle additionalIntentExtras) {
-        Activity activity = ContextUtils.activityFromContext(context);
-        BrowserServicesIntentDataProvider provider = null;
-        if (activity instanceof BaseCustomTabActivity customTabActivity) {
-            provider = customTabActivity.getIntentDataProvider();
-        }
-
-        Intent intent;
-        if (provider != null && provider.isTrustedWebActivity() && provider.getIntent() != null) {
-            intent = new Intent(provider.getIntent());
-            intent.removeExtra(TrustedWebActivityIntentBuilder.EXTRA_SPLASH_SCREEN_PARAMS);
-        } else {
-            intent = new Intent();
-        }
-
+        Intent intent = new Intent();
         intent.setClass(ContextUtils.getApplicationContext(), CustomTabActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         intent.putExtra(CustomTabIntentDataProvider.EXTRA_UI_TYPE, CustomTabsUiType.POPUP);
         if (windowFeatures != null) {
             intent.putExtra(EXTRA_REQUESTED_WINDOW_FEATURES, windowFeatures.toBundle());
+        }
+        if (additionalIntentExtras != null) {
+            intent.putExtras(additionalIntentExtras);
         }
         if (isIncognito) {
             IncognitoCustomTabIntentDataProvider.addIncognitoExtrasForChromeFeatures(
@@ -510,9 +506,6 @@ public class PopupCreatorImpl implements PopupCreator {
 
         IntentUtils.addTrustedIntentExtras(intent);
 
-        if (additionalIntentExtras != null) {
-            intent.putExtras(additionalIntentExtras);
-        }
         return intent;
     }
 
@@ -530,16 +523,25 @@ public class PopupCreatorImpl implements PopupCreator {
         // if the opener navigates before the Activity completes its launch.
         WebContents opener = webContents.getDocumentPictureInPictureOpener();
         if (opener != null) {
-            GURL openerUrl = opener.getLastCommittedUrl();
-            Origin openerOrigin = Origin.create(openerUrl != null ? openerUrl : GURL.emptyGURL());
             intent.putExtra(
                     DocumentPictureInPictureActivity.INITIAL_OPENER_ORIGIN_KEY,
-                    openerOrigin.toString());
+                    getOpenerOriginString(opener));
         }
 
         intent.setAction(Intent.ACTION_VIEW);
 
         return intent;
+    }
+
+    private static String getOpenerOriginString(WebContents opener) {
+        RenderFrameHost frame = opener.getMainFrame();
+        Origin origin =
+                frame != null
+                        ? frame.getLastCommittedOrigin()
+                        : (opener.getLastCommittedUrl() != null
+                                ? Origin.create(opener.getLastCommittedUrl())
+                                : null);
+        return (origin != null && !origin.isOpaque()) ? origin.toString() : "";
     }
 
     private static @Nullable Bundle resolveStartActivityOptions(

@@ -11,6 +11,8 @@ import android.util.ArrayMap;
 import androidx.annotation.VisibleForTesting;
 import androidx.fragment.app.Fragment;
 
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
@@ -18,6 +20,7 @@ import org.chromium.chrome.browser.about_settings.LegalInformationSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
 import org.chromium.chrome.browser.autofill.settings.AndroidPaymentAppsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
 import org.chromium.chrome.browser.autofill.settings.AutofillBuyNowPayLaterFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillCardBenefitsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillIdentityDocsFragment;
@@ -28,16 +31,14 @@ import org.chromium.chrome.browser.autofill.settings.AutofillTravelFragment;
 import org.chromium.chrome.browser.autofill.settings.FinancialAccountsManagementFragment;
 import org.chromium.chrome.browser.autofill.settings.NonCardPaymentMethodsManagementFragment;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
+import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
 import org.chromium.chrome.browser.glic.GlicSettings;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsSettings;
-import org.chromium.chrome.browser.language.settings.AlwaysTranslateListFragment;
 import org.chromium.chrome.browser.language.settings.LanguageSettings;
-import org.chromium.chrome.browser.language.settings.NeverTranslateListFragment;
-import org.chromium.chrome.browser.language.settings.SelectLanguageFragment;
 import org.chromium.chrome.browser.night_mode.NightModeMetrics;
 import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
 import org.chromium.chrome.browser.prefetch.settings.ExtendedPreloadingSettingsFragment;
@@ -50,14 +51,16 @@ import org.chromium.chrome.browser.privacy_guide.PrivacyGuideFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.EnhancedProtectionSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.SafeBrowsingSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.StandardProtectionSettingsFragment;
-import org.chromium.chrome.browser.safety_check.SafetyCheckSettingsFragment;
 import org.chromium.chrome.browser.safety_hub.SafetyHubFragment;
+import org.chromium.chrome.browser.safety_hub.SafetyHubNotificationsFragment;
+import org.chromium.chrome.browser.safety_hub.SafetyHubPermissionsFragment;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.search_engines.settings.SiteSearchSettings;
 import org.chromium.chrome.browser.settings.search.SearchResultsPreferenceFragment;
 import org.chromium.chrome.browser.ssl.HttpsFirstModeSettingsFragment;
 import org.chromium.chrome.browser.sync.settings.GoogleServicesSettings;
 import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
+import org.chromium.chrome.browser.sync.settings.PersonalizeGoogleServicesSettings;
 import org.chromium.chrome.browser.tasks.tab_management.TabArchiveSettingsFragment;
 import org.chromium.chrome.browser.tasks.tab_management.TabsSettings;
 import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
@@ -91,9 +94,6 @@ import java.util.function.Consumer;
 public class SettingsFragmentRegistry {
     // Path maps are initialized statically to ensure constant-time URL routing.
     @VisibleForTesting
-    static final ArrayMap<String, Class<? extends Fragment>> sPathToFragmentMap = new ArrayMap<>();
-
-    @VisibleForTesting
     static final ArrayMap<Class<? extends Fragment>, String> sFragmentToPathMap = new ArrayMap<>();
 
     @VisibleForTesting
@@ -102,8 +102,65 @@ public class SettingsFragmentRegistry {
     @VisibleForTesting
     static final ArrayMap<String, String> sArgKeyToQueryParamMap = new ArrayMap<>();
 
+    @FunctionalInterface
+    interface ParameterValueParser {
+        void putValue(Bundle bundle, String argKey, String val);
+    }
+
     @VisibleForTesting
-    static final ArrayMap<Class<? extends Fragment>, Consumer<Bundle>> sDefaultArgsProviders =
+    static final ArrayMap<String, ParameterValueParser> sQueryParamParsers = new ArrayMap<>();
+
+    /**
+     * Declarative rules for a registered route.
+     *
+     * <p>A URL carries less than the fragment transaction it replaces: the caller used to be able
+     * to hand the page any extra it liked, while a URL only has the query its author wrote. The
+     * route declares what to fill in for the rest.
+     */
+    public static final class RouteSpec {
+        private final Class<? extends Fragment> mFragmentClass;
+        private @Nullable Consumer<Bundle> mDefaultsProvider;
+
+        private RouteSpec(Class<? extends Fragment> fragmentClass) {
+            mFragmentClass = fragmentClass;
+        }
+
+        /** Declares arguments to fill in when the URL omits them. */
+        RouteSpec withDefaults(Consumer<Bundle> provider) {
+            mDefaultsProvider = provider;
+            return this;
+        }
+    }
+
+    /** The outcome of resolving a settings URL. */
+    public static final class Resolution {
+        /** The page to show. */
+        public final Class<? extends Fragment> fragmentClass;
+
+        /** Arguments for {@link #fragmentClass}. */
+        public final Bundle args;
+
+        private Resolution(Class<? extends Fragment> fragmentClass, Bundle args) {
+            this.fragmentClass = fragmentClass;
+            this.args = args;
+        }
+    }
+
+    @VisibleForTesting
+    static final ArrayMap<String, RouteSpec> sPathToRouteSpecMap = new ArrayMap<>();
+
+    /**
+     * Used for highlighting fragments that aren't mapped to getMainMenuKey() (some subpages).
+     *
+     * <p>Deliberately distinct from EmbeddableSettingsPage.getMainMenuKey(), which declares that a
+     * fragment is a given main menu row. That is an identity and must stay globally unique, because
+     * the settings search index keys its entries by preference key.
+     *
+     * <p>Only needed for pages that are absent from the search index, i.e. those attached at
+     * runtime rather than declared with in a preference XML.
+     */
+    @VisibleForTesting
+    static final ArrayMap<Class<? extends Fragment>, String> sFragmentToMainMenuAnchorMap =
             new ArrayMap<>();
 
     static {
@@ -122,6 +179,7 @@ public class SettingsFragmentRegistry {
         // TODO(crbug.com/542745585): Handle /account differently based on local state
         // since it's not a static page which is always available.
         registerMapping("/account", ManageSyncSettings.class);
+        registerMapping("/account/personalize", PersonalizeGoogleServicesSettings.class);
         registerMapping("/googleServices", GoogleServicesSettings.class);
 
         // Basics
@@ -147,7 +205,8 @@ public class SettingsFragmentRegistry {
 
         // Safety Check / Safety Hub
         registerMapping("/safetyCheck", SafetyHubFragment.class);
-        registerMapping("/notifications", SafetyCheckSettingsFragment.class);
+        registerMapping("/safetyCheck/permissions", SafetyHubPermissionsFragment.class);
+        registerMapping("/safetyCheck/notifications", SafetyHubNotificationsFragment.class);
 
         // Autofill & Passwords
         registerMapping("/autofill", AutofillAndPasswordsFragment.class);
@@ -162,7 +221,17 @@ public class SettingsFragmentRegistry {
         registerMapping("/autofill/travel", AutofillTravelFragment.class);
         registerMapping("/autofill/shopping", AutofillShoppingFragment.class);
         registerMapping("/autofill/personalContext", AutofillPersonalContextFragment.class);
-        registerMapping("/autofill/settings", AutofillOptionsFragment.class);
+        registerMapping("/autofill/settings", AutofillOptionsFragment.class)
+                // The page asserts on its referrer extra.
+                .withDefaults(
+                        bundle -> {
+                            if (!bundle.containsKey(
+                                    AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER)) {
+                                bundle.putInt(
+                                        AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER,
+                                        AutofillOptionsReferrer.SETTINGS);
+                            }
+                        });
 
         // Tabs and tab groups
         registerMapping("/tabs", TabsSettings.class);
@@ -173,7 +242,17 @@ public class SettingsFragmentRegistry {
 
         // Appearance
         registerMapping("/appearance", AppearanceSettingsFragment.class);
-        registerMapping("/theme", ThemeSettingsFragment.class);
+        registerMapping("/theme", ThemeSettingsFragment.class)
+                // The page asserts on its entry point extra.
+                .withDefaults(
+                        bundle -> {
+                            if (!bundle.containsKey(
+                                    ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY)) {
+                                bundle.putInt(
+                                        ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY,
+                                        NightModeMetrics.ThemeSettingsEntry.SETTINGS);
+                            }
+                        });
         registerMapping("/toolbar", AdaptiveToolbarSettingsFragment.class);
 
         // Accessibility
@@ -190,11 +269,25 @@ public class SettingsFragmentRegistry {
         registerMapping("/locationPermission", LocationPermissionSubpageSettings.class);
         registerMapping("/chosenObject", ChosenObjectSettings.class);
 
+        // These pages are attached at runtime, e.g. by tapping a row in "All sites", instead of
+        // being declared with android:fragment in a preference XML. They therefore have no entry
+        // in the settings search index and no breadcrumb path to derive a main menu row from, so
+        // the row they belong under is declared explicitly.
+        registerMainMenuAnchor(SingleWebsiteSettings.class, SiteSettings.MAIN_MENU_KEY);
+        registerMainMenuAnchor(GroupedWebsitesSettings.class, SiteSettings.MAIN_MENU_KEY);
+        registerMainMenuAnchor(StorageAccessSubpageSettings.class, SiteSettings.MAIN_MENU_KEY);
+        registerMainMenuAnchor(LocationPermissionSubpageSettings.class, SiteSettings.MAIN_MENU_KEY);
+        registerMainMenuAnchor(ChosenObjectSettings.class, SiteSettings.MAIN_MENU_KEY);
+
         // Languages, Downloads, Tabs, Homepage
+        //
+        // Only the top-level languages page is URL routed. The subpages (language picker, always
+        // and never translate lists) exchange the selected language using the androidx Fragment
+        // Result API, which requires the calling fragment to remain on the fragment back stack.
+        // URL navigation replaces detail fragments with addToBackStack=false, which breaks that
+        // contract. See crbug.com/555347875; these routes are restored once the subpages no longer
+        // depend on the fragment back stack.
         registerMapping("/languages", LanguageSettings.class);
-        registerMapping("/languages/select", SelectLanguageFragment.class);
-        registerMapping("/languages/alwaysTranslate", AlwaysTranslateListFragment.class);
-        registerMapping("/languages/neverTranslate", NeverTranslateListFragment.class);
         registerMapping("/downloads", DownloadSettings.class);
 
         // About & Developer
@@ -207,34 +300,34 @@ public class SettingsFragmentRegistry {
         registerMapping("/ai/gemini", GlicSettings.class);
 
         // Parameter translations mapping URL query string keys to Fragment
-        // argument extra keys.
-        registerParameterMapping("site", SingleWebsiteSettings.EXTRA_SITE_ADDRESS);
+        // argument extra keys with appropriate type deserialization.
+        registerWebsiteAddressParameterMapping("site", SingleWebsiteSettings.EXTRA_SITE_ADDRESS);
+        registerBooleanParameterMapping("fromGrouped", SingleWebsiteSettings.EXTRA_FROM_GROUPED);
         registerParameterMapping("category", SingleCategorySettings.EXTRA_CATEGORY);
         registerParameterMapping("title", SingleCategorySettings.EXTRA_TITLE);
         registerParameterMapping("group", GroupedWebsitesSettings.EXTRA_GROUP);
-        registerParameterMapping(
-                "potentialLanguages", SelectLanguageFragment.KEY_POTENTIAL_LANGUAGES);
-        registerParameterMapping("referrer", AutofillAndPasswordsFragment.EXTRA_REFERRER);
-
-        // Register default argument providers cleanly without hardcoding in URL parsing logic
-        sDefaultArgsProviders.put(
-                ThemeSettingsFragment.class,
-                bundle -> {
-                    if (!bundle.containsKey(ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY)) {
-                        bundle.putInt(
-                                ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY,
-                                NightModeMetrics.ThemeSettingsEntry.SETTINGS);
-                    }
-                });
+        registerIntParameterMapping(
+                "referrer",
+                AutofillAndPasswordsFragment.EXTRA_REFERRER,
+                /* defaultValue= */ AutofillSettingsReferrer.SETTINGS_MENU);
+        registerIntParameterMapping(
+                "optionsReferrer",
+                AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER,
+                /* defaultValue= */ AutofillOptionsReferrer.SETTINGS);
     }
 
-    private static void registerMapping(
+    /**
+     * Registers {@code path} as the URL for {@code detailFragmentClass}.
+     *
+     * @return the route's spec, for declaring rules that apply to it.
+     */
+    @CanIgnoreReturnValue
+    private static RouteSpec registerMapping(
             String path, Class<? extends Fragment> detailFragmentClass) {
         // Normalize lookup keys to lowercase US locale so path matching
         // remains case-insensitive and insensitive to system locale settings
         // (avoiding Turkish dotted/dotless i issues).
         String normalizedPath = path.toLowerCase(Locale.US);
-        sPathToFragmentMap.put(normalizedPath, detailFragmentClass);
 
         // Store canonical subpage path preserving original casing for clean
         // reverse URL generation.
@@ -242,16 +335,103 @@ public class SettingsFragmentRegistry {
             String canonicalPath = path.startsWith("/") ? path.substring(1) : path;
             sFragmentToPathMap.put(detailFragmentClass, canonicalPath);
         }
+
+        RouteSpec spec = new RouteSpec(detailFragmentClass);
+        sPathToRouteSpecMap.put(normalizedPath, spec);
+        return spec;
+    }
+
+    private static void registerMainMenuAnchor(
+            Class<? extends Fragment> fragmentClass, String mainMenuKey) {
+        sFragmentToMainMenuAnchorMap.put(fragmentClass, mainMenuKey);
+    }
+
+    public static @Nullable String getMainMenuAnchor(Class<? extends Fragment> fragmentClass) {
+        return sFragmentToMainMenuAnchorMap.get(fragmentClass);
+    }
+
+    private static void registerParameterMapping(
+            String queryParam, String argKey, ParameterValueParser parser) {
+        sQueryParamToArgKeyMap.put(queryParam, argKey);
+        sArgKeyToQueryParamMap.put(argKey, queryParam);
+        sQueryParamParsers.put(queryParam, parser);
     }
 
     private static void registerParameterMapping(String queryParam, String argKey) {
-        sQueryParamToArgKeyMap.put(queryParam, argKey);
-        sArgKeyToQueryParamMap.put(argKey, queryParam);
+        registerParameterMapping(
+                queryParam, argKey, (bundle, key, val) -> bundle.putString(key, val));
+    }
+
+    @SuppressWarnings("unused")
+    private static void registerBooleanParameterMapping(String queryParam, String argKey) {
+        registerParameterMapping(
+                queryParam,
+                argKey,
+                (bundle, key, val) -> bundle.putBoolean(key, Boolean.parseBoolean(val)));
+    }
+
+    private static void registerIntParameterMapping(
+            String queryParam, String argKey, int defaultValue) {
+        registerParameterMapping(
+                queryParam,
+                argKey,
+                (bundle, key, val) -> {
+                    try {
+                        bundle.putInt(key, Integer.parseInt(val));
+                    } catch (NumberFormatException e) {
+                        bundle.putInt(key, defaultValue);
+                    }
+                });
+    }
+
+    // Currently unused: its only caller was the "potentialLanguages" mapping, removed along with
+    // the languages subpage routes. Retained for when those routes are re-landed.
+    @SuppressWarnings("unused")
+    private static void registerShortParameterMapping(
+            String queryParam, String argKey, short defaultValue) {
+        registerParameterMapping(
+                queryParam,
+                argKey,
+                (bundle, key, val) -> {
+                    try {
+                        bundle.putShort(key, Short.parseShort(val));
+                    } catch (NumberFormatException e) {
+                        bundle.putShort(key, defaultValue);
+                    }
+                });
+    }
+
+    private static void registerWebsiteAddressParameterMapping(String queryParam, String argKey) {
+        registerParameterMapping(
+                queryParam,
+                argKey,
+                (bundle, key, val) -> {
+                    WebsiteAddress address = WebsiteAddress.create(val);
+                    if (address != null) {
+                        bundle.putSerializable(key, address);
+                    }
+                });
     }
 
     public static void registerMappingForTesting(
             String path, Class<? extends Fragment> detailFragmentClass) {
         registerMapping(path, detailFragmentClass);
+    }
+
+    /**
+     * Resolves a settings URL to the page to show and the arguments to show it with.
+     *
+     * <p>The single entry point for turning a URL into a page. A URL carries less than the fragment
+     * transaction it replaces, so the registry fills in what the route declares before handing the
+     * arguments back.
+     */
+    public static Resolution resolve(String url) {
+        Bundle args = parseUrlArguments(url);
+        RouteSpec spec = getRouteSpecForUrl(url);
+
+        // An unrecognised path shows the main settings page, matching what the omnibox does for
+        // any other unrecognised chrome:// URL.
+        return new Resolution(spec != null ? spec.mFragmentClass : MainSettings.class, args);
     }
 
     /**
@@ -261,47 +441,63 @@ public class SettingsFragmentRegistry {
      * @return Resolved Fragment class token, or null if invalid.
      */
     public static @Nullable Class<? extends Fragment> getFragmentClassForUrl(String url) {
-        String scheme;
-        String host;
-        String path;
-        try {
-            Uri uri = Uri.parse(url);
-            scheme = uri.getScheme();
-            host = uri.getHost();
-            path = uri.getPath();
-        } catch (UnsupportedOperationException
-                | IllegalArgumentException
-                | IndexOutOfBoundsException e) {
-            // Malformed URIs safely fall back to null.
-            return null;
-        }
+        RouteSpec spec = getRouteSpecForUrl(url);
+        return spec == null ? null : spec.mFragmentClass;
+    }
 
-        // Strict scheme validation prevents cross-origin or local file
-        // scheme injection.
-        if (!UrlUtilities.isChromeScheme(scheme)) {
-            return null;
-        }
+    /** Returns the route spec for a settings URL, or null if the URL is not routed. */
+    private static @Nullable RouteSpec getRouteSpecForUrl(String url) {
+        String path = settingsPathForUrl(url);
+        return path == null ? null : sPathToRouteSpecMap.get(path);
+    }
 
-        // Strict host validation ensures only settings pages are routed
-        // through this registry.
-        if (!UrlConstants.SETTINGS_HOST.equalsIgnoreCase(host)) {
-            return null;
-        }
+    /**
+     * Returns the normalized path of a settings URL, or null if {@code uri} does not address
+     * settings.
+     *
+     * <p>Strict scheme and host validation keeps other pages, e.g. a local file scheme, from being
+     * routed through this registry. The path is lower cased with {@link Locale#US} so that matching
+     * does not depend on the device locale, and a trailing slash is stripped so that
+     * "chrome://settings/appearance/" and "chrome://settings/appearance" agree.
+     */
+    private static @Nullable String settingsPath(Uri uri) {
+        if (!UrlUtilities.isChromeScheme(uri.getScheme())) return null;
+        if (!UrlConstants.SETTINGS_HOST.equalsIgnoreCase(uri.getHost())) return null;
 
-        if (path == null) path = "";
+        String path = uri.getPath();
+        if (path == null) return "";
 
-        // Normalize path using Locale.US for case-insensitive matching
-        // regardless of device locale.
         path = path.toLowerCase(Locale.US);
+        return path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+    }
 
-        // Strip trailing slash for consistency (e.g.
-        // "chrome://settings/appearance/" ->
-        // "chrome://settings/appearance").
-        if (path.endsWith("/")) {
-            path = path.substring(0, path.length() - 1);
-        }
+    /** {@link #settingsPath} for a URL string. */
+    private static @Nullable String settingsPathForUrl(@Nullable String url) {
+        return url == null ? null : settingsPath(Uri.parse(url));
+    }
 
-        return sPathToFragmentMap.get(path);
+    /**
+     * Returns whether two URLs address the same settings page, i.e. the same path and query.
+     *
+     * <p>Comparison ignores the scheme, because chrome://settings and chrome-native://settings both
+     * reach settings and are used interchangeably today; see the TODO in {@link
+     * #createUrlForFragment}. Returns false unless both URLs are settings URLs.
+     */
+    public static boolean isSameSettingsPage(@Nullable String url, @Nullable String other) {
+        String key = settingsPageKey(url);
+        return key != null && key.equals(settingsPageKey(other));
+    }
+
+    /** Returns a scheme-independent identity for a settings URL, or null if it is not one. */
+    private static @Nullable String settingsPageKey(@Nullable String url) {
+        if (url == null) return null;
+
+        Uri uri = Uri.parse(url);
+        String path = settingsPath(uri);
+        if (path == null) return null;
+
+        String query = uri.getQuery();
+        return query == null ? path : path + "?" + query;
     }
 
     /**
@@ -326,7 +522,12 @@ public class SettingsFragmentRegistry {
                 // Map query parameter key to argument bundle key if registered,
                 // otherwise keep original.
                 String argKey = sQueryParamToArgKeyMap.getOrDefault(param, param);
-                bundle.putString(argKey, val);
+                ParameterValueParser parser = sQueryParamParsers.get(param);
+                if (parser != null) {
+                    parser.putValue(bundle, argKey, val);
+                } else {
+                    bundle.putString(argKey, val);
+                }
             }
         } catch (UnsupportedOperationException
                 | IllegalArgumentException
@@ -343,11 +544,11 @@ public class SettingsFragmentRegistry {
         return bundle;
     }
 
-    /** Applies registered default arguments for the resolved target fragment. */
+    /** Applies the route's default arguments for anything the URL left out. */
     private static void applyDefaultArguments(String url, Bundle bundle) {
-        Class<? extends Fragment> fragmentClass = getFragmentClassForUrl(url);
-        if (fragmentClass != null && sDefaultArgsProviders.containsKey(fragmentClass)) {
-            sDefaultArgsProviders.get(fragmentClass).accept(bundle);
+        RouteSpec spec = getRouteSpecForUrl(url);
+        if (spec != null && spec.mDefaultsProvider != null) {
+            spec.mDefaultsProvider.accept(bundle);
         }
     }
 

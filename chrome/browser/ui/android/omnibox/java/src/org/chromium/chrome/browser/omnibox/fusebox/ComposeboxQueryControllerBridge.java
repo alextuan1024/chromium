@@ -22,7 +22,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.contextual_search.ContextUploadErrorType;
 import org.chromium.components.contextual_search.ContextUploadStatus;
 import org.chromium.components.contextual_search.InputState;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
 
@@ -141,6 +142,21 @@ public class ComposeboxQueryControllerBridge {
     }
 
     /**
+     * Add the given Drive file to the current session.
+     *
+     * @param driveId Unique ID of the Drive file.
+     * @param resourceKey Optional resource key for link-shared Drive files.
+     * @param fileName Name/title of the Drive file.
+     * @param mimeType MIME type of the Drive file.
+     * @return Unique token representing the Drive file, used to manipulate added Drive files.
+     */
+    public @Nullable String addDriveFile(
+            String driveId, @Nullable String resourceKey, String fileName, String mimeType) {
+        return ComposeboxQueryControllerBridgeJni.get()
+                .addDriveFile(mNativeInstance, driveId, resourceKey, fileName, mimeType);
+    }
+
+    /**
      * Uploads the given tab, adding it to the current session. If the upload can't be performed,
      * null is returned.
      */
@@ -159,17 +175,7 @@ public class ComposeboxQueryControllerBridge {
                 .addTabContextFromCache(mNativeInstance, tabId, isSuggestedTab);
     }
 
-    public void getAimUrl(GURL url, Callback<GURL> callback) {
-        ComposeboxQueryControllerBridgeJni.get().getAimUrl(mNativeInstance, url, callback);
-    }
-
-    public void getImageGenerationUrl(GURL url, Callback<GURL> callback) {
-        ComposeboxQueryControllerBridgeJni.get()
-                .getImageGenerationUrl(mNativeInstance, url, callback);
-    }
-
     public void getAimUrlFromInputState(GURL url, Callback<GURL> callback) {
-        assert OmniboxFeatures.sShowModelPicker.getValue();
         ComposeboxQueryControllerBridgeJni.get()
                 .getAimUrlFromInputState(mNativeInstance, url, callback);
     }
@@ -200,22 +206,17 @@ public class ComposeboxQueryControllerBridge {
         return ComposeboxQueryControllerBridgeJni.get().isPdfUploadEligible(mNativeInstance);
     }
 
-    /** Returns whether the user is eligible for creating images. */
-    boolean isCreateImagesEligible() {
-        return ComposeboxQueryControllerBridgeJni.get().isCreateImagesEligible(mNativeInstance);
-    }
-
     /**
      * @param toolMode The active tool to set.
      */
-    public void setActiveTool(int toolMode) {
+    public void setActiveTool(@ToolMode int toolMode) {
         ComposeboxQueryControllerBridgeJni.get().setActiveTool(mNativeInstance, toolMode);
     }
 
     /**
      * @param modelMode The active model to set.
      */
-    public void setActiveModel(int modelMode) {
+    public void setActiveModel(@ModelMode int modelMode) {
         ComposeboxQueryControllerBridgeJni.get().setActiveModel(mNativeInstance, modelMode);
     }
 
@@ -234,16 +235,6 @@ public class ComposeboxQueryControllerBridge {
         return mSuggestedTabsSupplier;
     }
 
-    public static void setInstanceForTesting(@Nullable ComposeboxQueryControllerBridge instance) {
-        sInstanceForTesting = Optional.ofNullable(instance);
-        ResettersForTesting.register(ComposeboxQueryControllerBridge::resetInstanceForTesting);
-    }
-
-    public static void resetInstanceForTesting() {
-        sInstanceForTesting = null;
-    }
-
-
     @CalledByNative
     private void onInputStateChanged(InputState inputState) {
         mInputStateSupplier.set(inputState);
@@ -253,6 +244,15 @@ public class ComposeboxQueryControllerBridge {
     private void onSuggestedTabsUpdated(
             @JniType("std::vector") List<SuggestedTabInfo> suggestedTabs) {
         mSuggestedTabsSupplier.set(suggestedTabs);
+    }
+
+    public static void setInstanceForTesting(@Nullable ComposeboxQueryControllerBridge instance) {
+        sInstanceForTesting = Optional.ofNullable(instance);
+        ResettersForTesting.register(ComposeboxQueryControllerBridge::resetInstanceForTesting);
+    }
+
+    public static void resetInstanceForTesting() {
+        sInstanceForTesting = null;
     }
 
     @NativeMethods
@@ -276,6 +276,14 @@ public class ComposeboxQueryControllerBridge {
                 ByteBuffer fileData);
 
         @JniType("std::string")
+        @Nullable String addDriveFile(
+                long nativeComposeboxQueryControllerBridge,
+                @JniType("std::string") String driveId,
+                @JniType("std::optional<std::string>") @Nullable String resourceKey,
+                @JniType("std::string") String fileName,
+                @JniType("std::string") String mimeType);
+
+        @JniType("std::string")
         @Nullable String addTabContext(
                 long nativeComposeboxQueryControllerBridge,
                 @JniType("content::WebContents*") WebContents webContents,
@@ -284,16 +292,6 @@ public class ComposeboxQueryControllerBridge {
         @JniType("std::string")
         @Nullable String addTabContextFromCache(
                 long nativeComposeboxQueryControllerBridge, long tabId, boolean isSuggestedTab);
-
-        void getAimUrl(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("GURL") GURL url,
-                @JniType("base::OnceCallback<void(GURL)>&&") Callback<GURL> callback);
-
-        void getImageGenerationUrl(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("GURL") GURL url,
-                @JniType("base::OnceCallback<void(GURL)>&&") Callback<GURL> callback);
 
         void getAimUrlFromInputState(
                 long nativeComposeboxQueryControllerBridge,
@@ -309,14 +307,12 @@ public class ComposeboxQueryControllerBridge {
 
         boolean isPdfUploadEligible(long nativeComposeboxQueryControllerBridge);
 
-        boolean isCreateImagesEligible(long nativeComposeboxQueryControllerBridge);
-
         void setActiveTool(
                 long nativeComposeboxQueryControllerBridge,
-                @JniType("omnibox::ToolMode") int toolMode);
+                @ToolMode @JniType("omnibox::ToolMode") int toolMode);
 
         void setActiveModel(
                 long nativeComposeboxQueryControllerBridge,
-                @JniType("omnibox::ModelMode") int modelMode);
+                @ModelMode @JniType("omnibox::ModelMode") int modelMode);
     }
 }

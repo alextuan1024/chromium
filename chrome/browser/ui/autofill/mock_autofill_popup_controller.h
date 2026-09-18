@@ -52,6 +52,12 @@ class MockAutofillPopupController : public AutofillPopupController {
   void set_element_bounds(const gfx::RectF& bounds) {
     element_bounds_ = bounds;
   }
+  const LocalFrameToken& GetAnchorFrameToken() const override {
+    return anchor_frame_token_;
+  }
+  void set_anchor_frame_token(const LocalFrameToken& frame_token) {
+    anchor_frame_token_ = frame_token;
+  }
   MOCK_METHOD(base::i18n::TextDirection,
               GetElementTextDirection,
               (),
@@ -113,6 +119,7 @@ class MockAutofillPopupController : public AutofillPopupController {
               MayRecycle,
               (base::WeakPtr<AutofillSuggestionDelegate> delegate,
                content::WebContents* web_contents,
+               const LocalFrameToken& anchor_frame_token,
                AutofillSuggestionTriggerSource trigger_source),
               (const override));
   MOCK_METHOD(void,
@@ -166,6 +173,7 @@ class MockAutofillPopupController : public AutofillPopupController {
       "Arial, Times New Roman, 15px"};
   gfx::RectF element_bounds_ = {100, 100, 250, 50};
   PopupAnchorType anchor_type_ = PopupAnchorType::kField;
+  LocalFrameToken anchor_frame_token_;
 
   base::WeakPtrFactory<MockAutofillPopupController> weak_ptr_factory_{this};
 };

@@ -97,6 +97,8 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.DeviceRestriction;
 
+import java.util.stream.IntStream;
+
 /** Tests for SendTabToSelfCoordinator */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
@@ -139,6 +141,16 @@ public class SendTabToSelfCoordinatorTest {
         SendTabToSelfAndroidBridgeJni.setInstanceForTesting(null);
         // Dismiss any active IPH text bubbles shown during the test.
         ThreadUtils.runOnUiThreadBlocking(TextBubble::dismissBubbles);
+        // Reset screen orientation to avoid leaking state across tests.
+        if (mSyncTestRule.getActivity() != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mSyncTestRule
+                                .getActivity()
+                                .setRequestedOrientation(
+                                        ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                    });
+        }
     }
 
     private void signInAndShowDevicePicker() {
@@ -161,6 +173,22 @@ public class SendTabToSelfCoordinatorTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> new BottomSheetTestSupport(controller).setSheetState(SheetState.FULL, false));
         BottomSheetTestSupport.waitForState(controller, SheetState.FULL);
+    }
+
+    /**
+     * Injects {@code count} fake target devices into the fake sync server with descending
+     * timestamps.
+     */
+    private void injectFakeDevices(int count) {
+        IntStream.rangeClosed(1, count)
+                .forEach(
+                        i -> {
+                            long olderTime = mSetUpTimeMs - i * 1000;
+                            mSyncTestRule
+                                    .getFakeServerHelper()
+                                    .injectDeviceInfoEntity(
+                                            "Guid" + i, "Device " + i, olderTime, olderTime);
+                        });
     }
 
     @Test
@@ -912,17 +940,23 @@ public class SendTabToSelfCoordinatorTest {
     }
 
     /**
-     * Tests that the enhanced target device picker displays correctly in landscape mode with all
-     * target devices and the Send button visible and accessible.
+     * Tests that the enhanced target device picker displays correctly on phones in landscape mode
+     * with all target devices, the `send_button`, and the `manage_devices_link` visible and
+     * accessible.
+     *
+     * In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * because the vertical screen clearance between half and full states is less than 160dp
+     * (`(1 - HALF_HEIGHT_RATIO) * mContainerHeight < 160dp`). This disables `SheetState.HALF` and
+     * forces the sheet to open directly in `SheetState.FULL`.
      */
     @Test
     @LargeTest
+    @Restriction(DeviceFormFactor.PHONE)
     @EnableFeatures({
         SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
         SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
         ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
     })
-    @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_landscapeMode() {
         mSyncTestRule
                 .getFakeServerHelper()
@@ -942,6 +976,207 @@ public class SendTabToSelfCoordinatorTest {
         onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
         onView(withId(R.id.send_button)).check(matches(isDisplayed()));
         onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Tests that when many devices exist on phones in landscape mode, the list height is clamped to
+     * allow scrolling while keeping the `send_button` and `manage_devices_link` visible and
+     * accessible.
+     *
+     * In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * because vertical clearance between half and full states is less than 160dp. This disables
+     * `SheetState.HALF` and forces the sheet to open directly in `SheetState.FULL`.
+     */
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
+        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
+    })
+    public void testEnhancedDevicePicker_landscapeModeOverflowWithManyDevices() {
+        injectFakeDevices(20);
+
+        Activity activity = mSyncTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                });
+
+        signInAndShowDevicePicker();
+
+        // In landscape mode on phones, the sheet opens directly in full state.
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+
+        // Scroll to the end of the list and verify actions remain visible.
+        onView(withId(R.id.sheet_item_list)).perform(RecyclerViewActions.scrollToPosition(20));
+        onView(withText("Device 20")).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Tests that rotating a phone from portrait to landscape while the enhanced device picker is
+     * shown keeps the `send_button` and `manage_devices_link` visible and accessible.
+     *
+     * When rotating a phone to landscape, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * because vertical clearance between half and full states is less than 160dp. This disables
+     * `SheetState.HALF` and forces the sheet into `SheetState.FULL`.
+     */
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
+        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
+    })
+    public void testEnhancedDevicePicker_rotationMaintainsControlsVisibility() {
+        injectFakeDevices(20);
+
+        signInAndShowDevicePicker();
+
+        // Rotate to landscape while the sheet is currently displayed in portrait.
+        Activity activity = mSyncTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                });
+
+        // In landscape mode on phones, the sheet transitions to full state and clamps list height.
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Tests that the enhanced target device picker on tablets in landscape mode opens in half-state
+     * where the manage devices link is hidden, and reveals the manage devices link when expanded to
+     * full state.
+     *
+     * In landscape orientation on tablets, `BottomSheet.isSmallScreen()` evaluates to `false`
+     * because the vertical screen clearance is large (distance between half and full states exceeds
+     * 160dp). Consequently, `SheetState.HALF` remains enabled and the sheet opens in half-state.
+     */
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
+        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
+    })
+    public void testEnhancedDevicePicker_tabletLandscapeMode() {
+        mSyncTestRule
+                .getFakeServerHelper()
+                .injectDeviceInfoEntity("Guid1", "My Phone", mSetUpTimeMs, mSetUpTimeMs);
+        mSyncTestRule
+                .getFakeServerHelper()
+                .injectDeviceInfoEntity("Guid2", "My Laptop", mSetUpTimeMs, mSetUpTimeMs);
+
+        Activity activity = mSyncTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                });
+
+        signInAndShowDevicePicker();
+
+        // On tablets in landscape, the sheet opens in half-state where manage devices is hidden.
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(not(isDisplayed())));
+
+        // Expanding to full state reveals the manage devices link and divider.
+        expandBottomSheetToFullState();
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+        onView(withId(R.id.manage_devices_divider)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Tests that when many devices exist on tablets in landscape mode, the sheet opens in
+     * half-state and can be expanded to full state with list scrolling and visible action controls.
+     */
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
+        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
+    })
+    public void testEnhancedDevicePicker_tabletLandscapeModeOverflowWithManyDevices() {
+        injectFakeDevices(20);
+
+        Activity activity = mSyncTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                });
+
+        signInAndShowDevicePicker();
+
+        // Sheet opens in half-state where manage devices is hidden.
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(not(isDisplayed())));
+
+        // Expand to full state and verify all action controls become visible.
+        expandBottomSheetToFullState();
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+
+        // Scroll to the end of the list and verify actions remain visible.
+        onView(withId(R.id.sheet_item_list)).perform(RecyclerViewActions.scrollToPosition(20));
+        onView(withText("Device 20")).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Tests that rotating a tablet from portrait to landscape maintains sheet stability and
+     * allows expanding to full state with all action controls visible.
+     */
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
+        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
+    })
+    public void testEnhancedDevicePicker_tabletRotationMaintainsControlsVisibility() {
+        injectFakeDevices(20);
+
+        signInAndShowDevicePicker();
+
+        // Rotate to landscape while the sheet is currently displayed in portrait.
+        Activity activity = mSyncTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                });
+
+        // On tablets, the sheet remains in half-state after rotating to landscape.
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isEnabled()));
+
+        // Expanding to full state reveals the manage devices link.
+        expandBottomSheetToFullState();
+        onView(withId(R.id.manage_devices_link)).check(matches(isDisplayed()));
+        onView(withId(R.id.send_button)).check(matches(isDisplayed()));
     }
 
     @Test

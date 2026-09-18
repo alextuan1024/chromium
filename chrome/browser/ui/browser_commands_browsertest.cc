@@ -13,7 +13,6 @@
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -31,6 +30,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tab_search_bubble_host.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/commerce/core/pref_names.h"
@@ -48,6 +48,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 
 namespace chrome {
@@ -989,6 +990,22 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
       isolated_browser->GetTabStripModel()->GetActiveTab();
   ASSERT_NE(isolated_tab, nullptr);
   EXPECT_EQ(isolated_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
+                       NewSplitTab_URLFallback) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(isolated_browser);
+  EXPECT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+
+  AddBlankTabAndShow(isolated_browser);
+  EXPECT_EQ(2, isolated_browser->GetTabStripModel()->count());
+  NewSplitTab(isolated_browser, split_tabs::SplitTabLayout::kSideBySide,
+              split_tabs::SplitTabCreatedSource::kToolbarButton);
+  EXPECT_EQ(ChromeUINewTabURLAsGURL(), isolated_browser->GetTabStripModel()
+                                           ->GetActiveWebContents()
+                                           ->GetVisibleURL());
 }
 
 }  // namespace chrome

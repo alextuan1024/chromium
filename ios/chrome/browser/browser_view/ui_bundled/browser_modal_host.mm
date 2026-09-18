@@ -53,6 +53,8 @@
 #import "ios/chrome/browser/contextual_panel/model/contextual_panel_tab_helper.h"
 #import "ios/chrome/browser/contextual_panel/utils/contextual_panel_metrics.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
+#import "ios/chrome/browser/default_browser/promo/contextual/coordinator/contextual_default_browser_promo_coordinator.h"
+#import "ios/chrome/browser/default_browser/promo/contextual/public/contextual_default_browser_promo_metrics.h"
 #import "ios/chrome/browser/default_browser/promo/generic/coordinator/default_browser_generic_promo_coordinator.h"
 #import "ios/chrome/browser/default_browser/promo/generic/public/default_browser_generic_promo_commands.h"
 #import "ios/chrome/browser/docking_promo/coordinator/docking_promo_coordinator.h"
@@ -114,6 +116,7 @@
 #import "ios/chrome/browser/shared/public/commands/cobalt_commands.h"
 #import "ios/chrome/browser/shared/public/commands/collaboration_group_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/contextual_default_browser_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_iph_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
@@ -209,6 +212,7 @@ const char kContextPanelDismissedHistogram[] =
                                 CollaborationGroupCommands,
                                 ContextualPanelEntrypointIPHCommands,
                                 ContextualSheetCommands,
+                                ContextualDefaultBrowserPromoCommands,
                                 DefaultBrowserGenericPromoCommands,
                                 CountryCodePickerCommands,
                                 DockingPromoCommands,
@@ -285,6 +289,8 @@ const char kContextPanelDismissedHistogram[] =
   ChromeCoordinator* _cobaltAlertCoordinator;
   ChromeCoordinator* _cobaltPopupCoordinator;
   ContextualSheetCoordinator* _contextualSheetCoordinator;
+  ContextualDefaultBrowserPromoCoordinator*
+      _contextualDefaultBrowserPromoCoordinator;
   CountryCodePickerCoordinator* _countryCodePickerCoordinator;
   CredentialSuggestionBottomSheetCoordinator*
       _credentialSuggestionBottomSheetCoordinator;
@@ -369,6 +375,7 @@ const char kContextPanelDismissedHistogram[] =
 - (void)clearPresentedState {
   [self hideActorOverlay];
   [self hideAddContacts];
+  [self hideContextualDefaultBrowserPromo];
   [self dismissSaveCardBottomSheet];
   [self dismissEditAddressBottomSheet];
   [self dismissAutofillErrorDialog];
@@ -645,6 +652,7 @@ const char kContextPanelDismissedHistogram[] =
     @protocol(CollaborationGroupCommands),
     @protocol(ContextualPanelEntrypointIPHCommands),
     @protocol(ContextualSheetCommands),
+    @protocol(ContextualDefaultBrowserPromoCommands),
     @protocol(DefaultBrowserGenericPromoCommands),
     @protocol(CountryCodePickerCommands),
     @protocol(DockingPromoCommands),
@@ -1337,6 +1345,24 @@ const char kContextPanelDismissedHistogram[] =
   _countryCodePickerCoordinator = nil;
 }
 
+#pragma mark - ContextualDefaultBrowserPromoCommands
+
+- (void)showContextualDefaultBrowserPromoWithType:
+    (ContextualDefaultBrowserPromoType)promoType {
+  [_contextualDefaultBrowserPromoCoordinator stop];
+  _contextualDefaultBrowserPromoCoordinator =
+      [[ContextualDefaultBrowserPromoCoordinator alloc]
+          initWithBaseViewController:_baseViewController
+                             browser:_browser
+                           promoType:promoType];
+  [_contextualDefaultBrowserPromoCoordinator start];
+}
+
+- (void)hideContextualDefaultBrowserPromo {
+  [_contextualDefaultBrowserPromoCoordinator stop];
+  _contextualDefaultBrowserPromoCoordinator = nil;
+}
+
 #pragma mark - DefaultBrowserGenericPromoCommands
 
 - (void)hidePromo {
@@ -1428,13 +1454,13 @@ const char kContextPanelDismissedHistogram[] =
   [_driveFilePickerCoordinator setSelectedIdentity:selectedIdentity];
 }
 
-- (void)showDriveFilePickerWithComposeboxDelegate:
-            (id<ComposeboxPickerPresenterDelegate>)delegate
-                               baseViewController:
-                                   (UIViewController*)baseViewController
-                               maxAttachmentCount:(NSUInteger)maxAttachmentCount
-                                snackbarPresenter:(ComposeboxSnackbarPresenter*)
-                                                      snackbarPresenter {
+- (void)
+    showDriveFilePickerWithResponseHandler:
+        (id<DriveFilePickerResponseCommands>)responseHandler
+                        baseViewController:(UIViewController*)baseViewController
+                        maxAttachmentCount:(NSUInteger)maxAttachmentCount
+                         snackbarPresenter:
+                             (ComposeboxSnackbarPresenter*)snackbarPresenter {
   // In the context of the compose box the user should not have been offered to
   // use the drive if they are not signed-in.
   CHECK(AuthenticationServiceFactory::GetForProfile(_browser->GetProfile())
@@ -1455,7 +1481,7 @@ const char kContextPanelDismissedHistogram[] =
                          browser:_browser
                         webState:activeWebState
                    forComposebox:YES];
-  _driveFilePickerCoordinator.composeboxDelegate = delegate;
+  _driveFilePickerCoordinator.responseHandler = responseHandler;
   _driveFilePickerCoordinator.maxAttachmentCount = maxAttachmentCount;
   _driveFilePickerCoordinator.snackbarPresenter = snackbarPresenter;
   [_driveFilePickerCoordinator start];
@@ -1907,6 +1933,8 @@ const char kContextPanelDismissedHistogram[] =
 #pragma mark - PictureInPictureCommands
 
 - (void)showPictureInPictureWithConfig:(PictureInPictureConfiguration*)config {
+  CHECK(!_browser->GetProfile()->IsOffTheRecord());
+
   [_pictureInPictureCoordinator stop];
 
   UIViewController* baseViewController = [self activeBaseViewController];

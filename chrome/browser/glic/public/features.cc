@@ -9,12 +9,15 @@
 #include "base/strings/string_split.h"
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
+#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 
 namespace features {
 
 BASE_FEATURE(kGlicAndroidSidePanel, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicDragAndDropFileUploadAndroid,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicAndroidOffscreenRendering, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicChromeStatusIcon, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kGlicChromeStatusIconSizePx{
@@ -64,6 +67,8 @@ base::flat_set<std::string> GetGlicSelectionDefaultBlockedSites() {
   return base::flat_set<std::string>(std::move(sites));
 }
 
+BASE_FEATURE(kGlicSelectionOverlayPrompt, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kGlicSelectionSmallChip, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kGlicSelectionSmallChipOnTop{
     &kGlicSelectionSmallChip, "on_top", true};
@@ -97,14 +102,6 @@ BASE_FEATURE(kGlicLiveMode,
 #endif
 );
 
-BASE_FEATURE(kGlicDefaultToLastActiveConversation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<base::TimeDelta>
-    kGlicDefaultToLastActiveConversationMaxRecency{
-        &kGlicDefaultToLastActiveConversation, "max_recency",
-        base::Minutes(20)};
-
 BASE_FEATURE(kGlicSummarizeVideoSuggestion, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicFixTimeToFirstQueryKillSwitch,
@@ -129,6 +126,8 @@ BASE_FEATURE(kGlicDynamicChromeTools, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicTextSelectionContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kGlicTextSelectionContextMenuMessageFirstFre{
     &kGlicTextSelectionContextMenu, "message_first_fre", false};
+const base::FeatureParam<bool> kGlicTextSelectionContextMenuAutoSubmit{
+    &kGlicTextSelectionContextMenu, "auto_submit", false};
 
 BASE_FEATURE(kGlicTieredRolloutV2, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kGlicTieredRolloutV2EligibleTiers{
@@ -183,6 +182,7 @@ const base::FeatureParam<base::TimeDelta> kGlicCookieSyncOnErrorMinInterval{
     &kGlicCookieSyncOnError, "min_interval", base::Minutes(5)};
 BASE_FEATURE(kGlicCookieSyncOnOpenEvenIfNoSyncNeeded,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicCookieSyncEarlyNoStartup, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicWebClientLoadTimes, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kGlicPreLoadingTimeMs{
@@ -261,8 +261,6 @@ BASE_FEATURE(kGlicWebPasteEligibilityCheck,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicTabGroups, base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<bool> kGlicTabGroupsUseFullTabEmbedder{
-    &kGlicTabGroups, "use_full_tab_embedder", false};
 BASE_FEATURE(kGlicSparkSettingsAccessibleLabels,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -272,6 +270,11 @@ BASE_FEATURE(kGlicStructuredYieldMetadata, base::FEATURE_ENABLED_BY_DEFAULT);
 // Runs the glic client in a PrivilegedWebContents instead of a webview.
 // This is a work in progress. See b/534807813.
 BASE_FEATURE(kGlicNoWebview, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsGlicNoWebviewEnabled() {
+  return base::FeatureList::IsEnabled(kGlicNoWebview) &&
+         base::FeatureList::IsEnabled(
+             pwc::mojom::features::kPrivilegedWebContents);
+}
 // Whether to disallow webview communication directly with the glic host
 // (chrome/browser/resources/glic/glic_api_impl/host). When enabled, some
 // functionality implemented by glic's webview.ts is implemented instead by c++
@@ -289,7 +292,8 @@ BASE_FEATURE(kGlicMarketingAutoOpen, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kGlicMarketingUrlAllowlist{
     &kGlicMarketingAutoOpen, "allowlisted_urls",
 #if BUILDFLAG(IS_ANDROID)
-    "https://www.google.com/chrome/ai-innovations/gemini-in-chrome/"
+    "https://www.google.com/chrome/ai-innovations/gemini-in-chrome/,"
+    "https://www.google.com/chrome/campaigns/gic-on-android/"
 #else
     ""
 #endif
@@ -304,4 +308,10 @@ BASE_FEATURE(kGlicActionFirstFRE,
 BASE_FEATURE(kGlicWarmOnNudge, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicWarmOnIph, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicBackfillWarmingUsePerformanceManager,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicColdWarmingUsePerformanceManager,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace features

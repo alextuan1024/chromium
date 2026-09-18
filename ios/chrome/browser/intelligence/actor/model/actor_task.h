@@ -13,11 +13,21 @@
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_multi_source_observation.h"
 #import "base/timer/timer.h"
+#import "ios/chrome/app/background_mode_buildflags.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_engine.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_task_updates_observer.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state_observer.h"
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+@class BackgroundContinuedProcessingTaskContext;
+@class NSError;
+
+namespace base {
+class Value;
+}  // namespace base
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
 @class CRBProtocolObservers;
 
@@ -27,6 +37,10 @@ class BrowserList;
 namespace web {
 class WebState;
 }
+
+namespace origin_gating {
+class OriginGatingChecker;
+}  // namespace origin_gating
 
 namespace actor {
 
@@ -45,7 +59,8 @@ class ActorTask : public web::WebStateObserver,
             bool allow_incognito_web_states,
             AggregatedJournal* journal,
             ActorToolFactory* tool_factory,
-            BrowserList* browser_list);
+            BrowserList* browser_list,
+            origin_gating::OriginGatingChecker* gating_checker);
   ~ActorTask() override;
 
   ActorTask(const ActorTask&) = delete;
@@ -129,6 +144,16 @@ class ActorTask : public web::WebStateObserver,
   // Returns whether this task allows actuating on incognito WebStates.
   bool allow_incognito_web_states() const;
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+  // Sets the background continued processing task context.
+  void SetBackgroundTaskContext(
+      BackgroundContinuedProcessingTaskContext* background_task_context);
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+
+  // Returns the origin gating checker used for evaluating navigation and
+  // actuation policies, or nullptr if unavailable.
+  origin_gating::OriginGatingChecker* GetOriginGatingChecker() const;
+
   // web::WebStateObserver overrides.
   void DidStopLoading(web::WebState* web_state) override;
   void WebStateDestroyed(web::WebState* web_state) override;
@@ -139,6 +164,9 @@ class ActorTask : public web::WebStateObserver,
   // Sets the actuation state on all controlled `WebState`s based on
   // `actuating`.
   void SetActuatingOnWebStates(bool actuating);
+
+  // Sets `SetKeepRenderProcessAlive` on all controlled `WebState`s.
+  void SetKeepRenderProcessAliveOnControlledWebStates(bool keep_alive);
 
   // Sets the task state and logs the transition.
   void SetState(ActorTaskState new_state);
@@ -170,6 +198,42 @@ class ActorTask : public web::WebStateObserver,
   // Returns the Browser associated with the given `window_id`.
   Browser* GetBrowserForWindowId(int32_t window_id) const;
 
+  // Prunes destroyed or null WebStates from `controlled_web_states_`. If
+  // `destroying_web_state` is provided, also prunes the matching entry.
+  void PruneDestroyedWebStates(web::WebState* destroying_web_state = nullptr);
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+  // Updates the subtitle of the background continued processing task to match
+  // the latest `task_update`.
+  void UpdateBackgroundTaskSubtitle(const std::string& task_update);
+
+  // Advances the background task progress by one discrete step using the
+  // context's stepped progress tracker.
+  void UpdateBackgroundTaskProgress();
+
+  // Finalizes the background task, reporting whether it succeeded.
+  void FinalizeBackgroundTask(bool success);
+
+  // Starts the JavaScript heartbeat ping timer if backgrounding is enabled and
+  // the timer is not already running.
+  // TODO(crbug.com/561253684): Ensure we only start the heartbeat timer when
+  // the app is backgrounded.
+  void StartHeartbeatTimer();
+
+  // Stops the JavaScript heartbeat ping timer.
+  void StopHeartbeatTimer();
+
+  // Sends a lightweight JavaScript ping to all controlled WebStates to keep
+  // their out-of-process WebContent processes alive.
+  void SendHeartbeatPing();
+
+  // Handles completion or failure of a JavaScript heartbeat ping for
+  // `web_state_id`. Failed pings are logged to the journal.
+  void OnHeartbeatPingResponse(web::WebStateID web_state_id,
+                               const base::Value* result,
+                               NSError* error);
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+
   // The task state.
   ActorTaskState state_ = ActorTaskState::kInit;
 
@@ -198,6 +262,11 @@ class ActorTask : public web::WebStateObserver,
   // ActorService, which is guaranteed to outlive this ActorTask.
   raw_ptr<ActorToolFactory> tool_factory_;
 
+  // The origin gating checker used for evaluating navigation and actuation
+  // policies. Owned by ActorService, which is guaranteed to outlive this
+  // ActorTask.
+  raw_ptr<origin_gating::OriginGatingChecker> gating_checker_ = nullptr;
+
   // Set of web states actively controlled (observed and/or being actuated on)
   // by this task.
   std::vector<base::WeakPtr<web::WebState>> controlled_web_states_;
@@ -222,6 +291,15 @@ class ActorTask : public web::WebStateObserver,
   // executions. `CRBProtocolObservers` itself is held strongly, but the
   // observers inside are held weakly.
   __strong CRBProtocolObservers<ActorTaskUpdatesObserver>* observers_;
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+  // Active context for background continued processing, if requested.
+  __strong BackgroundContinuedProcessingTaskContext* background_task_context_ =
+      nil;
+
+  // Repeating timer for sending JavaScript heartbeat pings.
+  base::RepeatingTimer heartbeat_timer_;
+#endif
 
   // Weak pointer factory.
   base::WeakPtrFactory<ActorTask> weak_ptr_factory_{this};

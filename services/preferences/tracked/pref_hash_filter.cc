@@ -32,6 +32,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/pref_store.h"
 #include "services/preferences/public/cpp/tracked/pref_names.h"
+#include "services/preferences/public/cpp/tracked/tracked_preference_histogram_names.h"
 #include "services/preferences/tracked/dictionary_hash_store_contents.h"
 #include "services/preferences/tracked/features.h"
 #include "services/preferences/tracked/pref_hash_store_transaction.h"
@@ -190,6 +191,12 @@ void PrefHashFilter::SetPrefService(PrefService* pref_service) {
   pref_service_ = pref_service;
 }
 
+void PrefHashFilter::SetMigratedPaths(
+    base::span<const std::string> migrated_paths) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  migrated_paths_.assign(migrated_paths.begin(), migrated_paths.end());
+}
+
 // static
 void PrefHashFilter::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
@@ -311,6 +318,9 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::FilterSerializeData(
       // processing paths that have changed.
       process_paths(changed_paths_);
     }
+    // The earlier call to `process_paths` may not have iterated through just
+    // `changed_paths_`, so emit metrics for changed paths separately.
+    RecordPrefValueChanges();
 
     changed_paths_.clear();
   }
@@ -463,6 +473,15 @@ void PrefHashFilter::DeferredEncryptorRevalidation(
       continue;
     }
 
+    // Preferences migrated on first run (from initial preferences) were
+    // seeded before the encryptor was available and therefore lack encrypted
+    // hashes. Initialize their encrypted hashes directly so that they are
+    // properly anchored in os_crypt without relying on legacy HMAC fallback.
+    if (std::ranges::contains(migrated_paths_, path)) {
+      preference->OnNewValue(value_at_load, transaction.get(),
+                             encryptor_.get());
+    }
+
     if (preference->EnforceAndReport(
             pref_store_contents_at_load, transaction.get(),
             nullptr /* external_tx */, encryptor_.get())) {
@@ -494,6 +513,7 @@ void PrefHashFilter::DeferredEncryptorRevalidation(
 
   pref_service_->SetString(
       pref_to_write, base::NumberToString(base::Time::Now().ToInternalValue()));
+  migrated_paths_.clear();
   if (on_deferred_revalidation_complete_for_testing_) {
     std::move(on_deferred_revalidation_complete_for_testing_).Run();
   }
@@ -637,6 +657,14 @@ void PrefHashFilter::MaybeRecordTrackedPreferenceResetCount(
   UMA_HISTOGRAM_COUNTS_100("Settings.TrackedPreferenceResets.Count",
                            reset_list ? reset_list->size() : 0);
   reset_metric_recorded_ = true;
+}
+
+void PrefHashFilter::RecordPrefValueChanges() const {
+  for (const auto& [path, preference] : changed_paths_) {
+    UMA_HISTOGRAM_EXACT_LINEAR(
+        user_prefs::tracked::kTrackedPrefHistogramNewValueSerialized,
+        preference->GetReportingId(), reporting_ids_count_);
+  }
 }
 
 // static

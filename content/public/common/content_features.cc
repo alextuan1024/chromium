@@ -520,10 +520,6 @@ BASE_FEATURE(kWebIdentityDigitalCredentials, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kWebIdentityDigitalCredentialsCreation,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables scrollers inside Blink to store scroll offsets in fractional
-// floating-point numbers rather than truncating to integers.
-BASE_FEATURE(kFractionalScrollOffsets, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Puts network quality estimate related Web APIs in the holdback mode. When the
 // holdback is enabled the related Web APIs return network quality estimate
 // set by the experiment (regardless of the actual quality).
@@ -753,6 +749,16 @@ BASE_FEATURE(kNavigationNetworkResponseQueue,
 #endif
 );
 
+// When PrioritizeMainFrameNavigationNetworkResponse is enabled, the browser
+// will schedule tasks related to primary main frame navigation network
+// responses in a kHighest priority queue.
+BASE_FEATURE(kPrioritizeMainFrameNavigationNetworkResponse,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<bool>
+    kPrioritizeMainFrameNavigationNetworkResponseEnableOnLowEndDevices{
+        &kPrioritizeMainFrameNavigationNetworkResponse,
+        "enable_on_low_end_devices", false};
+
 // If the network service is enabled, runs it in process.
 BASE_FEATURE(kNetworkServiceInProcess,
              "NetworkServiceInProcess2",
@@ -782,6 +788,11 @@ BASE_FEATURE(kOverscrollHistoryNavigation, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Whether web apps can run periodic tasks upon network connectivity.
 BASE_FEATURE(kPeriodicBackgroundSync, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, PreconnectManager bypasses UI-thread host preresolve and connects
+// sockets directly to the network context for single preconnect requests.
+BASE_FEATURE(kPreconnectManagerDirectFastPath,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, activation beacon is sent when a prefetched page is activated.
 // The activation beacon is a beacon that echoes back a server specified token
@@ -914,6 +925,25 @@ BASE_FEATURE(kRegionCaptureOfOtherTabs, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enable using the RenderDocument.
 BASE_FEATURE(kRenderDocument, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Master flag for the Resource Broker metrics-only skeleton, which observes
+// eligible subresource responses to measure cross-renderer duplication of
+// identical bytes. No serving behavior exists behind this flag.
+//
+// Policy: serving requires a future separate default-off feature; a
+// configuration that appears to request serving degrades to metrics-only with
+// a warning + UMA, never a browser-process CHECK.
+//
+// Tracking bug: crbug.com/560232768
+BASE_FEATURE(kResourceBroker, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Grace period to keep cached resources alive after their renderer exits
+// before evicting them.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kResourceBrokerGraceWindow,
+                   &kResourceBroker,
+                   "grace_window",
+                   base::Seconds(300));
 
 // Restrict the maximum number of concurrent ThreadPool tasks when a renderer is
 // low priority.
@@ -1332,14 +1362,16 @@ const base::FeatureParam<bool> kWebUIBundledCodeCacheGenerateResourceMap{
 BASE_FEATURE(kWebUIJSErrorReportingExtended, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
-// If enabled, WebUI will optimize resources loading by piping a dictionary of
-// URL paths to materialized WebUI resource content to the renderer via
-// LocalResourceLoaderConfig.
+// If enabled, opted-in WebUIs will optimize resources loading by piping a
+// dictionary of URL paths to materialized WebUI resource content to the
+// renderer via LocalResourceLoaderConfig.
+// For now, only TopChrome WebUI renderer-related WebUIs are opted-in, including
+// NavigationControl and Omnibox Popup.
 // This is an extension of `kWebUIInProcessResourceLoading` which previously
 // serves only resources in resource bundle.
 // See crbug.com/459528908.
 BASE_FEATURE(kWebUIInProcessResourceLoadingV2,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Controls whether the WebUSB API is enabled:
 // https://wicg.github.io/webusb
@@ -1384,8 +1416,7 @@ BASE_FEATURE(kAccessibilityDeprecateTypeAnnounce,
 
 // When enabled, extended selections are sent to Android through setSelection
 // API.
-BASE_FEATURE(kAccessibilityExtendedSelection,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAccessibilityExtendedSelection, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, syncs accessibility focus when WebView gains focus.
 BASE_FEATURE(kAccessibilitySyncFocusOnViewFocusGain,
@@ -1456,7 +1487,7 @@ BASE_FEATURE(kAccessibilitySequentialFocus, base::FEATURE_ENABLED_BY_DEFAULT);
 // When enabled, set selectable on all nodes with text, and support
 // ACTION_SET_SELECTION.
 BASE_FEATURE(kAccessibilitySetSelectableOnAllNodesWithText,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables posting registering, unregistering the broadcast receiver to the
 // background thread.

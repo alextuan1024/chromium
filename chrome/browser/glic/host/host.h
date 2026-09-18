@@ -14,6 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/host/context/glic_sharing_manager_provider.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
@@ -61,7 +62,7 @@ class Host : public GlicSharingManagerProvider {
     // Allows the user to manually resize the widget by dragging. If the widget
     // hasn't been created yet, apply this setting when it is created. No effect
     // if the widget doesn't exist or the feature flag is disabled.
-    virtual void EnableDragResize(bool enabled);
+    virtual void SetDragResizeEnabled(bool enabled);
 
     // Attaches glic to the last focused Chrome window.
     virtual void Attach() = 0;
@@ -71,8 +72,6 @@ class Host : public GlicSharingManagerProvider {
     // Sets the minimum widget size that the widget will allow the user to
     // resize to.
     virtual void SetMinimumWidgetSize(const gfx::Size& size);
-    virtual void CaptureScreenshot(
-        glic::mojom::WebClientHandler::CaptureScreenshotCallback callback) = 0;
 
     // Returns true if the glic widget is visible.
     virtual bool IsShowing() const = 0;
@@ -107,6 +106,9 @@ class Host : public GlicSharingManagerProvider {
 
     virtual void CreateZeroStateSuggestionsHandler(
         mojo::PendingReceiver<mojom::ZeroStateSuggestionsHandler> receiver) = 0;
+
+    virtual void CreateGeminiEnterpriseHandler(
+        mojo::PendingReceiver<mojom::GeminiEnterpriseHandler> receiver) = 0;
 
     virtual void RegisterConversation(
         glic::mojom::ConversationInfoPtr info,
@@ -159,6 +161,11 @@ class Host : public GlicSharingManagerProvider {
     // If the glic WebUI is destroyed, the webUI state is returned to
     // kUninitialized.
     virtual void WebUiStateChanged(mojom::WebUiState state) {}
+
+    // Called when the client failed to become usable. Unlike
+    // WebUiStateChanged() this describes the cause rather than the panel, and
+    // it is reported in both the webview and no-webview worlds.
+    virtual void ClientLoadErrorOccurred(ClientLoadErrorReason reason) {}
     virtual void ContextAccessIndicatorChanged(bool enabled) {}
   };
 
@@ -259,8 +266,6 @@ class Host : public GlicSharingManagerProvider {
   void OnGuestWebClientCleared(bool had_web_client);
 
   GlicWebContentsManager* contents_manager() { return contents_.get(); }
-  std::unique_ptr<content::WebContents> ReleaseWebContents();
-  void ReclaimWebContents(std::unique_ptr<content::WebContents> web_contents);
   // Returns the WebUI web contents. May be null.
   content::WebContents* webui_contents() const;
 
@@ -355,6 +360,11 @@ class Host : public GlicSharingManagerProvider {
   void WebUiStateChanged(GlicPageHandler* page_handler,
                          mojom::WebUiState new_state);
 
+  // Informs the host that the client failed to become usable, and why.
+  // Repeated errors are not deduplicated; an error after a reload is a
+  // genuinely new event.
+  void ClientLoadErrorOccurred(ClientLoadErrorReason reason);
+
   // Called when the web client changes its mode.
   void OnInteractionModeChange(mojom::WebClientMode new_mode);
 
@@ -372,7 +382,7 @@ class Host : public GlicSharingManagerProvider {
   // Allows the user to manually resize the widget by dragging. If the widget
   // hasn't been created yet, apply this setting when it is created. No effect
   // if the widget doesn't exist or the feature flag is disabled.
-  void EnableDragResize(bool enabled);
+  void SetDragResizeEnabled(bool enabled);
   void HibernateImpl(bool is_destroying);
   void AttachPanel();
   void DetachPanel();
@@ -381,9 +391,6 @@ class Host : public GlicSharingManagerProvider {
   // Sets the minimum widget size that the widget will allow the user to resize
   // to.
   void SetMinimumWidgetSize(const gfx::Size& size);
-
-  void CaptureScreenshot(
-      glic::mojom::WebClientHandler::CaptureScreenshotCallback callback);
 
   // Returns true if the widget is visible.
   bool IsWidgetShowing(GlicWebClientAccess* client) const;
@@ -458,6 +465,7 @@ class Host : public GlicSharingManagerProvider {
   mojom::WebUiState primary_webui_state_ = mojom::WebUiState::kUninitialized;
   std::optional<mojom::PanelState> pending_panel_state_;
   ClientState client_state_;
+  bool drag_resize_enabled_ = false;
 
   void OnActiveWebContentsChanged(content::WebContents* new_contents);
 
@@ -482,15 +490,12 @@ class EmptyEmbedderDelegate : public Host::EmbedderDelegate {
   void Resize(const gfx::Size& size,
               base::TimeDelta duration,
               base::OnceClosure callback) override;
-  void EnableDragResize(bool enabled) override {}
+  void SetDragResizeEnabled(bool enabled) override {}
   void Attach() override {}
   void Detach() override {}
   void ClosePanel() override {}
   void OnReload() override {}
   void SetMinimumWidgetSize(const gfx::Size& size) override {}
-  void CaptureScreenshot(
-      glic::mojom::WebClientHandler::CaptureScreenshotCallback callback)
-      override;
   bool IsShowing() const override;
   void SwitchConversation(
       glic::mojom::ConversationInfoPtr info,

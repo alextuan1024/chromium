@@ -26,6 +26,8 @@ import android.transition.TransitionManager;
 import android.transition.TransitionSet;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -91,6 +93,7 @@ import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.Highl
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightShape;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
@@ -132,6 +135,7 @@ public class SettingsSearchCoordinator
     private final Profile mProfile;
     private final Callback<Integer> mUpdateFirstVisibleTitle;
     private final MonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
+    private final boolean mShownInTab;
 
     private @Nullable Runnable mSearchRunnable;
     private @Nullable Runnable mRemoveResultChildViewListener;
@@ -240,6 +244,8 @@ public class SettingsSearchCoordinator
      * @param profile User profile object.
      * @param updateFirstVisibleTitle Callback used to set the first visible one of the titles. See
      *     {@link MultiColumnSettings#mFirstVisibleTitleIndex}.
+     * @param shownInTab Whether settings is shown in a browser tab rather than standalone {@link
+     *     SettingsActivity}.
      */
     public SettingsSearchCoordinator(
             FragmentActivity activity,
@@ -249,7 +255,8 @@ public class SettingsSearchCoordinator
             Map<PreferenceFragmentCompat, ContainmentItemDecoration> itemDecorations,
             Profile profile,
             Callback<Integer> updateFirstVisibleTitle,
-            MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier) {
+            MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
+            boolean shownInTab) {
         AccessibilityState.addListener(this);
 
         mActivity = activity;
@@ -261,6 +268,7 @@ public class SettingsSearchCoordinator
         mProfile = profile;
         mUpdateFirstVisibleTitle = updateFirstVisibleTitle;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
+        mShownInTab = shownInTab;
     }
 
     /** Finds a view and assumes that it exists. */
@@ -799,9 +807,15 @@ public class SettingsSearchCoordinator
     /**
      * Whether the search box should automatically receive accessibility focus on page load or tab
      * switch. Anchors TalkBack focus to the search box when Settings is opened in a tab.
+     *
+     * <p>On foldable devices, {@link SettingsInTab#isEnabled()} returns true even when folded so
+     * that an already-open settings tab survives folding. However, opening settings from the app
+     * menu while folded launches {@link SettingsActivity}. If the user later unfolds the device,
+     * the screen size changes, but settings behaviors need to stay consistent with how settings is
+     * hosted (indicated by {@code mShownInTab}).
      */
     private boolean shouldAutoFocusSearchBox() {
-        return SettingsInTab.isEnabled();
+        return mShownInTab;
     }
 
     private boolean isShowingMainSettings() {
@@ -1076,23 +1090,17 @@ public class SettingsSearchCoordinator
 
     /** Update the visibility of the help menu on the toolbar. */
     public void updateHelpMenuVisibility() {
-        // SettingsInTab does not show a help icon / options menu.
-        if (SettingsInTab.isEnabled()) {
-            ViewGroup menuView = (ViewGroup) getHelpMenuView();
-            if (menuView != null) {
-                menuView.setVisibility(View.GONE);
-            }
-            updateSearchUiWidth();
-            return;
-        }
-
         ViewGroup menuView = (ViewGroup) getHelpMenuView();
         if (menuView == null) {
+            if (mShownInTab && (mActionBar == null || !hasVisibleMenuItems(mActionBar.getMenu()))) {
+                updateSearchUiWidth();
+                return;
+            }
             mHandler.post(this::updateHelpMenuVisibility);
             return;
         }
 
-        menuView.post(
+        mHandler.post(
                 () -> {
                     // The task may run after the Activity has been destroyed, for example, during
                     // theme switch. https://crbug.com/545872336
@@ -1111,6 +1119,9 @@ public class SettingsSearchCoordinator
                     }
                     menuView.setVisibility(show ? View.VISIBLE : View.GONE);
                     updateSearchUiWidth();
+                    if (show && menuView.getWidth() == 0) {
+                        mHandler.post(this::updateSearchUiWidth);
+                    }
                 });
     }
 
@@ -1267,11 +1278,11 @@ public class SettingsSearchCoordinator
             int excessPx = detailPaneWidth - maxDetailWidthPx - minGapPx * 2;
             int gapPx = (excessPx > 0 ? excessPx / 2 : 0) + minGapPx;
             Toolbar actionBar = requireViewById(R.id.action_bar);
-            // SettingsInTab does not have a menu icon, but Toolbar has an internal
+            // SettingsInTab does not have a menu icon by default, but Toolbar has an internal
             // contentInsetEnd and padding that must be accounted for so the search box aligns
             // with the preference items in the detail pane.
             int actionBarEndMargin =
-                    SettingsInTab.isEnabled()
+                    mShownInTab && !hasMenuIcon()
                             ? gapPx - actionBar.getContentInsetEnd() - actionBar.getPaddingEnd()
                             : gapPx - getPixelSize(R.dimen.settings_menu_icon_margin);
             updateView(actionBar, 0, actionBarEndMargin, LayoutParams.MATCH_PARENT);
@@ -1296,7 +1307,7 @@ public class SettingsSearchCoordinator
         if (mActionBar != null) {
             boolean isMainSettings = mMultiColumnSettings != null && isShowingMainSettings();
             SettingsMenuHelper.updateNavigationIcon(
-                    mActionBar, mActivity, show, mUseMultiColumn, isMainSettings);
+                    mActionBar, mActivity, mShownInTab, show, mUseMultiColumn, isMainSettings);
         }
     }
 
@@ -1305,6 +1316,11 @@ public class SettingsSearchCoordinator
         return menuView != null && menuView.getVisibility() == View.VISIBLE
                 ? menuView.getWidth()
                 : 0;
+    }
+
+    private boolean hasMenuIcon() {
+        View menuView = getHelpMenuView();
+        return menuView != null && menuView.getVisibility() == View.VISIBLE;
     }
 
     private static void updateView(View view, int startMargin, int endMargin, int width) {
@@ -1334,6 +1350,8 @@ public class SettingsSearchCoordinator
     }
 
     private void updateSingleColumnSearchUiWidth(int appBarWidth) {
+        assert !mUseMultiColumn;
+
         // If the available width is unknown, defer until the layout pass completes (via the
         // existing onLayoutChangeListener).
         if (appBarWidth == 0) return;
@@ -1351,13 +1369,21 @@ public class SettingsSearchCoordinator
         int menuWidth = getMenuWidth();
         int startMargin = margin;
         int endMargin = margin;
-        if (isOnWideScreen) {
+        // On wide screens and in SettingsInTab (e.g. tablet in split-screen mode), preference items
+        // always include itemMargin. Include itemMargin here so the search UI aligns.
+        if (isOnWideScreen || mShownInTab) {
             int itemMargin = getPixelSize(R.dimen.settings_item_margin);
             margin += itemMargin;
             if (menuWidth > 0) {
-                // The menu icon on the right pushes the UI to left. Adjust the margin.
-                startMargin = margin + menuWidth - itemMargin;
-                endMargin = margin - (menuWidth - itemMargin);
+                // The menu icon pushes the UI to the other side. Adjust the margin.
+                int menuOffset = menuWidth - itemMargin;
+                if (LocalizationUtils.isLayoutRtl()) {
+                    startMargin = margin - menuOffset;
+                    endMargin = margin + menuOffset;
+                } else {
+                    startMargin = margin + menuOffset;
+                    endMargin = margin - menuOffset;
+                }
             } else {
                 // SettingsInTab does not have a menu icon, so don't adjust the margin.
                 startMargin = margin;
@@ -1370,19 +1396,23 @@ public class SettingsSearchCoordinator
             endMargin = margin + menuWidth;
         }
 
-        if (SettingsInTab.isEnabled()) {
-            // Multi-column mode sets an end margin on the action bar to align with the column gap.
-            // When transitioning to single-column mode, reset the margins to fill the width.
-            var lp = (ViewGroup.MarginLayoutParams) mActionBar.getLayoutParams();
-            if (lp.getMarginStart() != 0 || lp.getMarginEnd() != 0) {
-                updateView(mActionBar, 0, 0, LayoutParams.MATCH_PARENT);
-            }
+        // Multi-column mode sets an end margin on the action bar to align with the column gap.
+        // When transitioning to single-column mode, reset the margins to fill the width.
+        var actionBarlp = (ViewGroup.MarginLayoutParams) mActionBar.getLayoutParams();
+        if (actionBarlp.getMarginStart() != 0 || actionBarlp.getMarginEnd() != 0) {
+            updateView(mActionBar, 0, 0, LayoutParams.MATCH_PARENT);
         }
 
         // Use LayoutParams.MATCH_PARENT so the search views scale continuously with the parent
         // container (AppBarLayout or Toolbar) during window resizes and side panel transitions,
         // without setting fixed pixel widths that could cause layout overflow.
-        if (searchBox != null) {
+        // In single-column mode on tablets, searchBox is hosted in AppBarLayout (while in
+        // multi-column mode it is hosted in Toolbar). During orientation or layout transitions,
+        // updateSingleColumnSearchUiWidth() may run before switchSearchUiLayout() reparents
+        // searchBox back to AppBarLayout; avoid modifying its LayoutParams while it is still
+        // temporarily hosted in Toolbar.
+        View appBar = findViewById(R.id.app_bar_layout);
+        if (searchBox != null && (appBar == null || searchBox.getParent() == appBar)) {
             var lp = (ViewGroup.MarginLayoutParams) searchBox.getLayoutParams();
             if (lp.getMarginStart() != margin
                     || lp.getMarginEnd() != margin
@@ -1391,18 +1421,16 @@ public class SettingsSearchCoordinator
             }
         }
         if (query != null) {
-            // In SettingsInTab, the query container is hosted inside the action bar toolbar,
-            // which has internal horizontal padding and content insets. Because the query
-            // container has layout_gravity="end", Toolbar aligns it from the end using
-            // contentInsetEnd, but does not apply contentInsetStart to its start edge. Subtract
-            // the toolbar's start padding and effective end padding from the margins so that the
-            // query container aligns horizontally with the search box.
-            if (SettingsInTab.isEnabled()) {
-                startMargin = Math.max(0, startMargin - mActionBar.getPaddingStart());
-                int endPadding =
-                        Math.max(mActionBar.getPaddingEnd(), mActionBar.getContentInsetEnd());
-                endMargin = Math.max(0, endMargin - endPadding);
-            }
+            // The query container is hosted inside the action bar toolbar, which has internal
+            // horizontal padding and content insets. Because the query container has
+            // layout_gravity="end", Toolbar aligns it from the end using contentInsetEnd, but
+            // does not apply contentInsetStart to its start edge. Subtract the toolbar's start
+            // padding and effective end padding from the margins so that the query container aligns
+            // horizontally with the search box.
+            startMargin = Math.max(0, startMargin - mActionBar.getPaddingStart());
+            int endPadding = Math.max(mActionBar.getPaddingEnd(), mActionBar.getContentInsetEnd());
+            endMargin = Math.max(0, endMargin - endPadding);
+
             var lp = (ViewGroup.MarginLayoutParams) query.getLayoutParams();
             if (lp.getMarginStart() != startMargin
                     || lp.getMarginEnd() != endMargin
@@ -1461,6 +1489,11 @@ public class SettingsSearchCoordinator
 
     @VisibleForTesting(otherwise = PRIVATE)
     void onConfigurationChangedInternal() {
+        // This may run after the Activity has been destroyed, for example from a pending layout
+        // pass on the old view hierarchy during a theme switch. The fragments are already detached
+        // at that point, so there is nothing to update. https://crbug.com/561275965
+        if (mActivity.isFinishing() || mActivity.isDestroyed() || mIsDestroyed) return;
+
         boolean useMultiColumn = mUseMultiColumnSupplier.getAsBoolean();
 
         // Changing the layout restarts the activity, and in which case the help icon should remain
@@ -1598,12 +1631,27 @@ public class SettingsSearchCoordinator
 
     /**
      * Single source of truth for whether the help menu should be visible. Currently, it is visible
-     * only when we are in the main Settings state, not during Search or Results.
+     * only when we are in the main Settings state, not during Search or Results. For SettingsInTab,
+     * it is visible only when the options menu has visible items.
      */
     private boolean shouldShowHelpMenu() {
-        if (SettingsInTab.isEnabled()) return false;
+        if (mFragmentState != FS_SETTINGS) return false;
 
-        return mFragmentState == FS_SETTINGS;
+        if (mShownInTab) {
+            return mActionBar != null && hasVisibleMenuItems(mActionBar.getMenu());
+        }
+
+        return true;
+    }
+
+    private static boolean hasVisibleMenuItems(@Nullable Menu menu) {
+        if (menu == null || menu.size() == 0) return false;
+
+        for (int i = 0; i < menu.size(); i++) {
+            MenuItem item = menu.getItem(i);
+            if (item.isVisible()) return true;
+        }
+        return false;
     }
 
     private void setSearchBoxVerticalMargin(View searchBox, boolean multiColumn) {
@@ -1750,7 +1798,8 @@ public class SettingsSearchCoordinator
                     mProfile,
                     entry.key,
                     entry.extras,
-                    mModalDialogManagerSupplier.asNonNull().get())) {
+                    mModalDialogManagerSupplier.asNonNull().get(),
+                    mShownInTab)) {
                 enterResultState();
             }
             return;

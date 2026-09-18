@@ -7,7 +7,10 @@ import("//mojo/public/tools/bindings/mojom.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 
 source_set("indexed_db") {
-  public = [ "indexed_db_control_wrapper.h" ]
+  public = [
+    "indexed_db_client_state_checker.h",
+    "indexed_db_control_wrapper.h",
+  ]
 
   sources = [
     "file_path_util.cc",
@@ -122,6 +125,7 @@ source_set("indexed_db") {
     ":*",
     "//content/test/*",
   ]
+  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 source_set("indexed_db_fuzzer_support") {

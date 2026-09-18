@@ -82,15 +82,6 @@ inline constexpr char kAppBackgroundRefreshDescription[] =
     "Schedules app background refresh after some minimum period of time has "
     "passed after the last refresh.";
 
-inline constexpr char kAppBarHideInFullscreenName[] =
-    "AppBar Hide in Fullscreen";
-inline constexpr char kAppBarHideInFullscreenDescription[] =
-    "Completely hides the AppBarViewController when in fullscreen.";
-
-inline constexpr char kAppBarHideLabelsName[] = "AppBar Hide Labels";
-inline constexpr char kAppBarHideLabelsDescription[] =
-    "Hides the labels for the buttons in the App Bar.";
-
 inline constexpr char kAppSwitcherAISummarizationName[] =
     "App Switcher AI summarization";
 inline constexpr char kAppSwitcherAISummarizationDescription[] =
@@ -255,13 +246,6 @@ inline constexpr char kAutofillEnableGradientGoogleLogosName[] =
 inline constexpr char kAutofillEnableGradientGoogleLogosDescription[] =
     "When enabled, gradient-style GPay and Wallet branding logos will be used.";
 
-inline constexpr char kAutofillEnablePrefetchingRiskDataForRetrievalName[] =
-    "Enable prefetching of risk data during payments autofill retrieval";
-inline constexpr char
-    kAutofillEnablePrefetchingRiskDataForRetrievalDescription[] =
-        "When enabled, risk data is prefetched during payments autofill flows "
-        "to reduce user-perceived latency.";
-
 inline constexpr char kAutofillEnableWalletBrandingName[] =
     "Update Google Pay branding to Wallet where applicable";
 inline constexpr char kAutofillEnableWalletBrandingDescription[] =
@@ -386,23 +370,24 @@ inline constexpr char kBreakpadNoDelayInitialUploadDescription[] =
     "disabled, initial upload is delayed until deferred initialization. This "
     "does not affect recovery mode.";
 
-inline constexpr char kBuildExternalPrivacyContextName[] =
-    "Build external privacy context";
-inline constexpr char kBuildExternalPrivacyContextDescription[] =
-    "When enabled, checks if the account can be signed in on the device "
-    "according to the capabilities. This needs `can_sign_in_to_chrome` "
-    "capability to be fetched (controlled by "
-    "kEnforceCanSignInToChromeCapability flag).";
+inline constexpr char kBrowsingHistoryFilterByDeviceName[] =
+    "Filter Browsing History By Device";
+inline constexpr char kBrowsingHistoryFilterByDeviceDescription[] =
+    "Enables browser history filtering by device.";
 
-inline constexpr char kCacheIdentityListInChromeName[] =
-    "Cache identity list in chrome.";
-inline constexpr char kCacheIdentityListInChromeDescription[] =
-    "Changes the implementation of the cache of the list of identities on "
-    "device.";
+inline constexpr char kBrowsingHistorySimilarVisitsGroupingName[] =
+    "Browsing History Grouping Improvements";
+inline constexpr char kBrowsingHistorySimilarVisitsGroupingDescription[] =
+    "Enables improvements to grouping of similar browsing history.";
 
 inline constexpr char kChromeNextIaName[] = "ChromeNextIa";
 inline constexpr char kChromeNextIaDescription[] =
     "Enables the chrome_next_ia feature.";
+
+inline constexpr char kClientSideDetectionIosName[] =
+    "Client Side Detection on iOS";
+inline constexpr char kClientSideDetectionIosDescription[] =
+    "Enables Client Side Detection (CSD) for phishing on iOS.";
 
 inline constexpr char kCollaborationMessagingName[] = "Collaboration Messaging";
 inline constexpr char kCollaborationMessagingDescription[] =
@@ -580,6 +565,12 @@ inline constexpr char kDefaultBottomOmniboxOnIOSName[] =
 inline constexpr char kDefaultBottomOmniboxOnIOSDescription[] =
     "When enabled, the omnibox position defaults to bottom on iOS.";
 
+inline constexpr char kDefaultBrowserNonModalPromoStringsName[] =
+    "Default Browser Non-Modal Promo Strings";
+inline constexpr char kDefaultBrowserNonModalPromoStringsDescription[] =
+    "When enabled, enables new string variations for the default browser "
+    "non-modal promo on omnibox paste.";
+
 inline constexpr char kDefaultBrowserOffCyclePromoName[] =
     "Default Browser off-cycle promo";
 inline constexpr char kDefaultBrowserOffCyclePromoDescription[] =
@@ -703,6 +694,13 @@ inline constexpr char kEnableACPrefetchName[] = "Enable AC Prefetch";
 inline constexpr char kEnableACPrefetchDescription[] =
     "Ensures that account capabilities are prefetched and cached.";
 
+inline constexpr char kEnableAccountPreviewPreferredAccountFollowupName[] =
+    "Enable Account Preview Preferred Account Followup";
+inline constexpr char
+    kEnableAccountPreviewPreferredAccountFollowupDescription[] =
+        "Controls whether followup features for preferred account preview "
+        "(promos, and updated strings) are enabled.";
+
 inline constexpr char kEnableAccountPreviewPreferredAccountName[] =
     "Enable Account Preview Preferred Account";
 inline constexpr char kEnableAccountPreviewPreferredAccountDescription[] =
@@ -798,11 +796,6 @@ inline constexpr char kEnableTraitCollectionRegistrationDescription[] =
     "When enabled, UI elements will only observe and respond to the UITraits "
     "to which they have been registered.";
 
-inline constexpr char kEnforceCanSignInToChromeCapabilityName[] =
-    "Fetch can_sign_in_to_chrome capability";
-inline constexpr char kEnforceCanSignInToChromeCapabilityDescription[] =
-    "When enabled, can_sign_in_to_chrome is fetched.";
-
 inline constexpr char kEnhancedCalendarName[] =
     "Enable Enhanced Calendar integration";
 inline constexpr char kEnhancedCalendarDescription[] =
@@ -887,10 +880,6 @@ inline constexpr char kGeminiBinaryMigrationName[] = "Gemini Binary Migration";
 inline constexpr char kGeminiBinaryMigrationDescription[] =
     "Enables the binary network migration for Gemini.";
 
-inline constexpr char kGeminiChatPersistenceName[] = "Gemini Chat Persistence";
-inline constexpr char kGeminiChatPersistenceDescription[] =
-    "Enables improvements to Gemini Chat persistence.";
-
 inline constexpr char kGeminiClientMigrationName[] = "Gemini Client Migration";
 inline constexpr char kGeminiClientMigrationDescription[] =
     "Enables the client migration for Gemini, adding the infrastructure for "
@@ -963,15 +952,6 @@ inline constexpr char kGeminiScreenContextMigrationDescription[] =
 inline constexpr char kGeminiUnaryMigrationName[] = "Gemini Unary Migration";
 inline constexpr char kGeminiUnaryMigrationDescription[] =
     "Enables the unary network migration for Gemini.";
-
-inline constexpr char kGeminiUpdatedConsentName[] = "Gemini Updated Consent";
-inline constexpr char kGeminiUpdatedConsentDescription[] =
-    "Enables the updated Gemini consent flow.";
-
-inline constexpr char kGeminiUpdatedEligibilityName[] =
-    "Gemini Updated Eligibility";
-inline constexpr char kGeminiUpdatedEligibilityDescription[] =
-    "Enables the updated eligibility checks for Gemini users.";
 
 inline constexpr char kGeneralizedGeminiEntryFlowName[] =
     "Generalized Gemini Entry Flow";
@@ -1052,6 +1032,11 @@ inline constexpr char kIOSDateToCalendarSignedOutDescription[] =
     "When enabled, signed-out users can long-press detected dates to access "
     "the 'Add to Google Calendar' feature.";
 
+inline constexpr char kIOSDefaultBrowserContextualPromoName[] =
+    "Contextual Default Browser Promo";
+inline constexpr char kIOSDefaultBrowserContextualPromoDescription[] =
+    "Enables the contextual default browser promo half-sheet.";
+
 inline constexpr char kIOSEnableCloudProfileReportingName[] =
     "Enable profile reporting on iOS";
 inline constexpr char kIOSEnableCloudProfileReportingDescription[] =
@@ -1079,12 +1064,6 @@ inline constexpr char kIOSGeminiBottomSheetMigrationDescription[] =
     "Enables presenting the Gemini Floaty embedded in a bottom sheet instead"
     " of a overlay view. This feature requires both 'Gemini Copresence'"
     " and 'Assistant Container' features to be enabled.";
-
-inline constexpr char kIOSKeyboardAccessoryDefaultViewName[] =
-    "Default Input Accessory View";
-inline constexpr char kIOSKeyboardAccessoryDefaultViewDescription[] =
-    "When enabled, a default Keyboard Accessory view with navigation buttons "
-    "is provided for a <select> HTML element.";
 
 inline constexpr char kIOSLevelUpName[] = "Level Up";
 inline constexpr char kIOSLevelUpDescription[] =
@@ -1227,17 +1206,6 @@ inline constexpr char kInfobarBannerRevampName[] = "Infobar Banner Revamp";
 inline constexpr char kInfobarBannerRevampDescription[] =
     "Enables the revamped UI design for Infobar Banner.";
 
-inline constexpr char
-    kInvalidateSearchEngineChoiceOnDeviceRestoreDetectionName[] =
-        "Invalidate search engine choice after device restore";
-inline constexpr char
-    kInvalidateSearchEngineChoiceOnDeviceRestoreDetectionDescription[] =
-        "When enabled, search engine choices made before backup & restore will "
-        "not "
-        "be considered valid on the restored device, leading to the choice "
-        "screen "
-        "potentially retriggering.";
-
 inline constexpr char kLensBypassCompressionForC2paName[] =
     "Lens Bypass Compression for C2PA";
 inline constexpr char kLensBypassCompressionForC2paDescription[] =
@@ -1264,16 +1232,6 @@ inline constexpr char kLensContinuousZoomEnabledName[] =
     "Enable Lens camera continuous zoom";
 inline constexpr char kLensContinuousZoomEnabledDescription[] =
     "When enabled, Lens camera supports continuous zoom.";
-
-inline constexpr char kLensEnableSendRawFileMediaTypesName[] =
-    "Lens enable send raw file media types";
-inline constexpr char kLensEnableSendRawFileMediaTypesDescription[] =
-    "Enables sending raw file media types in the Lens overlay.";
-
-inline constexpr char kLensEnableSendUrlsInComposeboxesName[] =
-    "Lens enable send urls in composeboxes";
-inline constexpr char kLensEnableSendUrlsInComposeboxesDescription[] =
-    "Enables sending urls in AIM composeboxes.";
 
 inline constexpr char kLensFetchSrpApiEnabledName[] =
     "Lens fetch SRP API enabled";
@@ -1656,11 +1614,6 @@ inline constexpr char kPageActionMenuDescription[] =
     "When enabled, the entry point for the Page Action Menu becomes available "
     "for actions relating to the web page.";
 
-inline constexpr char kPageContextIPCOptimizationName[] =
-    "PageContextIPCOptimization";
-inline constexpr char kPageContextIPCOptimizationDescription[] =
-    "Enables the PageContextIPCOptimization feature.";
-
 inline constexpr char kPageContextPdfName[] = "Page Context PDF";
 inline constexpr char kPageContextPdfDescription[] =
     "Enables PDF support for Page Context in Gemini.";
@@ -1908,6 +1861,10 @@ inline constexpr char kSyncWalletVehicleRegistrationsName[] =
     "Sync wallet vehicle registrations";
 inline constexpr char kSyncWalletVehicleRegistrationsDescription[] =
     "Enables syncing vehicle registrations in the wallet to the server.";
+
+inline constexpr char kTTCEnabledName[] = "TTCEnabled";
+inline constexpr char kTTCEnabledDescription[] =
+    "Enables TalkToChrome prototype.";
 
 inline constexpr char kTabGroupInOverflowMenuName[] =
     "Enable the Tab Group button in the overflow menu";

@@ -27,6 +27,7 @@
 #include "content/public/common/web_identity.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/renderer/extension_localization_throttle.h"
 #include "net/http/structured_headers.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -282,6 +283,7 @@ URLLoaderThrottleProviderImpl::CreateThrottles(
             [](const blink::LocalFrameToken& token,
                const scoped_refptr<base::SequencedTaskRunner>
                    main_thread_task_runner,
+               network::mojom::RequestDestination destination,
                const std::optional<url::Origin>& initiator,
                const url::Origin& idp_origin,
                blink::mojom::IdpSigninStatus status) {

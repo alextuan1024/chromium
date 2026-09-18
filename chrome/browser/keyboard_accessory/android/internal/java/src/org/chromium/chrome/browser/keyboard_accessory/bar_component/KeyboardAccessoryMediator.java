@@ -20,6 +20,7 @@ import static org.chromium.chrome.browser.keyboard_accessory.bar_component.Keybo
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SKIP_CLOSING_ANIMATION;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.STYLE;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.VISIBLE;
+import static org.chromium.ui.base.LocalizationUtils.isLayoutRtl;
 
 import android.content.Context;
 
@@ -37,6 +38,7 @@ import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.keyboard_accessory.AccessoryAction;
 import org.chromium.chrome.browser.keyboard_accessory.KeyboardAccessoryVisualStateProvider;
+import org.chromium.chrome.browser.keyboard_accessory.NavigationDirection;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryCoordinator.BarVisibilityDelegate;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryCoordinator.TabSwitchingDelegate;
@@ -75,6 +77,7 @@ import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyObservable;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -106,6 +109,7 @@ class KeyboardAccessoryMediator
     private final ObserverList<KeyboardAccessoryVisualStateProvider.Observer> mVisualObservers =
             new ObserverList<>();
 
+    private @Nullable WeakReference<AutofillDelegate> mAutofillDelegate;
     private @TriState int mHasFilteredTouchEvent;
 
     KeyboardAccessoryMediator(
@@ -155,7 +159,8 @@ class KeyboardAccessoryMediator
     void setSuggestions(List<AutofillSuggestion> suggestions, AutofillDelegate delegate) {
         // TODO(crbug.com/542535472): Identify and restore the selected element across suggestion
         // updates to avoid losing selection on async loads.
-        mModel.set(SELECTED_SUGGESTION_INDEX, null);
+        setSelectedSuggestion(null);
+        mAutofillDelegate = new WeakReference<>(delegate);
         List<BarItem> retainedItems = collectItemsToRetain(AccessoryAction.AUTOFILL_SUGGESTION);
         retainedItems.addAll(toBarItems(suggestions, delegate));
         setBarContents(retainedItems);
@@ -171,10 +176,10 @@ class KeyboardAccessoryMediator
     }
 
     /**
-     * Updates the visual selection/hover state of the suggestion chips in the accessory bar to
-     * match the given {@code suggestionIndex} (which refers to the original index in the backend
-     * suggestions list). If no item matches (or if {@code suggestionIndex} is {@code null}), all
-     * suggestion items are unselected.
+     * Updates the visual selection state of the suggestion chips in the accessory bar to match the
+     * given {@code suggestionIndex} (which refers to the original index in the backend suggestions
+     * list). If no item matches (or if {@code suggestionIndex} is {@code null}), all suggestion
+     * items are unselected.
      *
      * <p>This method is a pure UI synchronizer for absolute selection (e.g., when hover or
      * selection is driven externally by mouse/touch or when clearing preview). It deliberately does
@@ -187,7 +192,88 @@ class KeyboardAccessoryMediator
     void setSelectedSuggestion(@Nullable Integer suggestionIndex) {
         assert suggestionIndex == null || suggestionIndex >= 0
                 : "Suggestion index must be null or non-negative: " + suggestionIndex;
+        for (BarItem barItem : mModel.get(BAR_ITEMS)) {
+            barItem.setSelectedSuggestion(suggestionIndex);
+        }
         mModel.set(SELECTED_SUGGESTION_INDEX, suggestionIndex);
+    }
+
+    /**
+     * Collects all enabled {@link AutofillBarItem} instances currently present in the accessory
+     * bar, flattening them across standalone items and nested groups (e.g. {@link GroupBarItem}).
+     */
+    private List<AutofillBarItem> getEnabledAutofillBarItems() {
+        List<AutofillBarItem> items = new ArrayList<>();
+        for (BarItem barItem : mModel.get(BAR_ITEMS)) {
+            for (ActionBarItem actionItem : barItem.getActionBarItems()) {
+                if (actionItem instanceof AutofillBarItem autofillItem
+                        && autofillItem.isEnabled()) {
+                    items.add(autofillItem);
+                }
+            }
+        }
+        return items;
+    }
+
+    /**
+     * Returns the index of the currently selected {@link AutofillBarItem} within the provided list
+     * of items, or {@code null} if none is selected.
+     */
+    private static @Nullable Integer getSelectedAutofillItemIndex(
+            List<AutofillBarItem> items, @Nullable Integer selectedSuggestionIndex) {
+        if (selectedSuggestionIndex == null) {
+            return null;
+        }
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).getOriginalIndex() == selectedSuggestionIndex) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Navigates cyclically to the next or previous suggestion in the accessory bar.
+     *
+     * <p>Unlike {@link #setSelectedSuggestion}, which performs absolute visual selection for a
+     * known backend index, this method handles relative keyboard navigation (e.g. Arrow Left /
+     * Right). Because the keyboard event originates externally without knowledge of the accessory
+     * bar's UI state (e.g. which suggestions are actually visible, filtered, or grouped), the
+     * mediator determines the next visible item and notifies {@link
+     * AutofillDelegate#suggestionSelectionStateChanged} so that the Autofill backend updates the
+     * preview on the web page.
+     *
+     * @param direction The direction to navigate (FORWARD or BACKWARD).
+     * @return True if a suggestion was selected; false if there are no suggestions to navigate or
+     *     no delegate is attached.
+     */
+    boolean navigateSuggestions(@NavigationDirection int direction) {
+        AutofillDelegate delegate = mAutofillDelegate != null ? mAutofillDelegate.get() : null;
+        if (delegate == null) {
+            return false;
+        }
+
+        List<AutofillBarItem> items = getEnabledAutofillBarItems();
+        if (items.isEmpty()) {
+            return false;
+        }
+
+        @Nullable Integer currentIndex =
+                getSelectedAutofillItemIndex(items, mModel.get(SELECTED_SUGGESTION_INDEX));
+        int targetIndex;
+        if (currentIndex == null) {
+            targetIndex = 0;
+        } else {
+            int step = (direction == NavigationDirection.FORWARD) ? 1 : -1;
+            if (isLayoutRtl()) {
+                step = -step;
+            }
+            targetIndex = Math.floorMod(currentIndex + step, items.size());
+        }
+
+        AutofillBarItem target = items.get(targetIndex);
+        delegate.suggestionSelectionStateChanged(target.getOriginalIndex(), true);
+        return true;
     }
 
     @Override
@@ -345,7 +431,7 @@ class KeyboardAccessoryMediator
             AutofillDelegate delegate, int pos, AutofillSuggestion suggestion) {
         return new Action(
                 AccessoryAction.AUTOFILL_SUGGESTION,
-                result -> {
+                () -> {
                     ManualFillingMetricsRecorder.recordActionSelected(
                             AccessoryAction.AUTOFILL_SUGGESTION);
                     if (suggestion.showLoadingOnAcceptance()) {
@@ -353,7 +439,10 @@ class KeyboardAccessoryMediator
                     }
                     delegate.suggestionAccepted(pos, suggestion.showLoadingOnAcceptance());
                 },
-                result -> {
+                () -> {
+                    if (maybeShowAutofillAiSuggestionDetails(delegate, pos, suggestion)) {
+                        return;
+                    }
                     if (maybeShowDialogOnLongPress(delegate, suggestion)) {
                         return;
                     }
@@ -363,6 +452,16 @@ class KeyboardAccessoryMediator
                                 ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_HOVER_PREVIEW)
                         ? selected -> delegate.suggestionSelectionStateChanged(pos, selected)
                         : null);
+    }
+
+    private boolean maybeShowAutofillAiSuggestionDetails(
+            AutofillDelegate delegate, int pos, AutofillSuggestion suggestion) {
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL_SUPPRESSION_UI)
+                && suggestion.getSuggestionType() == SuggestionType.FILL_AUTOFILL_AI) {
+            delegate.showAutofillAiSuggestionDetails(pos);
+            return true;
+        }
+        return false;
     }
 
     private boolean maybeShowDialogOnLongPress(
@@ -385,22 +484,23 @@ class KeyboardAccessoryMediator
         if (sublabel == null) {
             return false;
         }
-        mDialog.show(
+        final String description =
+                mContext.getString(R.string.autofill_ai_suggestion_long_press_dialog_description);
+        final String positiveButton =
+                mContext.getString(
+                        R.string.autofill_ai_suggestion_long_press_dialog_positive_button);
+        final String negativeButton =
+                mContext.getString(
+                        R.string.autofill_ai_suggestion_long_press_dialog_negative_button);
+        ConfirmationDialogParams confirmationDialog =
                 new ConfirmationDialogParams.Builder(mContext)
                         .withTitle(sublabel)
-                        .withDescription(
-                                mContext.getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_description))
-                        .withPositiveButton(
-                                mContext.getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_positive_button))
-                        .withNegativeButton(
-                                mContext.getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_negative_button))
-                        .build(),
+                        .withDescription(description)
+                        .withPositiveButton(positiveButton)
+                        .withNegativeButton(negativeButton)
+                        .build();
+        mDialog.show(
+                confirmationDialog,
                 (dismissHandler, buttonClickResult, stopShowing) ->
                         handleDialogAction(
                                 delegate,

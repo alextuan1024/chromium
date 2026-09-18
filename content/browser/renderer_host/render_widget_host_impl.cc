@@ -81,6 +81,7 @@
 #include "content/browser/renderer_host/render_widget_host_owner_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
+#include "content/browser/renderer_host/text_input_manager.h"
 #include "content/browser/renderer_host/unbounded_surface_window.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/browser/scheduler/browser_task_executor.h"
@@ -377,6 +378,38 @@ bool ShouldProcessKeyEventForListeners(
 #endif
 
   return false;
+}
+
+gfx::Rect ClampPopupBoundsToDisplay(const gfx::Rect& bounds,
+                                    RenderWidgetHostViewBase* view) {
+  // More than twice the width of an 8K display, so it never constrains a
+  // real popup, while keeping the area (2^28) well inside int.
+  constexpr int kMaxPopupWidthOrHeight = 16384;
+  static_assert(kMaxPopupWidthOrHeight <= std::numeric_limits<int>::max() / 4 /
+                                              kMaxPopupWidthOrHeight,
+                "kMaxPopupWidthOrHeight squared must stay well inside int");
+
+  // Ozone headless reports a 1x1 display unless --ozone-override-screen-size
+  // overrides it, which describes no real estate to clamp against. Fall back
+  // to a fixed maximum there, and likewise with no screen or an empty work
+  // area.
+  gfx::Size max_size(kMaxPopupWidthOrHeight, kMaxPopupWidthOrHeight);
+  display::Screen* screen = display::Screen::Get();
+  if (screen && !screen->IsHeadless()) {
+    // The view does not exist yet when the popup is first shown, in which
+    // case fall back to whichever display the requested bounds land on.
+    const display::Display display =
+        view ? screen->GetDisplayNearestView(view->GetNativeView())
+             : screen->GetDisplayMatching(bounds);
+    if (!display.work_area().IsEmpty()) {
+      max_size = display.work_area().size();
+    }
+  }
+
+  gfx::Rect clamped(bounds);
+  clamped.set_width(std::clamp(clamped.width(), 0, max_size.width()));
+  clamped.set_height(std::clamp(clamped.height(), 0, max_size.height()));
+  return clamped;
 }
 
 }  // namespace
@@ -1147,8 +1180,9 @@ blink::VisualProperties RenderWidgetHostImpl::GetVisualProperties() {
   // non-frame widget.
   const bool is_topmost_widget = !view_->IsRenderWidgetHostViewChildFrame();
 
-  // This widget is for a frame, but not the main frame of its frame tree.
-  const bool is_child_frame_widget =
+  // This widget is for a subframe (e.g. an <iframe>), not the main frame of its
+  // frame tree (e.g. top-level tab, GuestView or SurfaceEmbed).
+  const bool is_subframe_widget =
       view_->IsRenderWidgetHostViewChildFrame() && !owner_delegate_;
 
   // These properties come from the main frame RenderWidget and flow down the
@@ -1223,7 +1257,7 @@ blink::VisualProperties RenderWidgetHostImpl::GetVisualProperties() {
   gfx::Size viewport_device_px;
   gfx::Size viewport_dips;
   float dip_scale = 1 / GetDeviceScaleFactor();
-  if (is_child_frame_widget) {
+  if (is_subframe_widget) {
     viewport_device_px =
         properties_from_parent_local_root_.visible_viewport_size;
     viewport_dips = gfx::ScaleToCeiledSize(viewport_device_px, dip_scale);
@@ -1233,9 +1267,9 @@ blink::VisualProperties RenderWidgetHostImpl::GetVisualProperties() {
   }
   visual_properties.visible_viewport_size_device_px = viewport_device_px;
 
-  // The root widget's viewport segments are computed here - child frames just
+  // The root widget's viewport segments are computed here - subframes just
   // use the value provided from the parent.
-  if (is_topmost_widget) {
+  if (!is_subframe_widget) {
     std::optional<DisplayFeature> display_feature = view_->GetDisplayFeature();
     if (display_feature) {
       int top_controls_height =
@@ -2523,6 +2557,32 @@ void RenderWidgetHostImpl::PasteIntoNode(
       text, target_dom_node_id.target_element_dom_id);
 }
 
+std::optional<std::u16string_view>
+RenderWidgetHostImpl::GetTextPrecedingSelection(
+    const GlobalDOMNodeId& target_dom_node_id) {
+  TextInputManager* text_input_manager = delegate_->GetTextInputManager();
+  if (!text_input_manager) {
+    return std::nullopt;
+  }
+  const ui::mojom::TextInputState* state =
+      text_input_manager->GetTextInputState();
+  if (!state || !state->value) {
+    return std::nullopt;
+  }
+  if (!target_dom_node_id.target_element_dom_id.is_null() &&
+      state->node_id != target_dom_node_id.target_element_dom_id.value()) {
+    return std::nullopt;
+  }
+  if (!state->selection.IsValid()) {
+    return std::nullopt;
+  }
+  size_t start = state->selection.GetMin();
+  if (start > state->value->length()) {
+    return std::nullopt;
+  }
+  return std::u16string_view(*state->value).substr(0, start);
+}
+
 void RenderWidgetHostImpl::RejectPointerLockOrUnlockIfNecessary(
     blink::mojom::PointerLockResult reason) {
   CHECK(!request_pointer_lock_callback_ || !IsPointerLocked());
@@ -2604,9 +2664,9 @@ void RenderWidgetHostImpl::Destroy(bool also_delete) {
   // Tell the view to die.
   // Note that in the process of the view shutting down, it can call a ton
   // of other messages on us.  So if you do any other deinitialization here,
-  // do it after this call to view_->Destroy().
+  // do it after this call to view_->DestroyOrDefer().
   if (view_) {
-    view_->Destroy();
+    view_->DestroyOrDefer();
     view_.reset();
   }
 
@@ -2749,7 +2809,10 @@ void RenderWidgetHostImpl::SetPopupBounds(const gfx::Rect& bounds,
   // same time until it acked the changes. Otherwise, if they simultaneously
   // change bounds, browser's bounds can be clobbered.
   if (view_ && !waiting_for_screen_rects_ack_) {
-    view_->SetBounds(bounds);
+    gfx::Rect constrained_bounds =
+        delegate_ ? delegate_->ConstrainPopupBounds(bounds) : bounds;
+    view_->SetBounds(
+        ClampPopupBoundsToDisplay(constrained_bounds, view_.get()));
   }
   std::move(callback).Run();
 }
@@ -2930,8 +2993,10 @@ void RenderWidgetHostImpl::ShowPopup(const gfx::Rect& initial_screen_rect,
   // `delegate_` may be null since this message may be received from when
   // the delegate shutdown but this widget is not yet destroyed.
   if (delegate_) {
-    delegate_->ShowCreatedWidget(GetProcess()->GetID(), GetRoutingID(),
-                                 initial_screen_rect, anchor_screen_rect);
+    delegate_->ShowCreatedWidget(
+        GetProcess()->GetID(), GetRoutingID(),
+        ClampPopupBoundsToDisplay(initial_screen_rect, view_.get()),
+        anchor_screen_rect);
   }
   std::move(callback).Run();
 }

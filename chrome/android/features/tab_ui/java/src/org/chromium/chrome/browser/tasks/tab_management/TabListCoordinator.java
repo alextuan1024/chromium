@@ -64,6 +64,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListL
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabListHighlighter;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.tab_ui.R;
@@ -147,7 +148,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     private @Nullable TabListEmptyCoordinator mTabListEmptyCoordinator;
     private boolean mIsEmptyViewInitialized;
     private @Nullable Runnable mAwaitingLayoutRunnable;
-    private int mAwaitingTabId = Tab.INVALID_TAB_ID;
+    private @Nullable PropertyModel mAwaitingModel;
     private @TabActionState int mTabActionState;
 
     /**
@@ -325,16 +326,11 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
         @UiType int tabUiType = mMode == TabListMode.BOTTOM_STRIP ? UiType.STRIP : UiType.TAB;
         boolean isGridMode = mMode == TabListMode.GRID;
-        boolean isGridOrDialogComponent =
-                componentId == TabComponentId.GRID_TAB_SWITCHER
-                        || componentId == TabComponentId.TAB_GRID_DIALOG_FROM_STRIP
-                        || componentId == TabComponentId.TAB_GRID_DIALOG_IN_SWITCHER;
         TabListConfig tabListConfig =
                 new TabListConfig.Builder(layoutType)
                         .setTabUiType(tabUiType)
                         .setSupportsMessageCards(isGridMode)
                         .setSupportsShrinkCloseAnimation(isGridMode)
-                        .setSupportsDelayedTabAddition(isGridOrDialogComponent)
                         .setSupportsTabContextClick(true)
                         .setTabClosingSource(TabClosingSource.UNKNOWN)
                         .build();
@@ -568,9 +564,9 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         // where the runnable will not be serviced downstream, dropping the runnable altogether is
         // safe.
         if (mAwaitingLayoutRunnable != null) {
-            Log.d(TAG, "Dropping AwaitingLayoutRunnable for %d", mAwaitingTabId);
+            Log.d(TAG, "Dropping existing AwaitingLayoutRunnable for new tab %d", tabId);
             mAwaitingLayoutRunnable = null;
-            mAwaitingTabId = Tab.INVALID_TAB_ID;
+            mAwaitingModel = null;
         }
         int index = getIndexForTabIdWithRelatedTabs(tabId);
         if (index == TabModel.INVALID_TAB_INDEX) {
@@ -578,7 +574,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             return;
         }
         mAwaitingLayoutRunnable = r;
-        mAwaitingTabId = mModelList.get(index).model.get(TabProperties.TAB_ID);
+        mAwaitingModel = mModelList.get(index).model;
         mRecyclerView.runOnNextLayout(this::checkAwaitingLayout);
     }
 
@@ -793,6 +789,12 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         return mMediator;
     }
 
+    /** Prepares the tab list for hiding by detaching observers before the exit animation. */
+    void prepareHiding() {
+        mMediator.prepareHiding();
+    }
+
+    /** Cleans up the tab list after hiding completes. */
     void postHiding() {
         unregisterLayoutChangeListener();
         mMediator.postHiding();
@@ -831,6 +833,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             mTabSwitcherDragHandler.destroy();
         }
         mTabListFaviconProvider.destroy();
+        mAwaitingLayoutRunnable = null;
+        mAwaitingModel = null;
     }
 
     /**
@@ -891,7 +895,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     // PriceWelcomeMessageService.PriceWelcomeMessageProvider implementation.
     @Override
     public int getTabIndexFromTabId(@TabId int tabId) {
-        return mModelList.indexFromTabId(tabId);
+        return mMediator.getIndexFromTabId(tabId);
     }
 
     @Override
@@ -947,20 +951,23 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
     private void checkAwaitingLayout() {
         if (mAwaitingLayoutRunnable != null) {
+            int index = mModelList.indexFromModel(mAwaitingModel);
+            if (index == TabModel.INVALID_TAB_INDEX) return;
             SimpleRecyclerViewAdapter.ViewHolder holder =
                     (SimpleRecyclerViewAdapter.ViewHolder)
-                            mRecyclerView.findViewHolderForAdapterPosition(
-                                    mModelList.indexFromTabId(mAwaitingTabId));
+                            mRecyclerView.findViewHolderForAdapterPosition(index);
             if (holder == null) return;
-            assert assumeNonNull(holder.model).get(TabProperties.TAB_ID) == mAwaitingTabId;
+            assert assumeNonNull(holder.model) == mAwaitingModel;
             Runnable r = mAwaitingLayoutRunnable;
-            mAwaitingTabId = Tab.INVALID_TAB_ID;
+            mAwaitingModel = null;
             mAwaitingLayoutRunnable = null;
             r.run();
         }
     }
 
     /** Returns the index for the tab with related tabs. */
+    // TODO(crbug.com/517544602): Migrate to a token based lookup. Scanning related tab IDs can miss
+    // a group card once cards are keyed by token and its TAB_ID goes stale.
     int getIndexForTabIdWithRelatedTabs(int tabId) {
         return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
     }
@@ -1069,7 +1076,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * Maps a tab ID to an index. For use with {@link #addSpecialListItem(int, int, PropertyModel)}.
      */
     int getIndexFromTabId(@TabId int tabId) {
-        return mModelList.indexFromTabId(tabId);
+        return mMediator.getIndexFromTabId(tabId);
     }
 
     /**

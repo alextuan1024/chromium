@@ -4,12 +4,12 @@
 
 package org.chromium.chrome.browser.ntp_customization.theme;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
@@ -23,23 +23,32 @@ import org.chromium.url.GURL;
  */
 @NullMarked
 public class NtpSyncedThemeBridge {
-    private final Callback<@Nullable CustomBackgroundInfo> mOnThemeCollectionSyncedCallback;
+    /** Observer interface for synced theme updates. */
+    public interface Observer {
+        /** Dispatched when a theme collection background arrives from sync or daily refresh. */
+        void onThemeCollectionSynced(@Nullable CustomBackgroundInfo info);
+
+        /** Dispatched when a Chrome color arrives from sync. */
+        void onChromeColorSynced(int colorId);
+
+        /** Dispatched when the theme is reset to default from sync. */
+        void onDefaultThemeSynced();
+    }
+
+    private final Observer mObserver;
     private long mNativeNtpSyncedThemeBridge;
 
     /**
-     * Constructs a new NtpSyncedThemeBridge.
+     * Constructs a new NtpSyncedThemeBridge with an Observer.
      *
      * @param profile The profile for which this bridge is created.
-     * @param onThemeCollectionSyncedCallback The callback to be invoked when the theme collection
-     *     is synced or daily updated.
+     * @param observer The observer to receive synced theme changes.
      */
-    public NtpSyncedThemeBridge(
-            Profile profile,
-            Callback<@Nullable CustomBackgroundInfo> onThemeCollectionSyncedCallback) {
-        // Set the callback before calling native init(), since init attaches this bridge to
+    public NtpSyncedThemeBridge(Profile profile, Observer observer) {
+        // Set the observer before calling native init(), since init attaches this bridge to
         // NtpAndroidCustomBackgroundService, which may immediately notify this bridge of an
         // already-existing synced background.
-        mOnThemeCollectionSyncedCallback = onThemeCollectionSyncedCallback;
+        mObserver = observer;
         mNativeNtpSyncedThemeBridge = NtpSyncedThemeBridgeJni.get().init(profile, this);
     }
 
@@ -56,6 +65,48 @@ public class NtpSyncedThemeBridge {
         if (mNativeNtpSyncedThemeBridge == 0) return;
 
         NtpSyncedThemeBridgeJni.get().fetchNextThemeCollectionImage(mNativeNtpSyncedThemeBridge);
+    }
+
+    /**
+     * Sets the New Tab Page theme to a specific Chrome color and notifies the sync bridge.
+     *
+     * @param colorId The ID of the Chrome color.
+     */
+    public void setChromeColor(int colorId) {
+        if (mNativeNtpSyncedThemeBridge == 0) return;
+
+        NtpSyncedThemeBridgeJni.get().setChromeColor(mNativeNtpSyncedThemeBridge, colorId);
+    }
+
+    /** Resets the New Tab Page theme to default and notifies the sync bridge. */
+    public void resetCustomBackgroundInfo() {
+        if (mNativeNtpSyncedThemeBridge == 0) return;
+
+        NtpSyncedThemeBridgeJni.get().resetCustomBackgroundInfo(mNativeNtpSyncedThemeBridge);
+    }
+
+    /** Sets the user-uploaded background image and marks it local to the device. */
+    public void selectLocalBackgroundImage() {
+        if (mNativeNtpSyncedThemeBridge == 0) return;
+
+        NtpSyncedThemeBridgeJni.get().selectLocalBackgroundImage(mNativeNtpSyncedThemeBridge);
+    }
+
+    /**
+     * Updates the theme collection background with the primary theme color and notifies the sync
+     * bridge.
+     *
+     * @param backgroundUrl The URL of the background image.
+     * @param primaryColor The primary color extracted from the theme collection image.
+     */
+    public void updateCustomBackgroundPrefsWithColor(
+            GURL backgroundUrl, @Nullable @ColorInt Integer primaryColor) {
+        if (mNativeNtpSyncedThemeBridge == 0) return;
+
+        int color = primaryColor != null ? primaryColor : 0;
+        NtpSyncedThemeBridgeJni.get()
+                .updateCustomBackgroundPrefsWithColor(
+                        mNativeNtpSyncedThemeBridge, backgroundUrl, color);
     }
 
     /** Exposes whether the C++ service is actively processing a sync update. */
@@ -77,7 +128,29 @@ public class NtpSyncedThemeBridge {
 
         CustomBackgroundInfo info =
                 NtpSyncedThemeBridgeJni.get().getCustomBackgroundInfo(mNativeNtpSyncedThemeBridge);
-        mOnThemeCollectionSyncedCallback.onResult(info);
+        mObserver.onThemeCollectionSynced(info);
+    }
+
+    /**
+     * Called by native code when a Chrome color theme has been received from Chrome Sync.
+     * Dispatches the event to the registered observer.
+     *
+     * @param colorId The synced Chrome color ID.
+     */
+    @CalledByNative
+    @VisibleForTesting
+    void onChromeColorSynced(int colorId) {
+        mObserver.onChromeColorSynced(colorId);
+    }
+
+    /**
+     * Called by native code when the NTP theme has been reset to default from Chrome Sync.
+     * Dispatches the event to the registered observer.
+     */
+    @CalledByNative
+    @VisibleForTesting
+    void onDefaultThemeSynced() {
+        mObserver.onDefaultThemeSynced();
     }
 
     /**
@@ -88,15 +161,18 @@ public class NtpSyncedThemeBridge {
      * @param isUploadedImage True if the image was uploaded by the user from their local device.
      * @param isDailyRefreshEnabled True if the "Refresh daily" option is enabled for the
      *     collection.
+     * @param attribution The attribution string of the background image.
      */
     @CalledByNative
-    private static CustomBackgroundInfo createCustomBackgroundInfo(
+    @VisibleForTesting
+    static CustomBackgroundInfo createCustomBackgroundInfo(
             GURL backgroundUrl,
             String collectionId,
             boolean isUploadedImage,
-            boolean isDailyRefreshEnabled) {
+            boolean isDailyRefreshEnabled,
+            @Nullable String attribution) {
         return new CustomBackgroundInfo(
-                backgroundUrl, collectionId, isUploadedImage, isDailyRefreshEnabled);
+                backgroundUrl, collectionId, isUploadedImage, isDailyRefreshEnabled, attribution);
     }
 
     @NativeMethods
@@ -110,5 +186,14 @@ public class NtpSyncedThemeBridge {
         @Nullable CustomBackgroundInfo getCustomBackgroundInfo(long nativeNtpSyncedThemeBridge);
 
         boolean isProcessingSyncUpdate(long nativeNtpSyncedThemeBridge);
+
+        void setChromeColor(long nativeNtpSyncedThemeBridge, int colorId);
+
+        void resetCustomBackgroundInfo(long nativeNtpSyncedThemeBridge);
+
+        void selectLocalBackgroundImage(long nativeNtpSyncedThemeBridge);
+
+        void updateCustomBackgroundPrefsWithColor(
+                long nativeNtpSyncedThemeBridge, GURL backgroundUrl, int primaryColor);
     }
 }

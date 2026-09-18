@@ -34,10 +34,12 @@
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/first_run/first_run.h"
+#include "chrome/browser/glic/gemini_enterprise/geic_pref_names.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_prefs.h"
 #include "chrome/browser/gpu/gpu_mode_manager.h"
 #include "chrome/browser/hid/hid_policy_allowed_devices.h"
+#include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/login_detection/login_detection_prefs.h"
 #include "chrome/browser/media/media_engagement_service.h"
@@ -248,6 +250,7 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/activity_log/activity_log.h"
 #include "chrome/browser/extensions/commands/command_service.h"
+#include "chrome/browser/extensions/component_loader_prefs.h"
 #include "chrome/browser/extensions/extension_url_overrides.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
@@ -304,7 +307,6 @@
 #include "chrome/browser/desktop_to_mobile_promos/promos_utils.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/gcm/gcm_product_util.h"
 #include "chrome/browser/indigo/indigo_prefs.h"
-#include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/nearby_sharing/common/nearby_share_prefs.h"
@@ -339,6 +341,10 @@
 #include "components/live_caption/live_caption_controller.h"
 #include "components/live_caption/live_translate_controller.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)  // nocheck
+#include "chrome/browser/ui/ai_overlay_dialog/ai_overlay_dialog_controller.h"
+#endif
 
 #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
 #include "chrome/browser/devtools/devtools_window.h"
@@ -1004,6 +1010,10 @@ inline constexpr char kPluginVmEngagementTimeDayId[] =
 // Deprecated 09/2026.
 constexpr char kNSSCertsMigratedToServerCertDb[] =
     "certificates.nss_certs_migrated_to_server_cert_db";
+inline constexpr char kHatsLauncherAppsSurveyCycleEndTs[] =
+    "hats_launcher_apps_cycle_end_timestamp";
+inline constexpr char kHatsLauncherAppsSurveyIsSelected[] =
+    "hats_launcher_apps_is_selected";
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Deprecated 09/2026.
@@ -1011,6 +1021,16 @@ inline constexpr char kInvalidationPerSenderRegisteredForInvalidation[] =
     "invalidation.per_sender_registered_for_invalidation";
 inline constexpr char kInvalidationPerSenderActiveRegistrationTokens[] =
     "invalidation.per_sender_active_registration_tokens";
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Deprecated 09/2026.
+inline constexpr char kHatsBorealisGamesSurveyCycleEndTs[] =
+    "hats_borealis_games_end_timestamp";
+inline constexpr char kHatsBorealisGamesSurveyIsSelected[] =
+    "hats_borealis_games_is_selected";
+inline constexpr char kHatsBorealisGamesLastInteractionTimestamp[] =
+    "hats_borealis_games_last_interaction_timestamp";
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Register local state used only for migration (clearing or moving to a new
 // key).
@@ -1386,6 +1406,8 @@ void RegisterProfilePrefsForMigration(
 #if BUILDFLAG(IS_CHROMEOS)
   // Deprecated 09/2026.
   registry->RegisterIntegerPref(kNSSCertsMigratedToServerCertDb, 0);
+  registry->RegisterInt64Pref(kHatsLauncherAppsSurveyCycleEndTs, 0);
+  registry->RegisterBooleanPref(kHatsLauncherAppsSurveyIsSelected, false);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Deprecated 09/2026.
@@ -1393,6 +1415,14 @@ void RegisterProfilePrefsForMigration(
       kInvalidationPerSenderRegisteredForInvalidation);
   registry->RegisterDictionaryPref(
       kInvalidationPerSenderActiveRegistrationTokens);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Deprecated 09/2026.
+  registry->RegisterInt64Pref(kHatsBorealisGamesSurveyCycleEndTs, 0);
+  registry->RegisterBooleanPref(kHatsBorealisGamesSurveyIsSelected, false);
+  registry->RegisterTimePref(kHatsBorealisGamesLastInteractionTimestamp,
+                             base::Time());
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 }  // namespace
@@ -1440,6 +1470,7 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   flags_ui::PrefServiceFlagsStorage::RegisterPrefs(registry);
   GpuModeManager::RegisterPrefs(registry);
   signin::IdentityManager::RegisterLocalStatePrefs(registry);
+  IntranetRedirectDetector::RegisterPrefs(registry);
   language::GeoLanguageProvider::RegisterLocalStatePrefs(registry);
   language::UlpLanguageCodeLocator::RegisterLocalStatePrefs(registry);
   memory::EnterpriseMemoryLimitPrefObserver::RegisterPrefs(registry);
@@ -1518,7 +1549,6 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
 #else   // BUILDFLAG(IS_ANDROID)
   gcm::RegisterPrefs(registry);
   headless::RegisterPrefs(registry);
-  IntranetRedirectDetector::RegisterPrefs(registry);
   media_router::RegisterLocalStatePrefs(registry);
   performance_manager::user_tuning::prefs::RegisterLocalStatePrefs(registry);
   PerformanceInterventionMetricsReporter::RegisterLocalStatePrefs(registry);
@@ -1534,6 +1564,7 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   extensions::ExtensionPrefs::RegisterLocalStatePrefs(registry);
+  extensions::component_loader_prefs::RegisterPrefs(registry);
 #endif
 
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
@@ -1744,6 +1775,9 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   AccessibilityLabelsService::RegisterProfilePrefs(registry);
   registry->RegisterBooleanPref(prefs::kRendererAccessibilityEnabled, true);
   AccessibilityUIMessageHandler::RegisterProfilePrefs(registry);
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)  // nocheck
+  ttc::AiOverlayDialogController::RegisterProfilePrefs(registry);
+#endif
   AimEligibilityService::RegisterProfilePrefs(registry);
   AnnouncementNotificationService::RegisterProfilePrefs(registry);
   autofill::prefs::RegisterProfilePrefs(registry);
@@ -1776,6 +1810,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   enterprise_reporting::RegisterProfilePrefs(registry);
   dom_distiller::DistilledPagePrefs::RegisterProfilePrefs(registry);
   DownloadPrefs::RegisterProfilePrefs(registry);
+  geic::prefs::RegisterProfilePrefs(registry);
   glic::prefs::RegisterProfilePrefs(registry);
   glic::contextual_cueing::prefs::RegisterProfilePrefs(registry);
   permissions::PermissionHatsTriggerHelper::RegisterProfilePrefs(registry);
@@ -2036,6 +2071,8 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   registry->RegisterBooleanPref(prefs::kDeskAPIDeskSaveAndShareEnabled, false);
   registry->RegisterListPref(prefs::kDeskAPIThirdPartyAllowlist);
   registry->RegisterBooleanPref(prefs::kInsightsExtensionEnabled, false);
+  registry->RegisterBooleanPref(
+      ash::prefs::kAdminInstalledChromeAppsForceAllowed, false);
   registry->RegisterBooleanPref(ash::prefs::kEssentialSearchEnabled, false);
   registry->RegisterBooleanPref(ash::prefs::kLastEssentialSearchValue, false);
   // By default showing Sync Consent is set to true. It can changed by policy.
@@ -2719,11 +2756,25 @@ void MigrateObsoleteProfilePrefs(PrefService* profile_prefs,
 #if BUILDFLAG(IS_CHROMEOS)
   // Added 09/2026.
   profile_prefs->ClearPref(kNSSCertsMigratedToServerCertDb);
+  profile_prefs->ClearPref(kHatsLauncherAppsSurveyCycleEndTs);
+  profile_prefs->ClearPref(kHatsLauncherAppsSurveyIsSelected);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Added 09/2026.
   profile_prefs->ClearPref(kInvalidationPerSenderRegisteredForInvalidation);
   profile_prefs->ClearPref(kInvalidationPerSenderActiveRegistrationTokens);
+
+#if BUILDFLAG(IS_WIN)
+  // Added 09/2026.
+  CdmPrefServiceHelper::MigrateObsoleteProfilePrefs(profile_prefs);
+#endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Added 09/2026.
+  profile_prefs->ClearPref(kHatsBorealisGamesSurveyCycleEndTs);
+  profile_prefs->ClearPref(kHatsBorealisGamesSurveyIsSelected);
+  profile_prefs->ClearPref(kHatsBorealisGamesLastInteractionTimestamp);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Please don't delete the following line. It is used by PRESUBMIT.py.
   // END_MIGRATE_OBSOLETE_PROFILE_PREFS

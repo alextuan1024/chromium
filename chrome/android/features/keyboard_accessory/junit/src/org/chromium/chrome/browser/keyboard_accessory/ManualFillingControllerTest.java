@@ -22,6 +22,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doNothing;
@@ -52,11 +53,14 @@ import static org.chromium.chrome.browser.tab.TabSelectionType.FROM_USER;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.RectF;
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
 import android.view.Surface;
 import android.view.View;
 import android.view.Window;
 
 import androidx.annotation.Px;
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -73,7 +77,6 @@ import org.mockito.stubbing.Answer;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowLooper;
 
-import org.chromium.base.CallbackUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.UserDataHost;
@@ -106,6 +109,7 @@ import org.chromium.chrome.browser.keyboard_accessory.sheet_component.AccessoryS
 import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileJni;
+import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabHidingType;
@@ -113,6 +117,10 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.settings.SettingsNavigation;
+import org.chromium.components.browser_ui.widget.ActionConfirmationDialog;
+import org.chromium.components.browser_ui.widget.ActionConfirmationDialog.DialogHandle;
+import org.chromium.components.browser_ui.widget.StrictButtonPressController.ButtonClickResult;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.content_public.browser.Visibility;
@@ -123,6 +131,7 @@ import org.chromium.ui.base.ApplicationViewportInsetTracker;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.mojom.VirtualKeyboardMode;
 
@@ -137,7 +146,8 @@ import java.util.concurrent.atomic.AtomicReference;
 @Features.EnableFeatures({
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_SUPPRESS_ACCESSORY_ON_EMPTY,
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP,
-    ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING
+    ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING,
+    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
 })
 public class ManualFillingControllerTest {
     private static final int sKeyboardHeightDp = 100;
@@ -232,7 +242,7 @@ public class ManualFillingControllerTest {
          * @param actionType The type for the provided generation action.
          */
         void provideAction(@AccessoryAction int actionType) {
-            provideActions(new Action[] {new Action(actionType, CallbackUtils.emptyCallback())});
+            provideActions(new Action[] {new Action(actionType, () -> {})});
         }
 
         /**
@@ -360,8 +370,14 @@ public class ManualFillingControllerTest {
         when(mMockActivity.getCompositorViewHolderSupplier())
                 .thenReturn(compositorViewHolderSupplier);
         when(mMockActivity.getResources()).thenReturn(mMockResources);
+        when(mMockActivity.getColor(anyInt()))
+                .thenAnswer(
+                        invocation ->
+                                ApplicationProvider.getApplicationContext()
+                                        .getColor((Integer) invocation.getArgument(0)));
         when(mMockActivity.getPackageManager())
                 .thenReturn(RuntimeEnvironment.application.getPackageManager());
+        when(mMockActivity.getTheme()).thenReturn(RuntimeEnvironment.application.getTheme());
         when(mMockActivity.findViewById(android.R.id.content)).thenReturn(mMockContentView);
         when(mMockContentView.getRootView()).thenReturn(mock(View.class));
         mLastMockWebContents = mock(MockWebContents.class);
@@ -448,6 +464,125 @@ public class ManualFillingControllerTest {
         mController.destroy();
 
         assertThat(mMediator.getActionConfirmationDialogForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testShowAutofillAiSuggestionDetailsDeclines() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Remove this info?",
+                "Your info was suggested by Gemini.",
+                "Remove",
+                "Got it",
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // Clicking positive button (Got it) should trigger declinedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.POSITIVE,
+                        /* stopShowing= */ false);
+        verify(declinedCallback).run();
+        verify(confirmedCallback, never()).run();
+    }
+
+    @Test
+    public void testShowAutofillAiSuggestionDetailsConfirms() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Remove this info?",
+                "Your info was suggested by Gemini.",
+                "Remove",
+                "Got it",
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // Clicking negative button (Remove) should trigger confirmedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.NEGATIVE,
+                        /* stopShowing= */ false);
+        verify(confirmedCallback).run();
+        verify(declinedCallback, never()).run();
+    }
+
+    @Test
+    public void testFormatAutofillAiSuppressionMessageWithMultipleLinks() {
+        SettingsNavigation mockSettingsNavigation = mock(SettingsNavigation.class);
+        SettingsNavigationFactory.setInstanceForTesting(mockSettingsNavigation);
+
+        String rawBody =
+                "Suggested by Gemini · <src_link>View sources</src_link>\n\n"
+                        + "You can remove this suggestion from Chrome. Your original source won't"
+                        + " be deleted. <manage_link>Manage enhanced autofill</manage_link>";
+        CharSequence formatted = mMediator.formatAutofillAiSuppressionMessage(rawBody);
+
+        assertTrue(formatted instanceof Spanned);
+        Spanned spanned = (Spanned) formatted;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertEquals(2, spans.length);
+
+        String plainText = spanned.toString();
+
+        // Verify span 1 ("View sources")
+        int sourcesStart = plainText.indexOf("View sources");
+        int sourcesEnd = sourcesStart + "View sources".length();
+        assertEquals(sourcesStart, spanned.getSpanStart(spans[0]));
+        assertEquals(sourcesEnd, spanned.getSpanEnd(spans[0]));
+
+        // Verify span 2 ("Manage enhanced autofill")
+        int settingsStart = plainText.indexOf("Manage enhanced autofill");
+        int settingsEnd = settingsStart + "Manage enhanced autofill".length();
+        assertEquals(settingsStart, spanned.getSpanStart(spans[1]));
+        assertEquals(settingsEnd, spanned.getSpanEnd(spans[1]));
+
+        // Trigger settings click
+        spans[1].onClick(null);
+        verify(mockSettingsNavigation).startSettings(eq(mMockActivity), any(), any(), eq(true));
+    }
+
+    @Test
+    public void testDestroyDismissesActiveConfirmationDialog() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        ActionConfirmationDialog.DismissHandler mockDismissHandler =
+                mock(ActionConfirmationDialog.DismissHandler.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockDismissHandler);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Title", "Body", "Remove", "Got it", () -> {}, () -> {});
+        verify(mockDialog).show(any(), any());
+
+        mMediator.destroy();
+        verify(mockDismissHandler).dismiss(DialogDismissalCause.UNKNOWN);
     }
 
     @Test
@@ -2125,5 +2260,151 @@ public class ManualFillingControllerTest {
                                 })
                 .when(mMockCompositorViewHolder)
                 .getVisibleViewport(any(RectF.class));
+    }
+
+    @Test
+    public void testConfirmDeletionOperation() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // For standard dialog, positive button triggers confirmedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.POSITIVE,
+                        /* stopShowing= */ false);
+        verify(confirmedCallback).run();
+        verify(declinedCallback, never()).run();
+
+        // For standard dialog, negative button triggers declinedCallback
+        reset(confirmedCallback, declinedCallback);
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                confirmedCallback,
+                declinedCallback);
+        verify(mockDialog, times(2)).show(paramsCaptor.capture(), handlerCaptor.capture());
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.NEGATIVE,
+                        /* stopShowing= */ false);
+        verify(declinedCallback).run();
+        verify(confirmedCallback, never()).run();
+    }
+
+    @Test
+    public void testFormatDeletionMessageWithLink() {
+        String body = "Delete this item? <link>Learn more</link>";
+        String bodyLink = "https://google.com";
+        CharSequence result = mMediator.formatDeletionMessage(body, bodyLink);
+
+        assertThat(result).isInstanceOf(Spanned.class);
+        Spanned spanned = (Spanned) result;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertThat(spans.length).isEqualTo(1);
+        assertThat(spanned.toString()).isEqualTo("Delete this item? Learn more");
+    }
+
+    @Test
+    public void testFormatDeletionMessageWithoutLink() {
+        String body = "Delete this item without link.";
+        CharSequence result = mMediator.formatDeletionMessage(body, "");
+        assertThat(result.toString()).isEqualTo(body);
+    }
+
+    @Test
+    public void testDismissConfirmationDialogOnDestroy() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle));
+
+        mController.destroy();
+
+        verify(mockHandle).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testDismissConfirmationDialogOnPause() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle));
+
+        mMediator.pause();
+
+        verify(mockHandle).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testRepeatedConfirmDeletionOperationDismissesActiveDialog() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle1 = mock(DialogHandle.class);
+        DialogHandle mockHandle2 = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle1, mockHandle2);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title 1",
+                "Delete message 1",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle1));
+
+        mController.confirmDeletionOperation(
+                "Delete title 2",
+                "Delete message 2",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+
+        verify(mockHandle1).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle2));
     }
 }

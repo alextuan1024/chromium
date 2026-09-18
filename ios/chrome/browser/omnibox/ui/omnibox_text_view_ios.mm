@@ -1204,8 +1204,7 @@ const CGFloat kVerticalOffset = 1;
 }
 
 - (void)updateTextContainerInset {
-  BOOL isComposeboxIpad =
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_PHONE;
+  BOOL isComposeboxIpad = IsRegularXRegularSizeClass(self.traitCollection);
   CGFloat minVerticalInset =
       isComposeboxIpad ? kOmniboxTextViewMinVerticalInsetIPadComposebox
                        : kOmniboxTextViewMinVerticalInset;
@@ -1279,6 +1278,10 @@ const CGFloat kVerticalOffset = 1;
 }
 
 - (void)forceDisableReturnKey:(BOOL)forceDisable {
+  if (_forceDisableReturnKey == forceDisable) {
+    return;
+  }
+
   _forceDisableReturnKey = forceDisable;
   [self reloadInputViews];
 }

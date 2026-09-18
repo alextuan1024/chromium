@@ -76,14 +76,14 @@ void ShowLowDiskSpaceErrorNotification(content::BrowserContext* context) {
       l10n_util::GetStringUTF16(IDS_ARC_CRITICALLY_LOW_DISK_NOTIFICATION_TITLE),
       l10n_util::GetStringUTF16(
           IDS_ARC_CRITICALLY_LOW_DISK_NOTIFICATION_MESSAGE),
-      l10n_util::GetStringUTF16(IDS_ARC_NOTIFICATION_DISPLAY_SOURCE), GURL(),
+      l10n_util::GetStringUTF16(IDS_ARC_NOTIFICATION_DISPLAY_SOURCE),
       notifier_id, optional_fields,
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
               [](const user_manager::User* user,
                  std::optional<int> button_index) {
                 if (button_index) {
-                  DCHECK_EQ(0, *button_index);
+                  CHECK_EQ(0, *button_index, base::NotFatalUntil::M160);
                   ash::SettingsAppManager::Get()->Open(
                       CHECK_DEREF(user),
                       {.sub_page =

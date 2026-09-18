@@ -59,7 +59,9 @@
 #import "components/sync/service/sync_service.h"
 #import "components/translate/core/browser/translate_manager.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
+#import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/autofill/atmemory/model/ios_at_memory_query_service_factory.h"
+#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/autofill_ai/error_dialog/model/autofill_ai_error_dialog_context.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/save_entity_params.h"
 #import "ios/chrome/browser/autofill/model/address_normalizer_factory.h"
@@ -170,10 +172,12 @@ ChromeAutofillClientIOS::ChromeAutofillClientIOS(
   // This information is injected through the client because the Android device
   // authenticator is tied to UI. As a result, the data manager has no
   // cross-platform way to derive this information.
-  if (EntityDataManager* edm =
-          base::FeatureList::IsEnabled(features::kAutofillAiWalletPrivatePasses)
-              ? GetEntityDataManager()
-              : nullptr) {
+  if (EntityDataManager* edm = base::FeatureList::IsEnabled(
+                                   features::kAutofillAiWalletPrivatePasses) ||
+                                       base::FeatureList::IsEnabled(
+                                           features::kAutofillAmbientAutofill)
+                                   ? GetEntityDataManager()
+                                   : nullptr) {
     edm->SetReauthAvailability(SupportsDeviceReauth());
   }
 
@@ -402,6 +406,12 @@ ChromeAutofillClientIOS::GetProfileMetricsService() {
   return IOSProfileMetricsServiceFactory::GetForProfile(profile_);
 }
 
+affiliations::AffiliationService*
+ChromeAutofillClientIOS::GetAffiliationService() {
+  CHECK(profile_);
+  return IOSChromeAffiliationServiceFactory::GetForProfile(profile_);
+}
+
 FormDataImporter* ChromeAutofillClientIOS::GetFormDataImporter() {
   return form_data_importer_.get();
 }
@@ -538,6 +548,7 @@ ChromeAutofillClientIOS::ShowAutofillSuggestions(
 }
 
 void ChromeAutofillClientIOS::UpdateAutofillDataListValues(
+    const LocalFrameToken& frame_token,
     base::span<const SelectOption> datalist) {
   // No op. ios/web_view does not support display datalist.
 }
@@ -545,6 +556,11 @@ void ChromeAutofillClientIOS::UpdateAutofillDataListValues(
 void ChromeAutofillClientIOS::HideSuggestions(
     SuggestionHidingReason reason,
     std::optional<FillingProduct> product) {
+  if (product == FillingProduct::kAtMemory) {
+    [at_memory_handler_ dismissAtMemory];
+    return;
+  }
+
   // If a `product` filter is specified, only hide if it matches the active
   // popup.
   if (product && active_suggestion_delegate_ &&
@@ -757,7 +773,10 @@ void ChromeAutofillClientIOS::ShowEntityImportBubble(
     EntityInstance new_entity,
     std::optional<EntityInstance> old_entity,
     bool save_is_synchronous,
+    LegalMessageLines public_passes_notice,
     EntityImportPromptResultCallback prompt_result_callback) {
+  // TODO(crbug.com/553442816): Forward `public_passes_notice` to the save
+  // entity consumer so that they are displayed in the prompt footer.
   // Enhanced Autofill is only available to signed-in users.
   std::optional<std::u16string> user_email = GetUserEmail();
   if (!user_email.has_value()) {

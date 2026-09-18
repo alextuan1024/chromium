@@ -14,8 +14,6 @@ import android.graphics.Bitmap;
 import android.view.View;
 import android.widget.TextView;
 
-import androidx.test.filters.MediumTest;
-
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -42,7 +40,6 @@ import org.chromium.url.GURL;
 @RunWith(BaseRobolectricTestRunner.class)
 public class PwaUniversalInstallBottomSheetCoordinatorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
-    Activity mActivity;
 
     @Mock private BottomSheetController mBottomSheetControllerMock;
 
@@ -64,7 +61,6 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
     private void onOpenAppCalled() {}
 
     @Test
-    @MediumTest
     public void testShowing() {
         final Activity activity = Robolectric.buildActivity(Activity.class).create().get();
 
@@ -130,7 +126,6 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
     }
 
     @Test
-    @MediumTest
     @EnableFeatures({WebappsFeatureMap.ALWAYS_SHOW_INSTALL_DISAMBIGUATION_DIALOG})
     public void testOnAppDataFetched_alwaysShowDisambiguationFlagEnabled() {
         doReturn(true).when(mBottomSheetControllerMock).requestShowContent(any(), anyBoolean());
@@ -164,7 +159,6 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
     }
 
     @Test
-    @MediumTest
     @DisableFeatures({WebappsFeatureMap.ALWAYS_SHOW_INSTALL_DISAMBIGUATION_DIALOG})
     public void testOnAppDataFetched_flagDisabled_autoRedirectsOnRoot() {
         final Activity activity = Robolectric.buildActivity(Activity.class).create().get();

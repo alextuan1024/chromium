@@ -50,20 +50,24 @@ import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.contextual_search.InputState;
+import org.chromium.components.contextual_search.InputStateBuilder;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
 import org.chromium.components.omnibox.AutocompleteRequestType;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.ToolConfigProto.ToolConfig;
-import org.chromium.components.omnibox.ToolModeProto.ToolMode;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.url.GURL;
 
 /** Unit tests for {@link HintTextUpdater}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class HintTextUpdaterUnitTest {
+    private static final String AIM_ACTIVATION_HINT_TEXT = "Press tab then enter to ask AI Mode";
+    private static final String SEARCH_ENGINE_NAME = "Google";
+    private static final String SEARCH_ENGINE_HINT = "Search Google or type URL";
+
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
@@ -83,6 +87,8 @@ public class HintTextUpdaterUnitTest {
     private final SettableNonNullObservableSupplier<Integer> mFuseboxLayoutModeSupplier =
             ObservableSuppliers.createNonNull(FuseboxLayoutMode.TOOLBAR);
     private final SettableNonNullObservableSupplier<Boolean> mActivationChipVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final SettableNonNullObservableSupplier<Boolean> mActivationChipSelectedSupplier =
             ObservableSuppliers.createNonNull(false);
     private final SettableMonotonicObservableSupplier<Profile> mProfileSupplier =
             ObservableSuppliers.createMonotonic();
@@ -135,6 +141,7 @@ public class HintTextUpdaterUnitTest {
                         mSearchEngineServiceSupplier,
                         mFuseboxCoordinator,
                         mActivationChipVisibilitySupplier,
+                        mActivationChipSelectedSupplier,
                         mProfileSupplier,
                         mUpdateHintTextCallback);
 
@@ -149,6 +156,28 @@ public class HintTextUpdaterUnitTest {
 
         mUpdater.beginInput(mAutocompleteInput);
         clearInvocations(mUpdateHintTextCallback);
+    }
+
+    private void assertHintText(String expected) {
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        assertEquals(expected, mHintTextCaptor.getValue().toString().trim());
+    }
+
+    private void setupAimActivationHintEligible() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+        mAutocompleteInput.setDisplayState(DisplayState.SUGGESTIONS);
+    }
+
+    private void setupAimActivationHintShowing() {
+        setupAimActivationHintEligible();
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+        assertHintText(AIM_ACTIVATION_HINT_TEXT);
     }
 
     @Test
@@ -191,7 +220,6 @@ public class HintTextUpdaterUnitTest {
 
     @Test
     public void testGetOmniboxHintText_FuseboxSessionState() {
-        OmniboxFeatures.sShowModelPicker.setForTesting(true);
         when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
 
         String searchEngineHint = "Search Google or type URL";
@@ -207,22 +235,22 @@ public class HintTextUpdaterUnitTest {
 
         ToolConfig aiModeConfig =
                 ToolConfig.newBuilder()
-                        .setTool(ToolMode.TOOL_MODE_UNSPECIFIED)
+                        .setToolValue(ToolMode.TOOL_MODE_UNSPECIFIED)
                         .setHintText(aiModeHint)
                         .build();
         ToolConfig imageGenConfig =
                 ToolConfig.newBuilder()
-                        .setTool(ToolMode.TOOL_MODE_IMAGE_GEN)
+                        .setToolValue(ToolMode.TOOL_MODE_IMAGE_GEN)
                         .setHintText(imageGenHint)
                         .build();
         ToolConfig deepSearchConfig =
                 ToolConfig.newBuilder()
-                        .setTool(ToolMode.TOOL_MODE_DEEP_SEARCH)
+                        .setToolValue(ToolMode.TOOL_MODE_DEEP_SEARCH)
                         .setHintText(deepSearchHint)
                         .build();
         ToolConfig canvasConfig =
                 ToolConfig.newBuilder()
-                        .setTool(ToolMode.TOOL_MODE_CANVAS)
+                        .setToolValue(ToolMode.TOOL_MODE_CANVAS)
                         .setHintText(canvasHint)
                         .build();
         byte[][] toolConfigs =
@@ -237,7 +265,7 @@ public class HintTextUpdaterUnitTest {
         verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
         clearInvocations(mUpdateHintTextCallback);
 
-        InputState inputState = new InputState.Builder().withToolConfigs(toolConfigs).build();
+        InputState inputState = new InputStateBuilder().withToolConfigs(toolConfigs).build();
         mInputStateSupplier.set(inputState);
 
         mAutocompleteInput.setRequestType(AutocompleteRequestType.IMAGE_GENERATION);
@@ -256,12 +284,7 @@ public class HintTextUpdaterUnitTest {
         verify(mUpdateHintTextCallback).onResult(eq(aiModeHint));
 
         clearInvocations(mUpdateHintTextCallback);
-        OmniboxFeatures.sShowModelPicker.setForTesting(false);
         mAutocompleteInput.setRequestType(AutocompleteRequestType.DEEP_SEARCH);
-        verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
-        OmniboxFeatures.sShowModelPicker.setForTesting(true);
-
-        clearInvocations(mUpdateHintTextCallback);
         when(mFuseboxSessionState.getComposeboxQueryControllerBridge()).thenReturn(null);
         mUpdater.onTitleChanged();
         verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
@@ -269,14 +292,14 @@ public class HintTextUpdaterUnitTest {
                 .thenReturn(mComposeboxQueryControllerBridge);
 
         clearInvocations(mUpdateHintTextCallback);
-        InputState emptyHintState = new InputState.Builder().withHintText("").build();
+        InputState emptyHintState = new InputStateBuilder().withHintText("").build();
         mInputStateSupplier.set(emptyHintState);
         mUpdater.onTitleChanged();
         verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
     }
 
     @Test
-    public void testGetOmniboxHintText_ModelPickerDisabled() {
+    public void testGetOmniboxHintText_noSessionStateFallback() {
         when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
 
         clearInvocations(mUpdateHintTextCallback);
@@ -359,6 +382,41 @@ public class HintTextUpdaterUnitTest {
     }
 
     @Test
+    public void testAimActivationHint_FuseboxDisabled_showsHint() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.DISABLED);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        assertTrue(
+                mHintTextCaptor
+                        .getValue()
+                        .toString()
+                        .contains("Press tab then enter to ask AI Mode"));
+    }
+
+    @Test
+    public void testAimActivationHint_FuseboxDisabled_showsEmptyHintWhenTrackerSaysNo() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(false);
+        mFuseboxStateSupplier.set(FuseboxState.DISABLED);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq(""));
+    }
+
+    @Test
     public void testAimActivationHint_ResetsShownFlagOnEndInput() {
         when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
         mFuseboxStateSupplier.set(FuseboxState.COMPACT);
@@ -378,6 +436,71 @@ public class HintTextUpdaterUnitTest {
         mUpdater.beginInput(mAutocompleteInput);
         mUpdater.onTitleChanged();
         verify(mTracker, times(2)).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedClearsHint() {
+        setupAimActivationHintShowing();
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+
+        // Selecting the activation chip clears the hint text.
+        clearInvocations(mUpdateHintTextCallback, mTracker);
+        mActivationChipSelectedSupplier.set(true);
+        assertHintText("");
+        verify(mTracker, never()).dismissed(any());
+
+        // Deselecting the activation chip restores the hint without re-querying the tracker.
+        clearInvocations(mUpdateHintTextCallback, mTracker);
+        mActivationChipSelectedSupplier.set(false);
+        assertHintText(AIM_ACTIVATION_HINT_TEXT);
+        verify(mTracker, never()).shouldTriggerHelpUi(any());
+
+        // Ending input dismisses the tracker.
+        mUpdater.endInput();
+        verify(mTracker).dismissed(FeatureConstants.AIM_ACTIVATION_HINT);
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedInDrafting_ShowsDefaultHint() {
+        setupAimActivationHintEligible();
+        when(mSearchEngineService.getSearchEngineName()).thenReturn(SEARCH_ENGINE_NAME);
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn(SEARCH_ENGINE_HINT);
+
+        // Selecting the activation chip in SUGGESTIONS clears the hint.
+        mActivationChipSelectedSupplier.set(true);
+        clearInvocations(mUpdateHintTextCallback);
+
+        // When suggestions collapse to DRAFTING, the default search hint is restored.
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING);
+        assertHintText(SEARCH_ENGINE_HINT);
+
+        // When disengaged into DRAFTING_NO_FOCUS, the default search hint is also shown.
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING_NO_FOCUS);
+        assertHintText(SEARCH_ENGINE_HINT);
+
+        // When suggestions reopen, hint is cleared again.
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setDisplayState(DisplayState.SUGGESTIONS);
+        assertHintText("");
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedInDrafting_NonEmptyUserText_HidesHint() {
+        setupAimActivationHintEligible();
+        when(mSearchEngineService.getSearchEngineName()).thenReturn(SEARCH_ENGINE_NAME);
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn(SEARCH_ENGINE_HINT);
+
+        mActivationChipSelectedSupplier.set(true);
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING);
+        clearInvocations(mUpdateHintTextCallback);
+
+        mAutocompleteInput.setUserText("query");
+        assertHintText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setUserText("");
+        assertHintText(SEARCH_ENGINE_HINT);
     }
 
     @Test

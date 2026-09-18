@@ -439,13 +439,17 @@ class TabImpl implements Tab, TabInternal {
 
                     @Override
                     public void onViewDetachedFromWindow(View view) {
-                        if (isNativePage() && assumeNonNull(getNativePage()).getView() == view) {
+                        NativePage nativePage = getNativePage();
+                        if (isNativePage()
+                                && nativePage != null
+                                && !nativePage.isFrozen()
+                                && nativePage.getView() == view) {
                             if (mNativePageSmoothTransitionDelegate != null) {
                                 mNativePageSmoothTransitionDelegate.cancel();
                                 mNativePageSmoothTransitionDelegate = null;
                             } else {
                                 // reset ntp view state.
-                                assumeNonNull(getView()).setAlpha(1f);
+                                view.setAlpha(1f);
                             }
                         }
                         mIsViewAttachedToWindow = false;
@@ -526,9 +530,20 @@ class TabImpl implements Tab, TabInternal {
             updateWindowAndroid(window);
 
             // Reload the NativePage (if any), since the old NativePage has a reference to the old
-            // activity.
+            // activity. If hidden, freeze the native page to avoid eager instantiation of
+            // background native pages. If the native page was not frozen (e.g. because it is open
+            // and has a parent view, or because it wasn't hidden), reload it so that it binds to
+            // the new Activity and destroys the old native page to fix the Activity leak.
             if (isNativePage()) {
-                maybeShowNativePage(getUrl().getSpec(), true, PdfUtils.getPdfInfo(getNativePage()));
+                if (isHidden()) {
+                    freezeNativePage();
+                }
+                if (mNativePage != null && !mNativePage.isFrozen()) {
+                    maybeShowNativePage(
+                            getUrl().getSpec(),
+                            /* forceReload= */ true,
+                            PdfUtils.getPdfInfo(getNativePage()));
+                }
             }
         } else {
             updateIsDetachedFromActivity(window);
@@ -679,11 +694,14 @@ class TabImpl implements Tab, TabInternal {
 
     @Override
     public void freezeNativePage() {
-        if (mNativePage == null
-                || mNativePage.isFrozen()
-                || assumeNonNull(mNativePage.getView()).getParent() != null) {
+        if (mNativePage == null || mNativePage.isFrozen()) {
             return;
         }
+        View view = mNativePage.getView();
+        if (view == null || view.getParent() != null) {
+            return;
+        }
+        view.removeOnAttachStateChangeListener(mAttachStateChangeListener);
         mNativePage = FrozenNativePage.freeze(mNativePage);
         updateInteractableState();
     }
@@ -864,7 +882,8 @@ class TabImpl implements Tab, TabInternal {
         try {
             TraceEvent.begin("Tab.loadUrl");
             if (maybeHandleBeforeUnload(() -> loadUrl(params))) {
-                return new LoadUrlResult(TabLoadStatus.DEFAULT_PAGE_LOAD, null);
+                return new LoadUrlResult(
+                        TabLoadStatus.DEFAULT_PAGE_LOAD, /* navigationHandle= */ null);
             }
 
             // TODO(tedchoc): When showing the android NTP, delay the call to
@@ -1450,6 +1469,8 @@ class TabImpl implements Tab, TabInternal {
         // Update the title before destroying the tab. http://b/5783092
         updateTitle();
 
+        onAlertStateChanged(TabAlert.NONE);
+
         for (TabObserver observer : mObservers) observer.onDestroyed(this);
         boolean abortNavigationsFromTabClosures =
                 ChromeFeatureList.isEnabled(ChromeFeatureList.ABORT_NAVIGATIONS_FROM_TAB_CLOSURES);
@@ -1976,12 +1997,24 @@ class TabImpl implements Tab, TabInternal {
         if (!maybeShowNativePage(url.getSpec(), isReload, pdfInfo)) {
             // This is restricted to HTTP(S) URLs specifically, as these are the only schemes that
             // necessitate a PDF re-download.
-            String downloadUrl =
-                    (isPdf
-                                    || (UrlConstants.CHROME_NATIVE_SCHEME.equals(url.getScheme())
-                                            && UrlConstants.PDF_HOST.equals(url.getHost())))
-                            ? PdfUtils.getPdfReDownloadUrl(url.getSpec())
-                            : null;
+            String downloadUrl = null;
+            if (isPdf) {
+                downloadUrl = PdfUtils.getPdfReDownloadUrl(url.getSpec());
+            } else if (UrlConstants.CHROME_NATIVE_SCHEME.equals(url.getScheme())
+                    && UrlConstants.PDF_HOST.equals(url.getHost())) {
+                downloadUrl =
+                        PdfUtils.getPdfReDownloadUrl(url.getSpec());
+                // getPdfReDownloadUrl restricts to HTTP(S). Explicitly allow blob schemes
+                // since they are ephemeral and require re-load.
+                if (downloadUrl == null
+                        && ChromeFeatureList.sAndroidHandlePdfInIframe.isEnabled()) {
+                    String decodedUrl = PdfUtils.decodePdfPageUrl(url.getSpec());
+                    if (decodedUrl != null
+                            && decodedUrl.startsWith(UrlConstants.BLOB_SCHEME + ":")) {
+                        downloadUrl = decodedUrl;
+                    }
+                }
+            }
             if (downloadUrl != null) {
                 // When the download url is not null, we are navigating to a pdf native page which
                 // requires re-download. Load the download url to trigger the re-download.
@@ -2012,7 +2045,7 @@ class TabImpl implements Tab, TabInternal {
 
         // For incognito we fall through to startSettings(), which will redirect to the original
         // profile's window, similar to Win/Mac/Linux.
-        if (SettingsInTab.isEnabled() && !isIncognito()) return false;
+        if (SettingsInTab.isFeatureEnabled() && !isIncognito()) return false;
 
         // TODO(crbug.com/456164910): Use the URL path to open deeplinks into Settings.
         SettingsNavigationFactory.createSettingsNavigation().startSettings(getContext());
@@ -2323,10 +2356,9 @@ class TabImpl implements Tab, TabInternal {
     }
 
     @CalledByNative
-    private ByteBuffer getWebContentsStateByteBuffer() {
-        // Return a temp byte buffer if the state is null.
+    private @Nullable ByteBuffer getWebContentsStateByteBuffer() {
         if (mWebContentsState == null) {
-            return ByteBuffer.allocateDirect(0);
+            return null;
         }
         assert mWebContentsState.buffer().isDirect();
         return mWebContentsState.buffer();
@@ -3419,6 +3451,10 @@ class TabImpl implements Tab, TabInternal {
 
     boolean isArchivedForTesting() {
         return getTabModelType() == TabModelType.ARCHIVED;
+    }
+
+    OnAttachStateChangeListener getAttachStateChangeListenerForTesting() {
+        return mAttachStateChangeListener;
     }
 
     @NativeMethods

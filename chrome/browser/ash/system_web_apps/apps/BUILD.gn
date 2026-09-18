@@ -131,7 +131,6 @@ static_library("apps") {
     "//chrome/browser:browser_process",
     "//chrome/browser/apps:user_type_filter",
     "//chrome/browser/ash/boca",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/crostini",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/file_manager",
@@ -151,12 +150,14 @@ static_library("apps") {
     "//chrome/common:constants",
     "//chromeos/ash/components/boca",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/channel",
     "//chromeos/ash/components/demo_mode",
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/system_web_apps:system_web_app_type",
     "//chromeos/constants",
     "//chromeos/strings:strings_grit",
+    "//components/application_locale_storage",
     "//components/content_settings/core/common",
     "//components/drive",
     "//components/keyed_service/content",
@@ -255,6 +256,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/views/extensions:extensions_toolbar_desktop",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/ui/webui/ash/diagnostics_dialog",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
@@ -295,6 +297,7 @@ source_set("browser_tests") {
     "//chrome/browser/ash/system_web_apps/apps/personalization_app:browser_tests",
     "//chrome/browser/ash/system_web_apps/apps/projector_app:browser_tests",
     "//chrome/browser/ash/system_web_apps/apps/vc_background_ui:browser_tests",
+    "//chrome/browser/ui:settings_window_manager_chromeos",
   ]
 
   if (!is_official_build) {

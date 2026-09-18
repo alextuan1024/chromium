@@ -18,7 +18,8 @@ import {createAutocompleteMatch, SearchboxBrowserProxy} from './searchbox_browse
 import type {SearchboxIconElement} from './searchbox_icon.js';
 import {getCss} from './searchbox_match.css.js';
 import {getHtml} from './searchbox_match.html.js';
-import {mojoTimeTicks} from './utils.js';
+import {selectionsEqual} from './searchbox_selection_mixin.js';
+import {announce, mojoTimeTicks} from './utils.js';
 
 
 
@@ -146,6 +147,7 @@ export class SearchboxMatchElement extends CrLitElement {
       sideType: {type: Number},
 
       virtualFocusEnabled: {type: Boolean},
+      resultSequenceId: {type: Number},
 
       //========================================================================
       // Private properties
@@ -206,6 +208,7 @@ export class SearchboxMatchElement extends CrLitElement {
   accessor showThumbnail: boolean = false;
   accessor showEllipsis: boolean = false;
   accessor virtualFocusEnabled: boolean = false;
+  accessor resultSequenceId: number = 0;
   private accessor isContextualSuggestion_: boolean = false;
   private accessor isTopChromeSearchbox_: boolean =
       loadTimeData.getBoolean('isTopChromeSearchbox');
@@ -273,6 +276,14 @@ export class SearchboxMatchElement extends CrLitElement {
     super.updated(changedProperties);
     if (changedProperties.has('selection') || changedProperties.has('match')) {
       this.updateAriaLabel_();
+    }
+    if (this.virtualFocusEnabled && this.selection.line === this.matchIndex &&
+        this.selection.state !== SelectionLineState.kFocusedButtonAim) {
+      const oldSelection = changedProperties.get('selection');
+      if (changedProperties.has('selection') &&
+          (!oldSelection || !selectionsEqual(oldSelection, this.selection))) {
+        announce(this, this.ariaLabel);
+      }
     }
   }
 
@@ -345,7 +356,7 @@ export class SearchboxMatchElement extends CrLitElement {
     }
 
     this.pageHandler_.openAutocompleteMatch(
-        this.matchIndex, this.match.destinationUrl,
+        this.resultSequenceId, this.matchIndex, this.match.destinationUrl,
         /*areMatchesShowing=*/ true,
         /*mouseButton=*/ e.button || 0, {
           altKey: e.altKey,

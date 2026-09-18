@@ -93,6 +93,8 @@
 #include "components/dom_distiller/core/url_constants.h"
 #include "components/error_page/common/error.h"
 #include "components/error_page/common/localized_error.h"
+#include "components/facilitated_payments/content/renderer/facilitated_payments_agent.h"
+#include "components/facilitated_payments/core/features/features.h"
 #include "components/feed/feed_feature_list.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/guest_view/buildflags/buildflags.h"
@@ -183,6 +185,7 @@
 #include "third_party/blink/public/web/web_security_policy.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/jstemplate_builder.h"
 #include "url/origin.h"
@@ -218,7 +221,7 @@
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "chrome/common/initialize_extensions_client.h"
+#include "chrome/common/scoped_chrome_extensions_client.h"
 #include "chrome/renderer/extensions/api/chrome_extensions_renderer_api_provider.h"
 #include "chrome/renderer/extensions/chrome_extensions_renderer_client.h"
 #include "extensions/common/constants.h"
@@ -382,7 +385,8 @@ ChromeContentRendererClient::ChromeContentRendererClient()
       sampling_profiler::ThreadProfiler::CreateAndStartOnMainThread();
 #endif
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  EnsureExtensionsClientInitialized();
+  extensions_client_ =
+      std::make_unique<extensions::ScopedChromeExtensionsClient>();
   ChromeExtensionsRendererClient::Create();
 #endif
 }
@@ -421,23 +425,22 @@ void ChromeContentRendererClient::RenderThreadStarted() {
       thread->GetIOTaskRunner(), std::move(module_event_sink));
 #endif
 
-  browser_interface_broker_ =
-      blink::Platform::Current()->GetBrowserInterfaceBroker();
-
-  chrome_observer_ = std::make_unique<ChromeRenderThreadObserver>();
-  web_cache_impl_ = std::make_unique<web_cache::WebCacheImpl>();
-
 #if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
   if (request_header_integrity::RequestHeaderIntegrityURLLoaderThrottle::
           IsFeatureEnabled()) {
     mojo::PendingRemote<request_header_integrity::mojom::ChromeCompanero>
         remote;
-    browser_interface_broker_->GetInterface(
-        remote.InitWithNewPipeAndPassReceiver());
+    thread->BindHostReceiver(remote.InitWithNewPipeAndPassReceiver());
     request_header_integrity::ChromeCompaneroLoader::GetInstance()
         .SetMojoRemote(std::move(remote));
   }
 #endif
+
+  browser_interface_broker_ =
+      blink::Platform::Current()->GetBrowserInterfaceBroker();
+
+  chrome_observer_ = std::make_unique<ChromeRenderThreadObserver>();
+  web_cache_impl_ = std::make_unique<web_cache::WebCacheImpl>();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   auto* extensions_renderer_client =
@@ -822,6 +825,16 @@ void ChromeContentRendererClient::RenderFrameCreated(
     wallet::ImageExtractor::Create(render_frame, registry);
   }
 
+  // Scans the DOM for payment QR codes. The main frame check precedes the
+  // feature flag check so that subframes never enroll into the experiment and
+  // dilute its metrics.
+  if (render_frame->IsMainFrame() &&
+      base::FeatureList::IsEnabled(
+          payments::facilitated::kEnableDesktopQrCodeDetection)) {
+    new payments::facilitated::FacilitatedPaymentsAgent(render_frame,
+                                                        associated_interfaces);
+  }
+
 #if !BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(features::kWebium)) {
     WebUIBrowserRendererExtension::Create(render_frame);
@@ -916,6 +929,20 @@ bool ChromeContentRendererClient::IsDomStorageDisabled() const {
   // opaque origins). This avoids a renderer kill by the browser process which
   // isn't expecting PDF renderer processes to ever use DOM storage
   // interfaces. See https://crbug.com/357014503.
+  return pdf::IsPdfRenderer();
+#else
+  return false;
+#endif
+}
+
+bool ChromeContentRendererClient::AreDedicatedWorkersDisabled() const {
+#if BUILDFLAG(ENABLE_PDF) && BUILDFLAG(ENABLE_EXTENSIONS)
+  // PDF renderers shouldn't need to create dedicated workers. Note that it's
+  // still possible to attempt to instantiate a Worker in a PDF document's
+  // context via DevTools; returning true here ensures that the constructor
+  // throws a SecurityError DOMException. This avoids a renderer kill by the
+  // browser process which isn't expecting PDF renderer processes to ever create
+  // dedicated workers. See https://crbug.com/553118313.
   return pdf::IsPdfRenderer();
 #else
   return false;

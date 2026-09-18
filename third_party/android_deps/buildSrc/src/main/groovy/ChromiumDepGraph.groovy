@@ -235,9 +235,9 @@ class ChromiumDepGraph {
             org_robolectric_nativeruntime: new PropertyOverride(
                     licenseName: 'Apache-2.0, MIT',
                     licenseUrl: 'https://raw.githubusercontent.com/robolectric/robolectric/master/LICENSE'),
+            // Managed by //third_party/robolectric.
             org_robolectric_nativeruntime_dist_compat: new PropertyOverride(
-                    licenseName: 'Apache-2.0, MIT',
-                    licenseUrl: 'https://raw.githubusercontent.com/robolectric/robolectric/master/LICENSE'),
+                    exclude: true),
             org_robolectric_pluginapi: new PropertyOverride(
                     licenseName: 'Apache-2.0, MIT',
                     licenseUrl: 'https://raw.githubusercontent.com/robolectric/robolectric/master/LICENSE'),
@@ -273,9 +273,9 @@ class ChromiumDepGraph {
             org_jetbrains_kotlinx_kotlinx_coroutines_guava: new PropertyOverride(
                     resolveVersion: '1.8.1'),
             org_jetbrains_kotlinx_kotlinx_serialization_core_jvm: new PropertyOverride(
-                    resolveVersion: '1.7.2'),
+                    resolveVersion: '1.7.3'),
             org_jetbrains_kotlinx_kotlinx_serialization_json: new PropertyOverride(
-                    resolveVersion: '1.7.2', overrideLatest: true),
+                    resolveVersion: '1.7.3', overrideLatest: true),
             org_jetbrains_kotlinx_kotlinx_coroutines_test_jvm: new PropertyOverride(
                     resolveVersion: '1.7.3'),
             io_reactivex_rxjava3_rxjava: new PropertyOverride(
@@ -357,7 +357,8 @@ class ChromiumDepGraph {
                 'testCompileLatest',
                 'androidTestCompile',
                 'androidTestCompileLatest',
-                'buildCompileNoDeps'
+                'buildCompileNoDeps',
+                'buildCompileNoDepsLatest'
         ]
         timeIt('** Resolving all deps') {
             for (Project project : projects) {
@@ -802,13 +803,26 @@ class ChromiumDepGraph {
             //
             // The file url will be: https://maven.google.com/android/arch/core/common/1.1.1/common-1.1.1.pom
             String fileUrl = String.format('%s/%s', repoUrl, componentPomSubPath)
-            try {
-                GPathResult content = new XmlSlurper(
-                        false /* validating */, false /* namespaceAware */).parse(fileUrl)
-                logger.debug("Succeeded in resolving url $fileUrl")
-                return [repoUrl, fileUrl, content]
-            } catch (ignored) {
-                logger.debug("Failed in resolving url $fileUrl")
+            int maxRetries = 3
+            int delayMs = 1000
+            for (int retry = 0; retry <= maxRetries; retry++) {
+                try {
+                    GPathResult content = new XmlSlurper(
+                            false /* validating */, false /* namespaceAware */).parse(fileUrl)
+                    logger.debug("Succeeded in resolving url $fileUrl")
+                    return [repoUrl, fileUrl, content]
+                } catch (java.io.FileNotFoundException fnfe) {
+                    logger.debug("FileNotFoundException for url $fileUrl: " + fnfe.getMessage())
+                    break
+                } catch (Throwable e) {
+                    if (retry == maxRetries) {
+                        logger.warn("Failed in resolving url $fileUrl after $maxRetries retries: " + e.getMessage(), e)
+                        e.printStackTrace()
+                    } else {
+                        logger.warn("Transient failure for url $fileUrl (retry ${retry + 1}/${maxRetries}): " + e.getMessage())
+                        Thread.sleep(delayMs * (retry + 1))
+                    }
+                }
             }
         }
         throw new RuntimeException("Could not find pom from artifact $componentPomSubPath in $repoUrls")
@@ -825,14 +839,41 @@ class ChromiumDepGraph {
         // Use a background thread to avoid slowing down main thread.
         // Saves about 80 seconds currently.
         new Thread().start(() -> {
-            HttpURLConnection http = new URL(url).openConnection()
-            http.requestMethod = 'HEAD'
-            if (http.responseCode != 200) {
-                new RuntimeException("Resolved POM but could not resolve $url").printStackTrace()
-                // Exception is logged and ignored if thrown, so explicitly exit.
-                System.exit(1)
+            int maxRetries = 3
+            int delayMs = 1000
+            for (int retry = 0; retry <= maxRetries; retry++) {
+                HttpURLConnection http = null
+                try {
+                    http = (HttpURLConnection) new URL(url).openConnection()
+                    http.requestMethod = 'HEAD'
+                    http.connectTimeout = 5000
+                    http.readTimeout = 5000
+                    int code = http.responseCode
+                    if (code == 200) {
+                        return
+                    }
+                    if (code == 404) {
+                        new RuntimeException("Resolved POM but got 404 for $url").printStackTrace()
+                        System.exit(1)
+                    }
+                    if (retry == maxRetries) {
+                        new RuntimeException("Resolved POM but got response code $code for $url after $maxRetries retries").printStackTrace()
+                        System.exit(1)
+                    }
+                } catch (Throwable t) {
+                    if (retry == maxRetries) {
+                        new RuntimeException("Resolved POM but failed to connect to $url: " + t.getMessage(), t).printStackTrace()
+                        System.exit(1)
+                    }
+                } finally {
+                    if (http != null) {
+                        http.disconnect()
+                    }
+                }
+                try {
+                    Thread.sleep(delayMs * (retry + 1))
+                } catch (InterruptedException ignored) {}
             }
-            http.disconnect()
         })
     }
 

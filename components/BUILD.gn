@@ -211,7 +211,6 @@ test("components_unittests") {
     "//components/cloud_devices/common:unit_tests",
     "//components/collaboration:unit_tests",
     "//components/commerce/core:shopping_service_unit_tests",
-    "//components/commerce/core:utils_unit_tests",
     "//components/component_updater:unit_tests",
     "//components/component_updater/installer_policies:unit_tests",
     "//components/consent_auditor:unit_tests",
@@ -355,6 +354,7 @@ test("components_unittests") {
     "//components/site_token_provider:unit_tests",
     "//components/skills:unit_tests",
     "//components/speech:unit_tests",
+    "//components/sqlite_encrypted_vfs:unit_tests",
     "//components/sqlite_proto:unit_tests",
     "//components/sqlite_vfs:unit_tests",
     "//components/ssl_errors:unit_tests",
@@ -492,6 +492,7 @@ test("components_unittests") {
       "//components/drive:unit_tests",
       "//components/embedder_support:unit_tests",
       "//components/endpoint_fetcher:unit_tests",
+      "//components/facilitated_payments/content/renderer:unit_tests",
       "//components/favicon/content:unit_tests",
       "//components/feed/core/v2:core_unit_tests",
       "//components/feed/core/v2:ios_shared_unit_tests",
@@ -503,7 +504,6 @@ test("components_unittests") {
       "//components/history_embeddings/core:unit_tests",
       "//components/infobars/content:unit_tests",
       "//components/input:unit_tests",
-      "//components/invalidation:legacy_topics_cleanup_unit_tests",
       "//components/invalidation:unit_tests",
       "//components/javascript_dialogs:unit_tests",
       "//components/js_injection/common:unit_tests",
@@ -899,8 +899,8 @@ test("components_unittests") {
       "//components/safe_browsing/core/browser:ping_manager_unittest",
       "//components/safe_browsing/core/browser:user_population_unittest",
       "//components/safe_browsing/core/browser:verdict_cache_manager_unittest",
+      "//components/safe_browsing/core/browser/db:sb_test_util",
       "//components/safe_browsing/core/browser/db:unit_tests_local_db",
-      "//components/safe_browsing/core/browser/db:v4_test_util",
       "//components/safe_browsing/core/browser/password_protection:unit_tests",
       "//components/safe_browsing/core/browser/sync:unittests",
       "//components/safe_browsing/core/common:unit_tests",
@@ -1434,9 +1434,9 @@ if (use_blink) {
     if (safe_browsing_mode == 1 || is_ios) {
       sources += [ "safe_browsing/core/browser/db/v4_store_perftest.cc" ]
       deps += [
+        "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
         "//components/safe_browsing/core/browser/db:sb_store",
-        "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
-        "//components/safe_browsing/core/browser/db:v4_test_util",
+        "//components/safe_browsing/core/browser/db:sb_test_util",
         "//crypto",
       ]
     }

@@ -200,18 +200,22 @@ source_set("gles2_interface") {
 
 source_set("raster_interface") {
   sources = [
+    "raster_interface.cc",
     "raster_interface.h",
     "raster_interface_autogen.h",
   ]
   public_configs = [ "//third_party/khronos:khronos_headers" ]
   deps = [
+    ":client",
     ":interface_base",
     "//base",
+    "//cc/paint",
     "//components/viz/common/resources:shared_image_format",
     "//gpu/command_buffer/common",
     "//gpu/command_buffer/common:raster",
     "//skia",
     "//ui/gfx:buffer_types",
+    "//ui/gfx/geometry",
   ]
 }
 

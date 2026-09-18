@@ -74,7 +74,8 @@ GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
 
   // Add capability to show web modal dialogs (e.g. Data Controls Dialogs for
   // enterprise users) via constrained_window APIs.
-  SetModalDialogDelegate(this);
+  scoped_modal_dialog_delegate_.SetWebContents(
+      delegate_->host().webui_contents());
   host_observation_.Observe(&delegate_->host());
   panel_state_.kind = mojom::PanelStateKind::kAttached;
 }
@@ -105,7 +106,6 @@ GlicSidePanelUi::~GlicSidePanelUi() {
   if (glic_view_) {
     glic_view_->SetWebContents(nullptr);
   }
-  SetModalDialogDelegate(nullptr);
 }
 
 Host::EmbedderDelegate* GlicSidePanelUi::GetHostEmbedderDelegate() {
@@ -188,21 +188,6 @@ void GlicSidePanelUi::SwitchConversation(
                                 std::move(info), std::move(callback));
 }
 
-void GlicSidePanelUi::CaptureScreenshot(
-    glic::mojom::WebClientHandler::CaptureScreenshotCallback callback) {
-  if (!tab_) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-  if (!screenshot_capturer_) {
-    screenshot_capturer_ = GlicScreenshotCapturer::Create();
-  }
-  auto* browser_window = tab_->GetBrowserWindowInterface();
-  CHECK(browser_window);
-  screenshot_capturer_->CaptureScreenshot(
-      browser_window->GetWindow()->GetNativeWindow(), std::move(callback));
-}
-
 void GlicSidePanelUi::Show(const ShowOptions& options) {
   instance_metrics_->OnShowInSidePanel(tab_.get());
   auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator();
@@ -220,9 +205,6 @@ void GlicSidePanelUi::Show(const ShowOptions& options) {
 }
 
 void GlicSidePanelUi::Close(const CloseOptions& options) {
-  if (screenshot_capturer_) {
-    screenshot_capturer_->CloseScreenPicker();
-  }
   CloseSelectionOverlay();
   auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator();
   if (!glic_side_panel_coordinator) {
@@ -236,27 +218,12 @@ void GlicSidePanelUi::ClosePanel() {
   Close(CloseOptions());
 }
 
-void GlicSidePanelUi::SetModalDialogDelegate(
-    web_modal::WebContentsModalDialogManagerDelegate* delegate) {
-  content::WebContents* web_contents = delegate_->host().webui_contents();
-  if (!web_contents) {
-    return;
-  }
-  if (auto* dialog_manager =
-          web_modal::WebContentsModalDialogManager::FromWebContents(
-              web_contents)) {
-    if (delegate || dialog_manager->delegate() == this) {
-      dialog_manager->SetDelegate(delegate);
-    }
-  }
-}
-
 void GlicSidePanelUi::OnReload() {
   content::WebContents* web_contents = delegate_->host().webui_contents();
   if (web_contents && glic_view_) {
     glic_view_->SetWebContents(web_contents);
   }
-  SetModalDialogDelegate(this);
+  scoped_modal_dialog_delegate_.SetWebContents(web_contents);
 }
 
 void GlicSidePanelUi::ActiveWebContentsChanged(
@@ -264,7 +231,7 @@ void GlicSidePanelUi::ActiveWebContentsChanged(
   if (glic_view_) {
     glic_view_->SetWebContents(new_contents);
   }
-  SetModalDialogDelegate(this);
+  scoped_modal_dialog_delegate_.SetWebContents(new_contents);
 }
 
 std::unique_ptr<GlicUiEmbedder> GlicSidePanelUi::CreateInactiveEmbedder()

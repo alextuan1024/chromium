@@ -57,6 +57,14 @@ source_set("lifetime") {
     ]
   }
 
+  if (is_linux && use_dbus) {
+    public += [ "session_end_listener_linux.h" ]
+    public_deps += [
+      "//components/dbus",
+      "//dbus",
+    ]
+  }
+
   if (!is_android && !is_chromeos) {
     public += [ "switch_utils.h" ]
   }
@@ -78,7 +86,6 @@ source_set("impl") {
     "//build/config/compiler:compiler_buildflags",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
-    "//chrome/browser:flags",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_util",
     "//chrome/common:buildflags",
@@ -164,7 +171,10 @@ source_set("impl") {
       "//chrome/browser/profiles:profile_manager",
       "//chrome/browser/sessions",
       "//chrome/browser/ui:browser_init_state",
+      "//chrome/browser/ui:browser_manager_service",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui:scoped_tabbed_browser_displayer",
       "//chrome/browser/ui/lens",
       "//chrome/browser/ui/omnibox/omnibox_everywhere",
       "//chrome/browser/ui/profiles",
@@ -183,6 +193,15 @@ source_set("impl") {
     deps += [
       "//chrome/common:constants",
       "//components/prefs",
+    ]
+  }
+
+  if (is_linux && use_dbus) {
+    sources += [ "session_end_listener_linux.cc" ]
+    deps += [
+      "//chrome/common:chrome_features",
+      "//components/dbus",
+      "//components/version_info",
     ]
   }
 
@@ -239,7 +258,13 @@ if (!is_android) {
       ]
     }
     if (is_linux && use_dbus) {
-      deps += [ "//components/dbus" ]
+      sources += [ "session_end_listener_linux_unittest.cc" ]
+      deps += [
+        "//chrome/common:chrome_features",
+        "//components/dbus",
+        "//components/version_info",
+        "//dbus:test_support",
+      ]
     }
   }
 
@@ -277,6 +302,7 @@ if (!is_android) {
       "//chrome/browser/policy:test_support",
       "//chrome/browser/prefs:util",
       "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/user_education",

@@ -101,8 +101,9 @@ class MojoOmniboxInputDelegate implements OmniboxInputDelegate {
     }
 
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-      // Shift+Down/Up does selection, plain Down/Up navigates suggestions.
-      if (!event.shiftKey) {
+      // Arrow keys navigate suggestions unless modifiers are pressed.
+      if (!event.ctrlKey && !event.altKey && !event.shiftKey &&
+          !event.metaKey) {
         event.preventDefault();
       } else {
         return;
@@ -522,7 +523,6 @@ export class ReadonlyOmniboxElement extends CrLitElement {
         unelision = this.unelide();
       }
       this.$.textInput.focus();
-      this.switchView_(/*hasFocus=*/ true);
 
       // The following comments are from OmniboxViewViews::SetFocus:
       // If the user initiated the focus, then we always select-all, even if the
@@ -553,9 +553,13 @@ export class ReadonlyOmniboxElement extends CrLitElement {
       this.sendInputToBrowser(unelision);
 
       this.inputDelegate_.handleFocusChange(this, {
+        browserVersion: this.omniboxViewState.browserVersion,
         hasFocus: true,
         selection: this.getMojoSelection(),
-        requestClearKeyword: wasAlreadyFocused && !activateDefaultSearch,
+        // We shouldn't clear search keyword on auto-focus, since it may
+        // result in us overwriting a restored one on tab switch.
+        requestClearKeyword:
+            wasAlreadyFocused && !activateDefaultSearch && isUserInitiated,
         startZeroSuggest: isUserInitiated,
         activateDefaultSearch: activateDefaultSearch,
       });
@@ -569,6 +573,7 @@ export class ReadonlyOmniboxElement extends CrLitElement {
     this.lastFocusAcquisition_ = null;
 
     this.inputDelegate_.handleFocusChange(this, {
+      browserVersion: this.omniboxViewState.browserVersion,
       hasFocus: false,
       selection: this.getMojoSelection(),
       requestClearKeyword: false,
@@ -586,6 +591,7 @@ export class ReadonlyOmniboxElement extends CrLitElement {
     }
 
     this.inputDelegate_.handleFocusChange(this, {
+      browserVersion: this.omniboxViewState.browserVersion,
       hasFocus: true,
       selection: this.getMojoSelection(),
       requestClearKeyword: false,
@@ -945,9 +951,9 @@ export class ReadonlyOmniboxElement extends CrLitElement {
     const currentSelection = this.getMojoSelection();
     if (currentSelection.start !== this.omniboxViewState.selection?.start ||
         currentSelection.end !== this.omniboxViewState.selection?.end) {
-      if (this.unelideAndUpdateSelection(UnelisionGesture.OTHER)) {
-        this.sendInputToBrowser(/*unelision=*/ true);
-      }
+      const unelided = this.unelideAndUpdateSelection(UnelisionGesture.OTHER);
+      ++this.omniboxViewState.uiVersion;  // may be taking control of selection.
+      this.sendInputToBrowser(unelided);
     }
   }
 

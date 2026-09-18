@@ -47,6 +47,7 @@ import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.test.util.DeviceRestriction;
 
 /** Integration tests for sign-in / sign-out behavior in {@link SettingsPage}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -66,6 +67,18 @@ public class SettingsPageSigninTest {
     @Before
     public void setUp() {
         mActivityTestRule.startMainActivityOnBlankPage();
+
+        // Skip the tests on landscape devices. Rotating to portrait may letterbox the activity on
+        // landscape-oriented devices, causing Android's letterbox education dialog to intercept
+        // clicks, or rotation to fail (e.g. on automotive).
+        var activity = mActivityTestRule.getActivity();
+        boolean isLandscape =
+                activity.getResources().getConfiguration().orientation
+                        == Configuration.ORIENTATION_LANDSCAPE;
+        Assume.assumeFalse(
+                "Rotating to portrait letterboxes the activity on landscape-oriented devices,"
+                        + " causing Android's letterbox education dialog to intercept clicks.",
+                isLandscape);
     }
 
     @After
@@ -75,7 +88,11 @@ public class SettingsPageSigninTest {
 
     @Test
     @MediumTest
-    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @Restriction({
+        DeviceFormFactor.ONLY_TABLET,
+        // Automotive devices do not support display rotation.
+        DeviceRestriction.RESTRICTION_TYPE_NON_AUTO,
+    })
     public void testSignOutInSingleColumnThenTransitionToMultiColumn() {
         // Sign in.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
@@ -141,7 +158,11 @@ public class SettingsPageSigninTest {
      */
     @Test
     @MediumTest
-    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @Restriction({
+        DeviceFormFactor.ONLY_TABLET,
+        // Automotive devices do not support display rotation.
+        DeviceRestriction.RESTRICTION_TYPE_NON_AUTO,
+    })
     public void testRemoveAccountInSingleColumnRemovesDetailFragment() {
         // Sign in.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);

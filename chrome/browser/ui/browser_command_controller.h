@@ -237,6 +237,9 @@ class BrowserCommandController : public CommandUpdater,
 
   void UpdateTabRestoreCommandState();
 
+  // Updates the checked state for the action with id |action_id|.
+  void UpdateCheckedState(actions::ActionId action_id, bool checked);
+
   // Updates commands for find.
   void UpdateCommandsForFind();
 
@@ -263,9 +266,18 @@ class BrowserCommandController : public CommandUpdater,
   // Updates commands and actions that depend on tab group focus state.
   void UpdateCommandsForTabGroupFocusChanged();
 
+  // Updates commands and actions for profiling.
+  void UpdateCommandsForProfiling();
+
   void UpdateCommandAndActionEnabled(int command_id,
                                      actions::ActionId action_id,
                                      bool enabled);
+
+  // Returns true if the browser is in locked fullscreen mode. If `allow_ontask`
+  // is true, returns false when the browser is locked for `OnTask`.
+  //
+  // Always returns false on non ChromeOS platforms.
+  bool IsInLockedFullscreenMode(bool allow_ontask) const;
 
   std::unique_ptr<CommandUpdater> CreateCommandUpdater();
 

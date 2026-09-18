@@ -575,6 +575,11 @@ BASE_FEATURE(kExternalClearKeyForTesting, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kMediaFoundationClearKeyCdmPathForTesting{
     &kExternalClearKeyForTesting, "media_foundation_cdm_path", ""};
 
+// When enabled, URLProvisionFetcher is hardened against SSRF and OOM by
+// restricting requests and redirects to HTTPS POST, and enforcing a maximum
+// response size.
+BASE_FEATURE(kHardenUrlProvisionFetcher, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Prevents UrlProvisionFetcher from making a provisioning request. If
 // specified, any provisioning request made will not be sent to the provisioning
 // server, and the response will indicate a failure to communicate with the
@@ -1075,26 +1080,14 @@ BASE_FEATURE(kWebCodecsVideoEncoderFrameDrop,
 
 // Inform webrtc with correct video color space information whenever
 // possible.
-BASE_FEATURE(kWebRTCColorAccuracy,
-#if BUILDFLAG(IS_CHROMEOS)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif  // BUILDFLAG(IS_CHROMEOS)
-);
+BASE_FEATURE(kWebRTCColorAccuracy, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // A hardware video encoder is allowed to drop a frame in WebRTC.
 BASE_FEATURE(kWebRTCHardwareVideoEncoderFrameDrop,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables verbose logging of color space.
-// TODO: Delete this after testing is done.
-BASE_FEATURE(kWebRTCLogColorSpace, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kWebRtcAudioNeuralResidualEchoEstimation,
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kWebRtcVoiceIsolationDenoiser, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Used to set a few tunable parameters for the WebRTC Media Capabilities
 // implementation.
@@ -1157,26 +1150,14 @@ BASE_FEATURE(kVideoPipForceTrustedForMediaPlaybackForTesting,
 
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-// Spawn utility processes to perform hardware decode acceleration on behalf of
-// renderer processes (instead of using the GPU process). The GPU process will
-// still be used as a proxy between renderers and utility processes (see
-// go/oop-vd-dd).
-BASE_FEATURE(kUseOutOfProcessVideoDecoding,
-#if BUILDFLAG(IS_CHROMEOS)
-             base::FEATURE_ENABLED_BY_DEFAULT
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT
-#endif
-);
-
-
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 // If echo cancellation for a mic signal is requested, mix and cancel all audio
 // playback going to a specific output device in the audio service.
 BASE_FEATURE(kChromeWideEchoCancellation, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, input audio processing in the audio process may use an ML-based
+// voice isolation denoiser.
+BASE_FEATURE(kWebRtcVoiceIsolationDenoiser, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 
@@ -1249,8 +1230,8 @@ BASE_FEATURE(kPlatformHEVCHbdEncoderSupport, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(ENABLE_SYMPHONIA)
 BASE_FEATURE(kSymphoniaAudioDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSymphoniaMp3Decoding, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kSymphoniaPcmDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kSymphoniaVorbisDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaPcmDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSymphoniaVorbisDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_SYMPHONIA)
 
 #if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
@@ -1299,11 +1280,6 @@ BASE_FEATURE(kAndroidSuspendWebRtcOnScreenOff,
 
 // Enables zero-copy video capture on Android.
 BASE_FEATURE(kAndroidZeroCopyVideoCapture, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables automatic Picture-in-Picture permission prompt on Android for
-// document picture-in-picture.
-BASE_FEATURE(kAutoDocPiPPermissionPromptAndroid,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables automatic Picture-in-Picture on Android for supported websites.
 // This triggers for active video playback or camera/microphone usage on sites
@@ -1414,6 +1390,15 @@ BASE_FEATURE(kVTVideoEncodeAcceleratorCalculatePSNR,
 // Enables VideoToolbox zero-copy encode of opaque SharedImage-backed
 // VideoFrames.
 BASE_FEATURE(kVTVideoEncodeAcceleratorOpaqueSharedImageEncode,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Match the VideoToolbox output pixel format range to the frame color space so
+// VideoToolbox does not rescale code values.
+BASE_FEATURE(kVideoToolboxFullRangeOutput, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables VideoToolbox zero-copy encode of opaque RGB SharedImage-backed
+// VideoFrames (e.g. ARGB, XRGB).
+BASE_FEATURE(kVTVideoEncodeAcceleratorOpaqueRgbSharedImageEncode,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(IS_APPLE)
@@ -1534,7 +1519,7 @@ BASE_FEATURE(kCastStreamingMacHardwareH264, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables system audio loopback capture using the macOS CoreAudio tap API for
 // Cast.
-BASE_FEATURE(kMacCatapLoopbackAudioForCast, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kMacCatapLoopbackAudioForCast, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Use the built-in MacOS screen-sharing picker (SCContentSharingPicker). This
 // flag will only use the built-in picker on MacOS 15 Sequoia and later where it
@@ -1667,6 +1652,8 @@ BASE_FEATURE(kMediaFoundationVideoEncodeAccelerator,
 // denied to to use protected content IDs to play protected content.
 BASE_FEATURE(kProtectedMediaIdentifierIndicator,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kWasapiImproveGlitchDetection, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -1830,9 +1817,12 @@ bool IsAudioProcessMlModelUsageEnabled() {
     // model.
     return false;
   }
-  return base::FeatureList::IsEnabled(
-             kWebRtcAudioNeuralResidualEchoEstimation) ||
-         base::FeatureList::IsEnabled(kWebRtcVoiceIsolationDenoiser);
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  if (base::FeatureList::IsEnabled(kWebRtcVoiceIsolationDenoiser)) {
+    return true;
+  }
+#endif
+  return base::FeatureList::IsEnabled(kWebRtcAudioNeuralResidualEchoEstimation);
 }
 
 bool IsChromeWideEchoCancellationEnabled() {
@@ -1969,22 +1959,6 @@ bool IsVideoCaptureAcceleratedJpegDecodingEnabled() {
   return false;
 #endif
 }
-
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-bool IsOutOfProcessVideoDecodingEnabled() {
-#if BUILDFLAG(IS_CASTOS)
-  // The sandbox for OOP-VD was designed assuming that we're not on CastOS (see
-  // go/oop-vd-sandbox).
-  //
-  // TODO(b/210759684): revisit the sandbox to see if this restriction is
-  // necessary.
-  return false;
-#else
-  return base::FeatureList::IsEnabled(kUseOutOfProcessVideoDecoding);
-#endif
-}
-
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_ANDROID)
 bool IsAndroidZeroCopyVideoCaptureEnabled(

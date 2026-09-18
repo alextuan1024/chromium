@@ -196,8 +196,9 @@ BASE_FEATURE(kHideAimEntrypointForUrlSuggestions, ENABLED);
 // When enabled, the multimodal input button is shown in the Omnibox.
 BASE_FEATURE(kOmniboxMultimodalInput, ENABLED);
 
-// An additional gate to the behavior of OmniboxMultimodalInput on desktop.
-BASE_FEATURE(kAndroidDesktopAimGate, ENABLED);
+// Enables popup variations (e.g. accordion menu) for mobile Fusebox.
+BASE_FEATURE(kOmniboxFuseboxPopupVariations, DISABLED);
+
 
 // Disables tab attachments for Canvas requests and disables Canvas if tabs are
 // attached.
@@ -230,7 +231,7 @@ BASE_FEATURE(kOmniboxWebUIDebounceResize, ENABLED);
 // When enabled, the AIM WebUI popup will debounce auto-resize events.
 BASE_FEATURE(kOmniboxAimDebounceResize, DISABLED);
 // When enabled, the Omnibox Full WebUI popup will debounce auto-resize events.
-BASE_FEATURE(kOmniboxFullWebUIDebounceResize, ENABLED);
+BASE_FEATURE(kOmniboxFullWebUIDebounceResize, DISABLED);
 // When enabled, height workarounds are applied for the Omnibox WebUI popup.
 BASE_FEATURE(kOmniboxWebUIHeightWorkarounds, ENABLED);
 // When enabled, height workarounds are applied for the AIM WebUI popup.
@@ -284,12 +285,24 @@ BASE_FEATURE(kOmniboxFullWebUISizeWebViewToPreferredHeight, DISABLED);
 // widget upon creation, preventing pre-warmed child widgets from inheriting
 // parent window visibility and locking compositor frames.
 BASE_FEATURE(kOmniboxWebUIPopupHideOnCreation, DISABLED);
+
+// When enabled, a WebUI omnibox popup destroys its widget when it is hidden
+// and builds a fresh one on the next show, so the new native window has no
+// previous compositor content to present. This is applied to every WebUI popup
+// presenter, including the AI Mode popup, but only takes effect when the full
+// WebUI omnibox is enabled. The WebUI container (and its WebContents) is
+// preserved across the swap, so this does not discard the pre-warmed renderer.
+BASE_FEATURE(kOmniboxFullWebUIDestroyWidgetOnHide, ENABLED);
+
 // When enabled, the WebUI searchbox will bypass OmniboxController and
 // OmniboxEditModel.
 BASE_FEATURE(kWebUISearchboxWithoutModelController, DISABLED);
 
-// If enabled, debounces soft keyboard show/hide transitions in the Omnibox.
-BASE_FEATURE(kOmniboxDebounceKeyboardVisibility, DISABLED);
+// If enabled, debounces soft keyboard show/hide transitions in the Omnibox and
+// suppresses the legacy NTP fakebox accessibility focus reset that hides the
+// keyboard right after showing it. See crbug.com/534375541.
+// Enabled by default; retained as a kill switch.
+BASE_FEATURE(kOmniboxDebounceKeyboardVisibility, ENABLED);
 
 // Feature used to default typed navigations to use HTTPS instead of HTTP.
 // This only applies to navigations that don't have a scheme such as
@@ -471,6 +484,14 @@ const base::FeatureParam<int> kComposeboxDriveConsentProductId{
     &kComposeboxDriveContextMenuOptionDisclaimer, "product_id", 71720513};
 const base::FeatureParam<int> kComposeboxDriveConsentProductSurface{
     &kComposeboxDriveContextMenuOptionDisclaimer, "product_surface", 29};
+#elif BUILDFLAG(IS_ANDROID)
+// For Chrome on Android:
+// - Product ID: Chrome Android (111611457)
+// - Product Surface: SEARCH_AIM (29)
+const base::FeatureParam<int> kComposeboxDriveConsentProductId{
+    &kComposeboxDriveContextMenuOptionDisclaimer, "product_id", 111611457};
+const base::FeatureParam<int> kComposeboxDriveConsentProductSurface{
+    &kComposeboxDriveContextMenuOptionDisclaimer, "product_surface", 29};
 #else
 // For Chrome on Desktop:
 // - Product ID: Chrome Desktop (67911908)
@@ -538,6 +559,18 @@ const base::FeatureParam<bool>
         &kVoiceSearchCoherenceSearchbox,
         "VoiceSearchCoherenceSearchboxWithLiveTranscription", false};
 
+// Enables 3-second auto-endpointing for NTP Realbox voice search.
+// When enabled, voice search automatically submits after 3 seconds of trailing
+// silence.
+const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxAutoEndpoint{
+    &kVoiceSearchCoherenceSearchbox, "VoiceSearchCoherenceRealboxAutoEndpoint",
+    false};
+
+// Enables helper text (e.g. "Listening...") in NTP Realbox voice search.
+const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxHelperText{
+    &kVoiceSearchCoherenceSearchbox, "VoiceSearchCoherenceRealboxHelperText",
+    false};
+
 #if BUILDFLAG(IS_ANDROID)
 // Accelerates time from cold start to focused Omnibox on low-end devices,
 // prioritizing Omnibox focus and background initialization.
@@ -581,6 +614,9 @@ namespace android {
 static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
   static const base::Feature* const kFeaturesExposedToJava[] = {
       &kDiagnostics,
+      &kComposeboxDriveContextMenuOption,
+      &kComposeboxDriveContextMenuOptionDisclaimer,
+      &kForceDriveDisclaimerAccepted,
       &kForceAndroidRealbox,
       &kOmniboxTouchDownTriggerForPrefetch,
       &kOmniboxPrefetchSelectedSuggestionsOmtAndroid,
@@ -597,7 +633,7 @@ static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
       &kInlineLocationSignaling,
       &kOmniboxSiteSearch,
       &kOmniboxMultimodalInput,
-      &kAndroidDesktopAimGate,
+      &kOmniboxFuseboxPopupVariations,
       &kServeJavaCachedZeroSuggest,
       &kAIMSuppressVerbatimMatch,
       &kResetSuggestionsScroll,

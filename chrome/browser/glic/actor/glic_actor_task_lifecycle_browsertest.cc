@@ -20,6 +20,7 @@
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/one_time_tokens/core/browser/mock_one_time_token_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/page_content_annotations/content/page_context_fetcher.h"
 #include "components/performance_manager/public/features.h"
@@ -247,7 +248,6 @@ class GlicActorTaskLifecycleFunctionalBrowserTest
         "components/test/data");
     GlicActorFunctionalBrowserTestBase::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_https_test_server().Start());
   }
 
  private:
@@ -305,6 +305,15 @@ class GlicActorTaskLifecycleGmailOtpEnabledBrowserTest
     EXPECT_CALL(GetMockOtpService(), GetCachedOneTimeTokens())
         .WillRepeatedly(
             []() { return std::vector<one_time_tokens::OneTimeToken>(); });
+    EXPECT_CALL(GetMockOtpService(), FetchUserDataProcessingConsent(testing::_))
+        .WillRepeatedly(
+            [](one_time_tokens::OneTimeTokenService::
+                   FetchUserDataProcessingConsentCallback callback) {
+              std::move(callback).Run(
+                  one_time_tokens::UserDataProcessingConsentStates{
+                      .comms_apps = one_time_tokens::ConsentState::kEnabled,
+                      .google_apps = one_time_tokens::ConsentState::kEnabled});
+            });
   }
 
   affiliations::FakeAffiliationService* fake_affiliation_service() {

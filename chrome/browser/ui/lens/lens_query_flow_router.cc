@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/lens/lens_query_flow_router.h"
 
 #include "base/rand_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
@@ -82,6 +83,10 @@ omnibox::ChromeAimEntryPoint AimEntryPointFromInvocationSource(
     }
     return omnibox::DESKTOP_CHROME_OTHER_OMNIBOX_COMPOSEBOX_ENTRY_POINT;
   }
+  if (invocation_source ==
+      lens::LensOverlayInvocationSource::kOmniboxContextualQuery) {
+    return omnibox::DESKTOP_CHROME_OTHER_OMNIBOX_COMPOSEBOX_ENTRY_POINT;
+  }
   return omnibox::DESKTOP_CHROME_LENS_CONTEXTUAL_SEARCHBOX_ENTRY_POINT;
 }
 
@@ -110,12 +115,19 @@ bool IsOmniboxInvocationSource(
 }
 
 bool ShouldFetchActiveTabForInvocationSource(
-    std::optional<lens::LensOverlayInvocationSource> invocation_source) {
-  // Omnibox contextual compose queries already handle tab context prior
-  // to submission or explicitly suppress it, so a second context fetch
-  // should not be forced.
+    std::optional<lens::LensOverlayInvocationSource> invocation_source,
+    const contextual_search::ContextualSearchSessionHandle* session_handle) {
+  // Omnibox contextual compose queries upload tab context before submission,
+  // so forcing a second fetch would be redundant. That only holds while the
+  // query is issued on the session that context was uploaded to. When the
+  // query is fulfilled on a session of its own, as happens when it is routed
+  // to the Lens side panel, the pre-uploaded context is unreachable and the
+  // active tab must still be contextualized.
   if (invocation_source ==
-      lens::LensOverlayInvocationSource::kOmniboxContextualQuery) {
+          lens::LensOverlayInvocationSource::kOmniboxContextualQuery &&
+      session_handle &&
+      (!session_handle->GetUploadedContextTokens().empty() ||
+       !session_handle->GetSubmittedContextTokens().empty())) {
     return false;
   }
   return true;
@@ -701,6 +713,10 @@ void LensQueryFlowRouter::OnContextUploadStatusChanged(
   }
 }
 
+void LensQueryFlowRouter::OnControllerDestroyed() {
+  context_upload_status_observation_.Reset();
+}
+
 void LensQueryFlowRouter::SendInteractionToContextualTasks(
     std::unique_ptr<CreateSearchUrlRequestInfo> request_info) {
   if (!eligibility_logged_in_session_) {
@@ -756,11 +772,13 @@ void LensQueryFlowRouter::SendInteractionToContextualTasks(
     // Force contextualization of the active tab only if the overlay token was
     // never fetched and the invocation source requires tab contextualization.
     // Certain entry points (such as the Omnibox compose flow) handle tab
-    // context prior to submission or do not require a second context fetch.
+    // context prior to submission, but only when the query is issued on the
+    // session that context was uploaded to.
     std::vector<contextual_tasks::QueryContextualizer::TabId> force_tabs;
     if (!overlay_tab_context_file_token_.has_value() &&
         ShouldFetchActiveTabForInvocationSource(
-            pending_search_url_request_->invocation_source)) {
+            pending_search_url_request_->invocation_source,
+            GetContextualSearchSessionHandle())) {
       force_tabs.push_back(tab_interface()->GetHandle().raw_value());
     }
     contextual_tasks::QueryContextualizer::ContextualizeParams params;
@@ -1055,10 +1073,26 @@ LensQueryFlowRouter::CreateSearchUrlRequestInfoFromInteraction(
   lens::AppendLensOverlaySidePanelParams(additional_search_query_params,
                                          gen204_id_, has_text, has_image);
 
-  request_info->additional_params = additional_search_query_params;
   request_info->invocation_source = invocation_source;
   request_info->aim_entry_point =
       AimEntryPointFromInvocationSource(invocation_source);
+
+  // Extract and preserve any explicit AIM entry point from the query parameters
+  // for Omnibox queries (e.g. from page classification like SRP or NTP).
+  if (lens::IsOmniboxInvocationSource(invocation_source)) {
+    if (auto it = additional_search_query_params.find("aep");
+        it != additional_search_query_params.end()) {
+      int aep_val;
+      if (base::StringToInt(it->second, &aep_val) &&
+          omnibox::ChromeAimEntryPoint_IsValid(aep_val)) {
+        request_info->aim_entry_point =
+            static_cast<omnibox::ChromeAimEntryPoint>(aep_val);
+      }
+      additional_search_query_params.erase(it);
+    }
+  }
+
+  request_info->additional_params = additional_search_query_params;
 
   if (region) {
     auto client_logs =

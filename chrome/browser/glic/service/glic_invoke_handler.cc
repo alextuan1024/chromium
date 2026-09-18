@@ -10,6 +10,7 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/host/host.h"
@@ -44,6 +45,8 @@ ShowOptions CreateShowOptions(
       absl::Overload{[&](const GlicInvokeHandler::TabSurface& tab_surface) {
                        SidePanelShowOptions side_panel_options{
                            *tab_surface.tab};
+                       // TODO(b/562983414): Infer a more specific pin trigger
+                       // from the invocation source.
                        side_panel_options.pin_trigger =
                            GlicPinTrigger::kInstanceCreation;
                        side_panel_options.pin_on_bind = options.pin_on_bind;
@@ -140,11 +143,16 @@ GlicInvokeHandler::ResolvedTarget GlicInvokeHandler::ResolveTargetSurface(
     tabs::TabInterface* tab = tab_handle->Get();
     if (tab) {
       BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
-      if (!browser ||
-          browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
-        return {TabSurface{/*tab=*/nullptr, /*is_new=*/false}};
+      // Allow detached / background tabs for actuation, reject non-normal browser windows.
+      bool is_background_actuation =
+        !browser && target.actuation_target == mojom::ActuationTarget::kTargetSurface;
+      bool is_normal_browser =
+        browser && browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL;
+
+      if (is_background_actuation || is_normal_browser) {
+        return {TabSurface{tab, /*is_new=*/false}};
       }
-      return {TabSurface{tab, /*is_new=*/false}};
+      return {TabSurface{/*tab=*/nullptr, /*is_new=*/false}};
     }
   }
 
@@ -180,6 +188,8 @@ GlicInvokeHandler::GlicInvokeHandler(
       auto_submit_passkey_(auto_submit_passkey),
       auto_submit_options_(std::move(auto_submit_options)),
       completion_callback_(std::move(completion_callback)),
+      requires_client_invoke_(
+          RequiresClientInvoke(options_, auto_submit_passkey.has_value())),
       metrics_(std::move(invoke_metrics)) {
   if (const auto* tab_surface = std::get_if<TabSurface>(&resolved_target_)) {
     CHECK(tab_surface->tab);
@@ -209,22 +219,28 @@ GlicInvokeHandler::GlicInvokeHandler(
 
 GlicInvokeHandler::~GlicInvokeHandler() = default;
 
-bool GlicInvokeHandler::RequiresClientInvoke(
-    const mojom::InvokeOptionsPtr& mojo_options,
-    bool has_auto_submit_passkey) {
-  return mojo_options->invocation_source ==
+// static
+bool GlicInvokeHandler::RequiresClientInvoke(const GlicInvokeOptions& options,
+                                             bool has_auto_submit_passkey) {
+  // Note: these conditions mirror the options populated by
+  // CreateMojoOptions(). `actuation_tab_id` is intentionally not checked, as
+  // it is only populated when `actuation_target` is `kTargetSurface`, which is
+  // already covered below.
+  const auto* payload =
+      std::get_if<mojom::InvocationPayloadPtr>(&options.source_or_payload);
+  return options.GetInvocationSource() ==
              mojom::InvocationSource::kCaptureRegionHotkey ||
-         has_auto_submit_passkey || !mojo_options->payload.is_null() ||
-         (mojo_options->prompts && !mojo_options->prompts->empty()) ||
-         !mojo_options->context.is_null() ||
-         mojo_options->feature_mode != mojom::FeatureMode::kUnspecified ||
-         (mojo_options->actuation_target != mojom::ActuationTarget::kUnknown &&
-          mojo_options->actuation_target !=
+         has_auto_submit_passkey || (payload && !payload->is_null()) ||
+         !options.prompts.empty() ||
+         (options.additional_context.has_value() &&
+          !options.additional_context->context.is_null()) ||
+         options.feature_mode.value_or(mojom::FeatureMode::kUnspecified) !=
+             mojom::FeatureMode::kUnspecified ||
+         (options.target.actuation_target != mojom::ActuationTarget::kUnknown &&
+          options.target.actuation_target !=
               mojom::ActuationTarget::kAgentDecides) ||
-         mojo_options->disable_zero_state_suggestions ||
-         mojo_options->skill_id.has_value() ||
-         !mojo_options->zss_config.is_null() ||
-         mojo_options->actuation_tab_id.has_value();
+         options.disable_zss || options.skill_id.has_value() ||
+         options.zss_config.has_value();
 }
 
 void GlicInvokeHandler::Invoke() {
@@ -333,14 +349,16 @@ void GlicInvokeHandler::Invoke() {
                        weak_ptr_factory_.GetWeakPtr())));
   }
 
-  if (options_.fre_completion_wait_mode == FreCompletionWaitMode::kDefault) {
+  mojom::InvokeOptionsPtr mojo_options = CreateMojoOptions();
+
+  if (options_.fre_completion_wait_mode == FreCompletionWaitMode::kAlways ||
+      (options_.fre_completion_wait_mode == FreCompletionWaitMode::kDefault &&
+       requires_client_invoke_)) {
     tasks.push_back(std::make_unique<WaitForFreCompletionTask>(
         instance_->profile(), options_.fre_override));
   }
 
-  mojom::InvokeOptionsPtr mojo_options = CreateMojoOptions();
-
-  if (RequiresClientInvoke(mojo_options, auto_submit_passkey_.has_value())) {
+  if (requires_client_invoke_) {
     tasks.push_back(std::make_unique<SendToClientTask>(
         &*instance_, std::move(mojo_options), auto_submit_passkey_));
   }
@@ -362,8 +380,31 @@ void GlicInvokeHandler::Invoke() {
                        weak_ptr_factory_.GetWeakPtr())));
   }
 
-  main_task_ = std::make_unique<SequentialTaskGroup>(std::move(tasks));
+  main_task_ = std::make_unique<SequentialTaskGroup>(
+      std::move(tasks),
+      base::BindRepeating(
+          [](base::WeakPtr<GlicInvokeHandler> handler,
+             std::optional<GlicTaskType> task_type, base::TimeDelta duration) {
+            if (handler && handler->metrics_) {
+              handler->metrics_->RecordTaskPhaseCompleted(task_type, duration);
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr()));
 
+  int target_embedder_type = -1;
+  if (std::holds_alternative<TabSurface>(resolved_target_)) {
+    target_embedder_type = 0;
+  } else if (std::holds_alternative<Floating>(resolved_target_)) {
+    target_embedder_type = 1;
+  } else {
+    NOTIMPLEMENTED();
+  }
+
+  metrics_->RecordStarted(
+      options_.feature_mode.value_or(mojom::FeatureMode::kUnspecified),
+      target_embedder_type);
+  instance_->instance_metrics().SetActiveInvocationId(
+      metrics_->GetInvocationId());
   main_task_->Start(base::BindOnce(&GlicInvokeHandler::OnSuccess,
                                    weak_ptr_factory_.GetWeakPtr()));
 }
@@ -410,7 +451,8 @@ void GlicInvokeHandler::OnSuccess() {
     main_task_->NotifySequenceCompleted(/*success=*/true);
   }
 
-  metrics_->RecordSuccess();
+  metrics_->RecordSuccess(GetLastActiveTaskType());
+  instance_->instance_metrics().SetActiveInvocationId(std::nullopt);
 
   if (options_.on_success) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -428,7 +470,8 @@ void GlicInvokeHandler::OnError(GlicInvokeError error) {
     main_task_->NotifySequenceCompleted(/*success=*/false);
   }
 
-  metrics_->RecordError(error);
+  metrics_->RecordError(error, GetLastActiveTaskType());
+  instance_->instance_metrics().SetActiveInvocationId(std::nullopt);
 
   if (options_.on_error) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(

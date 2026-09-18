@@ -123,13 +123,6 @@ component("network_service") {
     "oblivious_http_request_handler.cc",
     "oblivious_http_request_handler.h",
     "observer_wrapper.h",
-    "orb/orb_api.cc",
-    "orb/orb_impl.cc",
-    "orb/orb_impl.h",
-    "orb/orb_mimetypes.cc",
-    "orb/orb_mimetypes.h",
-    "orb/orb_sniffers.cc",
-    "orb/orb_sniffers.h",
     "partial_decoder.cc",
     "partial_decoder.h",
     "pending_callback_chain.cc",
@@ -292,6 +285,13 @@ component("network_service") {
       "p2p/socket_udp.h",
       "throttling/throttling_p2p_network_interceptor.cc",
       "throttling/throttling_p2p_network_interceptor.h",
+    ]
+  }
+
+  if (enable_disk_cache_sql_backend) {
+    sources += [
+      "disk_cache/mojo_shared_http_cache_client_remote.cc",
+      "disk_cache/mojo_shared_http_cache_client_remote.h",
     ]
   }
 
@@ -511,9 +511,6 @@ source_set("tests") {
     "network_service_proxy_delegate_unittest.cc",
     "network_service_unittest.cc",
     "oblivious_http_request_handler_unittest.cc",
-    "orb/orb_impl_unittest.cc",
-    "orb/orb_mimetypes_unittest.cc",
-    "orb/orb_sniffers_unittest.cc",
     "partial_decoder_unittest.cc",
     "pending_callback_chain_unittest.cc",
     "prefetch_cache_unittest.cc",
@@ -564,6 +561,10 @@ source_set("tests") {
       "p2p/socket_test_utils.h",
       "p2p/socket_udp_unittest.cc",
     ]
+  }
+
+  if (enable_disk_cache_sql_backend) {
+    sources += [ "disk_cache/mojo_shared_http_cache_client_remote_unittest.cc" ]
   }
 
   if (enable_mdns) {

@@ -170,8 +170,12 @@ SaveFileManager::SaveFileManager() {
 
 SaveFileManager::~SaveFileManager() {
   // Check for clean shutdown.
-  CHECK(save_file_map_.empty(), base::NotFatalUntil::M159);
-  CHECK(g_save_file_manager, base::NotFatalUntil::M159);
+  // TODO(crbug.com/561373398): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(save_file_map_.empty());
+  // TODO(crbug.com/561373398): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(g_save_file_manager);
   g_save_file_manager = nullptr;
 }
 
@@ -641,7 +645,9 @@ void SaveFileManager::RemoveSavedFileFromFileMap(
     auto it = save_file_map_.find(save_item_id);
     if (it != save_file_map_.end()) {
       SaveFile* save_file = it->second.get();
-      CHECK(!save_file->InProgress(), base::NotFatalUntil::M159);
+      // TODO(crbug.com/561651608): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK(!save_file->InProgress());
       base::DeleteFile(save_file->FullPath());
       save_file_map_.erase(it);
     }

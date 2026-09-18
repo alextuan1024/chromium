@@ -1,4 +1,12 @@
-# This is a vpython "spec" file.
+# This is the vpython "spec" file bundled into test isolates.
+#
+# A uv-backed equivalent lives in //vpython.toml, which takes precedence
+# wherever both files are present -- so full checkouts (developer workstations
+# and builders) resolve that one instead. This spec still applies to
+# isolate-based swarming tasks, which bundle only //.vpython3.
+#
+# Keep the two in sync when adding or updating a wheel.
+# See https://crbug.com/40942322.
 #
 # It describes patterns for python wheel dependencies of the python scripts in
 # the chromium repo, particularly for dependencies that have compiled components
@@ -148,18 +156,10 @@ wheel: <
 wheel: <
   name: "infra/python/wheels/pillow/${vpython_platform}"
   version: "version:10.4.0"
-  # There is currently no Linux arm/arm64 version in CIPD.
-  not_match_tag: <
-    platform: "linux_arm64"
-  >
 >
 wheel: <
   name: "infra/python/wheels/opencv_python/${vpython_platform}"
   version: "version:4.8.1.78.chromium.1"
-  # There is currently no Linux arm/arm64 version in CIPD.
-  not_match_tag: <
-    platform: "linux_arm64"
-  >
 >
 # `pyyaml` is shared between `//third_party/wpt_tools/wpt/wpt` and `pytype`.
 wheel: <
@@ -536,9 +536,6 @@ wheel: <
 wheel: <
   name: "infra/python/wheels/pandas/${vpython_platform}"
   version: "version:1.5.3.chromium.1"
-  not_match_tag: <
-    platform: "linux_arm64"
-  >
 >
 
 # Used by:
@@ -567,8 +564,7 @@ wheel: <
 #   chrome/test/mini_installer/test_chrome_with_chromedriver.py
 #   testing/script/run_variations_smoke_tests.py
 #   //tools/perf/crossbench
-# Keep this to the same revision as third_party/webdriver/pylib, which is pulled
-# in via DEPS.
+# Keep this version synchronized with src/third_party/webdriver/pylib in //DEPS.
 wheel: <
   name: "infra/python/wheels/selenium-py3"
   version: "version:4.33.0"

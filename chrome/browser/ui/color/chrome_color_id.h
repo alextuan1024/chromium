@@ -24,6 +24,9 @@
   E_CPONLY(kColorAppMenuHighlightPrimary) \
   E_CPONLY(kColorAppMenuExpandedForegroundDefault) \
   E_CPONLY(kColorAppMenuExpandedForegroundPrimary) \
+  E_CPONLY(kColorAppMenuChipBackground) \
+  E_CPONLY(kColorAppMenuChipBackgroundHovered) \
+  E_CPONLY(kColorAppMenuChipForeground) \
   E_CPONLY(kColorAppMenuChipInkDropHover) \
   E_CPONLY(kColorAppMenuChipInkDropRipple) \
   E_CPONLY(kColorAppMenuYourChromeBackground) \
@@ -35,6 +38,9 @@
   E_CPONLY(kColorAppMenuFooterButtonForeground) \
   E_CPONLY(kColorAppMenuFooterButtonForegroundHovered) \
   E_CPONLY(kColorAppMenuFooterButtonBackgroundHovered) \
+  E_CPONLY(kColorAppMenuZoomButtonBackground) \
+  E_CPONLY(kColorAppMenuZoomButtonHover) \
+  E_CPONLY(kColorAppMenuZoomSeparator) \
   /* Actor UI colors.*/ \
   E_CPONLY(kColorActorUiHandoffButtonBackground) \
   E_CPONLY(kColorActorUiHandoffButtonBorder) \
@@ -1135,6 +1141,7 @@
   E_CPONLY(kColorToolbarSeparator) \
   E_CPONLY(kColorToolbarActionItemEngaged) \
   E_CPONLY(kColorToolbarSeparatorDefault) \
+  E_CPONLY(kColorToolbarSearchFieldTextColor) \
   E_CPONLY(kColorToolbarText) \
   E_CPONLY(kColorToolbarTextDefault) \
   E_CPONLY(kColorToolbarTextDisabled) \

@@ -207,24 +207,32 @@ std::u16string AttributeInstance::GetInfo(
     std::string_view app_locale,
     base::optional_ref<const AutofillFormatString> format_string) const {
   FieldType field_type = GetNormalizedFieldType(unnormalized_field_type);
+  std::optional<AutofillFormatString> compatible_format_string =
+      format_string && AutofillFormatString::IsTypeCompatible(
+                           format_string->type, field_type)
+          ? format_string.CopyAsOptional()
+          : std::nullopt;
+
   return std::visit(
       absl::Overload{[&](const CountryInfo& country) {
                        return country.GetCountryName(app_locale);
                      },
                      [&](const DateInfo& date) {
-                       if (format_string &&
-                           format_string->type == FormatString_Type_ICU_DATE) {
-                         return date.GetIcuDate(format_string->value,
+                       if (compatible_format_string &&
+                           compatible_format_string->type ==
+                               FormatString_Type_ICU_DATE) {
+                         return date.GetIcuDate(compatible_format_string->value,
                                                 app_locale);
                        }
-                       return date.GetDate(format_string ? format_string->value
-                                                         : u"YYYY-MM-DD");
+                       return date.GetDate(compatible_format_string
+                                               ? compatible_format_string->value
+                                               : u"YYYY-MM-DD");
                      },
                      [&](const NameInfo&) { return GetRawInfo(field_type); },
                      [&](const StateInfo&) { return GetRawInfo(field_type); },
                      [&](const std::u16string&) {
                        return Format(GetRawInfo(field_type), field_type,
-                                     format_string);
+                                     compatible_format_string);
                      }},
       info_);
 }
@@ -493,6 +501,12 @@ std::ostream& operator<<(std::ostream& os, const EntityInstance& e) {
               os << "- source " << s << std::endl;
             }
           },
+          [&](const EntityInstance::WalletRecordTypePayload& p) {
+            if (!p.management_url.empty()) {
+              os << "- management url: \"" << p.management_url << '"'
+                 << std::endl;
+            }
+          },
           [](const auto&) {}},
       e.record_type_data());
   return os;
@@ -754,12 +768,21 @@ EntityInstance EntityInstance::CopyWithNewEntityId(EntityId id) const {
 EntityInstance EntityInstance::CopyWithNewRecordType(
     RecordType record_type) const {
   EntityInstance new_entity = *this;
+  // Safeguard against the corner case of creating a copy with the same type.
+  if (this->record_type() == record_type) {
+    return new_entity;
+  }
+  // Adapt the record type specific payload.
   switch (record_type) {
     case RecordType::kLocal:
       new_entity.record_type_data_ = LocalRecordTypePayload();
       break;
     case RecordType::kServerWallet:
-      new_entity.record_type_data_ = WalletRecordTypePayload();
+      // When converting from a different record type (e.g. local)
+      // the management URL is empty because it needs to be provisioned
+      // by the Google Wallet servers.
+      new_entity.record_type_data_ =
+          WalletRecordTypePayload{.management_url = ""};
       break;
     case RecordType::kPersonalContext:
       // TODO(crbug.com/542083924): Converting to a pContext entity is currently

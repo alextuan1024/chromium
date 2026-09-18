@@ -138,7 +138,9 @@ import java.util.concurrent.atomic.AtomicReference;
     // Keep the exhaustive menu-structure assertions deterministic. The "Ask Gemini"
     // entry is covered by ChromeContextMenuPopulatorTest and
     // testContextMenuAddsAskGeminiForLink below.
-    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU
+    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
+    // TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID,
 })
 @Batch(Batch.PER_CLASS)
 @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288174
@@ -530,6 +532,7 @@ public class ContextMenuTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626022
     public void testCopyTelNumber() throws Throwable {
         doAnswer(sCopyIsAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -562,6 +565,7 @@ public class ContextMenuTest {
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisabledTest(message = "https://crbug.com/553228809")
     @DisableFeatures({UiAndroidFeatures.ANDROID_WINDOW_OCCLUSION})
     public void testSavePageLongPress() throws TimeoutException {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
@@ -748,6 +752,7 @@ public class ContextMenuTest {
     @Test
     @SmallTest
     @Feature({"Browser", "ContextMenu"})
+    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626022
     public void testContextMenuRetrievesLinkOptions() throws TimeoutException {
         Tab tab = mActivityTestRule.getActivityTab();
         mMenuCoordinator = ContextMenuUtils.openContextMenu(tab, "testLink");
@@ -827,6 +832,7 @@ public class ContextMenuTest {
     @SmallTest
     @Feature({"Browser", "ContextMenu"})
     @Policies.Add({@Policies.Item(key = "DefaultSearchProviderEnabled", string = "false")})
+    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626022
     public void testContextMenuRetrievesImageOptions_NoDefaultSearchEngine()
             throws TimeoutException {
         Tab tab = mActivityTestRule.getActivityTab();
@@ -1013,6 +1019,7 @@ public class ContextMenuTest {
     @Test
     @SmallTest
     @Feature({"Browser", "ContextMenu"})
+    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626022
     public void testCopyImage_notAllowedByPolicy() throws Throwable {
         doAnswer(sCopyIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -1193,6 +1200,7 @@ public class ContextMenuTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisabledTest(message = "https://crbug.com/553228809")
     @DisableFeatures({UiAndroidFeatures.ANDROID_WINDOW_OCCLUSION})
     public void testSharePageLongPress() throws Exception {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
@@ -1233,6 +1241,7 @@ public class ContextMenuTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.DESKTOP)
+    @DisabledTest(message = "https://crbug.com/553228809")
     @DisableFeatures({UiAndroidFeatures.ANDROID_WINDOW_OCCLUSION})
     public void testSharePageRightClick() throws Exception {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
@@ -1272,6 +1281,7 @@ public class ContextMenuTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisabledTest(message = "https://crbug.com/553228809")
     @DisableFeatures({UiAndroidFeatures.ANDROID_WINDOW_OCCLUSION})
     public void testPrintPageLongPress() throws Exception {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);

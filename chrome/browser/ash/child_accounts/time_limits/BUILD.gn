@@ -34,7 +34,7 @@ static_library("time_limits") {
   public_deps = [
     "//base",
     "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ash/browser_delegate",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/dbus/system_clock",
     "//chromeos/ash/components/settings",
     "//components/policy/proto",
@@ -48,7 +48,6 @@ static_library("time_limits") {
     "//chrome/browser/ash/app_list/arc",
     "//chrome/browser/ash/child_accounts/constants",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui/browser_window",
     "//chrome/browser/web_applications",
     "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
@@ -111,10 +110,6 @@ source_set("unit_tests") {
     "//ui/message_center",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {
@@ -140,6 +135,7 @@ source_set("browser_tests") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/common:chrome_features",

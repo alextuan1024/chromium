@@ -8,26 +8,26 @@
 #include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
 #include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/page_load_metrics/google/browser/google_url_util.h"
-#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
-#include "content/public/browser/web_contents.h"
 #include "ui/base/page_transition_types.h"
 
 namespace {
 
 void RecordInitiatorMetrics(content::NavigationHandle& navigation_handle) {
+  const ui::PageTransition transition = navigation_handle.GetPageTransition();
   bool is_srp =
       page_load_metrics::IsGoogleSearchResultUrl(navigation_handle.GetURL());
   auto* navigation_handle_user_data =
       page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
           navigation_handle);
   const ChromeInitiatorLocation initiator_location = [&]() {
-    if (ui::PageTransitionCoreTypeIs(navigation_handle.GetPageTransition(),
-                                     ui::PAGE_TRANSITION_RELOAD)) {
-      return ChromeInitiatorLocation::kReload;
-    }
-    if ((navigation_handle.GetPageTransition() &
-         ui::PAGE_TRANSITION_FORWARD_BACK) ||
+    // Back/forward navigation and BFCache restore must be checked before reload
+    // because back/forward navigations to an entry that was previously reloaded
+    // have a transition type of `PAGE_TRANSITION_RELOAD |
+    // PAGE_TRANSITION_FORWARD_BACK`. `PageTransitionCoreTypeIs()` strips
+    // qualifiers like `PAGE_TRANSITION_FORWARD_BACK`, so checking for reload
+    // first would misclassify back/forward navigations as `kReload`.
+    if ((transition & ui::PAGE_TRANSITION_FORWARD_BACK) ||
         navigation_handle.IsServedFromBackForwardCache()) {
       int history_offset = navigation_handle.GetNavigationEntryOffset();
       CHECK_NE(history_offset, 0);
@@ -37,15 +37,23 @@ void RecordInitiatorMetrics(content::NavigationHandle& navigation_handle) {
         return ChromeInitiatorLocation::kForward;
       }
     }
+    if (ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_RELOAD)) {
+      return ChromeInitiatorLocation::kReload;
+    }
     if (navigation_handle_user_data) {
       return GetChromeInitiatorLocation(
           navigation_handle_user_data->navigation_type());
     }
     if (navigation_handle.IsRendererInitiated() &&
-        navigation_handle.HasUserGesture() &&
-        ui::PageTransitionCoreTypeIs(navigation_handle.GetPageTransition(),
-                                     ui::PAGE_TRANSITION_LINK)) {
-      return ChromeInitiatorLocation::kLinkClick;
+        navigation_handle.HasUserGesture()) {
+      if (ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_LINK)) {
+        return ChromeInitiatorLocation::kLinkClick;
+      }
+
+      if (ui::PageTransitionCoreTypeIs(transition,
+                                       ui::PAGE_TRANSITION_FORM_SUBMIT)) {
+        return ChromeInitiatorLocation::kFormSubmission;
+      }
     }
     return ChromeInitiatorLocation::kOther;
   }();
@@ -55,6 +63,15 @@ void RecordInitiatorMetrics(content::NavigationHandle& navigation_handle) {
   if (is_srp) {
     base::UmaHistogramEnumeration("Navigation.InitiatorType.SRP",
                                   initiator_location);
+  }
+
+  if (initiator_location == ChromeInitiatorLocation::kOther) {
+    base::UmaHistogramSparse("Navigation.UnknownInitiator.PageTransition.All",
+                             transition);
+    if (is_srp) {
+      base::UmaHistogramSparse("Navigation.UnknownInitiator.PageTransition.SRP",
+                               transition);
+    }
   }
 }
 

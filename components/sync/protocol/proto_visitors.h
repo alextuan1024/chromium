@@ -13,7 +13,6 @@
 #include "components/sync/protocol/app_specifics.pb.h"
 #include "components/sync/protocol/arc_package_specifics.pb.h"
 #include "components/sync/protocol/autofill_entity_suppression_specifics.pb.h"
-#include "components/sync/protocol/autofill_offer_specifics.pb.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/autofill_valuable_metadata_specifics.pb.h"
 #include "components/sync/protocol/autofill_valuable_specifics.pb.h"
@@ -74,7 +73,6 @@
 #include "components/sync/protocol/unique_position.pb.h"
 #include "components/sync/protocol/user_consent_specifics.pb.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
-#include "components/sync/protocol/web_apk_specifics.pb.h"
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/sync/protocol/workspace_desk_specifics.pb.h"
@@ -197,48 +195,6 @@ VISIT_PROTO_FIELDS(const sync_pb::ArcPackageSpecifics& proto) {
   VISIT(package_version);
   VISIT(last_backup_android_id);
   VISIT(last_backup_time);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::AutofillOfferSpecifics& proto) {
-  VISIT(id);
-  VISIT(offer_details_url);
-  VISIT_REP(merchant_domain);
-  VISIT_REP(merchant_app_package);
-  VISIT(offer_expiry_date);
-  VISIT(card_linked_offer_data);
-  VISIT(promo_code_offer_data);
-  VISIT(display_strings);
-  VISIT(percentage_reward);
-  VISIT(fixed_amount_reward);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::CardLinkedOfferData& proto) {
-  VISIT_REP(instrument_id);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::PromoCodeOfferData& proto) {
-  VISIT(promo_code);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::DisplayStrings& proto) {
-  VISIT(value_prop_text);
-  VISIT(see_details_text_mobile);
-  VISIT(see_details_text_desktop);
-  VISIT(usage_instructions_text_mobile);
-  VISIT(usage_instructions_text_desktop);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::PercentageReward& proto) {
-  VISIT(percentage);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::FixedAmountReward& proto) {
-  VISIT(amount);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::AutofillProfileSpecifics& proto) {
@@ -701,6 +657,7 @@ VISIT_PROTO_FIELDS(const sync_pb::FeatureSpecificFields& proto) {
   VISIT_REP(desktop_to_ios_promo_receiving_types);
   VISIT_ENUM(glic_experimental_triggering_state);
   VISIT(glic_experimental_triggering_version);
+  VISIT_REP(glic_experimental_triggering_capabilities);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::SharingSpecificFields& proto) {
@@ -787,7 +744,7 @@ VISIT_PROTO_FIELDS(
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
-  static_assert(66 == GetNumDataTypes(),
+  static_assert(64 == GetNumDataTypes(),
                 "When adding a new protocol type, you will likely need to add "
                 "it here as well.");
   VISIT(encrypted);
@@ -798,7 +755,6 @@ VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
   VISIT(arc_package);
   VISIT(autofill);
   VISIT(autofill_entity_suppression);
-  VISIT(autofill_offer);
   VISIT(autofill_profile);
   VISIT(autofill_valuable);
   VISIT(autofill_valuable_metadata);
@@ -846,7 +802,6 @@ VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
   VISIT(user_consent);
   VISIT(user_event);
   VISIT(wallet_metadata);
-  VISIT(web_apk);
   VISIT(web_app);
   VISIT(webauthn_credential);
   VISIT(wifi_configuration);
@@ -2046,22 +2001,6 @@ VISIT_PROTO_FIELDS(const sync_pb::WalletMaskedIban& proto) {
   VISIT(nickname);
 }
 
-VISIT_PROTO_FIELDS(const sync_pb::WebApkIconInfo& proto) {
-  VISIT(size_in_px);
-  VISIT(url);
-  VISIT_ENUM(purpose);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::WebApkSpecifics& proto) {
-  VISIT(manifest_id);
-  VISIT(start_url);
-  VISIT(name);
-  VISIT(theme_color);
-  VISIT(scope);
-  VISIT_REP(icon_infos);
-  VISIT(last_used_time_windows_epoch_micros);
-}
-
 VISIT_PROTO_FIELDS(const sync_pb::WebAppIconInfo& proto) {
   VISIT(size_in_px);
   VISIT(url);
@@ -2221,6 +2160,8 @@ VISIT_PROTO_FIELDS(const sync_pb::AutofillValuableSpecifics& proto) {
   VISIT(offer);
   VISIT(order);
   VISIT(shipment);
+  VISIT(context_token);
+  VISIT(pass_view_url);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::Any& proto) {
@@ -2457,6 +2398,7 @@ VISIT_PROTO_FIELDS(const sync_pb::SkillSpecifics& proto) {
   VISIT(schema_version);
   VISIT_ENUM(skill_source);
   VISIT(source_skill_id);
+  VISIT(enabled);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::SimpleSkill& proto) {

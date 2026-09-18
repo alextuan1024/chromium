@@ -938,6 +938,16 @@ bool ScrollableArea::UsesCompositedOverlayScrollbars() const {
       !UsesCompositedScrolling()) {
     return false;
   }
+  if (const auto* box = GetLayoutBox()) {
+    // Some overlay scrollbar themes (e.g. Aura) needs the non-composited code
+    // path to initially show overlay scrollbars before the actual composited
+    // scrollbar is created. Only observed a difference in browser test
+    // SitePerProcessHitTestBrowserTest.CrossProcessMouseCapture on ChromeOS,
+    // but this is a safe check to have in place.
+    if (!box->GetFrameView()->GetPaintArtifactCompositor()) {
+      return false;
+    }
+  }
   if (const auto* scrollbar = HorizontalScrollbar()) {
     if (MayCompositeScrollbar(*scrollbar)) {
       return true;
@@ -1459,16 +1469,6 @@ void ScrollableArea::EnqueueScrollSnapChangingEvent() const {
       event_type_names::kScrollsnapchanging, cc::SnapAxis::kInline);
   target_node->GetDocument().EnqueueScrollSnapChangingEvent(
       target_node, block_target, inline_target);
-}
-
-ScrollOffset ScrollableArea::GetWebExposedScrollOffset() const {
-  ScrollOffset scroll_offset =
-      SnapScrollOffsetToPhysicalPixels(GetScrollOffset());
-
-  // Ensure that, if fractional scroll offsets are not enabled, the scroll
-  // offset is an floored value.
-  CHECK_EQ(gfx::ToRoundedVector2d(scroll_offset), scroll_offset);
-  return scroll_offset;
 }
 
 ScrollOffset ScrollableArea::GetScrollOffsetForScrollMarkerUpdate() {

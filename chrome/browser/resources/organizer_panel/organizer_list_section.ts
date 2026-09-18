@@ -8,11 +8,14 @@ import './organizer_list_section_item.js';
 import {assert} from '//resources/js/assert.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {SearchOptions} from '/tab_group_shared/search.js';
+import {search} from '/tab_group_shared/search.js';
 
 import {getCss} from './organizer_list_section.css.js';
 import {getHtml} from './organizer_list_section.html.js';
 import type {OrganizerListSectionClient, OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
-import type {OrganizerListSectionItem, OrganizerListSectionItemElement} from './organizer_list_section_item.js';
+import type {HighlightableOrganizerListSectionItem, OrganizerListSectionItem, OrganizerListSectionItemElement} from './organizer_list_section_item.js';
+import {SEARCH_PART_SEPARATOR} from './search_utils.js';
 
 /**
  * This is the number of items in a section that are rendered before the "Show
@@ -23,7 +26,6 @@ export const INITIAL_ITEM_COUNT = 3;
 export interface OrganizerListSectionElement {
   $: {
     header: HTMLElement,
-    items: HTMLElement,
   };
 }
 
@@ -47,6 +49,8 @@ export class OrganizerListSectionElement extends CrLitElement implements
       items: {type: Array},
       expanded_: {type: Boolean},
       searchQuery: {type: String},
+      filteredItems_: {type: Array},
+      filteredSearchQuery_: {type: String},
     };
   }
 
@@ -54,6 +58,38 @@ export class OrganizerListSectionElement extends CrLitElement implements
   accessor items: Array<OrganizerListSectionItem<unknown>> = [];
   protected accessor expanded_: boolean = false;
   accessor searchQuery: string = '';
+  protected accessor filteredItems_:
+      Array<HighlightableOrganizerListSectionItem<unknown>> = [];
+  // This is the search query that `filteredItems_` currently matches. This
+  // ensures that we don't show the full list of elements until after the search
+  // has been applied and the list of items has been filtered.
+  protected accessor filteredSearchQuery_: string = '';
+
+  private searchOptions_: SearchOptions<
+      HighlightableOrganizerListSectionItem<unknown>> = {
+    includeScore: true,
+    includeMatches: true,
+    ignoreLocation: false,
+    threshold: 0.0,
+    distance: 200,
+    keys:
+        [
+          {
+            name: 'title',
+            // Parts are joined with SEARCH_PART_SEPARATOR (newline) rather than
+            // a space so queries cannot match across part boundaries (e.g. the
+            // end of one title and the start of another in a split view).
+            getter: item => item.title.join(SEARCH_PART_SEPARATOR),
+            weight: 2,
+          },
+          {
+            name: 'description',
+            getter: item =>
+                item.description?.map(d => d.text).join(SEARCH_PART_SEPARATOR),
+            weight: 1,
+          },
+        ],
+  };
 
   // The panel WebUI will remain loaded but invisible when the panel is closed.
   // While invisible, the WebUI will not receive update events from the browser,
@@ -81,6 +117,11 @@ export class OrganizerListSectionElement extends CrLitElement implements
       this.delegate?.init(this);
       this.updateItems_();
     }
+
+    if (changedProperties.has('items') ||
+        changedProperties.has('searchQuery')) {
+      this.updateFilteredItems_();
+    }
   }
 
   onItemsChanged(items: Array<OrganizerListSectionItem<unknown>>) {
@@ -95,19 +136,49 @@ export class OrganizerListSectionElement extends CrLitElement implements
     this.items = await this.delegate.getItems();
   }
 
-  protected getInitialItems_(): Array<OrganizerListSectionItem<unknown>> {
+  private async updateFilteredItems_() {
+    const query = this.searchQuery;
+    if (query.length === 0) {
+      this.filteredSearchQuery_ = '';
+      this.filteredItems_ = [...this.items];
+      return;
+    }
+    const filteredItems = await search(query, this.items, this.searchOptions_);
+    // Confirm that the search query hasn't changed before updating the filtered
+    // items.
+    if (this.searchQuery === query) {
+      this.filteredSearchQuery_ = query;
+      this.filteredItems_ = filteredItems;
+    }
+  }
+
+  private isSearching_(): boolean {
+    return this.filteredSearchQuery_.length > 0;
+  }
+
+  protected getInitialItems_():
+      Array<HighlightableOrganizerListSectionItem<unknown>> {
+    if (this.isSearching_()) {
+      return this.getFilteredItems_();
+    }
     return this.getFilteredItems_().slice(0, INITIAL_ITEM_COUNT);
   }
 
-  protected getRemainingItems_(): Array<OrganizerListSectionItem<unknown>> {
-    if (!this.expanded_) {
+  protected getRemainingItems_():
+      Array<HighlightableOrganizerListSectionItem<unknown>> {
+    if (!this.expanded_ || this.isSearching_()) {
       return [];
     }
     return this.getFilteredItems_().slice(INITIAL_ITEM_COUNT);
   }
 
   protected hasMoreItems_(): boolean {
-    return this.getFilteredItems_().length > INITIAL_ITEM_COUNT;
+    return !this.isSearching_() &&
+        this.getFilteredItems_().length > INITIAL_ITEM_COUNT;
+  }
+
+  protected hasNoSearchResults_(): boolean {
+    return this.isSearching_() && this.getFilteredItems_().length === 0;
   }
 
   protected onExpandedChanged_(e: CustomEvent<{value: boolean}>) {
@@ -122,7 +193,7 @@ export class OrganizerListSectionElement extends CrLitElement implements
   }
 
   protected onItemActionButtonClick_(e: CustomEvent<{
-    item: OrganizerListSectionItem<unknown>,
+    item: HighlightableOrganizerListSectionItem<unknown>,
     buttonElement: HTMLElement,
   }>) {
     assert(e.detail.item);
@@ -132,8 +203,9 @@ export class OrganizerListSectionElement extends CrLitElement implements
         e.detail.item, e.detail.buttonElement);
   }
 
-  protected getFilteredItems_(): Array<OrganizerListSectionItem<unknown>> {
-    return this.searchQuery ? [] : this.items;
+  protected getFilteredItems_():
+      Array<HighlightableOrganizerListSectionItem<unknown>> {
+    return this.filteredItems_;
   }
 }
 

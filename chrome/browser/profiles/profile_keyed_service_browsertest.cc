@@ -30,6 +30,7 @@
 #include "components/keyed_service/core/keyed_service_base_factory.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/spellcheck/common/spellcheck_features.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/universal_optout/features.h"
 #include "content/public/common/content_features.h"
@@ -489,6 +490,7 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "OneTimePermissionsTrackerKeyedService",
     "OptimizationGuideGlobalStateHolderKeyedService",
     "OptimizationGuideKeyedService",
+    "OriginGatingService",
     "PermissionDecisionAutoBlocker",
     "PinnedToolbarActionsModel",
     "PlatformNotificationService",
@@ -631,6 +633,24 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
   if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
       features::kLazyKeyedServiceInstantiationExtensions.Get()) {
     guest_otr_active_services.erase("SafeBrowsingPrivateEventRouter");
+  }
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationExtensionsApi.Get()) {
+    guest_otr_active_services.erase("HidConnectionResourceManager");
+  }
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationCommerceAndUI.Get()) {
+    guest_otr_active_services.erase("ReadAnythingServiceFactory");
+  }
+#if BUILDFLAG(IS_CHROMEOS)
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationSharesheet.Get()) {
+    guest_otr_active_services.erase("SharesheetService");
+  }
+#endif
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationStorageNotification.Get()) {
+    guest_otr_active_services.erase("StorageNotificationService");
   }
   TestKeyedProfileServicesActives(guest_otr_profile, guest_otr_active_services);
 }
@@ -830,6 +850,7 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "OperationManager",
     "OptimizationGuideGlobalStateHolderKeyedService",
     "OptimizationGuideKeyedService",
+    "OriginGatingService",
 #if !BUILDFLAG(IS_CHROMEOS)
     // TODO(crbug.com/374351946): Investigate if this is necessary on CrOS.
     "PageContentAnnotationsService",
@@ -901,12 +922,6 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "SiteDataCacheFacadeFactory",
     "SiteEngagementService",
     "SocketManager",
-#if !BUILDFLAG(IS_CHROMEOS)
-    // TODO(crbug.com/374351946): Desktop chrome create this via
-    // ShoppingService->SyncService->Spellchecker. Investigate if this is
-    // expected on desktop chrome.
-    "SpellcheckService",
-#endif
     "StorageFrontend",
     "StorageNotificationService",
     "SystemInfoAPI",
@@ -1028,6 +1043,15 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
           universal_optout::features::kUniversalOptOut)) {
     guest_active_services.insert("UniversalOptOutService");
   }
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (!base::FeatureList::IsEnabled(
+          spellcheck::kOnDemandSpellcheckInitialization)) {
+    // TODO(crbug.com/374351946): Desktop chrome create this via
+    // ShoppingService->SyncService->Spellchecker. Investigate if this is
+    // expected on desktop chrome.
+    guest_active_services.insert("SpellcheckService");
+  }
+#endif
 #if BUILDFLAG(IS_CHROMEOS)
   EXPECT_TRUE(user_manager::UserManager::Get()->IsLoggedInAsGuest());
   // ChromeOS Guest mode starts with the guest otr profile.
@@ -1054,8 +1078,19 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     guest_active_services.erase("SafeBrowsingPrivateEventRouter");
   }
   if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationExtensionsApi.Get()) {
+    guest_active_services.erase("HidConnectionResourceManager");
+    guest_active_services.erase("OperationManager");
+    guest_active_services.erase("PasswordsPrivateEventRouter");
+    guest_active_services.erase("SidePanelService");
+  }
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
       features::kLazyKeyedServiceInstantiationSafeBrowsing.Get()) {
     guest_active_services.erase("SafeBrowsingTailoredSecurityService");
+  }
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationCommerceAndUI.Get()) {
+    guest_active_services.erase("LoginUIServiceFactory");
   }
   TestKeyedProfileServicesActives(guest_parent_profile, guest_active_services);
 }

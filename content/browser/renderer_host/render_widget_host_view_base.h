@@ -412,8 +412,31 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   // be suspended. Calling Show()/Hide() overrides the state set by this method.
   virtual void WasOccluded() {}
 
-  // Tells the View to destroy itself.
-  virtual void Destroy();
+  // Tells the View to destroy itself. This will be done immediately unless
+  // there are `input::ScopedInputDispatchPin` keeping `this` alive. Since input
+  // can have multiple distinct events in the queue, it is possible for an event
+  // to close our associated `RenderWidgetHostImpl` while iterating over events.
+  // The closure of the host normally leads to the destruction of `this`,
+  // however since we are on the stack input targeting risks re-entrancy to a
+  // destroyed `RenderWidgetHostViewBase`.
+  //
+  // In such a case we notify our subclass that this has occurred
+  // `OnDestroyOrDefer`. We then notify observers, while stopping out own
+  // observations. All associated `WeakPtrs` are cleared. This allows all other
+  // classes to treat `this` as if were destroyed and to gracefully stop input
+  // processing.
+  //
+  // Once the last `input::ScopedInputDispatchPin` has been removed
+  // `DestroyImpl` is called to actually `delete this`.
+  void DestroyOrDefer();
+  virtual void DestroyImpl() = 0;
+  virtual void OnDestroyOrDefer() {}
+
+  // RenderWidgetHostViewInput implementation:
+  void PinForInputDispatch() override;
+  void UnpinForInputDispatch() override;
+
+  bool destroy_pending() const { return destroy_pending_; }
 
   // Unbounded element API methods.
   virtual void CreateUnboundedSurface(
@@ -618,6 +641,8 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   explicit RenderWidgetHostViewBase(RenderWidgetHost* host);
   ~RenderWidgetHostViewBase() override;
 
+  virtual void CleanUpHostObservers() = 0;
+
   bool is_frame_sink_id_owner() const { return is_frame_sink_id_owner_; }
 
   virtual MouseWheelPhaseHandler* GetMouseWheelPhaseHandler();
@@ -677,10 +702,6 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   // RenderWidgetHostImpl::CancelSuccessfulPresentationTimeRequest, after doing
   // and platform-specific bookkeeping needed.
   virtual void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() = 0;
-
-  // The model object. Access is protected to allow access to
-  // RenderWidgetHostViewChildFrame.
-  raw_ptr<RenderWidgetHostImpl, DanglingUntriaged> host_;
 
   std::unique_ptr<UnboundedSurfaceWindow> unbounded_surface_window_;
 
@@ -757,11 +778,28 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   // opaque.
   bool IsBackgroundColorOpaque();
 
+  // This is only ever assigned in the constructor and cleared in
+  // `DestroyOrDefer()`. RenderWidgetHostImpl::Destroy() always routes through
+  // `view_->DestroyOrDefer()`, so `host_` is cleared before the
+  // RenderWidgetHostImpl is destroyed. This holds even when this view outlives
+  // the host, which happens when teardown is deferred while input is being
+  // dispatched (`pin_count_ > 0`).
+  raw_ptr<RenderWidgetHostImpl> host_;
+
   bool is_evicted_ = false;
 
   bool is_frame_sink_id_owner_ = false;
 
   std::unique_ptr<ScopedViewTransitionResources> view_transition_resources_;
+
+  // The count of `input::ScopedInputDispatchPin` active for `this`. Preventing
+  // our immediate deletion during input dispatch. See `DestroyOrDefer` for
+  // details.
+  int pin_count_ = 0;
+  // Once `DestroyOrDefer` has been called this becomes `true`. Used to
+  // early-exit visual updates that are no longer required. So that we can
+  // gracefully clean up input dispatch.
+  bool destroy_pending_ = false;
 
   base::WeakPtrFactory<RenderWidgetHostViewBase> weak_factory_{this};
 };

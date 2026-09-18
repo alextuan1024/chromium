@@ -22,7 +22,6 @@ import android.view.ViewTreeObserver;
 import android.view.ViewTreeObserver.OnPreDrawListener;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -39,6 +38,7 @@ import org.robolectric.shadows.ShadowSystemClock;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.InflationObserver;
@@ -70,6 +70,7 @@ public class AppLaunchDrawBlockerUnitTest {
     @Mock private Supplier<Boolean> mShouldIgnoreIntentSupplier;
     @Mock private Supplier<Boolean> mIsTabletSupplier;
     @Mock private Supplier<Boolean> mIsRecreatingSupplier;
+    @Mock private Supplier<Boolean> mShouldBlockDrawForTabLayoutSupplier;
 
     private final SettableMonotonicObservableSupplier<Profile> mProfileSupplier =
             ObservableSuppliers.createMonotonic();
@@ -93,6 +94,7 @@ public class AppLaunchDrawBlockerUnitTest {
 
     @Before
     public void setUp() {
+        SystemClock.setCurrentTimeMillis(INITIAL_TIME);
         when(mView.getViewTreeObserver()).thenReturn(mViewTreeObserver);
         TemplateUrlServiceFactoryJni.setInstanceForTesting(mTemplateUrlServiceFactory);
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
@@ -103,6 +105,7 @@ public class AppLaunchDrawBlockerUnitTest {
         when(mShouldIgnoreIntentSupplier.get()).thenReturn(false);
         when(mIsTabletSupplier.get()).thenReturn(false);
         when(mIsRecreatingSupplier.get()).thenReturn(false);
+        when(mShouldBlockDrawForTabLayoutSupplier.get()).thenReturn(false);
         when(mIncognitoRestoreAppLaunchDrawBlockerFactoryMock.create(
                         eq(mIntentSupplier),
                         eq(mShouldIgnoreIntentSupplier),
@@ -118,9 +121,9 @@ public class AppLaunchDrawBlockerUnitTest {
                         mIsTabletSupplier,
                         mIsRecreatingSupplier,
                         mProfileSupplier,
-                        mIncognitoRestoreAppLaunchDrawBlockerFactoryMock);
+                        mIncognitoRestoreAppLaunchDrawBlockerFactoryMock,
+                        mShouldBlockDrawForTabLayoutSupplier);
         validateConstructorAndCaptureObservers();
-        SystemClock.setCurrentTimeMillis(INITIAL_TIME);
     }
 
     @Test
@@ -328,7 +331,6 @@ public class AppLaunchDrawBlockerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShouldBlockDrawForIncognitoRestore_AddsOnPreDrawListener() {
         when(mIncognitoRestoreAppLaunchDrawBlockerMock.shouldBlockDraw()).thenReturn(true);
         mInflationObserver.onPostInflationStartup();
@@ -338,7 +340,6 @@ public class AppLaunchDrawBlockerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShouldNotBlockDrawForIncognitoRestore_DoesNotAddOnPreDrawListener() {
         when(mIncognitoRestoreAppLaunchDrawBlockerMock.shouldBlockDraw()).thenReturn(false);
         mInflationObserver.onPostInflationStartup();
@@ -348,7 +349,6 @@ public class AppLaunchDrawBlockerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnPreDrawListenerRemoved_WhenNoLongerNeedToBlockDrawForIncognitoRestore() {
         when(mIncognitoRestoreAppLaunchDrawBlockerMock.shouldBlockDraw()).thenReturn(true);
         mInflationObserver.onPostInflationStartup();
@@ -369,7 +369,6 @@ public class AppLaunchDrawBlockerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBlockDrawOnRecreation() {
         ChromeSharedPreferences.getInstance()
                 .writeInt(
@@ -387,6 +386,51 @@ public class AppLaunchDrawBlockerUnitTest {
         mAppLaunchDrawBlocker.onActiveTabAvailableForRecreation();
         assertTrue("Draw should no longer be blocked.", listener.onPreDraw());
         verify(mViewTreeObserver, times(1)).removeOnPreDrawListener(listener);
+    }
+
+    @Test
+    public void testBlockDrawForTabLayout() {
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.VerticalTabs.TabLayoutAvailable", 50);
+        ChromeSharedPreferences.getInstance()
+                .writeInt(
+                        ChromePreferenceKeys.APP_LAUNCH_LAST_KNOWN_ACTIVE_TAB_STATE,
+                        ActiveTabState.OTHER);
+        when(mShouldBlockDrawForTabLayoutSupplier.get()).thenReturn(true);
+        mInflationObserver.onPostInflationStartup();
+
+        verify(mViewTreeObserver, times(1))
+                .addOnPreDrawListener(mOnPreDrawListenerArgumentCaptor.capture());
+        OnPreDrawListener listener = mOnPreDrawListenerArgumentCaptor.getValue();
+        assertFalse("Draw should be blocked for tab layout.", listener.onPreDraw());
+
+        // Tab layout is now ready.
+        SystemClock.setCurrentTimeMillis(INITIAL_TIME + 50);
+        mAppLaunchDrawBlocker.onTabLayoutAvailable();
+        assertTrue("Draw should no longer be blocked.", listener.onPreDraw());
+        verify(mViewTreeObserver, times(1)).removeOnPreDrawListener(listener);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDoNotBlockDrawWhenTabLayoutDisabled() {
+        var histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.VerticalTabs.TabLayoutAvailable")
+                        .build();
+        ChromeSharedPreferences.getInstance()
+                .writeInt(
+                        ChromePreferenceKeys.APP_LAUNCH_LAST_KNOWN_ACTIVE_TAB_STATE,
+                        ActiveTabState.OTHER);
+        when(mShouldBlockDrawForTabLayoutSupplier.get()).thenReturn(false);
+        mInflationObserver.onPostInflationStartup();
+
+        verify(mViewTreeObserver, never()).addOnPreDrawListener(any());
+
+        // onTabLayoutAvailable called without prior draw blocking shouldn't record metrics.
+        mAppLaunchDrawBlocker.onTabLayoutAvailable();
+        histogramWatcher.assertExpected();
     }
 
     private void validateConstructorAndCaptureObservers() {

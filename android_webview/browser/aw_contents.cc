@@ -48,7 +48,6 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
-#include "base/android/locale_utils.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
@@ -56,7 +55,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/memory/memory_pressure_listener.h"
@@ -130,6 +129,15 @@
 #include "ui/gfx/image/image.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
+
+namespace jni_zero {
+template <>
+inline ScopedJavaLocalRef<jobject> ToJniType<base::i18n::LanguageTag>(
+    JNIEnv* env,
+    const base::i18n::LanguageTag& tag) {
+  return ToJniType(env, std::string(tag.tag_string()));
+}
+}  // namespace jni_zero
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwContents_jni.h"
@@ -530,8 +538,9 @@ static int32_t JNI_AwContents_GetNativeInstanceCount(JNIEnv* env) {
 }
 
 // static
-static std::string JNI_AwContents_GetSafeBrowsingLocaleForTesting() {
-  return base::i18n::GetConfiguredLocale();
+static base::i18n::LanguageTag
+JNI_AwContents_GetSafeBrowsingLocaleForTesting() {
+  return base::i18n::GetDefaultIcuLocale();
 }
 
 static ScopedJavaLocalRef<jobject> JNI_AwContents_FromWebContents(

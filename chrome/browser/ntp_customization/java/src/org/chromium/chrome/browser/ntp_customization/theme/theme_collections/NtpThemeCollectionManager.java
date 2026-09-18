@@ -126,17 +126,9 @@ public class NtpThemeCollectionManager {
         mNtpThemeCollectionBridge.setThemeCollectionImage(image);
     }
 
-    /** Sets the user-uploaded background image. */
-    public void selectLocalBackgroundImage() {
+    /** Cancels any in-flight theme collection selection or download. */
+    public void cancelPendingSelection() {
         resetSelectionState();
-        mNtpThemeCollectionBridge.selectLocalBackgroundImage();
-        mOtherBackgroundTypeSelected = true;
-    }
-
-    /** Resets the custom background. */
-    public void resetCustomBackground() {
-        resetSelectionState();
-        mNtpThemeCollectionBridge.resetCustomBackground();
         mOtherBackgroundTypeSelected = true;
     }
 
@@ -180,10 +172,6 @@ public class NtpThemeCollectionManager {
 
                     @ColorInt
                     Integer primaryColor = NtpCustomizationUtils.getContentBasedSeedColor(bitmap);
-                    if (primaryColor != null) {
-                        mNtpThemeCollectionBridge.updateThemeCollectionBackgroundColor(
-                                info.backgroundUrl, primaryColor);
-                    }
 
                     String fileId = null;
                     if (NtpCustomizationUtils.isNTPCustomizationSyncEnabled()) {

@@ -29,6 +29,7 @@
 #include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
+#include "services/webnn/webnn_utils.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/flatbuffers/src/include/flatbuffers/flatbuffers.h"
 #include "third_party/tflite/src/tensorflow/compiler/mlir/lite/schema/schema_generated.h"
@@ -44,10 +45,6 @@ class WebNNConstantOperand;
 namespace tflite {
 
 using TensorIndex = int32_t;
-
-struct Float16 {
-  uint16_t data;
-};
 
 struct TensorDescriptor {
   TensorIndex tensor_index;
@@ -151,6 +148,7 @@ class GraphBuilderTflite final {
   using OperatorOffset = flatbuffers::Offset<::tflite::Operator>;
   using BufferOffset = flatbuffers::Offset<::tflite::Buffer>;
   using TensorOffset = flatbuffers::Offset<::tflite::Tensor>;
+  using SubGraphOffset = flatbuffers::Offset<::tflite::SubGraph>;
   using StringOffset = flatbuffers::Offset<flatbuffers::String>;
   using ShapeOffset = flatbuffers::Offset<flatbuffers::Vector<int32_t>>;
   using ExternalBufferOffset = flatbuffers::Offset<::tflite::ExternalBuffer>;
@@ -236,6 +234,17 @@ class GraphBuilderTflite final {
       QuantizateParametersOffset quantize_params = 0,
       bool operation_supports_float16 = false,
       std::optional<::tflite::TensorType> override_tensor_type = std::nullopt);
+
+  // Must be called right after the operator that produced the float32
+  // temporary those casts read is appended to `operators_`. A graph output
+  // operand may also be consumed by a later operation, and that consumer reads
+  // the float16 tensor these casts write, because
+  // `operand_to_tensor_info_map_` holds the float16 graph output tensor rather
+  // than the float32 temporary. Deferring the casts any further would place
+  // them after their consumers, and TFLite both executes operators in list
+  // order and rejects a model whose operator reads a tensor that no earlier
+  // operator produced.
+  void FlushGraphOutputCastOperators();
 
   // The following steps implement the `SerializeOperation` function:
   // 1. Create `tflite::OperatorCode` with the kind of operator.
@@ -390,6 +399,14 @@ class GraphBuilderTflite final {
   base::expected<TensorIndex, std::string> CastGatherIndices(
       const TensorInfo& indices_tensor_info);
 
+  // Constant-folded equivalent of `SerializeGatherIndices()`: clamps
+  // `indices_operand_id` to `[-N, N - 1]` and shifts negatives by `N`, where
+  // `N` is the size of the indexed axis.
+  base::FixedArray<int32_t> ClampConstantIndices(
+      OperandId indices_operand_id,
+      base::span<const int32_t> input_dimensions,
+      std::optional<uint32_t> gather_axis);
+
   // This function is called by `SerializeGatherND` to serialize WebNN
   // gatherND or gatherElements.
   OperatorOffset SerializeGatherNDOperation(TensorIndex input_tensor_index,
@@ -532,7 +549,7 @@ class GraphBuilderTflite final {
       TensorIndex input_tensor_index,
       TensorIndex output_tensor_index,
       base::span<const int32_t> input_shape,
-      base::span<const uint32_t> permutation);
+      base::span<const int32_t> permutation);
 
   // This function is called by SerializeScatterND or SerializeScatterElements
   // to serialize WebNN scatterND or scatterElements operation.
@@ -575,7 +592,7 @@ class GraphBuilderTflite final {
   // `SerializeTransposeOperation`.
   base::expected<TensorIndex, std::string> InsertTransposeOperation(
       const TensorInfo& input_tensor_info,
-      base::span<const uint32_t> permutation);
+      base::span<const int32_t> permutation);
 
   // Serializes the rank-2 constant `operand_id` with its two axes
   // exchanged, so that no TRANSPOSE operator is emitted for it. A
@@ -772,8 +789,22 @@ class GraphBuilderTflite final {
       const TensorInfo& output_tensor_info);
   base::expected<OperatorOffset, std::string> SerializeExpand(
       const mojom::Expand& expand);
+  // Emits a single `BROADCAST_TO`, except when the graph targets a GPU
+  // delegate, where `SerializeBroadcastToAsReshapeAndTile()` is used instead.
   base::expected<OperatorOffset, std::string> SerializeBroadcastToOperation(
       TensorIndex input_tensor_index,
+      base::span<const int32_t> input_dimensions,
+      ::tflite::TensorType input_tensor_type,
+      base::span<const int32_t> output_dimensions,
+      TensorIndex output_tensor_index);
+  // Expresses a broadcast as `RESHAPE` + `TILE`, which the ML Drift GPU
+  // delegate supports natively while `BROADCAST_TO` it does not. Only valid for
+  // shapes accepted by `CanBroadcastToAsReshapeAndTile()`.
+  base::expected<OperatorOffset, std::string>
+  SerializeBroadcastToAsReshapeAndTile(
+      TensorIndex input_tensor_index,
+      base::span<const int32_t> input_dimensions,
+      ::tflite::TensorType input_tensor_type,
       base::span<const int32_t> output_dimensions,
       TensorIndex output_tensor_index);
   base::expected<OperatorOffset, std::string> SerializeGather(
@@ -802,10 +833,23 @@ class GraphBuilderTflite final {
       const mojom::InstanceNormalization& instance_normalization);
   base::expected<OperatorOffset, std::string> SerializeLayerNormalization(
       const mojom::LayerNormalization& layer_normalization);
-  // Emits a `custom_call.LayerNorm` custom op if supported by
-  // `context_device_`. Returns `std::nullopt` otherwise.
-  std::optional<OperatorOffset> SerializeLayerNormalizationAsCustomCall(
+  // Emits a `BuiltinOperator_STABLEHLO_COMPOSITE` operator named
+  // `odml.group_norm` with `sub_type = 1` (LayerNorm), which LiteRT lowers to
+  // the fused ML Drift `layer_norm` kernel. Returns `std::nullopt` if the
+  // operation doesn't meet the kernel's preconditions, in which case the
+  // caller should fall back to emulating layer normalization with primitives.
+  std::optional<OperatorOffset> SerializeLayerNormalizationAsComposite(
       const mojom::LayerNormalization& layer_normalization);
+  // Appends a decomposition subgraph for layer normalization (innermost axis,
+  // primitive operators) and returns its subgraph index, which composite
+  // operators reference as a fallback when no delegate claims them.
+  base::expected<int32_t, std::string>
+  SerializeLayerNormalizationDecompositionSubgraph(
+      base::span<const int32_t> input_dimensions,
+      ::tflite::TensorType tensor_type,
+      float epsilon,
+      bool has_scale,
+      bool has_bias);
   base::expected<OperatorOffset, std::string> SerializeLeakyRelu(
       const mojom::LeakyRelu& leaky_relu);
   base::expected<OperatorOffset, std::string> SerializeLinear(
@@ -1082,6 +1126,12 @@ class GraphBuilderTflite final {
   std::vector<BufferOffset> buffers_;
   std::vector<TensorOffset> tensors_;
   std::vector<ExternalBufferOffset> external_buffers_;
+
+  // Decomposition subgraphs referenced by StableHLO composite operators. They
+  // are appended after the main subgraph, so the subgraph index of the entry at
+  // position `i` is `i + 1`. `tensors_` and `operators_` are swapped out while
+  // one of these is being built, since tensor indices are subgraph-local.
+  std::vector<SubGraphOffset> decomposition_subgraphs_;
 
   // A temporary file created in browser process to hold all weights.
   base::File weights_file_;

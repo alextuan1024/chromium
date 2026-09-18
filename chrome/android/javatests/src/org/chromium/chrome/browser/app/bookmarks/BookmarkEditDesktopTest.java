@@ -21,11 +21,11 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ApplicationStatus.ActivityStateListener;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.bookmarks.BookmarkEditMetrics.BookmarkEditOutcome;
@@ -34,19 +34,21 @@ import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.BookmarkModelObserver;
 import org.chromium.chrome.browser.bookmarks.BookmarkModelTest;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.url.GURL;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /** Tests functionality in BookmarkEditActivity for Desktop dialog. */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @EnableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG})
 public class BookmarkEditDesktopTest {
@@ -107,8 +109,7 @@ public class BookmarkEditDesktopTest {
 
         startEditActivity(mBookmarkId);
         CriteriaHelper.pollUiThread(
-                () -> mActivity.getCloseButton() != null,
-                "Close button not initialized in options menu");
+                () -> mActivity.getCloseButton() != null, "Close button not initialized in header");
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -162,7 +163,7 @@ public class BookmarkEditDesktopTest {
         Assert.assertNotNull("Activity should not be null", mActivity);
         Assert.assertNotNull("Save button should exist", mActivity.getSaveButton());
         Assert.assertNotNull("Remove button should exist", mActivity.getRemoveButton());
-        Assert.assertNotNull("Close button should exist in menu", mActivity.getCloseButton());
+        Assert.assertNotNull("Close button should exist", mActivity.getCloseButton());
         Assert.assertNull("Delete button should not exist in menu", mActivity.getDeleteButton());
     }
 
@@ -213,6 +214,7 @@ public class BookmarkEditDesktopTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626182
     public void testCloseButton() throws ExecutionException, TimeoutException {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -228,7 +230,7 @@ public class BookmarkEditDesktopTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mActivity.onOptionsItemSelected(mActivity.getCloseButton());
+                    mActivity.getCloseButton().performClick();
                 });
 
         mDestroyedCallback.waitForCallback(0);

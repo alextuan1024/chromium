@@ -15,6 +15,7 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/cross_tab_copy_paste_tracker_factory.h"
 #include "chrome/browser/autofill/mock_autofill_agent.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
@@ -56,6 +57,7 @@
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_field_data.h"
+#include "components/autofill/core/common/unique_ids.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/personal_context/core/personal_context_eligibility_service.h"
 #include "components/personal_context/core/personal_context_prefs.h"
@@ -1274,6 +1276,30 @@ TEST_F(ChromeAutofillClientTest, HideSuggestions_ProductFilter) {
   client()->HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
                             FillingProduct::kAddress);
 }
+
+TEST_F(ChromeAutofillClientTest,
+       UpdateAutofillDataListValues_FrameTokenFilter) {
+  LocalFrameToken token1(base::UnguessableToken::Create());
+  LocalFrameToken token2(base::UnguessableToken::Create());
+
+  testing::NiceMock<MockAutofillPopupController> mock_controller;
+  mock_controller.set_anchor_frame_token(token1);
+
+  client()->set_suggestion_controller_for_testing(mock_controller.GetWeakPtr());
+
+  std::vector<SelectOption> options = {{.value = u"val", .text = u"txt"}};
+
+  // Attempt to update with a non-matching frame token should be ignored.
+  EXPECT_CALL(mock_controller, UpdateDataListValues).Times(0);
+  client()->UpdateAutofillDataListValues(token2, options);
+  testing::Mock::VerifyAndClearExpectations(&mock_controller);
+
+  // Attempt to update with a matching frame token should succeed.
+  EXPECT_CALL(
+      mock_controller,
+      UpdateDataListValues(ElementsAre(Field(&SelectOption::value, u"val"))));
+  client()->UpdateAutofillDataListValues(token1, options);
+}
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(ChromeAutofillClientTest, IsAutofillProfileEnabled_BlockedByPolicy) {
@@ -1358,6 +1384,11 @@ TEST_F(ChromeAutofillClientTest,
   // If the enterprise policy flag is OFF, IsAutofillEnabled does not check AI
   // types.
   EXPECT_FALSE(client()->IsAutofillEnabled());
+}
+
+TEST_F(ChromeAutofillClientTest, GetAffiliationService) {
+  EXPECT_EQ(AffiliationServiceFactory::GetForProfile(profile()),
+            client()->GetAffiliationService());
 }
 
 }  // namespace

@@ -163,9 +163,6 @@ const base::FeatureParam<std::string> kIPHLensOverlayUrlPathMatchBlockPatterns{
 const base::FeatureParam<base::TimeDelta> kIPHLensOverlayDelayTime{
     &feature_engagement::kIPHLensOverlayFeature, "x_wait_time",
     base::Seconds(7)};
-BASE_FEATURE(kIPHLensOverlayTranslateButtonFeature,
-             "IPH_LensOverlayTranslateButton",
-             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHOmniboxEverywhereLensPromoFeature,
              "IPH_OmniboxEverywhereLensPromo",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -273,7 +270,7 @@ BASE_FEATURE(kIPHSplitViewHorizontalIndirectAccessFeature,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHVerticalTabsExpandOnHoverFeature,
              "IPH_VerticalTabsExpandOnHoverFeature",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHVerticalTabstripTutorialFeature,
              "IPH_VerticalTabstripTutorialFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -336,7 +333,7 @@ BASE_FEATURE(kIPHBackNavigationMenuFeature,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHBookmarkBarSimplifiedFeature,
              "IPH_BookmarkBarSimplified",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
 
@@ -368,7 +365,7 @@ BASE_FEATURE(kIPHAndroidBottomBarPromoDialog,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHAndroidTabDeclutter,
              "IPH_AndroidTabDeclutter",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHAndroidVerticalTabsNewLabel,
              "IPH_AndroidVerticalTabsNewLabel",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -464,7 +461,7 @@ BASE_FEATURE(kIPHDefaultBrowserPromoSettingCardFeature,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHDownloadHomeFeature,
              "IPH_DownloadHome",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHDownloadIndicatorFeature,
              "IPH_DownloadIndicator",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -504,9 +501,6 @@ BASE_FEATURE(kIPHReadAloudExpandedPlayerFeature,
 BASE_FEATURE(kIPHReadAloudPlaybackModeFeature,
              "IPH_ReadAloudPlaybackModeFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kIPHReadLaterContextMenuFeature,
-             "IPH_ReadLaterContextMenu",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHReadLaterAppMenuBookmarkThisPageFeature,
              "IPH_ReadLaterAppMenuBookmarkThisPage",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -528,9 +522,6 @@ BASE_FEATURE(kIPHRequestDesktopSiteWindowSettingFeature,
 BASE_FEATURE(kIPHShoppingListSaveFlowFeature,
              "IPH_ShoppingListSaveFlow",
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kIPHEphemeralTabFeature,
-             "IPH_EphemeralTab",
-             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHFeedCardMenuFeature,
              "IPH_FeedCardMenu",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -970,9 +961,12 @@ BASE_FEATURE(kIPHiOSAIHubNewBadge,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIPHiOSGeminiLiveNewBadgeFeature,
+             "IPH_iOSGeminiLiveNewBadgeFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kIPHiOSGeminiLiveIPHFeature, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kIPHiOSGeminiLiveIPHFeature,
+             "IPH_iOSGeminiLiveIPHFeature",
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIPHiOSGeminiFullscreenPromoFeature,
              "IPH_iOSGeminiFullscreenPromoFeature",
@@ -983,6 +977,10 @@ BASE_FEATURE(kIPHiOSGeminiContextualCueChip,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIPHiOSGeminiWhatCanGeminiDo, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kIPHiOSPromoContextualDefaultBrowserGeminiFeature,
+             "IPH_iOSPromoContextualDefaultBrowserGemini",
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIPHiOSGeminiImageRemixFeature,
              "IPH_iOSGeminiImageRemixFeature",

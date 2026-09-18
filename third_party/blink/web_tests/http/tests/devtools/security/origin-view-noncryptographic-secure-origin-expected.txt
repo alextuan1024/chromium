@@ -11,10 +11,6 @@ Panel on origin view:
 Origin
         </DIV>
         <DIV class=origin-display >
-            <#comment >
-            </#comment>
-            <#comment >
-            </#comment>
             <DEVTOOLS-ICON role=presentation name=lock class=security-property security-property-secure >
                 <#document-fragment >
                     <STYLE >
@@ -23,47 +19,25 @@ Origin
                     </SPAN>
                 </#document-fragment>
             </DEVTOOLS-ICON>
-            <#comment >
-            </#comment>
             <SPAN class=highlighted-url >
                 <SPAN class=url-scheme-secure >
-                    <#comment >
-                    </#comment>
 chrome-test
                 </SPAN>
                 <SPAN class=url-scheme-separator >
-                    <#comment >
-                    </#comment>
 ://
                 </SPAN>
                 <SPAN >
-                    <#comment >
-                    </#comment>
 test
                 </SPAN>
             </SPAN>
-            <#comment >
-            </#comment>
         </DIV>
         <DIV class=view-network-button >
-            <DEVTOOLS-BUTTON role=link jslog=Action; track: click; context: reveal-in-network >
+            <DEVTOOLS-BUTTON role=presentation >
 View requests in Network panel
                 <#document-fragment >
-                    <#comment >
-                    </#comment>
                     <STYLE >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
                     </STYLE>
-                    <BUTTON class=outlined >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
+                    <BUTTON class= outlined  jslog=Action; track: click; context: reveal-in-network >
                         <SLOT >
                         </SLOT>
                     </BUTTON>

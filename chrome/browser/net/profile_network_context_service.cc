@@ -125,10 +125,10 @@
 #include "net/cert/x509_util.h"
 #endif
 
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
 #include "chrome/browser/ui/crypto_module_delegate_nss.h"
 #include "net/ssl/client_cert_store_nss.h"
-#endif  // BUILDFLAG(USE_NSS_CERTS)
+#endif  // BUILDFLAG(USE_NSS_CLIENT_CERTS)
 
 #if BUILDFLAG(IS_WIN)
 #include "net/ssl/client_cert_store_win.h"
@@ -719,10 +719,6 @@ void ProfileNetworkContextService::OnThirdPartyCookieBlockingChanged(
 }
 
 std::string ProfileNetworkContextService::ComputeAcceptLanguage() const {
-  // TODO:(https://crbug.com/40224802) Return only single language without
-  // expanding the language list if the DisableReduceAcceptLanguage deprecation
-  // trial ends.
-
   return ComputeAcceptLanguageFromPref(
       content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
           profile_->IsOffTheRecord() ? language::GetIncognitoLanguageList(
@@ -1138,8 +1134,11 @@ ProfileNetworkContextService::CreateCookieManagerParams(
   // TODO(crbug.com/483614998): Granting Lens side panel is a temporary
   // exception to use SameSite cookies while it migrates to a <webview>
   // approach. This should not be done for other untrusted WebUI.
-  out->secure_origin_cookies_allowed_origins.push_back(
-      url::Origin::Create(GURL(chrome::kChromeUILensUntrustedSidePanelURL)));
+  std::vector<net::SchemefulSite> accessed_by_lens{
+      net::SchemefulSite(GURL("https://google.com"))};
+  out->secure_origin_cookies_allowed_origins.insert_or_assign(
+      url::Origin::Create(GURL(chrome::kChromeUILensUntrustedSidePanelURL)),
+      std::move(accessed_by_lens));
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -1291,7 +1290,7 @@ ProfileNetworkContextService::CreateClientCertStore() {
       std::move(certificate_provider), kcer::KcerFactoryAsh::GetKcer(profile_),
       GetClientCertIssuerSourceFactory());
 
-#elif BUILDFLAG(USE_NSS_CERTS)
+#elif BUILDFLAG(USE_NSS_CLIENT_CERTS)
   std::unique_ptr<net::ClientCertStore> store =
       std::make_unique<net::ClientCertStoreNSS>(
           base::BindRepeating(&CreateCryptoModuleBlockingPasswordDelegate,

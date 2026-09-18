@@ -23,6 +23,7 @@ chromium-metrics-reviews@google.com.
 <variants name="ChromeInitiatorLocation">
   <variant name="Backward" summary="Initiated by a back navigation"/>
   <variant name="BookmarkBar" summary="Initiated from BookmarkBar"/>
+  <variant name="FormSubmission" summary="Initiated by a form submission"/>
   <variant name="Forward" summary="Initiated by a forward navigation"/>
   <variant name="LinkClick" summary="Initiated by a link click"/>
   <variant name="NewTabPage" summary="Initiated from NewTabPage"/>
@@ -55,6 +56,7 @@ chromium-metrics-reviews@google.com.
       summary="All initiator locations. No additional condition."/>
   <variant name="Backward" summary="Initiated by a back navigation"/>
   <variant name="BookmarkBar" summary="Initiated from BookmarkBar"/>
+  <variant name="FormSubmission" summary="Initiated by a form submission"/>
   <variant name="Forward" summary="Initiated by a forward navigation"/>
   <variant name="LinkClick" summary="Initiated by a link click"/>
   <variant name="NewTabPage" summary="Initiated from NewTabPage"/>
@@ -208,6 +210,9 @@ chromium-metrics-reviews@google.com.
 <variants name="UsedInstantLoad">
   <variant name="All" summary="All navigations. No additional condition."/>
   <variant name="NoInstantLoad" summary="No instant load technology was used."/>
+  <variant name="NoInstantLoadDiskCache"
+      summary="Navigation was served by disk cache without instant load
+               technology."/>
   <variant name="Prefetch" summary="Prefetch was used."/>
   <variant name="Prefetch.WithoutPrePrefetch"
       summary="Prefetch that was not constructed from a PrePrefetch was used.
@@ -412,7 +417,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Preloading.{PreloadingType}.Attempt.{PreloadingPredictor}.Precision"
-    enum="PredictorConfusionMatrix" expires_after="2027-01-10">
+    enum="PredictorConfusionMatrix" expires_after="2027-03-14">
   <owner>isaboori@google.com</owner>
   <owner>spelchat@chromium.org</owner>
   <owner>sreejakshetty@chromium.org</owner>

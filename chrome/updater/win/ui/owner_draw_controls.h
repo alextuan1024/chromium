@@ -17,6 +17,11 @@
 #include "ui/gfx/win/msg_util.h"
 #include "ui/gfx/win/window_impl.h"
 
+namespace updater::test {
+class CaptionButtonTestApi;
+class OwnerDrawTitleBarTestApi;
+}  // namespace updater::test
+
 namespace updater::ui {
 
 // Owner-drawn caption button used by the custom title bar. The control is a
@@ -43,35 +48,73 @@ class CaptionButton : public SubclassedWindow {
   const std::wstring& tool_tip_text() const;
   void set_tool_tip_text(const std::wstring& tool_tip_text);
 
-  void UpdateThemeState();
-
   CR_BEGIN_MSG_MAP_EX(CaptionButton)
     CR_MESSAGE_RANGE_HANDLER_EX(WM_MOUSEFIRST, WM_MOUSELAST, OnMouseMessage)
     CR_MESSAGE_HANDLER_EX(WM_MOUSEMOVE, OnMouseMove)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSEHOVER, OnMouseHover)
     CR_MESSAGE_HANDLER_EX(WM_MOUSELEAVE, OnMouseLeave)
+    CR_MESSAGE_HANDLER_EX(WM_ENABLE, OnEnable)
+    CR_MESSAGE_HANDLER_EX(WM_SHOWWINDOW, OnShowWindow)
     CR_MESSAGE_HANDLER_EX(WM_THEMECHANGED, OnThemeChanged)
     CR_MESSAGE_HANDLER_EX(WM_SYSCOLORCHANGE, OnThemeChanged)
     CR_MESSAGE_HANDLER_EX(WM_SETTINGCHANGE, OnThemeChanged)
   CR_END_MSG_MAP()
 
  private:
+  friend class updater::test::CaptionButtonTestApi;
+
   virtual HRGN GetButtonRgn(int rgn_width, int rgn_height) = 0;
+
+  // Refreshes the cached theme flags that the paint path reads.
+  void UpdateThemeState();
+
+  // Cancels any outstanding TME_LEAVE registration so that the next cursor
+  // entry re-arms it.
+  void CancelMouseTracking();
+
+  // Reports the control's own WS_DISABLED bit. Hover gating needs the enabled
+  // bit outside a draw cycle; the paint path uses ODS_DISABLED instead.
+  bool IsEnabled() const;
+
+  // Everything a single paint resolves against, snapshotted once so that the
+  // glyph and the background resolve against the same state.
+  struct PaintState {
+    bool is_enabled = false;
+    bool is_hovered = false;
+    bool is_dark_mode = false;
+    bool is_high_contrast = false;
+
+    // Whether this paint draws the hover treatment. `is_enabled` comes from
+    // `DRAWITEMSTRUCT::itemState` while `is_hovered` is a live member, so the
+    // two can disagree. Both the background and the glyph must ask this
+    // rather than `is_hovered`, otherwise a disabled control can paint a
+    // COLOR_HIGHLIGHTTEXT glyph on a non-highlight background.
+    bool paints_hover() const { return is_hovered && is_enabled; }
+  };
+  PaintState SnapshotPaintState(UINT item_state) const;
+
+  // Returns the color the glyph is painted with for the given `paint_state`.
+  static COLORREF ResolveGlyphColor(PaintState paint_state);
+
+  // Draws the focused-state border for the control.
+  void DrawFocusFrame(HDC dc,
+                      const RECT& button_rect,
+                      PaintState paint_state) const;
 
   LRESULT OnMouseMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnMouseMove(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseHover(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnMouseLeave(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnEnable(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnShowWindow(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnThemeChanged(UINT msg, WPARAM wparam, LPARAM lparam);
 
   COLORREF bk_color_ = RGB(0, 0, 0);
-  base::win::ScopedGDIObject<HBRUSH> foreground_brush_;
 
   HWND tool_tip_window_ = nullptr;
   std::wstring tool_tip_text_;
   bool is_tracking_mouse_events_ = false;
   bool is_mouse_hovering_ = false;
   bool is_high_contrast_ = false;
+  bool is_dark_mode_ = false;
 
   CR_MSG_MAP_CLASS_DECLARATIONS(CaptionButton)
 };
@@ -96,23 +139,12 @@ class MinimizeButton : public CaptionButton {
   HRGN GetButtonRgn(int rgn_width, int rgn_height) override;
 };
 
-class MaximizeButton : public CaptionButton {
- public:
-  MaximizeButton();
-  MaximizeButton(const MaximizeButton&) = delete;
-  MaximizeButton& operator=(const MaximizeButton&) = delete;
-
- private:
-  HRGN GetButtonRgn(int rgn_width, int rgn_height) override;
-};
-
 // Owner-drawn custom title bar. A child of the host dialog; positions and
 // paints its caption buttons.
 class OwnerDrawTitleBarWindow : public gfx::WindowImpl {
  public:
   enum ButtonIds {
     kButtonClose = 1,
-    kButtonMaximize,
     kButtonMinimize,
   };
 
@@ -140,12 +172,13 @@ class OwnerDrawTitleBarWindow : public gfx::WindowImpl {
     CR_MESSAGE_HANDLER_EX(WM_SIZE, OnSize)
     CR_MESSAGE_HANDLER_EX(WM_DRAWITEM, OnDrawItem)
     CR_COMMAND_ID_HANDLER_EX(kButtonClose, OnClose)
-    CR_COMMAND_ID_HANDLER_EX(kButtonMaximize, OnMaximize)
     CR_COMMAND_ID_HANDLER_EX(kButtonMinimize, OnMinimize)
     CR_MESSAGE_HANDLER_EX(WM_SETCURSOR, OnSetCursor)
   CR_END_MSG_MAP()
 
  private:
+  friend class updater::test::OwnerDrawTitleBarTestApi;
+
   void CreateCaptionButtons();
   void UpdateButtonState(HMENU menu,
                          UINT button_sc_id,
@@ -164,7 +197,6 @@ class OwnerDrawTitleBarWindow : public gfx::WindowImpl {
   LRESULT OnDrawItem(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnSetCursor(UINT msg, WPARAM wparam, LPARAM lparam);
   void OnClose(UINT notify_code, int id, HWND ctl);
-  void OnMaximize(UINT notify_code, int id, HWND ctl);
   void OnMinimize(UINT notify_code, int id, HWND ctl);
 
   POINT current_drag_position_ = {-1, -1};
@@ -198,6 +230,8 @@ class OwnerDrawTitleBar {
   }
 
  private:
+  friend class updater::test::OwnerDrawTitleBarTestApi;
+
   RECT ComputeTitleBarClientRect(HWND parent_hwnd, HWND title_bar_spacer_hwnd);
 
   OwnerDrawTitleBarWindow title_bar_window_;
@@ -222,10 +256,14 @@ class CustomDlgColors {
                             LRESULT& result,
                             DWORD msg_map_id = 0);
 
-  void UpdateThemeState();
+  // Refreshes the cached theme flags from the system. Returns true if any
+  // flag changed, i.e. if anything painted from them is now stale. The
+  // constructor and the WM_THEMECHANGED path legitimately ignore the result.
+  bool UpdateThemeState();
 
   bool is_high_contrast() const { return is_high_contrast_; }
   bool is_dark_mode() const { return is_dark_mode_; }
+  bool is_system_dark_mode() const { return is_system_dark_mode_; }
 
  private:
   COLORREF text_color_ = RGB(0xFF, 0xFF, 0xFF);
@@ -234,6 +272,7 @@ class CustomDlgColors {
   base::win::ScopedGDIObject<HBRUSH> dark_bk_brush_;
   bool is_high_contrast_ = false;
   bool is_dark_mode_ = false;
+  bool is_system_dark_mode_ = false;
 };
 
 // Subclassed (via `SetWindowSubclass`) progress bar control providing a

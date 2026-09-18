@@ -26,7 +26,6 @@
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/mock_sync_service_utils.h"
@@ -75,8 +74,7 @@ class SyncErrorInfobarDelegateTest : public PlatformTest {
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     presenter_ = OCMStrictProtocolMock(@protocol(SyncPresenterCommands));
     web_state_.SetBrowserState(profile_);
@@ -325,7 +323,7 @@ TEST_F(SyncErrorInfobarDelegateTest, InfobarAutoDismissAfterSignOut) {
   AccountInfo account_info =
       AccountInfo::Builder(GaiaId("gaia"), "person@example.org").Build();
   signin::PrimaryAccountChangeEvent::State previous_state(
-      account_info, signin::ConsentLevel::kSignin);
+      account_info.GetCoreAccountInfo(), signin::ConsentLevel::kSignin);
   signin::PrimaryAccountChangeEvent::State current_state;
   signin::PrimaryAccountChangeEvent event_details(
       previous_state, current_state, signin_metrics::ProfileSignout::kTest);

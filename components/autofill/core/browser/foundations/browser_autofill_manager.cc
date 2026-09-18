@@ -51,7 +51,6 @@
 #include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #include "components/autofill/core/browser/at_memory/at_memory_manager.h"
 #include "components/autofill/core/browser/at_memory/at_memory_search_state.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/autofill_type.h"
@@ -100,6 +99,7 @@
 #include "components/autofill/core/browser/metrics/form_events/credit_card_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
+#include "components/autofill/core/browser/metrics/javascript_dropdown_metrics.h"
 #include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/metrics/loyalty_cards_metrics.h"
 #include "components/autofill/core/browser/metrics/per_fill_metrics.h"
@@ -178,6 +178,61 @@ using mojom::SubmissionSource;
 using payments::AmountExtractionManager;
 
 namespace {
+
+// Returns the type of JS dropdown Autofill believes to have filled `form`, or
+// `kNone` otherwise.
+JavaScriptDropdownType DetectJavaScriptDropdown(
+    const FormStructure& form,
+    const AutofillField& trigger_field,
+    base::span<const JavaScriptFieldModification> field_modifications) {
+  // Below are the strategies to detect various types of JS dropdowns. It is
+  // important that these strategies remain disjoint (at most one of them can
+  // return true) in order not to break correctness.
+
+  auto detect_address_picker = [&] {
+    size_t address_fields_count = std::ranges::count_if(
+        field_modifications, [&](const JavaScriptFieldModification& mod) {
+          const AutofillField* field = form.GetFieldById(mod.field_id);
+          return field &&
+                 field->Type().GetGroups().contains(FieldTypeGroup::kAddress);
+        });
+
+    // If multiple address fields where changed at once, declare the operation
+    // as triggered by an address picker.
+    constexpr size_t kMinFieldsChangedAddressPicker = 3;
+    if (address_fields_count >= kMinFieldsChangedAddressPicker) {
+      return true;
+    }
+
+    // Otherwise ensure all modified fields were address fields and that the
+    // trigger field was prefix completed.
+    return address_fields_count == field_modifications.size() &&
+           std::ranges::any_of(field_modifications,
+                               [&](const JavaScriptFieldModification& mod) {
+                                 return mod.field_id ==
+                                            trigger_field.global_id() &&
+                                        mod.modification_type ==
+                                            mojom::JavaScriptModificationType::
+                                                kPrefixCompletion;
+                               });
+  };
+
+  auto detect_email_picker = [&] {
+    return field_modifications.size() == 1u &&
+           trigger_field.Type().GetAddressType() == EMAIL_ADDRESS &&
+           field_modifications.front().field_id == trigger_field.global_id() &&
+           field_modifications.front().modification_type ==
+               mojom::JavaScriptModificationType::kPrefixCompletion;
+  };
+
+  if (detect_email_picker()) {
+    return JavaScriptDropdownType::kEmail;
+  }
+  if (detect_address_picker()) {
+    return JavaScriptDropdownType::kAddress;
+  }
+  return JavaScriptDropdownType::kNone;
+}
 
 ValuePatternsMetric GetValuePattern(std::u16string_view value) {
   if (IsUPIVirtualPaymentAddress(value)) {
@@ -309,6 +364,7 @@ FillDataType GetEventTypeFromSingleFieldSuggestionType(SuggestionType type) {
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
     case SuggestionType::kLoadingThrobber:
@@ -320,9 +376,11 @@ FillDataType GetEventTypeFromSingleFieldSuggestionType(SuggestionType type) {
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
@@ -437,12 +495,12 @@ bool IsTriggerSourceOnlyRelevantForCompose(
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case AutofillSuggestionTriggerSource::kGlic:
     case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
     case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return false;
   }
   NOTREACHED();
@@ -467,11 +525,11 @@ bool CanReplaceCurrentSuggestions(AutofillSuggestionTriggerSource source) {
     case mojom::AutofillSuggestionTriggerSource::
         kPasswordManagerProcessedFocusedField:
     case mojom::AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case mojom::AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case mojom::AutofillSuggestionTriggerSource::kGlic:
     case mojom::AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
     case mojom::AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case mojom::AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case mojom::AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return true;
     case mojom::AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case mojom::AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
@@ -530,10 +588,11 @@ FillingProductSet GetFillingProductsToSuggest(
     case kAtMemoryContextMenu:
     case kAtMemoryDoubleCtrl:
     case kAtMemoryKeyboardShortcut:
-    case kAtMemoryTriggerString:
       return {FillingProduct::kAtMemory};
     case kAtMemoryInactivityNudge:
       return {FillingProduct::kNone};
+    case kGmailOneTimePasswordAvailable:
+      return {FillingProduct::kOneTimePassword};
   }
 }
 
@@ -659,6 +718,21 @@ void ReorderWebAuthnSuggestionsToFooter(std::vector<Suggestion>& suggestions) {
       !std::ranges::contains(suggestions, SuggestionType::kSeparator,
                              &Suggestion::type)) {
     suggestions.emplace(manage_pos, SuggestionType::kSeparator);
+  }
+
+  // Ensure a line separator between the inline QR code item and the item that
+  // is after it.
+  std::vector<Suggestion>::iterator qr_pos = std::ranges::find(
+      suggestions, SuggestionType::kWebauthnPasskeyQrCode, &Suggestion::type);
+  if (qr_pos == suggestions.end()) {
+    return;
+  }
+  std::vector<Suggestion>::iterator next_pos = std::next(qr_pos);
+  if (next_pos != suggestions.end() &&
+      next_pos->type != SuggestionType::kSeparator) {
+    Suggestion separator(SuggestionType::kSeparator);
+    separator.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+    suggestions.insert(next_pos, std::move(separator));
   }
 }
 
@@ -1303,6 +1377,10 @@ bool BrowserAutofillManager::TryToShowTouchToFillSuggestions(
 
 bool BrowserAutofillManager::MaybeShowPrivateInferenceNotice(
     base::span<const Suggestion> autofill_ai_suggestions) {
+  if (!driver().CanShowAutofillUi()) {
+    return false;
+  }
+
   if (std::ranges::contains(autofill_ai_suggestions,
                             SuggestionType::kAutofillAiPrivateInferenceNotice,
                             &Suggestion::type)) {
@@ -1358,8 +1436,6 @@ std::vector<Suggestion> BrowserAutofillManager::MergeWithAddressSuggestions(
 
   std::vector<Suggestion> address_suggestions =
       extract_vector(FillingProduct::kAddress);
-  std::vector<Suggestion> identity_credentials_suggestions =
-      extract_vector(FillingProduct::kIdentityCredential);
   std::vector<Suggestion> loyalty_card_suggestions =
       extract_vector(FillingProduct::kLoyaltyCard);
   std::vector<Suggestion> autocomplete_suggestions =
@@ -1375,28 +1451,12 @@ std::vector<Suggestion> BrowserAutofillManager::MergeWithAddressSuggestions(
                                            std::move(loyalty_card_suggestions));
   }
 
-  if (!identity_credentials_suggestions.empty()) {
-    MergeIdentityCredentialsAndAddressSuggestions(
-        address_suggestions, std::move(identity_credentials_suggestions));
-  }
-
   if (!autocomplete_suggestions.empty() && trigger_field) {
     MergeAutocompleteAndAddressSuggestions(
         address_suggestions, std::move(autocomplete_suggestions),
         trigger_field->Type().GetAddressType());
   }
   return address_suggestions;
-}
-
-void BrowserAutofillManager::MergeIdentityCredentialsAndAddressSuggestions(
-    std::vector<Suggestion>& suggestions,
-    std::vector<Suggestion> identity_credential_suggestions) {
-  // TODO(crbug.com/380367784): figure out what to do when both verified
-  // and unverified suggestions point to the same email address.
-  suggestions.insert(
-      suggestions.begin(),
-      std::make_move_iterator(identity_credential_suggestions.begin()),
-      std::make_move_iterator(identity_credential_suggestions.end()));
 }
 
 void BrowserAutofillManager::MergeAutocompleteAndAddressSuggestions(
@@ -1483,7 +1543,7 @@ void BrowserAutofillManager::GenerateSuggestionsAndMaybeShowUIPhase1(
       return;
     }
     otp_manager_->GetOtpSuggestions(
-        *form_structure, field.origin(),
+        *form_structure, field,
         std::move(generate_suggestions_and_maybe_show_ui_phase2));
     return;
   }
@@ -1932,6 +1992,7 @@ void BrowserAutofillManager::FillOrPreviewCreditCardForm(
       case AutofillTriggerSource::kManualFallback:
       case AutofillTriggerSource::kNone:
       case AutofillTriggerSource::kProactivePasswordRecovery:
+      case AutofillTriggerSource::kGmailOneTimePasswordAvailable:
       case AutofillTriggerSource::kProgrammaticRefill:
         NOTREACHED();
     }
@@ -2403,49 +2464,20 @@ void BrowserAutofillManager::OnJavaScriptChangedAutofilledValueImpl(
 void BrowserAutofillManager::OnDidDetectJavaScriptAutofillImpl(
     const FormData& form,
     const FieldGlobalId& trigger_field_id,
-    const std::vector<JavaScriptFieldModification>& field_modifications) {
+    const std::vector<JavaScriptFieldModification>& field_modifications,
+    base::TimeTicks detection_start_timestamp) {
   auto [form_structure, trigger_field] =
       FindMutableFormAndField(form.global_id(), trigger_field_id);
   if (!form_structure || !trigger_field) {
     return;
   }
 
-  auto detect_address_picker = [&] {
-    size_t address_fields_count = std::ranges::count_if(
-        field_modifications, [&](const JavaScriptFieldModification& mod) {
-          const AutofillField* field =
-              form_structure->GetFieldById(mod.field_id);
-          return field &&
-                 field->Type().GetGroups().contains(FieldTypeGroup::kAddress);
-        });
+  const JavaScriptDropdownType dropdown_type = DetectJavaScriptDropdown(
+      *form_structure, *trigger_field, field_modifications);
+  autofill_metrics::LogJavaScriptDropdownDetectionMetrics(
+      dropdown_type, field_modifications, detection_start_timestamp);
 
-    // If multiple address fields where changed at once, declare the operation
-    // as triggered by an address picker.
-    constexpr size_t kMinFieldsChangedAddressPicker = 3;
-    if (address_fields_count >= kMinFieldsChangedAddressPicker) {
-      return true;
-    }
-
-    // Otherwise ensure all modified fields were address fields and that the
-    // trigger field was prefix completed.
-    return address_fields_count == field_modifications.size() &&
-           std::ranges::contains(
-               field_modifications,
-               JavaScriptFieldModification(
-                   trigger_field_id,
-                   mojom::JavaScriptModificationType::kPrefixCompletion));
-  };
-
-  auto detect_email_picker = [&] {
-    return field_modifications.size() == 1u &&
-           trigger_field->Type().GetAddressType() == EMAIL_ADDRESS &&
-           field_modifications.front() ==
-               JavaScriptFieldModification(
-                   trigger_field_id,
-                   mojom::JavaScriptModificationType::kPrefixCompletion);
-  };
-
-  if (detect_address_picker() || detect_email_picker()) {
+  if (dropdown_type != JavaScriptDropdownType::kNone) {
     trigger_field->set_did_trigger_javascript_autofill(true);
     if (base::FeatureList::IsEnabled(
             features::debug::kAutofillShowTypePredictions)) {
@@ -2593,7 +2625,9 @@ void BrowserAutofillManager::AddCachedAutofillAiPredictions(
       server_prediction.set_source(ServerPrediction::SOURCE_AUTOFILL_AI);
       field->MaybeAddServerPrediction(std::move(server_prediction));
     }
-    if (prediction.format_string) {
+    if (prediction.format_string &&
+        AutofillFormatString::IsValid(prediction.format_string->value,
+                                      prediction.format_string->type)) {
       field->set_format_string_unless_overruled(
           *prediction.format_string, AutofillFormatStringSource::kModelResult);
     }
@@ -3189,7 +3223,8 @@ std::vector<Suggestion> BrowserAutofillManager::GetAvailableSuggestions(
             std::vector<Suggestion> loyalty_cards_suggestions_for_merge =
                 CreateLoyaltyCardSuggestionsForMerge(
                     *valuables_manager,
-                    client().GetLastCommittedPrimaryMainFrameURL());
+                    client().GetLastCommittedPrimaryMainFrameURL(),
+                    field.origin());
             MergeLoyaltyCardsAndAddressSuggestions(
                 suggestions, std::move(loyalty_cards_suggestions_for_merge));
           }
@@ -3225,21 +3260,6 @@ std::vector<Suggestion> BrowserAutofillManager::GetAvailableSuggestions(
     default:
       // Skip other filling products.
       break;
-  }
-
-  if (const IdentityCredentialDelegate* identity_credential_delegate =
-          client().GetIdentityCredentialDelegate()) {
-    // Only <input autocomplete="email webidentity"> fields are considered.
-    if (std::optional<AutocompleteParsingResult> autocomplete =
-            ParseAutocompleteAttribute(autofill_field.autocomplete_attribute());
-        autocomplete && autocomplete->webidentity) {
-      std::vector<Suggestion> verified_suggestions =
-          identity_credential_delegate->GetVerifiedAutofillSuggestions(
-              form, &form_structure, field, &autofill_field, client());
-      // Insert verified suggestions above unverified ones.
-      MergeIdentityCredentialsAndAddressSuggestions(
-          suggestions, std::move(verified_suggestions));
-    }
   }
 
   return suggestions;

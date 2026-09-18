@@ -28,12 +28,14 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/singleton_tabs.h"
+#include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/inspect_resources.h"
 #include "chrome/grit/inspect_resources_map.h"
+#include "components/favicon_base/favicon_url_parser.h"
 #include "components/prefs/pref_service.h"
 #include "components/ui_devtools/devtools_server.h"
 #include "components/ui_devtools/switches.h"
@@ -557,9 +559,9 @@ void InspectMessageHandler::CreateNativeUIInspectionSession(
   const GURL gurl(url);
   content::WebContents* front_end = inspect_ui->GetDelegate()->OpenURLFromTab(
       inspect_ui,
-      content::OpenURLParams(gurl, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          gurl, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
   // When the front-end is started, disable the launch button.
   inspect_ui_->ShowNativeUILaunchButton(/* enabled = */ false);
@@ -589,6 +591,11 @@ InspectUI::InspectUI(content::WebUI* web_ui)
 
   // Set up the chrome://theme/ source.
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+
+  // As as well as chrome://favicon2/
+  content::URLDataSource::Add(
+      profile, std::make_unique<FaviconSource>(
+                   profile, chrome::FaviconUrlFormat::kFavicon2));
 }
 
 InspectUI::~InspectUI() {
@@ -736,9 +743,9 @@ void InspectUI::InspectBrowserWithCustomFrontend(const std::string& source_id,
   WebContents* inspect_ui = web_ui()->GetWebContents();
   WebContents* front_end = inspect_ui->GetDelegate()->OpenURLFromTab(
       inspect_ui,
-      content::OpenURLParams(frontend_url, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          frontend_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   // Install devtools bindings.

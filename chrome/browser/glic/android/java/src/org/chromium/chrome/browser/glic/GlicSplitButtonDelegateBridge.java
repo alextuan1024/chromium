@@ -13,6 +13,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
 
+import java.util.List;
+
 /** JNI Bridge to dispatch native C++ GlicSplitButtonDelegate requests and UI events. */
 @JNINamespace("glic")
 @NullMarked
@@ -45,7 +47,9 @@ public class GlicSplitButtonDelegateBridge implements ChromeAndroidTaskFeature {
 
     @CalledByNative
     public void onTriggerGlicNudgeUi(
-            String label, String anchoredMessageText, String promptSuggestion) {
+            @JniType("std::string") String label,
+            @JniType("std::string") String anchoredMessageText,
+            @JniType("std::string") String promptSuggestion) {
         mDelegate.onTriggerGlicNudgeUi(label, anchoredMessageText, promptSuggestion);
     }
 
@@ -85,13 +89,13 @@ public class GlicSplitButtonDelegateBridge implements ChromeAndroidTaskFeature {
     }
 
     @CalledByNative
-    public void setGlicActorNudgeLabel(String nudgeLabel) {
+    public void setGlicActorNudgeLabel(@JniType("std::u16string") String nudgeLabel) {
         mDelegate.setGlicActorNudgeLabel(nudgeLabel);
     }
 
     @CalledByNative
-    public void triggerGlicActorNudge(String nudgeText) {
-        mDelegate.triggerGlicActorNudge(nudgeText);
+    public void triggerGlicActorNudge(@JniType("std::u16string") String nudgeLabel) {
+        mDelegate.triggerGlicActorNudge(nudgeLabel);
     }
 
     @CalledByNative
@@ -100,8 +104,8 @@ public class GlicSplitButtonDelegateBridge implements ChromeAndroidTaskFeature {
     }
 
     @CalledByNative
-    public void showActorTaskListBubble() {
-        mDelegate.showActorTaskListBubble();
+    public void showActorTaskListBubble(@JniType("std::vector") List<ActorTaskRowData> rows) {
+        mDelegate.showActorTaskListBubble(rows);
     }
 
     @CalledByNative
@@ -135,6 +139,13 @@ public class GlicSplitButtonDelegateBridge implements ChromeAndroidTaskFeature {
         }
     }
 
+    /** Notifies native side that the actor task list bubble / menu was dismissed. */
+    public void onActorTaskListBubbleDismissed() {
+        if (mNativePtr != 0) {
+            GlicSplitButtonDelegateBridgeJni.get().onActorTaskListBubbleDismissed(mNativePtr);
+        }
+    }
+
     @NativeMethods
     public interface Natives {
         long create(long browserWindowInterfacePtr, GlicSplitButtonDelegateBridge delegate);
@@ -147,5 +158,7 @@ public class GlicSplitButtonDelegateBridge implements ChromeAndroidTaskFeature {
         void onTaskRowClicked(long nativeGlicSplitButtonDelegateAndroid, int taskId);
 
         void onGlicActorButtonClicked(long nativeGlicSplitButtonDelegateAndroid);
+
+        void onActorTaskListBubbleDismissed(long nativeGlicSplitButtonDelegateAndroid);
     }
 }

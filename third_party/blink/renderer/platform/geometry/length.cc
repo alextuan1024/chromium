@@ -236,6 +236,26 @@ void Length::DecrementCalculatedCount() const {
   CalcHandles().DecrementCount(CalculationHandle());
 }
 
+Length& Length::AssignSlow(const Length& length) {
+  if (this == &length) {
+    return *this;
+  }
+  if (length.IsCalculated()) {
+    length.IncrementCalculatedCount();
+  }
+  if (IsCalculated()) {
+    DecrementCalculatedCount();
+  }
+  type_ = length.type_;
+  quirk_ = length.quirk_;
+  if (length.IsCalculated()) {
+    calculation_handle_ = length.calculation_handle_;
+  } else {
+    value_ = length.value_;
+  }
+  return *this;
+}
+
 unsigned Length::GetCalculatedCountForTest() const {
   DCHECK(IsCalculated());
   return CalcHandles().GetCount(CalculationHandle());
@@ -355,8 +375,8 @@ String Length::ToString() const {
   return builder.ToString();
 }
 
-unsigned Length::GetHash() const {
-  unsigned hash = 0;
+uint32_t Length::GetHash() const {
+  uint32_t hash = 0;
   AddFloatToHash(hash, value_);
   AddIntToHash(hash, type_);
   AddIntToHash(hash, quirk_);

@@ -45,6 +45,7 @@ try_.builder(
         "ci/chromeos-amd64-generic-asan-rel",
     ],
     gn_args = "ci/chromeos-amd64-generic-asan-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
 )
 
 try_.builder(
@@ -55,6 +56,7 @@ try_.builder(
     # TODO(crbug.com/40605913): Enable DCHECKS on the two amd64-generic bots
     # when the PFQ has it enabled.
     gn_args = "ci/chromeos-amd64-generic-cfi-thin-lto-rel",
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
@@ -68,6 +70,7 @@ try_.builder(
             "ci/chromeos-amd64-generic-dbg",
         ],
     ),
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
             "content/gpu/.+",
@@ -101,6 +104,7 @@ try_.builder(
         "ci/chromeos-arm-generic-dbg",
     ],
     gn_args = "ci/chromeos-arm-generic-dbg",
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
@@ -113,6 +117,7 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    contact_team_email = "chromeos-chrome-build@google.com",
     experiments = {
         # crbug/940930
         "chromium.enable_cleandead": 100,
@@ -131,6 +136,7 @@ try_.builder(
         ],
     ),
     builderless = not settings.is_main,
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         on_default_cq = True,
     ),
@@ -180,6 +186,7 @@ try_.builder(
         ],
     ),
     builderless = not settings.is_main,
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         on_default_cq = True,
     ),
@@ -210,6 +217,7 @@ try_.orchestrator_builder(
         ],
     ),
     compilator = "linux-chromeos-rel-compilator",
+    contact_team_email = "chromeos-chrome-build@google.com",
     coverage_test_types = ["unit", "overall"],
     # TODO(crbug.com/40241638): Use orchestrator pool once overloaded test pools
     # are addressed
@@ -235,6 +243,7 @@ try_.compilator_builder(
     name = "linux-chromeos-rel-compilator",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
     cores = 32,
+    contact_team_email = "chromeos-chrome-build@google.com",
     main_list_view = "try",
 )
 
@@ -252,6 +261,7 @@ try_.builder(
         ],
     ),
     ssd = 1,
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
@@ -283,6 +293,7 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    contact_team_email = "core-devices-eng@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
             "chromeos/ash/components/chromebox_for_meetings/.+",
@@ -301,15 +312,6 @@ try_.builder(
     ],
     gn_args = "ci/linux-chromeos-treesinviz-disabled-rel",
     contact_team_email = "chrome-gpu-team@google.com",
-)
-
-try_.builder(
-    name = "linux-chromeos-tsgo-rel",
-    mirrors = [
-        "ci/linux-chromeos-tsgo-rel",
-    ],
-    gn_args = "ci/linux-chromeos-tsgo-rel",
-    contact_team_email = "chrome-webui@google.com",
 )
 
 try_.builder(

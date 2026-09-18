@@ -21,6 +21,7 @@
 #include "content/public/utility/utility_thread.h"
 #include "content/services/devtools_media_encoding_service/devtools_media_encoding_service_impl.h"
 #include "content/services/devtools_media_encoding_service/public/mojom/devtools_media_encoding_service.mojom.h"
+#include "content/utility/on_device_model/on_device_model_sandbox_init.h"
 #include "device/vr/buildflags/buildflags.h"
 #include "media/base/media_switches.h"
 #include "media/gpu/buildflags.h"
@@ -43,6 +44,12 @@
 #include "base/apple/mach_logging.h"
 #include "sandbox/mac/system_services.h"
 #include "sandbox/policy/sandbox.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "sandbox/policy/features.h"
+#include "sandbox/policy/linux/sandbox_linux.h"
+#include "sandbox/policy/switches.h"
 #endif
 
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
@@ -98,10 +105,13 @@ extern sandbox::TargetServices* g_utility_target_services;
 #include "chromeos/ash/experiences/arc/video_accelerator/oop_arc_video_accelerator_factory.h"
 #endif  // BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+#include "media/mojo/services/oop_video_decoder_factory_process_service.h"  // nogncheck
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 #include "content/common/features.h"
 #include "media/mojo/services/mojo_video_encode_accelerator_provider_factory.h"
-#include "media/mojo/services/oop_video_decoder_factory_process_service.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_ACCESSIBILITY_SERVICE)
@@ -344,6 +354,23 @@ auto RunVideoCapture(
 auto RunOnDeviceModel(
     mojo::PendingReceiver<on_device_model::mojom::OnDeviceModelService>
         receiver) {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          sandbox::policy::switches::kNoSandbox)) {
+    CHECK(on_device_model::WasPreSandboxInitCalled());
+
+    // Sandbox must have been properly initialized (see crbug.com/499278708).
+    auto* sandbox_linux = sandbox::policy::SandboxLinux::GetInstance();
+    if (sandbox_linux->seccomp_bpf_supported() &&
+        base::FeatureList::IsEnabled(
+            sandbox::policy::features::
+                kOnDeviceModelExecutionMultiThreadedSandbox)) {
+      CHECK(sandbox_linux->seccomp_bpf_started());
+    }
+  }
+#else
+  CHECK(on_device_model::WasPreSandboxInitCalled());
+#endif
   return on_device_model::OnDeviceModelService::Create(std::move(receiver));
 }
 
@@ -364,13 +391,15 @@ auto RunOOPArcVideoAcceleratorFactoryService(
 #endif  // BUILDFLAG(IS_CHROMEOS) && \
         // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 auto RunOOPVideoDecoderFactoryProcessService(
     mojo::PendingReceiver<media::mojom::VideoDecoderFactoryProcess> receiver) {
   return std::make_unique<media::OOPVideoDecoderFactoryProcessService>(
       std::move(receiver), ChildProcess::current()->io_task_runner());
 }
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 auto RunVideoEncodeAcceleratorProviderFactory(
     mojo::PendingReceiver<media::mojom::VideoEncodeAcceleratorProviderFactory>
         receiver) {
@@ -379,8 +408,7 @@ auto RunVideoEncodeAcceleratorProviderFactory(
   factory->BindReceiver(std::move(receiver));
   return factory;
 }
-
-#endif  // (BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
 }  // namespace
 
@@ -407,7 +435,7 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
   services.Add(RunTracing);
   services.Add(RunVideoCapture);
 
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   services.Add(RunOOPVideoDecoderFactoryProcessService);
 #endif
 

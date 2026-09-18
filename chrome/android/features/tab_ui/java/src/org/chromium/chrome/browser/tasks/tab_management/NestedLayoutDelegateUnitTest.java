@@ -82,7 +82,7 @@ public class NestedLayoutDelegateUnitTest {
         mModelList = new TabListModel();
         mDelegate = new NestedLayoutDelegate(mMediator, mModelList);
         when(mMediator.getCurrentTabModelChecked()).thenReturn(mTabModel);
-        when(mMediator.isShowingTabs()).thenReturn(true);
+        when(mMediator.isTrackingTabs()).thenReturn(true);
         when(mMediator.supportsTabLoadingState()).thenReturn(true);
         when(mTabModel.getTabGroupColorWithFallback(any(Token.class)))
                 .thenReturn(TabGroupColorId.BLUE);
@@ -833,24 +833,12 @@ public class NestedLayoutDelegateUnitTest {
     }
 
     @Test
-    public void testDidSelectTab_TabDelayed() {
+    public void testGetIndexFromTabId() {
         addTabToModelList(TAB1_ID, null);
         addTabToModelList(TAB2_ID, null);
-        when(mMediator.isTabDelayed(mTab2)).thenReturn(true);
-
-        mDelegate.didSelectTab(mTab2, TabSelectionType.FROM_USER, TAB1_ID);
-
-        verify(mMediator).setLastSelectedTabListModelIndex(0);
-        verify(mMediator, never()).selectTab(anyInt(), anyInt());
-    }
-
-    @Test
-    public void testGetUiIndexForTab() {
-        addTabToModelList(TAB1_ID, null);
-        addTabToModelList(TAB2_ID, null);
-        assertEquals(0, mDelegate.getUiIndexForTab(TAB1_ID));
-        assertEquals(1, mDelegate.getUiIndexForTab(TAB2_ID));
-        assertEquals(TabModel.INVALID_TAB_INDEX, mDelegate.getUiIndexForTab(3));
+        assertEquals(0, mDelegate.getIndexFromTabId(TAB1_ID));
+        assertEquals(1, mDelegate.getIndexFromTabId(TAB2_ID));
+        assertEquals(TabModel.INVALID_TAB_INDEX, mDelegate.getIndexFromTabId(3));
     }
 
     @Test
@@ -873,7 +861,8 @@ public class NestedLayoutDelegateUnitTest {
 
     @Test
     public void testAreTabsInSameGroup_ReturnsFalse() {
-        assertFalse(mDelegate.areTabsInSameGroup(TAB1_ID, mTab2));
+        PropertyModel model = new PropertyModel(TabProperties.ALL_KEYS_TAB_GRID);
+        assertFalse(mDelegate.areTabsInSameGroup(model, mTab2));
     }
 
     @Test

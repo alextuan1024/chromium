@@ -149,10 +149,6 @@ bool IsReadingListAccountStorageEnabled() {
 #if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 #endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 
-// Enabled by default, intended as a kill switch.
-BASE_FEATURE(kSyncReadingListBatchUploadSelectedItems,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kSeparateLocalAndAccountThemes,
 #if BUILDFLAG(IS_CHROMEOS)
              base::FEATURE_DISABLED_BY_DEFAULT
@@ -163,10 +159,6 @@ BASE_FEATURE(kSeparateLocalAndAccountThemes,
 
 BASE_FEATURE(kSyncIncreaseNudgeDelayForSingleClient,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kWebApkBackupAndRestoreBackend, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kSyncEnablePasswordsSyncErrorMessageAlternative,
@@ -209,7 +201,7 @@ BASE_FEATURE(kSyncInvalidationsBypassScheduler,
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kSyncSearchEnginesAndroidLFF, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAlwaysRegisterSessionsInvalidationsAndroid,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSyncUploadAndroidBuildFingerprintPrefix,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)

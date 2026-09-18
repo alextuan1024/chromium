@@ -193,7 +193,12 @@ const ComputedStyle* TextControlInnerEditorElement::CustomStyleForLayoutObject(
   }
   style_builder.SetShouldIgnoreOverflowPropertyForInlineBlockBaseline();
 
-  if (!IsA<HTMLTextAreaElement>(host)) {
+  if (IsA<HTMLTextAreaElement>(host)) {
+    if (RuntimeEnabledFeatures::TextOverflowInTextareaEnabled()) {
+      style_builder.SetTextOverflow(
+          ToTextControl(host)->ValueForTextOverflow());
+    }
+  } else {
     style_builder.SetHasLineIfEmpty(true);
     style_builder.SetScrollbarColor(nullptr);
     style_builder.SetWhiteSpace(EWhiteSpace::kPre);
@@ -318,14 +323,6 @@ bool PasswordRevealButtonElement::WillRespondToMouseClickEvents() {
     return true;
 
   return HTMLDivElement::WillRespondToMouseClickEvents();
-}
-
-EmailVerificationIndicatorElement::EmailVerificationIndicatorElement(
-    Document& document)
-    : HTMLDivElement(document) {
-  SetShadowPseudoId(shadow_element_names::kPseudoEmailVerificationIndicator);
-  setAttribute(html_names::kIdAttr,
-               shadow_element_names::kIdEmailVerificationIndicator);
 }
 
 }  // namespace blink

@@ -7,21 +7,30 @@
 #import "base/functional/callback_helpers.h"
 #import "base/run_loop.h"
 #import "base/test/bind.h"
+#import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
+#import "components/content_settings/core/browser/host_content_settings_map.h"
+#import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/data_controls_tab_helper.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
 #import "ios/chrome/browser/overlays/model/public/web_content_area/http_auth_overlay.h"
 #import "ios/chrome/browser/overlays/model/public/web_content_area/java_script_alert_dialog_overlay.h"
+#import "ios/chrome/browser/permissions/model/permissions_tab_helper.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
 #import "ios/chrome/browser/web/model/blocked_popup_tab_helper.h"
 #import "ios/web/public/navigation/navigation_item.h"
+#import "ios/web/public/permissions/permissions.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_state_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "ios/web/public/ui/java_script_dialog_presenter.h"
 #import "ios/web/public/web_state.h"
@@ -60,6 +69,7 @@ class WebStateDelegateBrowserAgentTest : public PlatformTest {
     BlockedPopupTabHelper::CreateForWebState(web_state.get());
     SnapshotTabHelper::CreateForWebState(web_state.get());
     SnapshotSourceTabHelper::CreateForWebState(web_state.get());
+    PermissionsTabHelper::CreateForWebState(web_state.get());
     data_controls::DataControlsTabHelper::CreateForWebState(web_state.get());
     web_state->GetNavigationManager()->LoadURLWithParams(load_params);
 
@@ -195,6 +205,37 @@ TEST_F(WebStateDelegateBrowserAgentTest, OnAuthRequired) {
   EXPECT_TRUE(request->GetConfig<HTTPAuthOverlayRequestConfig>());
 }
 
+// Test that OnProxyAuthChallenge defaults to OnAuthRequired and adds an HTTP
+// auth overlay request for non-managed profiles.
+TEST_F(WebStateDelegateBrowserAgentTest,
+       OnProxyAuthChallenge_DefaultsToOnAuthRequired) {
+  if (@available(iOS 18.1, *)) {
+    NSURLProtectionSpace* protection_space =
+        [[NSURLProtectionSpace alloc] initWithProxyHost:@"http://chromium.test"
+                                                   port:0
+                                                   type:nil
+                                                  realm:nil
+                                   authenticationMethod:nil];
+    NSURLCredential* credential =
+        [[NSURLCredential alloc] initWithUser:@""
+                                     password:@""
+                                  persistence:NSURLCredentialPersistenceNone];
+    web::WebState* web_state = InsertNewWebState(GURL(kURL1));
+    delegate()->OnProxyAuthChallenge(web_state, protection_space, credential,
+                                     /*failure_response=*/nil,
+                                     base::DoNothing());
+
+    OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+        web_state, OverlayModality::kWebContentArea);
+    ASSERT_TRUE(queue);
+    OverlayRequest* request = queue->front_request();
+    ASSERT_TRUE(request);
+    EXPECT_TRUE(request->GetConfig<HTTPAuthOverlayRequestConfig>());
+  } else {
+    GTEST_SKIP() << "Requires iOS 18.1+";
+  }
+}
+
 // Tests that GetJavaScriptDialogPresenter() returns an overlay-based JavaScript
 // dialog presenter.
 TEST_F(WebStateDelegateBrowserAgentTest, GetJavaScriptDialogPresenter) {
@@ -253,4 +294,148 @@ TEST_F(WebStateDelegateBrowserAgentTest, ShouldAllowCut) {
                                run_loop.Quit();
                              }));
   run_loop.Run();
+}
+
+// Tests that HandlePermissionsDecisionRequest immediately grants permission
+// when HostContentSettingsMap has an explicit ALLOW rule and
+// kDomainLevelSitePermissions is enabled.
+TEST_F(WebStateDelegateBrowserAgentTest,
+       HandlePermissionsDecisionRequestExplicitAllow) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDomainLevelSitePermissions);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(profile_.get());
+  web_state->SetCurrentURL(GURL(kURL1));
+
+  HostContentSettingsMap* settings_map =
+      ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_CAMERA,
+      CONTENT_SETTING_ALLOW);
+
+  base::test::TestFuture<web::PermissionDecision> decision_future;
+  delegate()->HandlePermissionsDecisionRequest(
+      web_state.get(), @[ @(web::PermissionCamera) ],
+      base::CallbackToBlock(decision_future.GetCallback()));
+  EXPECT_EQ(web::PermissionDecisionGrant, decision_future.Get());
+}
+
+// Tests that HandlePermissionsDecisionRequest immediately denies permission
+// when HostContentSettingsMap has an explicit BLOCK rule and
+// kDomainLevelSitePermissions is enabled.
+TEST_F(WebStateDelegateBrowserAgentTest,
+       HandlePermissionsDecisionRequestExplicitBlock) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDomainLevelSitePermissions);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(profile_.get());
+  web_state->SetCurrentURL(GURL(kURL1));
+
+  HostContentSettingsMap* settings_map =
+      ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_MIC,
+      CONTENT_SETTING_BLOCK);
+
+  base::test::TestFuture<web::PermissionDecision> decision_future;
+  delegate()->HandlePermissionsDecisionRequest(
+      web_state.get(), @[ @(web::PermissionMicrophone) ],
+      base::CallbackToBlock(decision_future.GetCallback()));
+  EXPECT_EQ(web::PermissionDecisionDeny, decision_future.Get());
+}
+
+// Tests that HandlePermissionsDecisionRequest immediately denies permission
+// without presenting a dialog when one requested permission is ALLOW but
+// another is BLOCK.
+TEST_F(WebStateDelegateBrowserAgentTest,
+       HandlePermissionsDecisionRequestMixedBlockAndAllow) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDomainLevelSitePermissions);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(profile_.get());
+  web_state->SetCurrentURL(GURL(kURL1));
+  OverlayRequestQueue::CreateForWebState(web_state.get());
+  PermissionsTabHelper::CreateForWebState(web_state.get());
+
+  HostContentSettingsMap* settings_map =
+      ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_CAMERA,
+      CONTENT_SETTING_ALLOW);
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_MIC,
+      CONTENT_SETTING_BLOCK);
+
+  base::test::TestFuture<web::PermissionDecision> decision_future;
+  delegate()->HandlePermissionsDecisionRequest(
+      web_state.get(),
+      @[ @(web::PermissionCamera), @(web::PermissionMicrophone) ],
+      base::CallbackToBlock(decision_future.GetCallback()));
+  EXPECT_EQ(web::PermissionDecisionDeny, decision_future.Get());
+
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state.get(), OverlayModality::kWebContentArea);
+  EXPECT_EQ(0U, queue->size());
+}
+
+// Tests that HandlePermissionsDecisionRequest falls back to presenting a dialog
+// when one requested permission is ALLOW but another is unconfigured (ASK).
+TEST_F(WebStateDelegateBrowserAgentTest,
+       HandlePermissionsDecisionRequestMixedAllowAndUnconfigured) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDomainLevelSitePermissions);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(profile_.get());
+  web_state->SetCurrentURL(GURL(kURL1));
+  OverlayRequestQueue::CreateForWebState(web_state.get());
+  PermissionsTabHelper::CreateForWebState(web_state.get());
+
+  HostContentSettingsMap* settings_map =
+      ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_CAMERA,
+      CONTENT_SETTING_ALLOW);
+
+  delegate()->HandlePermissionsDecisionRequest(
+      web_state.get(),
+      @[ @(web::PermissionCamera), @(web::PermissionMicrophone) ],
+      ^(web::PermissionDecision decision){
+      });
+
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state.get(), OverlayModality::kWebContentArea);
+  EXPECT_EQ(1U, queue->size());
+}
+
+// Tests that when kDomainLevelSitePermissions is disabled, configured content
+// settings are bypassed and the dialog is presented.
+TEST_F(WebStateDelegateBrowserAgentTest,
+       HandlePermissionsDecisionRequestFeatureDisabledFallsBackToDialog) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kDomainLevelSitePermissions);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetBrowserState(profile_.get());
+  web_state->SetCurrentURL(GURL(kURL1));
+  OverlayRequestQueue::CreateForWebState(web_state.get());
+  PermissionsTabHelper::CreateForWebState(web_state.get());
+
+  HostContentSettingsMap* settings_map =
+      ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  settings_map->SetContentSettingDefaultScope(
+      GURL(kURL1), GURL(kURL1), ContentSettingsType::MEDIASTREAM_CAMERA,
+      CONTENT_SETTING_ALLOW);
+
+  delegate()->HandlePermissionsDecisionRequest(
+      web_state.get(), @[ @(web::PermissionCamera) ],
+      ^(web::PermissionDecision decision){
+      });
+
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state.get(), OverlayModality::kWebContentArea);
+  EXPECT_EQ(1U, queue->size());
 }

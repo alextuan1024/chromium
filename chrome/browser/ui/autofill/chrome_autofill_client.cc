@@ -29,6 +29,7 @@
 #include "chrome/browser/account_settings/account_setting_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/address_normalizer_factory.h"
 #include "chrome/browser/autofill/android/save_update_address_profile_prompt_mode.h"
 #include "chrome/browser/autofill/at_memory/at_memory_query_service_factory.h"
@@ -165,6 +166,7 @@
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/security_state/core/security_state.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -516,6 +518,12 @@ SingleFieldFillRouter& ChromeAutofillClient::GetSingleFieldFillRouter() {
   return single_field_fill_router_;
 }
 
+affiliations::AffiliationService*
+ChromeAutofillClient::GetAffiliationService() {
+  Profile* profile = GetProfile();
+  return AffiliationServiceFactory::GetForProfile(profile);
+}
+
 AutocompleteHistoryManager*
 ChromeAutofillClient::GetAutocompleteHistoryManager() {
   Profile* profile =
@@ -828,6 +836,9 @@ void ChromeAutofillClient::ShowAutofillSettings(
         return;
       case SuggestionType::kManageCreditCard:
       case SuggestionType::kManageIban:
+      // TODO(crbug.com/546252995): Open up the shopping leaf for Wallet Direct
+      // Offers when navigating to settings.
+      case SuggestionType::kManageOffers:
         base::UmaHistogramEnumeration(
             "Autofill.YourSavedInfoSettingsPage.VisitReferrer",
             autofill_metrics::AutofillSettingsReferrer::kFillingFlowDropdown);
@@ -900,8 +911,10 @@ ChromeAutofillClient::ShowAutofillSuggestions(
 }
 
 void ChromeAutofillClient::UpdateAutofillDataListValues(
+    const LocalFrameToken& frame_token,
     base::span<const SelectOption> options) {
-  if (suggestion_controller_) {
+  if (suggestion_controller_ &&
+      suggestion_controller_->GetAnchorFrameToken() == frame_token) {
     suggestion_controller_->UpdateDataListValues(options);
   }
 }
@@ -961,7 +974,7 @@ void ChromeAutofillClient::HideSuggestions(
 
 void ChromeAutofillClient::TriggerUserPerceptionOfAutofillSurvey(
     FillingProduct filling_product,
-    const std::map<std::string, std::string>& field_filling_stats_data) {
+    const HatsSurveyStringData& field_filling_stats_data) {
 #if !BUILDFLAG(IS_ANDROID)
   CHECK(filling_product == FillingProduct::kAddress ||
         filling_product == FillingProduct::kCreditCard);
@@ -1321,18 +1334,22 @@ ChromeAutofillClient::ChromeAutofillClient(content::WebContents* web_contents)
       critical_actions::CriticalActionFactory::GetForProfile(GetProfile()));
 
 #if !BUILDFLAG(IS_ANDROID)
-  otp_metrics_tracker_ =
-      std::make_unique<OtpMetricsTracker>(GetOneTimeTokenService());
+  if (OtpMetricsTracker::IsEligibleForGmailOtps(GetIdentityManager())) {
+    otp_metrics_tracker_ =
+        std::make_unique<OtpMetricsTracker>(GetOneTimeTokenService(), *this);
+  }
 #endif
 
   // Notify the EntityDataManager about the availability of device re-auth.
   // This information is injected through the client because the device
   // authenticator is tied to UI, even though the availability of device re-auth
   // is independent of it.
-  if (EntityDataManager* edm =
-          base::FeatureList::IsEnabled(features::kAutofillAiWalletPrivatePasses)
-              ? GetEntityDataManager()
-              : nullptr) {
+  if (EntityDataManager* edm = base::FeatureList::IsEnabled(
+                                   features::kAutofillAiWalletPrivatePasses) ||
+                                       base::FeatureList::IsEnabled(
+                                           features::kAutofillAmbientAutofill)
+                                   ? GetEntityDataManager()
+                                   : nullptr) {
     edm->SetReauthAvailability(SupportsDeviceReauth());
   }
 }
@@ -1428,7 +1445,7 @@ void ChromeAutofillClient::ShowAutofillSuggestionsImpl(
   suggestion_controller_ = AutofillSuggestionController::GetOrCreate(
       suggestion_controller_, delegate, web_contents(),
       PopupControllerCommon(
-          open_args.frame_token, element_bounds_in_screen_space,
+          open_args.anchor_frame_token, element_bounds_in_screen_space,
           open_args.text_direction, open_args.anchor_type,
           open_args.show_tabbed_popup,
           open_args.prefer_prev_arrow_side_on_suggestions_update),
@@ -1531,19 +1548,22 @@ void ChromeAutofillClient::ShowEntityImportBubble(
     EntityInstance new_entity,
     std::optional<EntityInstance> old_entity,
     bool save_is_synchronous,
+    LegalMessageLines public_passes_notice,
     EntityImportPromptResultCallback prompt_result_callback) {
 #if BUILDFLAG(IS_ANDROID)
   if (autofill_ai_save_update_entity_flow_manager_) {
     autofill_ai_save_update_entity_flow_manager_->OfferSave(
-        new_entity, std::move(old_entity), std::move(prompt_result_callback));
+        new_entity, std::move(old_entity), std::move(prompt_result_callback),
+        std::move(public_passes_notice));
   }
 #else
   if (auto* controller = AutofillAiImportDataController::GetOrCreate(
           web_contents(), GetAppLocale())) {
-    // TODO(crbug.com/553442816): Add the legal message lines.
+    // TODO(crbug.com/556588522): Rename `ShowPrompt()`'s `legal_message_lines`
+    // to `public_passes_notice`.
     controller->ShowPrompt(std::move(new_entity), std::move(old_entity),
                            /*close_on_accept=*/save_is_synchronous,
-                           /*legal_message_lines=*/{},
+                           std::move(public_passes_notice),
                            std::move(prompt_result_callback));
   } else {
     std::move(prompt_result_callback)

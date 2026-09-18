@@ -76,6 +76,8 @@ class RealboxSearchBrowserTestPage : public searchbox::mojom::Page {
       searchbox::mojom::OmniboxPopupSelectionPtr selection) override {}
   void SetInputText(const std::string& input_text) override {}
   void SetKeywordSpaceTriggeringEnabled(bool enabled) override {}
+  void SetAvailableKeywordModels(
+      std::vector<searchbox::mojom::InputKeywordModelPtr> models) override {}
   void SetThumbnail(const std::string& thumbnail_url,
                     bool is_deletable) override {}
   void OnContextualInputStatusChanged(
@@ -93,7 +95,7 @@ class RealboxSearchBrowserTestPage : public searchbox::mojom::Page {
       const std::optional<std::string>& invocation_source) override {}
   void OnPermissionPromptChanged(bool is_showing,
                                  const gfx::Size& prompt_size) override {}
-  void SetShowFre(bool show) override {}
+  void SetFreState(searchbox::mojom::FreStatePtr state) override {}
   MOCK_METHOD(void, UpdateContentSharingPolicy, (bool enabled), (override));
   MOCK_METHOD(void, UpdateLensSearchEligibility, (bool eligible), (override));
   MOCK_METHOD(void, UpdateAimPopupEligibility, (bool eligible), (override));
@@ -373,9 +375,10 @@ IN_PROC_BROWSER_TEST_F(RealboxHandlerTest, RealboxUpdatesEditModelInput) {
   EXPECT_EQ(input.focus_type(), metrics::OmniboxFocusType::INTERACTION_FOCUS);
 
   auto modifiers = searchbox::mojom::ActionModifiers::New();
-  handler_->OpenAutocompleteMatch(2, url, /*are_matches_showing=*/true,
-                                  /*mouse_button=*/1, std::move(modifiers),
-                                  /*via_keyboard=*/false);
+  handler_->OpenAutocompleteMatch(
+      autocomplete_controller_->result().sequence_id(), 2, url,
+      /*are_matches_showing=*/true, /*mouse_button=*/1, std::move(modifiers),
+      /*via_keyboard=*/false);
 
   // Assert that the input gets correctly updated for the realbox.
   EXPECT_TRUE(omnibox_edit_model_->GetInputForTesting().IsZeroSuggest());

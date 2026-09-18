@@ -25,6 +25,8 @@ constexpr char kCollectionFailureHistogram[] =
     "Enterprise.DeviceSignals.Collection.Failure";
 constexpr char kCollectionSignalsCountHistogram[] =
     "Enterprise.DeviceSignals.Collection.SignalsCount";
+constexpr char kCollectionTotalLatencyHistogram[] =
+    "Enterprise.DeviceSignals.Collection.TotalLatency";
 
 constexpr char kCollectionSuccessLatencyHistogramFormat[] =
     "Enterprise.DeviceSignals.Collection.Success.%s.Latency";
@@ -57,6 +59,8 @@ std::string GetHistogramVariant(SignalName signal_name) {
       return "BrowserContextSignals";
     case SignalName::kCertificates:
       return "Certificates";
+    case SignalName::kVerifyApps:
+      return "VerifyApps";
   }
 }
 
@@ -133,6 +137,14 @@ void LogSignalCollectionSucceeded(SignalName signal_name,
           kMaxSampleValue);
     }
   }
+}
+
+void LogTotalSignalCollectionLatency(base::TimeTicks start_time) {
+  // Unlike the per-signal histograms, this is the max over a fan-out that can
+  // include slow collectors (e.g. WMI-backed signals on Windows), so use medium
+  // times (up to 3 minutes) to keep the tail out of the overflow bucket.
+  base::UmaHistogramMediumTimes(kCollectionTotalLatencyHistogram,
+                                base::TimeTicks::Now() - start_time);
 }
 
 void LogCrowdStrikeParsingError(SignalsParsingError error) {

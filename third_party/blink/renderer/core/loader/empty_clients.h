@@ -376,7 +376,8 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
       bool has_rel_opener,
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>,
-      std::optional<base::UnguessableToken> script_tool_invocation_id) override;
+      std::optional<base::UnguessableToken> script_tool_invocation_id,
+      const String& script_injector_host) override;
 
   void DispatchWillSendSubmitEvent(HTMLFormElement*) override;
 
@@ -493,6 +494,7 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
   }
 
   bool IsDomStorageDisabled() const override { return false; }
+  bool AreDedicatedWorkersDisabled() const override { return false; }
 
  protected:
   // Not owned

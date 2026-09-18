@@ -45,6 +45,7 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -1526,18 +1527,11 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
 }
 
 // This test makes sure a crashed singleton tab reloads from a new navigation.
-#if BUILDFLAG(IS_WIN)
-// TODO(crbug.com/477008551): Investigate this Windows timeout.
-#define MAYBE_NavigateToCrashedSingletonTab \
-  DISABLED_NavigateToCrashedSingletonTab
-#else
-#define MAYBE_NavigateToCrashedSingletonTab NavigateToCrashedSingletonTab
-#endif
-IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
-                       MAYBE_NavigateToCrashedSingletonTab) {
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, NavigateToCrashedSingletonTab) {
   const GURL singleton_url(GetContentSettingsURL());
   WebContents* web_contents = chrome::AddSelectedTabWithURL(
       browser(), singleton_url, ui::PAGE_TRANSITION_LINK);
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
 
   // We should have one browser with 2 tabs, the 2nd selected.
   EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
@@ -1547,11 +1541,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   // Kill the singleton tab.
   {
     content::ScopedAllowRendererCrashes scoped_allow_renderer_crashes;
-
-    content::RenderFrameDeletedObserver crash_observer(
-        web_contents->GetPrimaryMainFrame());
-    web_contents->GetPrimaryMainFrame()->GetProcess()->Shutdown(1);
-    crash_observer.WaitUntilDeleted();
+    content::CrashTab(web_contents);
   }
   EXPECT_TRUE(web_contents->IsCrashed());
 
@@ -2215,6 +2205,95 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   EXPECT_EQ(nullptr, Navigate(&params));
 }
 
+class BrowserNavigatorStandalonePictureInPictureTest
+    : public BrowserNavigatorTest {
+ public:
+  BrowserNavigatorStandalonePictureInPictureTest() {
+    pip_feature_list_.InitAndEnableFeature(
+        features::kDocumentPipStandaloneWindow);
+  }
+
+ protected:
+  NavigateParams MakeStandalonePipNavigateParams() {
+    WebContents::CreateParams contents_params(browser()->GetProfile());
+    contents_params.picture_in_picture_options =
+        blink::mojom::PictureInPictureWindowOptions();
+    NavigateParams params(browser(), WebContents::Create(contents_params));
+    params.disposition = WindowOpenDisposition::NEW_PICTURE_IN_PICTURE;
+    params.window_action = NavigateParams::WindowAction::kShowWindow;
+    return params;
+  }
+
+  void ExpectStandalonePipWindow(WebContents* child) {
+    auto* manager = PictureInPictureWindowManager::GetInstance();
+    ASSERT_EQ(child, manager->GetChildWebContents());
+    EXPECT_TRUE(PictureInPictureWindowManager::IsChildWebContents(child));
+    EXPECT_TRUE(manager->GetPictureInPictureWindowBoundsInScreen().has_value());
+    EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  }
+
+ private:
+  base::test::ScopedFeatureList pip_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    BrowserNavigatorStandalonePictureInPictureTest,
+    Disposition_PictureInPicture_CantWithoutASourceContents) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  NavigateParams params = MakeStandalonePipNavigateParams();
+  WebContents* child = params.contents_to_insert.get();
+  params.source_contents = nullptr;
+
+  EXPECT_EQ(nullptr, Navigate(&params));
+  EXPECT_EQ(nullptr, params.source_contents);
+  EXPECT_EQ(browser(), params.browser);
+  EXPECT_EQ(nullptr, params.navigated_or_inserted_contents);
+  ASSERT_EQ(child, params.contents_to_insert.get());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(
+      nullptr,
+      PictureInPictureWindowManager::GetInstance()->GetChildWebContents());
+
+  // Supplying the source must make this same request open a standalone window.
+  params.source_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  Navigate(&params);
+  EXPECT_EQ(nullptr, params.browser);
+  EXPECT_EQ(nullptr, params.contents_to_insert);
+  ExpectStandalonePipWindow(child);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorStandalonePictureInPictureTest,
+                       Disposition_PictureInPicture_CantFromAboutBlank) {
+  WebContents* opener = browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(opener->GetLastCommittedURL().IsAboutBlank());
+  NavigateParams params = MakeStandalonePipNavigateParams();
+  WebContents* child = params.contents_to_insert.get();
+  params.source_contents = opener;
+
+  EXPECT_EQ(nullptr, Navigate(&params));
+  EXPECT_EQ(opener, params.source_contents);
+  EXPECT_EQ(browser(), params.browser);
+  EXPECT_EQ(nullptr, params.navigated_or_inserted_contents);
+  ASSERT_EQ(child, params.contents_to_insert.get());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(
+      nullptr,
+      PictureInPictureWindowManager::GetInstance()->GetChildWebContents());
+
+  // Changing only the source URL must allow standalone window creation.
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+  Navigate(&params);
+  EXPECT_EQ(nullptr, params.browser);
+  EXPECT_EQ(nullptr, params.contents_to_insert);
+  ExpectStandalonePipWindow(child);
+}
+
 IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
                        Disposition_PictureInPicture_OpenFromWebApp) {
   // Create the params for the PiP request that looks like it's from an app.
@@ -2534,9 +2613,10 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
 
   WebContents* source_contents =
       browser()->GetTabStripModel()->GetWebContentsAt(0);
-  content::OpenURLParams open_params(GetGoogleURL(), content::Referrer(),
-                                     WindowOpenDisposition::NEW_SPLIT_VIEW,
-                                     ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams open_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GetGoogleURL(), WindowOpenDisposition::NEW_SPLIT_VIEW,
+          ui::PAGE_TRANSITION_LINK);
   WebContents* returned_contents = source_contents->OpenURL(open_params, {});
 
   // Returning |source_contents| avoids DidOpenRequestedURL notifications,
@@ -2581,9 +2661,10 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   WebContents* const other_pinned_contents =
       tab_strip_model->GetWebContentsAt(1);
 
-  content::OpenURLParams open_params(GetGoogleURL(), content::Referrer(),
-                                     WindowOpenDisposition::NEW_SPLIT_VIEW,
-                                     ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams open_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GetGoogleURL(), WindowOpenDisposition::NEW_SPLIT_VIEW,
+          ui::PAGE_TRANSITION_LINK);
   WebContents* const new_contents = source_contents->OpenURL(open_params, {});
   ASSERT_TRUE(new_contents);
   ASSERT_EQ(3, tab_strip_model->count());

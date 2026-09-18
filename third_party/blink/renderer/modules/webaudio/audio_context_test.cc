@@ -16,6 +16,7 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
@@ -28,24 +29,35 @@
 #include "third_party/blink/public/platform/web_runtime_features.h"
 #include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_tester.h"
+#include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_dom_exception.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_worklet_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/worker_or_worklet_script_controller.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_sink_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_audiocontextlatencycategory_double.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_audiocontextrendersizecategory_unsignedlong.h"
 #include "third_party/blink/renderer/core/core_initializer.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/messaging/message_channel.h"
 #include "third_party/blink/renderer/core/messaging/message_port.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/modules/mediastream/sub_capture_target.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_playback_stats.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_global_scope.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_messaging_proxy.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_node.h"
+#include "third_party/blink/renderer/modules/webaudio/cross_thread_audio_worklet_processor_info.h"
 #include "third_party/blink/renderer/modules/webaudio/delay_node.h"
 #include "third_party/blink/renderer/modules/webaudio/media_stream_audio_destination_node.h"
 #include "third_party/blink/renderer/modules/webaudio/offline_audio_context.h"
@@ -982,28 +994,44 @@ class AudioContextStatsTest : public AudioContextTest, public base::TickClock {
                            base::TimeDelta min_delay,
                            base::TimeDelta max_delay,
                            int source_line) {
+    ExecutionContext* execution_context = ExecutionContext::From(script_state);
+    bool cross_origin_isolated =
+        execution_context ? execution_context->CrossOriginIsolatedCapability()
+                          : false;
+
     EXPECT_EQ(playback_stats->underrunEvents(script_state),
               total_glitches.count)
         << " LINE " << source_line;
-    EXPECT_FLOAT_EQ(playback_stats->underrunDuration(script_state),
-                    total_glitches.duration.InSecondsF())
+    EXPECT_FLOAT_EQ(
+        playback_stats->underrunDuration(script_state),
+        ConvertDOMHighResTimeStampToSeconds(Performance::ClampTimeResolution(
+            total_glitches.duration, cross_origin_isolated)))
         << " LINE " << source_line;
-    EXPECT_FLOAT_EQ(playback_stats->averageLatency(script_state),
-                    average_delay.InSecondsF())
+    EXPECT_FLOAT_EQ(
+        playback_stats->averageLatency(script_state),
+        ConvertDOMHighResTimeStampToSeconds(Performance::ClampTimeResolution(
+            average_delay, cross_origin_isolated)))
         << " LINE " << source_line;
-    EXPECT_FLOAT_EQ(playback_stats->minimumLatency(script_state),
-                    min_delay.InSecondsF())
+    EXPECT_FLOAT_EQ(
+        playback_stats->minimumLatency(script_state),
+        ConvertDOMHighResTimeStampToSeconds(Performance::ClampTimeResolution(
+            min_delay, cross_origin_isolated)))
         << " LINE " << source_line;
-    EXPECT_FLOAT_EQ(playback_stats->maximumLatency(script_state),
-                    max_delay.InSecondsF())
+    EXPECT_FLOAT_EQ(
+        playback_stats->maximumLatency(script_state),
+        ConvertDOMHighResTimeStampToSeconds(Performance::ClampTimeResolution(
+            max_delay, cross_origin_isolated)))
         << " LINE " << source_line;
-    EXPECT_NEAR(
-        playback_stats->totalDuration(script_state),
-        (media::AudioTimestampHelper::FramesToTime(
-             total_processed_frames, platform()->AudioHardwareSampleRate()) +
-         total_glitches.duration)
-            .InSecondsF(),
-        0.00001)
+
+    base::TimeDelta expected_total_duration =
+        media::AudioTimestampHelper::FramesToTime(
+            total_processed_frames, platform()->AudioHardwareSampleRate()) +
+        total_glitches.duration;
+    double coarsened_expected = ConvertDOMHighResTimeStampToSeconds(
+        Performance::ClampTimeResolution(expected_total_duration,
+                                         cross_origin_isolated));
+    EXPECT_NEAR(playback_stats->totalDuration(script_state),
+                coarsened_expected, 0.00011)
         << " LINE " << source_line;
   }
 
@@ -1350,7 +1378,6 @@ TEST_F(AudioContextStatsTest, PlaybackStatsVisibilityDataDiscard) {
 
   AudioPlaybackStats* playback_stats = audio_context->playbackStats();
   int glitches_before = playback_stats->underrunEvents(script_state);
-  double duration_before = playback_stats->totalDuration(script_state);
 
   // 2. Hide the page.
   GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
@@ -1376,17 +1403,22 @@ TEST_F(AudioContextStatsTest, PlaybackStatsVisibilityDataDiscard) {
   // the hidden period.
   int glitches_after = playback_stats->underrunEvents(script_state);
   EXPECT_EQ(glitches_before, glitches_after);
-  double duration_after =
-      duration_before + media::AudioTimestampHelper::FramesToTime(
-                            1000, audio_context->sampleRate())
-                            .InSecondsF();
-  // We use EXPECT_NEAR with a 10 microseconds tolerance to allow for
-  // sub-microsecond rounding errors from integer time conversion in
-  // AudioTimestampHelper::FramesToTime. The tolerance is smaller than 1 audio
-  // frame (~20.8 microseconds at 48kHz), ensuring any actually processed frame
-  // would still trigger a failure.
-  EXPECT_NEAR(playback_stats->totalDuration(script_state),
-              duration_after, 0.00001);
+  ExecutionContext* execution_context = ExecutionContext::From(script_state);
+  bool cross_origin_isolated =
+      execution_context ? execution_context->CrossOriginIsolatedCapability()
+                        : false;
+
+  base::TimeDelta expected_total_duration =
+      media::AudioTimestampHelper::FramesToTime(
+          2000, audio_context->sampleRate()) +
+      base::Milliseconds(10);  // 10ms baseline glitch
+  double duration_after = ConvertDOMHighResTimeStampToSeconds(
+      Performance::ClampTimeResolution(expected_total_duration,
+                                       cross_origin_isolated));
+  // We use EXPECT_NEAR with a 110 microseconds tolerance (0.00011s) to
+  // allow for coarsening grid alignment and sub-microsecond rounding errors.
+  EXPECT_NEAR(playback_stats->totalDuration(script_state), duration_after,
+              0.00011);
 }
 
 TEST_F(AudioContextStatsTest, PlaybackStatsMicrophoneRestrictionStartsDenied) {
@@ -1470,6 +1502,39 @@ TEST_F(AudioContextStatsTest, HasPendingActivityAfterClose) {
   EXPECT_FALSE(audio_context->HasPendingActivity());
 }
 
+TEST_F(AudioContextStatsTest, PlaybackStatsCoarsening) {
+  blink::WebRuntimeFeatures::EnableFeatureFromString(
+      "AudioContextPlaybackStats", true);
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* audio_context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+  audio_context->set_clock_for_testing(this);
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  AudioPlaybackStats* playback_stats = audio_context->playbackStats();
+
+  ContextRenderer* renderer =
+      MakeGarbageCollected<ContextRenderer>(audio_context);
+  renderer->Init();
+
+  // Advance time to allow updates.
+  fake_time_now_ += base::Seconds(1);
+
+  // Render with a very specific "fine" latency: 10.123 ms = 10123 us.
+  base::TimeDelta fine_delay = base::Microseconds(10123);
+  renderer->Render(100, fine_delay, media::AudioGlitchInfo{});
+
+  ToEventLoop(script_state).PerformMicrotaskCheckpoint();
+
+  double max_latency = playback_stats->maximumLatency(script_state);
+  int64_t max_latency_us = std::round(max_latency * 1000000.0);
+
+  // It should be a multiple of 100 us (0.1 ms).
+  EXPECT_EQ(max_latency_us % 100, 0) << "max_latency: " << max_latency;
+  EXPECT_TRUE(max_latency_us == 10100 || max_latency_us == 10200)
+      << "max_latency_us: " << max_latency_us;
+}
+
 // Test that AudioWorklet and its messaging proxy are signaled to terminate
 // when the AudioContext is closed.
 TEST_F(AudioContextTest, AudioWorkletTerminatedOnClose) {
@@ -1496,6 +1561,101 @@ TEST_F(AudioContextTest, AudioWorkletTerminatedOnClose) {
 
   // Wait for worker thread to shut down to avoid race on g_platform.
   proxy->GetBackingWorkerThread()->WaitForShutdownForTesting();
+}
+
+// Test that releasing the last reference to an AudioWorkletHandler during
+// CreateProcessor teardown safely executes on the main thread instead of
+// running ~AudioHandler on the AudioWorklet thread (which triggers
+// DCHECK(IsMainThread())).
+TEST_F(AudioContextTest, AudioWorkletCreateProcessorTeardownOnMainThread) {
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* audio_context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ScriptState::Scope scope(script_state);
+
+  auto* audio_worklet = audio_context->audioWorklet();
+  audio_worklet->proxies_.push_back(audio_worklet->CreateGlobalScope());
+
+  auto* proxy = audio_worklet->GetMessagingProxy();
+  ASSERT_TRUE(proxy);
+
+  WorkerThread* worker_thread = proxy->GetBackingWorkerThread();
+  ASSERT_TRUE(worker_thread);
+
+  // Register dummy-processor in the AudioWorkletGlobalScope.
+  base::WaitableEvent registration_event;
+  PostCrossThreadTask(
+      *worker_thread->GetTaskRunner(TaskType::kMiscPlatformAPI), FROM_HERE,
+      CrossThreadBindOnce(
+          [](WorkerThread* thread, base::WaitableEvent* event) {
+            auto* global_scope =
+                To<AudioWorkletGlobalScope>(thread->GlobalScope());
+            ScriptState* script_state =
+                global_scope->ScriptController()->GetScriptState();
+            ScriptState::Scope scope(script_state);
+            String source_code =
+                "class DummyProcessor extends AudioWorkletProcessor {"
+                "  process() { return true; }"
+                "};"
+                "registerProcessor('dummy-processor', DummyProcessor);";
+            ClassicScript::CreateUnspecifiedScript(source_code)
+                ->RunScriptOnScriptState(script_state);
+            event->Signal();
+          },
+          CrossThreadUnretained(worker_thread),
+          CrossThreadUnretained(&registration_event)));
+  registration_event.Wait();
+
+  AudioWorkletNodeOptions* node_options = AudioWorkletNodeOptions::Create();
+  auto* node = MakeGarbageCollected<AudioWorkletNode>(
+      *audio_context, "dummy-processor", node_options,
+      Vector<CrossThreadAudioParamInfo>(), nullptr);
+  scoped_refptr<AudioWorkletHandler> handler =
+      WrapRefCounted(&static_cast<AudioWorkletHandler&>(node->Handler()));
+
+  auto* channel = MakeGarbageCollected<MessageChannel>(
+      audio_context->GetExecutionContext());
+  MessagePortChannel processor_port_channel = channel->port2()->Disentangle();
+
+  handler->MarkProcessorInactiveOnMainThread();
+
+  WeakPersistent<AudioWorkletNode> weak_node = node;
+
+  // Block the worker thread until the main thread has dropped all references.
+  base::WaitableEvent worker_block_event;
+  PostCrossThreadTask(
+      *worker_thread->GetTaskRunner(TaskType::kMiscPlatformAPI), FROM_HERE,
+      CrossThreadBindOnce([](base::WaitableEvent* event) { event->Wait(); },
+                          CrossThreadUnretained(&worker_block_event)));
+
+  // Dispatch CreateProcessor and drop all main thread references.
+  proxy->CreateProcessor(handler, std::move(processor_port_channel),
+                         SerializedScriptValue::NullValue());
+  EXPECT_EQ(proxy->pending_create_processor_handlers_.size(), 1u);
+  handler = nullptr;
+  node = nullptr;
+  WebHeap::CollectAllGarbageForTesting();
+  EXPECT_EQ(weak_node.Get(), nullptr);
+  audio_context->GetDeferredTaskHandler().ClearHandlersToBeDeleted();
+
+  // Unblock worker thread so CreateProcessor runs.
+  worker_block_event.Signal();
+
+  // Flush the worker thread task queue and run main thread tasks.
+  base::WaitableEvent wait_event;
+  PostCrossThreadTask(
+      *worker_thread->GetTaskRunner(TaskType::kMiscPlatformAPI), FROM_HERE,
+      CrossThreadBindOnce(&base::WaitableEvent::Signal,
+                          CrossThreadUnretained(&wait_event)));
+  wait_event.Wait();
+  test::RunPendingTasks();
+  EXPECT_TRUE(proxy->pending_create_processor_handlers_.empty());
+
+  DummyExceptionStateForTesting exception_state;
+  audio_context->closeContext(script_state, exception_state);
+  worker_thread->WaitForShutdownForTesting();
 }
 
 // Test that an active AudioWorklet shared MessagePort keeps neither its
@@ -2947,6 +3107,67 @@ TEST_F(AudioContextTest, TestPromiseWhenSuspendAndResume) {
         }
       }
     }
+  }
+}
+
+TEST_F(AudioContextTest, SetSinkIdPermissionsPolicy) {
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ScriptState::Scope scope(script_state);
+  ExecutionContext* execution_context = GetFrame().DomWindow();
+  SecurityContext& security_context = execution_context->GetSecurityContext();
+  security_context.SetSecurityOriginForTesting(nullptr);
+  security_context.SetSecurityOrigin(
+      SecurityOrigin::CreateFromString(kSecurityOrigin));
+
+  // 'speaker-selection' should be enabled by default for self without needing
+  // experimental runtime flags.
+  EXPECT_TRUE(execution_context->IsFeatureEnabled(
+      network::mojom::PermissionsPolicyFeature::kSpeakerSelection));
+
+  AudioContext* context = AudioContext::Create(
+      execution_context, AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
+  FlushMediaDevicesDispatcherHost();
+
+  // With policy enabled, setSinkId to default device should not be rejected
+  // with NotAllowedError.
+  {
+    auto promise = context->setSinkId(
+        script_state,
+        MakeGarbageCollected<V8UnionAudioSinkOptionsOrString>(""),
+        ASSERT_NO_EXCEPTION);
+    ScriptPromiseTester tester(script_state, promise);
+    tester.WaitUntilSettled();
+    EXPECT_TRUE(tester.IsFulfilled());
+  }
+
+  // When policy explicitly disables speaker-selection, setSinkId should
+  // reject with NotAllowedError.
+  {
+    network::ParsedPermissionsPolicy policy;
+    policy.emplace_back(
+        network::mojom::PermissionsPolicyFeature::kSpeakerSelection,
+        /*allowed_origins=*/
+        std::vector<network::OriginWithPossibleWildcards>(),
+        /*self_if_matches=*/std::nullopt,
+        /*matches_all_origins=*/false,
+        /*matches_opaque_src=*/false);
+    security_context.SetPermissionsPolicy(
+        network::PermissionsPolicy::CreateFromParsedPolicy(
+            policy, security_context.GetSecurityOrigin()->ToUrlOrigin()));
+    EXPECT_FALSE(execution_context->IsFeatureEnabled(
+        network::mojom::PermissionsPolicyFeature::kSpeakerSelection));
+
+    auto promise = context->setSinkId(
+        script_state,
+        MakeGarbageCollected<V8UnionAudioSinkOptionsOrString>(""),
+        ASSERT_NO_EXCEPTION);
+    ScriptPromiseTester tester(script_state, promise);
+    tester.WaitUntilSettled();
+    EXPECT_TRUE(tester.IsRejected());
+    auto* dom_exception = V8DOMException::ToWrappable(
+        script_state->GetIsolate(), tester.Value().V8Value());
+    ASSERT_TRUE(dom_exception);
+    EXPECT_EQ(dom_exception->name(), "NotAllowedError");
   }
 }
 

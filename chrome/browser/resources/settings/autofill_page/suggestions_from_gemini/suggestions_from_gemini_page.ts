@@ -14,6 +14,7 @@ import '../../settings_shared.css.js';
 import '../autofill_shared.css.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {CrSettingsPrefs} from '/shared/settings/prefs/prefs_types.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -29,12 +30,13 @@ import {getTemplate} from './suggestions_from_gemini_page.html.js';
 const SettingsSuggestionsFromGeminiPageElementBase =
     SettingsViewMixin(PrefsMixin(PolymerElement));
 
-interface AtMemoryTriggerPrefValue {
-  is_shortcut: boolean;
-  trigger: string;
-}
+const atMemoryShortcutPrefName = 'autofill.at_memory.shortcut';
 
-const atMemoryTriggerPrefName = 'autofill.at_memory.trigger_info';
+export interface SettingsSuggestionsFromGeminiPageElement {
+  $: {
+    atMemoryDoubleCtrlTriggerToggle: SettingsToggleButtonElement,
+  };
+}
 
 export class SettingsSuggestionsFromGeminiPageElement extends
     SettingsSuggestionsFromGeminiPageElementBase {
@@ -65,10 +67,9 @@ export class SettingsSuggestionsFromGeminiPageElement extends
         },
       },
 
-      atMemoryTrigger_: {
-        type: String,
-        computed:
-            `computeAtMemoryTrigger_(prefs.${atMemoryTriggerPrefName}.value)`,
+      prefsInitialized_: {
+        type: Boolean,
+        value: false,
       },
     };
   }
@@ -76,20 +77,30 @@ export class SettingsSuggestionsFromGeminiPageElement extends
   declare prefs: Record<string, unknown>;
   declare private isAtMemoryEnabled_: boolean;
   declare private isAtMemoryTriggerCustomizationAllowed_: boolean;
-  declare private atMemoryTrigger_: string;
+  declare private prefsInitialized_: boolean;
 
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
+
+  override connectedCallback() {
+    super.connectedCallback();
+
+    CrSettingsPrefs.initialized.then(() => {
+      this.prefsInitialized_ = true;
+    });
+  }
 
   private showQualityLogging_(toggleOn: boolean, atMemoryEnabled: boolean):
       boolean {
     return toggleOn && atMemoryEnabled;
   }
 
-  private showCustomShortcut_(
-      toggleOn: boolean,
-      isAtMemoryTriggerCustomizationAllowed: boolean): boolean {
-    return toggleOn && isAtMemoryTriggerCustomizationAllowed;
+  private showDoubleCtrlShortcut_(): boolean {
+    if (!this.prefsInitialized_) {
+      return false;
+    }
+    return this.isAtMemoryTriggerCustomizationAllowed_ &&
+        !!this.getPref('generated.find_and_fill_with_gemini').value;
   }
 
   private showConsiderNoLoggingEnterprise_(enterprisePolicyValue: number):
@@ -111,23 +122,8 @@ export class SettingsSuggestionsFromGeminiPageElement extends
                          SuggestionsFromGeminiAction.TOGGLE_OFF);
   }
 
-  private onAtMemoryTriggerSettingUpdated_(event: CustomEvent<string>) {
-    const newTrigger = event.detail;
-    if (newTrigger === '') {
-      this.setPrefValue(
-          atMemoryTriggerPrefName, {is_shortcut: false, trigger: '@@'});
-    } else {
-      this.setPrefValue(
-          atMemoryTriggerPrefName, {is_shortcut: true, trigger: newTrigger});
-    }
-  }
-
-  private computeAtMemoryTrigger_(triggerPrefValue: AtMemoryTriggerPrefValue):
-      string {
-    if (!triggerPrefValue.is_shortcut) {
-      return '';
-    }
-    return triggerPrefValue.trigger;
+  private onAtMemoryShortcutUpdated_(event: CustomEvent<string>) {
+    this.setPrefValue(atMemoryShortcutPrefName, event.detail);
   }
 
   // SettingsViewMixin implementation.

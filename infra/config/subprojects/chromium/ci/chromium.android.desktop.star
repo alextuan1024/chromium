@@ -86,7 +86,7 @@ ci.builder(
             "debug_static_builder",
             "remoteexec",
             "arm64",
-            "webview_trichrome",
+            "webview_debug_package_name",
         ],
     ),
     targets = targets.bundle(
@@ -133,7 +133,7 @@ ci.builder(
             "minimal_symbols",
             "arm64",
             "strip_debug_info",
-            "webview_trichrome",
+            "webview_debug_package_name",
         ],
     ),
     targets = targets.bundle(
@@ -176,7 +176,7 @@ ci.builder(
             "debug_static_builder",
             "remoteexec",
             "x64",
-            "webview_trichrome",
+            "webview_debug_package_name",
             "webview_shell",
         ],
     ),
@@ -224,7 +224,7 @@ ci.builder(
             "minimal_symbols",
             "x64",
             "strip_debug_info",
-            "webview_trichrome",
+            "webview_debug_package_name",
             "webview_shell",
         ],
     ),
@@ -293,6 +293,7 @@ ci.thin_tester(
                     "--test-launcher-filter-file=../../testing/buildbot/filters/android.desktop.emulator_15.android_browsertests.filter",
                     "--emulator-debug-tags=all",
                 ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 50,
                 ),
@@ -310,6 +311,10 @@ ci.thin_tester(
                 ci_only = True,
             ),
             "android_chrome_wpt_tests": targets.mixin(
+                args = [
+                    # https://crbug.com/557344239: ChromeDriver hangs navigating from WebUI NTP on Android.
+                    "--additional-driver-flag=--disable-features=UseWebUiNtpAndroid",
+                ],
                 ci_only = True,
             ),
             "unit_tests": targets.mixin(

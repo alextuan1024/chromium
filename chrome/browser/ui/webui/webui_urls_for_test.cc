@@ -60,6 +60,9 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 #if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)
       "chrome://credits",
 #endif
+#if !BUILDFLAG(IS_ANDROID)
+      "chrome://critical-actions-internals",
+#endif
       "chrome://customize-chrome-side-panel.top-chrome",
       "chrome://data-sharing-internals",
 
@@ -224,7 +227,6 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://emoji-picker",
       "chrome://file-manager",
       "chrome://help-app",
-      "chrome://manage-mirrorsync",
       "chrome://multidevice-internals",
       "chrome://multidevice-setup",
       "chrome://nearby",

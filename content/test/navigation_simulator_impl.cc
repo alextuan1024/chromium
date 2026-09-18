@@ -1460,7 +1460,8 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
           base::TimeTicks() /* before_unload_dialog_closed */,
           has_user_gesture_, false /* started_by_ad */,
           false /* is_container_initiated */, false /* has_rel_opener */,
-          std::nullopt /* script_tool_invocation_id */);
+          std::nullopt /* script_tool_invocation_id */,
+          /*script_injector_host=*/"");
   auto common_params = blink::CreateCommonNavigationParams();
   common_params->navigation_start =
       navigation_start_.is_null() ? base::TimeTicks::Now() : navigation_start_;
@@ -1481,6 +1482,9 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
   common_params->href_translate = href_translate_;
   common_params->request_destination =
       network::mojom::RequestDestination::kDocument;
+  if (source_location_) {
+    common_params->source_location = source_location_.Clone();
+  }
 
   mojo::PendingAssociatedRemote<mojom::NavigationClient>
       navigation_client_remote;

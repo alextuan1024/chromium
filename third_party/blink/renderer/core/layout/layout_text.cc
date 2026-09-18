@@ -186,7 +186,7 @@ void LayoutText::Trace(Visitor* visitor) const {
 }
 
 LayoutText* LayoutText::CreateEmptyAnonymous(Document& document,
-                                             const ComputedStyle* style) {
+                                             const ComputedStyle& style) {
   auto* text = MakeGarbageCollected<LayoutText>(nullptr, StringImpl::empty_);
   text->SetDocumentForAnonymous(document);
   text->SetStyle(style);
@@ -855,7 +855,7 @@ static inline bool IsInlineFlowOrEmptyText(const LayoutObject* o) {
   return To<LayoutText>(o)->HasEmptyText();
 }
 
-UChar LayoutText::PreviousCharacter() const {
+UChar32 LayoutText::PreviousCharacter() const {
   NOT_DESTROYED();
   // find previous text layoutObject if one exists
   const LayoutObject* previous_text = PreviousInPreOrder();
@@ -867,11 +867,19 @@ UChar LayoutText::PreviousCharacter() const {
       break;
     }
   }
-  UChar prev = uchar::kSpace;
+  UChar32 prev = uchar::kSpace;
   if (previous_text && previous_text->IsText()) {
     if (const String& previous_string =
             To<LayoutText>(previous_text)->TransformedText()) {
-      prev = previous_string[previous_string.length() - 1];
+      if (RuntimeEnabledFeatures::
+              CapitalizeAfterSupplementaryCharacterFixEnabled()) {
+        if (!previous_string.empty()) {
+          wtf_size_t offset = previous_string.length();
+          prev = previous_string.CodePointAtAndPrevious(0, offset);
+        }
+      } else {
+        prev = previous_string[previous_string.length() - 1];
+      }
     }
   }
   return prev;

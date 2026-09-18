@@ -15,7 +15,6 @@
 #include "base/test/task_environment.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_metadata.h"
-#include "components/content_settings/core/common/features.h"
 #include "net/base/features.h"
 #include "net/base/network_delegate.h"
 #include "net/base/schemeful_site.h"
@@ -26,7 +25,6 @@
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
-#include "net/cookies/static_cookie_policy.h"
 #include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/public/cpp/features.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -44,11 +42,6 @@ using testing::IsEmpty;
 using testing::Not;
 using testing::UnorderedElementsAre;
 
-constexpr char kAllowedRequestsHistogram[] =
-    "API.StorageAccess.AllowedRequests4.Subsampled";
-constexpr char kAllowedByStorageAccessTypeHistogram[] =
-    "API.EffectiveStorageAccess.AllowedByStorageAccessType.Subsampled";
-
 constexpr char kDomainURL[] = "http://example.com";
 constexpr char kURL[] = "http://foo.com";
 constexpr char kSecureSchemedURL[] = "https://foo.com";
@@ -64,7 +57,6 @@ constexpr char kRwsMemberURL[] = "https://rws-member.test";
 constexpr char kUnrelatedURL[] = "http://unrelated.com";
 constexpr char kChromeScheme[] = "chrome";
 constexpr char kChromeSchemedURL[] = "chrome://new-tab-page/";
-constexpr char kUmaCookieName[] = "umaCookieName";
 constexpr char kCookieName[] = "name";
 
 std::unique_ptr<net::CanonicalCookie> MakeCanonicalCookie(
@@ -262,43 +254,6 @@ class CookieSettingsTestP : public CookieSettingsTestBase,
     return IsTopLevelStorageAccessGrantEligible() ? CONTENT_SETTING_ALLOW
                                                   : CONTENT_SETTING_BLOCK;
   }
-
-  // The cookie access result would be blocked if not for a Storage
-  // Access API grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithSaaOverride() const {
-    if (IsStorageAccessGrantEligibleViaAPI() ||
-        IsStorageAccessGrantEligibleViaHeader()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
-  }
-
-  // The cookie access result would be blocked if not for some Storage Access
-  // API usage. Note that this is not the same thing as presence of a permission
-  // grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithSaaViaAPI() const {
-    if (IsStorageAccessGrantEligibleViaAPI()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
-  }
-
-  // A version of above that considers Top-Level Storage Access API
-  // grant instead of Storage Access API grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithTopLevelSaaOverride() const {
-    // TODO(crbug.com/40246640): Check TopLevelStorageAccessAPI
-    // instead after separating the feature flag.
-    if (IsTopLevelStorageAccessGrantEligible()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
-  }
 };
 
 TEST_F(CookieSettingsTest, GetCookieSettingDefault) {
@@ -401,9 +356,6 @@ TEST_F(CookieSettingsTest, GetCookieSettingGetsFirstSetting) {
 }
 
 TEST_F(CookieSettingsTest, GetCookieSettingDontBlockThirdParty) {
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
-
   CookieSettings settings;
   settings.set_content_settings(
       ContentSettingsType::COOKIES,
@@ -413,9 +365,6 @@ TEST_F(CookieSettingsTest, GetCookieSettingDontBlockThirdParty) {
                                       GURL(kOtherURL),
                                       net::CookieSettingOverrides(), nullptr),
             CONTENT_SETTING_ALLOW);
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::ACCESS_ALLOWED, 1);
 }
 
 TEST_F(CookieSettingsTest, GetCookieSettingBlockThirdParty) {
@@ -605,9 +554,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocks) {
   GURL url = GURL(kOtherURL);
   GURL third_url = GURL(kDomainURL);
 
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
-
   CookieSettings settings;
   settings.set_content_settings(
       ContentSettingsType::COOKIES,
@@ -625,30 +571,12 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocks) {
   EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
                                       GetCookieSettingOverrides(), nullptr),
             SettingWithSaaOverride(CONTENT_SETTING_ALLOW));
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram, BlockedStorageAccessResultWithSaaOverride(),
-      1);
 
   // Invalid pair the |top_level_url| granting access to |url| is now
   // being loaded under |url| as the top level url.
   EXPECT_EQ(settings.GetCookieSetting(top_level_url, net::SiteForCookies(), url,
                                       GetCookieSettingOverrides(), nullptr),
             CONTENT_SETTING_BLOCK);
-
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT,
-      IsStorageAccessGrantEligibleViaAPI() ||
-              IsStorageAccessGrantEligibleViaHeader()
-          ? 1
-          : 0);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram, BlockedStorageAccessResultWithSaaOverride(),
-      IsStorageAccessGrantEligibleViaAPI() ||
-              IsStorageAccessGrantEligibleViaHeader()
-          ? 1
-          : 2);
 
   // Invalid pairs where a |third_url| is used.
   EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), third_url,
@@ -661,42 +589,26 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocks) {
 
   // If third-party cookies are blocked, SAA grant takes precedence over
   // possible override to allow 3PCs.
-  {
-    settings.set_block_third_party_cookies(true);
-    base::HistogramTester histogram_tester_2;
-    EXPECT_EQ(
-        settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
-                                  GetCookieSettingOverrides(), nullptr),
-        SettingWithSaaOverride(CONTENT_SETTING_ALLOW));
-    histogram_tester_2.ExpectUniqueSample(
-        kAllowedRequestsHistogram, BlockedStorageAccessResultWithSaaOverride(),
-        1);
-  }
+  settings.set_block_third_party_cookies(true);
+  EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
+                                      GetCookieSettingOverrides(), nullptr),
+            SettingWithSaaOverride(CONTENT_SETTING_ALLOW));
 
   // If cookies are globally blocked, SAA grants and 3PC override
   // should both be ignored.
-  {
-    settings.set_content_settings(
-        ContentSettingsType::COOKIES,
-        {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
-    settings.set_block_third_party_cookies(true);
-    base::HistogramTester histogram_tester_2;
-    EXPECT_EQ(
-        settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
-                                  GetCookieSettingOverrides(), nullptr),
-        CONTENT_SETTING_BLOCK);
-    histogram_tester_2.ExpectUniqueSample(
-        kAllowedRequestsHistogram,
-        net::cookie_util::StorageAccessResult::ACCESS_BLOCKED, 1);
-  }
+  settings.set_content_settings(
+      ContentSettingsType::COOKIES,
+      {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
+  settings.set_block_third_party_cookies(true);
+  EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
+                                      GetCookieSettingOverrides(), nullptr),
+            CONTENT_SETTING_BLOCK);
 }
 
 TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocksViaFedCM) {
   GURL top_level_url = GURL(kURL);
   GURL url = GURL(kOtherURL);
   GURL third_url = GURL(kDomainURL);
-
-  base::HistogramTester histogram_tester;
 
   CookieSettings settings;
   settings.set_content_settings(
@@ -716,22 +628,11 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocksViaFedCM) {
   EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
                                       GetCookieSettingOverrides(), nullptr),
             SettingWithSaaViaAPI(CONTENT_SETTING_ALLOW));
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram, BlockedStorageAccessResultWithSaaViaAPI(), 1);
 
   // Grants are not bidirectional.
   EXPECT_EQ(settings.GetCookieSetting(top_level_url, net::SiteForCookies(), url,
                                       GetCookieSettingOverrides(), nullptr),
             CONTENT_SETTING_BLOCK);
-
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT,
-      IsStorageAccessGrantEligibleViaAPI() ? 1 : 0);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram, BlockedStorageAccessResultWithSaaViaAPI(),
-      IsStorageAccessGrantEligibleViaAPI() ? 1 : 2);
 
   // Unrelated contexts do not get access.
   EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), third_url,
@@ -744,20 +645,13 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAUnblocksViaFedCM) {
 
   // If cookies are globally blocked, SAA grants and 3PC override
   // should both be ignored.
-  {
-    settings.set_content_settings(
-        ContentSettingsType::COOKIES,
-        {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
-    settings.set_block_third_party_cookies(true);
-    base::HistogramTester histogram_tester_2;
-    EXPECT_EQ(
-        settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
-                                  GetCookieSettingOverrides(), nullptr),
-        CONTENT_SETTING_BLOCK);
-    histogram_tester_2.ExpectUniqueSample(
-        kAllowedRequestsHistogram,
-        net::cookie_util::StorageAccessResult::ACCESS_BLOCKED, 1);
-  }
+  settings.set_content_settings(
+      ContentSettingsType::COOKIES,
+      {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
+  settings.set_block_third_party_cookies(true);
+  EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
+                                      GetCookieSettingOverrides(), nullptr),
+            CONTENT_SETTING_BLOCK);
 }
 
 // The Top-Level Storage Access API should unblock storage access that would
@@ -766,9 +660,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccessUnblocks) {
   const GURL top_level_url(kURL);
   const GURL url(kOtherURL);
   const GURL third_url(kDomainURL);
-
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
 
   CookieSettings settings;
   settings.set_content_settings(
@@ -788,9 +679,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccessUnblocks) {
   EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
                                       GetCookieSettingOverrides(), nullptr),
             SettingWithTopLevelSaaOverride());
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram,
-      BlockedStorageAccessResultWithTopLevelSaaOverride(), 1);
 
   // Check the cookie setting that does not match the top-level storage access
   // grant--the |top_level_url| granting access to |url| is now being loaded
@@ -798,18 +686,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccessUnblocks) {
   EXPECT_EQ(settings.GetCookieSetting(top_level_url, net::SiteForCookies(), url,
                                       GetCookieSettingOverrides(), nullptr),
             CONTENT_SETTING_BLOCK);
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 2);
-  // TODO(crbug.com/40246640): Separate metrics between StorageAccessAPI
-  // and the page-level variant.
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT,
-      IsTopLevelStorageAccessGrantEligible() ? 1 : 0);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      BlockedStorageAccessResultWithTopLevelSaaOverride(),
-      IsTopLevelStorageAccessGrantEligible() ? 1 : 2);
 
   // Check the cookie setting that does not match the top-level storage access
   // grant where a |third_url| is used.
@@ -823,32 +699,18 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccessUnblocks) {
 
   // If third-party cookies are blocked, Top-Level Storage Access grant takes
   // precedence over possible override to allow third-party cookies.
-  {
-    base::HistogramTester histogram_tester_2;
-    EXPECT_EQ(
-        settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
-                                  GetCookieSettingOverrides(), nullptr),
-        SettingWithTopLevelSaaOverride());
-    histogram_tester_2.ExpectUniqueSample(
-        kAllowedRequestsHistogram,
-        BlockedStorageAccessResultWithTopLevelSaaOverride(), 1);
-  }
+  EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
+                                      GetCookieSettingOverrides(), nullptr),
+            SettingWithTopLevelSaaOverride());
 
   // If cookies are globally blocked, Top-Level Storage Access grants and 3PC
   // override should both be ignored.
-  {
-    settings.set_content_settings(
-        ContentSettingsType::COOKIES,
-        {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
-    base::HistogramTester histogram_tester_2;
-    EXPECT_EQ(
-        settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
-                                  GetCookieSettingOverrides(), nullptr),
-        CONTENT_SETTING_BLOCK);
-    histogram_tester_2.ExpectUniqueSample(
-        kAllowedRequestsHistogram,
-        net::cookie_util::StorageAccessResult::ACCESS_BLOCKED, 1);
-  }
+  settings.set_content_settings(
+      ContentSettingsType::COOKIES,
+      {CreateSetting("*", "*", CONTENT_SETTING_BLOCK)});
+  EXPECT_EQ(settings.GetCookieSetting(url, net::SiteForCookies(), top_level_url,
+                                      GetCookieSettingOverrides(), nullptr),
+            CONTENT_SETTING_BLOCK);
 }
 
 // Subdomains of the granted embedding url should not gain access if a valid
@@ -1027,6 +889,89 @@ TEST_F(CookieSettingsTest, GetCookieSettingSecureOriginCookiesAllowed) {
             CONTENT_SETTING_BLOCK);
 }
 
+TEST_F(CookieSettingsTest, SetSecureOriginCookiesAllowedOrigins) {
+  url::ScopedSchemeRegistryForTests scoped_registry;
+  url::AddStandardScheme(kChromeScheme, url::SCHEME_WITH_HOST);
+
+  CookieSettings settings;
+  settings.set_secure_origin_cookies_allowed_origins(
+      {{url::Origin::Create(GURL("chrome://foo")),
+        {net::SchemefulSite(GURL("https://foo.com")),
+         net::SchemefulSite(GURL("https://bar.com"))}}});
+  settings.set_block_third_party_cookies(true);
+
+  EXPECT_EQ(settings.GetCookieSetting(
+                /*url=*/GURL("https://foo.com"),
+                /*site_for_cookies=*/net::SiteForCookies(),
+                /*first_party_url=*/GURL("chrome://foo"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_ALLOW);
+  EXPECT_TRUE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("https://foo.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://foo"))));
+
+  // Not applicable for http://
+  EXPECT_EQ(settings.GetCookieSetting(
+                /* url=*/GURL("http://foo.com"),
+                /* site_for_cookies=*/net::SiteForCookies(),
+                /* first_party_url=*/GURL("chrome://foo"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_BLOCK);
+  EXPECT_FALSE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("http://foo.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://foo"))));
+
+  // It is schemeful-site level.
+  EXPECT_EQ(settings.GetCookieSetting(
+                /*url=*/GURL("https://www.foo.com"),
+                /*site_for_cookies=*/net::SiteForCookies(),
+                /*first_party_url=*/GURL("chrome://foo"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_ALLOW);
+  EXPECT_TRUE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("https://www.foo.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://foo"))));
+
+  // Wrong first-party.
+  EXPECT_EQ(settings.GetCookieSetting(
+                /* url=*/GURL("https://foo.com"),
+                /* site_for_cookies=*/net::SiteForCookies(),
+                /* first_party_url=*/GURL("chrome://bar"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_BLOCK);
+  EXPECT_FALSE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("https://foo.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://bar"))));
+
+  // bar.com is OK
+  EXPECT_EQ(settings.GetCookieSetting(
+                /* url=*/GURL("https://bar.com"),
+                /* site_for_cookies=*/net::SiteForCookies(),
+                /* first_party_url=*/GURL("chrome://foo"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_ALLOW);
+  EXPECT_TRUE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("https://bar.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://foo"))));
+
+  // baz.com is not
+  EXPECT_EQ(settings.GetCookieSetting(
+                /* url=*/GURL("https://baz.com"),
+                /* site_for_cookies=*/net::SiteForCookies(),
+                /* first_party_url=*/GURL("chrome://foo"),
+                net::CookieSettingOverrides()),
+            CONTENT_SETTING_BLOCK);
+  EXPECT_FALSE(settings.ShouldIgnoreSameSiteRestrictions(
+      /*url=*/GURL("https://baz.com"),
+      /*site_for_cookies=*/net::SiteForCookies(),
+      /*top_level_origin=*/url::Origin::Create(GURL("chrome://foo"))));
+}
+
 TEST_F(CookieSettingsTest, GetCookieSettingWithThirdPartyCookiesAllowedScheme) {
   CookieSettings settings;
   settings.set_third_party_cookies_allowed_schemes({"chrome-extension"});
@@ -1126,127 +1071,6 @@ TEST_F(CookieSettingsTest, CookieAccessSemanticsForDomainWithWildcard) {
     EXPECT_EQ(test.status,
               settings.GetCookieAccessSemanticsForDomain(test.cookie_domain));
   }
-}
-
-struct AllowedByStorageAccessTypeTestData {
-  content_settings::CookieSettingsBase::AllowedByStorageAccessType
-      expected_type;
-  net::CookieSettingOverrides overrides;
-  std::vector<ContentSettingsType> settings_types;
-  bool expected_api_result = true;
-};
-class AllowedByStorageAccessTypeTest
-    : public CookieSettingsTestBase,
-      public testing::WithParamInterface<AllowedByStorageAccessTypeTestData> {
- public:
-  AllowedByStorageAccessTypeTest() {
-    for (const auto& val : GetParam().settings_types) {
-      settings_.set_content_settings(
-          val, {CreateSetting(kURL, kOtherURL, CONTENT_SETTING_ALLOW)});
-    }
-  }
-
-  content_settings::CookieSettingsBase::AllowedByStorageAccessType
-  ExpectedType() const {
-    return GetParam().expected_type;
-  }
-
-  bool ExpectedApiResult() const { return GetParam().expected_api_result; }
-
-  net::CookieSettingOverrides Overrides() const { return GetParam().overrides; }
-
-  std::vector<ContentSettingsType> SettingTypes() const {
-    return GetParam().settings_types;
-  }
-
-  CookieSettings settings_;
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    /* no label */,
-    AllowedByStorageAccessTypeTest,
-    testing::ValuesIn({
-        /*No overrides or settings*/
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kNone,
-            {},
-            {},
-            /*expected_api_result=*/false,
-        },
-        /*Override but not settings*/
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kNone,
-            {net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible},
-            {},
-            /*expected_api_result=*/false,
-        },
-        /*Settings but not override*/
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kNone,
-            {},
-            {ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS},
-            /*expected_api_result=*/false,
-        },
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kTopLevelOnly,
-            {net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible},
-            {ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS},
-        },
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kStorageAccessOnly,
-            {net::CookieSettingOverride::kStorageAccessGrantEligible},
-            {ContentSettingsType::STORAGE_ACCESS},
-        },
-        AllowedByStorageAccessTypeTestData{
-            content_settings::CookieSettingsBase::AllowedByStorageAccessType::
-                kTopLevelAndStorageAccess,
-            {net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible,
-             net::CookieSettingOverride::kStorageAccessGrantEligible},
-            {ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
-             ContentSettingsType::STORAGE_ACCESS},
-        },
-    }));
-
-TEST_P(AllowedByStorageAccessTypeTest, IsCookieAccessible) {
-  base::HistogramTester histogram_tester;
-  net::CookieInclusionStatus status;
-  settings_.set_block_third_party_cookies(true);
-
-  std::unique_ptr<net::CanonicalCookie> cookie =
-      MakeCanonicalCookie(kUmaCookieName, kURL);
-
-  ASSERT_EQ(settings_.IsCookieAccessible(
-                *cookie, GURL(kURL), net::SiteForCookies(),
-                url::Origin::Create(GURL(kOtherURL)),
-                net::FirstPartySetMetadata(), Overrides(), &status),
-            ExpectedApiResult());
-
-  histogram_tester.ExpectUniqueSample(kAllowedByStorageAccessTypeHistogram,
-                                      ExpectedType(), 1);
-}
-
-TEST_P(AllowedByStorageAccessTypeTest, AnnotateAndMoveUserBlockedCookies) {
-  base::HistogramTester histogram_tester;
-  settings_.set_block_third_party_cookies(true);
-
-  net::CookieAccessResultList maybe_included_cookies = {
-      {*MakeCanonicalCookie(kUmaCookieName, kURL), {}}};
-  net::CookieAccessResultList excluded_cookies = {};
-
-  ASSERT_EQ(
-      settings_.AnnotateAndMoveUserBlockedCookies(
-          GURL(kURL), net::SiteForCookies(),
-          url::Origin::Create(GURL(kOtherURL)), net::FirstPartySetMetadata(),
-          Overrides(), maybe_included_cookies, excluded_cookies),
-      ExpectedApiResult());
-
-  histogram_tester.ExpectUniqueSample(kAllowedByStorageAccessTypeHistogram,
-                                      ExpectedType(), 1);
 }
 
 TEST_P(CookieSettingsTestP, IsPrivacyModeEnabled) {
@@ -2443,7 +2267,6 @@ TEST_F(CookieSettingsTest,
   GURL url(kURL);
   url::Origin origin = url::Origin::Create(url);
   settings.set_block_third_party_cookies(true);
-  base::HistogramTester histogram_tester;
 
   std::unique_ptr<net::CanonicalCookie> cookie =
       MakeCanonicalSameSiteNoneCookie("name", url.spec());
@@ -2452,29 +2275,17 @@ TEST_F(CookieSettingsTest,
   ASSERT_FALSE(settings.IsCookieAccessible(
       *cookie, url, net::SiteForCookies(), origin, net::FirstPartySetMetadata(),
       net::CookieSettingOverrides(), nullptr));
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::ACCESS_BLOCKED, 1);
-
-  // Set overrides and enable feature.
-  const net::CookieSettingOverrides overrides(
-      {net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox});
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      net::features::kAllowSameSiteNoneCookiesInSandbox);
 
   // Override should allow cookie access despite null SiteForCookies due to the
   // sandboxed context.
   net::CookieInclusionStatus status;
-  EXPECT_TRUE(settings.IsCookieAccessible(*cookie, url, net::SiteForCookies(),
-                                          origin, net::FirstPartySetMetadata(),
-                                          overrides, &status));
+  EXPECT_TRUE(settings.IsCookieAccessible(
+      *cookie, url, net::SiteForCookies(), origin, net::FirstPartySetMetadata(),
+      {net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox},
+      &status));
   EXPECT_EQ(status.exemption_reason(),
             net::CookieInclusionStatus::ExemptionReason::
                 kSameSiteNoneCookiesInSandbox);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::ACCESS_ALLOWED_SANDBOX_VALUE, 1);
 }
 
 TEST_F(CookieSettingsTest,
@@ -2483,30 +2294,21 @@ TEST_F(CookieSettingsTest,
   GURL cross_site_url(kOtherURL);
   url::Origin origin = url::Origin::Create(GURL(kURL));
   settings.set_block_third_party_cookies(true);
-  base::HistogramTester histogram_tester;
 
   // Create a cross-site cookie
   std::unique_ptr<net::CanonicalCookie> cookie =
       MakeCanonicalSameSiteNoneCookie("name", cross_site_url.spec());
-
-  // Set overrides and enable feature.
-  const net::CookieSettingOverrides overrides(
-      {net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox});
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      net::features::kAllowSameSiteNoneCookiesInSandbox);
 
   // Override should not allow cookie that is cross-site with the top-level to
   // be included in cross-site request
   net::CookieInclusionStatus status;
   EXPECT_FALSE(settings.IsCookieAccessible(
       *cookie, cross_site_url, net::SiteForCookies(), origin,
-      net::FirstPartySetMetadata(), overrides, &status));
+      net::FirstPartySetMetadata(),
+      {net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox},
+      &status));
   EXPECT_EQ(status.exemption_reason(),
             net::CookieInclusionStatus::ExemptionReason::kNone);
-  histogram_tester.ExpectUniqueSample(
-      kAllowedRequestsHistogram,
-      net::cookie_util::StorageAccessResult::ACCESS_BLOCKED, 1);
 }
 
 // NOTE: These tests will fail if their FINAL name is of length greater than 256
@@ -2616,7 +2418,6 @@ TEST_P(CookieSettingsForceEnableOverrideTest, IsCookieAccessible) {
 
 TEST_P(CookieSettingsForceEnableOverrideTest,
        AnnotateAndMoveUserBlockedCookies) {
-
   net::CookieAccessResultList maybe_included_cookies = {
       {*MakeCanonicalSameSiteNoneCookie(kCookieName, kOtherURL)}};
   net::CookieAccessResultList excluded_cookies = {};

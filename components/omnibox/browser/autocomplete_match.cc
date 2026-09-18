@@ -5,6 +5,7 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,7 @@
 #include "components/omnibox/browser/document_provider.h"
 #include "components/omnibox/browser/inline_autocompletion_util.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
+#include "components/omnibox/browser/searchbox_utils.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/default_search_manager.h"
@@ -697,41 +699,16 @@ const gfx::VectorIcon& AutocompleteMatch::GetVectorIcon(
 
     case Type::STARTER_PACK:
       if (turl) {
-        switch (turl->GetBuiltinEngineType()) {
-          case KEYWORD_MODE_STARTER_PACK_BOOKMARKS:
-            return features::IsRoundedIconsEnabled()
-                       ? omnibox::kStarFilledIcon
-                       : omnibox::kStarActiveChromeRefreshOldIcon;
-          case KEYWORD_MODE_STARTER_PACK_HISTORY:
-            return features::IsRoundedIconsEnabled()
-                       ? vector_icons::kHistoryIcon
-                       : vector_icons::kHistoryChromeRefreshOldIcon;
-          case KEYWORD_MODE_STARTER_PACK_TABS:
-            return features::IsRoundedIconsEnabled()
-                       ? omnibox::kChromeProductIcon
-                       : omnibox::kProductChromeRefreshOldIcon;
-          case KEYWORD_MODE_STARTER_PACK_GEMINI:
-            return omnibox::kSparkIcon;
-          case KEYWORD_MODE_STARTER_PACK_AI_MODE:
-            return features::IsRoundedIconsEnabled()
-                       ? omnibox::kSearchSparkIcon
-                       : omnibox::kSearchSparkOldIcon;
-          default:
-            break;
-        }
+        return searchbox::GetKeywordVectorIcon(*turl);
       }
       return features::IsRoundedIconsEnabled()
                  ? omnibox::kChromeProductIcon
                  : omnibox::kProductChromeRefreshOldIcon;
 
     case Type::FEATURED_ENTERPRISE_SEARCH:
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-      if (turl && turl->CreatedByEnterpriseSearchAggregatorPolicy()) {
-        return base::FeatureList::IsEnabled(omnibox::kUseAgentspace25Logo)
-                   ? vector_icons::kGoogleAgentspaceMonochromeLogo25Icon
-                   : vector_icons::kGoogleAgentspaceMonochromeLogoIcon;
+      if (turl && turl->featured_by_policy()) {
+        return searchbox::GetKeywordVectorIcon(*turl);
       }
-#endif
       return features::IsRoundedIconsEnabled()
                  ? omnibox::kPublicIcon
                  : omnibox::kPageChromeRefreshOldIcon;
@@ -1075,6 +1052,7 @@ GURL AutocompleteMatch::GURLToStrippedGURL(
     return docs_url;
 
   GURL stripped_destination_url = url;
+  std::optional<url::Parsed::ComponentType> search_terms_location;
 
   // If the destination URL looks like it was generated from a TemplateURL,
   // remove all substitutions other than the search terms and optionally the
@@ -1092,12 +1070,16 @@ GURL AutocompleteMatch::GURLToStrippedGURL(
     const auto& cached = template_cache->Get(cache_key);
     if (cached != template_cache->end()) {
       stripped_destination_url = cached->second;
+      search_terms_location = template_url->url_ref().GetSearchTermKeyLocation(
+          template_url_service->search_terms_data());
     } else if (template_url->KeepSearchTermsInURL(
                    url, template_url_service->search_terms_data(),
                    keep_search_intent_params,
                    /*normalize_search_terms=*/false,
                    &stripped_destination_url)) {
       template_cache->Put(cache_key, stripped_destination_url);
+      search_terms_location = template_url->url_ref().GetSearchTermKeyLocation(
+          template_url_service->search_terms_data());
     }
   }
 
@@ -1126,7 +1108,10 @@ GURL AutocompleteMatch::GURLToStrippedGURL(
     needs_replacement = true;
   }
 
-  if (input.parts().ref.is_empty() && url.has_ref()) {
+  // Preserve a ref that contains the search terms. Otherwise, suggestions from
+  // search engines with fragment-based URLs all look identical.
+  if (input.parts().ref.is_empty() && url.has_ref() &&
+      search_terms_location != url::Parsed::REF) {
     replacements.ClearRef();
     needs_replacement = true;
   }

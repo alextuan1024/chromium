@@ -35,7 +35,7 @@ source_set("browser") {
     # TODO(crbug.com/502615476): Remove this once all downstream targets depend
     # on these directly.
     ":client_side_detection_service_base",
-    "//components/safe_browsing/core/browser/db:v4_protocol_config",
+    "//components/safe_browsing/core/browser/db:sb_protocol_config",
     "//components/safe_browsing/core/common/fbs:client_model",
     "//google_apis",
   ]
@@ -55,8 +55,8 @@ source_set("browser") {
     "//components/safe_browsing/core/browser:sync_observer",
     "//components/safe_browsing/core/browser:token_fetcher",
     "//components/safe_browsing/core/browser/db:database_manager",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/db:util",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
     "//components/safe_browsing/core/browser/db:v5_get_hash_protocol_manager",
     "//components/safe_browsing/core/browser/hashprefix_realtime:hash_realtime_service",
     "//components/safe_browsing/core/browser/realtime:policy_engine",
@@ -163,7 +163,7 @@ source_set("ping_manager_unittest") {
     ":browser",
     "//base",
     "//components/safe_browsing/core/browser:token_fetcher_testing_helper",
-    "//components/safe_browsing/core/browser/db:v4_test_util",
+    "//components/safe_browsing/core/browser/db:sb_test_util",
     "//components/safe_browsing/core/common",
     "//net",
     "//net:test_support",
@@ -219,7 +219,7 @@ source_set("verdict_cache_manager") {
     "//components/password_manager/core/browser",
     "//components/prefs",
     "//components/safe_browsing/core/browser:sync_observer",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common/proto:csd_proto",
     "//components/safe_browsing/core/common/proto:realtimeapi_proto",
@@ -237,7 +237,7 @@ source_set("verdict_cache_manager_unittest") {
     "//base/test:test_support",
     "//components/content_settings/core/browser",
     "//components/safe_browsing/core/browser:sync_observer",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common:safe_browsing_prefs",
     "//components/safe_browsing/core/common/proto:csd_proto",
@@ -246,6 +246,7 @@ source_set("verdict_cache_manager_unittest") {
     "//testing/gtest",
   ]
 }
+
 source_set("referrer_chain_provider") {
   sources = [ "referrer_chain_provider.h" ]
 

@@ -42,11 +42,10 @@
 //! This bridge is built using the `cxx` crate, which automates the generation
 //! of safe FFI bindings between the two languages.
 
-use symphonia::core::audio::sample::i24;
 use symphonia::core::audio::{Audio, Channels, GenericAudioBufferRef, Position};
-use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder};
+use symphonia::core::codecs::audio::{AudioCodecId, AudioCodecParameters, AudioDecoder};
 use symphonia::core::errors::Error;
-use symphonia::core::packet::Packet;
+use symphonia::core::packet::PacketRef;
 
 /// This module defines the FFI boundary using the `cxx` crate.
 ///
@@ -79,8 +78,7 @@ pub mod ffi {
         Vorbis,
     }
 
-    /// We currently only output interleaved data, and usually in F32. However,
-    /// that is not guaranteed by Symphonia.
+    /// We output planar data for F32, and interleaved data for integer formats.
     #[derive(Debug)]
     enum SymphoniaSampleFormat {
         Unknown,
@@ -89,6 +87,7 @@ pub mod ffi {
         S24,
         S32,
         F32,
+        PlanarF32,
     }
 
     /// Configuration parameters required to initialize a Symphonia decoder.
@@ -100,10 +99,6 @@ pub mod ffi {
         extra_data: &'a [u8],
         /// Expected bytes per sample from the container/config.
         bytes_per_sample: u8,
-
-        /// fields necessary for PCM decoders.
-        /// Maximum number of frames per packet.
-        max_frames_per_packet: u64,
         /// Sample rate of the audio stream.
         sample_rate: u32,
         /// Channel mask of the audio stream.
@@ -225,9 +220,9 @@ pub mod ffi {
         status: SymphoniaDecodeStatus,
         /// A descriptive error message if decoding failed.
         error_str: String,
-        /// A `Box` containing the decoded audio data. If the end of the stream
-        /// has been reached, the buffer will be empty.
-        buffer: Box<SymphoniaAudioBuffer>,
+        /// The decoded audio data. If the end of the stream has been reached,
+        /// the buffer will be empty.
+        buffer: SymphoniaAudioBuffer,
     }
 
     // This block declares the Rust functions that are exposed to C++.
@@ -281,7 +276,8 @@ fn default_audio_buffer() -> ffi::SymphoniaAudioBuffer {
 /// methods to access it as a raw byte slice (`&[u8]`). This is crucial
 /// for passing the data across the FFI boundary.
 pub struct SymphoniaRawSampleBuffer {
-    /// Interleaved audio sample data as bytes.
+    /// Audio sample data as bytes. F32 audio is planar; integer formats are
+    /// interleaved.
     data: Vec<u8>,
     /// The sample format of the data.
     sample_format: ffi::SymphoniaSampleFormat,
@@ -295,13 +291,22 @@ impl SymphoniaRawSampleBuffer {
     pub fn new_buffer_for(
         buf: &GenericAudioBufferRef,
         codec: ffi::SymphoniaAudioCodec,
+        bytes_per_sample: u8,
     ) -> Result<SymphoniaRawSampleBuffer, String> {
         let sample_format = match buf {
             GenericAudioBufferRef::U8(_) => ffi::SymphoniaSampleFormat::U8,
             GenericAudioBufferRef::S16(_) => ffi::SymphoniaSampleFormat::S16,
             GenericAudioBufferRef::S24(_) => ffi::SymphoniaSampleFormat::S24,
-            GenericAudioBufferRef::S32(_) => ffi::SymphoniaSampleFormat::S32,
-            GenericAudioBufferRef::F32(_) => ffi::SymphoniaSampleFormat::F32,
+            GenericAudioBufferRef::S32(_) => {
+                // Ensure we output S16 if requested (Symphonia outputs it as
+                // S32 regardless).
+                if bytes_per_sample == 2 {
+                    ffi::SymphoniaSampleFormat::S16
+                } else {
+                    ffi::SymphoniaSampleFormat::S32
+                }
+            }
+            GenericAudioBufferRef::F32(_) => ffi::SymphoniaSampleFormat::PlanarF32,
             _ => return Err("unsupported format".to_string()),
         };
         Ok(Self { data: Vec::new(), sample_format, codec })
@@ -310,12 +315,6 @@ impl SymphoniaRawSampleBuffer {
     /// Determines the FFI `SymphoniaSampleFormat` from the inner buffer type.
     fn sample_format(&self) -> ffi::SymphoniaSampleFormat {
         self.sample_format
-    }
-
-    /// Gets an immutable slice to the raw bytes of the samples written in the
-    /// buffer.
-    fn as_bytes(&self) -> &[u8] {
-        &self.data
     }
 
     /// Copies sample data from a Symphonia `GenericAudioBufferRef` into this
@@ -330,38 +329,48 @@ impl SymphoniaRawSampleBuffer {
                 src.copy_bytes_to_vec_interleaved_as::<i16>(&mut self.data)
             }
             GenericAudioBufferRef::S24(_) => {
-                src.copy_bytes_to_vec_interleaved_as::<i24>(&mut self.data)
-            }
-            GenericAudioBufferRef::S32(_) => {
+                // Chromium's AudioBuffer expects 24-bit samples to be padded to
+                // 32 bits and shifted left by 8 bits to use the full 32-bit
+                // range. Symphonia's conversion from i24 to i32 does
+                // `(s.clamped().inner()) << 8`, which produces the exact
+                // expected byte representation in little-endian.
                 src.copy_bytes_to_vec_interleaved_as::<i32>(&mut self.data)
             }
-            GenericAudioBufferRef::F32(_) => {
-                if matches!(self.codec, ffi::SymphoniaAudioCodec::Mp3) {
-                    let buf = match src {
-                        GenericAudioBufferRef::F32(buf) => buf,
-                        _ => unreachable!(),
-                    };
-                    let num_frames = buf.frames();
-                    let num_channels = buf.spec().channels().count();
-
-                    self.data.reserve(num_frames * num_channels * std::mem::size_of::<f32>());
-
-                    let planes: Vec<&[f32]> =
-                        (0..num_channels).map(|ch| buf.plane(ch).unwrap()).collect();
-
-                    for i in 0..num_frames {
-                        for plane in &planes {
-                            // Symphonia v0.6+ does not clamp float samples to a valid range.
-                            // While some codecs like Opus and Vorbis can legitimately exceed
-                            // [-1.0, 1.0], Symphonia's MP3 decoder can produce extreme values
-                            // on corrupted streams. We clamp MP3 only to maintain parity with
-                            // the FFmpegAudioDecoder's handling of corrupt files.
-                            let sample = plane[i].clamp(-1.0, 1.0);
-                            self.data.extend_from_slice(&sample.to_le_bytes());
+            GenericAudioBufferRef::S32(_) => {
+                if self.sample_format == ffi::SymphoniaSampleFormat::S16 {
+                    src.copy_bytes_to_vec_interleaved_as::<i16>(&mut self.data)
+                } else {
+                    src.copy_bytes_to_vec_interleaved_as::<i32>(&mut self.data)
+                }
+            }
+            GenericAudioBufferRef::F32(buf) => {
+                let num_frames = buf.frames();
+                let num_channels = buf.spec().channels().count();
+                let plane_bytes = num_frames * std::mem::size_of::<f32>();
+                let total_bytes = num_channels * plane_bytes;
+                self.data.resize(total_bytes, 0);
+                if plane_bytes > 0 {
+                    for (ch, chunk) in self.data.chunks_exact_mut(plane_bytes).enumerate() {
+                        let plane = buf.plane(ch).unwrap();
+                        if matches!(self.codec, ffi::SymphoniaAudioCodec::Mp3) {
+                            // Symphonia v0.6+ does not clamp float samples to a
+                            // valid range. While some codecs like Opus and
+                            // Vorbis can legitimately exceed [-1.0, 1.0],
+                            // Symphonia's MP3 decoder can produce extreme
+                            // values on corrupted streams. We clamp MP3
+                            // in-place to maintain parity with
+                            // FFmpegAudioDecoder's handling of corrupt files.
+                            for (&sample, dest) in plane.iter().zip(chunk.chunks_exact_mut(4)) {
+                                let clamped =
+                                    if sample.is_nan() { 0.0 } else { sample.clamp(-1.0, 1.0) };
+                                dest.copy_from_slice(&clamped.to_ne_bytes());
+                            }
+                        } else {
+                            for (&sample, dest) in plane.iter().zip(chunk.chunks_exact_mut(4)) {
+                                dest.copy_from_slice(&sample.to_ne_bytes());
+                            }
                         }
                     }
-                } else {
-                    src.copy_bytes_to_vec_interleaved_as::<f32>(&mut self.data)
                 }
             }
             _ => {
@@ -390,9 +399,6 @@ struct DecoderImpl {
 
     /// The codec of the audio stream.
     codec: ffi::SymphoniaAudioCodec,
-
-    /// Tracks whether the MPEG layer has already been detected and configured.
-    has_detected_layer: bool,
 }
 
 /// The opaque Rust decoder type exposed to C++ through the FFI bridge.
@@ -432,15 +438,10 @@ fn to_symphonia_codec_id(
     }
 }
 
-/// Converts an FFI `SymphoniaPacket` to a Symphonia `Packet`.
-impl<'a> From<&ffi::SymphoniaPacket<'a>> for Packet {
+/// Converts an FFI `SymphoniaPacket` to a zero-copy Symphonia `PacketRef`.
+impl<'a> From<&ffi::SymphoniaPacket<'a>> for PacketRef<'a> {
     fn from(value: &ffi::SymphoniaPacket<'a>) -> Self {
-        Packet::new(
-            0,
-            (value.timestamp_us as i64).into(),
-            value.duration_us.into(),
-            value.data.to_vec(),
-        )
+        PacketRef::new(0, (value.timestamp_us as i64).into(), value.duration_us.into(), value.data)
     }
 }
 
@@ -461,10 +462,10 @@ pub fn get_streaminfo_payload(extradata: &[u8]) -> &[u8] {
     const HEADER_SIZE: usize = 4;
     const STREAMINFO_SIZE: usize = 34;
 
-    // Always skip the "fLaC" marker if it's there. This is container-level framing
-    // and is never part of a metadata block. Note that a valid STREAMINFO block
-    // can never start with these bytes because it would violate the requirement
-    // that max_block_size >= min_block_size.
+    // Always skip the "fLaC" marker if it's there. This is container-level
+    // framing and is never part of a metadata block. Note that a valid
+    // STREAMINFO block can never start with these bytes because it would
+    // violate the requirement that max_block_size >= min_block_size.
     let stripped = extradata.strip_prefix(MARKER).unwrap_or(extradata);
 
     // If skipping the marker revealed the raw payload, return it.
@@ -472,11 +473,11 @@ pub fn get_streaminfo_payload(extradata: &[u8]) -> &[u8] {
         return stripped;
     }
 
-    // If the data (after optional marker) starts with a STREAMINFO metadata block
-    // header, extract its payload.
+    // If the data (after optional marker) starts with a STREAMINFO metadata
+    // block header, extract its payload.
     if stripped.len() >= HEADER_SIZE + STREAMINFO_SIZE {
-        // The first bit indicates if this is the last block, the next 7 indicate block
-        // type. https://www.ietf.org/archive/id/draft-ietf-cellar-flac-12.html#section-8.1
+        // The first bit indicates if this is the last block, the next 7
+        // indicate block type. https://www.ietf.org/archive/id/draft-ietf-cellar-flac-12.html#section-8.1
         let block_type = stripped[0] & 0x7f;
         if block_type == 0 {
             let block_len = u32::from_be_bytes([0, stripped[1], stripped[2], stripped[3]]) as usize;
@@ -573,10 +574,6 @@ impl<'a> TryFrom<&ffi::SymphoniaDecoderConfig<'a>> for AudioCodecParameters {
             params.with_extra_data(extra_data);
         }
 
-        if value.max_frames_per_packet > 0 {
-            params.with_max_frames_per_packet(value.max_frames_per_packet);
-        }
-
         Ok(params)
     }
 }
@@ -628,7 +625,6 @@ fn init_symphonia_decoder_impl(config: &ffi::SymphoniaDecoderConfig) -> InitResu
             current_codec_id,
             bytes_per_sample: config.bytes_per_sample,
             codec: config.codec,
-            has_detected_layer: false,
         }),
     })
 }
@@ -669,7 +665,6 @@ impl From<&Error> for ffi::SymphoniaDecodeStatus {
 pub fn create_audio_buffer(
     buffer_ref: GenericAudioBufferRef,
     mut sample_buffer: SymphoniaRawSampleBuffer,
-    bytes_per_sample: u8,
 ) -> Result<ffi::SymphoniaAudioBuffer, String> {
     let sample_rate = buffer_ref.spec().rate();
     let num_frames = buffer_ref.frames();
@@ -681,38 +676,10 @@ pub fn create_audio_buffer(
 
     // Populate the sample byte buffer.
     sample_buffer.copy_from_buffer(buffer_ref);
-    let mut sample_format = sample_buffer.sample_format();
-
-    // Ensure we output S16 if requested (Symphonia outputs it as S32 regardless).
-    let should_shift_down =
-        sample_format == ffi::SymphoniaSampleFormat::S32 && bytes_per_sample == 2;
-    let should_shift_up = sample_format == ffi::SymphoniaSampleFormat::S24;
-    let data = if should_shift_down {
-        sample_format = ffi::SymphoniaSampleFormat::S16;
-        sample_buffer
-            .as_bytes()
-            .chunks_exact(4)
-            .flat_map(|chunk| {
-                let sample = i32::from_ne_bytes(chunk.try_into().unwrap());
-                // Shift right by 16 to get back the original 16 bits.
-                ((sample >> 16) as i16).to_ne_bytes()
-            })
-            .collect()
-    } else if should_shift_up {
-        // Chromium's AudioBuffer expects 24-bit samples to be padded to 32 bits
-        // and shifted left by 8 bits to use the full 32-bit range.
-        // Chromium is always little-endian.
-        sample_buffer
-            .as_bytes()
-            .chunks_exact(3)
-            .flat_map(|chunk| [0, chunk[0], chunk[1], chunk[2]])
-            .collect()
-    } else {
-        sample_buffer.data
-    };
+    let sample_format = sample_buffer.sample_format();
 
     Ok(ffi::SymphoniaAudioBuffer {
-        data,
+        data: sample_buffer.data,
         sample_format,
         sample_rate,
         num_frames,
@@ -722,7 +689,7 @@ pub fn create_audio_buffer(
 }
 
 /// Type alias for the result of a decoding operation.
-type DecodeResult = Result<Box<ffi::SymphoniaAudioBuffer>, (ffi::SymphoniaDecodeStatus, String)>;
+type DecodeResult = Result<ffi::SymphoniaAudioBuffer, (ffi::SymphoniaDecodeStatus, String)>;
 
 /// Helper function to convert our internal decode result type to the FFI type.
 impl From<DecodeResult> for ffi::SymphoniaDecodeResult {
@@ -733,11 +700,9 @@ impl From<DecodeResult> for ffi::SymphoniaDecodeResult {
                 error_str: String::new(),
                 buffer,
             },
-            Err((status, error_str)) => ffi::SymphoniaDecodeResult {
-                status,
-                error_str,
-                buffer: Box::new(default_audio_buffer()),
-            },
+            Err((status, error_str)) => {
+                ffi::SymphoniaDecodeResult { status, error_str, buffer: default_audio_buffer() }
+            }
         }
     }
 }
@@ -785,29 +750,32 @@ impl DecoderImpl {
     /// (MP2) audio, `MpaDecoder` returns an invalid layer error. Ideally,
     /// Symphonia's `MpaDecoder` could support dynamic layer switching
     /// internally; until then, we detect the MPEG layer header and
-    /// re-instantiate the decoder for that layer to achieve full parity
-    /// with FFmpeg. TODO(crbug.com/544919881): Consider contributing
-    /// dynamic layer switching upstream to Symphonia's MpaDecoder.
-    fn maybe_update_mpeg_decoder(&mut self, packet_data: &[u8]) {
-        if !matches!(self.codec, ffi::SymphoniaAudioCodec::Mp3) || self.has_detected_layer {
-            return;
+    /// re-instantiate the decoder whenever the layer changes (including
+    /// mid-stream switches) to achieve full parity with FFmpeg.
+    /// TODO(crbug.com/544919881): Consider contributing dynamic layer
+    /// switching upstream to Symphonia's MpaDecoder.
+    fn maybe_update_mpeg_decoder(
+        &mut self,
+        packet_data: &[u8],
+    ) -> Result<(), (ffi::SymphoniaDecodeStatus, String)> {
+        if !matches!(self.codec, ffi::SymphoniaAudioCodec::Mp3) {
+            return Ok(());
         }
         let Some(target_codec_id) = detect_mpeg_audio_codec_id(packet_data) else {
-            return;
+            return Ok(());
         };
-        self.has_detected_layer = true;
         if target_codec_id == self.current_codec_id {
-            return;
+            return Ok(());
         }
         let mut new_params = self.codec_params.clone();
         new_params.for_codec(target_codec_id);
-        if let Ok(new_decoder) =
-            symphonia::default::get_codecs().make_audio_decoder(&new_params, &Default::default())
-        {
-            self.decoder = new_decoder;
-            self.codec_params = new_params;
-            self.current_codec_id = target_codec_id;
-        }
+        let new_decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&new_params, &Default::default())
+            .map_err(|e| ((&e).into(), e.to_string()))?;
+        self.decoder = new_decoder;
+        self.codec_params = new_params;
+        self.current_codec_id = target_codec_id;
+        Ok(())
     }
 }
 
@@ -824,23 +792,25 @@ impl SymphoniaDecoder {
             "invalid decoder state".to_string(),
         ))?;
 
-        decoder_impl.maybe_update_mpeg_decoder(packet.data);
+        decoder_impl.maybe_update_mpeg_decoder(packet.data)?;
 
-        let symphonia_packet = Packet::from(packet);
+        let packet_ref = PacketRef::from(packet);
         let buffer = decoder_impl
             .decoder
-            .decode(&symphonia_packet)
+            .decode_ref(&packet_ref)
             .map_err(|e| ((&e).into(), e.to_string()))?;
 
-        let sample_buffer = SymphoniaRawSampleBuffer::new_buffer_for(&buffer, decoder_impl.codec)
-            .map_err(|e| {
+        let sample_buffer = SymphoniaRawSampleBuffer::new_buffer_for(
+            &buffer,
+            decoder_impl.codec,
+            decoder_impl.bytes_per_sample,
+        )
+        .map_err(|e| {
             (ffi::SymphoniaDecodeStatus::InvalidDecodedBufferSampleFormat, e.to_string())
         })?;
 
-        Ok(Box::new(
-            create_audio_buffer(buffer, sample_buffer, decoder_impl.bytes_per_sample)
-                .map_err(|e| (ffi::SymphoniaDecodeStatus::InsufficentData, e.to_string()))?,
-        ))
+        create_audio_buffer(buffer, sample_buffer)
+            .map_err(|e| (ffi::SymphoniaDecodeStatus::InsufficentData, e.to_string()))
     }
 
     /// FFI-exposed method to decode a single audio packet.
@@ -850,5 +820,11 @@ impl SymphoniaDecoder {
     /// creating the sample buffer on the first successful decode.
     pub fn decode(&mut self, packet: &ffi::SymphoniaPacket) -> ffi::SymphoniaDecodeResult {
         self.decode_impl(packet).into()
+    }
+
+    /// Returns the current Symphonia `AudioCodecId` of the active decoder, or
+    /// `None` if the decoder is uninitialized or in an invalid state.
+    pub fn current_codec_id(&self) -> Option<AudioCodecId> {
+        self.decoder_impl.as_ref().map(|d| d.current_codec_id)
     }
 }

@@ -163,6 +163,7 @@ class MODULES_EXPORT CanvasRenderingContext2D final
   void SetOriginTainted() final;
   void DisableAcceleration() override;
   bool ShouldDisableAccelerationBecauseOfReadback() const override;
+  void RecordingCleared() override;
 
   // CanvasHibernationHandler::Delegate implementation
   Canvas2DResourceProvider* GetSharedImageProvider() const override;
@@ -175,6 +176,7 @@ class MODULES_EXPORT CanvasRenderingContext2D final
     return canvas() && canvas()->IsPageVisible();
   }
   void ResetResourceProvider() override;
+  std::unique_ptr<MemoryManagedPaintRecorder> ReleaseRecorder() override;
   void SetNeedsCompositingUpdate() override {
     if (canvas()) {
       canvas()->SetNeedsCompositingUpdate();
@@ -206,10 +208,6 @@ class MODULES_EXPORT CanvasRenderingContext2D final
   Color GetCurrentColor() const final;
 
   MemoryManagedPaintCanvas* GetOrCreatePaintCanvas() final;
-  using BaseRenderingContext2D::GetPaintCanvas;  // Pull the non-const overload.
-  const MemoryManagedPaintCanvas* GetPaintCanvas() const final;
-  const MemoryManagedPaintRecorder* Recorder() const override;
-  MemoryManagedPaintRecorder* Recorder();
 
   void WillDraw(const gfx::Rect& dirty_rect,
                 CanvasPerformanceMonitor::DrawType) final;
@@ -319,8 +317,6 @@ class MODULES_EXPORT CanvasRenderingContext2D final
 
   // This method should be called only when both providers are null.
   void RecreateResourceProvider();
-
-  void FlushIfRecordingLimitExceeded();
 
   void WakeUpFromHibernation();
 

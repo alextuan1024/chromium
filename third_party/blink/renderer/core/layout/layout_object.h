@@ -1115,6 +1115,21 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   }
   virtual void MarkMayContainAnchor();
 
+  // True if `this` or a descendant may have app-region in its style, so that
+  // collecting the draggable regions can skip the subtrees without any. Like
+  // MayContainAnchor(), but LocalFrameView clears it again when a walk of the
+  // subtree finds none.
+  bool MayContainDraggableRegion() const {
+    NOT_DESTROYED();
+    return may_contain_draggable_region_;
+  }
+  void SetMayContainDraggableRegion(bool b) {
+    NOT_DESTROYED();
+    may_contain_draggable_region_ = b;
+  }
+  // Sets the bit on `this` and its ancestors.
+  void MarkMayContainDraggableRegion();
+
   void SetHasBrokenSpine() {
     NOT_DESTROYED();
     has_broken_spine_ = true;
@@ -2254,7 +2269,7 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   // and new ComputedStyle like paint and size invalidations. If kNo, just set
   // the ComputedStyle member.
   enum class ApplyStyleChanges { kNo, kYes };
-  void SetStyle(const ComputedStyle*,
+  void SetStyle(const ComputedStyle&,
                 ApplyStyleChanges = ApplyStyleChanges::kYes);
 
   // Set the style of the object if it's generated content.
@@ -2268,7 +2283,7 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   // that node with the new ComputedStyle. Modifying the ComputedStyle of a node
   // outside of style recalc can break invariants in the style engine, so this
   // function must not gain any new call sites.
-  void SetModifiedStyleOutsideStyleRecalc(const ComputedStyle*,
+  void SetModifiedStyleOutsideStyleRecalc(const ComputedStyle&,
                                           ApplyStyleChanges);
 
   // This function returns an enclosing non-anonymous LayoutBlock for this
@@ -2296,6 +2311,15 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   // resolving anonymous blocks to their parent. Returns nullptr if the
   // resolved parent is not a block container (e.g., flex or inline).
   LayoutObject* ContainingBlockForTextOverflow() const;
+
+  // Returns the object whose scroll state decides whether text laid out in
+  // this block container should be truncated. This is normally the block
+  // container itself, but a <textarea> scrolls on its host rather than on the
+  // inner editor which owns the text-overflow style.
+  virtual const LayoutObject* ScrollerForTextOverflow() const {
+    NOT_DESTROYED();
+    return this;
+  }
 
   // Returns the nearest ancestor in the layout tree that IsForElement(),
   // or null if there is none.
@@ -2524,11 +2548,6 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
     return static_cast<bool>(style_);
   }
 #endif
-
-  const ComputedStyle* Style() const {
-    NOT_DESTROYED();
-    return style_.Get();
-  }
 
   // style_ can only be nullptr before the first style is set, thus most
   // callers will never see a nullptr style and should use StyleRef().
@@ -3521,10 +3540,9 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   // Updates only the local style ptr of the object.  Does not update the state
   // of the object, and so only should be called when the style is known not to
   // have changed (or from SetStyle).
-  void SetStyleInternal(const ComputedStyle* style) {
+  void SetStyleInternal(const ComputedStyle& style) {
     NOT_DESTROYED();
-    CHECK(style);
-    style_ = std::move(style);
+    style_ = style;
   }
 
   // Set style to null. This is needed during object construction in some
@@ -4048,6 +4066,9 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
 
   // See comments for |MayContainAnchor()|.
   unsigned may_contain_anchor_ : 1 = false;
+
+  // See comments for |MayContainDraggableRegion()|.
+  unsigned may_contain_draggable_region_ : 1 = false;
 
   // Set if we stopped rebuilding the spine because this object was marked for
   // layout. We don't need to do anything if we actually end up re-laying out

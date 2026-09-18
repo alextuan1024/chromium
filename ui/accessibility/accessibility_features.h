@@ -206,11 +206,6 @@ AX_BASE_EXPORT bool IsAccessibilityGroupLocationChangeByCommonAncestorEnabled();
 // TODO(accessibility): Should this be moved to ash_features.cc?
 AX_BASE_EXPORT bool IsDictationOfflineAvailable();
 
-// Adds option to limit the movement on the screen.
-AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityReducedAnimations);
-AX_BASE_EXPORT bool IsAccessibilityReducedAnimationsEnabled();
-
-
 // Allow context checking with the accessibility Dictation
 // feature.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(
@@ -218,18 +213,9 @@ AX_BASE_EXPORT BASE_DECLARE_FEATURE(
 AX_BASE_EXPORT bool
 IsExperimentalAccessibilityDictationContextCheckingEnabled();
 
-// Whether the screen magnifier can follow the ChromeVox focus.
-AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityMagnifierFollowsChromeVox);
-AX_BASE_EXPORT bool IsAccessibilityMagnifierFollowsChromeVoxEnabled();
-
-// Control mouse with keyboard.
-AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityMouseKeys);
-AX_BASE_EXPORT bool IsAccessibilityMouseKeysEnabled();
-
 // Controls whether the shake cursor to locate feature is available.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityShakeToLocate);
 AX_BASE_EXPORT bool IsAccessibilityShakeToLocateEnabled();
-
 
 // Controls whether the inverted mouse cursor feature is available.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityInvertedMouseCursor);
@@ -280,6 +266,13 @@ AX_BASE_EXPORT bool IsAccessibilityAndroidMathEnabled();
 // replacing the previous Speakr service integration.
 using ax::mojom::features::kReadAloudNative;
 AX_BASE_EXPORT bool IsReadAloudNativeEnabled();
+
+// Controls the server speech synthesis broker for Read Aloud. Returns true if
+// kReadAloudServerSynthesizer is enabled or if kReadAloudNative is enabled,
+// unless kReadAloudServerSynthesizer is explicitly disabled via command line or
+// Finch field trial overrides.
+using ax::mojom::features::kReadAloudServerSynthesizer;
+AX_BASE_EXPORT bool IsReadAloudServerSynthesizerEnabled();
 
 #if !BUILDFLAG(IS_ANDROID)
 // Use the AXTree fixing code, which may be an assortment of different
@@ -355,11 +348,6 @@ AX_BASE_EXPORT BASE_DECLARE_FEATURE(kHatsReadingModeSurvey);
 AX_BASE_EXPORT bool IsHatsReadingModeSurveyEnabled();
 
 AX_BASE_EXPORT bool IsReadAnythingDocsIntegrationEnabled();
-
-// Enable "load more" button to show at the end of Reading Mode panel.
-// Should be disabled by default.
-AX_BASE_EXPORT BASE_DECLARE_FEATURE(kReadAnythingDocsLoadMoreButton);
-AX_BASE_EXPORT bool IsReadAnythingDocsLoadMoreButtonEnabled();
 
 // Enable ReadabilityJS as the distillation source for Reading Mode.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kReadAnythingWithReadability);

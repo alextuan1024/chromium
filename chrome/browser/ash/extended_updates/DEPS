@@ -19,10 +19,10 @@ include_rules = [
   "+chrome/browser/ash/login/users",
   "+chrome/browser/ash/ownership",
   "+chrome/browser/ash/settings",
-  "+chrome/browser/notifications",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/webui/ash/extended_updates",
-  "+chrome/common/url_constants.h",
   "+chrome/grit",
   "+chrome/test/base",
+
+  "+ui/message_center/message_center.h",
 ]

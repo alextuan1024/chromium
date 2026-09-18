@@ -76,8 +76,13 @@ source_set("internal") {
       "//chrome/browser/prefs",
       "//chrome/browser/skills:public",
       "//chrome/browser/tab_group_sync:factories",
+      "//chrome/browser/ttc/core",
       "//chrome/browser/ui:browser_actions",
+      "//chrome/browser/ui:browser_content_setting_bubble_model_delegate",
       "//chrome/browser/ui:browser_init_state",
+      "//chrome/browser/ui:browser_manager_service",
+      "//chrome/browser/ui:browser_tab_menu_model_delegate",
+      "//chrome/browser/ui:browser_window_theme_observer",
       "//chrome/browser/ui:ui_controller_factory",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/animation",
@@ -122,6 +127,7 @@ source_set("internal") {
       "//chrome/browser/ui/views/data_sharing",
       "//chrome/browser/ui/views/download",
       "//chrome/browser/ui/views/frame:contents_border_controller",
+      "//chrome/browser/ui/views/frame:find_bar_owner_views",
       "//chrome/browser/ui/views/fullscreen_control",
       "//chrome/browser/ui/views/interaction:impl",
       "//chrome/browser/ui/views/location_bar:impl",
@@ -196,11 +202,16 @@ source_set("internal") {
         "//chrome/browser/ui/views:upgrade_notification_controller",
         "//chrome/browser/ui/views/extensions:extensions_views_utils",
         "//chrome/browser/ui/views/frame:scrim_view_controller",
+        "//chrome/browser/ui/views/profiles:profile_menu_coordinator",
       ]
     }
 
     if (use_aura) {
       deps += [ "//chrome/browser/ui:overscroll_pref_manager" ]
+    }
+
+    if (is_win) {
+      deps += [ "//chrome/browser/ui/views/frame:windows_taskbar_icon_updater" ]
     }
   }
 
@@ -214,6 +225,7 @@ source_set("internal") {
       "//chrome/browser/ui:browser_instant_controller",
       "//chrome/browser/ui:browser_location_bar_model_delegate",
       "//chrome/browser/ui:browser_select_file_dialog_controller",
+      "//chrome/browser/ui:browser_window_header",
     ]
   }
 }
@@ -415,6 +427,7 @@ if (is_android) {
       "//chrome/browser/ui/browser_window:create_browser_window",
       "//chrome/browser/ui/browser_window/test:android_browser_test_support",
       "//chrome/browser/ui/navigator",
+      "//chrome/test:test_support_jni_headers",
       "//chrome/test:test_support_ui_android",
       "//components/feed:feature_list",
       "//net:test_support",

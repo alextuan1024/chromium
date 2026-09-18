@@ -26,8 +26,9 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/safe_browsing_hats_delegate.h"
+#include "components/safe_browsing/core/browser/user_population.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safebrowsing_constants.h"
@@ -172,12 +173,6 @@ std::string_view GetReportTypeSuffix(
     case safe_browsing::ClientSafeBrowsingReportRequest_ReportType_APK_DOWNLOAD:
       return "APKDownload";
     case safe_browsing::
-        ClientSafeBrowsingReportRequest_ReportType_BLOCKED_AD_REDIRECT:
-      return "BlockedAdRedirect";
-    case safe_browsing::
-        ClientSafeBrowsingReportRequest_ReportType_BLOCKED_AD_POPUP:
-      return "BlockedAdPopup";
-    case safe_browsing::
         ClientSafeBrowsingReportRequest_ReportType_PHISHY_SITE_INTERACTIONS:
       return "PhishySiteInteractions";
     case safe_browsing::
@@ -208,6 +203,10 @@ std::string_view GetReportTypeSuffix(
         ClientSafeBrowsingReportRequest_ReportType_HASH_PREFIX_REAL_TIME_EXPERIMENT:
     case safe_browsing::
         ClientSafeBrowsingReportRequest_ReportType_EXTERNAL_APP_REDIRECT:
+    case safe_browsing::
+        ClientSafeBrowsingReportRequest_ReportType_BLOCKED_AD_REDIRECT:
+    case safe_browsing::
+        ClientSafeBrowsingReportRequest_ReportType_BLOCKED_AD_POPUP:
       NOTREACHED();
   }
 }
@@ -267,7 +266,7 @@ std::vector<std::string> PingManager::Persister::ReadAndDeleteReports() {
 
 // static
 std::unique_ptr<PingManager> PingManager::Create(
-    const V4ProtocolConfig& config,
+    const SBProtocolConfig& config,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher,
     base::RepeatingCallback<bool()> get_should_fetch_access_token,
@@ -289,7 +288,7 @@ std::unique_ptr<PingManager> PingManager::Create(
 }
 
 PingManager::PingManager(
-    const V4ProtocolConfig& config,
+    const SBProtocolConfig& config,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher,
     base::RepeatingCallback<bool()> get_should_fetch_access_token,
@@ -609,6 +608,8 @@ PingManager::ReportThreatDetailsResult PingManager::FinalizeAndSerializeReport(
   SanitizeThreatDetailsReport(report);
   if (!get_user_population_callback_.is_null()) {
     *report->mutable_population() = get_user_population_callback_.Run();
+    // TODO(crbug.com/372395685): Remove this post feature launch.
+    GetExperimentStatus({&kLocalListsUseSBv5}, report->mutable_population());
   }
   if (!get_page_load_token_callback_.is_null()) {
     ChromeUserPopulation::PageLoadToken token =

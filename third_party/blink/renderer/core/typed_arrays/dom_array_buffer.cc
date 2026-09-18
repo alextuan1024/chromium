@@ -32,9 +32,9 @@ const WrapperTypeInfo DOMArrayBuffer::wrapper_type_info_body_{
     "ArrayBuffer",
     nullptr,
     static_cast<v8::CppHeapPointerTag>(
-        ScriptWrappableArrayTag::kDOMArrayBufferTag),
+        CppHeapPointerTag::kDOMArrayBufferTag),
     static_cast<v8::CppHeapPointerTag>(
-        ScriptWrappableArrayTag::kDOMArrayBufferTag),
+        CppHeapPointerTag::kDOMArrayBufferTag),
     WrapperTypeInfo::kWrapperTypeObjectPrototype,
     WrapperTypeInfo::kObjectClassId,
     WrapperTypeInfo::kIdlOtherType,
@@ -157,7 +157,7 @@ v8::Maybe<bool> DOMArrayBuffer::TransferDetachable(
     return v8::Just(false);
   }
 
-  if (!Content()->Data()) {
+  if (!Content()->IsValid()) {
     // We transfer an empty ArrayBuffer, we can just allocate an empty content.
     result = ArrayBufferContents(Content()->BackingStore());
   } else {
@@ -238,7 +238,7 @@ DOMArrayBuffer* DOMArrayBuffer::CreateOrNull(size_t num_elements,
   ArrayBufferContents contents(num_elements, element_byte_size,
                                ArrayBufferContents::kNotShared,
                                ArrayBufferContents::kZeroInitialize);
-  if (!contents.Data()) {
+  if (!contents.IsValid()) {
     return nullptr;
   }
   return Create(std::move(contents));
@@ -270,7 +270,7 @@ DOMArrayBuffer* DOMArrayBuffer::CreateUninitializedOrNull(
   ArrayBufferContents contents(num_elements, element_byte_size,
                                ArrayBufferContents::kNotShared,
                                ArrayBufferContents::kDontInitialize);
-  if (!contents.Data()) {
+  if (!contents.IsValid()) {
     return nullptr;
   }
   return Create(std::move(contents));

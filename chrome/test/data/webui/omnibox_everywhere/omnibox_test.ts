@@ -4,18 +4,24 @@
 
 import 'chrome://omnibox-everywhere.top-chrome/omnibox_everywhere.js';
 
+import {FreChinMode} from 'chrome://omnibox-everywhere.top-chrome/fre_chin.js';
+import type {FreChinElement} from 'chrome://omnibox-everywhere.top-chrome/fre_chin.js';
 import {ComposeboxProxyImpl, OmniboxEverywhereBrowserProxyImpl, SearchboxBrowserProxy} from 'chrome://omnibox-everywhere.top-chrome/omnibox_everywhere.js';
 import type {OmniboxEverywhereAppElement, OmniboxEverywhereComposeboxElement, OmniboxEverywhereOmniboxElement, OmniboxEverywhereProfileIconElement} from 'chrome://omnibox-everywhere.top-chrome/omnibox_everywhere.js';
 import {ComposeboxFile} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxState} from 'chrome://resources/cr_components/composebox/common.js';
 import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
-import {InputType, ModelMode, ToolMode} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
+import {ContextUploadErrorType, ContextUploadStatus, InputType, ModelMode, ToolMode} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
 import type {ContextualEntrypointButtonElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_button.js';
+import {browserProxyFactory, MostVisitedPageHandlerRemote} from 'chrome://resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import type {SearchAnimatedGlowElement} from 'chrome://resources/cr_components/search/animated_glow.js';
 import {GlowAnimationState} from 'chrome://resources/cr_components/search/constants.js';
 import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {SelectionDirection, SelectionLineState, SelectionStep} from 'chrome://resources/cr_components/searchbox/searchbox_selection_mixin.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {FreStage} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {TextDirection} from 'chrome://resources/mojo/mojo/public/mojom/base/text_direction.mojom-webui.js';
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -45,16 +51,18 @@ suite('OmniboxEverywhereOmniboxTest', () => {
       searchboxShowComposeEntrypoint: true,
       ntpRealboxDynamicAiModeButton: true,
       composeboxContextDragAndDropEnabled: true,
-      energyEffectAnimationEnabled: false,
+      energyEffectAnimationEnabled: true,
       searchboxCr23Theming: true,
       searchboxCr23SteadyStateShadow: false,
       contextManagementInComposeboxEnabled: false,
       profileAvatarUrl: 'chrome://theme/IDR_PROFILE_AVATAR_0',
       profileName: 'Test Profile',
       profileEmail: 'test@example.com',
+      profileTooltipHeader: 'Chrome profile',
       omniboxEverywhereProfilePickerEnabled: false,
       isEnterpriseProfile: false,
       searchboxLayoutMode: 'TallBottomContext',
+      searchboxMultiline: true,
     });
     testProxy = new TestSearchboxBrowserProxy();
     SearchboxBrowserProxy.setInstance(testProxy);
@@ -165,10 +173,13 @@ suite('OmniboxEverywhereOmniboxTest', () => {
                 'search-animated-glow');
         assertTrue(!!glow);
         assertEquals('OmniboxEverywhere', glow.entrypointName);
+        assertTrue(glow.energyEffectAnimationEnabled);
 
         const composeButton =
             omnibox.shadowRoot.querySelector('#composeButton');
         assertTrue(!!composeButton);
+        assertTrue(
+            composeButton.hasAttribute('energy-effect-animation-enabled'));
       });
 
   test(
@@ -330,6 +341,30 @@ suite('OmniboxEverywhereOmniboxTest', () => {
     assertEquals('', omnibox.$.input.inputElement.value);
   });
 
+  test('multiLineEnabled is initialized from loadTimeData', () => {
+    assertTrue(omnibox.multiLineEnabled);
+    assertTrue(omnibox.hasAttribute('multi-line-enabled'));
+  });
+
+  test(
+      'updateDropdownVisibility suppresses dropdown when multiline input ' +
+          'expands',
+      () => {
+        omnibox.result = createAutocompleteResultForTesting({
+          input: 'multiline text',
+          matches: [createSearchMatchForTesting()],
+        });
+        omnibox.dropdownIsVisible = true;
+
+        Object.defineProperty(omnibox.$.input.inputElement, 'scrollHeight', {
+          value: 64,
+          configurable: true,
+        });
+
+        omnibox.updateDropdownVisibility();
+        assertFalse(omnibox.dropdownIsVisible);
+      });
+
   test('respects isFuseboxEnabled false', async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
@@ -367,33 +402,39 @@ suite('OmniboxEverywhereOmniboxTest', () => {
       });
 
   test(
-      'updateAimPopupEligibility respects isFuseboxEnabled false capability ' +
-          'in loadTimeData',
+      'updateAimPopupEligibility updates dynamically when initially disabled',
       async () => {
         document.body.innerHTML = window.trustedTypes!.emptyHTML;
         loadTimeData.overrideValues({
           isFuseboxEnabled: false,
-          searchboxShowComposeEntrypoint: true,
+          searchboxShowComposeEntrypoint: false,
+          searchboxVoiceSearch: true,
+          searchboxLensSearch: true,
         });
         const testOmnibox =
             document.createElement('omnibox-everywhere-omnibox');
         document.body.appendChild(testOmnibox);
         await microtasksFinished();
 
-        assertTrue(!!testOmnibox.shadowRoot.querySelector('#composeButton'));
+        assertFalse(!!testOmnibox.shadowRoot.querySelector('#composeButton'));
         assertFalse(!!testOmnibox.shadowRoot.querySelector('#context'));
+        assertFalse(
+            !!testOmnibox.shadowRoot.querySelector('#lensSearchButton'));
+
+        testProxy.page.updateAimPopupEligibility(true);
+        await microtasksFinished();
+
+        assertTrue(!!testOmnibox.shadowRoot.querySelector('#composeButton'));
+        assertTrue(!!testOmnibox.shadowRoot.querySelector('#context'));
+        assertTrue(!!testOmnibox.shadowRoot.querySelector('#lensSearchButton'));
 
         testProxy.page.updateAimPopupEligibility(false);
         await microtasksFinished();
 
         assertFalse(!!testOmnibox.shadowRoot.querySelector('#composeButton'));
         assertFalse(!!testOmnibox.shadowRoot.querySelector('#context'));
-
-        testProxy.page.updateAimPopupEligibility(true);
-        await microtasksFinished();
-
-        assertTrue(!!testOmnibox.shadowRoot.querySelector('#composeButton'));
-        assertFalse(!!testOmnibox.shadowRoot.querySelector('#context'));
+        assertFalse(
+            !!testOmnibox.shadowRoot.querySelector('#lensSearchButton'));
       });
   test('dropdownIsVisible preserves bottomControls', async () => {
     const bottomControls =
@@ -433,7 +474,7 @@ suite('OmniboxEverywhereOmniboxTest', () => {
     const composeButton =
         omnibox.shadowRoot.querySelector<HTMLElement>('#composeButton');
     assertTrue(!!composeButton);
-    assertEquals('16px', window.getComputedStyle(composeButton).top);
+    assertEquals('36px', window.getComputedStyle(composeButton).marginInlineEnd);
 
     const profileIcon =
         omnibox.shadowRoot.querySelector<HTMLElement>('#profileIcon');
@@ -468,6 +509,229 @@ suite('OmniboxEverywhereOmniboxTest', () => {
 
         assertFalse(omnibox.isScreenshotMenuOpen);
         assertFalse(lensContainer.classList.contains('menu-open'));
+      });
+
+  test(
+      'clicking lens button again toggles it off without calling ' +
+          'showScreenshotMenu again',
+      async () => {
+        const lensButton =
+            omnibox.shadowRoot.querySelector<HTMLElement>('#lensSearchButton');
+        assertTrue(!!lensButton);
+        assertFalse(omnibox.isScreenshotMenuOpen);
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertTrue(omnibox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertFalse(omnibox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+      });
+
+  test(
+      'pointerdown on lens button while open suppresses reopening on click ' +
+          'even after onScreenshotMenuClosed',
+      async () => {
+        const lensButton =
+            omnibox.shadowRoot.querySelector<HTMLElement>('#lensSearchButton');
+        assertTrue(!!lensButton);
+
+        lensButton.click();
+        await microtasksFinished();
+        assertTrue(omnibox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+        lensButton.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          composed: true,
+          button: 0,
+        }));
+        testProxy.page.onScreenshotMenuClosed();
+        await microtasksFinished();
+        assertFalse(omnibox.isScreenshotMenuOpen);
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertFalse(omnibox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+      });
+
+  test(
+      'non-primary pointerdown on lens button does not suppress reopening',
+      async () => {
+        const lensButton =
+            omnibox.shadowRoot.querySelector<HTMLElement>('#lensSearchButton');
+        assertTrue(!!lensButton);
+
+        lensButton.click();
+        await microtasksFinished();
+        assertTrue(omnibox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+        lensButton.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          composed: true,
+          button: 2,
+        }));
+        testProxy.page.onScreenshotMenuClosed();
+        await microtasksFinished();
+        assertFalse(omnibox.isScreenshotMenuOpen);
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertTrue(omnibox.isScreenshotMenuOpen);
+        assertEquals(2, testProxy.handler.getCallCount('showScreenshotMenu'));
+      });
+
+  test('pointercancel on lens button resets suppression', async () => {
+    const lensButton =
+        omnibox.shadowRoot.querySelector<HTMLElement>('#lensSearchButton');
+    assertTrue(!!lensButton);
+
+    lensButton.click();
+    await microtasksFinished();
+    assertTrue(omnibox.isScreenshotMenuOpen);
+    assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+    lensButton.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      composed: true,
+      button: 0,
+    }));
+    lensButton.dispatchEvent(new PointerEvent('pointercancel', {
+      bubbles: true,
+      composed: true,
+    }));
+    testProxy.page.onScreenshotMenuClosed();
+    await microtasksFinished();
+    assertFalse(omnibox.isScreenshotMenuOpen);
+
+    lensButton.click();
+    await microtasksFinished();
+
+    assertTrue(omnibox.isScreenshotMenuOpen);
+    assertEquals(2, testProxy.handler.getCallCount('showScreenshotMenu'));
+  });
+
+  test(
+      'stepCyclesSelection returns false to cycle within popup like Omnibox',
+      () => {
+        const match = createSearchMatchForTesting();
+        const result = createAutocompleteResultForTesting({matches: [match]});
+        const selection = {
+          line: 0,
+          state: SelectionLineState.kNormal,
+          actionIndex: 0,
+        };
+
+        assertFalse(omnibox.stepCyclesSelection(
+            result, selection, SelectionDirection.kForward,
+            SelectionStep.kStateOrLine));
+        assertFalse(omnibox.stepCyclesSelection(
+            result, selection, SelectionDirection.kBackward,
+            SelectionStep.kStateOrLine));
+      });
+
+  test('showContextEntrypoint reflects isFuseboxEnabled', async () => {
+    assertTrue(omnibox.showContextEntrypoint);
+
+    testProxy.page.updateAimPopupEligibility(false);
+    await microtasksFinished();
+
+    assertFalse(omnibox.showContextEntrypoint);
+  });
+
+  test(
+      'Tab navigates to contextual entrypoint when dropdown is visible',
+      async () => {
+        omnibox.virtualFocusEnabled = true;
+        omnibox.dropdownIsVisible = true;
+        const match =
+            createSearchMatchForTesting({allowedToBeDefaultMatch: true});
+        const result = createAutocompleteResultForTesting({matches: [match]});
+        omnibox.activeQueryId = 0;
+        testProxy.page.autocompleteResultChanged(result);
+        await microtasksFinished();
+
+        assertEquals(0, omnibox.selection.line);
+        assertEquals(SelectionLineState.kNormal, omnibox.selection.state);
+
+        // Tab 1 -> AIM button.
+        const tabEvent1 = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        omnibox.$.input.inputElement.dispatchEvent(tabEvent1);
+        await microtasksFinished();
+        assertTrue(tabEvent1.defaultPrevented);
+        assertEquals(
+            SelectionLineState.kFocusedButtonAim, omnibox.selection.state);
+
+        // Tab 2 -> Contextual entrypoint button.
+        const tabEvent2 = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        omnibox.$.input.inputElement.dispatchEvent(tabEvent2);
+        await microtasksFinished();
+        assertTrue(tabEvent2.defaultPrevented);
+        assertEquals(
+            SelectionLineState.kFocusedButtonContextEntrypoint,
+            omnibox.selection.state);
+
+        const entrypoint =
+            omnibox.shadowRoot.querySelector<ContextualEntrypointButtonElement>(
+                '#context')!;
+        assertTrue(entrypoint.hasVirtualFocus);
+      });
+
+  test(
+      'Enter on virtually focused contextual entrypoint triggers ' +
+          'showContextActionMenu',
+      async () => {
+        omnibox.virtualFocusEnabled = true;
+        omnibox.dropdownIsVisible = true;
+        const match = createSearchMatchForTesting();
+        omnibox.activeQueryId = 0;
+        testProxy.page.autocompleteResultChanged(
+            createAutocompleteResultForTesting({
+              queryId: 0,
+              input: 'query',
+              matches: [match],
+            }));
+        await microtasksFinished();
+
+        omnibox.setSelection({
+          line: -1,
+          state: SelectionLineState.kFocusedButtonContextEntrypoint,
+          actionIndex: 0,
+        });
+        await microtasksFinished();
+
+        const enterEvent = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        omnibox.$.input.inputElement.dispatchEvent(enterEvent);
+        await microtasksFinished();
+
+        assertTrue(enterEvent.defaultPrevented);
+        const args = await testEverywhereProxy.handler.whenCalled(
+            'showContextActionMenu');
+        assertTrue(args !== undefined);
       });
 });
 
@@ -508,7 +772,7 @@ suite('OmniboxEverywhereComposeboxTest', () => {
   });
 
   test('configures animated glow on composebox correctly', async () => {
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(resolve => requestAnimationFrame(resolve));
     await microtasksFinished();
     const glow = composebox.shadowRoot.querySelector<SearchAnimatedGlowElement>(
         '#animatedSearchElement');
@@ -524,7 +788,7 @@ suite('OmniboxEverywhereComposeboxTest', () => {
         composebox.playGlowAnimation(/*timeoutMs=*/ 10);
         assertEquals(GlowAnimationState.NONE, composebox.animationState);
 
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(resolve => requestAnimationFrame(resolve));
         await microtasksFinished();
 
         // After rAF callback runs, animationState is EXPANDING.
@@ -805,6 +1069,94 @@ suite('OmniboxEverywhereComposeboxTest', () => {
         assertFalse(composebox.isScreenshotMenuOpen);
         assertFalse(lensContainer.classList.contains('menu-open'));
       });
+
+  test(
+      'clicking lens button in composebox again toggles it off without ' +
+          'calling showScreenshotMenu again',
+      async () => {
+        const lensButton = composebox.shadowRoot.querySelector<HTMLElement>(
+            '#lensSearchButton');
+        assertTrue(!!lensButton);
+        assertFalse(composebox.isScreenshotMenuOpen);
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertTrue(composebox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertFalse(composebox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+      });
+
+  test(
+      'pointerdown on composebox lens button while open suppresses ' +
+          'reopening on click even after onScreenshotMenuClosed',
+      async () => {
+        const lensButton = composebox.shadowRoot.querySelector<HTMLElement>(
+            '#lensSearchButton');
+        assertTrue(!!lensButton);
+
+        lensButton.click();
+        await microtasksFinished();
+        assertTrue(composebox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+
+        lensButton.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          composed: true,
+          button: 0,
+        }));
+        testProxy.page.onScreenshotMenuClosed();
+        await microtasksFinished();
+        assertFalse(composebox.isScreenshotMenuOpen);
+
+        lensButton.click();
+        await microtasksFinished();
+
+        assertFalse(composebox.isScreenshotMenuOpen);
+        assertEquals(1, testProxy.handler.getCallCount('showScreenshotMenu'));
+      });
+
+  test('deleting file context queries autocomplete', async () => {
+    const token = 'test-token';
+    const file = ComposeboxFile.createFromFile(
+        token, {name: 'file.png', type: 'image/png'});
+    composebox.onFileContextAdded(file);
+    await microtasksFinished();
+
+    testProxy.handler.resetResolver('queryAutocomplete');
+    composebox.deleteFile(token, /*fromUserAction=*/ true);
+    await microtasksFinished();
+
+    assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
+    const args = testProxy.handler.getArgs('queryAutocomplete')[0];
+    assertEquals('', args[2]);
+    assertFalse(args[3]);
+    assertEquals(null, composebox.result);
+  });
+
+  test('context upload replaced queries autocomplete', async () => {
+    const token = 'test-token';
+    const file = ComposeboxFile.createFromFile(
+        token, {name: 'file.png', type: 'image/png'});
+    composebox.onFileContextAdded(file);
+    await microtasksFinished();
+
+    testProxy.handler.resetResolver('queryAutocomplete');
+    composebox.onContextualInputStatusChanged(
+        token, ContextUploadStatus.kUploadReplaced, null);
+    await microtasksFinished();
+
+    assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
+    const args = testProxy.handler.getArgs('queryAutocomplete')[0];
+    assertEquals('', args[2]);
+    assertFalse(args[3]);
+    assertEquals(null, composebox.result);
+  });
 });
 
 declare global {
@@ -822,6 +1174,7 @@ class MockSpeechRecognition {
 suite('OmniboxEverywhereAppTest', () => {
   let app: OmniboxEverywhereAppElement;
   let testProxy: TestSearchboxBrowserProxy;
+  let testEverywhereProxy: TestOmniboxEverywhereBrowserProxy;
   let mockPageHandler: TestMock<PageHandlerRemote>&PageHandlerRemote;
 
   setup(async () => {
@@ -846,14 +1199,24 @@ suite('OmniboxEverywhereAppTest', () => {
       profileName: 'Test Profile',
       profileEmail: 'test@example.com',
       omniboxEverywhereProfilePickerEnabled: false,
-      omniboxEverywhereShowShortcuts: true,
-      initialShowFre: false,
+      smallLoomnibox: true,
+      omniboxEverywhereMostVisitedHideTitle: true,
+      initialFreStage: 0,
       composeboxCancelButtonTitle: 'Close AI Mode',
       composeboxCancelButtonTitleInput: 'Clear text',
     });
 
+    const mostVisitedHandler = TestMock.fromClass(MostVisitedPageHandlerRemote);
+    const {instance: mostVisitedInstance} =
+        browserProxyFactory.createForTest(mostVisitedHandler);
+    browserProxyFactory.setInstance(mostVisitedInstance);
+    mostVisitedHandler.setResultFor(
+        'getMostVisitedExpandedState', Promise.resolve({isExpanded: false}));
+
     testProxy = new TestSearchboxBrowserProxy();
     SearchboxBrowserProxy.setInstance(testProxy);
+    testEverywhereProxy = new TestOmniboxEverywhereBrowserProxy();
+    OmniboxEverywhereBrowserProxyImpl.setInstance(testEverywhereProxy);
     mockPageHandler = TestMock.fromClass(PageHandlerRemote);
     ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
         mockPageHandler,
@@ -913,6 +1276,13 @@ suite('OmniboxEverywhereAppTest', () => {
         await microtasksFinished();
         assertTrue(voiceSearch.classList.contains('permission-prompt-showing'));
         assertTrue(glow.classList.contains('permission-prompt-showing'));
+        assertTrue(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '200px',
+            app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '100px',
+            app.style.getPropertyValue('--voice_search_minimum_width'));
 
         // Verify permission prompt closed state is handled.
         voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
@@ -928,6 +1298,11 @@ suite('OmniboxEverywhereAppTest', () => {
         assertFalse(
             voiceSearch.classList.contains('permission-prompt-showing'));
         assertFalse(glow.classList.contains('permission-prompt-showing'));
+        assertFalse(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_width'));
       });
 
   test(
@@ -979,6 +1354,13 @@ suite('OmniboxEverywhereAppTest', () => {
         await microtasksFinished();
         assertTrue(voiceSearch.classList.contains('permission-prompt-showing'));
         assertTrue(glow.classList.contains('permission-prompt-showing'));
+        assertTrue(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '200px',
+            app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '100px',
+            app.style.getPropertyValue('--voice_search_minimum_width'));
 
         // Verify permission prompt closed state is handled in composebox mode.
         voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
@@ -994,6 +1376,11 @@ suite('OmniboxEverywhereAppTest', () => {
         assertFalse(
             voiceSearch.classList.contains('permission-prompt-showing'));
         assertFalse(glow.classList.contains('permission-prompt-showing'));
+        assertFalse(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_width'));
       });
 
   test(
@@ -1059,6 +1446,93 @@ suite('OmniboxEverywhereAppTest', () => {
     assertTrue(!!restoredSearchbox);
     assertEquals('', restoredSearchbox.$.input.inputElement.value);
   });
+
+  test(
+      'disabling aim popup eligibility closes active composebox mode',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: 'draft text', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!composebox);
+
+        testProxy.page.updateAimPopupEligibility(false);
+        await microtasksFinished();
+
+        assertFalse(
+            !!app.shadowRoot.querySelector('omnibox-everywhere-composebox'));
+        const restoredSearchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        assertTrue(!!restoredSearchbox);
+      });
+
+  test(
+      'mode transitions call setIsComposebox on browser proxy handler',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: '', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        let isComposebox =
+            await testEverywhereProxy.handler.whenCalled('setIsComposebox');
+        assertTrue(isComposebox);
+        testEverywhereProxy.handler.reset();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!composebox);
+
+        composebox.dispatchEvent(new CustomEvent('close-composebox', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        isComposebox =
+            await testEverywhereProxy.handler.whenCalled('setIsComposebox');
+        assertFalse(isComposebox);
+        testEverywhereProxy.handler.reset();
+
+        // Reopen composebox and verify query submission cleans up UI without
+        // calling setIsComposebox across Mojo.
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: 'query', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+        isComposebox =
+            await testEverywhereProxy.handler.whenCalled('setIsComposebox');
+        assertTrue(isComposebox);
+        testEverywhereProxy.handler.reset();
+
+        const activeComposebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!activeComposebox);
+        activeComposebox.dispatchEvent(new CustomEvent('composebox-submit', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertEquals(
+            0, testEverywhereProxy.handler.getCallCount('setIsComposebox'));
+        const restoredSearchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox');
+        assertTrue(!!restoredSearchbox);
+      });
 
   test(
       'voice search final result in composebox submits query and closes dialog',
@@ -1186,34 +1660,68 @@ suite('OmniboxEverywhereAppTest', () => {
     assertFalse(!!dialog);
   });
 
-  test('voice permission changed updates CSS class', async () => {
-    const searchbox =
-        app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
-    searchbox.dispatchEvent(
-        new CustomEvent('open-voice-search', {bubbles: true, composed: true}));
-    await microtasksFinished();
+  test(
+      'voice permission changed updates CSS class and dimensions', async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent(
+            'open-voice-search', {bubbles: true, composed: true}));
+        await microtasksFinished();
 
-    const voiceSearch = app.shadowRoot.querySelector('#voiceSearch')!;
-    assertTrue(!!voiceSearch);
+        const voiceSearch = app.shadowRoot.querySelector('#voiceSearch')!;
+        assertTrue(!!voiceSearch);
+        const glow = app.shadowRoot.querySelector<SearchAnimatedGlowElement>(
+            '#voiceSearchGlow');
+        assertTrue(!!glow);
 
-    voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
-      detail: {isOpened: true},
-      bubbles: true,
-      composed: true,
-    }));
-    await microtasksFinished();
+        // Initial state: no prompt class or minimum dimensions set on host.
+        assertFalse(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_width'));
 
-    assertTrue(voiceSearch.classList.contains('permission-prompt-showing'));
+        voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
+          detail: {
+            isOpened: true,
+            height: 120,
+            width: 250,
+          },
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
 
-    voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
-      detail: {isOpened: false},
-      bubbles: true,
-      composed: true,
-    }));
-    await microtasksFinished();
+        assertTrue(voiceSearch.classList.contains('permission-prompt-showing'));
+        assertTrue(glow.classList.contains('permission-prompt-showing'));
+        assertTrue(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '120px',
+            app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '250px',
+            app.style.getPropertyValue('--voice_search_minimum_width'));
 
-    assertFalse(voiceSearch.classList.contains('permission-prompt-showing'));
-  });
+        voiceSearch.dispatchEvent(new CustomEvent('voice-permission-changed', {
+          detail: {
+            isOpened: false,
+            height: 0,
+            width: 0,
+          },
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(
+            voiceSearch.classList.contains('permission-prompt-showing'));
+        assertFalse(glow.classList.contains('permission-prompt-showing'));
+        assertFalse(app.classList.contains('has-permission-prompt'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_height'));
+        assertEquals(
+            '', app.style.getPropertyValue('--voice_search_minimum_width'));
+      });
 
   // TODO(crbug.com/552283274): Flaky on Mac.
   // <if expr="not is_macosx">
@@ -1224,11 +1732,37 @@ suite('OmniboxEverywhereAppTest', () => {
         document.body.innerHTML = window.trustedTypes!.emptyHTML;
         loadTimeData.overrideValues({
           omniboxEverywhereMostVisitedEnabled: true,
-          omniboxEverywhereShowShortcuts: true,
-          initialShowFre: false,
+          initialFreStage: 0,
         });
+        const mvHandler = TestMock.fromClass(MostVisitedPageHandlerRemote);
+        const {instance: mvInstance, remote: mvRemote} =
+            browserProxyFactory.createForTest(mvHandler);
+        browserProxyFactory.setInstance(mvInstance);
+        mvHandler.setResultFor(
+            'getMostVisitedExpandedState',
+            Promise.resolve({isExpanded: false}));
+
         const appWithMv = document.createElement('omnibox-everywhere-app');
         document.body.appendChild(appWithMv);
+        await microtasksFinished();
+
+        const testTiles = [{
+          title: 'Google',
+          titleDirection: TextDirection.LEFT_TO_RIGHT,
+          url: 'https://www.google.com/',
+          source: 0,
+          titleSource: 0,
+          isQueryTile: false,
+          allowUserEdit: false,
+          allowUserDelete: false,
+        }];
+        mvRemote.setMostVisitedInfo({
+          customLinksEnabled: false,
+          enterpriseShortcutsEnabled: false,
+          tiles: testTiles,
+          visible: true,
+        });
+        await mvRemote.$.flushForTesting();
         await microtasksFinished();
 
         const searchbox =
@@ -1270,6 +1804,196 @@ suite('OmniboxEverywhereAppTest', () => {
         assertEquals('flex', window.getComputedStyle(mvContainer).display);
       });
   // </if>
+
+  test('dynamic MVT visibility updates container visibility', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      omniboxEverywhereMostVisitedEnabled: true,
+      initialFreStage: 0,
+    });
+    const mvHandler = TestMock.fromClass(MostVisitedPageHandlerRemote);
+    const {instance: mvInstance, remote: mvRemote} =
+        browserProxyFactory.createForTest(mvHandler);
+    browserProxyFactory.setInstance(mvInstance);
+    mvHandler.setResultFor(
+        'getMostVisitedExpandedState', Promise.resolve({isExpanded: false}));
+
+    const appWithMv = document.createElement('omnibox-everywhere-app');
+    document.body.appendChild(appWithMv);
+    await microtasksFinished();
+
+    const mvContainer = appWithMv.shadowRoot.querySelector<HTMLElement>(
+        '#mostVisitedContainer');
+    const mostVisited = appWithMv.shadowRoot.querySelector('cr-most-visited');
+    assertTrue(!!mvContainer);
+    assertTrue(!!mostVisited);
+    assertTrue(mvContainer.hidden);
+
+    const testTiles = [{
+      title: 'Google',
+      titleDirection: TextDirection.LEFT_TO_RIGHT,
+      url: 'https://www.google.com/',
+      source: 0,
+      titleSource: 0,
+      isQueryTile: false,
+      allowUserEdit: false,
+      allowUserDelete: false,
+    }];
+
+    mvRemote.setMostVisitedInfo({
+      customLinksEnabled: false,
+      enterpriseShortcutsEnabled: false,
+      tiles: testTiles,
+      visible: true,
+    });
+    await mvRemote.$.flushForTesting();
+    await microtasksFinished();
+
+    assertFalse(mvContainer.hidden);
+
+    mvRemote.setMostVisitedInfo({
+      customLinksEnabled: false,
+      enterpriseShortcutsEnabled: false,
+      tiles: testTiles,
+      visible: false,
+    });
+    await mvRemote.$.flushForTesting();
+    await microtasksFinished();
+
+    assertTrue(mvContainer.hidden);
+  });
+
+  test(
+      'MVT remains mounted and hidden during FRE, unhiding when FRE dismissed',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        loadTimeData.overrideValues({
+          omniboxEverywhereMostVisitedEnabled: true,
+          initialFreStage: FreStage.kIntroModal,
+        });
+        const mvHandler = TestMock.fromClass(MostVisitedPageHandlerRemote);
+        const {instance: mvInstance, remote: mvRemote} =
+            browserProxyFactory.createForTest(mvHandler);
+        browserProxyFactory.setInstance(mvInstance);
+        mvHandler.setResultFor(
+            'getMostVisitedExpandedState',
+            Promise.resolve({isExpanded: false}));
+
+        const appWithMv = document.createElement('omnibox-everywhere-app');
+        document.body.appendChild(appWithMv);
+        await microtasksFinished();
+
+        const mvContainer = appWithMv.shadowRoot.querySelector<HTMLElement>(
+            '#mostVisitedContainer');
+        const mostVisited =
+            appWithMv.shadowRoot.querySelector('cr-most-visited');
+        assertTrue(!!mvContainer);
+        assertTrue(!!mostVisited);
+        assertTrue(mvContainer.hidden);
+
+        const testTiles = [{
+          title: 'Google',
+          titleDirection: TextDirection.LEFT_TO_RIGHT,
+          url: 'https://www.google.com/',
+          source: 0,
+          titleSource: 0,
+          isQueryTile: false,
+          allowUserEdit: false,
+          allowUserDelete: false,
+        }];
+
+        mvRemote.setMostVisitedInfo({
+          customLinksEnabled: false,
+          enterpriseShortcutsEnabled: false,
+          tiles: testTiles,
+          visible: true,
+        });
+        await mvRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        // Still hidden because FRE modal is active.
+        assertTrue(mvContainer.hidden);
+
+        // Transition FRE to kNone.
+        testProxy.page.setFreState({
+          stage: FreStage.kNone,
+          currentHotkeyTokens: [],
+        });
+        await microtasksFinished();
+
+        // Now unhidden.
+        assertFalse(mvContainer.hidden);
+      });
+
+  test('smallLoomnibox controls max-tiles and attribute', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      omniboxEverywhereMostVisitedEnabled: true,
+      smallLoomnibox: true,
+      initialFreStage: 0,
+    });
+    const smallApp = document.createElement('omnibox-everywhere-app');
+    document.body.appendChild(smallApp);
+    await microtasksFinished();
+
+    assertTrue(smallApp.hasAttribute('small-loomnibox'));
+    const mv = smallApp.shadowRoot.querySelector('cr-most-visited')!;
+    assertTrue(!!mv);
+    assertEquals('5', mv.getAttribute('max-tiles'));
+
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      omniboxEverywhereMostVisitedEnabled: true,
+      smallLoomnibox: false,
+      initialFreStage: 0,
+    });
+    const normalApp = document.createElement('omnibox-everywhere-app');
+    document.body.appendChild(normalApp);
+    await microtasksFinished();
+
+    assertFalse(normalApp.hasAttribute('small-loomnibox'));
+    const normalMv = normalApp.shadowRoot.querySelector('cr-most-visited')!;
+    assertTrue(!!normalMv);
+    assertEquals('7', normalMv.getAttribute('max-tiles'));
+  });
+
+  test(
+      'most visited tiles hide-title reflects hideTitle_ property',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        loadTimeData.overrideValues({
+          omniboxEverywhereMostVisitedEnabled: true,
+          omniboxEverywhereShowShortcuts: true,
+          omniboxEverywhereMostVisitedHideTitle: true,
+          initialFreStage: 0,
+        });
+        const appWithHiddenTitles =
+            document.createElement('omnibox-everywhere-app');
+        document.body.appendChild(appWithHiddenTitles);
+        await microtasksFinished();
+
+        const mvHidden =
+            appWithHiddenTitles.shadowRoot.querySelector('cr-most-visited')!;
+        assertTrue(!!mvHidden);
+        assertTrue(mvHidden.hasAttribute('hide-title'));
+
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        loadTimeData.overrideValues({
+          omniboxEverywhereMostVisitedEnabled: true,
+          omniboxEverywhereShowShortcuts: true,
+          omniboxEverywhereMostVisitedHideTitle: false,
+          initialFreStage: 0,
+        });
+        const appWithVisibleTitles =
+            document.createElement('omnibox-everywhere-app');
+        document.body.appendChild(appWithVisibleTitles);
+        await microtasksFinished();
+
+        const mvShown =
+            appWithVisibleTitles.shadowRoot.querySelector('cr-most-visited')!;
+        assertTrue(!!mvShown);
+        assertFalse(mvShown.hasAttribute('hide-title'));
+      });
 
   test(
       'close-composebox event exits composebox mode and focuses searchbox',
@@ -1373,6 +2097,95 @@ suite('OmniboxEverywhereAppTest', () => {
 
         assertFalse(app.hasAttribute('show-voice-search-overlay_'));
       });
+
+  test(
+      'window focus event focuses searchbox input in searchbox mode',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        assertTrue(!!searchbox);
+
+        let focusCalled = false;
+        searchbox.focusInput = () => {
+          focusCalled = true;
+        };
+
+        window.dispatchEvent(new Event('focus'));
+        await microtasksFinished();
+
+        assertTrue(focusCalled);
+      });
+
+  test(
+      'window focus event focuses composebox input in composebox mode',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: '', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!composebox);
+
+        let focusCalled = false;
+        composebox.focusInput = () => {
+          focusCalled = true;
+        };
+
+        window.dispatchEvent(new Event('focus'));
+        await microtasksFinished();
+
+        assertTrue(focusCalled);
+      });
+
+  test(
+      'window focus event does not focus input when voice search dialog is ' +
+          'open',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent(
+            'open-voice-search', {bubbles: true, composed: true}));
+        await microtasksFinished();
+
+        let focusCalled = false;
+        searchbox.focusInput = () => {
+          focusCalled = true;
+        };
+
+        window.dispatchEvent(new Event('focus'));
+        await microtasksFinished();
+
+        assertFalse(focusCalled);
+      });
+
+  test(
+      'window focus event does not focus input when FRE intro modal is open',
+      async () => {
+        testProxy.page.setFreState({
+          stage: FreStage.kIntroModal,
+          currentHotkeyTokens: [],
+        });
+        await microtasksFinished();
+
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        let focusCalled = false;
+        searchbox.focusInput = () => {
+          focusCalled = true;
+        };
+
+        window.dispatchEvent(new Event('focus'));
+        await microtasksFinished();
+
+        assertFalse(focusCalled);
+      });
+
   test('addFileContext Mojo event updates composebox thumbnail', async () => {
     const omniboxElement =
         app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
@@ -1412,6 +2225,156 @@ suite('OmniboxEverywhereAppTest', () => {
         Array.from(composeboxElement.attachedContext.values())[0]!;
     assertEquals('data:image/png;base64,image_data', updatedFile.dataUrl);
   });
+
+  test(
+      'dismissing shortcut setup chin calls dismissFre; reminder chin ' +
+          'renders tokens',
+      async () => {
+        testProxy.page.setFreState({
+          stage: FreStage.kShortcutSetupChin,
+          currentHotkeyTokens: ['Alt', 'Space'],
+        });
+        await microtasksFinished();
+
+        const setupChin = app.shadowRoot?.querySelector<FreChinElement>(
+            '#freShortcutSetupChin');
+        assertTrue(!!setupChin);
+        assertFalse(setupChin.classList.contains('dismissing'));
+
+        const closeBtn =
+            setupChin.shadowRoot?.querySelector<HTMLElement>('.close-button');
+        assertTrue(!!closeBtn);
+        closeBtn.click();
+        await microtasksFinished();
+
+        setupChin.dispatchEvent(new AnimationEvent('animationend', {
+          animationName: 'fadeOutFre',
+        }));
+        await microtasksFinished();
+
+        const dismissedStage = await testProxy.handler.whenCalled('dismissFre');
+        assertEquals(FreStage.kShortcutSetupChin, dismissedStage);
+
+        testProxy.page.setFreState({
+          stage: FreStage.kShortcutReminderChin,
+          currentHotkeyTokens: ['Alt', 'Space'],
+        });
+        await microtasksFinished();
+
+        const reminderChin = app.shadowRoot?.querySelector<FreChinElement>(
+            '#freShortcutReminderChin');
+        assertTrue(!!reminderChin);
+        assertFalse(reminderChin.classList.contains('dismissing'));
+        assertEquals(FreChinMode.SHORTCUT_REMINDER, reminderChin.mode);
+        assertEquals(2, reminderChin.hotkeyTokens.length);
+        assertEquals('Alt', reminderChin.hotkeyTokens[0]);
+        assertEquals('Space', reminderChin.hotkeyTokens[1]);
+      });
+
+  test(
+      'escape key with text in composebox clears text and stays in composebox',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: 'hello world', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!composebox);
+        assertEquals('hello world', composebox.input);
+
+        window.dispatchEvent(new KeyboardEvent(
+            'keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        await microtasksFinished();
+
+        assertTrue(
+            !!app.shadowRoot.querySelector('omnibox-everywhere-composebox'));
+        assertEquals('', composebox.input);
+        assertEquals(0, testProxy.handler.getCallCount('onEscapePressed'));
+      });
+
+  test(
+      'escape key with empty composebox exits composebox mode to searchbox',
+      async () => {
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        searchbox.dispatchEvent(new CustomEvent('open-composebox', {
+          detail: {text: '', files: [], mode: 0, model: 0},
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox')!;
+        assertTrue(!!composebox);
+        assertEquals('', composebox.input);
+
+        window.dispatchEvent(new KeyboardEvent(
+            'keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        await microtasksFinished();
+
+        assertFalse(
+            !!app.shadowRoot.querySelector('omnibox-everywhere-composebox'));
+        const restoredSearchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        assertTrue(!!restoredSearchbox);
+        assertEquals(0, testProxy.handler.getCallCount('onEscapePressed'));
+      });
+
+  test('escape key with text in searchbox clears searchbox text', async () => {
+    const searchbox =
+        app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+    searchbox.setInputText('searchbox query');
+    assertEquals('searchbox query', searchbox.$.input.getInputValue());
+
+    window.dispatchEvent(new KeyboardEvent(
+        'keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+    await microtasksFinished();
+
+    assertEquals('', searchbox.$.input.getInputValue());
+    assertEquals(0, testProxy.handler.getCallCount('onEscapePressed'));
+  });
+
+  test('escape key with empty searchbox calls onEscapePressed', async () => {
+    const searchbox =
+        app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+    assertEquals('', searchbox.$.input.getInputValue());
+
+    window.dispatchEvent(new KeyboardEvent(
+        'keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+    await microtasksFinished();
+
+    assertEquals(1, testProxy.handler.getCallCount('onEscapePressed'));
+  });
+
+  test(
+      'escape key with empty searchbox when FRE modal is showing calls ' +
+          'onEscapePressed',
+      async () => {
+        testProxy.page.setFreState({
+          stage: FreStage.kIntroModal,
+          currentHotkeyTokens: [],
+        });
+        await testProxy.page.$.flushForTesting();
+        await microtasksFinished();
+
+        assertTrue(!!app.shadowRoot.querySelector('fre-modal'));
+        const searchbox =
+            app.shadowRoot.querySelector('omnibox-everywhere-omnibox')!;
+        assertEquals('', searchbox.$.input.getInputValue());
+
+        window.dispatchEvent(new KeyboardEvent(
+            'keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        await microtasksFinished();
+
+        assertEquals(1, testProxy.handler.getCallCount('onEscapePressed'));
+      });
 });
 
 suite('OmniboxEverywhereProfileIconTest', () => {
@@ -1424,6 +2387,7 @@ suite('OmniboxEverywhereProfileIconTest', () => {
       profileAvatarUrl: 'chrome://theme/IDR_PROFILE_AVATAR_0',
       profileName: 'Test Profile',
       profileEmail: 'test@example.com',
+      profileTooltipHeader: 'Chrome profile',
       omniboxEverywhereProfilePickerEnabled: profilePickerEnabled,
       isEnterpriseProfile: false,
     });
@@ -1441,9 +2405,15 @@ suite('OmniboxEverywhereProfileIconTest', () => {
         const container = profileIcon.shadowRoot.querySelector<HTMLElement>(
             '#profileContainer');
         assertTrue(!!container);
+        assertEquals('BUTTON', container.tagName);
         assertFalse(container.classList.contains('clickable'));
+        assertEquals('true', container.getAttribute('aria-disabled'));
         assertEquals(
-            'Test Profile\ntest@example.com', container.getAttribute('title'));
+            'Chrome profile Test Profile test@example.com',
+            container.getAttribute('aria-label'));
+        assertEquals(
+            'Chrome profile\nTest Profile\ntest@example.com',
+            container.getAttribute('title'));
       });
 
   test('profile icon is clickable when profile picker is enabled', async () => {
@@ -1452,9 +2422,19 @@ suite('OmniboxEverywhereProfileIconTest', () => {
         profileIcon.shadowRoot.querySelector<HTMLElement>('#profileContainer');
     assertTrue(!!container);
     assertTrue(container.classList.contains('clickable'));
-    assertEquals('pointer', window.getComputedStyle(container).cursor);
+    assertEquals('false', container.getAttribute('aria-disabled'));
     assertEquals(
-        'Test Profile\ntest@example.com', container.getAttribute('title'));
+        'Chrome profile\nTest Profile\ntest@example.com',
+        container.getAttribute('title'));
+  });
+
+  test('profile icon image has correct size', async () => {
+    await createProfileIcon(false);
+    const img =
+        profileIcon.shadowRoot.querySelector<HTMLElement>('#profileIcon');
+    assertTrue(!!img);
+    assertEquals('20px', window.getComputedStyle(img).width);
+    assertEquals('20px', window.getComputedStyle(img).height);
   });
 
   test('renders enterprise badge when profile is enterprise', async () => {
@@ -1558,6 +2538,10 @@ suite('OmniboxEverywhereContextMenuTest', () => {
         const composebox =
             app.shadowRoot.querySelector('omnibox-everywhere-composebox');
         assertTrue(!!composebox);
+        assertEquals(1, testProxy.handler.getCallCount('setActiveToolMode'));
+        assertEquals(
+            ToolMode.kDeepSearch,
+            testProxy.handler.getArgs('setActiveToolMode')[0][0]);
       });
 
   test(
@@ -1612,5 +2596,90 @@ suite('OmniboxEverywhereContextMenuTest', () => {
         assertTrue(!!attachment);
         assertEquals('test_image.png', attachment.name);
         assertEquals('image/png', attachment.type);
+      });
+
+  test(
+      'file upload validation error displays error scrim in composebox',
+      async () => {
+        const testToken = '00000000000000010000000000000002';
+        testEverywhereProxy.page.openComposebox({
+          tool: ToolMode.kUnspecified,
+          model: ModelMode.kUnspecified,
+          tab: null,
+          fileToken: testToken,
+          fileInfo: {
+            fileName: 'large_image.png',
+            mimeType: 'image/png',
+            imageDataUrl: 'data:image/png;base64,AAAA',
+            thumbnailUrl: null,
+            isDeletable: true,
+            selectionTime: new Date(),
+          },
+        });
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox');
+        assertTrue(!!composebox);
+
+        testProxy.page.onContextualInputStatusChanged(
+            testToken, ContextUploadStatus.kValidationFailed,
+            ContextUploadErrorType.kBrowserProcessingFileTooLargeError);
+        await microtasksFinished();
+
+        const errorScrim =
+            composebox.shadowRoot.querySelector('ntp-error-scrim');
+        assertTrue(!!errorScrim);
+
+        errorScrim.dispatchEvent(new CustomEvent('dismiss-error-scrim', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(!!composebox.shadowRoot.querySelector('ntp-error-scrim'));
+      });
+
+  test(
+      'max images exceeded error displays error scrim and button dismisses',
+      async () => {
+        const testToken = '00000000000000010000000000000003';
+        testEverywhereProxy.page.openComposebox({
+          tool: ToolMode.kUnspecified,
+          model: ModelMode.kUnspecified,
+          tab: null,
+          fileToken: testToken,
+          fileInfo: {
+            fileName: 'eleventh_image.png',
+            mimeType: 'image/png',
+            imageDataUrl: null,
+            thumbnailUrl: null,
+            isDeletable: true,
+            selectionTime: new Date(),
+          },
+        });
+        await microtasksFinished();
+
+        const composebox =
+            app.shadowRoot.querySelector('omnibox-everywhere-composebox');
+        assertTrue(!!composebox);
+
+        testProxy.page.onContextualInputStatusChanged(
+            testToken, ContextUploadStatus.kValidationFailed,
+            ContextUploadErrorType.kBrowserProcessingMaxImagesExceededError);
+        await microtasksFinished();
+
+        const errorScrim =
+            composebox.shadowRoot.querySelector('ntp-error-scrim');
+        assertTrue(!!errorScrim);
+
+        const dismissBtn = errorScrim.shadowRoot.querySelector<HTMLElement>(
+            '#dismissErrorButton');
+        assertTrue(!!dismissBtn);
+        dismissBtn.click();
+        await microtasksFinished();
+
+        assertFalse(!!composebox.shadowRoot.querySelector('ntp-error-scrim'));
+        assertEquals(0, composebox.files.size);
       });
 });

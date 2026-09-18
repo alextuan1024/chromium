@@ -260,6 +260,7 @@ BrowserAccessibilityAndroid::~BrowserAccessibilityAndroid() {
   if (auto id = GetUniqueId()) {
     GetUniqueIdMap().erase(id);
   }
+  GetLeafMap().erase(this);
 }
 
 std::u16string BrowserAccessibilityAndroid::GetLocalizedString(
@@ -898,10 +899,11 @@ bool BrowserAccessibilityAndroid::ComputeIsLeaf() const {
   }
 
   // Focusable nodes with name from attribute should never drop children, unless
-  // they only have static text children.
+  // they only have static text children or generic containers with text.
   if (HasState(ax::mojom::State::kFocusable) &&
       GetNameFrom() == ax::mojom::NameFrom::kAttribute) {
-    if (HasOnlyTextChildren() && !HasListMarkerChild()) {
+    if ((HasOnlyTextChildren() || HasOnlyTextAndGenericDescendants()) &&
+        !HasListMarkerChild()) {
       return true;
     }
     // We exclude options, menu items, and comboboxes to prevent double
@@ -1354,16 +1356,25 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidSupplementalDescription()
 
 std::u16string BrowserAccessibilityAndroid::GetMultiselectableStateDescription()
     const {
-  // Count the number of children and selected children.
+  // Count the number of selectable children and selected children.
   int child_count = 0;
   int selected_count = 0;
   for (const auto& child : PlatformChildren()) {
-    child_count++;
     const BrowserAccessibilityAndroid& android_child =
         static_cast<const BrowserAccessibilityAndroid&>(child);
+    if (ui::IsSelectSupported(android_child.GetRole())) {
+      child_count++;
+    }
     if (android_child.IsSelected()) {
       selected_count++;
     }
+  }
+
+  // Prefer the set size when available, since it properly accounts for
+  // ordered sets and aria-setsize. Roles that do not compute a set size
+  // (e.g. role="grid") fall back to the count computed above.
+  if (std::optional<int> set_size = GetSetSize()) {
+    child_count = *set_size;
   }
 
   // If none are selected, return special case.
@@ -2018,8 +2029,9 @@ int BrowserAccessibilityAndroid::GetTextChangeFromIndex() const {
     // If the text change is due to a IME text commit.
     if (committed_text_length > 0) {
       // Cursor should move to the end of committed text.
-      CHECK_GE(GetSelectionStart() - committed_text_length, 0,
-               base::NotFatalUntil::M159);
+      // TODO(crbug.com/557456841): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK_GE(GetSelectionStart() - committed_text_length, 0);
       // This is current_cursor_location - len(X).
       return GetSelectionStart() - committed_text_length;
     }
@@ -2120,8 +2132,11 @@ int BrowserAccessibilityAndroid::GetSelectionStart() const {
     return ui::kAXAndroidUndefinedSelectionIndex;
   }
 
-  AXPosition position = anchor_object->CreateTextPositionAt(
+  AXPosition position = anchor_object->CreatePositionAt(
       unignored_selection.anchor_offset, unignored_selection.anchor_affinity);
+  if (position->IsTreePosition()) {
+    position = position->AsTextPosition();
+  }
   while (position->GetAnchor() && position->GetAnchor() != node()) {
     position = position->CreateParentPosition();
   }
@@ -2144,8 +2159,11 @@ int BrowserAccessibilityAndroid::GetSelectionEnd() const {
     return ui::kAXAndroidUndefinedSelectionIndex;
   }
 
-  AXPosition position = focus_object->CreateTextPositionAt(
+  AXPosition position = focus_object->CreatePositionAt(
       unignored_selection.focus_offset, unignored_selection.focus_affinity);
+  if (position->IsTreePosition()) {
+    position = position->AsTextPosition();
+  }
   while (position->GetAnchor() && position->GetAnchor() != node()) {
     position = position->CreateParentPosition();
   }
@@ -2610,6 +2628,34 @@ bool BrowserAccessibilityAndroid::HasListMarkerChild() const {
     }
   }
   return false;
+}
+
+bool BrowserAccessibilityAndroid::HasOnlyTextAndGenericDescendants() const {
+  // This is called from `IsLeaf`, so don't call `PlatformChildCount` from
+  // within this!
+  for (auto it = InternalChildrenBegin(); it != InternalChildrenEnd(); ++it) {
+    BrowserAccessibility* child = it.get();
+    if (child->IsFocusable() || child->HasState(ax::mojom::State::kFocusable)) {
+      return false;
+    }
+
+    const ax::mojom::Role role = child->GetRole();
+    if (ui::IsControl(role) || ui::IsLink(role) ||
+        role == ax::mojom::Role::kHeading || role == ax::mojom::Role::kTable ||
+        ui::IsTableLike(role)) {
+      return false;
+    }
+
+    if (role == ax::mojom::Role::kGenericContainer) {
+      if (!static_cast<const BrowserAccessibilityAndroid*>(child)
+               ->HasOnlyTextAndGenericDescendants()) {
+        return false;
+      }
+    } else if (!child->IsText()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool BrowserAccessibilityAndroid::ShouldPromoteValueToTextProperty(

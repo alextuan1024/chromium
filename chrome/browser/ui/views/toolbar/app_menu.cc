@@ -446,7 +446,7 @@ void AddSignedInChipToProfileMenuItem(
     std::vector<base::CallbackListSubscription>&
         profile_menu_subscription_list) {
   if (!profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed) ||
-      profile->IsIncognitoProfile()) {
+      profile->IsPrimaryOTRProfileWithRegularParent()) {
     return;
   }
   constexpr int profile_chip_corner_radii = 100;
@@ -475,9 +475,8 @@ void AddSignedInChipToProfileMenuItem(
                           : ui::kColorAppMenuProfileRowChipBackground,
                       profile_chip_corner_radii))
                   .SetBorder(views::CreateEmptyBorder(
-                      ChromeLayoutProvider::Get()
-                          ->GetInsetsMetric(
-                              INSETS_PROFILE_SIGNIN_STATUS_CHIP))))
+                      ChromeLayoutProvider::Get()->GetInsetsMetric(
+                          INSETS_APP_MENU_CHIP))))
           .Build();
 
   // MenuItemView has specific layout logic for child views which does not work
@@ -1310,6 +1309,10 @@ bool AppMenu::IsCommandEnabled(int command_id) const {
 
   if (IsBookmarkCommand(command_id) ||
       command_id == IDC_SHOW_BOOKMARK_SIDE_PANEL) {
+    return true;
+  }
+
+  if (command_id == AppMenuModel::kSkillsMenuPlaceholder) {
     return true;
   }
 

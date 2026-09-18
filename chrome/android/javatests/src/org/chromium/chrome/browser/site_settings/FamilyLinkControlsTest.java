@@ -30,14 +30,10 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivity;
-import org.chromium.chrome.browser.signin.SigninCheckerProvider;
-import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -48,6 +44,7 @@ import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
 import org.chromium.components.content_settings.ContentSettingSource;
 import org.chromium.components.content_settings.ContentSettingsType;
+import org.chromium.ui.test.util.DeviceRestriction;
 
 /** Tests family link controls are reflected in UI */
 @Batch(Batch.PER_CLASS)
@@ -70,21 +67,10 @@ public class FamilyLinkControlsTest {
 
     @Before
     public void setUp() {
-
         // Initialize the browser.
         SiteSettingsTestUtils.startSiteSettingsMenu("").finish();
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> SigninCheckerProvider.get(ProfileManager.getLastUsedRegularProfile()));
         mSigninTestRule.addChildTestAccountThenWaitForSignin();
-
-        // Wait for SigninChecker to be initialized
-        CriteriaHelper.pollUiThread(
-                () ->
-                        IdentityServicesProvider.get()
-                                .getSigninManager(ProfileManager.getLastUsedRegularProfile())
-                                .getIdentityManager()
-                                .hasPrimaryAccount());
     }
 
     @Test
@@ -115,6 +101,7 @@ public class FamilyLinkControlsTest {
 
     @Test
     @SmallTest
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // crbug.com/562621880
     public void testDeletingOnDeviceDataAllowedForSupervisedUsers() throws InterruptedException {
         WebsitePreferenceBridgeJni.setInstanceForTesting(mWebsitePreferenceBridgeJniMock);
         when(mWebsitePreferenceBridgeJniMock.getDefaultContentSettingProviderSource(

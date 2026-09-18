@@ -141,8 +141,8 @@ class MessagePortAudioWorkletOriginTest : public PageTestBase {
     return global_scope_.Get();
   }
 
-  AtomicString DispatchMessage(ExecutionContext& context,
-                               BlinkTransferableMessage message) {
+  AtomicString DispatchMessageToPort(ExecutionContext& context,
+                                     BlinkTransferableMessage message) {
     MessagePort* port = MakeGarbageCollected<MessagePort>(context);
     base::RunLoop run_loop;
     auto* wait = MakeGarbageCollected<WaitForEvent>();
@@ -150,6 +150,8 @@ class MessagePortAudioWorkletOriginTest : public PageTestBase {
     wait->AddEventListener(port, event_type_names::kMessageerror);
     wait->AddCompletionClosure(run_loop.QuitClosure());
 
+    // Call WrapAsMessage() from the test and deserialize in blink_core to
+    // exercise the cross-component tag check in component builds.
     mojo::Message mojo_message =
         mojom::blink::TransferableMessage::WrapAsMessage(std::move(message));
     if (!static_cast<mojo::MessageReceiver*>(port)->Accept(&mojo_message)) {
@@ -246,11 +248,30 @@ TEST_F(MessagePortAudioWorkletOriginTest,
   ASSERT_FALSE(scope->DocumentSecurityOrigin()->IsOpaque());
   ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
 
-  EXPECT_EQ(
-      DispatchMessage(*scope, MakeWasmModuleMessage(
-                                  script_state, scope->DocumentSecurityOrigin(),
-                                  scope->GetAgentClusterID())),
-      event_type_names::kMessage);
+  BlinkTransferableMessage message =
+      MakeWasmModuleMessage(script_state, scope->DocumentSecurityOrigin(),
+                            scope->GetAgentClusterID());
+  scoped_refptr<SerializedScriptValue> original_value = message.message;
+  bool checked_value = false;
+  SerializedScriptValue::ScopedOverrideCanDeserializeInForTesting
+      override_can_deserialize_in(base::BindLambdaForTesting(
+          [&](const SerializedScriptValue& value,
+              ExecutionContext* execution_context, bool can_deserialize) {
+            // A Mojo serialization fallback would replace the value and drop
+            // its Wasm attachments, even if dispatch still produced "message".
+            EXPECT_EQ(&value, original_value.get());
+            EXPECT_EQ(execution_context, scope);
+            EXPECT_EQ(value.GetOriginCheckRequirement(),
+                      SerializedScriptValue::OriginCheckRequirement::
+                          kAllowRelatedAudioWorklet);
+            EXPECT_TRUE(can_deserialize);
+            checked_value = true;
+            return can_deserialize;
+          }));
+
+  EXPECT_EQ(DispatchMessageToPort(*scope, std::move(message)),
+            event_type_names::kMessage);
+  EXPECT_TRUE(checked_value);
 }
 
 TEST_F(MessagePortAudioWorkletOriginTest,
@@ -262,7 +283,7 @@ TEST_F(MessagePortAudioWorkletOriginTest,
       scope->DocumentSecurityOrigin()->IsSameOriginWith(other_origin.get()));
   ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
 
-  EXPECT_EQ(DispatchMessage(
+  EXPECT_EQ(DispatchMessageToPort(
                 *scope, MakeWasmModuleMessage(script_state, other_origin.get(),
                                               scope->GetAgentClusterID())),
             event_type_names::kMessageerror);
@@ -273,11 +294,24 @@ TEST_F(MessagePortAudioWorkletOriginTest,
   auto* scope = CreateGlobalScope();
   ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
 
-  EXPECT_EQ(
-      DispatchMessage(*scope, MakeWasmModuleMessage(
-                                  script_state, scope->DocumentSecurityOrigin(),
-                                  base::UnguessableToken::Create())),
-      event_type_names::kMessageerror);
+  EXPECT_EQ(DispatchMessageToPort(
+                *scope, MakeWasmModuleMessage(
+                            script_state, scope->DocumentSecurityOrigin(),
+                            base::UnguessableToken::Create())),
+            event_type_names::kMessageerror);
+}
+
+TEST_F(MessagePortAudioWorkletOriginTest,
+       AudioWorkletRejectsWasmModulesWithoutSenderOrigin) {
+  auto* scope = CreateGlobalScope();
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  BlinkTransferableMessage message =
+      MakeWasmModuleMessage(script_state, scope->DocumentSecurityOrigin(),
+                            scope->GetAgentClusterID());
+  message.sender_origin.reset();
+
+  EXPECT_EQ(DispatchMessageToPort(*scope, std::move(message)),
+            event_type_names::kMessageerror);
 }
 
 TEST_F(MessagePortAudioWorkletOriginTest,
@@ -290,7 +324,7 @@ TEST_F(MessagePortAudioWorkletOriginTest,
   ASSERT_EQ(message.message->GetOriginCheckRequirement(),
             SerializedScriptValue::OriginCheckRequirement::kStrict);
 
-  EXPECT_EQ(DispatchMessage(*scope, std::move(message)),
+  EXPECT_EQ(DispatchMessageToPort(*scope, std::move(message)),
             event_type_names::kMessageerror);
 }
 
@@ -306,7 +340,7 @@ TEST_F(MessagePortAudioWorkletOriginTest,
   ASSERT_EQ(message.message->GetOriginCheckRequirement(),
             SerializedScriptValue::OriginCheckRequirement::kStrict);
 
-  EXPECT_EQ(DispatchMessage(*scope, std::move(message)),
+  EXPECT_EQ(DispatchMessageToPort(*scope, std::move(message)),
             event_type_names::kMessageerror);
 }
 

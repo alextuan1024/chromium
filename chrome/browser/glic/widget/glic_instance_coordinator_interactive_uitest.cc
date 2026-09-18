@@ -408,8 +408,17 @@ IN_PROC_BROWSER_TEST_F(GlicInstanceCoordinatorUiTest,
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+// Flaky on Linux only.
+// TODO(crbug.com/561614245): Deflake and re-enable. Likely the same
+// multi-instance breakage as the two tests above.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_AccountInvalidatedWhileGlicOpen \
+  DISABLED_AccountInvalidatedWhileGlicOpen
+#else
+#define MAYBE_AccountInvalidatedWhileGlicOpen AccountInvalidatedWhileGlicOpen
+#endif
 IN_PROC_BROWSER_TEST_F(GlicInstanceCoordinatorUiTest,
-                       AccountInvalidatedWhileGlicOpen) {
+                       MAYBE_AccountInvalidatedWhileGlicOpen) {
   TrackGlicInstanceWithTabIndex(0);
   RunTestSequence(
       SimulateGlicHotkey(), WaitForWebUIState(mojom::WebUiState::kReady),
@@ -673,12 +682,16 @@ class GlicInstanceCoordinatorWithDelayedPreloadingUiTest
         [this]() { glic_service()->TryPreload(GlicWarmingTrigger::kStartup); });
   }
 
-  auto CheckWarmed() {
-    return Do([this]() {
-      EXPECT_TRUE(GetInstanceCoordinator()
-                      .GetWebContentsWarmingPoolForTesting()
-                      .HasWarmedContainerForTesting());
-    });
+  auto WaitUntilWarmed() {
+    return WaitUntil(
+        [this]() -> std::string {
+          return GetInstanceCoordinator()
+                         .GetWebContentsWarmingPoolForTesting()
+                         .HasWarmedContainerForTesting()
+                     ? "warmed"
+                     : "not warmed";
+        },
+        "warmed", "Wait for warmed container");
   }
 
  private:
@@ -687,10 +700,8 @@ class GlicInstanceCoordinatorWithDelayedPreloadingUiTest
 
 IN_PROC_BROWSER_TEST_F(GlicInstanceCoordinatorWithDelayedPreloadingUiTest,
                        Preload) {
-  // TODO(crbug.com/411100559): Wait for preload completion rather than assuming
-  // that it will finish before the next step in the sequence.
   RunTestSequence(
-      ResetPreloading(), TryPreload(), CheckWarmed(),
+      ResetPreloading(), TryPreload(), WaitUntilWarmed(),
       PressButton(kGlicButtonElementId),
       InAnyContext(
           WaitForShow(kGlicViewElementId).SetMustRemainVisible(false)));

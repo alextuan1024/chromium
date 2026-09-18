@@ -7,36 +7,47 @@
 #import <AVFoundation/AVFoundation.h>
 #import <PhotosUI/PhotosUI.h>
 
+#import <optional>
+#import <utility>
+
 #import "base/check.h"
 #import "base/check_op.h"
 #import "base/feature_list.h"
+#import "base/ios/block_types.h"
 #import "base/memory/weak_ptr.h"
+#import "base/not_fatal_until.h"
 #import "components/contextual_search/input_state_model.h"
 #import "components/contextual_search/pref_names.h"
 #import "components/lens/lens_features.h"
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/composebox/public/composebox_input_item_source.h"
+#import "ios/chrome/browser/composebox/shared/coordinator/composebox_attachment_diff.h"
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_image_result.h"
 #import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_recorder.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_snackbar_presenter.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/drive_file_picker_commands.h"
+#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/public/provider/chrome/browser/privacy_primitive/privacy_primitive_api.h"
 #import "ios/public/provider/chrome/browser/privacy_primitive/privacy_primitive_configuration.h"
+#import "net/base/apple/url_conversions.h"
 
 namespace {
 // The ConsentKit product ID for Chrome on iOS.
 constexpr int kChromeIOSProductId = 71720513;
 }  // namespace
 
-@interface ComposeboxPickerPresenter () <PHPickerViewControllerDelegate,
+@interface ComposeboxPickerPresenter () <DriveFilePickerResponseCommands,
+                                         PHPickerViewControllerDelegate,
                                          UIDocumentPickerDelegate,
                                          UIImagePickerControllerDelegate,
                                          UINavigationControllerDelegate>
@@ -45,11 +56,15 @@ constexpr int kChromeIOSProductId = 71720513;
 @property(nonatomic, strong) id<PrivacyPrimitiveService>
     privacyPrimitiveService;
 
+// The picker being presented.
+@property(nonatomic, weak) UIViewController* picker;
+
 @end
 
 @implementation ComposeboxPickerPresenter {
   // The VC used as a base for presentations.
   __weak UIViewController* _baseViewController;
+
   base::WeakPtr<Browser> _browser;
 
   // Presents snackbars.
@@ -90,9 +105,7 @@ constexpr int kChromeIOSProductId = 71720513;
   UIImagePickerController* picker = [[UIImagePickerController alloc] init];
   picker.delegate = self;
   picker.sourceType = UIImagePickerControllerSourceTypeCamera;
-  [_baseViewController presentViewController:picker
-                                    animated:YES
-                                  completion:nil];
+  [self showPickerViewController:picker];
 }
 
 - (void)presentGalleryPickerWithLimit:(NSUInteger)limit {
@@ -113,10 +126,7 @@ constexpr int kChromeIOSProductId = 71720513;
   PHPickerViewController* picker =
       [[PHPickerViewController alloc] initWithConfiguration:config];
   picker.delegate = self;
-
-  [_baseViewController presentViewController:picker
-                                    animated:YES
-                                  completion:nil];
+  [self showPickerViewController:picker];
 }
 
 - (void)presentFilePicker {
@@ -131,10 +141,7 @@ constexpr int kChromeIOSProductId = 71720513;
 
   picker.allowsMultipleSelection = NO;
   picker.delegate = self;
-
-  [_baseViewController presentViewController:picker
-                                    animated:YES
-                                  completion:nil];
+  [self showPickerViewController:picker];
 }
 
 - (void)presentTabPicker {
@@ -157,11 +164,8 @@ constexpr int kChromeIOSProductId = 71720513;
 
   __weak __typeof(self) weakSelf = self;
   TabPickerCompletionBlock completionBlock =
-      ^(std::set<web::WebStateID> selectedIDs,
-        std::set<web::WebStateID> cachedIDs) {
-        [weakSelf.delegate composeboxPickerPresenter:weakSelf
-                   handleSelectedTabsWithWebStateIDs:selectedIDs
-                                   cachedWebStateIDs:cachedIDs];
+      ^(std::optional<TabPickerSelection> selection) {
+        [weakSelf userDidPickTabs:std::move(selection)];
       };
 
   id<TabPickerCommands> tabPickerHandler =
@@ -201,6 +205,11 @@ constexpr int kChromeIOSProductId = 71720513;
     config.productSurface =
         omnibox::kComposeboxDriveConsentProductSurface.Get();
 
+    __weak __typeof(self) weakSelf = self;
+    config.openURLCallback = ^(NSURL* URL) {
+      [weakSelf privacyPrimitiveOpenURLInNewTab:URL];
+    };
+
     self.privacyPrimitiveService =
         ios::provider::CreatePrivacyPrimitiveService(config);
     if (!self.privacyPrimitiveService) {
@@ -208,7 +217,6 @@ constexpr int kChromeIOSProductId = 71720513;
       return;
     }
 
-    __weak __typeof(self) weakSelf = self;
     [self.privacyPrimitiveService
         showFlowWithPresentingViewController:_baseViewController
                            completionHandler:^(BOOL success) {
@@ -221,7 +229,14 @@ constexpr int kChromeIOSProductId = 71720513;
   [self showDriveFilePickerInternal];
 }
 
+- (void)dismissPicker {
+  [self dismissPickerWithCompletion:nil];
+}
+
 - (void)privacyPrimitiveFlowCompletedWithSuccess:(BOOL)success {
+  if (!self.privacyPrimitiveService) {
+    return;
+  }
   self.privacyPrimitiveService = nil;
   if (!success || ![self canShowDriveFilePicker]) {
     [self.metricsRecorder
@@ -236,6 +251,51 @@ constexpr int kChromeIOSProductId = 71720513;
   [self showDriveFilePickerInternal];
 }
 
+- (void)privacyPrimitiveOpenURLInNewTab:(NSURL*)URL {
+  if (!_browser || !URL) {
+    return;
+  }
+  const GURL targetURL = net::GURLWithNSURL(URL);
+  if (!targetURL.is_valid() || !targetURL.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+  self.privacyPrimitiveService = nil;
+  [self.metricsRecorder
+      recordPickerOutcome:MobileFuseboxPickerOutcome::kManualUserExit
+        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
+
+  // Dismiss any UI potentially presented by the privacy primitive flow before
+  // hiding the composebox and opening the URL in a new tab.
+  UIViewController* presentingVC = _baseViewController;
+  UIViewController* modalVC = presentingVC.presentedViewController;
+  if (!modalVC) {
+    [self dismissComposeboxAndOpenURLInNewTab:targetURL];
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  [modalVC
+      dismissViewControllerAnimated:YES
+                         completion:^{
+                           [weakSelf
+                               dismissComposeboxAndOpenURLInNewTab:targetURL];
+                         }];
+}
+
+- (void)dismissComposeboxAndOpenURLInNewTab:(const GURL&)URL {
+  if (!_browser || !URL.is_valid()) {
+    return;
+  }
+  id<BrowserCoordinatorCommands> browserCoordinatorHandler = HandlerForProtocol(
+      _browser->GetCommandDispatcher(), BrowserCoordinatorCommands);
+  [browserCoordinatorHandler hideComposebox];
+
+  OpenNewTabCommand* command = [OpenNewTabCommand commandWithURLFromChrome:URL];
+  id<SceneCommands> sceneHandler =
+      HandlerForProtocol(_browser->GetCommandDispatcher(), SceneCommands);
+  [sceneHandler openURLInNewTab:command];
+}
+
 - (void)showDriveFilePickerInternal {
   if (!_browser || ![self canShowDriveFilePicker]) {
     return;
@@ -246,10 +306,28 @@ constexpr int kChromeIOSProductId = 71720513;
   id<DriveFilePickerCommands> driveFilePickerCommands = HandlerForProtocol(
       _browser->GetCommandDispatcher(), DriveFilePickerCommands);
   [driveFilePickerCommands
-      showDriveFilePickerWithComposeboxDelegate:self.delegate
-                             baseViewController:_baseViewController
-                             maxAttachmentCount:maxDriveAttachmentCount
-                              snackbarPresenter:_snackbarPresenter];
+      showDriveFilePickerWithResponseHandler:self
+                          baseViewController:_baseViewController
+                          maxAttachmentCount:maxDriveAttachmentCount
+                           snackbarPresenter:_snackbarPresenter];
+}
+
+#pragma mark - DriveFilePickerResponseCommands
+
+- (void)driveFilePickerDidPickItems:
+    (NSArray<ComposeboxPickerDriveResult*>*)items {
+  CHECK(items.count, base::NotFatalUntil::M157);
+  [self.metricsRecorder
+      recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
+        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
+  [self.delegate composeboxPickerPresenter:self didPickDriveItems:items];
+}
+
+- (void)driveFilePickerDidCancel {
+  [self.metricsRecorder
+      recordPickerOutcome:MobileFuseboxPickerOutcome::kManualUserExit
+        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
+  [self.delegate composeboxPickerPresenterDidCancelDrivePicker:self];
 }
 
 #pragma mark - UIImagePickerControllerDelegate
@@ -257,12 +335,9 @@ constexpr int kChromeIOSProductId = 71720513;
 - (void)imagePickerController:(UIImagePickerController*)picker
     didFinishPickingMediaWithInfo:(NSDictionary<NSString*, id>*)info {
   __weak __typeof(self) weakSelf = self;
-  [picker dismissViewControllerAnimated:YES
-                             completion:^{
-                               [weakSelf.delegate
-                                   composeboxPickerPresenterDidDissmissCamera:
-                                       weakSelf];
-                             }];
+  [self dismissPickerWithCompletion:^{
+    [weakSelf.delegate composeboxPickerPresenterDidDismissCamera:weakSelf];
+  }];
 
   UIImage* image = info[UIImagePickerControllerOriginalImage];
   if (!image) {
@@ -294,21 +369,20 @@ constexpr int kChromeIOSProductId = 71720513;
         forAttachmentType:MobileFuseboxPickerAttachmentType::kCamera];
 
   __weak __typeof(self) weakSelf = self;
-  [picker dismissViewControllerAnimated:YES
-                             completion:^{
-                               [weakSelf.delegate
-                                   composeboxPickerPresenterDidDissmissCamera:
-                                       weakSelf];
-                             }];
+  [self dismissPickerWithCompletion:^{
+    [weakSelf.delegate composeboxPickerPresenterDidDismissCamera:weakSelf];
+  }];
 }
 
 #pragma mark - PHPickerViewControllerDelegate
 
 - (void)picker:(PHPickerViewController*)picker
     didFinishPicking:(NSArray<PHPickerResult*>*)results {
-  [picker dismissViewControllerAnimated:YES completion:nil];
-
   if (results.count == 0) {
+    // Only dismiss when the picking is NO-OP. Otherwise the dismissal is
+    // handled by the embedder (to e.g.; coordinate multiple dismissals).
+    [self dismissPicker];
+
     [self.metricsRecorder
         recordPickerOutcome:MobileFuseboxPickerOutcome::kManualUserExit
           forAttachmentType:MobileFuseboxPickerAttachmentType::kGallery];
@@ -358,6 +432,36 @@ constexpr int kChromeIOSProductId = 71720513;
 
 #pragma mark - Private
 
+/// Handles tab picker completion with `selection`.
+- (void)userDidPickTabs:(std::optional<TabPickerSelection>)selection {
+  if (!selection.has_value()) {
+    [self.metricsRecorder
+        recordPickerOutcome:MobileFuseboxPickerOutcome::kManualUserExit
+          forAttachmentType:MobileFuseboxPickerAttachmentType::kTabs];
+    [self.delegate composeboxPickerPresenterDidCancelTabPicker:self];
+    return;
+  }
+  std::set<web::WebStateID> currentIDs =
+      self.dataSource
+          ? [self.dataSource
+                attachedWebStateIDsInCurrentContextForPresenter:self]
+          : std::set<web::WebStateID>{};
+  composebox::TabDiff diff =
+      composebox::ComputeTabDiff(currentIDs, selection->selected_ids);
+  // Only record attachment added if new tabs were actually selected.
+  // Note: If tabs were only unselected or unchanged, no outcome is recorded
+  // because MobileFuseboxPickerOutcome currently has no dedicated bucket for
+  // removals or no-op edits (tracked in crbug.com/558537506).
+  if (!diff.added.empty()) {
+    [self.metricsRecorder
+        recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
+          forAttachmentType:MobileFuseboxPickerAttachmentType::kTabs];
+  }
+  [self.delegate composeboxPickerPresenter:self
+         handleSelectedTabsWithWebStateIDs:selection->selected_ids
+                         cachedWebStateIDs:selection->cached_ids];
+}
+
 /// Returns the primary identity if the browser is regular and the user is
 /// signed in; otherwise returns nil.
 - (id<SystemIdentity>)driveFilePickerIdentity {
@@ -397,6 +501,17 @@ constexpr int kChromeIOSProductId = 71720513;
   }
   _snackbarPresenter =
       [[ComposeboxSnackbarPresenter alloc] initWithBrowser:_browser.get()];
+}
+
+- (void)showPickerViewController:(UIViewController*)picker {
+  _picker = picker;
+  [_baseViewController presentViewController:picker
+                                    animated:YES
+                                  completion:nil];
+}
+
+- (void)dismissPickerWithCompletion:(ProceduralBlock)completion {
+  [_picker dismissViewControllerAnimated:YES completion:completion];
 }
 
 @end

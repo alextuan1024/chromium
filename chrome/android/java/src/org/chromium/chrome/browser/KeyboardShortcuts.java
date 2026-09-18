@@ -26,6 +26,7 @@ import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
+import org.chromium.chrome.browser.devtools.DevToolsWindowAndroid;
 import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
@@ -43,8 +44,6 @@ import org.chromium.chrome.browser.task_manager.TaskManager;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.content_public.browser.BrowserContextHandle;
-import org.chromium.content_public.browser.ContentFeatureList;
-import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.device.gamepad.GamepadList;
@@ -85,7 +84,7 @@ public class KeyboardShortcuts {
         KeyboardShortcutsSemanticMeaning.MOVE_TO_TAB_RIGHT,
         KeyboardShortcutsSemanticMeaning.MOVE_TO_SPECIFIC_TAB,
         KeyboardShortcutsSemanticMeaning.MOVE_TO_LAST_TAB,
-        KeyboardShortcutsSemanticMeaning.TAB_SEARCH,
+        // KeyboardShortcutsSemanticMeaning.TAB_SEARCH,
         KeyboardShortcutsSemanticMeaning.TAB_SEARCH_SIDE_UI,
         KeyboardShortcutsSemanticMeaning.NOT_IMPLEMENTED_TOGGLE_MULTITASK_MENU,
         KeyboardShortcutsSemanticMeaning.CLOSE_TAB,
@@ -164,7 +163,8 @@ public class KeyboardShortcuts {
         int MOVE_TO_TAB_RIGHT = 9;
         int MOVE_TO_SPECIFIC_TAB = 10;
         int MOVE_TO_LAST_TAB = 11;
-        int TAB_SEARCH = 12;
+        // Tab search in Hub UI (deprecated in favor of TAB_SEARCH_SIDE_UI).
+        // int TAB_SEARCH = 12;
         int NOT_IMPLEMENTED_TOGGLE_MULTITASK_MENU = 13;
 
         // Closing.
@@ -491,19 +491,16 @@ public class KeyboardShortcuts {
                     new KeyCombo(KeyEvent.KEYCODE_BUTTON_B, NO_MODIFIER),
                 });
 
-        // Tab search in Hub UI is opened with Ctrl+Shift+A.
-        new KeyboardShortcutDefinition(
-                KeyboardShortcutsSemanticMeaning.TAB_SEARCH,
-                new KeyCombo(KeyEvent.KEYCODE_A, (KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON)),
-                R.string.keyboard_shortcut_tab_search,
-                R.string.keyboard_shortcut_tab_group_header);
-
-        // Tab search start anchored side UI is opened with Alt+Shift+A.
+        // Tab search start anchored side UI is opened with Ctrl+Shift+A or Alt+Shift+A.
         new KeyboardShortcutDefinition(
                 KeyboardShortcutsSemanticMeaning.TAB_SEARCH_SIDE_UI,
-                new KeyCombo(KeyEvent.KEYCODE_A, (KeyEvent.META_ALT_ON | KeyEvent.META_SHIFT_ON)),
+                new KeyCombo(KeyEvent.KEYCODE_A, (KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON)),
                 R.string.keyboard_shortcut_tab_search,
-                R.string.keyboard_shortcut_tab_group_header);
+                R.string.keyboard_shortcut_tab_group_header,
+                new KeyCombo[] {
+                    new KeyCombo(
+                            KeyEvent.KEYCODE_A, (KeyEvent.META_ALT_ON | KeyEvent.META_SHIFT_ON)),
+                });
 
         // Navigation shortcuts (keyboard_shortcut_tab_navigation_group_header).
         new KeyboardShortcutDefinition(
@@ -853,6 +850,12 @@ public class KeyboardShortcuts {
             return null;
         }
 
+        if (KeyEvent.isGamepadButton(keyCode)) {
+            if (GamepadList.isGamepadAPIActive()) {
+                return null;
+            }
+        }
+
         switch (keyCode) {
             case KeyEvent.KEYCODE_SEARCH:
                 if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
@@ -1017,7 +1020,7 @@ public class KeyboardShortcuts {
                     KeyEvent.KEYCODE_I,
                     KeyEvent.META_ALT_ON | KeyEvent.META_SHIFT_ON);
         }
-        if (ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND)) {
+        if (DevToolsWindowAndroid.isDevToolsAvailable(context)) {
             addShortcut(
                     context,
                     shortcutGroupsById,
@@ -1215,9 +1218,6 @@ public class KeyboardShortcuts {
                         currentTab.loadUrl(
                                 new LoadUrlParams(homePageUrl, PageTransition.HOME_PAGE));
                     }
-                    return true;
-                case KeyboardShortcutsSemanticMeaning.TAB_SEARCH:
-                    menuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.tab_search, false);
                     return true;
                 case KeyboardShortcutsSemanticMeaning.TAB_SEARCH_SIDE_UI:
                     int actionId =

@@ -109,10 +109,18 @@ void WebUIReadOnlyOmnibox::OnTabChanged(content::WebContents* web_contents) {
     }
   }
 
-  if (state && state->model_state.focus_state == OMNIBOX_FOCUS_VISIBLE) {
-    SetFocus(/*is_user_initiated=*/false);
-  } else if (has_focus_) {
-    OnBlur();
+  // If we need to restore focus (we might not if e.g. switching in a split
+  // view), ChromeWebContentsViewFocusHelper will have given it to our
+  // views::WebView. In that case, make sure to restore it to the right-ish
+  // element --- we sadly don't know what in the location bar was focused
+  // exactly.
+  if (toolbar_delegate_) {  // null in some unit tests.
+    if (toolbar_delegate_->GetInternalWebView()->HasFocus()) {
+      SetFocusWithTarget(
+          toolbar_ui_api::mojom::FocusRequestTarget::kLocationBar);
+    } else {
+      OnBlur();
+    }
   }
 
   RequestUpdateWebUI();
@@ -204,6 +212,7 @@ void WebUIReadOnlyOmnibox::SetWindowTextAndCaretPos(const std::u16string& text,
   text_ = text;
   selection_ = gfx::Range(caret_pos);
   ResetFormatting();
+  ResetBrowserVersion();
 
   if (update_popup) {
     UpdatePopup();
@@ -232,7 +241,6 @@ void WebUIReadOnlyOmnibox::SetAdditionalText(
 void WebUIReadOnlyOmnibox::EnterKeywordModeForDefaultSearchProvider() {
   controller()->edit_model()->EnterKeywordModeForDefaultSearchProvider(
       metrics::OmniboxEventProto::KEYBOARD_SHORTCUT);
-  ResetBrowserVersion();
   RequestUpdateWebUI();
 }
 
@@ -273,7 +281,6 @@ void WebUIReadOnlyOmnibox::RevertAll() {
   if (auto* popup_closer = controller()->client()->GetOmniboxPopupCloser()) {
     popup_closer->CloseWithReason(omnibox::PopupCloseReason::kRevertAll);
   }
-  ResetBrowserVersion();
   RequestUpdateWebUI();
 }
 
@@ -324,7 +331,6 @@ void WebUIReadOnlyOmnibox::OnTemporaryTextMaybeChanged(
   SetAccessibilityLabel(display_text, match, false);
 
   // This will call RequestUpdateWebUI(), so we don't have to.
-  ResetBrowserVersion();
   SetWindowTextAndCaretPos(display_text, display_text.length(),
                            /*update_popup=*/false, notify_text_changed);
 }
@@ -588,6 +594,19 @@ void WebUIReadOnlyOmnibox::OnBlur() {
   }
   has_focus_ = false;
   aim_hint_currently_shown_ = false;
+
+  // If focus is transferring to a WebUI popup widget (e.g., Full Popup or AIM
+  // Popup), treat this as a logical focus transfer rather than a true blur.
+  // Keep the edit model's focus state active, and skip all reversion/blurring.
+  if (controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kFull ||
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kAim) {
+    ClearAccessibilityLabel();
+    RequestUpdateWebUI();
+    return;
+  }
+
   controller()->edit_model()->OnWillKillFocus();
   if (auto* popup_closer = controller()->client()->GetOmniboxPopupCloser()) {
     popup_closer->CloseWithReason(omnibox::PopupCloseReason::kBlur);
@@ -602,18 +621,23 @@ WebUIReadOnlyOmnibox::OnFocusChange(
     const toolbar_ui_api::mojom::OmniboxActionFocusChange& focus_change) {
   if (focus_change.has_focus) {
     has_focus_ = true;
-    selection_ = focus_change.selection;
+
     // TODO(crbug.com/500653057): Key state, though Views impl doesn't have it.
     controller()->edit_model()->OnSetFocus(/*control_down=*/false);
 
-    if (focus_change.request_clear_keyword) {
-      controller()->edit_model()->ClearKeyword();
-    }
-    if (focus_change.start_zero_suggest) {
-      controller()->edit_model()->StartZeroSuggestRequest();
-    }
-    if (focus_change.activate_default_search) {
-      EnterKeywordModeForDefaultSearchProvider();
+    // We ignore anything beyond focus update if the request is stale.
+    if (focus_change.browser_version == browser_version_) {
+      selection_ = focus_change.selection;
+
+      if (focus_change.request_clear_keyword) {
+        controller()->edit_model()->ClearKeyword();
+      }
+      if (focus_change.start_zero_suggest) {
+        controller()->edit_model()->StartZeroSuggestRequest();
+      }
+      if (focus_change.activate_default_search) {
+        EnterKeywordModeForDefaultSearchProvider();
+      }
     }
     RequestUpdateWebUI();
   } else {
@@ -631,6 +655,7 @@ WebUIReadOnlyOmnibox::OnTextInput(
 
   ui_version_ = text_input.ui_version;
   if (text_input.unelision) {
+    uint32_t saved_browser_version = browser_version_;
     // Let the edit model unelide as well to match what we did on the
     // WebUI side.
     bool unelide_ok = controller()->edit_model()->Unelide();
@@ -638,8 +663,11 @@ WebUIReadOnlyOmnibox::OnTextInput(
     // It should produce the same text (the 'formatted full URL').
     DCHECK_EQ(text_, text_input.text);
 
-    // We want the WebUI-side selection, however, not Unelide()'s
-    // SelectAll();
+    // Unelide() calls SetWindowTextAndCaretPos() and SelectAll(), which reset
+    // browser_version_ and selection_. Since this unelision was initiated by
+    // WebUI, restore the WebUI-side versions and selection.
+    browser_version_ = saved_browser_version;
+    ui_version_ = text_input.ui_version;
     selection_ = text_input.selection;
     TextChanged();
     RequestUpdateWebUI();
@@ -729,13 +757,19 @@ WebUIReadOnlyOmnibox::OnKey(
       break;
 
     case ui::DomKey::ARROW_UP:
+      DCHECK(!control);
+      DCHECK(!alt);
       DCHECK(!shift);
+      DCHECK(!command);
       controller()->edit_model()->OnUpOrDownPressed(/*down=*/false,
                                                     /*page=*/false);
       break;
 
     case ui::DomKey::ARROW_DOWN:
+      DCHECK(!control);
+      DCHECK(!alt);
       DCHECK(!shift);
+      DCHECK(!command);
       controller()->edit_model()->OnUpOrDownPressed(/*down=*/true,
                                                     /*page=*/false);
       break;

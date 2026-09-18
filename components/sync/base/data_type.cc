@@ -236,24 +236,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
-            .type = AUTOFILL_WALLET_OFFER,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kAutofillOfferFieldNumber,
-            .debug_string = "Autofill Wallet Offer",
-            .histogram_suffix = "AUTOFILL_OFFER",
-            .stable_lowercase_string = "autofill_wallet_offer",
-            // Wallet data is not encrypted since it actually originates on the
-            // server.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
-        },
-        {
             .type = AUTOFILL_WALLET_USAGE,
             .specifics_field_number =
                 sync_pb::EntitySpecifics::kAutofillWalletUsageFieldNumber,
@@ -636,23 +618,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .debug_string = "Web Apps",
             .histogram_suffix = "WEB_APP",
             .stable_lowercase_string = "web_apps",
-            .encryption_policy =
-                EncryptionPolicy::kEncryptedIfCustomPassphraseSet,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
-        },
-        {
-            .type = WEB_APKS,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kWebApkFieldNumber,
-            .debug_string = "Web Apks",
-            .histogram_suffix = "WEB_APK",
-            .stable_lowercase_string = "webapks",
             .encryption_policy =
                 EncryptionPolicy::kEncryptedIfCustomPassphraseSet,
             .priority = DataTypePriority::kRegular,
@@ -1212,12 +1177,12 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
     }};
 
 // LINT.IfChange(DataTypeHistogramSuffix)
-static_assert(GetNumDataTypes() == 66,
+static_assert(GetNumDataTypes() == 64,
               "When adding a new type, update kDataTypeInfoTable, update "
               "histograms.xml and follow the integration checklist in "
               "https://www.chromium.org/developers/design-documents/sync/"
               "integration-checklist/");
-// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
 
 const DataTypeInfo& GetDataTypeInfo(DataType type) {
   static const base::NoDestructor<
@@ -1266,9 +1231,6 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
       break;
     case AUTOFILL_WALLET_METADATA:
       specifics->mutable_wallet_metadata();
-      break;
-    case AUTOFILL_WALLET_OFFER:
-      specifics->mutable_autofill_offer();
       break;
     case AUTOFILL_WALLET_USAGE:
       specifics->mutable_autofill_wallet_usage();
@@ -1350,9 +1312,6 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
       break;
     case WEB_APPS:
       specifics->mutable_web_app();
-      break;
-    case WEB_APKS:
-      specifics->mutable_web_apk();
       break;
     case WIFI_CONFIGURATIONS:
       specifics->mutable_wifi_configuration();
@@ -1664,8 +1623,6 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kAutofillWalletData;
     case AUTOFILL_WALLET_METADATA:
       return DataTypeForHistograms::kAutofillWalletMetadata;
-    case AUTOFILL_WALLET_OFFER:
-      return DataTypeForHistograms::kAutofillWalletOffer;
     case AUTOFILL_WALLET_USAGE:
       return DataTypeForHistograms::kAutofillWalletUsage;
     case THEMES:
@@ -1718,8 +1675,6 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kWifiConfigurations;
     case WEB_APPS:
       return DataTypeForHistograms::kWebApps;
-    case WEB_APKS:
-      return DataTypeForHistograms::kWebApks;
     case OS_PREFERENCES:
       return DataTypeForHistograms::kOsPreferences;
     case OS_PRIORITY_PREFERENCES:

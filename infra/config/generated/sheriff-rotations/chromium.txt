@@ -3,7 +3,6 @@ ci/ASAN Release
 ci/ASAN Release Media
 ci/ASan Release (32-bit x86 with V8-ARM)
 ci/ASan Release Media (32-bit x86 with V8-ARM)
-ci/Centipede High End Upload Linux ASan
 ci/Centipede Upload Linux ASan
 ci/ChromiumOS ASAN Release
 ci/Deterministic Fuchsia (dbg)
@@ -74,6 +73,7 @@ ci/chromeos-arm-generic-dbg
 ci/chromeos-arm-generic-rel
 ci/chromeos-arm64-generic-rel
 ci/chromeos-x64-libfuzzer-asan-rel-tests
+ci/fuchsia-arm64-cast-receiver-rel
 ci/fuchsia-x64-cast-receiver-dbg
 ci/fuchsia-x64-cast-receiver-rel
 ci/ios-catalyst

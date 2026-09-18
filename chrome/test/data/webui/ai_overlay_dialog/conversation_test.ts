@@ -12,6 +12,7 @@ type ConversationMessage =|{
   text: string,
 }|{type: 'clearTranscription'};
 import type {AiOverlayToolsRemote} from 'chrome-untrusted://ai-overlay-dialog/tools.mojom-webui.js';
+import {loadTimeData} from 'chrome-untrusted://resources/js/load_time_data.js';
 import {assertDeepEquals, assertEquals} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome-untrusted://webui-test/test_browser_proxy.js';
 
@@ -33,6 +34,7 @@ class MockToolsRemote extends TestBrowserProxy {
       'seekToTimestamp',
       'translatePage',
       'openGeminiPanel',
+      'closeGeminiPanel',
     ]);
   }
   openUrl() {
@@ -80,6 +82,9 @@ class MockToolsRemote extends TestBrowserProxy {
   openGeminiPanel() {
     return Promise.resolve('');
   }
+  closeGeminiPanel() {
+    return Promise.resolve();
+  }
 }
 
 suite('ConversationTest', () => {
@@ -123,9 +128,14 @@ suite('ConversationTest', () => {
   } as unknown as PageCallbackRouter;
 
   setup(() => {
+    loadTimeData.resetForTesting({});
     sentMessages = [];
     stateChanges = [];
     audioResponses = [];
+  });
+
+  teardown(() => {
+    loadTimeData.resetForTesting();
   });
 
   test('InputTranscriptionAssignment', () => {

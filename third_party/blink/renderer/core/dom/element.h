@@ -34,6 +34,7 @@
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink-forward.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/js_event_handler.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
@@ -171,7 +172,7 @@ class StylePropertyMapReadOnly;
 class StyleRecalcContext;
 class StyleScopeData;
 class TextVisitor;
-class TrustedParserOptions;
+class TrustedHTMLParserOptions;
 class V8UnionBooleanOrScrollIntoViewOptions;
 class V8UnionCSSPseudoElementOrDocumentOrElementOrText;
 class V8UnionKeyframeAnimationOptionsOrUnrestrictedDouble;
@@ -1167,9 +1168,6 @@ class CORE_EXPORT Element : public ContainerNode {
     SetElementFlag(ElementFlags::kStyleAffectedByEmpty);
   }
 
-  // Determine whether the parent or owner of this element in the flat tree is a
-  // canvas element or in a canvas subtree.
-  bool ComputeIsInCanvasSubtree() const;
   // Recursively sets the IsInCanvasSubtree bit for the element and its subtree.
   void SetIsInCanvasSubtree(bool value);
   // Is in the flat subtree of a canvas element, but not the canvas element
@@ -1185,7 +1183,7 @@ class CORE_EXPORT Element : public ContainerNode {
   void VerifySubtreeIsInCanvas(bool value);
 #endif
 
-  // Returns the nearest ancestor <canvas layoutsubtree> if this element is
+  // Returns the nearest ancestor <canvas content=drawable> if this element is
   // eligible for drawing into it (i.e. is connected, is in a canvas subtree,
   // is not a pseudo-element, and is an immediate child of the canvas or has
   // the 'drawable' attribute). Returns nullptr otherwise.
@@ -1552,7 +1550,7 @@ class CORE_EXPORT Element : public ContainerNode {
                      SetHTMLUnsafeOptions*,
                      ExceptionState&);
   void setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
-                     TrustedParserOptions*,
+                     TrustedHTMLParserOptions*,
                      ExceptionState&);
   void setHTML(const String& html, SetHTMLOptions*, ExceptionState&);
 
@@ -1617,6 +1615,8 @@ class CORE_EXPORT Element : public ContainerNode {
   // Returns true if this element contains any ::scroll-button or
   // ::scroll-marker-group pseudos.
   bool HasScrollButtonOrMarkerGroupPseudos() const;
+  // Returns true if this element contains an ::interest-button pseudo.
+  bool HasInterestButtonPseudo() const;
 
   bool PseudoElementStylesAffectCounters() const;
 
@@ -1648,6 +1648,10 @@ class CORE_EXPORT Element : public ContainerNode {
   // See StyleRecalcContext for more information.
   const ComputedStyle* StyleForPseudoElement(const StyleRecalcContext&,
                                              const StyleRequest&);
+
+  // StyleForPseudoElement specifically for kPseudoIdFirstLineInherited.
+  const ComputedStyle* StyleForFirstLineInherited(const StyleRecalcContext&,
+                                                  const StyleRequest&);
 
   // These are used by ResolveStyle with Highlight Inheritance when caching
   // is not used.
@@ -1908,8 +1912,14 @@ class CORE_EXPORT Element : public ContainerNode {
   // `ad_provenance` is not overwritten).
   void SetIsAdRelated(AdProvenance ad_provenance);
 
+  // Marks this element as an ad-related video stream.
+  void UpdateToVideoAd();
+
   // Returns true if the element is considered ad-related.
   bool IsAdRelated() const;
+
+  // Returns true if the element is an ad-related video stream.
+  bool IsVideoAd() const;
 
   // Returns the `AdProvenance` if the element is ad-related, or `std::nullopt`
   // otherwise.
@@ -2322,6 +2332,27 @@ class CORE_EXPORT Element : public ContainerNode {
     return false;
   }
 
+  void SetElementAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
+
+  void SetDocumentAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
+
+  void SetWindowAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
+
  private:
   friend class AXObject;
   friend class KeyboardEventManager;
@@ -2516,6 +2547,7 @@ class CORE_EXPORT Element : public ContainerNode {
     if (IsDocumentElement()) {
       return;
     }
+    AttachPseudoElement(kPseudoIdInterestButton, context);
     AttachSucceedingScrollControlsPseudoElements(context);
   }
 
@@ -2523,7 +2555,6 @@ class CORE_EXPORT Element : public ContainerNode {
     AttachPseudoElement(kPseudoIdAfter, context);
     AttachPseudoElement(kPseudoIdExpandIcon, context);
     AttachPseudoElement(kPseudoIdPickerIcon, context);
-    AttachPseudoElement(kPseudoIdInterestButton, context);
     AttachDocumentElementSucceedingPseudoElements(context);
     AttachPseudoElement(kPseudoIdBackdrop, context);
     UpdateFirstLetterPseudoElement(StyleUpdatePhase::kAttachLayoutTree);

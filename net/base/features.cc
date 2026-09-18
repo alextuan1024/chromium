@@ -34,8 +34,6 @@ BASE_FEATURE(kAlpsForHttp2, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAsyncRetryOnTooManyConnectionErrors,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAvoidH2Reprioritization, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kDeriveConnectionTypeFromCapabilities,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -291,9 +289,6 @@ extern const base::FeatureParam<base::TimeDelta> kTimeoutTcpConnectAttemptMax(
 BASE_FEATURE(kCookieSameSiteConsidersRedirectChain,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAllowSameSiteNoneCookiesInSandbox,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kStaticKeyPinningEnforcement, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCookieDomainRejectNonASCII, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -519,6 +514,9 @@ BASE_FEATURE(kDeviceBoundSessionsForSingleSignOn,
 
 BASE_FEATURE(kDeviceBoundSessionsPersistExpiryOnRefresh,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDeviceBoundSessionsIncludeAudienceClaim,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSpdySessionForProxyAdditionalChecks,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -948,7 +946,7 @@ BASE_FEATURE(kUseNSURLDataForGURLConversion, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_APPLE)
 
 BASE_FEATURE(kDrainSpdySessionSynchronouslyOnRemoteEndpointDisconnect,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLogicalClearHttpCache, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kLogicalClearHttpCacheUserVisiblePriority{
@@ -1078,4 +1076,11 @@ BASE_FEATURE(kEnableWindowsTcpLoopbackFastFail,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
+BASE_FEATURE(kQuicSocketSendBufferSize, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(int,
+                   kQuicSocketSendBufferSizeParam,
+                   &kQuicSocketSendBufferSize,
+                   -1);
+
 }  // namespace net::features
+

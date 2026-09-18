@@ -64,7 +64,6 @@
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -103,6 +102,7 @@
 #include "third_party/blink/public/mojom/media/renderer_audio_input_stream_factory.mojom.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
 #include "third_party/blink/public/mojom/render_accessibility.mojom.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/css_property_id.mojom.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
@@ -624,7 +624,7 @@ class CONTENT_EXPORT RenderFrameImpl
                               int world_id) override;
   void WillReleaseScriptContext(v8::Local<v8::Context> context,
                                 int world_id) override;
-  void DidChangeScrollOffset() override;
+  void DidChangeScrollOffset(blink::mojom::ScrollType) override;
   blink::WebMediaStreamDeviceObserver* MediaStreamDeviceObserver() override;
   blink::WebEncryptedMediaClient* EncryptedMediaClient() override;
   blink::WebString UserAgentOverride() override;
@@ -1107,6 +1107,7 @@ class CONTENT_EXPORT RenderFrameImpl
       const blink::WebURL& url,
       const blink::WebString& suggested_mime_type) override;
   bool IsDomStorageDisabled() const override;
+  bool AreDedicatedWorkersDisabled() const override;
   v8::Local<v8::Object> GetScriptableObject(
       const blink::WebElement& plugin_element,
       v8::Isolate* isolate) override;

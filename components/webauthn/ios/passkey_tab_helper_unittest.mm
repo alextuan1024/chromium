@@ -15,6 +15,7 @@
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "components/autofill/ios/form_util/child_frame_registrar.h"
 #import "components/password_manager/core/browser/mock_password_manager.h"
+#import "components/password_manager/core/browser/password_manager_metrics_util.h"
 #import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
@@ -39,6 +40,7 @@
 #import "services/network/test/test_url_loader_factory.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "url/origin.h"
 
 namespace webauthn {
 
@@ -62,6 +64,7 @@ constexpr char kWellKnownURL[] = "https://example.com/.well-known/webauthn";
 constexpr char kOriginURL[] = "https://example.com";
 constexpr char kInsecureOriginURL[] = "http://example.com";
 constexpr char kRelatedOriginURL[] = "https://example.ca";
+constexpr char kSubdomainOriginURL[] = "https://sub.example.com";
 constexpr char16_t kDeferToRendererJsCall[] = u"deferToRenderer";
 
 constexpr char kWebAuthenticationIOSContentAreaEventHistogram[] =
@@ -159,6 +162,17 @@ class PasskeyTabHelperTest : public PlatformTest {
   sync_pb::WebauthnCredentialSpecifics GetPasskey(const std::string& cred_id) {
     return *passkey_model_->GetPasskey(
         kRpId, cred_id, PasskeyModel::ShadowedCredentials::kInclude);
+  }
+
+  // Creates and adds a valid passkey to the model with an encrypted EC private
+  // key, suitable for testing cryptographic assertions.
+  sync_pb::WebauthnCredentialSpecifics AddValidPasskey(
+      std::string_view rp_id = kRpId) {
+    return static_cast<TestPasskeyModel*>(passkey_model_.get())
+        ->CreatePasskey(rp_id, {{1, 2, 3}, "test_user", "Test User"},
+                        std::vector<uint8_t>(32u, 0),
+                        /*trusted_vault_key_version=*/0,
+                        /*public_key_spki_der_out=*/nullptr);
   }
 
   void MaybeShowInterstitialAndRegister(RegistrationRequestParams params) {
@@ -279,7 +293,8 @@ class PasskeyTabHelperTest : public PlatformTest {
               std::optional<bool>(expected_without_biometrics));
   }
 
-  web::WebTaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_{
+      web::WebTaskEnvironment::TimeSource::MOCK_TIME};
   web::ScopedTestingWebClient scoped_web_client_;
   base::HistogramTester histogram_tester_;
   std::unique_ptr<PasskeyModel> passkey_model_ =
@@ -725,6 +740,9 @@ TEST_F(PasskeyTabHelperTest, HandleRegistrationDefersWhenGpmDisabled) {
 
 // Tests that automatic passkey upgrade is allowed for a valid, recent login.
 TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeSuccess) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
   password_manager::PasswordForm form;
   form.username_value = u"";
   form.url = GURL(kOriginURL);
@@ -740,6 +758,9 @@ TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeSuccess) {
 
 // Tests that automatic passkey upgrade is denied if the login is too old.
 TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeThresholdEnforcement) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
   password_manager::PasswordForm form;
   form.username_value = u"";
   form.url = GURL(kOriginURL);
@@ -755,6 +776,48 @@ TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeThresholdEnforcement) {
 
 // Tests that automatic passkey upgrade is denied if no logins are found.
 TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRemovalHandling) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  std::vector<password_manager::PasswordForm> empty_results;
+  EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, empty_results));
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+  EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests that automatic passkey upgrade allows matching subdomains via eTLD+1.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRpIdNormalization) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kSubdomainOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kSubdomainOriginURL);
+  form.date_last_used = base::Time::Now();
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests that automatic passkey upgrade eligibility is single-use and consumed
+// after a successful upgrade evaluation.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeSingleUse) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
   password_manager::PasswordForm form;
   form.username_value = u"";
   form.url = GURL(kOriginURL);
@@ -766,17 +829,116 @@ TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRemovalHandling) {
   RegistrationRequestParams params = BuildRegistrationRequestParams({});
 
   EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
-
-  results.clear();
+  // The second attempt must fail because the eligibility was consumed.
   EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, results));
 }
 
-// Tests that automatic passkey upgrade allows matching subdomains via eTLD+1.
-TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRpIdNormalization) {
+// Tests that automatic passkey upgrade is denied if the tab did not record a
+// password login, even if matching credentials exist in the password store.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRequiresTabEligibility) {
   password_manager::PasswordForm form;
   form.username_value = u"";
-  form.url = GURL("https://sub.example.com");
+  form.url = GURL(kOriginURL);
   form.date_last_used = base::Time::Now();
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests that automatic passkey upgrade tab eligibility expires after the
+// recency threshold.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeExpiredTabEligibility) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+  task_environment_.FastForwardBy(base::Minutes(6));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests HasAutomaticPasskeyUpgradeEligibility directly under various
+// conditions.
+TEST_F(PasskeyTabHelperTest, HasAutomaticPasskeyUpgradeEligibility) {
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  // No login recorded -> not eligible.
+  EXPECT_FALSE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+
+  // Record login -> eligible.
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+  EXPECT_TRUE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+
+  // Forwarding past threshold -> expired.
+  task_environment_.FastForwardBy(base::Minutes(6));
+  EXPECT_FALSE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+}
+
+// Tests that recording a password login with an opaque origin does not
+// establish automatic passkey upgrade eligibility.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeOpaqueOriginDenied) {
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  passkey_tab_helper()->RecordPasswordLogin("", url::Origin());
+  EXPECT_FALSE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+}
+
+// Tests that automatic passkey upgrade is denied when the pref is disabled on
+// the client.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradePrefDisabled) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  client_->SetAutomaticPasskeyUpgradeEnabled(false);
+  EXPECT_FALSE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+  EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, results));
+
+  client_->SetAutomaticPasskeyUpgradeEnabled(true);
+  EXPECT_TRUE(
+      passkey_tab_helper()->HasAutomaticPasskeyUpgradeEligibility(params));
+  EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests that automatic passkey upgrade is allowed when only `date_last_filled`
+// is recent.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeDateLastFilled) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time();
+  form.date_created = base::Time();
+  form.date_last_filled = base::Time::Now();
 
   std::vector<password_manager::PasswordForm> results;
   results.push_back(form);
@@ -786,6 +948,46 @@ TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeRpIdNormalization) {
   EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
 }
 
+// Tests that automatic passkey upgrade is allowed when only `date_created` is
+// recent.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeDateCreated) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time();
+  form.date_last_filled = base::Time::Now();
+  form.date_created = base::Time::Now();
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  EXPECT_TRUE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
+
+// Tests that automatic passkey upgrade is denied if the credential has
+// `blocked_by_user` set to true.
+TEST_F(PasskeyTabHelperTest, AutomaticPasskeyUpgradeBlockedByUser) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+  form.blocked_by_user = true;
+
+  std::vector<password_manager::PasswordForm> results;
+  results.push_back(form);
+
+  RegistrationRequestParams params = BuildRegistrationRequestParams({});
+
+  EXPECT_FALSE(CanPerformAutomaticPasskeyUpgrade(params, results));
+}
 // Tests that a conditional create request does NOT show the incognito
 // interstitial when automatic passkey upgrade is denied.
 TEST_F(PasskeyTabHelperTest, ConditionalCreateOffTheRecordUpgradeDeny) {
@@ -819,10 +1021,51 @@ TEST_F(PasskeyTabHelperTest, ConditionalCreateOffTheRecordUpgradeDeny) {
   EXPECT_FALSE(client_->DidFetchKeys());
 }
 
+// Tests that a conditional create request does not fetch keys or show creation
+// UI when automatic passkey upgrades are disabled in prefs.
+TEST_F(PasskeyTabHelperTest, ConditionalCreateUpgradePrefDisabled) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
+  client_->SetAutomaticPasskeyUpgradeEnabled(false);
+
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+
+  password_manager::PasswordForm form;
+  form.username_value = u"";
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+  test_password_store_->AddLogin(password_manager::FromPasswordForm(form));
+  base::RunLoop().RunUntilIdle();
+
+  IOSPasskeyClient::RequestInfo request_info(web::kMainFakeFrameId,
+                                             kFakeRequestId);
+  device::PublicKeyCredentialRpEntity rp_entity(kRpId);
+  std::vector<uint8_t> challenge;
+  PasskeyRequestParams::RequestType request_type =
+      PasskeyRequestParams::RequestType::kConditionalCreate;
+  PasskeyExtensionData extension_data;
+  PasskeyRequestParams request_params(
+      std::move(request_info), std::move(rp_entity), std::move(challenge),
+      device::UserVerificationRequirement::kPreferred, request_type,
+      std::move(extension_data));
+  device::PublicKeyCredentialUserEntity user_entity;
+  RegistrationRequestParams params(std::move(request_params),
+                                   std::move(user_entity),
+                                   /*exclude_credentials=*/{});
+
+  passkey_tab_helper()->HandleCreateRequestedEvent(std::move(params));
+
+  EXPECT_FALSE(client_->DidShowCreationBottomSheet());
+  EXPECT_FALSE(client_->DidFetchKeys());
+}
+
 // Tests that a conditional create request shows the incognito interstitial
 // when automatic passkey upgrade is allowed, and creation proceeds if the user
 // chooses to proceed.
 TEST_F(PasskeyTabHelperTest, ConditionalCreateOffTheRecordUpgradeAllowProceed) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
   fake_browser_state_.SetOffTheRecord(true);
   SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
   SetUpIOSPasswordManagerDriver();
@@ -867,6 +1110,8 @@ TEST_F(PasskeyTabHelperTest, ConditionalCreateOffTheRecordUpgradeAllowProceed) {
 // when automatic passkey upgrade is allowed, and creation is cancelled if the
 // user cancels.
 TEST_F(PasskeyTabHelperTest, ConditionalCreateOffTheRecordUpgradeAllowCancel) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      "", url::Origin::Create(GURL(kOriginURL)));
   fake_browser_state_.SetOffTheRecord(true);
   SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
   SetUpIOSPasswordManagerDriver();
@@ -1475,6 +1720,89 @@ TEST_F(PasskeyTabHelperTest,
       origin, std::move(params));
 
   EXPECT_FALSE(GetPasskey(kCredentialId).hidden());
+}
+
+// Test that `PasswordManager.BrowserAssistedLogin.Type` is logged when a
+// passkey assertion succeeds.
+TEST_F(PasskeyTabHelperTest,
+       StartPasskeyAssertionSuccessLogsBrowserAssistedLogin) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  // Handle get request.
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  EXPECT_TRUE(client_->DidShowSuggestionBottomSheet());
+
+  base::HistogramTester histogram_tester;
+
+  // Trigger start of assertion.
+  passkey_tab_helper()->StartPasskeyAssertion(kFakeRequestId,
+                                              passkey.credential_id(),
+                                              /*did_complete_uv=*/false);
+  EXPECT_TRUE(client_->DidFetchKeys());
+
+  // Verify that resolveAssertionRequest was called on the frame.
+  web::FakeWebFramesManager* frames_manager =
+      static_cast<web::FakeWebFramesManager*>(
+          fake_web_state_.GetWebFramesManager(
+              PasskeyJavaScriptFeature::GetInstance()
+                  ->GetSupportedContentWorld()));
+  web::FakeWebFrame* frame = static_cast<web::FakeWebFrame*>(
+      frames_manager->GetFrameWithId(web::kMainFakeFrameId));
+  std::u16string last_call = frame->GetLastJavaScriptCall();
+  EXPECT_NE(last_call.find(u"resolveAssertionRequest"), std::u16string::npos);
+
+  // Verify that PasswordManager.BrowserAssistedLogin.Type was logged.
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.BrowserAssistedLogin.Type",
+      password_manager::metrics_util::BrowserAssistedLoginType::
+          kPasskeyStoredInGPM,
+      1);
+}
+
+// Test that `PasswordManager.BrowserAssistedLogin.Type` is not logged when a
+// passkey assertion request fails.
+TEST_F(PasskeyTabHelperTest,
+       StartPasskeyAssertionFailureDoesNotLogBrowserAssistedLogin) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+
+  // Handle get request.
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  EXPECT_TRUE(client_->DidShowSuggestionBottomSheet());
+
+  base::HistogramTester histogram_tester;
+
+  // Trigger start of assertion with a non-existent credential ID.
+  passkey_tab_helper()->StartPasskeyAssertion(kFakeRequestId,
+                                              "non_existent_credential_id",
+                                              /*did_complete_uv=*/false);
+
+  // Request should defer to renderer.
+  web::FakeWebFramesManager* frames_manager =
+      static_cast<web::FakeWebFramesManager*>(
+          fake_web_state_.GetWebFramesManager(
+              PasskeyJavaScriptFeature::GetInstance()
+                  ->GetSupportedContentWorld()));
+  web::FakeWebFrame* frame = static_cast<web::FakeWebFrame*>(
+      frames_manager->GetFrameWithId(web::kMainFakeFrameId));
+  std::u16string last_call = frame->GetLastJavaScriptCall();
+  EXPECT_NE(last_call.find(kDeferToRendererJsCall), std::u16string::npos);
+
+  // Verify that PasswordManager.BrowserAssistedLogin.Type was NOT logged.
+  histogram_tester.ExpectTotalCount("PasswordManager.BrowserAssistedLogin.Type",
+                                    0);
 }
 
 }  // namespace webauthn

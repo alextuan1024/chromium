@@ -4,8 +4,13 @@
 
 #import "ios/chrome/browser/web/model/web_state_delegate_browser_agent.h"
 
+#import <optional>
+
+#import "base/functional/callback_helpers.h"
 #import "base/notimplemented.h"
+#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/task/sequenced_task_runner.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/content_settings/core/common/content_settings.h"
 #import "components/enterprise/client_certificates/ios/certificate_provisioning_service_ios.h"
@@ -16,6 +21,8 @@
 #import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios.h"
 #import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios_factory.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/data_controls_tab_helper.h"
+#import "ios/chrome/browser/enterprise/proxy/model/proxy_service_controller.h"
+#import "ios/chrome/browser/enterprise/proxy/model/proxy_service_controller_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_callback_manager.h"
@@ -29,6 +36,7 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_capabilities.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
@@ -110,6 +118,56 @@ bool IsMicOrCameraAccessSubjectToParentalControls(
           default_mic_setting == ContentSetting::CONTENT_SETTING_BLOCK) ||
          ([permissions containsObject:@(web::PermissionCamera)] &&
           default_camera_setting == ContentSetting::CONTENT_SETTING_BLOCK);
+}
+
+// Helper to determine the permission decision based on domain settings.
+// Returns std::nullopt if the decision should fall back to user prompt.
+std::optional<web::PermissionDecision> DetermineDomainLevelDecision(
+    HostContentSettingsMap* settings_map,
+    const GURL& url,
+    NSArray<NSNumber*>* permissions) {
+  if (!settings_map || !url.is_valid()) {
+    return std::nullopt;
+  }
+
+  bool has_explicit_allow = false;
+  bool has_unconfigured = false;
+
+  for (NSNumber* permission_number in permissions) {
+    web::Permission permission =
+        static_cast<web::Permission>(permission_number.unsignedIntegerValue);
+    ContentSettingsType type = ContentSettingsTypeForPermission(permission);
+    ContentSetting setting = settings_map->GetContentSetting(url, url, type);
+    switch (setting) {
+      case CONTENT_SETTING_BLOCK:
+        // Any explicit block denies immediately.
+        return web::PermissionDecisionDeny;
+      case CONTENT_SETTING_ALLOW:
+        has_explicit_allow = true;
+        break;
+      case CONTENT_SETTING_ASK:
+      case CONTENT_SETTING_DEFAULT:
+        has_unconfigured = true;
+        break;
+      case CONTENT_SETTING_SESSION_ONLY:
+      case CONTENT_SETTING_NUM_SETTINGS:
+        NOTREACHED();
+    }
+  }
+
+  if (has_explicit_allow && !has_unconfigured) {
+    return web::PermissionDecisionGrant;
+  }
+
+  return std::nullopt;
+}
+
+// Asynchronously invokes the permission decision handler to prevent
+// re-entrancy issues with WebKit.
+void PostPermissionDecision(web::WebStatePermissionDecisionHandler handler,
+                            web::PermissionDecision decision) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(handler, decision));
 }
 
 }  // namespace
@@ -318,9 +376,55 @@ void WebStateDelegateBrowserAgent::HandlePermissionsDecisionRequest(
     return;
   }
 
-  PermissionsTabHelper::FromWebState(source)
-      ->PresentPermissionsDecisionDialogWithCompletionHandler(permissions,
-                                                              handler);
+  if (IsDomainLevelSitePermissionsEnabled()) {
+    HostContentSettingsMap* settings_map =
+        ios::HostContentSettingsMapFactory::GetForProfile(profile);
+    GURL url = source->GetLastCommittedURL();
+
+    std::optional<web::PermissionDecision> decision =
+        DetermineDomainLevelDecision(settings_map, url, permissions);
+    if (decision) {
+      PostPermissionDecision(handler, *decision);
+      return;
+    }
+  }
+
+  PermissionsTabHelper* permissions_tab_helper =
+      PermissionsTabHelper::FromWebState(source);
+  if (permissions_tab_helper) {
+    permissions_tab_helper
+        ->PresentPermissionsDecisionDialogWithCompletionHandler(permissions,
+                                                                handler);
+    return;
+  }
+
+  handler(web::PermissionDecisionDeny);
+}
+
+void WebStateDelegateBrowserAgent::OnProxyAuthChallenge(
+    web::WebState* source,
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    web::WebStateDelegate::ProxyAuthCallback callback) {
+  auto [proxy_callback, fallback_callback] =
+      base::SplitOnceCallback(std::move(callback));
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(source->GetBrowserState());
+  ProxyServiceController* proxy_service_controller =
+      ProxyServiceControllerFactory::GetForProfile(profile);
+  if (proxy_service_controller &&
+      proxy_service_controller->MaybeHandleProxyAuthChallenge(
+          source, protection_space, proposed_credential, failure_response,
+          std::move(proxy_callback))) {
+    return;
+  }
+  // If enterprise proxy logic does not handle the challenge (e.g., for
+  // non-managed profiles or non-enterprise proxies), delegate to the base
+  // `WebStateDelegate::OnProxyAuthChallenge` implementation, which handles
+  // forwarding the challenge to `OnAuthRequired`.
+  web::WebStateDelegate::OnProxyAuthChallenge(
+      source, protection_space, proposed_credential, failure_response,
+      std::move(fallback_callback));
 }
 
 void WebStateDelegateBrowserAgent::OnAuthRequired(

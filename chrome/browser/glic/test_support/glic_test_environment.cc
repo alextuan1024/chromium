@@ -317,25 +317,31 @@ void GlicTestEnvironment::OnProfileInitializationComplete(Profile* profile) {
 }
 
 bool GlicTestEnvironment::StartTestServerIfNeeded(
-    net::test_server::EmbeddedTestServer* http_server) {
-  if (http_server->Started()) {
+    net::test_server::EmbeddedTestServer* server,
+    net::test_server::EmbeddedTestServerHandle& handle) {
+  if (server->Started()) {
     return true;
   }
 
-  test_server_handle_ = http_server->StartAndReturnHandle();
-  return static_cast<bool>(test_server_handle_);
+  handle = server->StartAndReturnHandle();
+  return static_cast<bool>(handle);
 }
 
 bool GlicTestEnvironment::SetupEmbeddedTestServers(
     net::test_server::EmbeddedTestServer* http_server,
     net::test_server::EmbeddedTestServer* https_server) {
   CHECK(guest_url_.is_empty()) << "SetupEmbeddedTestServers called twice";
-  CHECK(http_server);
+  CHECK(https_server);
 
-  ServeGlicFiles(http_server, "HTTP test server");
+  if (http_server) {
+    ServeGlicFiles(http_server, "HTTP test server");
+    if (!StartTestServerIfNeeded(http_server, test_server_handle_)) {
+      return false;
+    }
+  }
   ServeGlicFiles(https_server, "HTTPS test server");
 
-  if (!StartTestServerIfNeeded(http_server)) {
+  if (!StartTestServerIfNeeded(https_server, https_test_server_handle_)) {
     return false;
   }
 
@@ -356,10 +362,9 @@ bool GlicTestEnvironment::SetupEmbeddedTestServers(
     }
   }
 
+  guest_url_ = https_server->GetURL(path.str());
   auto* command_line = base::CommandLine::ForCurrentProcess();
-  guest_url_ = http_server->GetURL(path.str());
   command_line->AppendSwitchASCII(::switches::kGlicGuestURL, guest_url_.spec());
-
 
   return true;
 }

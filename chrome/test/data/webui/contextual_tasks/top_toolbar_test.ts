@@ -61,7 +61,7 @@ suite('TopToolbarTest', () => {
       assertHTMLElement(lightLogo);
       assertEquals(
           lightLogo.src,
-          'chrome://resources/cr_components/searchbox/icons/chrome_product.svg');
+          'chrome://resources/cr_components/searchbox/icons/chrome_product_cr23.svg');
       const darkLogo = topToolbar.shadowRoot.querySelector<HTMLImageElement>(
           '.chrome-logo-dark');
       assertHTMLElement(darkLogo);
@@ -661,21 +661,6 @@ suite('TopToolbarTest', () => {
           assertEquals(
               0, proxy.handler.getCallCount('maybeTriggerPinningPromo'));
         });
-
-    test(
-        'does not call maybeTriggerPinningPromo when lens search tooltip is showing',
-        async () => {
-          topToolbar.isAiPage = false;
-          topToolbar.lensSearchTooltipShowing = true;
-          await microtasksFinished();
-          proxy.handler.reset();
-
-          topToolbar.isAiPage = true;
-          await microtasksFinished();
-
-          assertEquals(
-              0, proxy.handler.getCallCount('maybeTriggerPinningPromo'));
-        });
   });
 
   (loadTimeData.getBoolean('isSmallDeviceFormFactor') ?
@@ -916,6 +901,27 @@ suite('TopToolbarTest', () => {
     assertFalse(dialogEl.hasAttribute('unbounded'));
   });
 
+  test('closes overflow menu when the side panel loses focus', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    topToolbar = document.createElement('top-toolbar');
+    document.body.appendChild(topToolbar);
+    await microtasksFinished();
+
+    const overflowMenuButton =
+        topToolbar.shadowRoot.querySelector<HTMLElement>('#overflowMenuButton');
+    assertTrue(!!overflowMenuButton);
+
+    overflowMenuButton.click();
+    await microtasksFinished();
+    assertTrue(topToolbar.$.overflowMenu.get().$.menu.open);
+
+    // Clicking outside of the side panel (e.g. on the page contents, the Lens
+    // crop frame, or a search result) blurs the side panel's window.
+    window.dispatchEvent(new Event('blur'));
+    await microtasksFinished();
+    assertFalse(topToolbar.$.overflowMenu.get().$.menu.open);
+  });
+
   // <if expr="not is_android">
   suite('Permission Dashboard Integration', () => {
     setup(async () => {
@@ -940,6 +946,7 @@ suite('TopToolbarTest', () => {
         message: '',
         tooltip: '',
         accessibilityName: '',
+        stateToken: 1,
         ...overrides,
       };
     }

@@ -33,6 +33,7 @@
 #include "base/observer_list.h"
 #include "base/rand_util.h"
 #include "base/strings/escape.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -56,6 +57,7 @@
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/in_memory_history_backend.h"
+#include "components/history/core/browser/journeys/journeys_backend_util.h"
 #include "components/history/core/browser/journeys/journeys_sync_bridge.h"
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/browser/keyword_search_term_util.h"
@@ -415,18 +417,41 @@ HistoryBackend::~HistoryBackend() {
 #endif
 }
 
+void HistoryBackend::SetInitParams(
+    bool force_fail,
+    const HistoryDatabaseParams& history_database_params) {
+  force_fail_ = force_fail;
+  history_database_params_ =
+      std::make_unique<HistoryDatabaseParams>(history_database_params);
+}
+
 void HistoryBackend::Init(
     bool force_fail,
     const HistoryDatabaseParams& history_database_params) {
+  if (is_inited_) {
+    return;
+  }
+  SetInitParams(force_fail, history_database_params);
+  InitWithCachedParams();
+}
+
+void HistoryBackend::InitWithCachedParams() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  if (is_inited_) {
+    return;
+  }
+  CHECK(history_database_params_);
+  is_inited_ = true;
+
   TRACE_EVENT0("browser", "HistoryBackend::Init");
 
-  DCHECK(base::PathExists(history_database_params.history_dir))
+  DCHECK(base::PathExists(history_database_params_->history_dir))
       << "History directory does not exist. If you are in a test make sure "
          "that ~TestingProfile() has not been called or that the "
          "ScopedTempDirectory used outlives this task.";
 
-  if (!force_fail) {
-    InitImpl(history_database_params);
+  if (!force_fail_) {
+    InitImpl(*history_database_params_);
   }
   delegate_->DBLoaded();
 
@@ -435,7 +460,13 @@ void HistoryBackend::Init(
       std::make_unique<ClientTagBasedDataTypeProcessor>(
           syncer::HISTORY,
           base::BindRepeating(&syncer::ReportUnrecoverableError,
-                              history_database_params.channel)));
+                              history_database_params_->channel)));
+
+  // Forward the sync transport state if SetSyncTransportState() was called
+  // before backend initialization.
+  if (sync_transport_state_.has_value()) {
+    history_sync_bridge_->SetSyncTransportState(*sync_transport_state_);
+  }
 
   if (base::FeatureList::IsEnabled(syncer::kSyncJourney)) {
     journeys_sync_bridge_ = std::make_unique<journeys::JourneysSyncBridge>(
@@ -443,7 +474,7 @@ void HistoryBackend::Init(
         std::make_unique<ClientTagBasedDataTypeProcessor>(
             syncer::JOURNEY,
             base::BindRepeating(&syncer::ReportUnrecoverableError,
-                                history_database_params.channel)));
+                                history_database_params_->channel)));
   }
 
   if (db_ && db_->GetDeleteForeignVisitsUntilId() != kInvalidVisitID) {
@@ -451,6 +482,8 @@ void HistoryBackend::Init(
     // browser shutdown. Continue it.
     StartDeletingForeignVisits();
   }
+
+  history_database_params_.reset();
 }
 
 void HistoryBackend::SetOnBackendDestroyTask(
@@ -2068,6 +2101,8 @@ QueryURLAndVisitsResult HistoryBackend::QueryURLAndVisits(
 
 base::WeakPtr<syncer::DataTypeControllerDelegate>
 HistoryBackend::GetHistorySyncControllerDelegate() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  InitWithCachedParams();
   if (history_sync_bridge_) {
     return history_sync_bridge_->change_processor()->GetControllerDelegate();
   }
@@ -2076,6 +2111,8 @@ HistoryBackend::GetHistorySyncControllerDelegate() {
 
 base::WeakPtr<syncer::DataTypeControllerDelegate>
 HistoryBackend::GetJourneysSyncControllerDelegate() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  InitWithCachedParams();
   if (journeys_sync_bridge_) {
     return journeys_sync_bridge_->change_processor()->GetControllerDelegate();
   }
@@ -2084,12 +2121,15 @@ HistoryBackend::GetJourneysSyncControllerDelegate() {
 
 void HistoryBackend::SetSyncTransportState(
     syncer::SyncService::TransportState state) {
+  sync_transport_state_ = state;
+  // If the sync bridge has already been created, forward the state immediately;
+  // otherwise, it will be forwarded when InitWithCachedParams() runs.
   if (history_sync_bridge_) {
     history_sync_bridge_->SetSyncTransportState(state);
   }
 }
 
-bool HistoryBackend::AddOrUpdateJourneys(
+bool HistoryBackend::AddOrUpdateJourneyRows(
     const std::vector<journeys::JourneyRow>& journeys) {
   if (!db_) {
     return false;
@@ -2107,11 +2147,18 @@ bool HistoryBackend::DeleteJourneys(
   return db_->DeleteJourneys(journey_ids);
 }
 
-std::vector<journeys::JourneyRow> HistoryBackend::GetAllJourneys() {
+std::vector<journeys::JourneyRow> HistoryBackend::GetAllJourneyRows() {
   if (!db_) {
     return {};
   }
   return db_->GetAllJourneys();
+}
+
+std::vector<journeys::Journey> HistoryBackend::GetAllJourneysWithVisits() {
+  if (!db_) {
+    return {};
+  }
+  return journeys::GetAllJourneysWithResolvedVisits(*db_);
 }
 
 bool HistoryBackend::DeleteAllJourneys() {
@@ -2829,7 +2876,7 @@ QueryResults HistoryBackend::QueryHistory(const std::u16string& text_query,
                                           const QueryOptions& options) {
   QueryResults query_results;
   if (db_) {
-    if (text_query.empty()) {
+    if (text_query.empty() && options.hostname_suffix.empty()) {
       // Basic history query for the main database.
       QueryHistoryBasic(options, &query_results);
     } else {
@@ -2906,12 +2953,28 @@ void HistoryBackend::QueryHistoryBasic(const QueryOptions& options,
 void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
                                       const QueryOptions& options,
                                       QueryResults* result) {
-  URLRows text_matches =
-      options.host_only
-          ? GetMatchesForHost(text_query)
-          : db_->GetTextMatchesWithAlgorithm(
-                text_query, options.matching_algorithm.value_or(
-                                query_parser::MatchingAlgorithm::DEFAULT));
+  URLRows text_matches;
+  if (text_query.empty()) {
+    // Host-only search.
+    text_matches = GetMatchesForHost(options.hostname_suffix);
+  } else {
+    // Text search or combined text + host search.
+    text_matches = db_->GetTextMatchesWithAlgorithm(
+        text_query, options.matching_algorithm.value_or(
+                        query_parser::MatchingAlgorithm::DEFAULT));
+
+    if (!options.hostname_suffix.empty()) {
+      const bool use_improved_matching = base::FeatureList::IsEnabled(
+          kBrowsingHistoryImprovedHostnameSuffixMatching);
+      const std::string hostname_suffix =
+          use_improved_matching ? base::ToLowerASCII(options.hostname_suffix)
+                                : options.hostname_suffix;
+      std::erase_if(text_matches, [&](const URLRow& row) {
+        return use_improved_matching ? !row.url().DomainIs(hostname_suffix)
+                                     : (row.url().GetHost() != hostname_suffix);
+      });
+    }
+  }
 
   std::vector<URLResult> matching_visits;
   for (const auto& text_match : text_matches) {
@@ -2964,15 +3027,22 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
   }
 }
 
-URLRows HistoryBackend::GetMatchesForHost(const std::u16string& host_name) {
+URLRows HistoryBackend::GetMatchesForHost(const std::string& hostname_suffix) {
   URLRows results;
   URLDatabase::URLEnumerator iter;
 
   if (db_ && db_->InitURLEnumeratorForEverything(&iter)) {
     URLRow row;
-    std::string host_name_utf8 = base::UTF16ToUTF8(host_name);
+    const bool improved_suffix_matching = base::FeatureList::IsEnabled(
+        kBrowsingHistoryImprovedHostnameSuffixMatching);
+    const std::string target_host = improved_suffix_matching
+                                        ? base::ToLowerASCII(hostname_suffix)
+                                        : hostname_suffix;
     while (iter.GetNextURL(&row)) {
-      if (row.url().is_valid() && row.url().GetHost() == host_name_utf8) {
+      const bool matches_host = improved_suffix_matching
+                                    ? row.url().DomainIs(target_host)
+                                    : (row.url().GetHost() == target_host);
+      if (row.url().is_valid() && matches_host) {
         results.push_back(std::move(row));
       }
     }

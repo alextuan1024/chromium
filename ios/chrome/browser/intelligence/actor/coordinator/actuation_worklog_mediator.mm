@@ -26,9 +26,6 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
   if (!toolType) {
     return nil;
   }
-
-  // TODO(crbug.com/556191112): Add a catch-all or specific icons for the
-  // remaining tool types.
   switch (*toolType) {
     case actor::ToolType::kClick:
       return [[ActuationWorklogChip alloc]
@@ -47,18 +44,29 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
                            IDS_IOS_ACTOR_WORKLOG_CHIP_SCROLLING)
                   icon:SymbolWithPointSize(SymbolCursorArrowMotionLines,
                                            kIconSize)];
-    case actor::ToolType::kWait:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_WAITING)
-                  icon:SymbolWithPointSize(SymbolHourglass, kIconSize)];
     case actor::ToolType::kAttemptLogin:
       return [[ActuationWorklogChip alloc]
           initWithText:l10n_util::GetNSString(
                            IDS_IOS_ACTOR_WORKLOG_CHIP_FILLING_PASSWORD)
                   icon:SymbolWithPointSize(SymbolKey, kIconSize)];
-    default:
+    case actor::ToolType::kNavigate:
+      return [[ActuationWorklogChip alloc]
+          initWithText:l10n_util::GetNSString(
+                           IDS_IOS_ACTOR_WORKLOG_CHIP_NAVIGATING)
+                  icon:SymbolWithPointSize(SymbolGlobe, kIconSize)];
+    case actor::ToolType::kWait:
+      return [[ActuationWorklogChip alloc]
+          initWithText:l10n_util::GetNSString(
+                           IDS_IOS_ACTOR_WORKLOG_CHIP_WAITING)
+                  icon:SymbolWithPointSize(SymbolHourglass, kIconSize)];
+    case actor::ToolType::kWaitZeroDuration:
+    case actor::ToolType::kUnknown:
       return nil;
+    default:
+      return [[ActuationWorklogChip alloc]
+          initWithText:l10n_util::GetNSString(
+                           IDS_IOS_ACTOR_WORKLOG_CHIP_PROCESSING)
+                  icon:SymbolWithPointSize(SymbolCursorArrow, kIconSize)];
   }
 }
 
@@ -67,6 +75,8 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
 @implementation ActuationWorklogMediator {
   // Service tracking actor tasks and updates.
   raw_ptr<actor::ActorService> _actorService;
+  // Currently observed task ID.
+  std::optional<actor::ActorTaskId> _currentTaskId;
   // Latest emitted update, used to deduplicate consecutive identical updates.
   NSString* _latestEmittedTaskUpdate;
 }
@@ -92,6 +102,7 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
   }
   [_consumer reset];
   _consumer = nil;
+  _currentTaskId.reset();
   _latestEmittedTaskUpdate = nil;
 }
 
@@ -127,7 +138,7 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
                             taskUpdate:(NSString*)taskUpdate
                           currentState:(actor::ActorTaskState)state
                              webStates:(NSArray<NSNumber*>*)webStatesIDs {
-  // TODO(crbug.com/555198195): Ensure updates are tied to the same `taskID`.
+  _currentTaskId = taskID;
   ActuationWorklogItem* initialItem = [ActuationWorklogItem
       labeledItemWithTitle:l10n_util::GetNSString(
                                IDS_IOS_GEMINI_FIRST_ACTUATION_STEP_TITLE)
@@ -146,6 +157,9 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
 - (void)actorTaskWithID:(actor::ActorTaskId)taskID
          didChangeState:(actor::ActorTaskState)newState
               fromState:(actor::ActorTaskState)oldState {
+  if (_currentTaskId != taskID) {
+    return;
+  }
   [_consumer setActuationActive:!actor::IsTerminalState(newState)];
 }
 
@@ -153,14 +167,31 @@ ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
         willExecuteTool:(actor::ToolType)toolType
              taskUpdate:(NSString*)taskUpdate
              onWebState:(web::WebStateID)webStateID {
+  if (_currentTaskId != taskID) {
+    return;
+  }
   [self processUpdateWithTool:toolType taskUpdate:taskUpdate];
 }
 
 - (void)actorTaskDidStopWithID:(actor::ActorTaskId)taskID
                     finalState:(actor::ActorTaskState)finalState {
+  if (_currentTaskId != taskID) {
+    return;
+  }
+  _currentTaskId.reset();
   _latestEmittedTaskUpdate = nil;
   [_consumer setActuationActive:NO];
   [_consumer reset];
+}
+
+#pragma mark - ActuationWorklogMutator
+
+- (void)stopActuation {
+  if (!_actorService || !_currentTaskId) {
+    return;
+  }
+  _actorService->StopTask(*_currentTaskId,
+                          actor::ActorTaskStoppedReason::kStoppedByUser);
 }
 
 @end

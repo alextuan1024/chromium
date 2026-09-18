@@ -3766,14 +3766,14 @@
     },
     {
       "id": 483,
-      "cr_bugs": [528131939],
-      "description": "Reset texture base level before calling glCompressedTexSubImage2D for ASTC textures to work around PowerVR driver bug.",
+      "cr_bugs": [551708184],
+      "description": "Reset texture base level before calling glCompressedTexImage2D or glCompressedTexSubImage2D for ASTC textures to work around PowerVR driver bug.",
       "os": {
         "type": "android"
       },
       "gl_vendor": "Imagination.*",
       "features": [
-        "reset_base_level_for_astc_sub_image"
+        "reset_base_level_for_astc_image"
       ]
     },
     {
@@ -3893,10 +3893,10 @@
     {
       "id": 494,
       "cr_bugs": [553172761],
-      "description": "For texture formats which would be twiddled on the host CPU, upload via TexSubImage2D instead of TexImage2D.",
+      "description": "Upload non-power-of-two textures via TexSubImage2D instead of TexImage2D when uploading client-side data.",
       "gl_vendor": "Imagination.*",
       "features": [
-        "use_tex_sub_image_for_host_twiddled_npot_uploads"
+        "use_tex_sub_image_for_client_data_npot_uploads"
       ]
     },
     {
@@ -3914,6 +3914,85 @@
       },
       "features": [
         "disable_dx12_info_collection"
+      ]
+    },
+    {
+      "id": 496,
+      "cr_bugs": [556870863],
+      "description": "Program binary cache entries can collide in Imagination's GLES driver",
+      "os": {
+        "type": "android"
+      },
+      "gl_vendor": "Imagination.*",
+      "gl_type": "angle_gles",
+      "features": [
+        "disable_program_cache"
+      ]
+    },
+    {
+      "id": 497,
+      "cr_bugs": [556956704],
+      "description": "NVIDIA video processor can succeed while zeroing YUV copies tagged BT.2020 PQ (G2084) or G22 left chroma siting. Identity copies retag both processor color spaces to BT.2020 G22 top-left.",
+      "os": {
+        "type": "win"
+      },
+      "vendor_id": "0x10de",
+      "driver_version": {
+        "schema": "nvidia_driver",
+        "op": ">",
+        "value": "591.86"
+      },
+      "features": [
+        "use_g22_topleft_color_space_for_yuv_vp"
+      ]
+    },
+    {
+      "id": 498,
+      "cr_bugs": [
+        551065272
+      ],
+      "description": "Recreate mipmap levels before calling glGenerateMipmap on Mali GPUs",
+      "gl_vendor": "ARM.*",
+      "features": [
+        "recreate_mipmap_levels_before_generate"
+      ]
+    },
+    {
+      "id": 499,
+      "description": "adjust src/dst region if blitting pixels outside framebuffer on Android Mali",
+      "cr_bugs": [546630009],
+      "os": {
+        "type": "android"
+      },
+      "gl_vendor": "ARM.*",
+      "features": [
+        "adjust_src_dst_region_for_blitframebuffer"
+      ]
+    },
+    {
+      "id": 500,
+      "cr_bugs": [556576976],
+      "description": "Older intel iHD drivers allocate too few tiles for AV1 decode, leading to potential memory corruption.",
+      "os": {
+        "type": "linux"
+      },
+      "vendor_id": "0x8086",
+      "driver_version": {
+        "op": "<",
+        "value": "23.2.4"
+      },
+      "features": [
+        "disable_accelerated_av1_decode"
+      ]
+    },
+    {
+      "id": 501,
+      "description": "Older PowerVR drivers mishandle large 3D NPOT sizes in texStorage3D",
+      "cr_bugs": [551673541],
+      "gl_vendor": "Imagination.*",
+      "gl_renderer": "PowerVR.*",
+      "features": [
+        "round_up_3d_texture_size_to_pot_for_limit"
       ]
     }
   ]

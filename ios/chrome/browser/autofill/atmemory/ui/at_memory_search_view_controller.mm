@@ -8,6 +8,7 @@
 #import "base/check.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "base/strings/sys_string_conversions.h"
 #import "build/buildflag.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
@@ -37,6 +38,9 @@ namespace {
 
 // URL for the AI disclosure footer link.
 constexpr char kAIDisclosureURL[] = "settings://ai_disclosure";
+
+// Vertical spacing between the notice section and search results.
+constexpr CGFloat kNoticeSectionSpacing = 16.0;
 
 // Section identifiers in the "AtMemory" page table view.
 enum class SectionIdentifier {
@@ -118,6 +122,8 @@ enum class ItemIdentifier {
                            action:@selector(handleCancelButton)];
   cancelButton.accessibilityIdentifier =
       kAtMemoryCloseButtonAccessibilityIdentifier;
+  cancelButton.accessibilityLabel = l10n_util::GetNSString(
+      IDS_IOS_AUTOFILL_AI_CLOSE_FIND_AND_FILL_ACCESSIBILITY_LABEL);
   self.navigationItem.rightBarButtonItem = cancelButton;
 
   self.title = l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_FIND_AND_FILL_TITLE);
@@ -285,6 +291,10 @@ enum class ItemIdentifier {
     return UITableViewAutomaticDimension;
   }
 
+  if (sectionIdentifier == SectionIdentifier::kNoticeSection) {
+    return kNoticeSectionSpacing;
+  }
+
   return 0;
 }
 
@@ -292,7 +302,7 @@ enum class ItemIdentifier {
 
 - (void)view:(TableViewLinkHeaderFooterView*)view didTapLinkURL:(CrURL*)URL {
   if (URL.gurl == GURL(kAIDisclosureURL)) {
-    [self.atMemoryHandler openManageEnhancedAutofillDetails];
+    [self.mutator didTapAIDisclosureLink];
   }
 }
 
@@ -377,6 +387,22 @@ enum class ItemIdentifier {
 }
 
 #pragma mark - Private
+
+// Posts a VoiceOver announcement with the number of available search results.
+- (void)announceSearchResultsForAccessibility {
+  if (!UIAccessibilityIsVoiceOverRunning() || !self.view.window) {
+    return;
+  }
+
+  NSAttributedString* announcement = [[NSAttributedString alloc]
+      initWithString:
+          l10n_util::GetPluralNSStringF(
+              IDS_IOS_AUTOFILL_AT_MEMORY_SEARCH_RESULTS_AVAILABLE_ACCESSIBILITY_ANNOUNCEMENT,
+              static_cast<int>(_searchResults.count))
+          attributes:@{UIAccessibilitySpeechAttributeQueueAnnouncement : @YES}];
+  UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+                                  announcement);
+}
 
 // Initiates the Gemini entry flow for an unsupported query and dismisses the
 // AtMemory UI upon success.
@@ -505,6 +531,8 @@ enum class ItemIdentifier {
                  @(static_cast<int>(SectionIdentifier::kSearchResultsSection))];
 
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
+  [self announceSearchResultsForAccessibility];
+
   [self updateTableViewBackgroundStyle];
 }
 
@@ -615,10 +643,20 @@ enum class ItemIdentifier {
       [TableViewCellContentConfiguration dequeueTableViewCell:tableView];
   cell.contentConfiguration = configuration;
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  cell.accessibilityTraits |= UIAccessibilityTraitButton;
   cell.accessibilityIdentifier =
       GetAtMemorySearchResultCellAccessibilityIdentifier(itemIdentifier.title);
 
-  cell.accessoryView = [self infoButtonForSearchItem:itemIdentifier];
+  UIButton* infoButton = [self infoButtonForSearchItem:itemIdentifier];
+  cell.accessoryView = infoButton;
+
+  // Make the cell a container so both the suggestion row and the info button
+  // are accessible to VoiceOver.
+  cell.isAccessibilityElement = NO;
+  cell.contentView.isAccessibilityElement = YES;
+  cell.contentView.accessibilityLabel = configuration.accessibilityLabel;
+  cell.contentView.accessibilityTraits = UIAccessibilityTraitButton;
+  cell.accessibilityElements = @[ cell.contentView, infoButton ];
 
   return cell;
 }
@@ -630,8 +668,12 @@ enum class ItemIdentifier {
               forState:UIControlStateNormal];
   infoButton.tintColor = [UIColor colorNamed:kBlueColor];
   infoButton.tag = item.index;
+  infoButton.accessibilityTraits |= UIAccessibilityTraitButton;
   infoButton.accessibilityIdentifier =
       GetAtMemorySearchResultInfoButtonAccessibilityIdentifier(item.title);
+  infoButton.accessibilityLabel = l10n_util::GetNSStringF(
+      IDS_IOS_MANUAL_FALLBACK_THREE_DOT_MENU_BUTTON_ACCESSIBILITY_LABEL,
+      base::SysNSStringToUTF16(item.title));
   [infoButton addTarget:self
                  action:@selector(handleInfoButtonTap:)
        forControlEvents:UIControlEventTouchUpInside];
@@ -662,6 +704,7 @@ enum class ItemIdentifier {
   UITableViewCell* cell =
       [TableViewCellContentConfiguration dequeueTableViewCell:tableView];
   cell.contentConfiguration = configuration;
+  cell.accessibilityTraits |= UIAccessibilityTraitButton;
   cell.accessibilityIdentifier = kAtMemorySearchCellAccessibilityIdentifier;
 
   return cell;
@@ -688,6 +731,7 @@ enum class ItemIdentifier {
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   cell.contentView.alpha = kDefaultCellAlpha;
   cell.userInteractionEnabled = NO;
+  cell.accessibilityTraits &= ~UIAccessibilityTraitButton;
   cell.accessibilityIdentifier = kAtMemoryNoDataCellAccessibilityIdentifier;
 
   return cell;
@@ -716,6 +760,7 @@ enum class ItemIdentifier {
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   cell.contentView.alpha = kDisabledCellAlpha;
   cell.userInteractionEnabled = NO;
+  cell.accessibilityTraits &= ~UIAccessibilityTraitButton;
   cell.accessibilityIdentifier =
       kAtMemoryNoConnectionCellAccessibilityIdentifier;
 
@@ -749,6 +794,7 @@ enum class ItemIdentifier {
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   cell.contentView.alpha = kDefaultCellAlpha;
   cell.userInteractionEnabled = YES;
+  cell.accessibilityTraits |= UIAccessibilityTraitButton;
   cell.accessibilityIdentifier =
       kAtMemoryUnsupportedQueryCellAccessibilityIdentifier;
 
@@ -775,6 +821,7 @@ enum class ItemIdentifier {
   cell.contentConfiguration = configuration;
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   cell.userInteractionEnabled = NO;
+  cell.accessibilityTraits &= ~UIAccessibilityTraitButton;
   cell.accessibilityIdentifier = kAtMemoryFetchingCellAccessibilityIdentifier;
 
   return cell;

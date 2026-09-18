@@ -15,7 +15,6 @@
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/values.h"
 #include "chrome/browser/accessibility/phrase_segmentation/dependency_parser_model_loader.h"
@@ -67,6 +66,7 @@
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "net/http/http_status_code.h"
 #include "pdf/buildflags.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -142,6 +142,10 @@ class ReadAnythingUntrustedPageHandler::DomDistillerDelegate
                 contents, /*owned=*/false)),
         url);
   }
+
+  // Cancels an in-flight distillation request, if any. Resetting the handle
+  // removes this delegate as an observer, so OnArticleReady() is not called.
+  void CancelDistillation() { viewer_handle_.reset(); }
 
   // dom_distiller::ViewRequestDelegate:
   void OnArticleReady(
@@ -604,15 +608,17 @@ void ReadAnythingUntrustedPageHandler::OnUpdateLanguageStatus(
     content::LanguageInstallStatus install_status,
     const std::string& error) {
   // Language status is profile-dependent so only send the update if the status
-  // is for this profile. Incognito profiles download the language to the main
-  // profile, so we need to always send the language updates for incognito.
+  // is for this profile. Primary off-the-record profiles with regular parents
+  // (such as Incognito or Enterprise Isolated Mode) download the language to
+  // the main profile, so we need to always send the language updates for them.
   // Guest profiles don't have matching IDs, so if this profile is a guest and
   // the profile sending the language status is a guest, then we do send the
   // status update.
   Profile* statusProfile = Profile::FromBrowserContext(browser_context);
   const bool shouldSendGuestStatus =
       statusProfile->IsGuestSession() && profile_->IsGuestSession();
-  if (!shouldSendGuestStatus && !profile_->IsIncognitoProfile() &&
+  if (!shouldSendGuestStatus &&
+      !profile_->IsPrimaryOTRProfileWithRegularParent() &&
       statusProfile->UniqueToken() != profile_->UniqueToken()) {
     return;
   }
@@ -905,86 +911,36 @@ void ReadAnythingUntrustedPageHandler::OnLinksEnabledChanged(bool enabled) {
       prefs::kAccessibilityReadAnythingLinksEnabled, enabled);
 }
 
-std::string ReadAnythingUntrustedPageHandler::GetDisplayLanguage() {
-  std::string source_lang = current_language_code_;
-
-  content::WebContents* main_contents = GetWebContents();
-  if (!main_contents) {
-    return source_lang;
-  }
-
-  ChromeTranslateClient* main_client =
-      ChromeTranslateClient::FromWebContents(main_contents);
-  if (!main_client) {
-    return source_lang;
-  }
-
-  const translate::LanguageState& main_language_state =
-      main_client->GetLanguageState();
-
-  // Use the main page's translated language if it has already been translated.
-  if (main_language_state.IsPageTranslated()) {
-    return main_language_state.current_language();
-  }
-
-  // Fall back to the main page's source language if ours is unknown.
-  if (source_lang.empty() || source_lang == "und" || source_lang == "und-und") {
-    return main_language_state.source_language();
-  }
-
-  return source_lang;
-}
-
 void ReadAnythingUntrustedPageHandler::OnTranslationRequested() {
   if (!features::IsReadAnythingTranslateEntryPointEnabled()) {
     mojo::ReportBadMessage("Translate entry point not enabled");
     return;
   }
-  content::WebContents* side_panel_contents = web_ui_->GetWebContents();
-  if (!side_panel_contents) {
+
+  // Translating the tab also translates the content displayed in reading mode:
+  // while reading mode is open, ContentTranslateDriver dispatches the
+  // translation to both the tab's and the side panel's TranslateAgent. See
+  // ContentTranslateDriver::GetTranslateAgents().
+  content::WebContents* main_contents =
+      main_observer_ ? main_observer_->web_contents() : nullptr;
+  if (!main_contents) {
     return;
   }
 
-  ChromeTranslateClient::CreateForWebContents(side_panel_contents);
   ChromeTranslateClient* translate_client =
-      ChromeTranslateClient::FromWebContents(side_panel_contents);
+      ChromeTranslateClient::FromWebContents(main_contents);
   if (!translate_client) {
     return;
   }
 
   translate::TranslateManager* translate_manager =
       translate_client->GetTranslateManager();
-  if (translate_manager) {
-    // Sync the article's true source language to the side panel
-    // TranslateManager (using the current language if the main page was
-    // translated) and preserve any existing target language before opening the
-    // Translate bubble.
-    std::optional<std::string> target_lang;
-    translate::LanguageState* language_state =
-        translate_manager->GetLanguageState();
-
-    if (language_state) {
-      if (language_state->IsPageTranslated()) {
-        target_lang = language_state->current_language();
-      }
-
-      std::string source_lang = GetDisplayLanguage();
-
-      if (target_lang == source_lang) {
-        target_lang = std::nullopt;
-      }
-      if (!source_lang.empty() && source_lang != "und" &&
-          source_lang != "und-und") {
-        language_state->LanguageDetermined(
-            source_lang, /*page_level_translation_criteria_met=*/true);
-      }
-      language_state->set_translation_pending(false);
-    }
-    translate_manager->ShowTranslateUI(/*source_code=*/std::nullopt,
-                                       /*target_code=*/target_lang,
-                                       /*auto_translate=*/true,
-                                       /*triggered_from_menu=*/true);
+  if (!translate_manager) {
+    return;
   }
+
+  translate_manager->ShowTranslateUI(/*auto_translate=*/true,
+                                     /*triggered_from_menu=*/true);
 }
 
 void ReadAnythingUntrustedPageHandler::OnImagesEnabledChanged(bool enabled) {
@@ -1288,12 +1244,35 @@ void ReadAnythingUntrustedPageHandler::OnSpeechEngineStalled() {
 #endif
 }
 
-void ReadAnythingUntrustedPageHandler::RequestReadabilityDistillation() {
+void ReadAnythingUntrustedPageHandler::RequestReadabilityDistillation(
+    RequestReadabilityDistillationCallback callback) {
+  // Use a local wrapper so any early return runs the callback with ("", "") on
+  // destruction, containing fallback handling to this function scope.
+  auto wrapped_callback =
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), "", "");
   if (!features::IsReadAnythingWithReadabilityEnabled()) {
     return;
   }
   readability_distillation_tree_change_start_time_ = base::TimeTicks();
-  RequestDomDistillerDistillation(tab_->GetContents());
+
+  // Tree changes reset this state in OnActiveAXTreeIDChanged(), but
+  // same-document (SPA) navigations reuse the AXTree ID, so reset here.
+  ResetReadabilityState();
+
+  // Registered before starting so a result can never arrive before the
+  // callback. Resetting replies ("", "") if distillation never started.
+  readability_callback_ = std::move(wrapped_callback);
+  if (!RequestDomDistillerDistillation(tab_->GetContents())) {
+    readability_callback_.Reset();
+  }
+}
+
+void ReadAnythingUntrustedPageHandler::ResetReadabilityState() {
+  // readability_callback_ is always wrapped, so resetting it replies ("", "").
+  readability_callback_.Reset();
+  if (distiller_delegate_) {
+    distiller_delegate_->CancelDistillation();
+  }
 }
 
 void ReadAnythingUntrustedPageHandler::PerformActionInTargetTree(
@@ -1373,6 +1352,23 @@ void ReadAnythingUntrustedPageHandler::OnCollapseSelection() {
 void ReadAnythingUntrustedPageHandler::OnDistillationStatus(
     read_anything::mojom::DistillationStatus status,
     int word_count) {
+#if BUILDFLAG(ENABLE_PDF)
+  if (last_open_trigger_ == ReadAnythingOpenTrigger::kPdfTranslation &&
+      status == read_anything::mojom::DistillationStatus::kSuccess) {
+    // Target main_observer_'s WebContents because ContentTranslateDriver is
+    // attached to the outer primary tab WebContents, not the inner GuestView
+    // WebContents (pdf_observer_).
+    content::WebContents* web_contents =
+        main_observer_ ? main_observer_->web_contents() : nullptr;
+    if (web_contents) {
+      auto* driver =
+          translate::ContentTranslateDriver::FromWebContents(web_contents);
+      if (driver) {
+        driver->MaybeTriggerPendingPdfTranslation();
+      }
+    }
+  }
+#endif  // BUILDFLAG(ENABLE_PDF)
   if (last_open_trigger_ == ReadAnythingOpenTrigger::kOmniboxChip) {
     if (status != read_anything::mojom::DistillationStatus::kStillRunning) {
       last_open_trigger_ = ReadAnythingOpenTrigger::kUnknown;
@@ -1582,6 +1578,10 @@ void ReadAnythingUntrustedPageHandler::CheckIfActiveAXTreeChangedToPdf() {
 }
 
 void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
+  // Reset the distillation from the previous tree/page so its result is not
+  // used as stale content.
+  ResetReadabilityState();
+
   is_pdf_with_frame_ = false;
   is_waiting_for_pdf_frame_ = false;
 
@@ -1680,13 +1680,12 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
     RequestDomDistillerDistillation(contents);
   }
 }
-void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
+bool ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
     content::WebContents* content) {
-  if (!features::IsReadAnythingWithReadabilityEnabled() ||
+  if (!content || !features::IsReadAnythingWithReadabilityEnabled() ||
       features::IsReadAnythingReadAloudPhraseHighlightingEnabled() ||
-      is_pdf_with_frame_ ||
-      (content && IsGoogleDocs(content->GetLastCommittedURL()))) {
-    return;
+      is_pdf_with_frame_ || IsGoogleDocs(content->GetLastCommittedURL())) {
+    return false;
   }
 
   // Don't attempt Readability distillation in automated tests. This is to prevent internal
@@ -1696,8 +1695,10 @@ void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
     page_->OnReadabilityDistillationStateChanged(
         read_anything::mojom::ReadAnythingDistillationState::
             kDistillationEmpty);
-    page_->UpdateContent("", "");
-    return;
+    if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+      page_->UpdateContent("", "");
+    }
+    return false;
   }
 
   const GURL& url = content->GetLastCommittedURL();
@@ -1711,8 +1712,10 @@ void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
     page_->OnReadabilityDistillationStateChanged(
         read_anything::mojom::ReadAnythingDistillationState::
             kDistillationEmpty);
-    page_->UpdateContent("", "");
-    return;
+    if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+      page_->UpdateContent("", "");
+    }
+    return false;
   }
 
   dom_distiller::DomDistillerService* dom_distiller_service =
@@ -1723,6 +1726,7 @@ void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
       read_anything::mojom::ReadAnythingDistillationState::
           kDistillationInProgress);
   distiller_delegate_->StartDistillation(dom_distiller_service, content);
+  return true;
 }
 
 void ReadAnythingUntrustedPageHandler::RecordListenToThisPagePlaybackMetric(
@@ -1791,8 +1795,16 @@ void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
       page_->OnReadabilityDistillationStateChanged(
           read_anything::mojom::ReadAnythingDistillationState::
               kDistillationWithContent);
-      page_->UpdateContent(dom_distiller_title().value_or(""),
-                           dom_distiller_content().value());
+      // `readability_callback_` Set only for renderer-requested distillations.
+      if (readability_callback_) {
+        std::move(readability_callback_)
+            .Run(dom_distiller_title().value_or(""),
+                 dom_distiller_content().value());
+      }
+      if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+        page_->UpdateContent(dom_distiller_title().value_or(""),
+                             dom_distiller_content().value());
+      }
       if (features::IsReadAnythingDistillationQualityEvaluationEnabled()) {
         EvaluateDistillationQuality(dom_distiller_content().value());
       }
@@ -1808,7 +1820,12 @@ void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
     page_->OnReadabilityDistillationStateChanged(
         read_anything::mojom::ReadAnythingDistillationState::
             kDistillationEmpty);
-    page_->UpdateContent(/*title=*/"", /*content=*/"");
+    if (readability_callback_) {
+      std::move(readability_callback_).Run(/*title=*/"", /*content=*/"");
+    }
+    if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+      page_->UpdateContent(/*title=*/"", /*content=*/"");
+    }
   }
   // Reset the tree-change start time once distillation has finished,
   // regardless of whether content was successfully produced.

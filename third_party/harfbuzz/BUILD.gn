@@ -9,6 +9,7 @@ import("//third_party/harfbuzz/harfbuzz.gni")
 
 if (use_system_harfbuzz) {
   import("//build/config/linux/pkg_config.gni")
+
   pkg_config("harfbuzz_from_pkgconfig") {
     visibility = [
       "//third_party/freetype",
@@ -22,6 +23,7 @@ if (use_system_harfbuzz) {
 
   component("harfbuzz") {
     public_configs = [ ":harfbuzz_from_pkgconfig" ]
+    check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
   }
 } else {
   import("//build/rust/cargo_crate.gni")
@@ -37,6 +39,7 @@ if (use_system_harfbuzz) {
       "no-doc-comments",
     ]
     configs = [ ":harfbuzz_config" ]
+    check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
   }
 
   cargo_crate("harfbuzz_rust") {
@@ -306,6 +309,7 @@ if (use_system_harfbuzz) {
       "src/src/hb-ot-vorg-table.hh",
       "src/src/hb-priority-queue.hh",
       "src/src/hb-repacker.hh",
+      "src/src/hb-result.hh",
       "src/src/hb-sanitize.hh",
       "src/src/hb-script-list.h",
       "src/src/hb-serialize.hh",
@@ -353,6 +357,7 @@ if (use_system_harfbuzz) {
       "src/src/hb-unicode.cc",
       "src/src/hb-unicode.hh",
       "src/src/hb-utf.hh",
+      "src/src/hb-vector.h",
       "src/src/hb-vector.hh",
       "src/src/hb.hh",
     ]
@@ -571,6 +576,7 @@ if (use_system_harfbuzz) {
       public += [ "src/src/hb-glib.h" ]
       sources += [ "src/src/hb-glib.cc" ]
     }
+    check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
   }
 }
 

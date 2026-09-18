@@ -26,6 +26,14 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
           exportparts="composebox-background">
       </search-animated-glow>
     ` : ''}
+    ${this.errorMessage ? html`
+      <ntp-error-scrim id="errorScrim" part="error-scrim"
+          ?compact-mode="${this.searchboxLayoutMode === 'Compact' &&
+                          this.files.size === 0}"
+          .errorMessage="${this.errorMessage}"
+          @dismiss-error-scrim="${this.onDismissErrorScrim}">
+      </ntp-error-scrim>`
+    : ''}
     <div id="composebox" part="composebox" ?inert="${!!this.errorMessage}"
       @keydown="${this.onKeydown}"
       @dragenter="${this.dragAndDropHandler.handleDragEnter}"
@@ -72,7 +80,9 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
             <cr-composebox-dropdown
                 id="matches"
                 part="dropdown"
-                exportparts="match-text-container"
+                exportparts="match-text-container, match-container,
+                             match-icon-container, match-focus-indicator,
+                             match-icon, match-remove-button"
                 role="listbox"
                 .result="${this.result}"
                 .selectedMatchIndex="${this.selectedMatchIndex}"
@@ -83,7 +93,7 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                     this.onSelectedMatchIndexChanged}"
                 @match-focusin="${this.onMatchFocusin}"
                 @match-click="${this.onMatchClick}"
-                ?hidden="${!this.showDropdown || !this.dropdownNeeded}"
+                ?hidden="${this.shouldHideDropdown()}"
                 .lastQueriedInput="${this.lastQueriedInput}">
             </cr-composebox-dropdown>
             <div id="bottomControls">
@@ -134,6 +144,8 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                 <div class="searchbox-icon-button-container lens ${
                     this.isScreenshotMenuOpen ? 'menu-open' : ''}">
                   <button id="lensSearchButton" class="searchbox-icon-button"
+                      @pointerdown="${this.onLensSearchPointerdown_}"
+                      @pointercancel="${this.onLensSearchPointercancel_}"
                       @click="${this.onLensSearchClick_}"
                       title="${this.i18n('lensSearchButtonLabel')}">
                   </button>

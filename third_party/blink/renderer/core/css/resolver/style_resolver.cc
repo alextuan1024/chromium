@@ -1311,7 +1311,7 @@ void StyleResolver::MatchAllRules(StyleResolverState& state,
   }
 }
 
-const ComputedStyle* StyleResolver::StyleForViewport() {
+const ComputedStyle& StyleResolver::StyleForViewport() {
   ComputedStyleBuilder builder = InitialStyleBuilderForElement();
 
   builder.SetZIndex(0);
@@ -1327,7 +1327,7 @@ const ComputedStyle* StyleResolver::StyleForViewport() {
 
   GetDocument().GetStyleEngine().ApplyVisionDeficiencyStyle(builder);
 
-  return builder.TakeStyle();
+  return *builder.TakeStyle();
 }
 
 static StyleBaseData* GetBaseData(const StyleResolverState& state) {
@@ -2180,7 +2180,7 @@ class ViewportSizeChangeScopeForPrinting {
   std::optional<PhysicalSize> document_icb_size_;
 };
 
-const ComputedStyle* StyleResolver::StyleForPage(uint32_t page_index,
+const ComputedStyle& StyleResolver::StyleForPage(uint32_t page_index,
                                                  const AtomicString& page_name,
                                                  float page_fitting_scale,
                                                  bool ignore_author_style) {
@@ -2200,7 +2200,7 @@ const ComputedStyle* StyleResolver::StyleForPage(uint32_t page_index,
   StyleResolverState state(GetDocument(), *root_element,
                            nullptr /* StyleRecalcContext */,
                            StyleRequest(parent_style));
-  state.CreateNewStyle(*InitialStyleForElement(), *parent_style);
+  state.CreateNewStyle(InitialStyleForElement(), *parent_style);
 
   auto& builder = state.StyleBuilder();
   // Page boxes are blocks.
@@ -2267,7 +2267,7 @@ const ComputedStyle* StyleResolver::StyleForPage(uint32_t page_index,
   state.LoadPendingResources();
 
   // Now return the style.
-  return state.TakeStyle();
+  return *state.TakeStyle();
 }
 
 void StyleResolver::StyleForPageMargins(const ComputedStyle& page_style,
@@ -2311,7 +2311,7 @@ void StyleResolver::StyleForPageMargins(const ComputedStyle& page_style,
     StyleResolverState margin_state(GetDocument(), *root_element,
                                     /*StyleRecalcContext=*/nullptr,
                                     StyleRequest(&page_style));
-    margin_state.CreateNewStyle(*InitialStyleForElement(), page_style);
+    margin_state.CreateNewStyle(InitialStyleForElement(), page_style);
     margin_state.StyleBuilder().SetDisplay(EDisplay::kBlock);
     margin_state.StyleBuilder().SetIsPageMarginBox(true);
 
@@ -2345,9 +2345,9 @@ void StyleResolver::LoadPaginationResources() {
   // loaded. As it is now, only resources needed on the first page (with no page
   // name) will be loaded. Any resource inside a non-empty @page selector
   // (unless it happens to match the first page) will be missing.
-  const ComputedStyle* page_style = StyleForPage(0, /*page_name=*/g_null_atom);
+  const ComputedStyle& page_style = StyleForPage(0, /*page_name=*/g_null_atom);
   PageMarginsStyle ignored;
-  StyleForPageMargins(*page_style, 0, /*page_name=*/g_null_atom, &ignored);
+  StyleForPageMargins(page_style, 0, /*page_name=*/g_null_atom, &ignored);
 }
 
 const ComputedStyle& StyleResolver::InitialStyle() const {
@@ -2378,10 +2378,10 @@ float StyleResolver::InitialZoom() const {
   return 1;
 }
 
-const ComputedStyle* StyleResolver::CreateInitialStyle() const {
-  ComputedStyleBuilder builder(*ComputedStyle::GetInitialStyleSingleton());
+const ComputedStyle& StyleResolver::CreateInitialStyle() const {
+  ComputedStyleBuilder builder(ComputedStyle::GetInitialStyleSingleton());
   SetZoomedInitialLineWidths(InitialZoom(), builder);
-  return builder.TakeStyle();
+  return *builder.TakeStyle();
 }
 
 ComputedStyleBuilder StyleResolver::InitialStyleBuilderForElement() const {
@@ -2423,8 +2423,8 @@ ComputedStyleBuilder StyleResolver::InitialStyleBuilderForElement() const {
   return builder;
 }
 
-const ComputedStyle* StyleResolver::InitialStyleForElement() const {
-  return InitialStyleBuilderForElement().TakeStyle();
+const ComputedStyle& StyleResolver::InitialStyleForElement() const {
+  return *InitialStyleBuilderForElement().TakeStyle();
 }
 
 const ComputedStyle* StyleResolver::StyleForText(Text* text_node) {
@@ -3295,7 +3295,7 @@ Font* StyleResolver::ComputeFont(Element& element,
   GetDocument().GetStyleEngine().UpdateViewportSize();
   state.CreateNewClonedStyle(style);
   if (const ComputedStyle* parent_style = element.GetComputedStyle()) {
-    state.SetParentStyle(parent_style);
+    state.SetParentStyle(*parent_style);
   }
 
   for (const CSSProperty* property : properties) {
@@ -3376,11 +3376,11 @@ ComputedStyleBuilder StyleResolver::CreateAnonymousStyleBuilderWithDisplay(
   return builder;
 }
 
-const ComputedStyle* StyleResolver::CreateAnonymousStyleWithDisplay(
+const ComputedStyle& StyleResolver::CreateAnonymousStyleWithDisplay(
     const ComputedStyle& parent_style,
     EDisplay display) {
-  return CreateAnonymousStyleBuilderWithDisplay(parent_style, display)
-      .TakeStyle();
+  return *CreateAnonymousStyleBuilderWithDisplay(parent_style, display)
+              .TakeStyle();
 }
 
 const ComputedStyle* StyleResolver::CreateInheritedDisplayContentsStyleIfNeeded(
@@ -3389,7 +3389,7 @@ const ComputedStyle* StyleResolver::CreateInheritedDisplayContentsStyleIfNeeded(
   if (parent_style.InheritedEqual(layout_parent_style)) {
     return nullptr;
   }
-  return CreateAnonymousStyleWithDisplay(parent_style, EDisplay::kInline);
+  return &CreateAnonymousStyleWithDisplay(parent_style, EDisplay::kInline);
 }
 
 #define PROPAGATE_FROM(source, getter, setter, initial) \
@@ -3701,7 +3701,7 @@ void StyleResolver::PropagateStyleToViewport() {
   }
   if (changed || update_scrollbar_style) {
     GetDocument().GetLayoutView()->SetStyle(
-        new_viewport_style_builder.TakeStyle());
+        *new_viewport_style_builder.TakeStyle());
   }
 }
 #undef PROPAGATE_VALUE
@@ -3754,7 +3754,7 @@ static Font* ComputeInitialLetterFont(const ComputedStyle& style,
 //  * inline-sizing.
 // Additionally, all of the sizing properties and box-sizing also apply to
 // initial letters (see [css-sizing-3]).
-const ComputedStyle* StyleResolver::StyleForInitialLetterText(
+const ComputedStyle& StyleResolver::StyleForInitialLetterText(
     const ComputedStyle& initial_letter_box_style,
     const ComputedStyle& paragraph_style) {
   DCHECK(paragraph_style.InitialLetter().IsNormal());
@@ -3767,7 +3767,7 @@ const ComputedStyle* StyleResolver::StyleForInitialLetterText(
   builder.SetVerticalAlign(EVerticalAlign::kBaseline);
   builder.SetBaseTextDecorationData(
       initial_letter_box_style.AppliedTextDecorationData());
-  return builder.TakeStyle();
+  return *builder.TakeStyle();
 }
 
 StyleRulePositionTry* StyleResolver::ResolvePositionTryRule(

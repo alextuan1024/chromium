@@ -29,6 +29,7 @@
 #include "cc/paint/record_paint_canvas.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink-forward.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_text_align.h"
@@ -152,11 +153,70 @@ BaseRenderingContext2D::BaseRenderingContext2D(
       color_params_(attrs.color_space,
                     attrs.hdr_metadata,
                     attrs.pixel_format,
-                    attrs.alpha) {}
+                    attrs.alpha),
+      max_pinned_image_bytes_(
+          static_cast<size_t>(features::kMaxPinnedImageKB.Get()) * 1024) {
+  UpdateRecordingLimits(/*is_graphite=*/false);
+}
+
+const MemoryManagedPaintRecorder* BaseRenderingContext2D::Recorder() const {
+  return recorder_.get();
+}
+
+const MemoryManagedPaintCanvas* BaseRenderingContext2D::GetPaintCanvas() const {
+  if (isContextLost() || !IsPaintable()) [[unlikely]] {
+    return nullptr;
+  }
+  const MemoryManagedPaintRecorder* recorder = Recorder();
+  if (!recorder) [[unlikely]] {
+    return nullptr;
+  }
+  return &recorder->getRecordingCanvas();
+}
+
+void BaseRenderingContext2D::CreateRecorder(const gfx::Size& size,
+                                            bool is_graphite) {
+  recorder_ = std::make_unique<MemoryManagedPaintRecorder>(size, this);
+  if (is_graphite) {
+    recorder_->DisableLineDrawingAsPaths();
+  }
+  UpdateRecordingLimits(is_graphite);
+}
+
+void BaseRenderingContext2D::ResetRecorder() {
+  recorder_.reset();
+}
+
+std::unique_ptr<MemoryManagedPaintRecorder>
+BaseRenderingContext2D::ReleaseRecorder() {
+  if (recorder_) {
+    recorder_->SetClient(nullptr);
+  }
+  return std::move(recorder_);
+}
+
+void BaseRenderingContext2D::SetRecorder(
+    std::unique_ptr<MemoryManagedPaintRecorder> recorder,
+    bool is_graphite) {
+  if (recorder) {
+    recorder->SetClient(this);
+  }
+  recorder_ = std::move(recorder);
+  if (recorder_ && is_graphite) {
+    recorder_->DisableLineDrawingAsPaths();
+  }
+}
+
+void BaseRenderingContext2D::UpdateRecordingLimits(bool is_graphite) {
+  max_recorded_op_bytes_ =
+      static_cast<size_t>(is_graphite ? features::kMaxRecordedOpGraphiteKB.Get()
+                                      : features::kMaxRecordedOpKB.Get()) *
+      1024;
+}
 
 void BaseRenderingContext2D::ResetInternal() {
   Canvas2DRecorderContext::ResetInternal();
-
+  clear_frame_ = true;
 }
 
 CanvasRenderingContext2DSettings* BaseRenderingContext2D::getContextAttributes()
@@ -724,9 +784,13 @@ void BaseRenderingContext2D::Trace(Visitor* visitor) const {
   Canvas2DRecorderContext::Trace(visitor);
 }
 
-void BaseRenderingContext2D::RestoreCanvasMatrixClipStack(
-    cc::PaintCanvas* c) const {
-  RestoreMatrixClipStack(c);
+void BaseRenderingContext2D::InitializeForRecording(
+    cc::PaintCanvas* canvas) const {
+  RestoreMatrixClipStack(canvas);
+}
+
+void BaseRenderingContext2D::RecordingCleared() {
+  clear_frame_ = true;
 }
 
 void BaseRenderingContext2D::Reset() {
@@ -737,30 +801,23 @@ std::optional<cc::PaintRecord> BaseRenderingContext2D::FlushCanvasInternal(
     Canvas2DResourceProvider* shared_image_provider,
     Canvas2DBitmapProvider* bitmap_provider,
     FlushReason reason) {
-  MemoryManagedPaintRecorder* recorder = nullptr;
-  if (shared_image_provider) {
-    recorder = &shared_image_provider->Recorder();
-  } else if (bitmap_provider) {
-    recorder = &bitmap_provider->Recorder();
-  }
+  MemoryManagedPaintRecorder* recorder = Recorder();
   if (!recorder || !recorder->HasReleasableDrawOps()) {
     return std::nullopt;
   }
 
   cc::PaintRecord recording = recorder->ReleaseMainRecording();
+  DidFlushRecording(recording, clear_frame_, reason);
+  clear_frame_ = false;
   if (shared_image_provider) {
     ScopedRasterTimer timer(shared_image_provider->IsAccelerated()
                                 ? shared_image_provider->RasterInterface()
                                 : nullptr,
                             *shared_image_provider);
-    DidFlushRecording(recording, shared_image_provider->clear_frame(), reason);
-    shared_image_provider->set_clear_frame(false);
     shared_image_provider->RasterRecord(recording);
     shared_image_provider->ReleaseImageProviderImages();
   } else if (bitmap_provider) {
     ScopedRasterTimer timer(nullptr, *bitmap_provider);
-    DidFlushRecording(recording, bitmap_provider->clear_frame(), reason);
-    bitmap_provider->set_clear_frame(false);
     bitmap_provider->RasterRecord(recording);
     bitmap_provider->ReleaseImageProviderImages();
   }
@@ -768,6 +825,21 @@ std::optional<cc::PaintRecord> BaseRenderingContext2D::FlushCanvasInternal(
     Host()->DidFlush();
   }
   return recording;
+}
+
+void BaseRenderingContext2D::FlushIfRecordingLimitExceeded() {
+  if (Host()->IsPrinting() && clear_frame()) {
+    return;
+  }
+  const MemoryManagedPaintRecorder* recorder = Recorder();
+  if (!recorder) {
+    return;
+  }
+  if (recorder->ReleasableOpBytesUsed() > max_recorded_op_bytes() ||
+      recorder->ReleasableImageBytesUsed() > max_pinned_image_bytes())
+      [[unlikely]] {
+    FlushCanvas(FlushReason::kOther);
+  }
 }
 
 void BaseRenderingContext2D::WillUseCurrentFont() const {
@@ -863,10 +935,14 @@ V8CanvasDirection BaseRenderingContext2D::direction() const {
     UseCounter::Count(GetTopExecutionContext(),
                       WebFeature::kCanvasTextDirectionGetInherit);
   }
-  return ToTextDirection(state.GetDirection(),
-                         GetCanvasRenderingContextHost()) == TextDirection::kRtl
-             ? V8CanvasDirection(V8CanvasDirection::Enum::kRtl)
-             : V8CanvasDirection(V8CanvasDirection::Enum::kLtr);
+  if (!RuntimeEnabledFeatures::CanvasTextDirectionReflectEnabled()) {
+    return ToTextDirection(state.GetDirection(),
+                           GetCanvasRenderingContextHost()) ==
+                   TextDirection::kRtl
+               ? V8CanvasDirection(V8CanvasDirection::Enum::kRtl)
+               : V8CanvasDirection(V8CanvasDirection::Enum::kLtr);
+  }
+  return V8CanvasDirection(state.GetDirection());
 }
 
 void BaseRenderingContext2D::setDirection(const V8CanvasDirection direction) {
@@ -1474,7 +1550,7 @@ V8UnionDOMMatrixOrUndefined::Ret BaseRenderingContext2D::DrawElementInternal(
   float dpr = child_paint_record->paint_state.effective_zoom;
   gfx::RectF src_rect(child_paint_record->paint_state.box_size);
   if (sx && sy && swidth && sheight) {
-    Canvas2DRecorderContext::AdjustRectForCanvas(*sx, *sy, *swidth, *sheight);
+    AdjustRectForCanvas(*sx, *sy, *swidth, *sheight);
     src_rect = gfx::RectF(*sx * dpr, *sy * dpr, *swidth * dpr, *sheight * dpr);
   }
 
@@ -1500,7 +1576,7 @@ V8UnionDOMMatrixOrUndefined::Ret BaseRenderingContext2D::DrawElementInternal(
   if (dwidth && dheight) {
     dw = *dwidth;
     dh = *dheight;
-    Canvas2DRecorderContext::AdjustRectForCanvas(x, y, dw, dh);
+    AdjustRectForCanvas(x, y, dw, dh);
   }
   gfx::RectF dst_rect(x, y, dw, dh);
 

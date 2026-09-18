@@ -117,6 +117,7 @@ import org.chromium.content_public.browser.JavaScriptCallback;
 import org.chromium.content_public.browser.JavascriptInjector;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.MessagePayload;
+import org.chromium.content_public.browser.MessagePayloadType;
 import org.chromium.content_public.browser.MessagePort;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -3650,6 +3651,17 @@ public class AwContents implements SmartClipProvider {
         // If the RenderFrameHost or the RenderFrame doesn't exist we couldn't post the message.
         if (mainFrame == null || !mainFrame.isRenderFrameLive()) return;
 
+        if (messagePayload.getType() == MessagePayloadType.SHARED_ARRAY_BUFFER) {
+            if (!mainFrame.isCrossOriginIsolated()) {
+                throw new IllegalStateException(
+                        "Cannot send SharedArrayBuffer to a frame that is not cross-origin"
+                            + " isolated. If this was"
+                            + " intended, consider allowing your origin with"
+                            + " `Profile#setCrossOriginIsolatedAllowlist()`, and add the"
+                            + " Document-Isolation-Policy header the page's response.");
+            }
+        }
+
         mWebContents.postMessageToMainFrame(messagePayload, null, targetOrigin, sentPorts);
     }
 
@@ -5144,7 +5156,7 @@ public class AwContents implements SmartClipProvider {
         void updateDefaultLocale(
                 @JniType("std::string") String locale, @JniType("std::string") String localeList);
 
-        @JniType("std::string")
+        @JniType("base::i18n::LanguageTag")
         String getSafeBrowsingLocaleForTesting();
 
         AwContents fromWebContents(WebContents webContents);

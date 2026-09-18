@@ -369,7 +369,8 @@ TEST_F(CredentialProviderServiceTest, AccountChange) {
 
   // Set managed account as the primary one.
   CoreAccountInfo core_account =
-      identity_test_environment_.MakeAccountAvailable(kEmailFoo);
+      identity_test_environment_.MakeAccountAvailable(kEmailFoo)
+          .GetCoreAccountInfo();
   AccountInfo account = AccountInfo::Builder(core_account)
                             .SetHostedDomain(kManagedDomain)
                             .Build();
@@ -609,7 +610,7 @@ TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_CachedFavicon) {
 
   // Create a dummy favicon file to simulate a fresh cached favicon.
   GURL url(kTestUrl1);
-  NSString* favicon_key = GetFaviconFileKey(url);
+  NSString* favicon_key = base::SysUTF8ToNSString(GetFaviconFileKey(url));
 
   NSURL* folder_url = base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath());
   ASSERT_NE(nil, folder_url);

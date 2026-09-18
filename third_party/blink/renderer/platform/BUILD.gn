@@ -253,6 +253,7 @@ group("blink_platform_public_deps") {
     "//third_party/boringssl",
     "//third_party/libwebp",
     "//third_party/ots",
+    "//third_party/woff2:woff2_dec",
     "//ui/gfx/animation/keyframe",
     "//url",
     "//v8",
@@ -591,7 +592,6 @@ component("platform") {
     "exported/url_conversion.cc",
     "exported/video_capture/web_video_capture_impl_manager.cc",
     "exported/weak_wrapper_resource_load_info_notifier.cc",
-    "exported/web_audio_bus.cc",
     "exported/web_blob_info.cc",
     "exported/web_cache.cc",
     "exported/web_content_decryption_module.cc",
@@ -712,6 +712,8 @@ component("platform") {
     "fonts/generic_font_family_settings.cc",
     "fonts/generic_font_family_settings.h",
     "fonts/glyph_metrics_map.h",
+    "fonts/ift/ift_patcher.cc",
+    "fonts/ift/ift_patcher.h",
     "fonts/opentype/color_table_lookup.cc",
     "fonts/opentype/color_table_lookup.h",
     "fonts/opentype/font_format_check.cc",
@@ -971,6 +973,7 @@ component("platform") {
     "graphics/deferred_image_decoder.cc",
     "graphics/deferred_image_decoder.h",
     "graphics/dom_node_id.h",
+    "graphics/dom_node_id_traits.h",
     "graphics/draw_looper_builder.cc",
     "graphics/draw_looper_builder.h",
     "graphics/exported_canvas_resource.cc",
@@ -1060,10 +1063,8 @@ component("platform") {
     "graphics/gpu/webgpu_mailbox_buffer.h",
     "graphics/gpu/webgpu_mailbox_texture.cc",
     "graphics/gpu/webgpu_mailbox_texture.h",
-    "graphics/gpu/webgpu_shared_image_wrapper.cc",
-    "graphics/gpu/webgpu_shared_image_wrapper.h",
-    "graphics/gpu/webgpu_shared_image_wrapper_cache.cc",
-    "graphics/gpu/webgpu_shared_image_wrapper_cache.h",
+    "graphics/gpu/webgpu_shared_image_cache.cc",
+    "graphics/gpu/webgpu_shared_image_cache.h",
     "graphics/gpu/webgpu_swap_buffer_provider.cc",
     "graphics/gpu/webgpu_swap_buffer_provider.h",
     "graphics/gpu/webgpu_texture_alpha_clearer.cc",
@@ -1439,7 +1440,6 @@ component("platform") {
     "peerconnection/rtc_rtp_source.h",
     "peerconnection/rtc_rtp_transceiver_platform.cc",
     "peerconnection/rtc_rtp_transceiver_platform.h",
-    "peerconnection/rtc_scoped_refptr_cross_thread_copier.h",
     "peerconnection/rtc_session_description_platform.cc",
     "peerconnection/rtc_session_description_platform.h",
     "peerconnection/rtc_session_description_request.h",
@@ -1488,6 +1488,8 @@ component("platform") {
     "region_capture_crop_id.h",
     "resolution_units.h",
     "restriction_target_id.h",
+    "runtime_enabled_feature_checks.cc",
+    "runtime_enabled_feature_checks.h",
     "search_engine_utils.cc",
     "search_engine_utils.h",
     "sparse_vector.h",
@@ -1564,6 +1566,8 @@ component("platform") {
     "text/writing_mode_utils.h",
     "theme/web_theme_engine_conversions.cc",
     "theme/web_theme_engine_conversions.h",
+    "theme/web_theme_engine_default.cc",
+    "theme/web_theme_engine_default.h",
     "theme/web_theme_engine_helper.cc",
     "theme/web_theme_engine_helper.h",
     "timer.cc",
@@ -1819,14 +1823,19 @@ component("platform") {
   deps = [
     ":rustfft_ffi",
     "fonts:font_format_bindings",
+    "fonts:ift_patcher_bindings",
     "//base:base_static",
     "//base/allocator:buildflags",
     "//build:chromecast_buildflags",
     "//cc",
     "//cc/mojo_embedder",
     "//components/input",
+    "//components/language_detection/content/common",
+    "//components/language_detection/content/common:common_blink",
+    "//components/language_detection/content/renderer",
     "//components/paint_preview/common",
     "//components/search_engines:search_engine_utils",
+    "//components/translate/core/language_detection",
     "//components/viz/client",
     "//components/viz/common",
     "//components/webrtc:net_address_utils",
@@ -1858,6 +1867,7 @@ component("platform") {
     "//third_party/highway:libhwy",
     "//third_party/icu",
     "//third_party/libgav1:libgav1_parser",
+    "//third_party/libgav1:libgav1_utils_constants",
     "//third_party/libyuv",
     "//third_party/one_euro_filter",
     "//third_party/webrtc_overrides:webrtc_component",
@@ -1893,11 +1903,6 @@ component("platform") {
     sources += [
       "theme/web_theme_engine_android.cc",
       "theme/web_theme_engine_android.h",
-    ]
-  } else {
-    sources += [
-      "theme/web_theme_engine_default.cc",
-      "theme/web_theme_engine_default.h",
     ]
   }
 
@@ -2238,6 +2243,7 @@ source_set("blink_platform_unittests_sources") {
     "fonts/font_test.cc",
     "fonts/font_test_utilities.cc",
     "fonts/generic_font_family_settings_test.cc",
+    "fonts/ift/ift_patcher_test.cc",
     "fonts/opentype/color_table_lookup_test.cc",
     "fonts/opentype/font_format_check_test.cc",
     "fonts/opentype/font_settings_test.cc",
@@ -2298,6 +2304,7 @@ source_set("blink_platform_unittests_sources") {
     "graphics/dark_mode_lab_color_space_test.cc",
     "graphics/decoding_image_generator_test.cc",
     "graphics/deferred_image_decoder_test_wo_platform.cc",
+    "graphics/dom_node_id_traits_test.cc",
     "graphics/filters/fe_composite_test.cc",
     "graphics/filters/fe_turbulence_test.cc",
     "graphics/filters/image_filter_builder_test.cc",
@@ -2306,7 +2313,7 @@ source_set("blink_platform_unittests_sources") {
     "graphics/gpu/webgl_image_conversion_test.cc",
     "graphics/gpu/webgpu_native_test_support.cc",
     "graphics/gpu/webgpu_native_test_support.h",
-    "graphics/gpu/webgpu_shared_image_wrapper_cache_test.cc",
+    "graphics/gpu/webgpu_shared_image_cache_test.cc",
     "graphics/graphics_context_test.cc",
     "graphics/paint/cull_rect_test.cc",
     "graphics/paint/display_item_raster_invalidator_test.cc",
@@ -2778,7 +2785,7 @@ source_set("blink_image_decoder_fuzzer_test_support") {
   ]
   deps = [ ":platform" ]
   if (enable_jxl_decoder) {
-    deps += [ "//third_party/rust/jxl/v0_6/wrapper:jxl_rs" ]
+    deps += [ "//third_party/rust/jxl/v0_7/wrapper:jxl_rs" ]
   }
 }
 
@@ -2897,7 +2904,7 @@ if (enable_jxl_decoder) {
     deps = [
       ":blink_image_decoder_fuzzer_test_support",
       ":platform",
-      "//third_party/rust/jxl/v0_6/wrapper:jxl_rs",
+      "//third_party/rust/jxl/v0_7/wrapper:jxl_rs",
     ]
     seed_corpuses =
         [ "//third_party/blink/web_tests/external/wpt/jpegxl/resources" ]
@@ -2958,17 +2965,6 @@ blink_fuzzer_test("blink_jpeg_decoder_fuzzer") {
 
 blink_fuzzer_test("blink_bmp_decoder_fuzzer") {
   sources = [ "image-decoders/bmp/bmp_image_decoder_fuzzer.cc" ]
-  deps = [
-    ":blink_image_decoder_fuzzer_test_support",
-    ":platform",
-  ]
-  seed_corpuses = [ "//third_party/blink/web_tests/images/bmp-suite/good" ]
-
-  additional_configs = [ "//third_party/blink/renderer:inside_blink" ]
-}
-
-blink_fuzzer_test("blink_bmp_rust_decoder_fuzzer") {
-  sources = [ "image-decoders/bmp/bmp_rust_image_decoder_fuzzer.cc" ]
   deps = [
     ":blink_image_decoder_fuzzer_test_support",
     ":platform",

@@ -65,6 +65,7 @@ source_set("impl") {
     "//chrome/browser:chrome_content_browser_client",
     "//chrome/browser:defaults",
     "//chrome/browser:flags",
+    "//chrome/browser:intranet_redirect_detector",
     "//chrome/browser/accessibility",
     "//chrome/browser/accessibility/accessibility_prefs",
     "//chrome/browser/autocomplete:aim_eligibility_service",
@@ -77,6 +78,7 @@ source_set("impl") {
     "//chrome/browser/first_run",
     "//chrome/browser/gcm",
     "//chrome/browser/glic",
+    "//chrome/browser/glic/gemini_enterprise",
     "//chrome/browser/glic/suggestions",
     "//chrome/browser/gpu",
     "//chrome/browser/hid",
@@ -383,7 +385,6 @@ source_set("impl") {
     ]
   } else {
     deps += [
-      "//chrome/browser:intranet_redirect_detector",
       "//chrome/browser/actor/ui",
       "//chrome/browser/desktop_to_mobile_promos:utils",
       "//chrome/browser/device_identity",
@@ -414,6 +415,10 @@ source_set("impl") {
       "persistent_renderer_prefs_manager.cc",
       "persistent_renderer_prefs_manager_factory.cc",
     ]
+  }
+
+  if (!is_android || is_desktop_android) {
+    deps += [ "//chrome/browser/ui/ai_overlay_dialog" ]
   }
 
   if (enable_extensions) {
@@ -626,6 +631,7 @@ if (!is_android) {
       "//chrome/browser/search_engines",
       "//chrome/browser/sync/test/integration:sync_integration_test_support",
       "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:browser_window_state",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_strip",

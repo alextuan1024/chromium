@@ -11,7 +11,6 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -25,6 +24,7 @@
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 #include "chrome/browser/ui/read_anything/read_anything_service.h"
 #include "chrome/browser/ui/read_anything/read_anything_service_factory.h"
+#include "chrome/browser/ui/read_anything/read_anything_side_panel_web_view.h"
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
@@ -39,6 +39,7 @@
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/find_result_waiter.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -101,9 +102,6 @@ class ReadAnythingControllerBrowserTest : public InProcessBrowserTest {
   explicit ReadAnythingControllerBrowserTest(
       std::vector<base::test::FeatureRef> enabled_features = {},
       std::vector<base::test::FeatureRef> disabled_features = {}) {
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-    enabled_features.push_back(features::kWasmTtsEngineAutoInstallDisabled);
-#endif
     scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
 
@@ -2062,26 +2060,26 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
 
   int initial_tab_count = browser()->GetTabStripModel()->count();
 
-  content::OpenURLParams chrome_params(
-      GURL("chrome://settings/"), content::Referrer(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK,
-      false);
+  content::OpenURLParams chrome_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("chrome://settings/"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   EXPECT_EQ(nullptr, immersive_delegate->OpenURLFromTab(
                          immersive_contents, chrome_params, base::DoNothing()));
   EXPECT_EQ(initial_tab_count, browser()->GetTabStripModel()->count());
 
-  content::OpenURLParams file_params(GURL("file:///etc/passwd"),
-                                     content::Referrer(),
-                                     WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                     ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams file_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("file:///etc/passwd"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   EXPECT_EQ(nullptr, immersive_delegate->OpenURLFromTab(
                          immersive_contents, file_params, base::DoNothing()));
   EXPECT_EQ(initial_tab_count, browser()->GetTabStripModel()->count());
 
-  content::OpenURLParams js_params(GURL("javascript:alert(1)"),
-                                   content::Referrer(),
-                                   WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                   ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams js_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("javascript:alert(1)"),
+          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK);
   EXPECT_EQ(nullptr, immersive_delegate->OpenURLFromTab(
                          immersive_contents, js_params, base::DoNothing()));
   EXPECT_EQ(initial_tab_count, browser()->GetTabStripModel()->count());
@@ -2153,9 +2151,10 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
       GURL("chrome-extension://abc/popup.html"),
   };
   for (const GURL& target : non_web_urls) {
-    content::OpenURLParams params(target, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            target, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::PAGE_TRANSITION_LINK);
     EXPECT_EQ(nullptr, immersive_delegate->OpenURLFromTab(
                            immersive_contents, params, base::DoNothing()))
         << target;
@@ -2184,9 +2183,10 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
   ASSERT_TRUE(side_panel_delegate);
 
   for (const GURL& target : non_web_urls) {
-    content::OpenURLParams params(target, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            target, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::PAGE_TRANSITION_LINK);
     EXPECT_EQ(nullptr, side_panel_delegate->OpenURLFromTab(
                            side_panel_contents, params, base::DoNothing()))
         << target;
@@ -2227,6 +2227,48 @@ IN_PROC_BROWSER_TEST_F(
 
   // Wait for the "press and hold" timer (1.5s) to trigger the exit.
   // We use a FullscreenWaiter to wait for the state change.
+  ui_test_utils::FullscreenWaiter waiter(browser(),
+                                         {.browser_fullscreen = false});
+  waiter.Wait();
+
+  // Verify the browser has exited fullscreen.
+  ASSERT_FALSE(browser()->GetWindow()->IsFullscreen());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ReadAnythingControllerBrowserTest,
+    HandleKeyboardEvent_WhenFullscreenInSidePanelMode_EscapeClosesFullscreen) {
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ASSERT_TRUE(tab);
+  auto* controller = ReadAnythingController::From(tab);
+  ASSERT_TRUE(controller);
+
+  controller->ShowSidePanelUI(SidePanelOpenTrigger::kAppMenu);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return SidePanelUI::From(browser())->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+
+  auto* side_panel =
+      BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
+  auto* content_wrapper = side_panel->GetContentParentView();
+  ASSERT_FALSE(content_wrapper->children().empty());
+  auto* sp_view = static_cast<ReadAnythingSidePanelWebView*>(
+      content_wrapper->children()[0]);
+  ASSERT_TRUE(sp_view);
+
+  // Put the browser in fullscreen mode
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+  ASSERT_TRUE(browser()->GetWindow()->IsFullscreen());
+
+  // Create an event that holds down the escape button
+  input::NativeWebKeyboardEvent escape_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  escape_event.windows_key_code = ui::VKEY_ESCAPE;
+  sp_view->HandleKeyboardEvent(sp_view->GetWebContents(), escape_event);
+
+  // Wait for the "press and hold" timer (1.5s) to trigger the exit.
   ui_test_utils::FullscreenWaiter waiter(browser(),
                                          {.browser_fullscreen = false});
   waiter.Wait();
@@ -3103,31 +3145,78 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
   EXPECT_TRUE(base::test::RunUntil([&]() { return IsFocusOnMainPage(); }));
 }
 
-class ReadAnythingControllerTranslateBrowserTest
-    : public ReadAnythingControllerBrowserTest {
- public:
-  ReadAnythingControllerTranslateBrowserTest()
-      : ReadAnythingControllerBrowserTest(
-            {features::kReadAnythingTranslateEntryPoint}) {}
-};
-
-IN_PROC_BROWSER_TEST_F(
-    ReadAnythingControllerTranslateBrowserTest,
-    ImmersiveWebView_AttachesTranslateClientWhenFeatureEnabled) {
+// Reading Mode creates a single WebUIContentsWrapper from whichever
+// presentation opens first, so both creation orders are covered here.
+// `OpenedInImmersiveFirst` is the case that regressed: without setting the
+// embedding context at creation it fails with a null tab and browser window.
+// `OpenedInSidePanelFirst` guards the path that `SidePanelWebUIView` already
+// handles, confirming the extra call does not disturb it.
+IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
+                       EmbeddingContextSet_OpenedInImmersiveFirst) {
   TabStripModel* tab_strip_model = browser()->GetTabStripModel();
   tabs::TabInterface* tab = tab_strip_model->GetActiveTab();
   ASSERT_TRUE(tab);
   auto* controller = ReadAnythingController::From(tab);
   ASSERT_TRUE(controller);
+  auto* side_panel_ui = SidePanelUI::From(browser());
 
+  // 1. Open in immersive mode and verify context.
   controller->ShowImmersiveUI(ReadAnythingOpenTrigger::kOmniboxChip);
   AwaitAndAssertOverlayVisibility(/*visible=*/true);
-  views::View* overlay_view = GetActiveImmersiveOverlay();
-  ASSERT_FALSE(overlay_view->children().empty());
+  content::WebContents* irm_contents = GetImmersiveWebContents();
+  ASSERT_TRUE(irm_contents);
+  EXPECT_EQ(webui::GetTabInterface(irm_contents), tab);
+  EXPECT_EQ(webui::GetBrowserWindowInterface(irm_contents),
+            tab->GetBrowserWindowInterface());
 
-  ReadAnythingImmersiveWebView* web_view =
-      static_cast<ReadAnythingImmersiveWebView*>(overlay_view->children()[0]);
-  ASSERT_NE(web_view, nullptr);
-  EXPECT_NE(ChromeTranslateClient::FromWebContents(web_view->GetWebContents()),
-            nullptr);
+  // 2. Toggle to side panel and verify context remains valid.
+  controller->TogglePresentation(/*is_user_initiated=*/true);
+  AssertOverlayVisibility(/*visible=*/false);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return side_panel_ui->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+  content::WebContents* side_panel_contents = GetSidePanelWebContents();
+  ASSERT_TRUE(side_panel_contents);
+  EXPECT_EQ(webui::GetTabInterface(side_panel_contents), tab);
+  EXPECT_EQ(webui::GetBrowserWindowInterface(side_panel_contents),
+            tab->GetBrowserWindowInterface());
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingControllerBrowserTest,
+                       EmbeddingContextSet_OpenedInSidePanelFirst) {
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
+  tabs::TabInterface* tab = tab_strip_model->GetActiveTab();
+  ASSERT_TRUE(tab);
+  auto* controller = ReadAnythingController::From(tab);
+  ASSERT_TRUE(controller);
+  auto* side_panel_ui = SidePanelUI::From(browser());
+
+  // 1. Open in the side panel and verify context.
+  controller->ShowSidePanelUI(SidePanelOpenTrigger::kAppMenu);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return side_panel_ui->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+  content::WebContents* side_panel_contents = GetSidePanelWebContents();
+  ASSERT_TRUE(side_panel_contents);
+  EXPECT_EQ(webui::GetTabInterface(side_panel_contents), tab);
+  EXPECT_EQ(webui::GetBrowserWindowInterface(side_panel_contents),
+            tab->GetBrowserWindowInterface());
+
+  // 2. Toggle to immersive mode and verify context remains valid. The same
+  // WebContents is reused, so the context set at creation must survive the
+  // handoff between host views.
+  controller->TogglePresentation(/*is_user_initiated=*/true);
+  AwaitAndAssertOverlayVisibility(/*visible=*/true);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !side_panel_ui->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+  content::WebContents* irm_contents = GetImmersiveWebContents();
+  ASSERT_TRUE(irm_contents);
+  EXPECT_EQ(irm_contents, side_panel_contents);
+  EXPECT_EQ(webui::GetTabInterface(irm_contents), tab);
+  EXPECT_EQ(webui::GetBrowserWindowInterface(irm_contents),
+            tab->GetBrowserWindowInterface());
 }

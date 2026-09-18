@@ -29,7 +29,9 @@ source_set("coordinator") {
     "//ios/chrome/browser/autofill/atmemory/ui:item",
     "//ios/chrome/browser/autofill/atmemory/utils",
     "//ios/chrome/browser/autofill/manual_fill/public",
+    "//ios/chrome/browser/autofill/model",
     "//ios/chrome/browser/personal_context/model",
+    "//ios/chrome/browser/settings/ui_bundled:settings_root",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
@@ -41,14 +43,25 @@ source_set("coordinator") {
   ]
 }
 
+source_set("test_support") {
+  testonly = true
+  sources = [
+    "fake_at_memory_fill_handler.h",
+    "fake_at_memory_fill_handler.mm",
+  ]
+  deps = [ "//ios/chrome/browser/autofill/atmemory/public" ]
+}
+
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "at_memory_granular_fill_mediator_unittest.mm",
     "at_memory_mediator_unittest.mm",
     "at_memory_search_mediator_unittest.mm",
   ]
   deps = [
     ":coordinator",
+    ":test_support",
     "//base",
     "//base/test:test_support",
     "//components/autofill/core/browser:test_support",
@@ -56,7 +69,10 @@ source_set("unit_tests") {
     "//components/personal_context/first_run",
     "//ios/chrome/browser/autofill/atmemory/public",
     "//ios/chrome/browser/autofill/atmemory/ui",
+    "//ios/chrome/browser/autofill/atmemory/ui:item",
     "//ios/chrome/browser/autofill/manual_fill/public",
+    "//ios/chrome/browser/autofill/public",
+    "//ios/chrome/browser/shared/public/features",
     "//ios/web/public/test",
     "//ios/web/public/test/fakes",
     "//testing/gmock",

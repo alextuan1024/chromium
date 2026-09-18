@@ -289,6 +289,7 @@ component("raw_ptr") {
   configs -= partition_alloc_remove_configs
   configs += partition_alloc_add_configs
   configs += [ ":dependants_extra_warnings" ]
+  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 if (is_clang_or_gcc) {
@@ -421,6 +422,7 @@ if (is_clang_or_gcc) {
       "internal/partition_page_internal.h",
       "internal/partition_root_exports.h",
       "internal/partition_root_internal.h",
+      "internal/partition_root_internal_forward.h",
       "internal/partition_superpage_extent_entry_internal.h",
       "internal/reservation_offset_table_internal.h",
       "internal/thread_cache_internal.h",
@@ -555,13 +557,9 @@ if (is_clang_or_gcc) {
       sources += [
         "page_allocator_internals_posix.cc",
         "page_allocator_internals_posix.h",
-        "partition_tls_posix.cc",
       ]
     } else if (is_fuchsia) {
-      sources += [
-        "page_allocator_internals_fuchsia.h",
-        "partition_tls_posix.cc",
-      ]
+      sources += [ "page_allocator_internals_fuchsia.h" ]
     }
     if (is_android) {
       # The Android NDK supports PR_MTE_* macros as of NDK r23.
@@ -1071,10 +1069,7 @@ if (build_with_chromium) {
   source_set("unittests") {
     testonly = true
 
-    sources = [
-      "partition_alloc_base/test/gtest_util.h",
-      "use_death_tests.h",
-    ]
+    sources = []
     deps = []
     deps += [ ":internal_headers" ]
 
@@ -1205,10 +1200,7 @@ if (build_with_chromium) {
   source_set("death_unittests") {
     testonly = true
 
-    sources = [
-      "partition_alloc_base/test/gtest_util.h",
-      "use_death_tests.h",
-    ]
+    sources = []
     deps = []
     deps += [ ":internal_headers" ]
 
@@ -1250,6 +1242,24 @@ if (build_with_chromium) {
     # enable the diagnostic by removing this line.
     configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
+
+  source_set("perftests") {
+    testonly = true
+    sources = [
+      "partition_alloc_perftest.cc",
+      "partition_lock_perftest.cc",
+    ]
+
+    deps = [
+      ":partition_alloc",
+      ":test_support",
+      "//testing/gtest",
+      "//testing/perf",
+    ]
+
+    configs -= partition_alloc_remove_configs
+    configs += partition_alloc_add_configs
+  }
 }
 
 source_set("test_support") {
@@ -1258,11 +1268,15 @@ source_set("test_support") {
   sources = [
     "extended_api.cc",
     "extended_api.h",
+    "partition_alloc_base/test/gtest_util.h",
     "partition_alloc_base/test/move_only_int.h",
     "partition_alloc_base/threading/platform_thread_for_testing.h",
+    "partition_alloc_base/timer/lap_timer.cc",
+    "partition_alloc_base/timer/lap_timer.h",
     "partition_alloc_for_testing.h",
     "pointers/raw_ptr_counting_impl_for_test.cc",
     "pointers/raw_ptr_counting_impl_for_test.h",
+    "use_death_tests.h",
   ]
   if (is_posix) {
     sources += [
@@ -1283,6 +1297,10 @@ source_set("test_support") {
     sources += [
       "partition_alloc_base/threading/platform_thread_apple_for_testing.mm",
     ]
+    frameworks = [
+      "CoreFoundation.framework",
+      "Foundation.framework",
+    ]
   }
   if (is_linux || is_chromeos) {
     sources += [
@@ -1296,9 +1314,11 @@ source_set("test_support") {
   }
   public_deps = [
     ":arm_bti_testfunctions",
+    ":build_config",
     ":buildflags",
     ":partition_alloc",
     ":raw_ptr",
+    "//testing/gtest",
   ]
 
   # "extended_api.cc" depends on thread_cache_internal.h.

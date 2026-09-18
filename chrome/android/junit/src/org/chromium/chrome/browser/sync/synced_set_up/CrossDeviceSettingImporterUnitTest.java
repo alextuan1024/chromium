@@ -222,7 +222,29 @@ public class CrossDeviceSettingImporterUnitTest {
 
         // Simulate dialog dismissal.
         mModalDialogManagerObserverCaptor.getValue().onLastDialogDismissed();
+        verify(mModalDialogManager).removeObserver(mModalDialogManagerObserverCaptor.getValue());
         verify(mSnackbarManager).showSnackbar(mSnackbar);
+    }
+
+    @Test
+    public void testDestroy_RemovesModalDialogObserver() {
+        when(mModalDialogManager.isShowing()).thenReturn(true);
+        initializeCrossDeviceSettingImporter().showSnackbarAfterDialogs(mSnackbar, false);
+        verify(mModalDialogManager).addObserver(mModalDialogManagerObserverCaptor.capture());
+
+        mCrossDeviceSettingImporter.destroy();
+
+        verify(mModalDialogManager).removeObserver(mModalDialogManagerObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testOnTabChangeOrGainFocus_incognitoProfile_ignored() {
+        when(mProfile.isOffTheRecord()).thenReturn(true);
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+
+        verify(mCrossDevicePrefTracker, never()).getServiceStatus();
+        verify(mSnackbarManager, never()).showSnackbar(any());
+        importer.destroy();
     }
 
     @Test
@@ -830,6 +852,18 @@ public class CrossDeviceSettingImporterUnitTest {
         mCrossDeviceSettingImporter.destroy();
         verify(mTab2).removeObserver(any(TabObserver.class));
         assertTrue(!mActivityTabSupplier.hasObservers());
+    }
+
+    @Test
+    public void testTabObserver_OnDestroyed() {
+        initializeCrossDeviceSettingImporter();
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        ArgumentCaptor<TabObserver> tabObserverCaptor = ArgumentCaptor.forClass(TabObserver.class);
+        verify(mTab).addObserver(tabObserverCaptor.capture());
+
+        tabObserverCaptor.getValue().onDestroyed(mTab);
+        verify(mTab).removeObserver(tabObserverCaptor.getValue());
     }
 
     @Test

@@ -16,6 +16,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 
+import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.view.AccessibilityDelegateCompat;
 import androidx.core.view.ViewCompat;
@@ -30,6 +31,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.settings.search.SettingsSearchCoordinator;
+import org.chromium.components.browser_ui.settings.SearchViewProvider;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 
 /**
@@ -40,6 +42,13 @@ import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 public class SettingsMenuHelper {
     /** Delegate for handling settings menu actions. */
     public interface Delegate {
+        /**
+         * Returns whether settings is being shown in a browser tab. The value is fixed for the
+         * lifetime of the host, so it does not change when the screen width changes (e.g. the
+         * device is folded or unfolded).
+         */
+        boolean isShownInTab();
+
         /** Returns the current main fragment. */
         @Nullable Fragment getMainFragment();
 
@@ -67,10 +76,11 @@ public class SettingsMenuHelper {
      *
      * @param menu The Menu to populate.
      * @param activity The Activity hosting the menu.
+     * @param delegate The Delegate to provide the host state.
      */
-    public static void onCreateOptionsMenu(Menu menu, Activity activity) {
-        // SettingsInTab does not have a help icon / options menu.
-        if (SettingsInTab.isEnabled()) return;
+    public static void onCreateOptionsMenu(Menu menu, Activity activity, Delegate delegate) {
+        // Settings shown in a tab does not have a help icon / options menu.
+        if (delegate.isShownInTab()) return;
 
         // By default, every screen in Settings shows a "Help & feedback" menu item.
         MenuItem help =
@@ -88,14 +98,61 @@ public class SettingsMenuHelper {
      * Helper to prepare the options menu.
      *
      * @param menu The Menu to prepare.
+     * @param delegate The Delegate to provide the host state.
      */
-    public static void onPrepareOptionsMenu(Menu menu) {
+    public static void onPrepareOptionsMenu(Menu menu, Delegate delegate) {
+        if (delegate.isShownInTab()) {
+            removeHelpMenuItems(menu);
+        }
         for (int i = 0; i < menu.size(); i++) {
             MenuItem item = menu.getItem(i);
             if (item.getIcon() != null) {
                 item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
             }
         }
+    }
+
+    /**
+     * Removes any help menu items (general, targeted, site settings or editor) from the menu when
+     * settings is shown in a tab.
+     */
+    private static void removeHelpMenuItems(Menu menu) {
+        menu.removeItem(R.id.menu_id_general_help);
+        menu.removeItem(R.id.menu_id_targeted_help);
+        menu.removeItem(R.id.menu_id_site_settings_help);
+        menu.removeItem(R.id.help_menu_id);
+    }
+
+    /**
+     * Removes menu items whose action view is a {@link SearchView}. Used when the fragment's search
+     * UI is hosted somewhere else (see MultiColumnTitleUpdater), to avoid showing a duplicate
+     * search icon in the toolbar.
+     */
+    private static void removeSearchMenuItems(Menu menu) {
+        for (int i = menu.size() - 1; i >= 0; --i) {
+            MenuItem item = menu.getItem(i);
+            if (item.getActionView() instanceof SearchView) {
+                // Collapse first, otherwise an expanded action view can stay attached to the
+                // toolbar after its item is removed.
+                item.collapseActionView();
+                menu.removeItem(item.getItemId());
+            }
+        }
+    }
+
+    /**
+     * Returns whether the detailed page title hosts the fragment's own search UI. In that case the
+     * search icon lives next to the page title (see MultiColumnTitleUpdater) and must not be
+     * duplicated in the toolbar. The detailed page title is only visible in two-column layouts.
+     */
+    private static boolean isSearchShownInDetailedPageTitle(
+            @Nullable Fragment mainFragment, Delegate delegate) {
+        if (!delegate.isShownInTab()) return false;
+
+        if (!(mainFragment instanceof SearchViewProvider)) return false;
+
+        MultiColumnSettings multiColumnSettings = delegate.getMultiColumnSettings();
+        return multiColumnSettings != null && multiColumnSettings.isTwoColumn();
     }
 
     /**
@@ -109,18 +166,24 @@ public class SettingsMenuHelper {
         Menu menu = toolbar.getMenu();
         menu.clear();
 
-        // SettingsInTab does not have a help icon / options menu.
-        if (SettingsInTab.isEnabled()) return;
+        onCreateOptionsMenu(menu, activity, delegate);
 
-        onCreateOptionsMenu(menu, activity);
-
+        // Settings shown in a tab removes help menu items in onPrepareOptionsMenu(), but we still
+        // need to allow detail pages to add their own menu items (e.g. delete icon for payment
+        // cards).
         Fragment mainFragment = delegate.getMainFragment();
         if (mainFragment != null && mainFragment.isAdded() && mainFragment.hasOptionsMenu()) {
             mainFragment.onCreateOptionsMenu(menu, activity.getMenuInflater());
             mainFragment.onPrepareOptionsMenu(menu);
+
+            // The search icon is handled by MultiColumnTitleUpdater because it appears next to
+            // the detailed page title in two-column layouts.
+            if (isSearchShownInDetailedPageTitle(mainFragment, delegate)) {
+                removeSearchMenuItems(menu);
+            }
         }
 
-        onPrepareOptionsMenu(menu);
+        onPrepareOptionsMenu(menu, delegate);
     }
 
     /**
@@ -183,18 +246,19 @@ public class SettingsMenuHelper {
 
     /**
      * Configures the navigation icon and click listener on the toolbar based on column layout. The
-     * Chrome logo is shown in multi-column layouts, or in single-column layouts when SettingsInTab
-     * is enabled and showing the top-level main settings. A back button is shown in single-column
-     * layouts otherwise.
+     * Chrome logo is shown in multi-column layouts, or in single-column layouts when settings is
+     * shown in a tab and showing the top-level main settings. A back button is shown in
+     * single-column layouts otherwise.
      */
     public static void updateNavigationIcon(
             Toolbar toolbar,
             Activity activity,
+            boolean shownInTab,
             boolean show,
             boolean isMultiColumn,
             boolean isMainSettings) {
         if (show) {
-            if (isMultiColumn || (SettingsInTab.isEnabled() && isMainSettings)) {
+            if (isMultiColumn || (shownInTab && isMainSettings)) {
                 // Show the Chrome logo at 32x32 dp without tinting.
                 toolbar.setNavigationIcon(R.drawable.app_icon_32dp);
                 if (toolbar instanceof MaterialToolbar materialToolbar) {
@@ -228,7 +292,7 @@ public class SettingsMenuHelper {
                 navigationButton.setClickable(true);
                 navigationButton.setFocusable(true);
                 ViewCompat.setAccessibilityDelegate(navigationButton, null);
-                if (SettingsInTab.isEnabled()) {
+                if (shownInTab) {
                     requestAccessibilityFocus(navigationButton);
                 }
             }

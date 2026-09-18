@@ -12,7 +12,6 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -50,7 +49,7 @@ import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
-import org.chromium.components.browser_ui.share.ShareImageFileUtils;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.RoundedCornerImageView;
@@ -82,6 +81,8 @@ import java.util.Set;
 @NullMarked
 class ShareSheetBottomSheetContent implements BottomSheetContent, OnItemClickListener {
     private static final int SHARE_SHEET_ITEM = 0;
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder().setUserInitiated(true).build();
 
     private final Activity mActivity;
     private final Profile mProfile;
@@ -281,8 +282,12 @@ class ShareSheetBottomSheetContent implements BottomSheetContent, OnItemClickLis
 
         if (contentTypes.contains(ContentType.IMAGE)
                 || contentTypes.contains(ContentType.IMAGE_AND_LINK)) {
-            assert mParams.getImageUriToShare() != null;
-            setImageForPreviewFromUri(mParams.getImageUriToShare());
+            if (mParams.getPreviewImageBitmap() != null) {
+                setImageForPreviewFromBitmap(mParams.getPreviewImageBitmap());
+            } else {
+                setDefaultIconForPreview(
+                        AppCompatResources.getDrawable(mActivity, R.drawable.generic_file));
+            }
             if (TextUtils.isEmpty(subtitle)) {
                 subtitle = getFileType(fileContentType);
             }
@@ -324,11 +329,6 @@ class ShareSheetBottomSheetContent implements BottomSheetContent, OnItemClickLis
         }
 
         setTextForPreview(title, subtitle);
-    }
-
-    private void setImageForPreviewFromUri(Uri imageUri) {
-        ShareImageFileUtils.getBitmapFromUriAsync(
-                mActivity, imageUri, this::setImageForPreviewFromBitmap);
     }
 
     private void setImageForPreviewFromBitmap(@Nullable Bitmap bitmap) {
@@ -660,6 +660,11 @@ class ShareSheetBottomSheetContent implements BottomSheetContent, OnItemClickLis
             mToast.cancel();
         }
         mShareSheetCoordinator.destroy();
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
     }
 
     @Override

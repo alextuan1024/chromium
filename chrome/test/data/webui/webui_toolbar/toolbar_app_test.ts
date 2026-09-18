@@ -12,20 +12,10 @@ import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_as
 import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE, resetInitialStateForTesting, SearchboxBrowserProxy, SecurityChipRole, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {LhsChipIdentifier, ToolbarAppElement} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BrowserProxy, FocusRequestListener, NavigationControlsStateListener} from 'chrome://webui-toolbar.top-chrome/browser_proxy.js';
-import {AvatarToolbarButtonState} from 'chrome://webui-toolbar.top-chrome/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {AvatarToolbarButtonState, BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE, resetInitialStateForTesting, SearchboxBrowserProxy, SecurityChipRole, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
+import type {BrowserProxy, FocusRequestListener, LhsChipIdentifier, NavigationControlsStateListener, ToolbarAppElement} from 'chrome://webui-toolbar.top-chrome/app.js';
 
-class TestToolbarUiHandler extends TestBrowserProxy {
-  constructor() {
-    super(['onPageInitialized']);
-  }
-
-  onPageInitialized() {
-    this.methodCalled('onPageInitialized');
-  }
-}
+import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
 class TestBrowserControlsHandler extends TestBrowserProxy {
   constructor() {
@@ -38,7 +28,7 @@ class TestBrowserControlsHandler extends TestBrowserProxy {
 }
 
 class TestToolbarBrowserProxy extends TestBrowserProxy implements BrowserProxy {
-  toolbarUIHandler: any;
+  toolbarUIHandler: TestToolbarUiHandler;
   browserControlsHandler: any;
   private listener_: NavigationControlsStateListener|null = null;
 
@@ -82,7 +72,9 @@ class TestToolbarBrowserProxy extends TestBrowserProxy implements BrowserProxy {
 
   removeShowSplitTabsContextMenuListener() {}
 
-  onChipClicked(_chip: LhsChipIdentifier, _isPointerClick: boolean) {}
+  onChipClicked(
+      _chip: LhsChipIdentifier, _isPointerClick: boolean, _stateToken: number) {
+  }
   onChipPointerEntered(_chip: LhsChipIdentifier) {}
   onChipPointerExited(_chip: LhsChipIdentifier) {}
   onChipMousePressed(_chip: LhsChipIdentifier) {}
@@ -719,10 +711,10 @@ suite('ToolbarAppTest', () => {
 
       if (hasLinearGradientRing) {
         assertTrue(innerButton.hasAttribute('has-linear-gradient-ring'));
-        assertEquals('30px', iconStyle.width);
-        assertEquals('30px', iconStyle.height);
-        assertEquals('5px', buttonStyle.paddingLeft);
-        assertEquals('7px', buttonStyle.paddingRight);
+        assertEquals('28px', iconStyle.width);
+        assertEquals('28px', iconStyle.height);
+        assertEquals('6px', buttonStyle.paddingLeft);
+        assertEquals('8px', buttonStyle.paddingRight);
       } else {
         assertFalse(innerButton.hasAttribute('has-linear-gradient-ring'));
         assertEquals('20px', iconStyle.width);
@@ -795,5 +787,111 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     assertFalse(innerChip.classList.contains('help-anchor-highlight'));
+  });
+
+  test('AvatarButtonDoesNotAnimateOnNewWindow', async () => {
+    loadTimeData.overrideValues({
+      initialWebUISurfaceSyncEnabled: false,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+
+    assertTrue(avatarButton.classList.contains('initial-load'));
+
+    let transitionFired = false;
+    textSpan.addEventListener('transitionrun', () => {
+      transitionFired = true;
+    });
+    textSpan.addEventListener('transitionstart', () => {
+      transitionFired = true;
+    });
+
+    // Simulate initial Mojo navigation state delivery for an Incognito window.
+    const navigationState = createMockNavigationState();
+    navigationState.avatarControlState = {
+      state: AvatarToolbarButtonState.kIncognitoProfile,
+      text: 'Incognito',
+      icon: {handleId: 0n},
+      tooltip: '',
+      accessibilityName: '',
+      accessibilityDescription: '',
+      enabled: true,
+      hasLinearGradientRing: false,
+    };
+
+    browserProxy.fireNavigationStateListener([], navigationState);
+    await microtasksFinished();
+
+    // Trigger style calculation / layout.
+    window.getComputedStyle(textSpan).maxWidth;
+
+    assertFalse(
+        transitionFired,
+        'Avatar button text should not animate on initial window load');
+
+    // Wait for the animation frame to remove initial-load.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertFalse(avatarButton.classList.contains('initial-load'));
+  });
+
+  test('AvatarButtonAnimatesOnSubsequentTextChanges', async () => {
+    loadTimeData.overrideValues({
+      initialWebUISurfaceSyncEnabled: false,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+
+    assertTrue(avatarButton.classList.contains('initial-load'));
+
+    // Deliver initial navigation state for a standard window without text.
+    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    await microtasksFinished();
+
+    // Wait for initial-load to be removed after initial window load.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertFalse(avatarButton.classList.contains('initial-load'));
+    window.getComputedStyle(textSpan).maxWidth;
+
+    let transitionFired = false;
+    textSpan.addEventListener('transitionrun', () => {
+      transitionFired = true;
+    });
+    textSpan.addEventListener('transitionstart', () => {
+      transitionFired = true;
+    });
+
+    // Subsequent state change (e.g. sync error with label) should animate.
+    const syncErrorNavigationState = createMockNavigationState();
+    syncErrorNavigationState.avatarControlState = {
+      state: AvatarToolbarButtonState.kSyncError,
+      text: 'Error',
+      icon: {handleId: 0n},
+      tooltip: '',
+      accessibilityName: '',
+      accessibilityDescription: '',
+      enabled: true,
+      hasLinearGradientRing: false,
+    };
+    browserProxy.fireNavigationStateListener([], syncErrorNavigationState);
+    await microtasksFinished();
+    // Trigger layout/style resolution, then flush event loop for queued events.
+    window.getComputedStyle(textSpan).maxWidth;
+    await microtasksFinished();
+
+    assertTrue(
+        transitionFired ||
+            window.getComputedStyle(textSpan).maxWidth.includes('calc-size'),
+        'Avatar button text should animate on subsequent state changes');
+    assertFalse(avatarButton.classList.contains('initial-load'));
   });
 });

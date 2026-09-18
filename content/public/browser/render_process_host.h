@@ -38,6 +38,7 @@
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 #include "services/network/public/mojom/restricted_cookie_manager.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
+#include "third_party/blink/public/common/oom_intervention/oom_intervention_types.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/background_sync/background_sync.mojom.h"
 #include "third_party/blink/public/mojom/buckets/bucket_manager_host.mojom-forward.h"
@@ -57,9 +58,9 @@
 #include "content/public/browser/android/child_process_importance.h"
 #endif
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/mojo/mojom/video_decoder.mojom-forward.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_FUCHSIA)
 #include "media/mojo/mojom/fuchsia_media.mojom-forward.h"
@@ -715,11 +716,11 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
           receiver) = 0;
 #endif
   virtual void CreateOneShotSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::OneShotBackgroundSyncService>
           receiver) = 0;
   virtual void CreatePeriodicSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::PeriodicBackgroundSyncService>
           receiver) = 0;
   virtual void BindQuotaManagerHost(
@@ -744,10 +745,10 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
       const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::NotificationService> receiver) = 0;
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   virtual void CreateOOPVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver) = 0;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
   // Returns the current number of active views in this process.  Excludes
   // any RenderViewHosts that are swapped out.
@@ -800,6 +801,11 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // Returns the frame token of the document that was unresponsive when the
   // JavaScript call stack was captured.
   virtual const blink::LocalFrameToken& GetUnresponsiveDocumentToken()
+      const = 0;
+
+  // Returns the crash memory metrics (such as whether an allocation failed)
+  // reported by the renderer into shared memory before exiting.
+  virtual std::optional<blink::OomInterventionMetrics> GetCrashMemoryMetrics()
       const = 0;
 
   // Returns a string that contains information useful for debugging

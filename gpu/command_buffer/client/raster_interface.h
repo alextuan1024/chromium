@@ -11,6 +11,7 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "gpu/command_buffer/client/interface_base.h"
 #include "gpu/command_buffer/common/raster_cmd_enums.h"
 #include "gpu/command_buffer/common/sync_token.h"
@@ -26,6 +27,7 @@ class SkCanvas;
 namespace cc {
 class DisplayItemList;
 class ImageProvider;
+class PaintRecord;
 struct ElementId;
 }  // namespace cc
 
@@ -44,6 +46,8 @@ extern "C" typedef const struct _GLcolorSpace* GLcolorSpace;
 
 namespace gpu {
 
+struct Capabilities;
+class ClientSharedImage;
 struct Mailbox;
 
 namespace raster {
@@ -54,6 +58,24 @@ class RasterInterface : public InterfaceBase {
  public:
   RasterInterface() {}
   virtual ~RasterInterface() {}
+
+  virtual const Capabilities& GetCapabilities() const = 0;
+
+  struct CopySharedImageResult {
+    SyncToken source_sync_token;
+    SyncToken dest_sync_token;
+  };
+
+  // This function will not perform any color conversion during the copy.
+  // `source_rect` specifies the subregion of `source` to copy from, and
+  // `dest_offset` specifies the offset within `dest` to copy to.
+  virtual CopySharedImageResult CopySharedImage(
+      const scoped_refptr<ClientSharedImage>& source,
+      const SyncToken& source_sync_token,
+      const scoped_refptr<ClientSharedImage>& dest,
+      const SyncToken& dest_sync_token,
+      const gfx::Rect& source_rect,
+      const gfx::Point& dest_offset);
 
   // This function will not perform any color conversion during the copy.
   // The same width/height is assumed for the destination.
@@ -70,6 +92,16 @@ class RasterInterface : public InterfaceBase {
                                const gpu::Mailbox& dest_mailbox,
                                const gfx::Rect& source_rect,
                                const gfx::Rect& dest_rect) = 0;
+
+  // Asynchronously writes pixels from caller-owned memory inside
+  // `src_sk_pixmap` into `dest`.
+  // NOTE: This is only for single planar shared images (RGB). For multiplanar
+  // shared images, perform WritePixelsYUV.
+  virtual SyncToken WritePixels(const scoped_refptr<ClientSharedImage>& dest,
+                                const SyncToken& sync_token,
+                                int dst_x_offset,
+                                int dst_y_offset,
+                                const SkPixmap& src_sk_pixmap);
 
   // Asynchronously writes pixels from caller-owned memory inside
   // |src_sk_pixmap| into |dest_mailbox|.
@@ -90,6 +122,14 @@ class RasterInterface : public InterfaceBase {
                               const SkYUVAPixmaps& src_yuv_pixmap) = 0;
 
   // OOP-Raster
+
+  SyncToken RasterSharedImage(
+      const scoped_refptr<ClientSharedImage>& dest,
+      const SyncToken& sync_token,
+      cc::PaintRecord record,
+      cc::ImageProvider* image_provider,
+      bool needs_clear,
+      base::RepeatingCallback<void(SkCanvas*, uint32_t)> custom_callback = {});
 
   // msaa_sample_count has no effect unless msaa_mode is set to kMSAA
   virtual void BeginRasterCHROMIUM(SkColor4f sk_color_4f,

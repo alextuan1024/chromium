@@ -50,12 +50,6 @@ int CodeUnitCompareIgnoringAsciiCase(base::span<const CharType1> c1,
 
 }  // namespace
 
-StringView::StringView(const UChar* chars)
-    // SAFETY: It's safe if `chars` points to a NUL-terminated string.
-    : StringView(UNSAFE_BUFFERS(
-          base::span(chars, chars ? LengthOfNullTerminatedString(chars) : 0))) {
-}
-
 #if DCHECK_IS_ON()
 StringView::~StringView() {
   DCHECK(impl_);
@@ -190,7 +184,7 @@ bool StringView::ContainsOnlyLatin1OrEmpty() const {
   if (empty() || Is8Bit()) {
     return true;
   }
-  return std::ranges::all_of(Span16(), [](UChar ch) { return ch < 0x0100; });
+  return ContainsOnlyLatin1(Span16());
 }
 
 bool StringView::SubstringContainsOnlyWhitespaceOrEmpty(size_type from,

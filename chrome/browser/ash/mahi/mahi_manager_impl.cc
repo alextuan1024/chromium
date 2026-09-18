@@ -36,17 +36,16 @@
 #include "chrome/browser/ash/mahi/mahi_availability.h"
 #include "chrome/browser/ash/mahi/mahi_cache_manager.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
-#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/manta/manta_service_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chromeos/ash/components/history/history_service_provider.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/mahi/public/cpp/mahi_manager.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_content_manager.h"
 #include "chromeos/components/mahi/public/cpp/mahi_types.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/feedback/feedback_constants.h"
 #include "components/manta/manta_service.h"
@@ -101,8 +100,7 @@ void LogProviderCreationStatus(ProviderCreationStatus status) {
 std::optional<std::string> MaybeGetUrl(
     const chromeos::MahiPageInfo& mahi_page_info) {
   // Do not send the fake URL of media app PDF files.
-  return chromeos::features::IsMahiSendingUrl() &&
-                 !mahi_page_info.url.spec().starts_with(kMediaAppPDFUrlPrefix)
+  return !mahi_page_info.url.spec().starts_with(kMediaAppPDFUrlPrefix)
              ? std::make_optional(mahi_page_info.url.spec())
              : std::nullopt;
 }
@@ -769,13 +767,17 @@ bool MahiManagerImpl::MaybeInitializeAndDiscardPendingRequests() {
 }
 
 void MahiManagerImpl::MaybeObserveHistoryService() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  if (!profile) {
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  // TODO(crbug.com/447287122): Production always has an active session here, so
+  // this should CHECK(session); it returns early only because
+  // MahiManagerImplTest (NoSessionAshTestBase) reaches here without one.
+  if (!session) {
     return;
   }
 
   history::HistoryService* service =
-      HistoryServiceFactory::GetForProfileWithoutCreating(profile);
+      ash::HistoryServiceProvider::Get().Find(session->account_id());
   if (service && !scoped_history_service_observer_.IsObserving()) {
     scoped_history_service_observer_.Observe(service);
   }

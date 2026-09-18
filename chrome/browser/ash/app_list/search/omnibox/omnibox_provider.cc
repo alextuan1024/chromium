@@ -23,8 +23,10 @@
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
-#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/history/history_service_provider.h"
+#include "components/account_id/account_id.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_controller_config.h"
@@ -46,6 +48,14 @@ bool IsCalculator(const AutocompleteMatch& match) {
   return match.type == AutocompleteMatchType::CALCULATOR;
 }
 
+// Returns the history service for `profile`'s account. OmniboxProvider is only
+// created for a real user profile (via AppListClientImpl), which always has an
+// associated account.
+history::HistoryService* GetHistoryService(Profile* profile) {
+  return ::ash::HistoryServiceProvider::Get().Find(CHECK_DEREF(
+      ::ash::AnnotatedAccountId::Get(profile->GetOriginalProfile())));
+}
+
 }  //  namespace
 
 // Control category is kept default intentionally as we always need to get
@@ -61,9 +71,7 @@ OmniboxProvider::OmniboxProvider(Profile* profile,
       favicon_cache_(FaviconServiceFactory::GetForProfile(
                          profile,
                          ServiceAccessType::EXPLICIT_ACCESS),
-                     HistoryServiceFactory::GetForProfile(
-                         profile,
-                         ServiceAccessType::EXPLICIT_ACCESS)) {
+                     GetHistoryService(profile)) {
   controller_ = std::make_unique<AutocompleteController>(
       std::make_unique<ChromeAutocompleteProviderClient>(profile),
       AutocompleteControllerConfig{.provider_types = provider_types,
@@ -129,7 +137,7 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
       if (!IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
         continue;
       }
-      DCHECK(last_tokenized_query_.has_value());
+      CHECK(last_tokenized_query_.has_value(), base::NotFatalUntil::M160);
       new_results.emplace_back(std::make_unique<OpenTabResult>(
           profile_, list_controller_,
           CreateResult(match, controller_.get(),
@@ -169,7 +177,7 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
 
 void OmniboxProvider::OnResultChanged(AutocompleteController* controller,
                                       bool default_match_changed) {
-  DCHECK(controller == controller_.get());
+  CHECK(controller == controller_.get(), base::NotFatalUntil::M160);
 
   // Record the query latency.
   base::TimeDelta query_latency = base::TimeTicks::Now() - query_start_time_;

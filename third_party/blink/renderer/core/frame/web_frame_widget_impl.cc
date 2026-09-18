@@ -98,6 +98,7 @@
 #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
 #include "third_party/blink/renderer/core/editing/ime/stylus_writing_gesture.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
+#include "third_party/blink/renderer/core/editing/reveal_selection_scope.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
 #include "third_party/blink/renderer/core/events/clipboard_event.h"
@@ -699,7 +700,7 @@ void WebFrameWidgetImpl::DragTargetDragLeave(
                      screen_point, operations_allowed_,
                      /*force_default_action=*/false);
 
-  GetPage()->GetDragController().DragExited(&drag_data,
+  GetPage()->GetDragController().DragExited(drag_data,
                                             *local_root_->GetFrame());
 
   // FIXME: why is the drag scroll timer not stopped here?
@@ -742,7 +743,7 @@ void WebFrameWidgetImpl::DragTargetDrop(const WebDragData& web_drag_data,
                      ViewportToRootFrame(point_in_viewport), screen_point,
                      operations_allowed_, web_drag_data.ForceDefaultAction());
   GetPage()->GetDragController().PerformDrop(
-      &drag_data, *local_root_->GetFrame(), drag_operation_);
+      drag_data, *local_root_->GetFrame(), drag_operation_);
   // Drops that initiated in the browser get reported via `DragSourceEndedAt`.
   if (!GetPage()->GetDragController().did_initiate_drag()) {
     local_root_->GetFrame()->GetEventHandler().ReportDragEnd();
@@ -1514,7 +1515,7 @@ void WebFrameWidgetImpl::DragTargetDragEnterOrOver(
                      /*force_default_action=*/false);
 
   drag_operation_ = GetPage()->GetDragController().DragEnteredOrUpdated(
-      &drag_data, *local_root_->GetFrame());
+      drag_data, *local_root_->GetFrame());
 
   // Mask the drag operation against the drag source's allowed
   // operations.
@@ -4405,6 +4406,14 @@ void WebFrameWidgetImpl::CommitText(
     DOMNodeIdType target_dom_node_id) {
   TargetImeNodeFocusChangeScope focus_scope(target_dom_node_id);
 
+  std::optional<RevealSelectionScope> reveal_selection_scope;
+  if (LocalFrame* target_frame = !target_dom_node_id.is_null()
+                                     ? FocusedLocalFrameInWidget()
+                                     : nullptr) {
+    // If given a target node, keep the selection in view.
+    reveal_selection_scope.emplace(*target_frame);
+  }
+
   WebInputMethodController* controller = GetActiveWebInputMethodController();
   if (!controller) {
     return;
@@ -6089,7 +6098,8 @@ void WebFrameWidgetImpl::OnWindowShowStateChanged(
     ui::mojom::blink::WindowShowState old_state,
     ui::mojom::blink::WindowShowState new_state) {
   if (!RuntimeEnabledFeatures::
-          DesktopPWAsAdditionalWindowingControlsEnabled()) {
+          DesktopPWAsAdditionalWindowingControlsEnabled() ||
+      !ForMainFrame() || IsProvisional()) {
     return;
   }
 
@@ -6120,7 +6130,7 @@ void WebFrameWidgetImpl::OnWindowShowStateChanged(
 void WebFrameWidgetImpl::OnResizableChanged(bool new_resizable) {
   if (!RuntimeEnabledFeatures::
           DesktopPWAsAdditionalWindowingControlsEnabled() ||
-      !ForMainFrame()) {
+      !ForMainFrame() || IsProvisional()) {
     return;
   }
 

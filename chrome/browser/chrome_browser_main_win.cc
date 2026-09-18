@@ -48,9 +48,7 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/version.h"
-#include "base/win/elevation_util.h"
 #include "base/win/pe_image.h"
-#include "base/win/win_util.h"
 #include "base/win/wrapped_window_proc.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -470,6 +468,50 @@ void ReportParentProcessName() {
   }
 }
 
+void MaybeUpdateIsolationStateFromFieldTrial() {
+  std::string group_name;
+  base::FieldTrial* trial =
+      base::FeatureList::GetFieldTrial(features::kIsolatedProcess);
+  if (trial) {
+    group_name = trial->group_name();
+  }
+
+  const std::string old_group_name =
+      g_browser_process->local_state()->GetString(
+          prefs::kPreviousIsolationState);
+
+  if (group_name == old_group_name) {
+    return;
+  }
+
+  // If an enterprise administrator has set a Mandatory policy,
+  // do not allow a field trial to override it.
+  if (g_browser_process->local_state()->IsManagedPreference(
+          prefs::kProcessIsolationEnabled)) {
+    return;
+  }
+
+  // Only persist `prefs::kPreviousIsolationState` after
+  // `SetIsolationState` completes successfully. Persisting it
+  // before the re-encryption and registry update completes would leave
+  // the profile in an inconsistent state if shutdown or failure
+  // occurs mid-operation, preventing retry on subsequent startups.
+  chrome::SetIsolationState(
+      base::FeatureList::IsEnabled(features::kIsolatedProcess)
+          ? chrome::IsolationState::kProcessIsolation
+          : chrome::IsolationState::kIsolationDisabled,
+      g_browser_process->local_state(),
+      base::BindOnce(
+          [](std::string new_group_name,
+             base::expected<chrome::IsolationState, HRESULT> result) {
+            if (result.has_value()) {
+              g_browser_process->local_state()->SetString(
+                  prefs::kPreviousIsolationState, new_group_name);
+            }
+          },
+          std::move(group_name)));
+}
+
 // This error message is not localized because we failed to load the
 // localization data files.
 const char kMissingLocaleDataTitle[] = "Missing File Error";
@@ -536,11 +578,6 @@ int ChromeBrowserMainPartsWin::PreEarlyInitialization() {
     // Note, cannot return RESULT_CODE_NORMAL_EXIT here as this code needs to
     // result in browser startup bailing.
     return CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED;
-  }
-
-  // Requires FeatureList and may restart the browser.
-  if (auto deelevate_result = MaybeAutoDeElevate()) {
-    return *deelevate_result;
   }
 
   return content::RESULT_CODE_NORMAL_EXIT;
@@ -742,44 +779,24 @@ void ChromeBrowserMainPartsWin::PostBrowserStart() {
   }
 #endif  // GOOGLE_CHROME_BRANDING
 
+  // Record the launch result HRESULT if an attempt to launch an isolated
+  // browser was made during early startup. On launch failure, this records the
+  // failure HRESULT when the process falls through to run unisolated. On launch
+  // success, this records S_OK in the isolated browser process itself, because
+  // the launcher stub process terminates without initializing metrics.
+  if (auto launch_result = chrome::GetIsolatedBrowserLaunchResult()) {
+    base::UmaHistogramSparse("Windows.IsolatedBrowser.LaunchResult",
+                             *launch_result);
+  }
+
   // Record the parent process at a low priority.
   base::ThreadPool::PostTask(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
       base::BindOnce(&ReportParentProcessName));
 
   content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-      ->PostTask(FROM_HERE, base::BindOnce([]() {
-                   std::string group_name;
-                   base::FieldTrial* trial = base::FeatureList::GetFieldTrial(
-                       features::kIsolatedProcess);
-                   if (trial) {
-                     group_name = trial->group_name();
-                   }
-
-                   const std::string old_group_name =
-                       g_browser_process->local_state()->GetString(
-                           prefs::kPreviousIsolationState);
-
-                   if (group_name == old_group_name) {
-                     return;
-                   }
-
-                   // If an enterprise administrator has set a Mandatory policy,
-                   // do not allow a field trial to override it.
-                   if (g_browser_process->local_state()->IsManagedPreference(
-                           prefs::kProcessIsolationEnabled)) {
-                     return;
-                   }
-
-                   g_browser_process->local_state()->SetString(
-                       prefs::kPreviousIsolationState, group_name);
-
-                   chrome::SetIsolationState(
-                       base::FeatureList::IsEnabled(features::kIsolatedProcess)
-                           ? chrome::IsolationState::kProcessIsolation
-                           : chrome::IsolationState::kIsolationDisabled,
-                       g_browser_process->local_state(), base::DoNothing());
-                 }));
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&MaybeUpdateIsolationStateFromFieldTrial));
 
   base::ImportantFileWriterCleaner::GetInstance().Start();
 }
@@ -996,55 +1013,3 @@ void ChromeBrowserMainPartsWin::SetupModuleDatabase(
       &ChromeBrowserMainPartsWin::OnModuleEvent, base::Unretained(this)));
 }
 
-// Check if the browser process is launching elevated, and attempt to
-// automatically de-elevate.
-std::optional<int> ChromeBrowserMainPartsWin::MaybeAutoDeElevate() {
-  // Do not de-elevate in an integration test.
-  if (is_integration_test()) {
-    return std::nullopt;
-  }
-
-  if (!base::FeatureList::IsEnabled(features::kAutoDeElevate)) {
-    return std::nullopt;
-  }
-
-  // Don't bother trying when UAC is disabled because it won't work anyway.
-  if (!base::win::UserAccountIsUnnecessarilyElevated()) {
-    return std::nullopt;
-  }
-
-  const char* const kNoRestartSwitches[] = {
-      // Do not interfere with automation scenarios, which might want to launch
-      // Chrome elevated.
-      switches::kEnableAutomation,
-      // Never attempt to de-elevate a second time.
-      switches::kDoNotDeElevateOnLaunch};
-  if (std::ranges::any_of(
-          kNoRestartSwitches,
-          [command_line = base::CommandLine::ForCurrentProcess()](
-              const char* no_restart_switch) {
-            return command_line->HasSwitch(no_restart_switch);
-          })) {
-    return std::nullopt;
-  }
-
-  base::CommandLine new_command_line(*base::CommandLine::ForCurrentProcess());
-  // Give a fully qualified .exe name
-  base::FilePath full_exe_name;
-  if (base::PathService::Get(base::FILE_EXE, &full_exe_name)) {
-    new_command_line.SetProgram(full_exe_name);
-  }
-  new_command_line.AppendSwitch(switches::kDoNotDeElevateOnLaunch);
-
-  auto process_or_error = base::win::RunDeElevated(new_command_line);
-  const HRESULT hr = process_or_error.has_value()
-                         ? S_OK
-                         : HRESULT_FROM_WIN32(process_or_error.error());
-  base::UmaHistogramSparse("Windows.AutoDeElevateResult", hr);
-  // If it fails, it doesn't matter why, just proceed with the normal launch.
-  if (SUCCEEDED(hr)) {
-    return CHROME_RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED;
-  }
-
-  return std::nullopt;
-}

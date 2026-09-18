@@ -236,6 +236,13 @@ void SharedImageStub::OnCreateSharedImageWithData(
 
   auto& metadata = params->si_info->meta;
 
+  if (metadata.array_layers > 1) {
+    LOG(ERROR) << "SharedImageStub: array_layers > 1 is not supported for "
+                  "pixel upload";
+    OnError();
+    return;
+  }
+
   bool needs_gl = HasGLES2ReadOrWriteUsage(metadata.usage);
   if (!MakeContextCurrent(needs_gl)) {
     OnError();
@@ -370,15 +377,12 @@ void SharedImageStub::OnUpdateSharedImage(const Mailbox& mailbox,
 bool SharedImageStub::UpdateSharedImage(const Mailbox& mailbox,
                                         gfx::GpuFenceHandle in_fence_handle) {
   TRACE_EVENT0("gpu", "SharedImageStub::UpdateSharedImage");
-  std::unique_ptr<gfx::GpuFence> in_fence;
-  if (!in_fence_handle.is_null()) {
-    in_fence = std::make_unique<gfx::GpuFence>(std::move(in_fence_handle));
-  }
+
   if (!MakeContextCurrent()) {
     OnError();
     return false;
   }
-  if (!factory_->UpdateSharedImage(mailbox, std::move(in_fence))) {
+  if (!factory_->UpdateSharedImage(mailbox, std::move(in_fence_handle))) {
     LOG(ERROR) << "SharedImageStub: Unable to update shared image";
     OnError();
     return false;

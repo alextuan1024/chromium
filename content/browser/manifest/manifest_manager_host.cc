@@ -16,7 +16,9 @@
 #include "base/types/expected.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/common/content_client.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/message.h"
+#include "net/base/mime_util.h"
 #include "net/base/schemeful_site.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -30,6 +32,7 @@
 #include "third_party/icu/source/common/unicode/utf16.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 namespace content {
 
@@ -96,7 +99,23 @@ std::optional<std::string> MaybeGetBadMessageStringForManifest(
         return "Manifest file_handlers must be same-origin with the document.";
       }
       for (const auto& [mime_type, extensions] : file_handler->accept) {
+        std::string mime_type_utf8 = base::UTF16ToUTF8(mime_type);
+        std::string top_level_mime_type;
+        if (!net::ParseMimeTypeWithoutParameter(mime_type_utf8,
+                                                &top_level_mime_type,
+                                                /*subtype=*/nullptr) ||
+            !net::IsValidTopLevelMimeType(top_level_mime_type)) {
+          return "Manifest file_handlers accept MIME type is invalid.";
+        }
+        if (extensions.empty()) {
+          return "Manifest file_handlers accept extensions list cannot be "
+                 "empty.";
+        }
         for (const auto& extension : extensions) {
+          if (!extension.starts_with(u".") || extension.length() <= 1) {
+            return "Manifest file_handlers accept extension must start with a "
+                   "'.' and contain at least one extension character.";
+          }
           for (size_t i = 0; i < extension.length();) {
             UChar32 c;
             U16_NEXT(extension, i, extension.length(), c);
@@ -146,25 +165,43 @@ std::optional<std::string> MaybeGetBadMessageStringForManifest(
 
     net::SchemefulSite document_site(document_origin);
     for (const auto& migrate_from : manifest.migrate_from) {
-      if (!document_site.IsSameSiteWith(migrate_from->id)) {
+      if (!migrate_from->id.is_valid() ||
+          !document_site.IsSameSiteWith(migrate_from->id)) {
         return "Manifest migrate_from id must be the same site as the "
                "document.";
       }
-      if (migrate_from->install_url && migrate_from->install_url->is_valid() &&
-          !document_site.IsSameSiteWith(*migrate_from->install_url)) {
-        return "Manifest migrate_from install_url must be the same site as the "
-               "document.";
+      if (migrate_from->install_url) {
+        if (!migrate_from->install_url->is_valid()) {
+          return "Manifest migrate_from install_url must be valid.";
+        }
+        if (!document_site.IsSameSiteWith(*migrate_from->install_url)) {
+          return "Manifest migrate_from install_url must be the same site as "
+                 "the document.";
+        }
+        if (!url::IsSameOriginWith(migrate_from->id,
+                                   *migrate_from->install_url)) {
+          return "Manifest migrate_from install_url must be the same origin as "
+                 "the id.";
+        }
       }
     }
 
     if (manifest.migrate_to) {
-      if (!document_site.IsSameSiteWith(manifest.migrate_to->id)) {
+      if (!manifest.migrate_to->id.is_valid() ||
+          !document_site.IsSameSiteWith(manifest.migrate_to->id)) {
         return "Manifest migrate_to id must be the same site as the document.";
       }
-      if (manifest.migrate_to->install_url.is_valid() &&
-          !document_site.IsSameSiteWith(manifest.migrate_to->install_url)) {
+      if (!manifest.migrate_to->install_url.is_valid()) {
+        return "Manifest migrate_to install_url must be valid.";
+      }
+      if (!document_site.IsSameSiteWith(manifest.migrate_to->install_url)) {
         return "Manifest migrate_to install_url must be the same site as the "
                "document.";
+      }
+      if (!url::IsSameOriginWith(manifest.migrate_to->id,
+                                 manifest.migrate_to->install_url)) {
+        return "Manifest migrate_to install_url must be the same origin as "
+               "the id.";
       }
     }
 
@@ -176,6 +213,15 @@ std::optional<std::string> MaybeGetBadMessageStringForManifest(
             base::StartsWith(shortcut.url.path(), manifest.scope.path(),
                              base::CompareCase::SENSITIVE))) {
         return "Manifest shortcut urls must be within scope.";
+      }
+    }
+
+    for (const auto& scope_extension : manifest.scope_extensions) {
+      if (scope_extension->origin.opaque()) {
+        return "Manifest scope_extensions origin must not be opaque.";
+      }
+      if (scope_extension->origin.scheme() != url::kHttpsScheme) {
+        return "Manifest scope_extensions origin must use the https scheme.";
       }
     }
 
@@ -326,6 +372,73 @@ void ManifestManagerHost::
         blink::mojom::ManifestPtr manifest) {
   CHECK_IS_TEST();
   ValidateAndMaybeOverrideManifest(result, std::move(manifest));
+}
+
+void ManifestManagerHost::ParseManifestFromString(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    const std::string& manifest_contents,
+    ParseManifestCallback callback) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  GetManifestManager().ParseManifestFromString(
+      document_url, manifest_url, manifest_contents,
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindOnce(
+              &ManifestManagerHost::OnParseManifestFromStringResponse,
+              weak_factory_.GetWeakPtr(), document_url, manifest_url,
+              std::move(callback)),
+          blink::mojom::ManifestPtr()));
+}
+
+void ManifestManagerHost::OnParseManifestFromStringResponse(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    ParseManifestCallback callback,
+    blink::mojom::ManifestPtr manifest) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  manifest = ValidateParsedManifestFromString(document_url, manifest_url,
+                                              std::move(manifest));
+  std::move(callback).Run(std::move(manifest));
+}
+
+blink::mojom::ManifestPtr ManifestManagerHost::ValidateParsedManifestFromString(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    blink::mojom::ManifestPtr manifest) {
+  if (!manifest || blink::IsEmptyManifest(manifest)) {
+    return blink::mojom::Manifest::New();
+  }
+
+  if (manifest->manifest_url != manifest_url) {
+    mojo::ReportBadMessage("Returned manifest has incorrect manifest URL");
+    return blink::mojom::Manifest::New();
+  }
+
+  url::Origin document_origin = url::Origin::Create(document_url);
+  if (document_origin.opaque()) {
+    return blink::mojom::Manifest::New();
+  }
+
+  if (std::optional<std::string> bad_message_error =
+          MaybeGetBadMessageStringForManifest(
+              blink::mojom::ManifestRequestResult::kSuccess, *manifest,
+              document_origin);
+      bad_message_error.has_value()) {
+    mojo::ReportBadMessage(*bad_message_error);
+    return blink::mojom::Manifest::New();
+  }
+
+  return manifest;
+}
+
+blink::mojom::ManifestPtr
+ManifestManagerHost::ValidateParsedManifestFromStringForTesting(  // IN-TEST
+    const GURL& document_url,
+    const GURL& manifest_url,
+    blink::mojom::ManifestPtr manifest) {
+  CHECK_IS_TEST();
+  return ValidateParsedManifestFromString(document_url, manifest_url,
+                                          std::move(manifest));
 }
 
 std::vector<ManifestManagerHost::GetManifestCallback>

@@ -39,7 +39,6 @@ static_library("dlp") {
     "//ash/public/cpp",
     "//base",
     "//chrome/app:generated_resources",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/policy/dlp/dialogs",
     "//chrome/browser/chromeos/policy/dlp",
@@ -49,6 +48,7 @@ static_library("dlp") {
     "//chrome/browser/profiles:profile_manager",
     "//chrome/common",
     "//chrome/common:chrome_features",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/system_web_apps:system_web_app_type",
     "//chromeos/dbus/dlp",
     "//chromeos/dbus/dlp:dlp_proto",
@@ -163,10 +163,6 @@ source_set("unit_tests") {
     "//ui/base",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {
@@ -213,6 +209,7 @@ source_set("browser_tests") {
     "//chrome/browser/media/webrtc",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/ash/capture_mode",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/common",
@@ -250,8 +247,4 @@ source_set("browser_tests") {
     "//ui/views",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

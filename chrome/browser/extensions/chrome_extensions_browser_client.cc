@@ -96,6 +96,7 @@
 #include "chrome/browser/usb/usb_chooser_context.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
 #include "chrome/common/channel_info.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -265,9 +266,6 @@ bool RegisterTransformers() {
       std::make_unique<PrivacySandboxTransformer>());
   pref_mapping->RegisterPrefTransformer(
       prefs::kPrivacySandboxM1AdMeasurementEnabled,
-      std::make_unique<PrivacySandboxTransformer>());
-  pref_mapping->RegisterPrefTransformer(
-      prefs::kPrivacySandboxRelatedWebsiteSetsEnabled,
       std::make_unique<PrivacySandboxTransformer>());
 
   return true;
@@ -1041,12 +1039,12 @@ ChromeExtensionsBrowserClient::GetSafeBrowsingDatabaseManager() const {
 #endif
 }
 
-std::optional<safe_browsing::V4ProtocolConfig>
-ChromeExtensionsBrowserClient::GetV4ProtocolConfig() const {
+std::optional<safe_browsing::SBProtocolConfig>
+ChromeExtensionsBrowserClient::GetSBProtocolConfig() const {
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   return g_browser_process && g_browser_process->safe_browsing_service()
              ? std::optional(g_browser_process->safe_browsing_service()
-                                 ->GetV4ProtocolConfig())
+                                 ->GetSBProtocolConfig())
              : std::nullopt;
 #else
   return std::nullopt;
@@ -1340,6 +1338,13 @@ ChromeExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
 gfx::NativeWindow ChromeExtensionsBrowserClient::GetNativeWindowForFunction(
     ExtensionFunction& function) {
   return ChromeExtensionFunctionDetails(&function).GetNativeWindowForUI();
+}
+
+bool ChromeExtensionsBrowserClient::IsLazyKeyedServiceInstantiationEnabled()
+    const {
+  return base::FeatureList::IsEnabled(
+             features::kLazyKeyedServiceInstantiation) &&
+         features::kLazyKeyedServiceInstantiationExtensionsApi.Get();
 }
 
 void ChromeExtensionsBrowserClient::SetAPIClientForTest(

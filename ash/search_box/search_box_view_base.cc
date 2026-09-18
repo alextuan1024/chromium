@@ -10,15 +10,14 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/ash_typography.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
+#include "ash/style/style_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/ime/text_input_flags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -28,6 +27,7 @@
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/animation_builder.h"
@@ -35,6 +35,7 @@
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/animation/ink_drop_impl.h"
+#include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/button/image_button.h"
@@ -107,36 +108,6 @@ void SetupLabelView(views::Label* label,
 
 }  // namespace
 
-// A background that paints a solid white rounded rect with a thin grey
-// border.
-class SearchBoxBackground : public views::Background {
- public:
-  SearchBoxBackground(SkColor color, int corner_radius)
-      : corner_radius_(corner_radius) {
-    SetColor(color);
-  }
-
-  SearchBoxBackground(const SearchBoxBackground&) = delete;
-  SearchBoxBackground& operator=(const SearchBoxBackground&) = delete;
-
-  ~SearchBoxBackground() override = default;
-
-  void SetCornerRadius(int corner_radius) { corner_radius_ = corner_radius; }
-
- private:
-  // views::Background overrides:
-  void Paint(gfx::Canvas* canvas, views::View* view) const override {
-    gfx::Rect bounds = view->GetContentsBounds();
-
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(color().ResolveToSkColor(view->GetColorProvider()));
-    canvas->DrawRoundRect(bounds, corner_radius_, flags);
-  }
-
-  int corner_radius_;
-};
-
 // To paint grey background on mic and back buttons, and close buttons for
 // fullscreen launcher.
 class SearchBoxImageButton : public views::ImageButton {
@@ -189,8 +160,7 @@ class SearchBoxImageButton : public views::ImageButton {
 
   void UpdateInkDropColorAndOpacity(SkColor background_color) {
     const std::pair<SkColor, float> base_color_and_opacity =
-        ash::ColorProvider::Get()->GetInkDropBaseColorAndOpacity(
-            background_color);
+        StyleUtil::GetInkDropBaseColorAndOpacity(background_color);
     auto* ink_drop = views::InkDrop::Get(this);
     ink_drop->SetBaseColor(base_color_and_opacity.first);
     ink_drop->SetVisibleOpacity(base_color_and_opacity.second);
@@ -459,15 +429,13 @@ SearchBoxViewBase::SearchBoxViewBase()
 SearchBoxViewBase::~SearchBoxViewBase() = default;
 
 void SearchBoxViewBase::Init(const InitParams& params) {
+  has_background_ = params.create_background;
   show_close_button_when_active_ = params.show_close_button_when_active;
   search_icon_->set_animation_enabled(params.animate_changing_search_icon);
+
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
   layer()->SetMasksToBounds(true);
-  if (params.create_background) {
-    SetBackground(std::make_unique<SearchBoxBackground>(
-        gfx::kPlaceholderColor, kSearchBoxBorderCornerRadius));
-  }
 
   if (params.increase_child_view_padding) {
     content_container_->SetBetweenChildSpacing(kInnerPadding);
@@ -478,6 +446,8 @@ void SearchBoxViewBase::Init(const InitParams& params) {
   }
 
   UpdateSearchBoxBorder();
+  UpdateSearchBoxBackground(kSearchBoxBorderCornerRadius,
+                            gfx::kPlaceholderColor);
 }
 
 views::ImageButton* SearchBoxViewBase::CreateCloseButton(
@@ -846,12 +816,6 @@ bool SearchBoxViewBase::HandleGestureEvent(
   return OnTextfieldEvent(gesture_event.type());
 }
 
-void SearchBoxViewBase::SetSearchBoxBackgroundCornerRadius(int corner_radius) {
-  auto* search_box_background = static_cast<SearchBoxBackground*>(background());
-  if (search_box_background)
-    search_box_background->SetCornerRadius(corner_radius);
-}
-
 void SearchBoxViewBase::SetSearchIconImage(gfx::ImageSkia image) {
   search_icon_->SetSearchIconImage(image);
 }
@@ -893,10 +857,12 @@ void SearchBoxViewBase::HandleSearchBoxEvent(ui::LocatedEvent* located_event) {
   }
 }
 
-void SearchBoxViewBase::UpdateBackgroundColor(SkColor color) {
-  auto* search_box_background = background();
-  if (search_box_background)
-    search_box_background->SetColor(color);
+void SearchBoxViewBase::UpdateSearchBoxBackground(int corner_radius,
+                                                  SkColor color) {
+  if (has_background_) {
+    SetBackground(views::CreateRoundedRectBackground(
+        color, gfx::RoundedCornersF(corner_radius), GetInsets()));
+  }
   if (close_button_)
     close_button_->UpdateInkDropColorAndOpacity(color);
   if (assistant_button_)

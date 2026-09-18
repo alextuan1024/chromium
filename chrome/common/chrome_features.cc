@@ -12,24 +12,12 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
+#include "extensions/buildflags/buildflags.h"
 #include "pdf/buildflags.h"
 
 namespace features {
 
 // All features in alphabetical order.
-
-// Timeout controlling how long the paint stability monitor waits after the
-// initial contentful paint before considering the UI to have stabilized.
-const base::FeatureParam<base::TimeDelta>
-    kActorPaintStabilityIntialPaintTimeout{
-        &kGlicActor, "actor-paint-stability-initial-paint-timeout",
-        base::Seconds(1)};
-// Timeout controlling how long the paint stability monitor waits for subsequent
-// contenful paints before considering the UI to have stabilized.
-const base::FeatureParam<base::TimeDelta>
-    kActorPaintStabilitySubsequentPaintTimeout{
-        &kGlicActor, "actor-paint-stability-subsequent-paint-timeout",
-        base::Seconds(1)};
 
 #if BUILDFLAG(IS_WIN)
 // When enabled, notifications from PWA's will use the PWA icon and name,
@@ -281,6 +269,8 @@ BASE_FEATURE(kGlicExperimentalTriggeringOptInBypass,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicExperimentalTriggeringOpenWindowIfNone,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicExperimentalTriggeringOsNotification,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicBackgroundTriggering, base::FEATURE_DISABLED_BY_DEFAULT);
 
 const base::FeatureParam<std::string> kGlicExperimentalTriggeringOptInURL{
@@ -290,19 +280,21 @@ const base::FeatureParam<std::string> kGlicExperimentalTriggeringOptInURL{
 const base::FeatureParam<std::string> kGlicExperimentalTriggeringTabFocusHosts{
     &kGlicExperimentalTriggeringOptInTabFocus,
     "glic-experimental-triggering-tab-focus-hosts",
-    "gemini.google.com,gemini-autopush.corp.google.com"};
+    "gemini.google.com,"
+    "gemini-autopush.corp.google.com,"
+    "gemini-preprod.corp.google.com"};
 
 const base::FeatureParam<std::string>
     kGlicExperimentalTriggeringTabFocusPathSubstring{
         &kGlicExperimentalTriggeringOptInTabFocus,
         "glic-experimental-triggering-tab-focus-path-substring",
-        "/spark,/corp/spark"};
+        "/spark,/corp/spark,/app,/corp/app"};
 
 const base::FeatureParam<std::string>
     kGlicExperimentalTriggeringTabFocusFallbackURL{
         &kGlicExperimentalTriggeringOptInTabFocus,
         "glic-experimental-triggering-tab-focus-fallback-url",
-        "https://gemini.google.com/spark"};
+        "https://gemini.google.com/app"};
 
 const base::FeatureParam<base::TimeDelta> kGlicActorPageToolTimeout{
     &kGlicActor, "glic-actor-page-tool-timeout", base::Seconds(30)};
@@ -312,6 +304,7 @@ const base::FeatureParam<base::TimeDelta> kGlicActorClickDelay{
 
 // Controls whether the Actor UI components are enabled.
 BASE_FEATURE(kGlicActorUi, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicActorUiNewIcon, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicConfirmTabClose, base::FEATURE_ENABLED_BY_DEFAULT);
 // Controls whether we ignore users preference of reduced motion enabled and
 // still show the tab indicator spinner. No-op if kGlicActorUiTabIndicator is
@@ -410,37 +403,6 @@ const base::FeatureParam<base::TimeDelta> kGlicActorUiDebounceTimer{
 
 const base::FeatureParam<int> kGlicActorUiCompletedTaskExpiryDelaySeconds{
     &kGlicActorUi, "glic-actor-ui-completed-task-expiry-delay", 30};
-
-// The overall observation timeout when waiting on a renderer tool to complete.
-const base::FeatureParam<base::TimeDelta> kGlicActorPageStabilityTimeout{
-    &kGlicActor, "glic-actor-page-stability-timeout", base::Seconds(4)};
-
-// The minimum amount of time to wait for page stability before invoking the
-// callback.
-const base::FeatureParam<base::TimeDelta> kGlicActorPageStabilityMinWait{
-    &kGlicActor, "glic-actor-page-stability-min-wait", base::Seconds(1)};
-
-// The overall observation timeout when waiting for a tool to complete.
-// This timeout is long but based on the NavigationToLoadEventFired UMA. This
-// should be tuned with real world usage.
-const base::FeatureParam<base::TimeDelta> kActorObservationDelayTimeout{
-    &kGlicActor, "actor-observation-delay-timeout", base::Seconds(10)};
-
-// The additional delay before completing a tool if LCP is not detected yet upon
-// loading.
-const base::FeatureParam<base::TimeDelta> kActorObservationDelayLcp{
-    &kGlicActor, "actor-observation-delay-lcp", base::Seconds(1)};
-
-// The time for Autofill to parse and classify form fields.
-// Autofill is expected to return within this timeout (having successfully
-// parsed the form fields or not).
-// LINT.IfChange(kActorObservationDelayAutofillPredictionsTimeout)
-BASE_FEATURE_PARAM(base::TimeDelta,
-                   kActorObservationDelayAutofillPredictionsTimeout,
-                   &kGlicActor,
-                   "actor-observation-delay-autofill-predictions-timeout",
-                   base::Seconds(1));
-// LINT.ThenChange(//ios/chrome/browser/intelligence/features/features.mm:kActorPageStabilityAutofillPredictionsTimeout)
 
 // If enabled, observation for page load excludes load in ad frames.
 BASE_FEATURE(kGlicActorObservationDelayExcludeAdFrameLoading,
@@ -597,8 +559,13 @@ const base::FeatureParam<std::string> kGlicIneligibleAccountHelpUrl{
     &kGlicSupportLinks, "ineligible_account_help_url",
     "https://support.google.com/gemini/answer/17117411#gic_access"};
 
-const base::FeatureParam<int> kGlicMinRequiredRamMb{
-    &kGlic, "glic-min-required-ram-mb", 0};
+const base::FeatureParam<int> kGlicMinRequiredRamMb{&kGlic,
+                                                    "glic-min-required-ram-mb",
+#if BUILDFLAG(IS_ANDROID)
+                                                    3600};
+#else
+                                                    0};
+#endif
 
 const base::FeatureParam<bool> kGlicAdaptiveToolbarAutoPin{
     &kGlic, "adaptive-toolbar-auto-pin", true};
@@ -635,10 +602,6 @@ const base::FeatureParam<int> kGlicMultiInstanceFloatyWidth{
 const base::FeatureParam<int> kGlicMultiInstanceFloatyHeight{
     &kGlicMultiInstance, "glic-multi-instance-floaty-height", 400};
 
-// Controls whether the Glic feature's z order changes based on the webclient
-// mode.
-BASE_FEATURE(kGlicZOrderChanges, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Whether to sync @google.com account cookies. This is only for development and
 // testing.
 BASE_FEATURE(kGlicDevelopmentSyncGoogleCookies,
@@ -664,10 +627,6 @@ const base::FeatureParam<int> kGlicInitialWidth{&kGlic, "glic-initial-width",
                                                 352};
 const base::FeatureParam<int> kGlicInitialHeight{&kGlic, "glic-initial-height",
                                                  86};
-
-// Quality value in the range [0, 100]. For use with gfx::JPEGCodec::Encode().
-const base::FeatureParam<int> kGlicScreenshotEncodeQuality{
-    &kGlic, "glic-screenshot-encode-quality", 100};
 
 const base::FeatureParam<std::string> kGlicDefaultHotkey{
     &kGlic, "glic-default-hotkey", ""};
@@ -1361,6 +1320,10 @@ const base::FeatureParam<std::string> kIndigoScopes{
     &kIndigo, "indigo_scopes",
     "https://www.googleapis.com/auth/userinfo.email"};
 
+const base::FeatureParam<bool> kIndigoContextualCueingV2OverrideUcbScoring{
+    &kIndigoContextualCueingV2,
+    "indigo_contextual_cueing_v2_override_ucb_scoring", true};
+
 BASE_FEATURE(kIndigoMetadataKeywordHeuristic,
              base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<base::TimeDelta>
@@ -1417,6 +1380,10 @@ BASE_FEATURE(kIsolatedWebAppBundleCache, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)
+// Controls whether Chromium requests a delay shutdown inhibitor and listens
+// for session end events via D-Bus on Linux to allow flushing state cleanly.
+BASE_FEATURE(kLinuxLogindShutdownInhibitor, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kLinuxLowMemoryMonitor, base::FEATURE_DISABLED_BY_DEFAULT);
 // Values taken from the low-memory-monitor documentation and also apply to the
 // portal API:
@@ -1448,6 +1415,18 @@ BASE_FEATURE_PARAM(bool,
                    &kLazyKeyedServiceInstantiation,
                    true);
 
+// When enabled, extension API keyed services (Batch 2) are instantiated lazily.
+BASE_FEATURE_PARAM(bool,
+                   kLazyKeyedServiceInstantiationExtensionsApi,
+                   &kLazyKeyedServiceInstantiation,
+                   true);
+
+// When enabled, commerce and browser UI keyed services are instantiated lazily.
+BASE_FEATURE_PARAM(bool,
+                   kLazyKeyedServiceInstantiationCommerceAndUI,
+                   &kLazyKeyedServiceInstantiation,
+                   true);
+
 // When enabled, Optimization Guide and related keyed services are instantiated
 // lazily.
 BASE_FEATURE_PARAM(bool,
@@ -1464,6 +1443,24 @@ BASE_FEATURE_PARAM(bool,
 // When enabled, Visited URL Ranking keyed services are instantiated lazily.
 BASE_FEATURE_PARAM(bool,
                    kLazyKeyedServiceInstantiationVisitedUrlRanking,
+                   &kLazyKeyedServiceInstantiation,
+                   true);
+
+// When enabled, Safety Hub keyed services are instantiated lazily.
+BASE_FEATURE_PARAM(bool,
+                   kLazyKeyedServiceInstantiationSafetyHub,
+                   &kLazyKeyedServiceInstantiation,
+                   true);
+
+// When enabled, Sharesheet keyed service is instantiated lazily.
+BASE_FEATURE_PARAM(bool,
+                   kLazyKeyedServiceInstantiationSharesheet,
+                   &kLazyKeyedServiceInstantiation,
+                   true);
+
+// When enabled, StorageNotificationService is instantiated lazily.
+BASE_FEATURE_PARAM(bool,
+                   kLazyKeyedServiceInstantiationStorageNotification,
                    &kLazyKeyedServiceInstantiation,
                    true);
 

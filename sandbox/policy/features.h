@@ -20,6 +20,11 @@ SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kNetworkServiceSandbox);
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kNetworkServiceSyscallFilter);
 SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kNetworkServiceFileAllowlist);
+// Gating multi-threaded sandbox initialization for OnDeviceModelExecution with
+// a feature allows experiments to detect issues in the field, and disabling if
+// such issues are found.
+SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kOnDeviceModelExecutionMultiThreadedSandbox);
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 #endif
@@ -37,7 +42,6 @@ SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(
     kWinSboxRestrictCoreSharingOnRenderer);
 SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kEnableCsrssLockdown);
 SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kWinSboxStrictHandleChecks);
-SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(kWinSboxHighGPUJobMemoryLimits);
 SANDBOX_POLICY_EXPORT BASE_DECLARE_FEATURE(
     kWinSboxModuleTamperingProtection);
 #endif  // BUILDFLAG(IS_WIN)

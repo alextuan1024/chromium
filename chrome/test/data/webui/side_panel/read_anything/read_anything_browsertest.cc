@@ -135,13 +135,7 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, Common) {
   RunSidePanelTest("side_panel/read_anything/common_test.js", "mocha.run()");
 }
 
-// TODO(crbug.com/502069860): Flaky on Windows.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_RectCalculations DISABLED_RectCalculations
-#else
-#define MAYBE_RectCalculations RectCalculations
-#endif
-IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, MAYBE_RectCalculations) {
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, RectCalculations) {
   RunSidePanelTest("side_panel/read_anything/rect_calculations_test.js",
                    "mocha.run()");
 }
@@ -161,10 +155,20 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceSelectionMenu) {
                    "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceSelectionDialog) {
+  RunSidePanelTest("side_panel/read_anything/voice_selection_dialog_test.js",
+                   "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceLanguageUtil) {
   RunSidePanelTest(
       "side_panel/read_anything/voice_language_conversions_test.js",
       "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceMenuDisplay) {
+  RunSidePanelTest("side_panel/read_anything/voice_menu_display_test.js",
+                   "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, KeyboardUtil) {

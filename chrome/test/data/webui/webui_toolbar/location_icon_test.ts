@@ -10,19 +10,7 @@ import {hasStyle, microtasksFinished} from 'chrome://webui-test/test_util.js';
 import {BrowserProxyImpl, IconTable, IconType, LhsChipIdentifier, PointerProxyImpl, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/app.js';
 import type {IconFromTableElement, LocationIconElement, PointerProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
 
-class TestToolbarUiHandler extends TestBrowserProxy {
-  constructor() {
-    super(['onLhsChipMousePressed', 'onLhsChipClicked']);
-  }
-
-  onLhsChipMousePressed(id: LhsChipIdentifier, isMiddleClick: boolean) {
-    this.methodCalled('onLhsChipMousePressed', [id, isMiddleClick]);
-  }
-
-  onLhsChipClicked(id: LhsChipIdentifier, isMouseInteraction: boolean) {
-    this.methodCalled('onLhsChipClicked', [id, isMouseInteraction]);
-  }
-}
+import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
 class TestPointerProxy extends TestBrowserProxy implements PointerProxy {
   constructor() {
@@ -268,6 +256,7 @@ suite('LocationIconTest', function() {
         LhsChipIdentifier.kLocationIcon,
         toolbarUiHandler.getArgs('onLhsChipClicked')[0][0]);
     assertFalse(toolbarUiHandler.getArgs('onLhsChipClicked')[0][1]);
+    assertEquals(0, toolbarUiHandler.getArgs('onLhsChipClicked')[0][2]);
 
     // Simulate mouse interaction
     const clickEvent = new PointerEvent('click', {pointerType: 'mouse'});
@@ -277,6 +266,7 @@ suite('LocationIconTest', function() {
         LhsChipIdentifier.kLocationIcon,
         toolbarUiHandler.getArgs('onLhsChipClicked')[1][0]);
     assertTrue(toolbarUiHandler.getArgs('onLhsChipClicked')[1][1]);
+    assertEquals(0, toolbarUiHandler.getArgs('onLhsChipClicked')[1][2]);
   });
 
   test('Multi-touch scenario', async function() {

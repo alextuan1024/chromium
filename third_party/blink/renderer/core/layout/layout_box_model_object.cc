@@ -136,9 +136,7 @@ void LayoutBoxModelObject::StyleWillChange(
   // cached subsequences containing this object or descendant objects.
   if (old_style &&
       (IsStacked(*old_style) != IsStacked(new_style) ||
-       IsStackingContext(*old_style) != IsStackingContext(new_style)) &&
-      // ObjectPaintInvalidator requires this.
-      IsRooted()) {
+       IsStackingContext(*old_style) != IsStackingContext(new_style))) {
     ObjectPaintInvalidator(*this).SlowSetPaintingLayerNeedsRepaint();
   }
 
@@ -283,11 +281,8 @@ void LayoutBoxModelObject::StyleDidChange(
     // |LayoutBoxModelObject::StyleWillChange| but changes to stacking can
     // change the PaintingContainer so we need to ensure the new
     // PaintingContainer is also marked for repaint.
-    if (old_style &&
-        (IsStacked() != IsStacked(*old_style) ||
-         IsStackingContext() != IsStackingContext(*old_style)) &&
-        // ObjectPaintInvalidator requires this.
-        IsRooted()) {
+    if (old_style && (IsStacked() != IsStacked(*old_style) ||
+                      IsStackingContext() != IsStackingContext(*old_style))) {
       ObjectPaintInvalidator(*this).SlowSetPaintingLayerNeedsRepaint();
     }
 
@@ -480,7 +475,7 @@ void LayoutBoxModelObject::ImageChanged(WrappedImagePtr image,
                                         CanDeferInvalidation) {
   NOT_DESTROYED();
   for (const FillLayer* layer = &StyleRef().MaskLayers(); layer;
-       layer = layer->Next()) {
+       layer = layer->NextForUsedValue()) {
     if (layer->GetImage() && image == layer->GetImage()->Data()) {
       // Since an invalid <mask> reference does not yield a paint property
       // (see CSSMaskPainter), we need to update paint properties when such a

@@ -149,8 +149,10 @@ DeclarativePerformanceObserver::~DeclarativePerformanceObserver() {
 
 void DeclarativePerformanceObserver::OnDidFinishNavigation(
     NavigationHandle* navigation_handle) {
-  DCHECK_EQ(navigation_handle->GetRenderFrameHost(), &render_frame_host());
-  DCHECK(navigation_handle->IsServedFromBackForwardCache());
+  CHECK_EQ(navigation_handle->GetRenderFrameHost(), &render_frame_host(),
+           base::NotFatalUntil::M160);
+  CHECK(navigation_handle->IsServedFromBackForwardCache(),
+        base::NotFatalUntil::M160);
 
   navigation_start_ = navigation_handle->NavigationStart();
   committed_url_ =
@@ -185,8 +187,10 @@ void DeclarativePerformanceObserver::OnDidFinishNavigation(
 
 void DeclarativePerformanceObserver::OnPrerenderActivation(
     NavigationHandle* navigation_handle) {
-  DCHECK_EQ(navigation_handle->GetRenderFrameHost(), &render_frame_host());
-  DCHECK(navigation_handle->IsPrerenderedPageActivation());
+  CHECK_EQ(navigation_handle->GetRenderFrameHost(), &render_frame_host(),
+           base::NotFatalUntil::M160);
+  CHECK(navigation_handle->IsPrerenderedPageActivation(),
+        base::NotFatalUntil::M160);
 
   for (auto& entry : buffered_entries_) {
     if (entry.is_dict()) {
@@ -254,8 +258,8 @@ void DeclarativePerformanceObserver::SetStoragePartitionForTesting(  // IN-TEST
 }
 
 StoragePartition* DeclarativePerformanceObserver::GetStoragePartition() const {
-  return storage_partition_for_testing_
-             ? storage_partition_for_testing_.get()
+  return storage_partition_for_testing_.has_value()
+             ? storage_partition_for_testing_->get()
              : render_frame_host().GetStoragePartition();
 }
 

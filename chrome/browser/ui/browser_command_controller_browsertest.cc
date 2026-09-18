@@ -38,9 +38,11 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/translate/translate_test_utils.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
@@ -69,6 +71,7 @@
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -91,6 +94,7 @@
 #include "net/base/network_change_notifier.h"
 #include "ui/actions/actions.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
@@ -776,6 +780,7 @@ class BrowserCommandControllerBrowserTestLockedFullscreen
     command_controller->PrintingStateChanged();
     command_controller->ExtensionStateChanged();
     command_controller->FindBarVisibilityChanged();
+    command_controller->ZoomStateChanged();
     command_controller->UpdateReloadStopState(
         /*is_loading=*/true,
         /*force=*/false);
@@ -836,6 +841,116 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
   // Exit locked fullscreen and verify IDC_EXIT is enabled again.
   ExitLockedFullscreen();
   EXPECT_TRUE(command_controller->IsCommandEnabled(IDC_EXIT));
+}
+
+// Internal helper methods that update command state must not re-enable
+// restricted commands while in locked fullscreen mode.
+IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
+                       CommandsRemainDisabledWhenNotLockedForOnTask) {
+  SetLockedForOnTask(false);
+  CommandUpdater* const command_updater = GetCommandUpdater();
+  chrome::BrowserCommandController* const controller =
+      chrome::BrowserCommandController::From(browser());
+
+  EnterLockedFullscreen();
+
+  constexpr int kRestrictedCommands[] = {
+      IDC_FIND,
+      IDC_FIND_NEXT,
+      IDC_FIND_PREVIOUS,
+      IDC_CLOSE_FIND_OR_STOP,
+      IDC_ZOOM_PLUS,
+      IDC_ZOOM_NORMAL,
+      IDC_ZOOM_MINUS,
+      IDC_DUPLICATE_TARGET_TAB,
+      IDC_PIN_TARGET_TAB,
+      IDC_GROUP_TARGET_TAB,
+      IDC_MUTE_TARGET_SITE,
+      IDC_OPEN_GLIC,
+  };
+
+  // Commands must be disabled initially upon entering locked fullscreen.
+  for (int id : kRestrictedCommands) {
+    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+        << "Command " << id
+        << " should be disabled initially in locked fullscreen";
+  }
+
+  // Simulate a tab blocked state transition.
+  const int active = browser()->tab_strip_model()->active_index();
+  browser()->tab_strip_model()->SetTabBlocked(active, true);
+  browser()->tab_strip_model()->SetTabBlocked(active, false);
+
+  // Simulate zoom, tab focus, and active Glic instance changes.
+  controller->ZoomStateChanged();
+  controller->TabKeyboardFocusChangedTo(active);
+  controller->GlicActiveInstanceChanged(nullptr);
+
+  // Commands must remain disabled in locked fullscreen mode.
+  for (int id : kRestrictedCommands) {
+    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+        << "Command " << id << " should remain disabled in locked fullscreen";
+  }
+}
+
+// When locked for OnTask, restricted commands (such as `IDC_ZOOM_*` and
+// `IDC_OPEN_GLIC`) must remain disabled after state updates, while
+// OnTask allowlisted commands (such as `IDC_FIND`) remain enabled.
+IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
+                       CommandsRemainRestrictedWhenLockedForOnTask) {
+  SetLockedForOnTask(true);
+  CommandUpdater* const command_updater = GetCommandUpdater();
+  chrome::BrowserCommandController* const controller =
+      chrome::BrowserCommandController::From(browser());
+
+  EnterLockedFullscreen();
+
+  // When locked for OnTask, Find commands are allowlisted and enabled, while
+  // `IDC_ZOOM_*` and `IDC_OPEN_GLIC` are restricted.
+  constexpr int kFindCommands[] = {
+      IDC_FIND,
+      IDC_FIND_NEXT,
+      IDC_FIND_PREVIOUS,
+      IDC_CLOSE_FIND_OR_STOP,
+  };
+  for (int id : kFindCommands) {
+    EXPECT_TRUE(command_updater->IsCommandEnabled(id))
+        << "Command " << id
+        << " should be enabled initially when locked for OnTask";
+  }
+
+  constexpr int kRestrictedCommands[] = {
+      IDC_ZOOM_PLUS,        IDC_ZOOM_NORMAL,
+      IDC_ZOOM_MINUS,       IDC_DUPLICATE_TARGET_TAB,
+      IDC_PIN_TARGET_TAB,   IDC_GROUP_TARGET_TAB,
+      IDC_MUTE_TARGET_SITE, IDC_OPEN_GLIC,
+  };
+  for (int id : kRestrictedCommands) {
+    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+        << "Command " << id
+        << " should be disabled initially when locked for OnTask";
+  }
+
+  // Simulate a tab blocked state transition.
+  const int active = browser()->tab_strip_model()->active_index();
+  browser()->tab_strip_model()->SetTabBlocked(active, true);
+  browser()->tab_strip_model()->SetTabBlocked(active, false);
+
+  // Simulate zoom, tab focus, and active Glic instance changes.
+  controller->ZoomStateChanged();
+  controller->TabKeyboardFocusChangedTo(active);
+  controller->GlicActiveInstanceChanged(nullptr);
+
+  // Find commands must remain enabled when locked for OnTask, while restricted
+  // commands remain disabled.
+  for (int id : kFindCommands) {
+    EXPECT_TRUE(command_updater->IsCommandEnabled(id))
+        << "Command " << id << " should remain enabled when locked for OnTask";
+  }
+  for (int id : kRestrictedCommands) {
+    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+        << "Command " << id << " should remain disabled when locked for OnTask";
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
@@ -1476,9 +1591,22 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
   EXPECT_TRUE(command_controller->IsCommandEnabled(
       IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP));
 
+  auto* const root_action = BrowserActions::From(browser())->root_action_item();
+  auto* const always_show_action = actions::ActionManager::Get().FindAction(
+      kActionBookmarkBarSubmenuAlwaysShow, root_action);
+  auto* const always_hide_action = actions::ActionManager::Get().FindAction(
+      kActionBookmarkBarSubmenuAlwaysHide, root_action);
+  auto* const only_on_ntp_action = actions::ActionManager::Get().FindAction(
+      kActionBookmarkBarSubmenuOnlyOnNtp, root_action);
+
+  ASSERT_NE(always_show_action, nullptr);
+  ASSERT_NE(always_hide_action, nullptr);
+  ASSERT_NE(only_on_ntp_action, nullptr);
+
   base::UserActionTester user_action_tester;
 
-  // Test executing visibility commands updates the pref correctly.
+  // Test executing visibility commands updates the pref and ActionItem checked
+  // state correctly.
   EXPECT_EQ(0, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_AlwaysShowBookmarkBar"));
   chrome::ExecuteCommand(browser(), IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW);
@@ -1488,6 +1616,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
       static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysShow));
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_AlwaysShowBookmarkBar"));
+  EXPECT_TRUE(always_show_action->GetChecked());
+  EXPECT_FALSE(always_hide_action->GetChecked());
+  EXPECT_FALSE(only_on_ntp_action->GetChecked());
 
   EXPECT_EQ(0, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_AlwaysHideBookmarkBar"));
@@ -1498,6 +1629,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
       static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysHide));
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_AlwaysHideBookmarkBar"));
+  EXPECT_FALSE(always_show_action->GetChecked());
+  EXPECT_TRUE(always_hide_action->GetChecked());
+  EXPECT_FALSE(only_on_ntp_action->GetChecked());
 
   EXPECT_EQ(0, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_OnlyShowBookmarkBarOnNtp"));
@@ -1508,6 +1642,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
       static_cast<int>(bookmarks::BookmarkBarVisibilityState::kOnlyShowOnNtp));
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "WrenchMenu_Bookmarks_OnlyShowBookmarkBarOnNtp"));
+  EXPECT_FALSE(always_show_action->GetChecked());
+  EXPECT_FALSE(always_hide_action->GetChecked());
+  EXPECT_TRUE(only_on_ntp_action->GetChecked());
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
@@ -1751,5 +1888,41 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTestChromeOSGuest,
   EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_OPTIONS));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
+                       RecentTabsDisabledInIncognito) {
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  EXPECT_FALSE(
+      chrome::IsCommandEnabled(incognito_browser, IDC_RECENT_TABS_MENU));
+  EXPECT_FALSE(chrome::IsCommandEnabled(incognito_browser,
+                                        IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
+  EXPECT_FALSE(chrome::IsCommandEnabled(incognito_browser,
+                                        IDC_RECENT_TABS_SEE_DEVICE_TABS));
+}
+
+class BrowserCommandControllerBrowserTestIsolatedTest
+    : public BrowserCommandControllerBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    BrowserCommandControllerBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTestIsolatedTest,
+                       RecentTabsDisabledInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  EXPECT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+
+  EXPECT_FALSE(
+      chrome::IsCommandEnabled(isolated_browser, IDC_RECENT_TABS_MENU));
+  EXPECT_FALSE(chrome::IsCommandEnabled(isolated_browser,
+                                        IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
+  EXPECT_FALSE(chrome::IsCommandEnabled(isolated_browser,
+                                        IDC_RECENT_TABS_SEE_DEVICE_TABS));
+}
 
 }  // namespace chrome

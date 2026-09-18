@@ -26,6 +26,7 @@
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_image_fetcher_base.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
@@ -113,6 +114,19 @@ class AutofillMetrics {
     kTap = 2,
     kMaxValue = kTap,
   };
+
+  // Milestones of interaction with the Android Keyboard Accessory when a
+  // mouse or precision pointer (such as a touchpad) is present.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(AutofillKeyboardAccessoryInteraction)
+  enum class AutofillKeyboardAccessoryInteraction {
+    kAccessoryShown = 0,
+    kSuggestionSelected = 1,
+    kSuggestionAccepted = 2,
+    kMaxValue = kSuggestionAccepted,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillKeyboardAccessoryInteraction)
 
   // Represents card submitted state.
   // These values are persisted to logs. Entries should not be renumbered and
@@ -216,29 +230,6 @@ class AutofillMetrics {
     kMaxValue = kDismissedByUserAcceptanceNoServerRequestNeeded,
   };
 
-  // Each of these is logged at most once per query to the server, which in turn
-  // occurs at most once per page load.
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum ServerQueryMetric {
-    QUERY_SENT = 0,               // Sent a query to the server.
-    QUERY_RESPONSE_RECEIVED = 1,  // Received a response.
-    QUERY_RESPONSE_PARSED = 2,    // Successfully parsed the server response.
-
-    // The response was parseable, but provided no improvements relative to our
-    // heuristics.
-    QUERY_RESPONSE_MATCHED_LOCAL_HEURISTICS = 3,
-
-    // Our heuristics detected at least one auto-fillable field, and the server
-    // response overrode the type of at least one field.
-    QUERY_RESPONSE_OVERRODE_LOCAL_HEURISTICS = 4,
-
-    // Our heuristics did not detect any auto-fillable fields, but the server
-    // response did detect at least one.
-    QUERY_RESPONSE_WITH_NO_LOCAL_HEURISTICS = 5,
-    NUM_SERVER_QUERY_METRICS,
-  };
-
   // Logs usage of "Scan card" control item.
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -255,6 +246,8 @@ class AutofillMetrics {
   // Entry points for the scan credit card prompt.
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
+  //
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
   enum class ScanCreditCardPromptEntryPoint {
     kKeyboardAccessory = 0,
     kBottomsheet = 1,
@@ -475,7 +468,7 @@ class AutofillMetrics {
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
   enum class AtMemoryTriggerSource {
-    kTypedTrigger = 0,
+    // Deprecated: kTypedTrigger = 0,
     kContextMenu = 1,
     kKeyboardShortcut = 2,
     kDoubleCtrl = 3,
@@ -651,8 +644,6 @@ class AutofillMetrics {
   static void LogScanCreditCardScreenType(ScanCreditCardScreenType screen_type);
   static void LogScanCreditCardCompletedNewUser(bool is_new_user);
 
-  static void LogServerQueryMetric(ServerQueryMetric metric);
-
   // Logs |event| to the unmask prompt events histogram.
   static void LogUnmaskPromptEvent(UnmaskPromptEvent event,
                                    bool has_valid_nickname,
@@ -777,12 +768,21 @@ class AutofillMetrics {
                                   int popup_level,
                                   PopupInteraction action);
 
+  // Logs interaction milestones for the keyboard accessory when a mouse is
+  // connected.
+  static void LogKeyboardAccessoryInteractionWithMouse(
+      FillingProduct filling_product,
+      AutofillKeyboardAccessoryInteraction interaction);
+
   // Logs the number of days since an accepted Autocomplete suggestion was last
   // used.
   static void LogAutocompleteDaysSinceLastUse(size_t days);
 
-  // Logs the fact that an autocomplete popup was shown.
-  static void OnAutocompleteSuggestionsShown();
+  // Logs the fact that an autocomplete popup was shown, recording
+  // `AUTOCOMPLETE_SUGGESTIONS_SHOWN` to `Autocomplete.Events3` and for each
+  // distinct `MatchingType` present in `suggestions`.
+  static void OnAutocompleteSuggestionsShown(
+      base::span<const Suggestion> suggestions);
 
   // This should be called each time a server response is parsed for a form.
   static void LogServerResponseHasDataForForm(bool has_data);
@@ -938,7 +938,19 @@ class AutofillMetrics {
       bool delete_confirmed,
       AutofillProfile::RecordType record_type);
 
+  // Logs an autocomplete interaction `event` to Autocomplete.Events3.
   static void LogAutocompleteEvent(AutocompleteEvent event);
+
+  // Logs an autocomplete interaction `event` to Autocomplete.Events3, and if
+  // `matching_type` is provided, also to
+  // Autocomplete.{MatchingType}BasedSuggestions.
+  static void LogAutocompleteEvent(AutocompleteEvent event,
+                                   std::optional<MatchingType> matching_type);
+
+  // Overload that extracts `MatchingType` from `suggestion` payload if
+  // available.
+  static void LogAutocompleteEvent(AutocompleteEvent event,
+                                   const Suggestion& suggestion);
 
   // TODO(crbug.com/316143236): Remove all datalist related metrics once
   // debugging is complete.

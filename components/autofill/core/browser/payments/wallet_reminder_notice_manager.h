@@ -7,6 +7,8 @@
 
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
@@ -16,7 +18,6 @@ namespace autofill {
 
 class AutofillClient;
 class CreditCard;
-class EntityInstance;
 
 namespace payments {
 
@@ -37,8 +38,11 @@ class WalletReminderNoticeManager {
   bool IsWalletReminderNoticeEligible(const CreditCard& extracted_card);
 
   // Checks if a user is eligible to see the Wallet reminder notice for a public
-  // pass.
-  bool IsWalletReminderNoticeEligible(const EntityInstance& entity_instance);
+  // pass with `type` and `record_type`. Returns true if the entity is eligible
+  // and the notice has not already been acknowledged.
+  bool IsWalletReminderNoticeEligible(
+      const EntityType& type,
+      const EntityInstance::RecordType& record_type);
 
   // Initiates the asynchronous flow to display the Wallet Reminder Notice by
   // issuing the GetWalletReminderNotice RPC via PaymentsNetworkInterface.

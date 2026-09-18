@@ -190,7 +190,8 @@ import java.util.stream.IntStream;
     ChromeFeatureList.DATA_SHARING,
     ChromeFeatureList.GLIC,
     ChromeFeatureList.TASK_MANAGER_CLANK,
-    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
+    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS,
+    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU
 })
 @EnableFeatures(ChromeFeatureList.TAB_STRIP_AUTO_SELECT_ON_CLOSE_CHANGE)
 public class StripLayoutHelperTest {
@@ -2963,7 +2964,8 @@ public class StripLayoutHelperTest {
                         eq(mBottomSheetController),
                         eq(true),
                         eq(false),
-                        eq(mWindowAndroid));
+                        eq(mWindowAndroid),
+                        any());
     }
 
     /** Sets up tabModel and menu coordinator. */

@@ -1111,6 +1111,28 @@ public class ChromeAndroidTaskImplUnitTest {
     }
 
     @Test
+    public void addFeature_whenPendingUpdate_addsFeature() {
+        // Arrange: put the Task in PENDING_UPDATE by starting a minimize that hasn't settled yet.
+        var chromeAndroidTaskWithMockDeps = createChromeAndroidTaskWithMockDeps(/* taskId= */ 1);
+        var chromeAndroidTask =
+                (ChromeAndroidTaskImpl) chromeAndroidTaskWithMockDeps.mChromeAndroidTask;
+        var profile = chromeAndroidTaskWithMockDeps.mMockProfile;
+
+        chromeAndroidTask.minimize();
+        assertEquals(State.PENDING_UPDATE, chromeAndroidTask.getState());
+
+        // Act.
+        var testFeature = new TestChromeAndroidTaskFeature(chromeAndroidTask);
+        ChromeAndroidTaskFeatureKey featureKey =
+                new ChromeAndroidTaskFeatureKey(TestChromeAndroidTaskFeature.class, profile);
+        var returnedFeature = chromeAndroidTask.addFeature(featureKey, () -> testFeature);
+
+        // Assert.
+        assertEquals(testFeature, returnedFeature);
+        assertEquals(testFeature, chromeAndroidTask.getFeatureForTesting(featureKey));
+    }
+
+    @Test
     public void removeAllFeaturesForActivity_removesFeatureAndInvokesOnFeatureRemoved()
             throws Exception {
         // Arrange.
@@ -3955,7 +3977,7 @@ public class ChromeAndroidTaskImplUnitTest {
     }
 
     @Test
-    public void onProfileDestroyed_whenTaskIsPendingCreate_destroysPendingBrowserWindow() {
+    public void onProfileDestroyed_whenTaskIsPendingCreate_throwsException() {
         // TODO(crbug.com/479566813): Re-enable for Desktop Android when fixed.
         assumeFalse(BuildConfig.IS_DESKTOP_ANDROID);
 
@@ -3965,29 +3987,10 @@ public class ChromeAndroidTaskImplUnitTest {
         // Arrange: Create the pending task.
         var pendingTaskWithDeps =
                 createChromeAndroidTaskWithMockDeps(/* taskId= */ 2, /* isPendingTask= */ true);
-        var pendingTask = (ChromeAndroidTaskImpl) pendingTaskWithDeps.mChromeAndroidTask;
         var profile = pendingTaskWithDeps.mMockProfile;
-        var mockNatives = pendingTaskWithDeps.mMockAndroidBrowserWindowNatives;
 
-        assertEquals(
-                "Pending task should track exactly 1 native window pointer",
-                1,
-                pendingTask.getAllNativeBrowserWindowPtrs().size());
-
-        // Extract the created native pointer to verify it gets destroyed.
-        long pendingWindowPtr = pendingTask.getAllNativeBrowserWindowPtrs().get(0);
-
-        // Act: Destroy the profile before the task attaches to an Activity.
-        ProfileManager.onProfileDestroyed(profile);
-
-        // Assert: The pending window should be destroyed and cleared.
-        assertEquals(
-                "Pending window should be cleared",
-                0,
-                pendingTask.getAllNativeBrowserWindowPtrs().size());
-
-        // Verify native destroy was actually called.
-        verify(mockNatives, times(1)).destroy(pendingWindowPtr);
+        // Act & Assert: Destroying the profile while a browser window is pending should throw.
+        assertThrows(IllegalStateException.class, () -> ProfileManager.onProfileDestroyed(profile));
     }
 
     @Test
@@ -4050,6 +4053,27 @@ public class ChromeAndroidTaskImplUnitTest {
                                 chromeAndroidTaskWithMockDeps
                                         .mActivityScopedObjects
                                         .mActivityWindowAndroid));
+    }
+
+    @Test
+    public void
+            androidBrowserWindowObserver_whenPendingTaskDestroyed_notifiesRemovedOncePerWindow() {
+        // Arrange: Creating a pending task requires an existing task to generate the Intent.
+        createChromeAndroidTaskWithMockDeps(/* taskId= */ 1);
+
+        var pendingTaskWithDeps =
+                createChromeAndroidTaskWithMockDeps(/* taskId= */ 2, /* isPendingTask= */ true);
+        var pendingTask = (ChromeAndroidTaskImpl) pendingTaskWithDeps.mChromeAndroidTask;
+        pendingTask.getOrCreateNativeBrowserWindowPtr(pendingTaskWithDeps.mMockProfile);
+
+        var observer = mock(AndroidBrowserWindowObserver.class);
+        pendingTask.addAndroidBrowserWindowObserver(observer);
+
+        // Act.
+        pendingTask.destroy();
+
+        // Assert: Observer should be notified exactly once for the pending window.
+        verify(observer, times(1)).onBrowserWindowRemoved(any());
     }
 
     @Test

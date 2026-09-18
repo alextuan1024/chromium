@@ -21,7 +21,6 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/boca/on_task/activity/active_tab_tracker.h"
 #include "chromeos/ash/components/boca/on_task/on_task_blocklist.h"
@@ -88,7 +87,7 @@ OnTaskSystemWebAppManagerImpl::~OnTaskSystemWebAppManagerImpl() = default;
 
 void OnTaskSystemWebAppManagerImpl::LaunchSystemWebAppAsync(
     base::OnceCallback<void(bool)> callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Include Boca URL in the SWA launch params so the downstream helper triggers
   // the specified callback on launch.
@@ -115,21 +114,19 @@ void OnTaskSystemWebAppManagerImpl::LaunchSystemWebAppAsync(
 
 void OnTaskSystemWebAppManagerImpl::CloseSystemWebAppWindow(
     SessionID window_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   BrowserDelegate* const browser = GetBrowserWindowWithID(window_id);
   LockedSessionWindowTracker* const window_tracker = GetWindowTracker();
   if (window_tracker) {
     window_tracker->InitializeBrowserInfoForTracking(nullptr);
   }
   if (browser) {
-    // Skips the tab unload process so that browser closes immediately.
-    browser->SetSkipWarningUserOnClose(true);
     browser->Close();
   }
 }
 
 SessionID OnTaskSystemWebAppManagerImpl::GetActiveSystemWebAppWindowID() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   BrowserDelegate* const browser = FindSystemWebAppBrowser(
       profile_, SystemWebAppType::BOCA, BrowserType::kApp);
@@ -144,7 +141,7 @@ SessionID OnTaskSystemWebAppManagerImpl::GetActiveSystemWebAppWindowID() {
 void OnTaskSystemWebAppManagerImpl::SetPinStateForSystemWebAppWindow(
     bool pinned,
     SessionID window_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   BrowserDelegate* const browser = GetBrowserWindowWithID(window_id);
   if (!browser) {
     return;
@@ -183,7 +180,7 @@ void OnTaskSystemWebAppManagerImpl::SetPinStateForSystemWebAppWindow(
 void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
     bool paused,
     SessionID window_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   BrowserDelegate* const browser = GetBrowserWindowWithID(window_id);
   if (!browser) {
     return;
@@ -191,7 +188,7 @@ void OnTaskSystemWebAppManagerImpl::SetPauseStateForSystemWebAppWindow(
 
   if (paused) {
     // Focus on the boca homepage in pause mode.
-    DCHECK_GT(browser->GetWebContentsCount(), 0u);
+    CHECK_GT(browser->GetWebContentsCount(), 0u, base::NotFatalUntil::M160);
     size_t activation_index = 0;
     for (size_t idx = 0; idx < browser->GetWebContentsCount(); ++idx) {
       if (IsBocaHomePageTab(browser->GetWebContentsAt(idx))) {
@@ -354,8 +351,7 @@ void OnTaskSystemWebAppManagerImpl::RemoveTabsWithTabIds(
     content::WebContents* const tab = browser->GetWebContentsAt(idx);
     const SessionID tab_id = sessions::SessionTabHelper::IdForTab(tab);
     if (tab_ids_to_remove.contains(tab_id)) {
-      browser->GetBrowser().GetTabStripModel()->DetachAndDeleteWebContentsAt(
-          idx);
+      browser->ForceCloseWebContentsAt(idx);
     }
   }
   window_tracker->set_can_start_navigation_throttle(true);
@@ -390,7 +386,8 @@ void OnTaskSystemWebAppManagerImpl::PrepareSystemWebAppWindowForOnTask(
         tab_ids_to_remove.insert(tab_id);
       }
     }
-    DCHECK_NE(tab_ids_to_remove.size(), browser->GetWebContentsCount());
+    CHECK_NE(tab_ids_to_remove.size(), browser->GetWebContentsCount(),
+             base::NotFatalUntil::M160);
     RemoveTabsWithTabIds(window_id, tab_ids_to_remove);
   }
 }

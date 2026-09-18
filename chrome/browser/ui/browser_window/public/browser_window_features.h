@@ -91,7 +91,7 @@ class LocationBarModel;
 class MemorySaverOptInIPHController;
 class PinnedToolbarActions;
 class ProfileMenuCoordinator;
-class OrganizerPanelStateController;
+class OrganizerPanelController;
 class ReadingListSidePanelCoordinator;
 class RecentActivityBubbleCoordinator;
 class ScrimViewController;
@@ -144,10 +144,6 @@ class OverscrollPrefManager;
 #if BUILDFLAG(ENABLE_EXTENSIONS) && (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC))
 class DefaultSearchExtensionControlledController;
 #endif
-
-namespace actions {
-class ActionItem;
-}  // namespace actions
 
 #if BUILDFLAG(IS_CHROMEOS)
 namespace ash::boca {
@@ -265,11 +261,8 @@ class TabStripUIControllerImpl;
 
 namespace ttc {
 class AiOverlayDialogController;
+class EntrypointController;
 }  // namespace ttc
-
-namespace ui {
-class AcceleratorProvider;
-}  // namespace ui
 
 namespace web_app {
 class AppBrowserController;
@@ -310,19 +303,9 @@ class BrowserWindowFeatures {
   // Called exactly once to tear down state that depends on the window object.
   void TearDownPreBrowserWindowDestruction();
 
-  ui::AcceleratorProvider* accelerator_provider() {
-    return accelerator_provider_;
-  }
-
-  chrome::BrowserCommandController* browser_command_controller() const {
-    return browser_command_controller_.get();
-  }
-
   // Get the FindBarController for this browser window, creating it if it does
   // not yet exist.
   FindBarController* GetFindBarController();
-
-  actions::ActionItem* GetRootActionItem();
 
   // Returns true if a FindBarController exists for this browser window.
   bool HasFindBarController() const;
@@ -347,8 +330,6 @@ class BrowserWindowFeatures {
   PinnedToolbarActions* pinned_toolbar_actions() {
     return pinned_toolbar_actions_;
   }
-
-  TabStripModel* tab_strip_model() { return tab_strip_model_; }
 
   static ui::UserDataFactoryWithOwner<BrowserWindowInterface>&
   GetUserDataFactoryForTesting();
@@ -473,8 +454,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<tab_groups::MostRecentSharedTabUpdateStore>
       most_recent_shared_tab_update_store_;
   std::unique_ptr<ProfileMenuCoordinator> profile_menu_coordinator_;
-  std::unique_ptr<OrganizerPanelStateController>
-      organizer_panel_state_controller_;
+  std::unique_ptr<OrganizerPanelController> organizer_panel_controller_;
   std::unique_ptr<qrcode_generator::QRCodeWindowController>
       qrcode_window_controller_;
   std::unique_ptr<ReadingListSidePanelCoordinator>
@@ -509,6 +489,7 @@ class BrowserWindowFeatures {
       tabs_from_other_devices_side_panel_coordinator_;
   std::unique_ptr<ToastService> toast_service_;
   std::unique_ptr<TranslateBubbleController> translate_bubble_controller_;
+  std::unique_ptr<ttc::EntrypointController> ttc_entrypoint_controller_;
   std::unique_ptr<UpgradeNotificationController>
       upgrade_notification_controller_;
   std::unique_ptr<BrowserUserEducationInterface> user_education_;
@@ -607,11 +588,6 @@ class BrowserWindowFeatures {
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
   // Non-owning references.
-  // TODO(webium): Current both BrowserView and WebUIBrowserWindow implement
-  // AcceleratorProvider. Consider eliminating this inheritance and composing
-  // this functionality into its own class.
-  raw_ptr<ui::AcceleratorProvider> accelerator_provider_;
-
   // TODO(crbug.com/423956131): Remove this.
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
 

@@ -488,8 +488,93 @@ TEST_F(NameInfoTest, FinalizeAfterImportWithIncompleteNameAndAlternativeName) {
   EXPECT_EQ(matching_types, FieldTypeSet({ALTERNATIVE_FULL_NAME}));
 }
 
-// Tests the scenario in which the structured name is merged.
-TEST_F(NameInfoTest, MergeStructuredName) {
+// Tests that `MergeStructuredName` returns false when alternative name support
+// does not match between profiles.
+TEST_F(NameInfoTest, MergeStructuredName_DissimilarAlternativeNameSupport) {
+  NameInfo name1(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  NameInfo name2(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(name2, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  EXPECT_FALSE(
+      name1.MergeStructuredName(name2, /*newer_was_more_recently_used=*/true));
+  EXPECT_FALSE(
+      name2.MergeStructuredName(name1, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns false when the full names are not
+// mergeable.
+TEST_F(NameInfoTest, MergeStructuredName_FullNameNotMergeable) {
+  NameInfo name1(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  NameInfo name2(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name2, {{.type = NAME_FULL, .value = "Jane Smith"}});
+
+  EXPECT_FALSE(
+      name1.MergeStructuredName(name2, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns false when both profiles support
+// alternative names and their full names are mergeable, but their alternative
+// names are not mergeable.
+TEST_F(NameInfoTest, MergeStructuredName_AlternativeNamesNotMergeable) {
+  NameInfo stored_profile(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      stored_profile,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  NameInfo submitted_data(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      submitted_data,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "さとう さくら"}});
+
+  EXPECT_FALSE(stored_profile.MergeStructuredName(
+      submitted_data, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns true and merges both full and
+// alternative names when both profiles support alternative names and their
+// components are mergeable.
+TEST_F(NameInfoTest,
+       MergeStructuredName_AlternativeNamesSupportedAndMergeable) {
+  NameInfo stored_profile(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      stored_profile,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  NameInfo submitted_data(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      submitted_data,
+      {{.type = NAME_LAST, .value = "Doe"},
+       {.type = NAME_FIRST, .value = "John"},
+       {.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  EXPECT_TRUE(stored_profile.MergeStructuredName(
+      submitted_data, /*newer_was_more_recently_used=*/true));
+
+  test::VerifyFormGroupValues(
+      stored_profile,
+      {{.type = NAME_LAST, .value = "Doe"},
+       {.type = NAME_FIRST, .value = "John"},
+       {.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+}
+
+// Tests that `MergeStructuredName` returns true and merges full names when
+// alternative names are not supported and full names are mergeable.
+TEST_F(NameInfoTest,
+       MergeStructuredName_AlternativeNamesNotSupportedAndFullNameMergeable) {
   NameInfo name1(/*alternative_names_supported=*/false);
   test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
 
@@ -504,63 +589,6 @@ TEST_F(NameInfoTest, MergeStructuredName) {
   test::VerifyFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"},
                                       {.type = NAME_FIRST, .value = "John"},
                                       {.type = NAME_LAST, .value = "Doe"}});
-}
-
-// Tests the scenario in which the alternative name is merged.
-TEST_F(NameInfoTest, MergeStructuredAlternativeName) {
-  NameInfo stored_profile(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      stored_profile,
-      {{.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-
-  NameInfo submitted_data(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      submitted_data,
-      {{.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
-       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-
-  EXPECT_TRUE(stored_profile.MergeStructuredName(
-      submitted_data, /*newer_was_more_recently_used=*/true));
-
-  test::VerifyFormGroupValues(
-      stored_profile,
-      {{.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
-       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-}
-
-// Tests the scenario in which both the structured name and the alternative
-// name are merged.
-TEST_F(NameInfoTest, MergeStructuredNameMergingBoth) {
-  NameInfo stored_profile(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      stored_profile, {{.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_FULL_NAME, .value = "John Doe"}});
-
-  NameInfo submitted_data(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      submitted_data, {{.type = NAME_LAST, .value = "Doe"},
-                       {.type = NAME_FIRST, .value = "John"},
-                       {.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_GIVEN_NAME, .value = "John"},
-                       {.type = ALTERNATIVE_FAMILY_NAME, .value = "Doe"},
-                       {.type = ALTERNATIVE_FULL_NAME, .value = "John Doe"}});
-
-  EXPECT_TRUE(stored_profile.MergeStructuredName(
-      submitted_data, /*newer_was_more_recently_used=*/true));
-
-  test::VerifyFormGroupValues(
-      stored_profile, {{.type = NAME_LAST, .value = "Doe"},
-                       {.type = NAME_FIRST, .value = "John"},
-                       {.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_GIVEN_NAME, .value = "John"},
-                       {.type = ALTERNATIVE_FAMILY_NAME, .value = "Doe"}});
 }
 
 TEST_F(NameInfoTest, MergeNames_WithPermutation) {
@@ -1395,6 +1423,38 @@ TEST_F(NameInfoTest, AssigningNameInfoWithAlternativeName) {
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME), u"alt_given");
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME), u"alt_family");
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
+            u"alt_familyalt_given");
+}
+
+// Tests that moving a NameInfo object via move constructor and move assignment
+// properly transfers its values and alternative names.
+TEST_F(NameInfoTest, MovingNameInfoWithAlternativeName) {
+  NameInfo jp_profile =
+      CreateNameInfo(u"John", u"", u"Doe", u"", u"alt_given", u"alt_family",
+                     u"alt_familyalt_given",
+                     /*should_support_alternative_name=*/true);
+
+  // Test move construction.
+  NameInfo moved_constructed_profile(std::move(jp_profile));
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(NAME_FIRST), u"John");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(NAME_LAST), u"Doe");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME),
+            u"alt_given");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME),
+            u"alt_family");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
+            u"alt_familyalt_given");
+
+  // Test move assignment.
+  NameInfo moved_assigned_profile(/*alternative_names_supported=*/false);
+  moved_assigned_profile = std::move(moved_constructed_profile);
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(NAME_FIRST), u"John");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(NAME_LAST), u"Doe");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME),
+            u"alt_given");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME),
+            u"alt_family");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
             u"alt_familyalt_given");
 }
 

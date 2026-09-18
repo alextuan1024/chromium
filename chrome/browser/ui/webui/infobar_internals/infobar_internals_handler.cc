@@ -28,6 +28,7 @@
 #include "chrome/browser/infobars/browser_infobar_manager.h"
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/browser/infobars/infobar_spec.h"
 #include "chrome/browser/infobars/simple_alert_infobar_creator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/known_interception_disclosure_infobar_delegate.h"
@@ -35,8 +36,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
-#include "chrome/browser/ui/omnibox/alternate_nav_infobar_delegate.h"
+#include "chrome/browser/ui/omnibox/chrome_omnibox_navigation_observer.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
+#include "chrome/browser/ui/startup/bad_flags_prompt.h"
 #include "chrome/browser/ui/startup/google_api_keys_infobar_delegate.h"
 #include "chrome/browser/ui/startup/obsolete_system_infobar_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -57,6 +59,7 @@
 #include "content/public/common/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "sandbox/policy/switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 
@@ -64,12 +67,9 @@
 #include "chrome/browser/ui/startup/chrome_for_testing_infobar_delegate.h"
 #endif
 
-#if BUILDFLAG(ENABLE_PLUGINS)
-#include "chrome/browser/plugins/reload_plugin_infobar_delegate.h"
-#endif
-
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/debugger/extension_dev_tools_infobar_delegate.h"
+#include "chrome/browser/extensions/api/identity/web_auth_flow_info_bar_delegate.h"
 #include "chrome/browser/extensions/api/messaging/incognito_connectability.h"
 #include "chrome/browser/extensions/api/messaging/incognito_connectability_infobar_delegate.h"
 #include "chrome/browser/extensions/theme_installed_infobar_delegate.h"
@@ -78,6 +78,7 @@
 #include "chrome/browser/ui/extensions/installation_error_infobar_delegate.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/install/crx_install_error.h"
+#include "extensions/browser/ui_util.h"
 #include "extensions/common/extension.h"
 #include "extensions/strings/grit/extensions_strings.h"
 #endif
@@ -124,6 +125,7 @@ struct TriggerRequirements {
 TriggerRequirements RequirementsFor(InfoBarType type) {
   switch (type) {
     case InfoBarType::kAlternateNav:
+    case InfoBarType::kBadFlags:
     case InfoBarType::kCollectedCookies:
     case InfoBarType::kDevTools:
     case InfoBarType::kDevToolsSharedProcess:
@@ -131,9 +133,6 @@ TriggerRequirements RequirementsFor(InfoBarType type) {
     case InfoBarType::kKnownInterception:
     case InfoBarType::kObsoleteSystem:
     case InfoBarType::kPageInfo:
-#if BUILDFLAG(ENABLE_PLUGINS)
-    case InfoBarType::kReloadPlugin:
-#endif
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     case InfoBarType::kPdf:
 #endif
@@ -141,6 +140,7 @@ TriggerRequirements RequirementsFor(InfoBarType type) {
 #if BUILDFLAG(ENABLE_EXTENSIONS)
     case InfoBarType::kIncognitoConnectability:
     case InfoBarType::kInstallationError:
+    case InfoBarType::kWebAuthFlow:
       return {.profile = true, .web_contents = true};
 #endif
     case InfoBarType::kExtensionDevTools:
@@ -195,6 +195,9 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
               "The Alternate Nav infobar is shown when a user searches for a "
               "term they may have meant to navigate to.");
   }
+  add_entry(InfoBarType::kBadFlags, "Bad Flags",
+            "The Bad Flags infobar warns users that they are running Chrome "
+            "with an unsupported command-line flag.");
 #if BUILDFLAG(CHROME_FOR_TESTING)
   add_entry(InfoBarType::kChromeForTesting, "Chrome for Testing",
             "The Chrome for Testing infobar warns users that this version is "
@@ -288,13 +291,6 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
             "This can only be triggered on Windows or Mac.");
 #endif
 
-#if BUILDFLAG(ENABLE_PLUGINS)
-  add_entry(InfoBarType::kReloadPlugin, "Reload Plugin",
-            "The Reload Plugin infobar is used to ask the user to reload a "
-            "page when a plugin has crashed or disconnected. This trigger "
-            "shows the infobar.");
-#endif
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   add_entry(InfoBarType::kSessionRestore, "Session Restore",
             "Triggers the session restore infobar. This infobar can only be "
@@ -313,6 +309,9 @@ void InfoBarInternalsHandler::GetInfoBars(GetInfoBarsCallback callback) {
             "The Theme Installed infobar is shown when a user installs a "
             "theme. This trigger shows the infobar for the current theme, "
             "allowing you to 'undo' to the state before this trigger.");
+  add_entry(InfoBarType::kWebAuthFlow, "Web Authentication Flow",
+            "The Web Authentication Flow infobar is shown when an extension "
+            "starts an interactive web authentication flow.");
 #endif
 
   std::move(callback).Run(std::move(infobar_list));
@@ -339,8 +338,13 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
       AutocompleteMatch match;
       match.destination_url = GURL("https://google.com/");
 
-      AlternateNavInfoBarDelegate::CreateForOmniboxNavigation(
+      ChromeOmniboxNavigationObserver::ShowAlternativeNavInfoBar(
           web_contents, u"test", match, GURL("https://youtube.com/"));
+      return true;
+    }
+    case InfoBarType::kBadFlags: {
+      ShowBadFlagsInfoBar(web_contents, IDS_BAD_FLAGS_WARNING_MESSAGE,
+                          sandbox::policy::switches::kNoSandbox);
       return true;
     }
 #if BUILDFLAG(CHROME_FOR_TESTING)
@@ -592,7 +596,17 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
     case InfoBarType::kKeystone: {
 #if BUILDFLAG(ENABLE_UPDATER)
       profile->GetPrefs()->SetBoolean(prefs::kShowUpdatePromotionInfoBar, true);
-      ShowUpdaterPromotionInfoBar();
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  KEYSTONE_PROMOTION_INFOBAR_DELEGATE_MAC)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        browser_infobar_manager->ShowGlobally(
+            infobars::InfoBarDelegate::KEYSTONE_PROMOTION_INFOBAR_DELEGATE_MAC);
+      } else {
+        KeystonePromotionInfoBarDelegate::Create(web_contents);
+      }
       return true;
 #else
       return false;
@@ -696,16 +710,7 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
       return true;
     }
 #endif
-#if BUILDFLAG(ENABLE_PLUGINS)
-    case InfoBarType::kReloadPlugin: {
-      ReloadPluginInfoBarDelegate::Create(
-          infobars::ContentInfoBarManager::FromWebContents(web_contents),
-          &web_contents->GetController(),
-          l10n_util::GetStringFUTF16(IDS_PLUGIN_CRASHED_PROMPT,
-                                     u"Infobar Internals"));
-      return true;
-    }
-#endif
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
     case InfoBarType::kSessionRestore: {
       session_restore_infobar::SessionRestoreInfoBarManager::GetInstance()
@@ -762,6 +767,39 @@ bool InfoBarInternalsHandler::TriggerInfoBarInternal(InfoBarType type) {
             theme_service->BuildReinstallerForCurrentTheme());
       }
       return true;
+    }
+    case InfoBarType::kWebAuthFlow: {
+      extensions::ExtensionRegistry* registry =
+          extensions::ExtensionRegistry::Get(profile);
+      const extensions::ExtensionSet& extensions =
+          registry->enabled_extensions();
+
+      std::string extension_name = "Dummy Extension";
+      if (!extensions.empty()) {
+        const extensions::Extension* extension = extensions.begin()->get();
+        extension_name = extension->name();
+      }
+
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE)) {
+        if (!browser_infobar_manager) {
+          return false;
+        }
+        infobars::InfoBarShowParams params;
+        params.substitutions = {MessageSubstitution(
+            extensions::ui_util::GetFixupExtensionNameForUIDisplay(
+                extension_name),
+            /*is_link=*/false, /*accessible_name=*/std::nullopt)};
+        return browser_infobar_manager->Show(
+                   active_tab,
+                   infobars::InfoBarDelegate::
+                       EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE,
+                   std::move(params)) != nullptr;
+      } else {
+        return extensions::WebAuthFlowInfoBarDelegate::Create(
+                   web_contents, extension_name) != nullptr;
+      }
     }
 #endif
   }

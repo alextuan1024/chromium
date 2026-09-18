@@ -52,6 +52,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/remote_frame.mojom-blink.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
@@ -1159,8 +1160,7 @@ void LocalFrameView::RunCanvasOnpaintSteps() {
     const HeapVector<Member<Element>> children(*changed_elements);
     CanvasPaintEventInit* init = CanvasPaintEventInit::Create();
     init->setChangedElements(std::move(children));
-    canvas->DispatchEvent(
-        *CanvasPaintEvent::Create(event_type_names::kPaint, init));
+    canvas->DispatchPaintEvent(init);
   }
 }
 
@@ -1178,7 +1178,6 @@ void LocalFrameView::RunIntersectionObserverSteps() {
 
   if (frame_->IsOutermostMainFrame()) {
     EnsureOverlayInterstitialAdDetector().MaybeFireDetection(frame_.Get());
-    EnsureStickyAdDetector().MaybeFireDetection(frame_.Get());
 
     // Report the main frame's document intersection with itself.
     LayoutObject* layout_object = GetLayoutView();
@@ -2003,10 +2002,15 @@ void LocalFrameView::UpdateDocumentDraggableRegions() const {
       !frame_->GetPage()->GetChromeClient().SupportsDraggableRegions()) {
     return;
   }
+  LayoutView* layout_view = document->GetLayoutView();
+  DCHECK(layout_view);
 
   Vector<DraggableRegionValue> new_regions;
-  CollectDraggableRegions(*(document->GetLayoutBox()), new_regions);
+  CollectDraggableRegions(*layout_view, new_regions);
   if (new_regions == document->DraggableRegions()) {
+    // The request has been served. Without this the bit stays set and every
+    // paint recomputes the regions from now on.
+    document->SetDraggableRegionsDirty(false);
     return;
   }
 
@@ -3341,6 +3345,11 @@ void LocalFrameView::PaintTree(
           if (auto* layout_view = frame_view.GetLayoutView())
             layout_view->Layer()->ClearNeedsRepaintRecursively();
         }
+        // Regions may have changed with a style change that needs no layout
+        // (visibility, z-index, transform), and possibly no repaint either.
+        if (frame_view.frame_->GetDocument()->DraggableRegionsDirty()) {
+          frame_view.UpdateDocumentDraggableRegions();
+        }
         PaintTiming::From(*frame_view.GetFrame().GetDocument())
             .NotifyPaintFinished();
       });
@@ -3584,12 +3593,12 @@ void LocalFrameView::UpdateStyleAndLayout() {
 
   // Second pass: run autosize until it stabilizes.
   if (auto_size_info_) {
-    bool should_reset_for_layout = did_layout;
+    bool should_reset_for_content = did_layout || needs_autosize_for_overflow_;
     bool did_run_autosize_layout = false;
     {
       base::AutoReset<bool> reset(&is_being_auto_sized_, true);
-      while (auto_size_info_->AutoSizeIfNeeded(should_reset_for_layout)) {
-        should_reset_for_layout = false;
+      while (auto_size_info_->AutoSizeIfNeeded(should_reset_for_content)) {
+        should_reset_for_content = false;
         did_layout |= UpdateStyleAndLayoutInternal();
         did_run_autosize_layout = true;
       }
@@ -3619,6 +3628,10 @@ void LocalFrameView::UpdateStyleAndLayout() {
     did_layout |= UpdateStyleAndLayoutInternal();
   }
   delay_scroll_offset_clamp_scope.reset();
+
+  // Clear the overflow invalidation flag so changes caused by this sizing
+  // sequence do not trigger another measurement sequence.
+  needs_autosize_for_overflow_ = false;
 
 #if DCHECK_IS_ON()
   if (!Lifecycle().LifecyclePostponed() && !ShouldThrottleRendering()) {
@@ -4234,8 +4247,9 @@ void LocalFrameView::SetLayoutSizeInternal(const gfx::Size& size,
   document->LayoutViewportWasResized(options);
 }
 
-void LocalFrameView::DidChangeScrollOffset() {
-  GetFrame().Client()->DidChangeScrollOffset();
+void LocalFrameView::DidChangeScrollOffset(
+    mojom::blink::ScrollType scroll_type) {
+  GetFrame().Client()->DidChangeScrollOffset(scroll_type);
   if (GetFrame().IsOutermostMainFrame()) {
     GetFrame()
         .GetPage()
@@ -4705,18 +4719,32 @@ RootFrameViewport* LocalFrameView::GetRootFrameViewport() {
   return viewport_scrollable_area_.Get();
 }
 
-void LocalFrameView::CollectDraggableRegions(
+// Returns whether `layout_object` or a descendant has app-region, and updates
+// MayContainDraggableRegion() to that, so that later walks skip subtrees that
+// no longer have any.
+// static
+bool LocalFrameView::CollectDraggableRegions(
     LayoutObject& layout_object,
-    Vector<DraggableRegionValue>& regions) const {
-  // LayoutTexts don't have their own style, they just use their parent's style,
-  // so we don't want to include them.
-  if (layout_object.IsText())
-    return;
-
-  layout_object.AddDraggableRegions(regions);
-  for (LayoutObject* curr = layout_object.SlowFirstChild(); curr;
-       curr = curr->NextSibling())
-    CollectDraggableRegions(*curr, regions);
+    Vector<DraggableRegionValue>& regions) {
+  if (!layout_object.MayContainDraggableRegion()) {
+    return false;
+  }
+  bool has_region = layout_object.StyleRef().DraggableRegionMode() !=
+                    EDraggableRegionMode::kNone;
+  if (has_region) {
+    layout_object.AddDraggableRegions(regions);
+  }
+  for (LayoutObject* child = layout_object.SlowFirstChild(); child;
+       child = child->NextSibling()) {
+    // LayoutTexts don't have their own style, they just use their parent's
+    // style, so we don't want to include them.
+    if (child->IsText()) {
+      continue;
+    }
+    has_region |= CollectDraggableRegions(*child, regions);
+  }
+  layout_object.SetMayContainDraggableRegion(has_region);
+  return has_region;
 }
 
 void LocalFrameView::UpdateIntersectionObserverStatus() {
@@ -5449,13 +5477,6 @@ LocalFrameView::EnsureOverlayInterstitialAdDetector() {
         std::make_unique<OverlayInterstitialAdDetector>();
   }
   return *overlay_interstitial_ad_detector_.get();
-}
-
-StickyAdDetector& LocalFrameView::EnsureStickyAdDetector() {
-  if (!sticky_ad_detector_) {
-    sticky_ad_detector_ = std::make_unique<StickyAdDetector>();
-  }
-  return *sticky_ad_detector_.get();
 }
 
 static PaintLayer* GetXrOverlayLayer(Document& document) {

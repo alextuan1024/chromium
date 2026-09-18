@@ -430,6 +430,10 @@ void InputController::MaybeSetUpAudioProcessing(
   // In case fake audio input is requested.
   processing_input_params->set_format(processing_output_params.format());
 
+  auto volume_adjustment_callback = base::BindPostTask(
+      task_runner_,
+      base::BindRepeating(&InputController::SetVolume, weak_this_));
+
   // Unretained() is safe, since |this| and |event_handler_| outlive
   // |audio_processor_handler_|.
   audio_processor_handler_ = std::make_unique<AudioProcessorHandler>(
@@ -438,6 +442,7 @@ void InputController::MaybeSetUpAudioProcessing(
       base::BindRepeating(&EventHandler::OnLog,
                           base::Unretained(event_handler_)),
       std::move(deliver_processed_audio_callback),
+      std::move(volume_adjustment_callback),
       // AudioProcessorHandler delivers errors on the main thread.
       base::BindRepeating(&InputController::DoReportError, weak_this_,
                           REFERENCE_STREAM_ERROR),
@@ -465,7 +470,9 @@ InputController::MaybeCreateVoiceIsolationHandler(
 
   return VoiceIsolationHandler::MaybeCreate(
       *ml_model_manager, processing_output_params,
-      std::move(deliver_processed_audio_callback));
+      std::move(deliver_processed_audio_callback),
+      base::BindRepeating(&EventHandler::OnLog,
+                          base::Unretained(event_handler_)));
 }
 
 #endif
@@ -848,7 +855,7 @@ void InputController::DoLogAudioLevels(float level_dbfs,
     LogMicrophoneMuteResult(MICROPHONE_IS_NOT_MUTED);
   }
 
-  static const float kSilenceThresholdDBFS = -72.24719896f;
+  constexpr float kSilenceThresholdDBFS = -72.24719896f;
   SendLogMessage(base::StringPrintf(
       "%s => (average audio level=%.2f dBFS%s)", __func__, level_dbfs,
       level_dbfs < kSilenceThresholdDBFS ? " <=> low audio input level" : ""));
@@ -1012,18 +1019,14 @@ void InputController::OnData(const media::AudioBus* source,
 void InputController::DeliverProcessedAudio(
     const media::AudioBus& audio_bus,
     base::TimeTicks audio_capture_time,
-    std::optional<double> new_volume,
     const media::AudioGlitchInfo& glitch_info) {
+  TRACE_EVENT("audio", "InputController::DeliverProcessedAudio", "frames",
+              audio_bus.frames(), "channels", audio_bus.channels());
   stats_reporter_->ReportDelayAndGlitches(audio_capture_time, glitch_info);
   // When processing is performed in the audio service, the consumer is not
   // expected to use the input volume and keypress information.
   sync_writer_->Write(&audio_bus, /*volume=*/1.0, audio_capture_time,
                       glitch_info);
-  if (new_volume) {
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&InputController::SetVolume, weak_this_, *new_volume));
-  }
 }
 #endif
 

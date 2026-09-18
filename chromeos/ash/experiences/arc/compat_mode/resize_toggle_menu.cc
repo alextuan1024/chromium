@@ -8,10 +8,10 @@
 #include <utility>
 
 #include "ash/public/cpp/arc_compat_mode_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -115,8 +115,9 @@ ResizeToggleMenu::MenuButtonView::MenuButtonView(PressedCallback callback,
   ash::TypographyProvider::Get()->StyleLabel(ash::TypographyToken::kCrosButton2,
                                              *label);
 
+  // The border is only used to inset the contents; it is never painted.
   SetBorder(views::CreateRoundedRectBorder(kBorderThicknessDp, kButtonRadius,
-                                           gfx::kPlaceholderColor));
+                                           SK_ColorTRANSPARENT));
   SetBackground(views::CreateRoundedRectBackground(gfx::kPlaceholderColor,
                                                    kButtonRadius));
 
@@ -164,9 +165,10 @@ void ResizeToggleMenu::MenuButtonView::UpdateColors() {
   title_->SetEnabledColor(is_selected_ ? cros_tokens::kCrosSysOnPrimary
                                        : cros_tokens::kCrosSysOnSurface);
 
-  background()->SetColor(is_selected_ ? cros_tokens::kCrosSysPrimary
-                                      : cros_tokens::kCrosSysSystemOnBase);
-  GetBorder()->SetColor(SK_ColorTRANSPARENT);
+  SetBackground(views::CreateRoundedRectBackground(
+      is_selected_ ? cros_tokens::kCrosSysPrimary
+                   : cros_tokens::kCrosSysSystemOnBase,
+      kButtonRadius));
 }
 
 BEGIN_METADATA(ResizeToggleMenu, MenuButtonView)
@@ -286,9 +288,9 @@ ResizeToggleMenu::MakeBubbleDelegate(
       gfx::RoundedCornersF(kBubbleCornerRadius));
   contents_layer->SetIsFastRoundedCorner(true);
   if (chromeos::features::IsSystemBlurEnabled()) {
-    contents_layer->SetBackgroundBlur(ash::ColorProvider::kBackgroundBlurSigma);
+    contents_layer->SetBackgroundBlur(ash::StyleUtil::kBackgroundBlurSigma);
     contents_layer->SetBackdropFilterQuality(
-        ash::ColorProvider::kBackgroundBlurQuality);
+        ash::StyleUtil::kBackgroundBlurQuality);
     contents_layer->SetFillsBoundsOpaquely(false);
   }
 

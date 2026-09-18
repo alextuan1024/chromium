@@ -1099,7 +1099,6 @@ MemorySearchResult ConvertToMemorySearchResult(
       proto_result.relevance_score(), std::move(primary_typed_value));
   pcontext_result.sources = ExtractSources(proto_result);
   pcontext_result.metadata_list = ExtractMetadata(proto_result, app_locale);
-  pcontext_result.is_obfuscated = IsSpiiMemoryDataType(memory_data_type);
   return pcontext_result;
 }
 
@@ -1752,26 +1751,6 @@ Suggestion::Icon GetSuggestionIcon(MemoryDataType type, bool is_autofill_only) {
     case MemoryDataTypeCategory::kUnknown:
       return is_autofill_only ? Suggestion::Icon::kNoIcon
                               : Suggestion::Icon::kTextSpark;
-  }
-}
-
-bool IsDynamicTransactionType(MemoryDataType data_type) {
-  switch (GetMemoryDataTypeCategory(data_type)) {
-    case MemoryDataTypeCategory::kOrder:
-    case MemoryDataTypeCategory::kShipment:
-      return true;
-    case MemoryDataTypeCategory::kContactInfo:
-    case MemoryDataTypeCategory::kCreditCard:
-    case MemoryDataTypeCategory::kIban:
-    case MemoryDataTypeCategory::kPassport:
-    case MemoryDataTypeCategory::kDriversLicense:
-    case MemoryDataTypeCategory::kNationalIdCard:
-    case MemoryDataTypeCategory::kVehicle:
-    case MemoryDataTypeCategory::kFlightReservation:
-    case MemoryDataTypeCategory::kKnownTravelerNumber:
-    case MemoryDataTypeCategory::kRedressNumber:
-    case MemoryDataTypeCategory::kUnknown:
-      return false;
   }
 }
 

@@ -74,6 +74,8 @@ public class LocationBarLayout extends ConstraintLayout {
     protected boolean mNativeInitialized;
     private final View mMarginSpacer;
     private final int mLocationBarIconStartingPadding;
+    @VisibleForTesting
+    protected final @Px int mMinWidthForExpandedActivationChip;
 
     protected @Nullable CompositeTouchDelegate mCompositeTouchDelegate;
     protected @Nullable SearchEngineService mSearchEngineService;
@@ -121,6 +123,9 @@ public class LocationBarLayout extends ConstraintLayout {
                 res.getDimensionPixelOffset(R.dimen.location_bar_url_action_offset);
         mLocationBarIconStartingPadding =
                 res.getDimensionPixelSize(R.dimen.location_bar_icon_starting_padding);
+        mMinWidthForExpandedActivationChip =
+                res.getDimensionPixelSize(
+                        R.dimen.fusebox_compact_activation_chip_min_width_required);
     }
 
     /** Called when activity is being destroyed. */
@@ -371,18 +376,6 @@ public class LocationBarLayout extends ConstraintLayout {
         mStatusCoordinator.setUnfocusedLocationBarWidth(unfocusedWidth);
     }
 
-    public StatusCoordinator getStatusCoordinatorForTesting() {
-        return mStatusCoordinator;
-    }
-
-    public boolean getLocationBarButtonsVisibilityForTesting() {
-        return mShowUrlButtons;
-    }
-
-    public void setStatusCoordinatorForTesting(StatusCoordinator statusCoordinator) {
-        mStatusCoordinator = statusCoordinator;
-    }
-
     /* package */ void setUrlActionContainerVisibility(boolean shouldShow) {
         mShowUrlButtons = shouldShow;
 
@@ -546,10 +539,6 @@ public class LocationBarLayout extends ConstraintLayout {
         }
     }
 
-    int getUrlActionContainerEndMarginForTesting() {
-        return mUrlActionContainerEndMargin;
-    }
-
     /**
      * This should be called when the state of the fusebox shown in the LocationBar changes; it is
      * assumed to start in the DISABLED state.
@@ -682,5 +671,30 @@ public class LocationBarLayout extends ConstraintLayout {
 
     /* package */ boolean isActivationChipCompact() {
         return mActivationChip.isCompact();
+    }
+
+    /** Returns whether the URL bar text would overflow if the activation chip were expanded. */
+    /* package */ boolean isUrlBarTextOverflowing() {
+        @Px int currentWidth = getUrlBarWidth();
+        @Px int chipDelta = getActivationChipCompactWidthDelta();
+        boolean isCompact = isActivationChipCompact();
+        @Px int expandedUrlBarWidth = isCompact ? (currentWidth - chipDelta) : currentWidth;
+        return getUrlBarTextWidth() > expandedUrlBarWidth;
+    }
+
+    /* package */ boolean isTooNarrowForExpandedActivationChip() {
+        return false;
+    }
+
+    public StatusCoordinator getStatusCoordinatorForTesting() {
+        return mStatusCoordinator;
+    }
+
+    public void setStatusCoordinatorForTesting(StatusCoordinator statusCoordinator) {
+        mStatusCoordinator = statusCoordinator;
+    }
+
+    int getUrlActionContainerEndMarginForTesting() {
+        return mUrlActionContainerEndMargin;
     }
 }

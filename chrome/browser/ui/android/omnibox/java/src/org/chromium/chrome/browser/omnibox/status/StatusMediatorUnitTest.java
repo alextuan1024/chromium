@@ -184,7 +184,10 @@ public final class StatusMediatorUnitTest {
         mAutocompleteInput = new AutocompleteInput();
         lenient().doReturn(mAutocompleteInput).when(mFuseboxSessionState).getAutocompleteInput();
 
-        mModel = new PropertyModel(StatusProperties.ALL_KEYS);
+        mModel =
+                new PropertyModel.Builder(StatusProperties.ALL_KEYS)
+                        .with(StatusProperties.RESOURCE_PROVIDER, mResourceProvider)
+                        .build();
         mMediator =
                 new StatusMediator(
                         mResourceProvider,
@@ -383,6 +386,17 @@ public final class StatusMediatorUnitTest {
         assertNotEquals(
                 mMockFaviconDrawable,
                 mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getDrawable(mContext));
+    }
+
+    @Test
+    public void previewUrlCleared_displayStateDrafting_showsSearchEngineLogo() {
+        setDisplayState(DisplayState.DRAFTING);
+        mAutocompleteInput.setPreviewMatchUrl(JUnitTestGURLs.BLUE_1);
+        mMediator.onFaviconFetched(JUnitTestGURLs.BLUE_1, mMockFaviconDrawable);
+
+        mAutocompleteInput.setPreviewMatchUrl(null);
+
+        assertEquals(R.drawable.ic_logo_googleg_20dp, getModelIconID());
     }
 
     @Test
@@ -1516,6 +1530,30 @@ public final class StatusMediatorUnitTest {
         assertEquals(
                 R.drawable.ic_logo_googleg_20dp,
                 mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getIconRes());
+    }
+
+    @Test
+    public void statusIconCornerRadius_default() {
+        mMediator.beginInput(mFuseboxSessionState);
+        assertEquals(
+                R.dimen.omnibox_small_icon_rounding_radius,
+                mModel.get(StatusProperties.STATUS_ICON_CORNER_RADIUS));
+
+        mMediator.endInput();
+        assertEquals(
+                R.dimen.omnibox_search_engine_logo_composed_half_size,
+                mModel.get(StatusProperties.STATUS_ICON_CORNER_RADIUS));
+    }
+
+    @Test
+    public void statusIconCornerRadius_desktop() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
+
+        mMediator.beginInput(mFuseboxSessionState);
+        mMediator.endInput();
+        assertEquals(
+                R.dimen.omnibox_search_engine_logo_composed_half_size_desktop,
+                mModel.get(StatusProperties.STATUS_ICON_CORNER_RADIUS));
     }
 
     private void setDisplayState(@DisplayState int state) {

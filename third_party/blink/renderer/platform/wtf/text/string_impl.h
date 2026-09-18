@@ -57,7 +57,7 @@
 #if BUILDFLAG(IS_APPLE)
 #include "base/apple/scoped_cftyperef.h"
 
-typedef const struct __CFString* CFStringRef;
+using CFStringRef = const struct __CFString*;
 #endif
 
 #ifdef __OBJC__
@@ -73,21 +73,11 @@ enum TextCaseSensitivity {
   kTextCaseAsciiInsensitive,
 };
 
-// Computes a standard StringHasher string for the given buffer,
-// with the caveat that the buffer may contain 8-bit data only.
-// In that case, it is converted from UChar to LChar on the fly,
-// so that we return the same hash as if we hashed the string as
-// LChar to begin with. This ensures that the same code points
-// are hashed to the same value, even if someone called e.g.
-// Ensure16Bit() on the string at some point.
-WTF_EXPORT unsigned ComputeHashForWideString(base::span<const UChar> str);
-
 enum StripBehavior { kStripExtraWhiteSpace, kDoNotStripWhiteSpace };
 
-typedef bool (*CharacterMatchFunctionPtr)(UChar);
-typedef bool (*IsWhiteSpaceFunctionPtr)(UChar);
-typedef HashMap<wtf_size_t, StringImpl*, AlreadyHashedTraits>
-    StaticStringsTable;
+using CharacterMatchFunctionPtr = bool (*)(UChar);
+using IsWhiteSpaceFunctionPtr = bool (*)(UChar);
+using StaticStringsTable = HashMap<uint32_t, StringImpl*, AlreadyHashedTraits>;
 
 // You can find documentation about this class in this doc:
 // https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/renderer/platform/wtf/text/README.md
@@ -137,7 +127,7 @@ class WTF_EXPORT StringImpl {
   }
 
   enum StaticStringTag { kStaticString };
-  StringImpl(size_type length, wtf_size_t hash, StaticStringTag)
+  StringImpl(size_type length, uint32_t hash, StaticStringTag)
       : length_(length),
         hash_and_flags_(hash << kHashShift | LengthToAsciiFlags(length) |
                         kIs8Bit | kIsStatic) {}
@@ -246,28 +236,26 @@ class WTF_EXPORT StringImpl {
   // flags in the low bits because it makes them slightly more efficient to
   // access.  So, we shift left and right when setting and getting our hash
   // code.
-  void SetHash(wtf_size_t hash) const {
-    // Multiple clients assume that StringHasher is the canonical string
-    // hash function.
-    DCHECK_EQ(
-        hash,
-        (Is8Bit() ? StringHasher::ComputeHashAndMaskTop8Bits(
-                        reinterpret_cast<const char*>(Span8().data()), length_)
-                  : ComputeHashForWideString(Span16())));
+  void SetHash(uint32_t hash) const {
+    // Multiple clients assume that blink::HashString24() and
+    // blink::HashWideString24() are the canonical string hash functions.
+    DCHECK_EQ(hash,
+              (Is8Bit() ? HashString24(Span8()) : HashWideString24(Span16())));
     DCHECK(hash);  // Verify that 0 is a valid sentinel hash value.
     SetHashRaw(hash);
   }
 
   bool HasHash() const { return GetHashRaw() != 0; }
 
-  wtf_size_t ExistingHash() const {
+  uint32_t ExistingHash() const {
     DCHECK(HasHash());
     return GetHashRaw();
   }
 
-  wtf_size_t GetHash() const {
-    if (wtf_size_t hash = GetHashRaw())
+  uint32_t GetHash() const {
+    if (uint32_t hash = GetHashRaw()) {
       return hash;
+    }
     return HashSlowCase();
   }
 
@@ -340,7 +328,7 @@ class WTF_EXPORT StringImpl {
   }
 
 #if DCHECK_IS_ON()
-  unsigned int RefCountChangeCountForTesting() const {
+  wtf_size_t RefCountChangeCountForTesting() const {
     return ref_count_change_count_;
   }
   void ResetRefCountChangeCountForTesting() { ref_count_change_count_ = 0; }
@@ -563,7 +551,7 @@ class WTF_EXPORT StringImpl {
   };
 
   // Hash value is 24 bits.
-  constexpr static int kHashShift = (sizeof(unsigned) * 8) - 24;
+  constexpr static int kHashShift = (sizeof(uint32_t) * 8) - 24;
 
   static inline constexpr uint32_t LengthToAsciiFlags(int length) {
     return length
@@ -581,16 +569,16 @@ class WTF_EXPORT StringImpl {
     return flags;
   }
 
-  void SetHashRaw(unsigned hash_val) const {
+  void SetHashRaw(uint32_t hash_val) const {
     // Setting the hash is idempotent so fetch_or() is sufficient. DCHECK()
     // as a sanity check.
-    unsigned previous_value = hash_and_flags_.fetch_or(
+    uint32_t previous_value = hash_and_flags_.fetch_or(
         hash_val << kHashShift, std::memory_order_relaxed);
     DCHECK(((previous_value >> kHashShift) == 0) ||
            ((previous_value >> kHashShift) == hash_val));
   }
 
-  unsigned GetHashRaw() const {
+  uint32_t GetHashRaw() const {
     return hash_and_flags_.load(std::memory_order_relaxed) >> kHashShift;
   }
 
@@ -637,13 +625,13 @@ class WTF_EXPORT StringImpl {
       base::span<const CharType>,
       UCharPredicate,
       StripBehavior);
-  NOINLINE wtf_size_t HashSlowCase() const;
+  NOINLINE uint32_t HashSlowCase() const;
 
   void DestroyIfNeeded();
 
   // Calculates the kContainsOnlyAscii and kIsLowerAscii flags. Returns
   // a bitfield with those 2 values.
-  unsigned ComputeAsciiFlags() const;
+  uint32_t ComputeAsciiFlags() const;
 
 #if DCHECK_IS_ON()
   std::string AsciiForDebugging() const;
@@ -654,14 +642,12 @@ class WTF_EXPORT StringImpl {
 #if DCHECK_IS_ON()
   void AssertHashIsCorrect() {
     DCHECK(HasHash());
-    DCHECK_EQ(ExistingHash(),
-              StringHasher::ComputeHashAndMaskTop8Bits(
-                  reinterpret_cast<const char*>(Span8().data()), length()));
+    DCHECK_EQ(ExistingHash(), HashString24(Span8()));
   }
 #endif
 
 #if DCHECK_IS_ON()
-  mutable std::atomic<unsigned> ref_count_change_count_{0};
+  mutable std::atomic<wtf_size_t> ref_count_change_count_{0};
 #endif
   // TODO (crbug.com/1083392): Use base::AtomicRefCount.
   mutable std::atomic_uint32_t ref_count_{1};
@@ -996,17 +982,6 @@ inline StringImpl::size_type StringImpl::Find(UChar character,
   if (Is8Bit())
     return blink::Find(Span8(), character, start);
   return blink::Find(Span16(), character, start);
-}
-
-// Null-terminated strings is generally discouraged as it has high chance to
-// cause Buffer overflow.
-UNSAFE_BUFFER_USAGE inline wtf_size_t LengthOfNullTerminatedString(
-    const UChar* string) {
-  size_t length = 0;
-  while (string[length] != 0) {
-    ++length;
-  }
-  return base::checked_cast<wtf_size_t>(length);
 }
 
 template <typename CharacterType1,

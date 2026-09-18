@@ -652,8 +652,6 @@ void RenderThreadImpl::Init() {
   if (use_cached_routing_table_) {
     RequestNewItemsForFrameRoutingCache();
   }
-
-  blink::WebV8Features::InitializeMojoJSAllowedProtectedMemory();
 }
 
 RenderThreadImpl::~RenderThreadImpl() {
@@ -822,6 +820,10 @@ void RenderThreadImpl::InitializeWebKit(mojo::BinderMap* binders) {
 
   blink_platform_impl_ = std::make_unique<RendererBlinkPlatformImpl>(
       main_thread_scheduler_.get(), GetIOTaskRunner());
+  // Whether this process may enable MojoJS is tracked in protected memory,
+  // which has to be initialized before anything enables or queries the MojoJS
+  // runtime features below.
+  blink::WebRuntimeFeatures::InitializeMojoJSPermissions();
   // This, among other things, enables any feature marked "test" in
   // runtime_enabled_features. It is run before
   // SetRuntimeFeaturesDefaultsAndUpdateFromArgs() so that command line
@@ -897,6 +899,13 @@ void RenderThreadImpl::RegisterSchemes() {
       chrome_untrusted_scheme);
   WebSecurityPolicy::RegisterURLSchemeAsAllowingWasmEvalCSP(
       chrome_untrusted_scheme);
+
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
+  if (command_line.HasSwitch(switches::kAllowFileAccessFromFiles)) {
+    WebSecurityPolicy::RegisterURLSchemeAsSupportingFetchAPI(
+        WebString::FromAscii(url::kFileScheme));
+  }
 
   if (base::FeatureList::IsEnabled(features::kWebUICodeCache)) {
     WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(chrome_scheme);
@@ -1576,6 +1585,7 @@ RenderThreadImpl::SharedCompositorWorkerContextProvider(
   auto shared_memory_limits =
       support_gpu_rasterization ? gpu::SharedMemoryLimits::ForGPURasterContext()
                                 : gpu::SharedMemoryLimits();
+  base::TimeTicks create_start_time = base::TimeTicks::Now();
   shared_worker_context_provider_ =
       viz::ContextProviderCommandBuffer::CreateForRaster(
           std::move(gpu_channel_host), kGpuStreamIdWorker,
@@ -1587,10 +1597,15 @@ RenderThreadImpl::SharedCompositorWorkerContextProvider(
           viz::command_buffer_metrics::ContextType::RENDERER_RASTER_WORKER);
 
   auto result = shared_worker_context_provider_->BindToCurrentSequence();
+  const base::TimeDelta elapsed = base::TimeTicks::Now() - create_start_time;
   if (result != gpu::ContextResult::kSuccess) {
+    base::UmaHistogramTimes(
+        "GPU.CreateSharedWorkerContextProvider.Duration.Failure", elapsed);
     shared_worker_context_provider_ = nullptr;
     return nullptr;
   }
+  base::UmaHistogramTimes(
+      "GPU.CreateSharedWorkerContextProvider.Duration.Success", elapsed);
 
   return shared_worker_context_provider_;
 }

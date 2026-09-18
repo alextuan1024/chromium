@@ -24,13 +24,13 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
-#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/shared_types.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/one_time_tokens/core/browser/mock_one_time_token_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
@@ -69,7 +69,6 @@ class GlicActorAttemptOtpFillingBrowserTest
         "components/test/data");
     GlicActorFunctionalBrowserTestBase::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_https_test_server().Start());
 
     // Allow default calls to Subscribe (e.g. from Autofill OtpManager on
     // Android).
@@ -89,12 +88,16 @@ class GlicActorAttemptOtpFillingBrowserTest
     EXPECT_CALL(GetMockOtpService(), GetCachedOneTimeTokens())
         .WillRepeatedly(
             []() { return std::vector<one_time_tokens::OneTimeToken>(); });
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    GlicActorFunctionalBrowserTestBase::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(
-        ::actor::switches::kAttemptOtpFillingBypassLoginCheck);
+    // Allow default calls to FetchUserDataProcessingConsent.
+    EXPECT_CALL(GetMockOtpService(), FetchUserDataProcessingConsent)
+        .WillRepeatedly(
+            [](one_time_tokens::OneTimeTokenService::
+                   FetchUserDataProcessingConsentCallback callback) {
+              std::move(callback).Run(
+                  one_time_tokens::UserDataProcessingConsentStates{
+                      .comms_apps = one_time_tokens::ConsentState::kEnabled,
+                      .google_apps = one_time_tokens::ConsentState::kEnabled});
+            });
   }
 
   void SetUpBrowserContextKeyedServices(

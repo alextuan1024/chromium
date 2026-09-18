@@ -211,6 +211,12 @@ CHAR_LIMIT guidelines:
       <message name="IDS_PREFS_SECTION_ADVANCED" desc='Title of "Advanced" section of preferences. [CHAR_LIMIT=32]'>
         Advanced
       </message>
+      <message name="IDS_CCT_ALWAYS_OPEN_IN_BROWSER_TITLE" desc="Title for preference toggle in Settings to always open Custom Tabs in Chrome browser. [CHAR_LIMIT=40]">
+        Always open custom tabs in Chrome
+      </message>
+      <message name="IDS_CCT_ALWAYS_OPEN_IN_BROWSER_SUMMARY" desc="Summary for preference toggle in Settings to always open Custom Tabs in Chrome browser. [CHAR_LIMIT=60]">
+        Open web pages in Chrome browser instead of custom tabs
+      </message>
       <message name="IDS_PREFS_NEW_LABEL" desc="The label displayed next to the title of newly added preferences.">
         <ph name="PREF_TITLE">%1$s</ph>  <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
       </message>
@@ -788,9 +794,6 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       <message name="IDS_AUTOFILL_DELETE_SAVED_CVCS_CONFIRMATION_DIALOG_TITLE" desc="Title for the dialog where the user confirms their intention to delete their saved CVCs.">
         Delete saved security codes?
       </message>
-      <message name="IDS_AUTOFILL_DELETE_SAVED_CVCS_CONFIRMATION_DIALOG_MESSAGE" desc="Message for the dialog where the user confirms their intention to delete their saved CVCs.">
-        All security codes saved on your device and in your Google Account will be deleted
-      </message>
       <message name="IDS_AUTOFILL_DELETE_SAVED_CVCS_IN_WALLET_CONFIRMATION_DIALOG_MESSAGE" desc="Message for the dialog where the user confirms their intention to delete their saved CVCs in Google Wallet.">
         All security codes saved on your device and in Google Wallet will be deleted
       </message>
@@ -1042,6 +1045,9 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       </message>
       <message name="IDS_DO_NOT_TRACK_TITLE" desc="Title for the 'Do Not Track' preference. Please leave the 'Do Not Track' part in English according to the glossary.">
         Send a “Do Not Track” request
+      </message>
+      <message name="IDS_DO_NOT_TRACK_SUMMARY_DISCLAIMER" desc="Summary for the 'Do Not Track' preference. Explains that sites may not respond to 'Do Not Track' requests even when this toggle is on. Please leave the 'Do Not Track' part in English according to the glossary.">
+        Sites, including Google, use their discretion when responding to this request.
       </message>
       <message name="IDS_DO_NOT_TRACK_DESCRIPTION" desc="Description for 'Do Not Track' preference">
         Enabling “Do Not Track” means that a request will be included with your browsing traffic. Any effect depends on whether a website responds to the request, and how the request is interpreted.
@@ -2905,8 +2911,8 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_CONTEXTMENU_OPEN_IMAGE_IN_NEW_TAB" desc="Context sensitive menu item for opening/viewing the selected image in a new tab. [CHAR_LIMIT=30]">
         Open image in new tab
       </message>
-      <message name="IDS_CONTEXTMENU_OPEN_IMAGE_IN_EPHEMERAL_TAB" desc="Context-sensitive menu item to open a quick preview of the selected image. Note that 'preview' is a verb, not a noun. We're also labeling it *New* to draw attention to it when first released. The selected image link will open in an overlay panel on top of the current tab which will go away easily too. [CHAR_LIMIT=30]">
-        Preview image <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+      <message name="IDS_CONTEXTMENU_OPEN_IMAGE_IN_EPHEMERAL_TAB" desc="Context-sensitive menu item to open a quick preview of the selected image. Note that 'preview' is a verb, not a noun. The selected image link will open in an overlay panel on top of the current tab which will go away easily too. [CHAR_LIMIT=30]">
+        Preview image
       </message>
       <message name="IDS_CONTEXTMENU_LOAD_ORIGINAL_IMAGE" desc="Context sensitive menu item for Lite mode low fidelity placeholder images that loads the original version in place. [CHAR_LIMIT=30]">
         Load image
@@ -2915,13 +2921,13 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
         Copy image
       </message>
       <message name="IDS_CONTEXTMENU_SEARCH_IMAGE_WITH_GOOGLE_LENS" desc="Context sensitive menu item for deep linking into google lens. [CHAR_LIMIT=30]">
-        Search image with Google Lens <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+        Search image with Google Lens
       </message>
       <message name="IDS_CONTEXTMENU_TRANSLATE_IMAGE_WITH_GOOGLE_LENS" desc="Context sensitive chip for deep linking into google lens for translate results. [CHAR_LIMIT=30]">
-          Translate image with Google Lens <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+        Translate image with Google Lens
       </message>
       <message name="IDS_CONTEXTMENU_SHOP_IMAGE_WITH_GOOGLE_LENS" desc="Context sensitive menu item for deep linking into google lens for shopping results. [CHAR_LIMIT=30]">
-        Shop image with Google Lens <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+        Shop image with Google Lens
       </message>
       <message name="IDS_CONTEXTMENU_SEARCH_WEB_FOR_IMAGE" desc="Context sensitive menu item for search-for-Image command in a new tab. [CHAR_LIMIT=30]">
         Search <ph name="SEARCH_ENGINE">%1$s<ex>Google</ex></ph> for this image
@@ -2968,11 +2974,11 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_CONTEXTMENU_OPEN_IN_CHROME_INCOGNITO_TAB" desc="Context sensitive menu item to open the selected link in a Chrome Incognito tab from Chrome Custom Tab. [CHAR_LIMIT=30]">
         Open in Incognito tab
       </message>
-      <message name="IDS_CONTEXTMENU_OPEN_IN_EPHEMERAL_TAB" desc="Context-sensitive menu item to open a quick preview of the selected linked page.   Note that 'preview' is a verb, not a noun. We're also labeling it *New* to draw attention to it when first released. The selected link will open in an overlay panel on top of the current tab which will go away easily too. [CHAR_LIMIT=30]">
-        Preview page <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+      <message name="IDS_CONTEXTMENU_OPEN_IN_EPHEMERAL_TAB" desc="Context-sensitive menu item to open a quick preview of the selected linked page.   Note that 'preview' is a verb, not a noun. The selected link will open in an overlay panel on top of the current tab which will go away easily too. [CHAR_LIMIT=30]">
+        Preview page
       </message>
-      <message name="IDS_CONTEXTMENU_READ_LATER" desc="Context sensitive menu item for marking a link to be read later. We're also labeling it *New* to draw attention to it when first released. [CHAR_LIMIT=30]">
-        Add to reading list <ph name="BEGIN_NEW">&lt;new&gt;</ph>New<ph name="END_NEW">&lt;/new&gt;</ph>
+      <message name="IDS_CONTEXTMENU_READ_LATER" desc="Context sensitive menu item for marking a link to be read later. [CHAR_LIMIT=30]">
+        Add to reading list
       </message>
       <message name="IDS_CONTEXTMENU_SHARE_HIGHLIGHT" desc="This string is shown in the context menu for resharing the link-to-text.">
         Share highlight
@@ -3601,7 +3607,7 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
         Sign in to Chrome
       </message>
       <message name="IDS_SIGNIN_FRE_SUBTITLE_SIGNIN_FORCED_BY_POLICY" desc="Subtitle of a dialog to sign in to Chrome when sign-in is required because of an enterprise policy.">
-        Your organization requires you to sign in to use Chrome.
+        Your organization requires you to sign in to use Chrome
       </message>
       <message name="IDS_FRE_SIGNING_IN" desc="Text to show below a progress spinner in the signin FRE to notify the user that signing in is in progress and that the user's data is being fetched.">
         Getting your stuff\u2026
@@ -3839,24 +3845,14 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       Cancel
       </message>
 
+      <!-- Android Desktop Account Menu -->
+      <message name="IDS_ACCOUNT_MENU_PROMO_CARD_DESCRIPTION" desc="Subtitle of the promo card in the account menu when signed out.">
+        Sign in to get your bookmarks, passwords, and more on all your devices
+      </message>
+
       <!-- Strings for Seamless Sign-in -->
-      <message name="IDS_SIGNIN_PROMO_TITLE_NTP_SIGN_IN_AS_BUTTON" desc="This string is the headline of a card that appears when the user visits Chrome's new tab page; the user isn't signed in to Chrome. The line below this string is ether 'To get your passwords and more on all your devices, sign in to Chrome' or 'To get your passwords and more on all your devices, sign in to Chrome as john.doe@example.com'.">
-        Your Chrome, everywhere
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_GROUP1" desc="This string is the body of a message promotion about signing in to Chrome with the user's Google Account. It explains the overarching user benefit of signing in (access to passwords, etc.). We want users to understand why signing in is beneficial, and click 'Continue as John' to sign in to their Google Account. The tone should be informative and lightweight.">
-        To get your passwords and more on all your devices, sign in as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_GROUP2" desc="This string is the body of a message promotion about signing in to Chrome with the user's Google Account. It explains the overarching user benefit of signing in (access to passwords, etc.). We want users to understand why signing in is beneficial, and click 'Continue as John' to sign in to their Google Account. The tone should be informative and lightweight.">
+      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_WITH_ACCOUNT" desc="This string is the body of a message promotion about signing in to Chrome with the user's Google Account. It explains the overarching user benefit of signing in (access to passwords, etc.). We want users to understand why signing in is beneficial, and click 'Continue as John' to sign in to their Google Account. The tone should be informative and lightweight.">
         Get your passwords and more on all your devices
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_GROUP3" desc="This string is the body of a message promotion about signing in to Chrome with the user's Google Account. It explains the overarching user benefit of signing in (access to passwords, etc.). We want users to understand why signing in is beneficial, and click 'Sign in as John' to sign in to their Google Account. The tone should be informative and lightweight.">
-        To get your passwords and more on all your devices, sign in to Chrome as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_GROUP4" desc="This string is the body of a message promotion about signing in to Chrome with the user's Google Account. It explains the overarching user benefit of signing in (access to passwords, etc.). We want users to understand why signing in is beneficial, and click 'Sign in as John' to sign in to their Google Account. The tone should be informative and lightweight.">
-        To get your passwords and more on all your devices, sign in to Chrome
-      </message>
-      <message name="IDS_SIGNIN_PROMO_SIGN_IN_AS" desc="Button to sign into Chrome with the displayed account and without having to reenter a password. ‘John’ is replaced with the user’s given name, or the user’s full name if the given name is not available.">
-        Sign in as <ph name="USER_FULL_NAME">%1$s<ex>John</ex></ph>
       </message>
       <message name="IDS_SIGNIN_PROMO_SIGN_IN" desc="Button to sign into Chrome, similar to IDS_SIGNIN_PROMO_SIGN_IN_AS. Used when the user's display names are not available.">
         Sign in
@@ -3864,29 +3860,11 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_SIGNIN_HISTORY_SYNC_PROMO_TITLE_RECENT_TABS" desc="This string is the headline of a card that appears when the user opens Chrome's recent tabs. The user may be signed in to Chrome, but has not opted in for syncing History and Tabs. The line below this string is 'To see tabs from your other devices, sync your tabs and history'. This headline means that the user can see some of their recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Turn on' button and turn on history and tabs syncing. The tone should be inviting.">
         Browse across devices
       </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_RECENT_TABS_GROUP1" desc="This message means that the user can get the recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
-        To get your tabs and more on all your devices, sign in as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_RECENT_TABS_GROUP2" desc="This message means that the user can get the recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
+      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_RECENT_TABS_WITH_ACCOUNT" desc="This message means that the user can get the recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
         Get your tabs and more on all your devices
       </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_RECENT_TABS_GROUP3" desc="This message means that the user can get the recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Sign in as John' button and sign-in. The tone should be inviting.">
-        To get your tabs and more on all your devices, sign in to Chrome as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_RECENT_TABS_GROUP4" desc="This message means that the user can get the recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Sign in as John' button and sign-in. The tone should be inviting.">
-        To get your tabs and more on all your devices, sign in to Chrome
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS_GROUP1" desc="This string is the description of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Sign in to Chrome'." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
-        To get your bookmarks and more on all your devices, sign in as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS_GROUP2" desc="This string is the description of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Sign in to Chrome'." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
+      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS_WITH_ACCOUNT" desc="This string is the description of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Sign in to Chrome'." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Continue as John' button and sign-in. The tone should be inviting.">
         Get your bookmarks and more on all your devices
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS_GROUP3" desc="This string is the description of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Get all your bookmarks'." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Sign in as John' button and sign-in. The tone should be inviting.">
-        To get your bookmarks and more on all your devices, sign in to Chrome as <ph name="EMAIL">%1$s<ex>john.doe@example.com</ex></ph>
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS_GROUP4" desc="This string is the description of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Get all your bookmarks'." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Sign in as John' button and sign-in. The tone should be inviting.">
-        To get your bookmarks and more on all your devices, sign in to Chrome
       </message>
       <message name="IDS_HISTORY_SYNC_RECENT_TABS_TITLE" desc="Title of a page that asks users to start syncing their tabs and browsing history, so they can get back to sites they visited more quickly without having to type them, for example by seeing these sites suggested in the Omnibox. This also allows users to access their recent tabs and browsing history across all their devices.">
         Sync tabs and history
@@ -3905,9 +3883,6 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_ACCOUNT_SETTINGS_PROMO_DESCRIPTION_BOOKMARKS" desc="This string is on a promo intended to promote reviewing the user's Google Account settings page to enable bookmarks toggle. It appears on the Bookmarks page when the user is signed in and not syncing bookmarks.">
         To get your bookmarks on all your devices, turn on “Bookmarks” in settings
       </message>
-      <message name="IDS_SIGNIN_PROMO_TITLE_BOOKMARKS" desc="This string is the headline of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The line below this string is 'Sign in to get your bookmarks and more from your other devices'. [CHAR_LIMIT=70]" meaning="This headline means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Continue' button and turn on sync. The tone should be inviting.">
-        Get all your bookmarks
-      </message>
       <message name="IDS_SIGNIN_PROMO_DESCRIPTION_BOOKMARKS" desc="This string is the title of a card that appears when the user opens Chrome's bookmarks; the user is signed out of Chrome. The headline above this string is 'Get all your bookmarks'. There's no character limit but try to keep the translation under 120 characters." meaning="This message means that the user can get the bookmarks from their computer on their phone, and their phone's bookmarks on their computer. We want users to read this card and tap the 'Continue' button and sign-in. The tone should be inviting.">
         Sign in to get your bookmarks and more on all your devices
       </message>
@@ -3919,12 +3894,6 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_SIGNIN_PROMO_DESCRIPTION_AUTOFILL_AND_PASSWORDS_SEAMLESS" desc="This string is the description of a card that appears in the Autofill and Passwords settings; the user is signed out of Chrome. The headline above this string is 'Sign in to Chrome'.">
         Get your passwords and more on all your devices
-      </message>
-      <message name="IDS_SIGNIN_PROMO_TITLE_NTP_FEED_TOP_PROMO" desc="This string is the headline of a card that appears when the user visits Chrome's new tab page; the user isn't signed in to Chrome. The line below this string is 'Sign in to get content based on your interests'. [CHAR_LIMIT=70]">
-        Get better content
-      </message>
-      <message name="IDS_SIGNIN_PROMO_DESCRIPTION_NTP_FEED_TOP_PROMO" desc="This string is the body of a card that appears when the user visits Chrome's new tab page; the user isn't signed in to Chrome. The headline above this string is 'Get better content'. There's no character limit but try to keep the translation under 120 characters." meaning="This message means that the user is missing out on more interesting and relevant news articles. We want users to read this card and tap the 'Continue' button and sign-in. The tone should be inviting.">
-        Sign in to get content based on your interests
       </message>
       <message name="IDS_SIGNIN_PROMO_TITLE_RECENT_TABS" desc="This string is the headline of a card that appears when the user opens Chrome's recent tabs. The user may be signed in to Chrome, but has not opted in for syncing History and Tabs. The line below this string is 'To see tabs from your other devices, sync your tabs and history'. This headline means that the user can see some of their recent tabs from their computer on their phone, and their phone's recent tabs on their computer. We want users to read this card and tap the 'Turn on' button and turn on history and tabs syncing. The tone should be inviting. [CHAR_LIMIT=70]">
         You’ll find your tabs from other devices here
@@ -4251,6 +4220,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_MENU_NEW_WINDOW" desc="Menu item for opening a new window. [CHAR_LIMIT=27]">
         New window
       </message>
+      <message name="IDS_PROFILE_MENU_ACCOUNT_SETTINGS_BUTTON" desc="Button in the avatar menu bubble view for opening Chrome account settings. [CHAR_LIMIT=30]">
+        Your account in Chrome
+      </message>
       <message name="IDS_MENU_NEW_INCOGNITO_WINDOW" desc="Menu item for opening a new incognito window. [CHAR_LIMIT=27]">
         New Incognito window
       </message>
@@ -4290,9 +4262,6 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_MENU_PAGE_INFO" desc="Tooltip on Android for the button to view information about the current web page. Info is short for information.  [CHAR_LIMIT=27]">
         Page info
-      </message>
-      <message name="IDS_MENU_APP_INFO" desc="Tooltip on Android for the button to view information about the current app. Info is short for information.  [CHAR_LIMIT=27]">
-        App info
       </message>
       <message name="IDS_MENU_STOP_REFRESH" desc="Tooltip on Android for the button to stop refreshing the current web page. [CHAR_LIMIT=27]">
         Stop refreshing
@@ -4820,6 +4789,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_FOLDER_PICKER_ROOT"  desc="Toolbar title for when the user is selecting a folder and the current selected folder is the root.">
         Move to\u2026
+      </message>
+      <message name="IDS_FOLDER_PICKER_ROOT_DESKTOP"  desc="Title for the folder picker shown in the desktop bookmarks dialog, when the current selected folder is the root.">
+        Choose another folder
       </message>
       <message name="IDS_FOLDER_PICKER_MOVE_HERE"  desc="Button the user clicks to move the given bookmark (or folder) to the selected folder.">
         Move here
@@ -5510,6 +5482,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_ACCESSIBILITY_OMNIBOX_ADD_TABS" desc="Accessibility announcement when the 'Tabs' option in the Omnibox 'Add context' popup is highlighted.">
         Attach tabs
+      </message>
+      <message name="IDS_ACCESSIBILITY_OMNIBOX_ADD_FROM_DRIVE" desc="Accessibility announcement when the 'Drive' option in the Omnibox 'Add context' popup is highlighted.">
+        Attach files from Drive
       </message>
 
       <message name="IDS_ACCESSIBILITY_SHARE_SELECTED_ITEMS" desc="Content description for the button to share selected items. [ICU Syntax]">
@@ -7983,6 +7958,15 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_GLIC_MIC_DISABLED_SNACKBAR" desc="Snackbar message shown when the microphone is disabled and unable to prompt user for permission.">
         Enable mic to use voice
+      </message>
+      <message name="IDS_GLIC_MIC_PERMISSION_DIALOG_TITLE" desc="Title for dialog asking user for microphone permission for Gemini.">
+        Gemini wants to use your microphone
+      </message>
+      <message name="IDS_GLIC_MIC_PERMISSION_DIALOG_MESSAGE" desc="Explanation for why Gemini needs microphone permission, with a link to Settings.">
+        To talk to Gemini, give it permission to use your microphone. You can also manage this in <ph name="BEGIN_LINK">&lt;link&gt;</ph>Settings<ph name="END_LINK">&lt;/link&gt;</ph>
+      </message>
+      <message name="IDS_GLIC_MIC_PERMISSION_DIALOG_ALLOW" desc="Positive button text to allow microphone permission for Gemini.">
+        Allow
       </message>
 
       <!-- Immersive Playback Confirmation strings -->

@@ -163,7 +163,6 @@
 #define IDC_AUTOFILL_MANDATORY_REAUTH   35036
 #define IDC_SHOW_PASSWORD_MANAGER       35041
 #define IDC_SHOW_PAYMENT_METHODS        35042
-#define IDC_SHOW_ADDRESSES              35043
 #define IDC_ORGANIZE_TABS               35044
 #define IDC_SEND_SHARED_TAB_GROUP_FEEDBACK 35046
 #define IDC_SHOW_IDENTITY_DOCS          35047
@@ -550,10 +549,15 @@
 #define IDC_OMNIBOX_CONTEXT_SHARED_TABS_SUBMENU               54019
 #define IDC_OMNIBOX_CONTEXT_SMART_TAB_SHARING                 54020
 
+// Skills commands
+#define IDC_MANAGE_SKILLS                                     54021
+#define IDC_BROWSE_SKILLS                                     54022
+
 // Omnibox Everywhere status tray icon menu
 #define IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_TOGGLE                      54030
 #define IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_CUSTOMIZE_KEYBOARD_SHORTCUT 54031
 #define IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_SETTINGS                    54032
+#define IDC_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_EXIT                        54033
 
 // NOTE: The last valid command value is 57343 (0xDFFF)
 // See http://msdn.microsoft.com/en-us/library/t2zechd4(VS.71).aspx
@@ -592,6 +596,7 @@
 #define IDC_SAVED_TAB_GROUPS_MENU 57332
 #define IDC_MORE_TOOLS_MENU 57331
 #define IDC_HELP_MENU 57330
+#define IDC_SKILLS_MENU 57310
 
 // Context Menu submenus
 #define IDC_SPELLCHECK_MENU 57329

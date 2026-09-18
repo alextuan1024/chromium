@@ -46,6 +46,7 @@
 #import "components/trusted_vault/trusted_vault_server_constants.h"
 #import "components/webauthn/ios/ios_passkey_client.h"
 #import "components/webauthn/ios/ios_passkey_client_commands.h"
+#import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper_browser_presentation_provider.h"
 #import "ios/chrome/browser/app_store_rating/model/features.h"
 #import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator.h"
@@ -292,6 +293,13 @@
 #import "ios/chrome/browser/print/coordinator/swift_coordinator.h"
 #import "ios/chrome/common/swift/features.h"
 #endif  // BUILDFLAG(ENABLE_SWIFT_CXX_INTEROP)
+
+namespace {
+
+// Spacing between the snackbar and bottom bar (App Bar or bottom toolbar).
+constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
+
+}  // namespace
 
 @interface BrowserCoordinator () <
     AppLauncherTabHelperBrowserPresentationProvider,
@@ -576,14 +584,27 @@
   UIView* bottomToolbar = [LayoutGuideCenterForBrowser(self.browser)
       referencedViewUnderName:kSecondaryToolbarGuide];
   if (IsChromeNextIaEnabled()) {
-    // On iPad, or if the bottom toolbar view is not yet installed in the active
-    // window hierarchy (e.g. when bottom omnibox is disabled), return 0 offset.
-    if (!IsSplitToolbarMode(self.viewController) || !bottomToolbar.window) {
+    // On iPad, or if not in split toolbar mode, return 0 offset.
+    if (!IsSplitToolbarMode(self.viewController)) {
       return 0;
     }
-    CGPoint originOfBottomToolbar = [bottomToolbar convertPoint:CGPointZero
-                                                         toView:nil];
-    return windowHeight - originOfBottomToolbar.y;
+    if (bottomToolbar.window) {
+      CGPoint originOfBottomToolbar = [bottomToolbar convertPoint:CGPointZero
+                                                           toView:nil];
+      return windowHeight - originOfBottomToolbar.y -
+             window.safeAreaInsets.bottom + kSnackbarFloatingBottomMargin;
+    }
+    if (self.sceneState.layoutState.appBarPosition == AppBarPosition::kBottom) {
+      UIView* appBar = [LayoutGuideCenterForBrowser(self.browser)
+          referencedViewUnderName:kAppBarGuide];
+      if (appBar.window) {
+        CGPoint originOfAppBar = [appBar convertPoint:CGPointZero toView:nil];
+        return windowHeight - originOfAppBar.y - window.safeAreaInsets.bottom +
+               kSnackbarFloatingBottomMargin;
+      }
+      return AppBarHeightPortrait() + kSnackbarFloatingBottomMargin;
+    }
+    return 0;
   } else {
     return CGRectGetHeight(bottomToolbar.bounds);
   }
@@ -1966,13 +1987,8 @@
 
 - (void)showComposebox {
   [self exitFullscreen];
-
-  if (IsComposeboxIOSEnabled()) {
-    [self showComposeboxFromEntrypoint:ComposeboxEntrypoint::kOther
-                             withQuery:nil];
-  } else {
-    [_omniboxCommandsHandler focusOmnibox];
-  }
+  [self showComposeboxFromEntrypoint:ComposeboxEntrypoint::kOther
+                           withQuery:nil];
 }
 
 - (void)showComposeboxFromEntrypoint:(ComposeboxEntrypoint)entrypoint
@@ -1984,13 +2000,6 @@
 }
 
 - (void)showComposeboxWithParams:(ComposeboxFocusParams*)params {
-  if (!IsComposeboxIOSEnabled()) {
-    [_omniboxCommandsHandler focusOmnibox];
-    [_omniboxCommandsHandler insertTextToOmnibox:params.query];
-    return;
-  }
-
-  CHECK(IsComposeboxIOSEnabled());
   if (_composeboxCoordinator) {
     return;
   }
@@ -2004,19 +2013,11 @@
 }
 
 - (void)hideComposebox {
-  if (IsComposeboxIOSEnabled()) {
-    [self hideComposeboxImmediately:NO completion:nil];
-  } else {
-    [_omniboxCommandsHandler cancelOmniboxEdit];
-  }
+  [self hideComposeboxImmediately:NO completion:nil];
 }
 
 - (void)hideComposeboxWithCompletion:(ProceduralBlock)completion {
-  if (IsComposeboxIOSEnabled()) {
-    [self hideComposeboxImmediately:NO completion:completion];
-  } else {
-    [_omniboxCommandsHandler cancelOmniboxEditWithCompletion:completion];
-  }
+  [self hideComposeboxImmediately:NO completion:completion];
 }
 
 - (void)clearPresentedStateWithCompletion:(ProceduralBlock)completion
@@ -2028,6 +2029,8 @@
   [self.readingListCoordinator stop];
   self.readingListCoordinator.delegate = nil;
   self.readingListCoordinator = nil;
+
+  [self stopRecentTabsCoordinator];
 
   [self hideReaderModeBlurOverlay];
 
@@ -2053,11 +2056,8 @@
     [self hideComposebox];
   }
 
-  BOOL dismissPresentedViewController = YES;
-  if (IsComposeboxIOSEnabled()) {
-    dismissPresentedViewController =
-        dismissOmnibox || !_composeboxCoordinator.presented;
-  }
+  BOOL dismissPresentedViewController =
+      dismissOmnibox || !_composeboxCoordinator.presented;
 
   [self.viewController
       clearPresentedStateWithCompletion:completion
@@ -2245,40 +2245,53 @@
 #pragma mark - AutofillSettingsNavigator
 
 - (void)openSettingsForPage:(AutofillSettingsPage)page {
+  [self openSettingsForPage:page completion:nil];
+}
+
+- (void)openSettingsForPage:(AutofillSettingsPage)page
+                 completion:(ProceduralBlock)completion {
+  // Only Enhanced Autofill settings report their dismissal; a completion for
+  // any other page would silently never run.
+  CHECK(!completion || page == AutofillSettingsPage::kEnhancedAutofill);
+
+  id<SettingsCommands> settingsHandler =
+      HandlerForProtocol(self.dispatcher, SettingsCommands);
   switch (page) {
     case AutofillSettingsPage::kPasswordManager:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      [settingsHandler
           showSavedPasswordsSettingsFromViewController:self.viewController];
       break;
     case AutofillSettingsPage::kPasswordSettings:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      [settingsHandler
           showPasswordSettingsFromViewController:self.viewController];
       break;
     case AutofillSettingsPage::kAddresses:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      [settingsHandler
           showProfileSettingsFromViewController:self.viewController];
       break;
     case AutofillSettingsPage::kCreditCards:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
-          showCreditCardSettings];
+      [settingsHandler showCreditCardSettings];
       break;
     case AutofillSettingsPage::kIdentityDocs:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
-          showIdentityDocsWithReferrer:autofill::autofill_metrics::
-                                           AutofillSettingsReferrer::
-                                               kFillingFlowDropdown];
+      [settingsHandler showIdentityDocsWithReferrer:
+                           autofill::autofill_metrics::
+                               AutofillSettingsReferrer::kFillingFlowDropdown];
       break;
     case AutofillSettingsPage::kShopping:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
-          showShoppingWithReferrer:autofill::autofill_metrics::
-                                       AutofillSettingsReferrer::
-                                           kFillingFlowDropdown];
+      [settingsHandler showShoppingWithReferrer:autofill::autofill_metrics::
+                                                    AutofillSettingsReferrer::
+                                                        kFillingFlowDropdown];
       break;
     case AutofillSettingsPage::kTravel:
-      [HandlerForProtocol(self.dispatcher, SettingsCommands)
-          showTravelWithReferrer:autofill::autofill_metrics::
-                                     AutofillSettingsReferrer::
-                                         kFillingFlowDropdown];
+      [settingsHandler showTravelWithReferrer:autofill::autofill_metrics::
+                                                  AutofillSettingsReferrer::
+                                                      kFillingFlowDropdown];
+      break;
+    case AutofillSettingsPage::kEnhancedAutofill:
+      [settingsHandler showEnhancedAutofillSettingsWithCompletion:completion];
+      break;
+    case AutofillSettingsPage::kSuggestionsFromGeminiHelpImprove:
+      [settingsHandler showSuggestionsFromGeminiHelpImprove];
       break;
   }
 }

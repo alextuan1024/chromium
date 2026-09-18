@@ -30,9 +30,11 @@
 
 #include <complex>
 #include <memory>
+#include <numbers>
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/memory/ptr_util.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/fdlibm/ieee754.h"
@@ -53,12 +55,34 @@ unsigned CheckedFftSize(unsigned fft_size) {
 
 }  // namespace
 
+bool FFTFrame::InitializeBuffers() {
+  const unsigned packed_size = (fft_size_ + 1) / 2;
+  return real_data_.TryAllocate(packed_size) &&
+         imag_data_.TryAllocate(packed_size);
+}
+
 FFTFrame::FFTFrame(unsigned fft_size)
+    : FFTFrame(fft_size, /*allocate_buffers=*/true) {}
+
+FFTFrame::FFTFrame(unsigned fft_size, bool allocate_buffers)
     : fft_size_(CheckedFftSize(fft_size)),
       rust_fft_(blink::rust_fft::rustfft_new(fft_size_)) {
-  const unsigned packed_size = (fft_size_ + 1) / 2;
-  real_data_.Allocate(packed_size);
-  imag_data_.Allocate(packed_size);
+  if (allocate_buffers) {
+    CHECK(InitializeBuffers());
+  }
+}
+
+// static
+std::unique_ptr<FFTFrame> FFTFrame::TryCreate(unsigned fft_size) {
+  if (fft_size < MinFFTSize() || fft_size > MaxFFTSize()) {
+    return nullptr;
+  }
+  auto frame =
+      base::WrapUnique(new FFTFrame(fft_size, /*allocate_buffers=*/false));
+  if (!frame->InitializeBuffers()) {
+    return nullptr;
+  }
+  return frame;
 }
 
 void FFTFrame::DoFFT(base::span<const float> data) {
@@ -195,26 +219,26 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
     last_phase2 = phase2;
 
     // Unwrap phase deltas
-    if (delta_phase1 > kPiDouble) {
+    if (delta_phase1 > std::numbers::pi) {
       delta_phase1 -= kTwoPiDouble;
     }
-    if (delta_phase1 < -kPiDouble) {
+    if (delta_phase1 < -std::numbers::pi) {
       delta_phase1 += kTwoPiDouble;
     }
-    if (delta_phase2 > kPiDouble) {
+    if (delta_phase2 > std::numbers::pi) {
       delta_phase2 -= kTwoPiDouble;
     }
-    if (delta_phase2 < -kPiDouble) {
+    if (delta_phase2 < -std::numbers::pi) {
       delta_phase2 += kTwoPiDouble;
     }
 
     // Blend group-delays
     double delta_phase_blend;
 
-    if (delta_phase1 - delta_phase2 > kPiDouble) {
+    if (delta_phase1 - delta_phase2 > std::numbers::pi) {
       delta_phase_blend =
           s1 * delta_phase1 + s2 * (kTwoPiDouble + delta_phase2);
-    } else if (delta_phase2 - delta_phase1 > kPiDouble) {
+    } else if (delta_phase2 - delta_phase1 > std::numbers::pi) {
       delta_phase_blend =
           s1 * (kTwoPiDouble + delta_phase1) + s2 * delta_phase2;
     } else {
@@ -224,10 +248,10 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
     phase_accum += delta_phase_blend;
 
     // Unwrap
-    if (phase_accum > kPiDouble) {
+    if (phase_accum > std::numbers::pi) {
       phase_accum -= kTwoPiDouble;
     }
-    if (phase_accum < -kPiDouble) {
+    if (phase_accum < -std::numbers::pi) {
       phase_accum += kTwoPiDouble;
     }
 
@@ -261,10 +285,10 @@ double FFTFrame::ExtractAverageGroupDelay() {
     last_phase = phase;
 
     // Unwrap
-    if (delta_phase < -kPiDouble) {
+    if (delta_phase < -std::numbers::pi) {
       delta_phase += kTwoPiDouble;
     }
-    if (delta_phase > kPiDouble) {
+    if (delta_phase > std::numbers::pi) {
       delta_phase -= kTwoPiDouble;
     }
 

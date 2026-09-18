@@ -186,6 +186,7 @@ source_set("browser") {
     "//components/services/storage/public/mojom",
     "//components/sqlite_proto",
     "//components/system_media_controls",
+    "//components/tracing:background_tracing_utils",
     "//components/tracing:tracing_config",
     "//components/ukm",
     "//components/ukm/debug:util",
@@ -286,6 +287,7 @@ source_set("browser") {
     "//services/network:network_service",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//services/on_device_model/public/cpp",
     "//services/resource_coordinator:lib",
     "//services/resource_coordinator/public/cpp:resource_coordinator_cpp",
     "//services/resource_coordinator/public/cpp/memory_instrumentation:browser",
@@ -1044,12 +1046,8 @@ source_set("browser") {
     "find_in_page_client.h",
     "find_request_manager.cc",
     "find_request_manager.h",
-    "first_party_sets/database/first_party_sets_database.cc",
-    "first_party_sets/database/first_party_sets_database.h",
     "first_party_sets/first_party_set_parser.cc",
     "first_party_sets/first_party_set_parser.h",
-    "first_party_sets/first_party_sets_handler_database_helper.cc",
-    "first_party_sets/first_party_sets_handler_database_helper.h",
     "first_party_sets/first_party_sets_handler_impl.h",
     "first_party_sets/first_party_sets_handler_impl_instance.cc",
     "first_party_sets/first_party_sets_handler_impl_instance.h",
@@ -1057,8 +1055,6 @@ source_set("browser") {
     "first_party_sets/first_party_sets_loader.h",
     "first_party_sets/first_party_sets_overrides_policy.cc",
     "first_party_sets/first_party_sets_overrides_policy.h",
-    "first_party_sets/first_party_sets_site_data_remover.cc",
-    "first_party_sets/first_party_sets_site_data_remover.h",
     "font_access/font_access_manager.cc",
     "font_access/font_access_manager.h",
     "font_access/font_enumeration_cache.cc",
@@ -1106,6 +1102,7 @@ source_set("browser") {
     "handwriting/handwriting_recognition_service_impl.h",
     "handwriting/handwriting_recognizer_impl.cc",
     "handwriting/handwriting_recognizer_impl.h",
+    "haptics/haptics_manager.h",
     "haptics/haptics_service_impl.cc",
     "haptics/haptics_service_impl.h",
     "hid/hid_service.cc",
@@ -1621,6 +1618,8 @@ source_set("browser") {
     "renderer_host/ancestor_throttle.h",
     "renderer_host/async_before_unload_commit_deferring_condition.cc",
     "renderer_host/async_before_unload_commit_deferring_condition.h",
+    "renderer_host/back_forward_cache_disabling_feature_handle.cc",
+    "renderer_host/back_forward_cache_disabling_feature_handle.h",
     "renderer_host/batched_proxy_ipc_sender.cc",
     "renderer_host/batched_proxy_ipc_sender.h",
     "renderer_host/blocked_scheme_navigation_throttle.cc",
@@ -1669,6 +1668,8 @@ source_set("browser") {
     "renderer_host/frame_tree_node.cc",
     "renderer_host/frame_tree_node.h",
     "renderer_host/global_routing_id.cc",
+    "renderer_host/holding_blocking_idb_lock_handle.cc",
+    "renderer_host/holding_blocking_idb_lock_handle.h",
     "renderer_host/http_error_navigation_throttle.cc",
     "renderer_host/http_error_navigation_throttle.h",
     "renderer_host/indexed_db_client_state_checker_factory.cc",
@@ -1843,6 +1844,8 @@ source_set("browser") {
     "renderer_host/render_frame_host_impl.cc",
     "renderer_host/render_frame_host_impl.h",
     "renderer_host/render_frame_host_impl_interface_binders.cc",
+    "renderer_host/render_frame_host_lifecycle_state_impl.cc",
+    "renderer_host/render_frame_host_lifecycle_state_impl.h",
     "renderer_host/render_frame_host_manager.cc",
     "renderer_host/render_frame_host_manager.h",
     "renderer_host/render_frame_host_owner.h",
@@ -2506,7 +2509,7 @@ source_set("browser") {
     deps += [ "//components/services/font_data:lib" ]
   }
 
-  if (allow_oop_video_decoder) {
+  if (enable_oop_video_decoder) {
     sources += [ "media/oop_video_decoder_factory.cc" ]
     deps += [ "//media/mojo/mojom" ]
   }
@@ -2973,6 +2976,9 @@ source_set("browser") {
       "file_system_access/file_path_watcher/file_path_watcher_win.cc",
       "font_access/font_enumeration_data_source_win.cc",
       "font_access/font_enumeration_data_source_win.h",
+      "haptics/haptics_manager_impl_win.cc",
+      "haptics/haptics_manager_impl_win.h",
+      "haptics/haptics_waveforms_statics3_win.h",
       "installedapp/fetch_related_win_apps_task.cc",
       "installedapp/fetch_related_win_apps_task.h",
       "installedapp/native_win_app_fetcher.h",

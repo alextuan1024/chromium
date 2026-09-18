@@ -526,14 +526,6 @@ targets.mixin(
     ],
 )
 
-# TODO(fxbug.dev/370067428): Remove once Netstack2 no longer exists.
-targets.mixin(
-    name = "fuchsia-netstack2-x64",
-    args = [
-        "--product=terminal_with_netstack2.x64",
-    ],
-)
-
 # TODO(b/300509814): Large device spec should be the default choice.
 # Choose virtual_device_large spec for more ram. This mixin works on emulators
 # only.
@@ -604,6 +596,15 @@ targets.mixin(
 targets.mixin(
     # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
     # in the test definition once V8 uses Starlark test specs.
+    name = "legacy_gpu_vulkan_pixel_skia_gold_test_args",
+    args = [
+        "--extra-browser-args=--use-vulkan=native --disable-vulkan-fallback-to-gl-for-testing --enable-features=Vulkan --use-gl=angle --use-angle=gl --use-cmd-decoder=passthrough",
+    ],
+)
+
+targets.mixin(
+    # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
+    # in the test definition once V8 uses Starlark test specs.
     name = "legacy_gpu_webgl_conformance_shards",
     swarming = targets.swarming(
         shards = 2,
@@ -613,6 +614,15 @@ targets.mixin(
     ),
     chromeos_swarming = targets.swarming(
         shards = 6,
+    ),
+)
+
+targets.mixin(
+    # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
+    # in the test definition once V8 uses Starlark test specs.
+    name = "legacy_gpu_webgl2_conformance_shards",
+    swarming = targets.swarming(
+        shards = 5,
     ),
 )
 
@@ -1106,6 +1116,18 @@ targets.mixin(
             swarming.cache(
                 name = "runtime_ios_27_0",
                 path = "Runtime-ios-27.0",
+            ),
+        ],
+    ),
+)
+
+targets.mixin(
+    name = "ios_runtime_cache_27_2",
+    swarming = targets.swarming(
+        named_caches = [
+            swarming.cache(
+                name = "runtime_ios_27_2",
+                path = "Runtime-ios-27.2",
             ),
         ],
     ),
@@ -2320,12 +2342,12 @@ targets.mixin(
     name = "xcode_27_beta",
     args = [
         "--xcode-build-version",
-        "27a5252f",
+        "27b5019j",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_27a5252f",
+                name = "xcode_ios_27b5019j",
                 path = "Xcode.app",
             ),
         ],
@@ -2336,12 +2358,12 @@ targets.mixin(
     name = "xcode_27_main",
     args = [
         "--xcode-build-version",
-        "27a5252f",
+        "27a266a",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_27a5252f",
+                name = "xcode_ios_27a266a",
                 path = "Xcode.app",
             ),
         ],

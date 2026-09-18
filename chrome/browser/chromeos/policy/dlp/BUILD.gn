@@ -61,8 +61,7 @@ static_library("dlp") {
 
   public_deps = [
     "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ash/browser_delegate",
-    "//chrome/browser/ui/tabs:tab_strip_model_observer",
+    "//chromeos/ash/components/browser_delegate",
   ]
 
   deps = [
@@ -78,13 +77,10 @@ static_library("dlp") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/chromeos/policy/dlp/dialogs",
     "//chrome/browser/download",
-    "//chrome/browser/favicon",
     "//chrome/browser/notifications",
     "//chrome/browser/profiles",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/navigator",
-    "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chromeos/constants",
@@ -95,6 +91,7 @@ static_library("dlp") {
     "//components/download/public/common:public",
     "//components/enterprise/common/proto:dlp_policy_event_proto",
     "//components/enterprise/data_controls/core/browser",
+    "//components/favicon/content",
     "//components/file_access",
     "//components/keyed_service/core",
     "//components/policy/core/common:common_constants",
@@ -281,6 +278,7 @@ if (!is_chromeos_device) {
       "//chrome/browser/printing:test_support",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
       "//chromeos/dbus/dlp",

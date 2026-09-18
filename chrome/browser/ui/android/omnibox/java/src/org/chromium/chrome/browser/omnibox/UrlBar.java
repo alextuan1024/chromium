@@ -97,6 +97,17 @@ public class UrlBar extends AutocompleteEditText {
     // check for text equality, instead of worrying about partial equality with truncated text.
     private static final int MIN_LENGTH_FOR_TRUNCATION = 100;
 
+    // Longest prefix handed to the text shaper by getTextWidth(). Shaping arbitrarily long URLs on
+    // the UI thread stalls layout and triggers HarfBuzz sanitization ANRs, so longer text is
+    // measured by sampling this prefix and scaling the result up to the full length.
+    @VisibleForTesting /* package */ static final int MAX_URL_LENGTH_FOR_MEASUREMENT = 150;
+
+    // Ceiling for the width getTextWidth() reports. Extrapolating a sampled prefix over a
+    // multi-megabyte data: URI can approach Integer.MAX_VALUE, and callers add padding to the
+    // result, which would wrap to a negative width. Any value far beyond the widest conceivable
+    // display signals overflow just as well, so the exact ceiling is unimportant.
+    @VisibleForTesting /* package */ static final int MAX_REPORTED_TEXT_WIDTH_PX = 1_000_000;
+
     @VisibleForTesting static final int MULTILINE_EDIT_MAX_LINES = 5;
     @VisibleForTesting static final int DESKTOP_MULTILINE_EDIT_MAX_LINES = 8;
 
@@ -152,6 +163,10 @@ public class UrlBar extends AutocompleteEditText {
     private float mPreviousScrollFontSize;
     private boolean mPreviousScrollWasRtl;
     private @Nullable CharSequence mVisibleTextPrefixHint;
+    private @Nullable String mLastMeasuredText;
+    private float mLastMeasuredTextSize;
+    private int mLastMeasuredTextLength;
+    private int mLastMeasuredTextWidth = -1;
 
     // Used as a hint to indicate the text may contain an ellipsize span.  This will be true if an
     // ellipsize span was applied the last time the text changed. A true value here does not
@@ -368,6 +383,8 @@ public class UrlBar extends AutocompleteEditText {
         mTextChangeListener = null;
         mManageSearchEnginesCallback = null;
         mShowAiModeCallback = null;
+        mLastMeasuredText = null;
+        mLastMeasuredTextWidth = -1;
     }
 
     /**
@@ -405,6 +422,10 @@ public class UrlBar extends AutocompleteEditText {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // Cursor movement across wrapped lines takes precedence over key listeners (which use the
+        // vertical DPAD keys to navigate the suggestions list).
+        if (moveCursorVerticallyInWrappedText(keyCode, event)) return true;
+
         return ((KeyNavigationUtil.isEnter(event)
                                 || KeyNavigationUtil.isGoAnyDirection(event)
                                 || KeyNavigationUtil.isTabNavigation(event)
@@ -523,9 +544,77 @@ public class UrlBar extends AutocompleteEditText {
     }
 
     private void updateUrlBarForMultilineInput() {
-        boolean wantWrap = mAllowMultilineInput && mFocused && mCurrentInputCanBeWrapped;
+        boolean wantWrap = isMultilineInputActive();
         if (wantWrap == !isHorizontallyScrollable()) return;
         setHorizontallyScrolling(!wantWrap);
+    }
+
+    /** Returns whether the {@link UrlBar} is presently configured to wrap long user input. */
+    private boolean isMultilineInputActive() {
+        return mAllowMultilineInput && mFocused && mCurrentInputCanBeWrapped;
+    }
+
+    /** Returns whether the currently laid out text spans more than a single line. */
+    private boolean isTextWrapped() {
+        Layout layout = getLayout();
+        return layout != null && layout.getLineCount() > 1;
+    }
+
+    /**
+     * Gives the underlying {@link android.widget.EditText} a chance to move the text cursor
+     * vertically across the lines of wrapped, multiline user input before the vertical DPAD keys
+     * are offered to the key listeners (which use them to navigate the suggestions list).
+     *
+     * <p>Mimics the behavior of a conventional multiline text editor: the cursor first travels
+     * between the wrapped lines (entirely handled by the EditText's movement method), and once the
+     * top or the bottom line is reached, it snaps to the very beginning or the very end of the
+     * text. When the cursor already rests at that edge, the key event is not consumed here,
+     * allowing it to reach the key listeners.
+     *
+     * @param keyCode the code of the pressed key
+     * @param event the key event to evaluate
+     * @return whether the cursor was moved, meaning the key event has been consumed
+     */
+    private boolean moveCursorVerticallyInWrappedText(int keyCode, KeyEvent event) {
+        if (!KeyNavigationUtil.isGoUpOrDown(event)) return false;
+
+        boolean hasNoModifiers = event.hasNoModifiers();
+        boolean isShiftOnly = event.hasModifiers(KeyEvent.META_SHIFT_ON);
+        if (!hasNoModifiers && !isShiftOnly) return false;
+        if (!isMultilineInputActive() || !isTextWrapped()) return false;
+
+        // Convert NUMPAD keys to DPAD keys so the underlying TextView movement method handles them.
+        boolean goDown = KeyNavigationUtil.isGoDown(event);
+        int dpadKeyCode = goDown ? KeyEvent.KEYCODE_DPAD_DOWN : KeyEvent.KEYCODE_DPAD_UP;
+        KeyEvent dpadEvent =
+                (keyCode == dpadKeyCode)
+                        ? event
+                        : new KeyEvent(
+                                event.getDownTime(),
+                                event.getEventTime(),
+                                event.getAction(),
+                                dpadKeyCode,
+                                event.getRepeatCount(),
+                                event.getMetaState());
+
+        // Let the EditText move or extend the selection across the wrapped lines.
+        if (super_onKeyDown(dpadKeyCode, dpadEvent)) return true;
+
+        // The topmost / bottommost line is reached: place the cursor or extend selection to the
+        // matching end of the text.
+        int edgeOffset = goDown ? length() : 0;
+        int activeEnd = getSelectionEnd();
+        if (activeEnd == edgeOffset) {
+            // When selecting with Shift, do not spill over into suggestions list navigation.
+            return isShiftOnly;
+        }
+
+        if (isShiftOnly) {
+            Selection.extendSelection(getText(), edgeOffset);
+        } else {
+            setSelection(edgeOffset);
+        }
+        return true;
     }
 
     /**
@@ -597,6 +686,7 @@ public class UrlBar extends AutocompleteEditText {
         // session remains inactive until typing begins.
         // See crbug.com/410642190
         super.onTextChanged(text, start, lengthBefore, lengthAfter);
+        mLastMeasuredTextWidth = -1;
 
         // Due to crbug.com/40139311, Autofill had to be disabled on the UrlBar to work around
         // an issue on Android Q+. With Autofill disabled, the Autofill compat mode no longer
@@ -626,8 +716,7 @@ public class UrlBar extends AutocompleteEditText {
 
     private void detectAndNotifyOnTextWrappingChanges() {
         mWrapDetectionScheduled = false;
-        var layout = getLayout();
-        boolean textIsWrapped = layout != null && layout.getLineCount() > 1;
+        boolean textIsWrapped = isTextWrapped();
 
         if (mTextIsWrapped == textIsWrapped) return;
         mTextIsWrapped = textIsWrapped;
@@ -1597,7 +1686,7 @@ public class UrlBar extends AutocompleteEditText {
             }
             // Suppress framework driven auto-scrolling if we're focused and currently selecting all
             // text so that the beginning of the url remains visible.
-        } else if (getText() != null
+        } else if (!TextUtils.isEmpty(getText())
                 && getSelectionStart() == 0
                 && getSelectionEnd() == getText().length()) {
             return false;
@@ -1772,9 +1861,55 @@ public class UrlBar extends AutocompleteEditText {
         return fontMetrics.bottom - fontMetrics.top;
     }
 
+    /**
+     * Returns the measured width of the displayed text in pixels, caching the result across
+     * repeated measurement passes to avoid UI thread layout stalls.
+     *
+     * <p>At most {@link #MAX_URL_LENGTH_FOR_MEASUREMENT} characters are handed to the text shaper;
+     * longer text is measured by sampling that prefix and scaling the result up to the full length,
+     * clamped to {@link #MAX_REPORTED_TEXT_WIDTH_PX}. The approximation is safe because callers
+     * only use the value to decide whether the text overflows the available width, and then clamp
+     * it to that width.
+     */
     /* package */ @Px
     int getTextWidth() {
-        return (int) Math.ceil(getPaint().measureText(getText().toString()));
+        CharSequence textToMeasure = getText();
+        if (TextUtils.isEmpty(textToMeasure)) {
+            textToMeasure = getHint();
+            if (TextUtils.isEmpty(textToMeasure)) {
+                return 0;
+            }
+        }
+
+        int totalLength = textToMeasure.length();
+        int lengthToMeasure = Math.min(totalLength, MAX_URL_LENGTH_FOR_MEASUREMENT);
+        // Never hand the shaper half of a surrogate pair; it would render as a replacement glyph.
+        if (lengthToMeasure < totalLength
+                && Character.isHighSurrogate(textToMeasure.charAt(lengthToMeasure - 1))) {
+            lengthToMeasure--;
+        }
+        float textSize = getPaint().getTextSize();
+
+        // Checked before building the substring so that repeated measure passes allocate nothing.
+        if (mLastMeasuredTextWidth >= 0
+                && textSize == mLastMeasuredTextSize
+                && totalLength == mLastMeasuredTextLength
+                && mLastMeasuredText != null
+                && mLastMeasuredText.length() == lengthToMeasure
+                && TextUtils.regionMatches(
+                        textToMeasure, 0, mLastMeasuredText, 0, lengthToMeasure)) {
+            return mLastMeasuredTextWidth;
+        }
+
+        String measuredSubstr = textToMeasure.subSequence(0, lengthToMeasure).toString();
+        double sampledWidth = getPaint().measureText(measuredSubstr);
+        double extrapolatedWidth = sampledWidth * totalLength / lengthToMeasure;
+        int width = (int) Math.min(MAX_REPORTED_TEXT_WIDTH_PX, Math.ceil(extrapolatedWidth));
+        mLastMeasuredText = measuredSubstr;
+        mLastMeasuredTextSize = textSize;
+        mLastMeasuredTextLength = totalLength;
+        mLastMeasuredTextWidth = width;
+        return width;
     }
 
     /* package */ @Px
@@ -1820,14 +1955,6 @@ public class UrlBar extends AutocompleteEditText {
         public static final BoundsEllipsisSpan INSTANCE = new BoundsEllipsisSpan();
     }
 
-    /* package */ boolean hasPendingDisplayTextScrollForTesting() {
-        return mPendingScroll;
-    }
-
-    /* package */ void setVisibleTextPrefixHintForTesting(CharSequence hintForTesting) {
-        mVisibleTextPrefixHint = hintForTesting;
-    }
-
     /* package */ @Nullable Runnable getManageSearchEnginesCallback() {
         return mManageSearchEnginesCallback;
     }
@@ -1846,6 +1973,14 @@ public class UrlBar extends AutocompleteEditText {
             mContextMenuHelper.clearTouchCoordinates();
         }
         return super.showContextMenu();
+    }
+
+    /* package */ boolean hasPendingDisplayTextScrollForTesting() {
+        return mPendingScroll;
+    }
+
+    /* package */ void setVisibleTextPrefixHintForTesting(CharSequence hintForTesting) {
+        mVisibleTextPrefixHint = hintForTesting;
     }
 
     @Nullable UrlBarContextMenuHelper getContextMenuHelperForTesting() {

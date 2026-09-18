@@ -201,6 +201,7 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsAutoDismiss);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsSaveVideoFrame);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsSeamlessTransfer);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalVaapiLock);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kHardenUrlProvisionFetcher);
 // When enabled, H.264 keyframe detection becomes stricter for samples whose avc
 // config does not provide SPS/PPS. In that case, an IDR alone is not
 // sufficient, SPS+PPS must appear in-band to mark it as a keyframe.
@@ -305,14 +306,10 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebCodecsDecoderFlushOptimizations);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebCodecsVideoEncoderFrameDrop);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCColorAccuracy);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCHardwareVideoEncoderFrameDrop);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCLogColorSpace);
 // When enabled, input audio processing in the audio process may use an ML-based
 // residual echo estimator instead of the default heuristics, when applying
 // WebRTC echo cancellation.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcAudioNeuralResidualEchoEstimation);
-// When enabled, input audio processing in the audio process may use an ML-based
-// voice isolation denoiser.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcVoiceIsolationDenoiser);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebrtcMediaCapabilitiesParameters);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWidevinePersistentLicenseSupport);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kZeroCopyDesktopCapture);
@@ -331,15 +328,11 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseSequencedTaskRunnerForMojoVEAProvider);
 #endif  // !BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-// Note: please use IsOutOfProcessVideoDecodingEnabled() to determine if OOP-VD
-// is enabled instead of directly checking this feature flag. The reason is that
-// that function may perform checks beyond the feature flag.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseOutOfProcessVideoDecoding);
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kChromeWideEchoCancellation);
+// When enabled, input audio processing in the audio process may use an ML-based
+// voice isolation denoiser.
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcVoiceIsolationDenoiser);
 #endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
@@ -397,7 +390,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowMediaCodecSoftwareDecoder);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidEnableBackgroundMediaCapturing);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidSuspendWebRtcOnScreenOff);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidZeroCopyVideoCapture);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoDocPiPPermissionPromptAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPictureAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kContextMenuPictureInPictureAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kFullscreenVideoPictureInPicture);
@@ -427,6 +419,9 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseMediaFormatCodedSize);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kVTVideoEncodeAcceleratorCalculatePSNR);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kVTVideoEncodeAcceleratorOpaqueSharedImageEncode);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kVideoToolboxFullRangeOutput);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(
+    kVTVideoEncodeAcceleratorOpaqueRgbSharedImageEncode);
 #endif  // BUILDFLAG(IS_APPLE)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -522,6 +517,7 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationUseSoftwareRateCtrl);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationVideoCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationVideoEncodeAccelerator);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kProtectedMediaIdentifierIndicator);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kWasapiImproveGlitchDetection);
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(SYSTEM_LOOPBACK_AS_AEC_REFERENCE)
@@ -602,10 +598,6 @@ MEDIA_EXPORT bool IsSystemLoopbackAsAecReferenceForcedOn();
 MEDIA_EXPORT bool IsSystemLoopbackCaptureSupported();
 
 MEDIA_EXPORT bool IsVideoCaptureAcceleratedJpegDecodingEnabled();
-
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-MEDIA_EXPORT bool IsOutOfProcessVideoDecodingEnabled();
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_ANDROID)
 MEDIA_EXPORT bool IsAndroidZeroCopyVideoCaptureEnabled(

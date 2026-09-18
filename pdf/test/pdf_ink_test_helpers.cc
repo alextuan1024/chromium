@@ -14,6 +14,7 @@
 #include "base/numerics/ranges.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "pdf/mojom/pdf.mojom.h"
 #include "pdf/pdf_ink_conversions.h"
@@ -124,7 +125,8 @@ base::DictValue SampleTextAttributesDict() {
   text_attributes.Set("styles", base::DictValue()
                                     .Set("bold", true)
                                     .Set("italic", true)
-                                    .Set("strikethrough", true));
+                                    .Set("strikethrough", true)
+                                    .Set("underline", true));
   return text_attributes;
 }
 
@@ -153,6 +155,7 @@ InkTextBoxAttributes SampleInkTextBoxAttributesWithText(std::string text) {
       .is_bold = false,
       .is_italic = true,
       .is_strikethrough = false,
+      .is_underline = false,
       .text = std::move(text),
   };
 }
@@ -177,6 +180,7 @@ SampleInkTextBoxAttributesMatcherWith(const std::string& text,
       .is_bold = true,
       .is_italic = true,
       .is_strikethrough = true,
+      .is_underline = true,
       .text = text,
   });
 }
@@ -270,7 +274,9 @@ void PrintTo(const InkTextInfo& info, std::ostream* os) {
       << ",\n  location=" << info.location.ToString()
       << ",\n  glyphs=" << testing::PrintToString(info.glyphs)
       << ",\n  glyph_positions=" << testing::PrintToString(info.glyph_positions)
-      << "\n}";
+      << ",\n  text=\"" << base::UTF16ToUTF8(info.text) << "\""
+      << ",\n  join_prev_actualtext="
+      << base::ToString(info.join_prev_actualtext) << "\n}";
 }
 
 void PrintTo(const InkTextBoxAttributes& info, std::ostream* os) {
@@ -315,6 +321,7 @@ void PrintTo(const InkTextBoxAttributes& info, std::ostream* os) {
       << ",\n  is_bold=" << base::ToString(info.is_bold)
       << ",\n  is_italic=" << base::ToString(info.is_italic)
       << ",\n  is_strikethrough=" << base::ToString(info.is_strikethrough)
+      << ",\n  is_underline=" << base::ToString(info.is_underline)
       << ",\n  text=" << info.text << "\n}";
 }
 
@@ -325,7 +332,8 @@ bool InkTextInfoEquals(const InkTextInfo& lhs, const InkTextInfo& rhs) {
       });
   return glyph_positions_eq && lhs.font_id == rhs.font_id &&
          lhs.glyphs == rhs.glyphs && lhs.location == rhs.location &&
-         lhs.is_horizontal == rhs.is_horizontal && lhs.text == rhs.text;
+         lhs.is_horizontal == rhs.is_horizontal && lhs.text == rhs.text &&
+         lhs.join_prev_actualtext == rhs.join_prev_actualtext;
 }
 
 }  // namespace chrome_pdf

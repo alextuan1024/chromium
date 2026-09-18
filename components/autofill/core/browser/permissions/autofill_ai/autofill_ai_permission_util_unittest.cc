@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "base/feature_list.h"
-#include "base/system/sys_info.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -655,6 +654,40 @@ TEST_F(AutofillAiPermissionUtilsTest,
   }
 }
 
+TEST_F(AutofillAiPermissionUtilsTest,
+       GetAutofillAmbientAutofillSupportedEntityTypes) {
+  // Test fixture default configuration.
+  EXPECT_EQ(
+      GetAutofillAmbientAutofillSupportedEntityTypes(),
+      (DenseSet<EntityType>{EntityType(kPassport), EntityType(kDriversLicense),
+                            EntityType(kVehicle), EntityType(kNationalIdCard),
+                            EntityType(kFlightReservation), EntityType(kOrder),
+                            EntityType(kShipment)}));
+
+  // Empty configuration returns an empty set.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        features::kAutofillAmbientAutofill,
+        {{features::kAutofillAmbientAutofillSupportedEntityTypes.name, ""}});
+    EXPECT_TRUE(GetAutofillAmbientAutofillSupportedEntityTypes().empty());
+  }
+
+  // Parses valid types, trims whitespace, and ignores unknown types or empty
+  // tokens.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        features::kAutofillAmbientAutofill,
+        {{features::kAutofillAmbientAutofillSupportedEntityTypes.name,
+          " Passport , UnknownType,  Driver's license ,, Vehicle "}});
+    EXPECT_EQ(GetAutofillAmbientAutofillSupportedEntityTypes(),
+              (DenseSet<EntityType>{EntityType(kPassport),
+                                    EntityType(kDriversLicense),
+                                    EntityType(kVehicle)}));
+  }
+}
+
 TEST_F(AutofillAiPermissionUtilsTest, kAmbientAutofill) {
   client().set_personal_context_eligibility_state(
       personal_context::PersonalContextEligibilityState::kEligible);
@@ -725,45 +758,6 @@ TEST_F(AutofillAiPermissionUtilsTest, kAmbientAutofill_G1Tiers) {
         client(), AutofillAiAction::kAmbientAutofill));
   }
 }
-
-TEST_F(AutofillAiPermissionUtilsTest,
-       kAmbientAutofill_IneligibleTierAndDevice) {
-  client().set_personal_context_eligibility_state(
-      personal_context::PersonalContextEligibilityState::kEligible);
-
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kAutofillAmbientAutofill,
-      {{"ambient_autofill_eligible_tiers", "2"},
-       {"ambient_autofill_enabled_devices", "NonExistentDevice"}});
-
-  client().GetPrefs()->SetInteger(
-      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
-
-  EXPECT_FALSE(
-      MayPerformAutofillAiAction(client(), AutofillAiAction::kAmbientAutofill));
-}
-
-#if BUILDFLAG(IS_ANDROID)
-TEST_F(AutofillAiPermissionUtilsTest, kAmbientAutofill_AndroidDeviceEligible) {
-  client().set_personal_context_eligibility_state(
-      personal_context::PersonalContextEligibilityState::kEligible);
-
-  const std::string actual_model_name = base::SysInfo::HardwareModelName();
-
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kAutofillAmbientAutofill,
-      {{"ambient_autofill_eligible_tiers", "2"},
-       {"ambient_autofill_enabled_devices", actual_model_name}});
-
-  client().GetPrefs()->SetInteger(
-      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
-
-  EXPECT_TRUE(
-      MayPerformAutofillAiAction(client(), AutofillAiAction::kAmbientAutofill));
-}
-#endif  // BUILDFLAG(IS_ANDROID)
 
 TEST_F(AutofillAiPermissionUtilsTest,
        AmbientAutofillRequiresPersonalContextPref) {

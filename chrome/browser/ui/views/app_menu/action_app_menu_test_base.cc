@@ -9,12 +9,16 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/time/default_clock.h"
+#include "base/time/default_tick_clock.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
+#include "components/sync/test/test_sync_service.h"
 #include "ui/actions/actions.h"
 
 ActionAppMenuTestBase::ActionAppMenuTestBase() = default;
@@ -23,6 +27,12 @@ ActionAppMenuTestBase::~ActionAppMenuTestBase() = default;
 void ActionAppMenuTestBase::SetUp() {
   ChromeViewsTestBase::SetUp();
   profile_ = std::make_unique<TestingProfile>();
+  SyncServiceFactory::GetInstance()->SetTestingFactory(
+      profile_.get(),
+      base::BindRepeating(
+          [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+            return std::make_unique<syncer::TestSyncService>();
+          }));
   TabRestoreServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(), TabRestoreServiceFactory::GetDefaultFactory());
   tab_groups::TabGroupSyncServiceFactory::GetInstance()->SetTestingFactory(
@@ -34,6 +44,11 @@ void ActionAppMenuTestBase::SetUp() {
       &mock_window_interface_);
   tab_strip_model_ = std::make_unique<TabStripModel>(
       &test_tab_strip_model_delegate_, profile_.get());
+  widget_ = CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  ON_CALL(mock_base_window_, GetNativeWindow())
+      .WillByDefault(testing::Return(widget_->GetNativeWindow()));
+  ON_CALL(mock_window_interface_, GetWindow())
+      .WillByDefault(testing::Return(&mock_base_window_));
   ON_CALL(mock_window_interface_, GetProfile())
       .WillByDefault(testing::Return(profile_.get()));
   ON_CALL(mock_window_interface_, GetTabStripModel())
@@ -58,13 +73,27 @@ void ActionAppMenuTestBase::SetUp() {
                        .SetActionId(action_id)
                        .SetText(text)
                        .SetEnabled(true)
-                       .SetVisible(true)
+                       .SetVisible(action_id != kActionUpgradeDialog)
                        .Build());
   };
 
   add_action(kActionNewTab, u"New Tab");
   add_action(kActionNewWindow, u"New Window");
   add_action(kActionNewIncognitoWindow, u"New Incognito Window");
+  add_action(kActionNewIsolatedWindow, u"New Isolated Window");
+  add_action(kActionProfileSubmenu, u"Profile");
+  add_action(kActionManageGoogleAccount, u"Manage your Google Account");
+  add_action(kActionCustomizeChrome, u"Customize Chrome");
+  add_action(kActionCloseProfile, u"Close profile");
+  add_action(kActionAddNewProfile, u"Add new profile");
+  add_action(kActionOpenGuestProfile, u"Open Guest profile");
+  add_action(kActionManageChromeProfiles, u"Manage Chrome profiles");
+  add_action(kActionShowSignin, u"Sign in to Chrome");
+  add_action(kActionTurnOnSync, u"Turn on sync");
+  add_action(kActionShowSyncSettings, u"Sync settings");
+  add_action(kActionShowSyncPassphraseDialog, u"Enter passphrase");
+  add_action(kActionShowSigninWhenPaused, u"Sign in again");
+  add_action(kActionUpgradeDialog, u"Update Chrome");
   add_action(kActionPasswordsAndAutofillSubmenu, u"Passwords and autofill");
   add_action(kActionShowPasswordManager, u"Password Manager");
   add_action(kActionShowPaymentMethods, u"Payment methods");
@@ -73,7 +102,7 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionShowTravel, u"Travel");
   add_action(kActionShowHistory, u"History");
   add_action(kActionRecentTabsSubmenu, u"Recent Tabs");
-  add_action(kActionShowDownloads, u"Downloads");
+  add_action(kActionShowDownloadsPage, u"Downloads");
   add_action(kActionBookmarksSubmenu, u"Bookmarks and Lists");
   add_action(kActionBookmarkThisTab, u"Bookmark This Tab");
   add_action(kActionBookmarkAllTabs, u"Bookmark All Tabs");
@@ -145,6 +174,7 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionFeedback, u"Send Feedback");
   add_action(kActionReportUnsafeSite, u"Report Unsafe Site");
   add_action(kActionExit, u"Exit");
+  add_action(kActionShowManagementPage, u"Managed by your organization");
   add_action(kActionZoomSubmenu, u"Zoom");
   add_action(kActionZoomMinus, u"Zoom Out");
   add_action(kActionZoomPlus, u"Zoom In");
@@ -160,6 +190,7 @@ void ActionAppMenuTestBase::SetUp() {
 }
 
 void ActionAppMenuTestBase::TearDown() {
+  widget_.reset();
   root_action_ = nullptr;
   browser_actions_.reset();
   tab_strip_model_.reset();

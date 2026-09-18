@@ -54,16 +54,17 @@
 #include "android_webview/common/aw_paths.h"
 #include "android_webview/common/aw_switches.h"
 #include "android_webview/common/url_constants.h"
-#include "base/android/locale_utils.h"
 #include "base/android/yield_to_looper_checker.h"
 #include "base/base_paths_android.h"
 #include "base/base_switches.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/android_locale.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
@@ -504,7 +505,7 @@ void AwContentBrowserClient::AppendExtraCommandLineSwitches(
 }
 
 std::string AwContentBrowserClient::GetApplicationLocale() {
-  return base::android::GetDefaultLocaleString();
+  return std::string(base::i18n::GetAndroidDefaultLocale().tag_string());
 }
 
 std::string AwContentBrowserClient::GetAcceptLangs(
@@ -669,7 +670,13 @@ AwContentBrowserClient::GetLocalTracesDirectory() {
 
 std::unique_ptr<content::TracingDelegate>
 AwContentBrowserClient::CreateTracingDelegate() {
-  return std::make_unique<AwTracingDelegate>();
+  PrefService* local_state = nullptr;
+  if (auto* browser_process = AwBrowserProcess::GetInstance()) {
+    local_state = browser_process->local_state();
+  } else if (aw_feature_list_creator_) {
+    local_state = aw_feature_list_creator_->local_state();
+  }
+  return std::make_unique<AwTracingDelegate>(CHECK_DEREF(local_state));
 }
 
 void AwContentBrowserClient::GetAdditionalMappedFilesForChildProcess(

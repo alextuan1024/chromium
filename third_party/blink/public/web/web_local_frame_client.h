@@ -64,6 +64,7 @@
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/loader/same_document_navigation_type.mojom-shared.h"
 #include "third_party/blink/public/mojom/media/renderer_audio_input_stream_factory.mojom-shared.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/platform/child_url_loader_factory_bundle.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider.h"
@@ -688,7 +689,7 @@ class BLINK_EXPORT WebLocalFrameClient {
   // Geometry notifications ----------------------------------------------
 
   // The main frame scrolled.
-  virtual void DidChangeScrollOffset() {}
+  virtual void DidChangeScrollOffset(mojom::ScrollType) {}
 
   // MediaStream -----------------------------------------------------
 
@@ -794,6 +795,9 @@ class BLINK_EXPORT WebLocalFrameClient {
   // Specifies whether to disable DOM storage interfaces such as localStorage
   // and sessionStorage.
   virtual bool IsDomStorageDisabled() const { return false; }
+
+  // Specifies whether to disable dedicated workers.
+  virtual bool AreDedicatedWorkersDisabled() const { return false; }
 
   // Returns a scriptable object for the given plugin element. This is used for
   // having an external handler implement certain customized APIs for the

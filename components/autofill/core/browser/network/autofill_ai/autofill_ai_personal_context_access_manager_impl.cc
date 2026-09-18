@@ -21,6 +21,7 @@
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/data_model/data_model_util.h"
@@ -99,19 +100,20 @@ bool IsPersonalContextSpiiType(EntityType type) {
          EntityInstance::PersonalContextSpiiType::kSpii;
 }
 
-bool IsValidDateWithinTtl(const EntityInstance& entity,
-                          AttributeTypeName type_name,
-                          base::TimeDelta ttl) {
+PersonalContextPrefetchEntityValidationResult ValidateDateWithinTtl(
+    const EntityInstance& entity,
+    AttributeTypeName type_name,
+    base::TimeDelta ttl) {
   base::optional_ref<const AttributeInstance> attr =
       entity.attribute(AttributeType(type_name));
   if (!attr) {
-    return false;
+    return PersonalContextPrefetchEntityValidationResult::kFailedTtlMissingDate;
   }
 
   data_util::Date date;
   if (!data_util::ParseDate(attr->GetCompleteRawInfo(), u"YYYY-MM-DD", date) ||
       !data_util::IsValidDateForFormat(date, u"YYYY-MM-DD")) {
-    return false;
+    return PersonalContextPrefetchEntityValidationResult::kFailedTtlInvalidDate;
   }
 
   // Set the time to the end of the day so the date remains valid throughout the
@@ -126,48 +128,83 @@ bool IsValidDateWithinTtl(const EntityInstance& entity,
       .millisecond = 999,
   };
   base::Time time;
-  return base::Time::FromLocalExploded(exploded, &time) &&
-         time + ttl >= base::Time::Now();
+  if (!base::Time::FromLocalExploded(exploded, &time)) {
+    return PersonalContextPrefetchEntityValidationResult::kFailedTtlInvalidDate;
+  }
+
+  return (time + ttl >= base::Time::Now())
+             ? PersonalContextPrefetchEntityValidationResult::kValid
+             : PersonalContextPrefetchEntityValidationResult::kFailedTtlExpired;
 }
 
-bool ValidateTtl(const EntityInstance& entity) {
+PersonalContextPrefetchEntityValidationResult ValidateTtl(
+    const EntityInstance& entity) {
   switch (entity.type().name()) {
     case EntityTypeName::kPassport:
-      return IsValidDateWithinTtl(
+      return ValidateDateWithinTtl(
           entity, AttributeTypeName::kPassportExpirationDate, base::Days(0));
     case EntityTypeName::kDriversLicense:
-      return IsValidDateWithinTtl(
+      return ValidateDateWithinTtl(
           entity, AttributeTypeName::kDriversLicenseExpirationDate,
           base::Days(0));
     case EntityTypeName::kNationalIdCard:
-      return IsValidDateWithinTtl(
+      return ValidateDateWithinTtl(
           entity, AttributeTypeName::kNationalIdCardExpirationDate,
           base::Days(0));
     case EntityTypeName::kOrder:
-      return IsValidDateWithinTtl(entity, AttributeTypeName::kOrderDate,
-                                  base::Days(90));
+      return ValidateDateWithinTtl(entity, AttributeTypeName::kOrderDate,
+                                   base::Days(90));
     case EntityTypeName::kShipment:
-      return IsValidDateWithinTtl(
+      return ValidateDateWithinTtl(
           entity, AttributeTypeName::kShipmentShippedDate, base::Days(30));
     case EntityTypeName::kFlightReservation:
-      return IsValidDateWithinTtl(
+      return ValidateDateWithinTtl(
           entity, AttributeTypeName::kFlightReservationDepartureDate,
           base::Days(90));
+    // The following entity types do not have a TTL or expiration date
+    // requirement for Ambient Autofill.
     case EntityTypeName::kVehicle:
-      return true;
-    case EntityTypeName::kKnownTravelerNumber:
     case EntityTypeName::kRedressNumber:
-      // Unsupported by Ambient Autofill.
-      return false;
+    case EntityTypeName::kKnownTravelerNumber:
+      return PersonalContextPrefetchEntityValidationResult::kValid;
   }
   NOTREACHED();
 }
 
-bool IsValidAmbientAutofillEntity(const EntityInstance& entity) {
-  return AttributesMeetImportConstraints(
-             entity.type(),
-             DenseSet(entity.attributes(), &AttributeInstance::type)) &&
-         ValidateTtl(entity);
+PersonalContextPrefetchEntityValidationResult ValidateAmbientAutofillEntity(
+    const EntityInstance& entity,
+    const DenseSet<EntityType>& supported_types) {
+  if (!supported_types.contains(entity.type())) {
+    return PersonalContextPrefetchEntityValidationResult::
+        kUnsupportedEntityType;
+  }
+
+  if (!AttributesMeetImportConstraints(
+          entity.type(),
+          DenseSet(entity.attributes(), &AttributeInstance::type))) {
+    return PersonalContextPrefetchEntityValidationResult::
+        kFailedImportConstraints;
+  }
+
+  PersonalContextPrefetchEntityValidationResult ttl_result =
+      ValidateTtl(entity);
+  if (ttl_result != PersonalContextPrefetchEntityValidationResult::kValid) {
+    return ttl_result;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAmbientAutofillFilterEntitiesWithoutSource)) {
+    const auto& payload =
+        std::get<EntityInstance::PersonalContextRecordTypePayload>(
+            entity.record_type_data());
+    // TODO(crbug.com/541184524): Check for valid source URLs.
+    if (payload.sources.empty()) {
+      return PersonalContextPrefetchEntityValidationResult::
+          kFailedMissingSource;
+    }
+  }
+
+  return PersonalContextPrefetchEntityValidationResult::kValid;
 }
 
 // Logs the request latency of a personal context network request.
@@ -389,6 +426,8 @@ AutofillAiPersonalContextAccessManagerImpl::ExtractEntitiesFromResponse(
                 kResponseParseError));
   }
 
+  const DenseSet<EntityType> supported_types =
+      GetAutofillAmbientAutofillSupportedEntityTypes();
   std::vector<ParsedEntity> entities;
   entities.reserve(response.entities_size());
   for (const personal_context::proto::Entity& entity : response.entities()) {
@@ -400,9 +439,12 @@ AutofillAiPersonalContextAccessManagerImpl::ExtractEntitiesFromResponse(
       }
     } else if (std::optional<EntityInstance> converted =
                    ConvertProtoToEntityInstance(entity, /*mask_spii=*/true)) {
-      // TODO(crbug.com/501037715): Record metrics for
-      // `IsValidAmbientAutofillEntity`.
-      if (IsValidAmbientAutofillEntity(*converted)) {
+      PersonalContextPrefetchEntityValidationResult validation_result =
+          ValidateAmbientAutofillEntity(*converted, supported_types);
+      LogPersonalContextPrefetchEntityValidationResult(converted->type(),
+                                                       validation_result);
+      if (validation_result ==
+          PersonalContextPrefetchEntityValidationResult::kValid) {
         entities.push_back({std::move(*converted), entity});
       }
     }
@@ -719,7 +761,7 @@ void AutofillAiPersonalContextAccessManagerImpl::
 
   if (non_eligibility_reason ==
           PersonalContextNonEligibilityReason::kEligible &&
-      !IsDeviceOrSubscriptionTierEligibleForAmbientAutofill(
+      !IsSubscriptionTierEligibleForAmbientAutofill(
           subscription_eligibility_observation_.GetSource())) {
     non_eligibility_reason = PersonalContextNonEligibilityReason::
         kNotG1SubscriberOrAndroidPremiumDevice;

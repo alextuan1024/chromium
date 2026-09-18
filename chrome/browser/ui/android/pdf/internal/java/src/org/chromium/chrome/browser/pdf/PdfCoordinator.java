@@ -190,6 +190,8 @@ public class PdfCoordinator
 
     private boolean mHasMadeAnyChanges;
 
+    private boolean mIsFragmentRestored;
+
     boolean mIsInitialZoomPass = true;
     private boolean mIsDefaultZoomPending;
 
@@ -279,6 +281,7 @@ public class PdfCoordinator
         if (fragment != null) {
             if (reuseFragment) {
                 mChromePdfViewerFragment = (ChromePdfViewerFragment) fragment;
+                mIsFragmentRestored = true;
                 mChromePdfViewerFragment.setPagesPerRow(false);
                 if (mPdfFilePath == null) {
                     mPdfFilePath =
@@ -1337,10 +1340,13 @@ public class PdfCoordinator
             PdfUtils.recordPdfLoadResultDetail(PdfLoadResult.ABORT);
         }
         if (!mFragmentManager.isDestroyed() && mChromePdfViewerFragment.getDelegate() == this) {
-            mFragmentManager
-                    .beginTransaction()
-                    .remove(mChromePdfViewerFragment)
-                    .commitAllowingStateLoss();
+            FragmentTransaction transaction =
+                    mFragmentManager.beginTransaction().remove(mChromePdfViewerFragment);
+            if (PdfUtils.isReuseFragmentEnabled()) {
+                transaction.commitNowAllowingStateLoss();
+            } else {
+                transaction.commitAllowingStateLoss();
+            }
         }
         mChromePdfViewerFragment = null;
     }
@@ -1531,6 +1537,7 @@ public class PdfCoordinator
     @Override
     public void resetLoadState() {
         mIsPdfLoaded = false;
+        mIsFragmentRestored = false;
         mIsFitToPageActive = TriState.NOT_SET;
         mLastFitZoom = -1f;
         mHasMadeAnyChanges = false;
@@ -1695,6 +1702,11 @@ public class PdfCoordinator
                 try {
                     mIsInitialZoomPass = true;
                     mIsDefaultZoomPending = false;
+                    if (mIsFragmentRestored) {
+                        mIsFragmentRestored = false;
+                        PdfUtils.recordRecoveredFragmentUriMatches(
+                                mUri.equals(mChromePdfViewerFragment.getDocumentUri()));
+                    }
                     if (!mUri.equals(mChromePdfViewerFragment.getDocumentUri())) {
                         mChromePdfViewerFragment.setDocumentUri(mUri);
                         mChromePdfViewerFragment.setFilePath(mPdfFilePath);
@@ -2083,11 +2095,11 @@ public class PdfCoordinator
     }
 
     @Override
-    public boolean onLinkClicked(Uri uri) {
+    public void onLinkClicked(Uri uri) {
         String scheme = uri.getScheme();
         if (scheme == null || !ALLOWED_LINK_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
             PdfUtils.recordHyperlinkClickResult(PdfHyperlinkClickResult.BLOCKED_INVALID_SCHEME);
-            return false;
+            return;
         }
         LoadUrlParams params = new LoadUrlParams(uri.toString(), PAGE_TRANSITION_TYPE);
         params.setIsRendererInitiated(true);
@@ -2096,7 +2108,6 @@ public class PdfCoordinator
         // TODO(crbug.com/548013417): Reuse existing tab for link clicks.
         mNativePageHost.openNewTab(params);
         PdfUtils.recordHyperlinkClickResult(PdfHyperlinkClickResult.SUCCESS_LOAD_INITIATED);
-        return true;
     }
 
     @Override
@@ -2417,6 +2428,7 @@ public class PdfCoordinator
             onProceed.run();
             return;
         }
+        mNativePageHost.selectTab();
         ModalDialogManager modalDialogManager = null;
         if (mActivity instanceof ModalDialogManagerHolder) {
             modalDialogManager = ((ModalDialogManagerHolder) mActivity).getModalDialogManager();

@@ -2,9 +2,7 @@ include_rules = [
   "-chrome",
 
   "+chrome/browser/ash/login/test",
-  "+chrome/browser/ui/browser.h",
   "+chrome/browser/ui/browser_window.h",
-  "+chrome/browser/ui/tabs",
   "+chrome/common/chrome_paths.h",
   "+chrome/test/base",
 ]

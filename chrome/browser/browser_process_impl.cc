@@ -58,6 +58,7 @@
 #include "chrome/browser/google/google_brand.h"
 #include "chrome/browser/gpu/gpu_mode_manager.h"
 #include "chrome/browser/icon_manager.h"
+#include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/media/audio_process_ml_model_forwarder.h"
@@ -204,7 +205,6 @@ void OnLocalStatePrefsLoaded();
 #include "chrome/browser/error_reporting/chrome_js_error_report_processor.h"
 #include "chrome/browser/gcm/gcm_product_util.h"
 #include "chrome/browser/hid/hid_system_tray_icon.h"
-#include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
 #include "chrome/browser/usb/usb_system_tray_icon.h"
@@ -221,7 +221,7 @@ void OnLocalStatePrefsLoaded();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/chrome_extensions_browser_client.h"
-#include "chrome/common/initialize_extensions_client.h"
+#include "chrome/common/scoped_chrome_extensions_client.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -321,6 +321,12 @@ BrowserProcessImpl::BrowserProcessImpl(StartupData* startup_data)
       active_primary_accounts_metrics_recorder_(
           std::make_unique<signin::ActivePrimaryAccountsMetricsRecorder>(
               *local_state_)),
+      metrics_services_manager_(startup_data->chrome_feature_list_creator()
+                                    ->TakeMetricsServicesManager()),
+      metrics_services_manager_client_(
+          static_cast<ChromeMetricsServicesManagerClient*>(
+              startup_data->chrome_feature_list_creator()
+                  ->GetMetricsServicesManagerClient())),
 #if BUILDFLAG(IS_ANDROID)
       device_parental_controls_(
           std::make_unique<supervised_user::AndroidParentalControls>()),
@@ -334,6 +340,9 @@ BrowserProcessImpl::BrowserProcessImpl(StartupData* startup_data)
       features_(GlobalFeatures::CreateGlobalFeatures()) {
   CHECK(!g_browser_process);
   g_browser_process = this;
+
+  CHECK(metrics_services_manager_);
+  CHECK(metrics_services_manager_client_);
 
   features_->Init();
 
@@ -363,11 +372,7 @@ void BrowserProcessImpl::Init() {
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
-  // Forces creation of |metrics_services_manager_client_| if necessary
-  // (typically this call is a no-op as MetricsServicesManager has already been
-  // created).
-  GetMetricsServicesManager();
-  DCHECK(metrics_services_manager_client_);
+  CHECK(metrics_services_manager_client_);
   metrics_services_manager_client_->OnCrosSettingsCreated();
 #endif
 
@@ -392,7 +397,8 @@ void BrowserProcessImpl::Init() {
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  EnsureExtensionsClientInitialized();
+  extensions_client_ =
+      std::make_unique<extensions::ScopedChromeExtensionsClient>();
 
   // Initialize the ExtensionsBrowserClient. This isn't in extension-specific
   // code because a number of external concepts that extensions shouldn't know
@@ -773,14 +779,6 @@ void BrowserProcessImpl::PostDestroyThreads() {
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-void BrowserProcessImpl::SetMetricsServices(
-    std::unique_ptr<metrics_services_manager::MetricsServicesManager> manager,
-    metrics_services_manager::MetricsServicesManagerClient* client) {
-  metrics_services_manager_ = std::move(manager);
-  metrics_services_manager_client_ =
-      static_cast<ChromeMetricsServicesManagerClient*>(client);
-}
-
 namespace {
 
 // Used at the end of session to block the UI thread for completion of sentinel
@@ -953,16 +951,6 @@ void BrowserProcessImpl::EndSession() {
 metrics_services_manager::MetricsServicesManager*
 BrowserProcessImpl::GetMetricsServicesManager() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // Only create the objects if teardown hasn't started yet, as otherwise these
-  // may have already been destroyed.
-  if (!metrics_services_manager_ && !tearing_down_) {
-    auto client =
-        std::make_unique<ChromeMetricsServicesManagerClient>(local_state());
-    metrics_services_manager_client_ = client.get();
-    metrics_services_manager_ =
-        std::make_unique<metrics_services_manager::MetricsServicesManager>(
-            std::move(client));
-  }
   return metrics_services_manager_.get();
 }
 
@@ -1199,7 +1187,6 @@ BrowserProcessImpl::device_parental_controls() {
   return *device_parental_controls_;
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 IntranetRedirectDetector* BrowserProcessImpl::intranet_redirect_detector() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!intranet_redirect_detector_) {
@@ -1208,7 +1195,6 @@ IntranetRedirectDetector* BrowserProcessImpl::intranet_redirect_detector() {
 
   return intranet_redirect_detector_.get();
 }
-#endif
 
 const std::string& BrowserProcessImpl::GetApplicationLocale() {
 #if !BUILDFLAG(IS_CHROMEOS)

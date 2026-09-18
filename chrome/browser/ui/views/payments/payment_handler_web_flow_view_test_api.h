@@ -33,6 +33,42 @@ class PaymentHandlerWebFlowViewTestApi {
     return controller_->permission_dashboard_view();
   }
 
+  bool is_indicator_chip_collapse_timer_running() const {
+    return controller_->indicator_chip_collapse_timer_.IsRunning();
+  }
+
+  void fire_indicator_chip_collapse_timer() {
+    controller_->indicator_chip_collapse_timer_.FireNow();
+  }
+
+  bool is_indicator_dismiss_timer_running() const {
+    return controller_->indicator_dismiss_timer_.IsRunning();
+  }
+
+  void fire_indicator_dismiss_timer() {
+    controller_->indicator_dismiss_timer_.FireNow();
+  }
+
+  PaymentHandlerWebFlowViewController::IndicatorType indicator_type() const {
+    return controller_->indicator_type_;
+  }
+
+  PaymentHandlerWebFlowViewController::IndicatorDisplayPhase indicator_phase()
+      const {
+    return controller_->indicator_phase_;
+  }
+
+  void OnMediaAccessResponse(
+      content::MediaResponseCallback original_callback,
+      const blink::mojom::StreamDevicesSet& stream_devices_set,
+      blink::mojom::MediaStreamRequestResult result,
+      std::unique_ptr<content::MediaStreamUI> ui) {
+    controller_->OnMediaAccessResponse(
+        controller_->weak_ptr_factory_.GetWeakPtr(),
+        std::move(original_callback), stream_devices_set, result,
+        std::move(ui));
+  }
+
  private:
   const raw_ref<PaymentHandlerWebFlowViewController> controller_;
 };

@@ -49,8 +49,7 @@ namespace glic {
 class GlicSharingManagerInternal;
 struct ShowOptions;
 
-using SafeEmbedderKey =
-    std::variant<tabs::TabHandle, FloatingEmbedderKey, TabEmbedderKey>;
+using SafeEmbedderKey = std::variant<tabs::TabHandle, FloatingEmbedderKey>;
 
 // Tracks and logs lifecycle events for a single GlicInstance.
 class GlicInstanceMetrics : public GlicInstanceMetricsBackwardsCompatibility {
@@ -204,6 +203,11 @@ class GlicInstanceMetrics : public GlicInstanceMetricsBackwardsCompatibility {
   // Called when GlicInstanceImpl::WebUiStateChanged is called.
   void OnWebUiStateChanged(mojom::WebUiState state);
 
+  // Called when the client failed to become usable. Records the
+  // Glic.ClientError structured metrics event, joined to the in-flight
+  // invocation if there is one.
+  void OnClientLoadError(ClientLoadErrorReason reason);
+
   // Called when the client is ready to show.
   void OnClientReady();
 
@@ -237,6 +241,8 @@ class GlicInstanceMetrics : public GlicInstanceMetricsBackwardsCompatibility {
   }
 
   GlicMetricsSessionManager& session_manager() { return session_manager_; }
+
+  void SetActiveInvocationId(std::optional<uint64_t> invocation_id);
 
   std::optional<mojom::InvocationSource> initial_invocation_source() const {
     return initial_invocation_source_;
@@ -318,6 +324,10 @@ class GlicInstanceMetrics : public GlicInstanceMetricsBackwardsCompatibility {
   // The last invocation source that was used to show the panel.
   mojom::InvocationSource last_invocation_source_ =
       mojom::InvocationSource::kUnsupported;
+  std::optional<uint64_t> active_invocation_id_ = std::nullopt;
+  // When `active_invocation_id_` was set. Null when there is no invocation in
+  // flight. Used to report how far into an invocation a failure happened.
+  base::TimeTicks active_invocation_start_time_;
   std::optional<mojom::InvocationSource> initial_invocation_source_ =
       std::nullopt;
   bool did_open_ = false;

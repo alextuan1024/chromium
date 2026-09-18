@@ -38,7 +38,6 @@
 #import "ios/chrome/browser/composebox/ui/composebox_input_plate_view_controller_delegate.h"
 #import "ios/chrome/browser/composebox/ui/composebox_ui_config.h"
 #import "ios/chrome/browser/composebox/ui/composebox_ui_input_state.h"
-#import "ios/chrome/browser/composebox/ui/composebox_ui_util.h"
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_input.h"
 #import "ios/chrome/browser/omnibox/ui/text_field_view_containing.h"
@@ -518,6 +517,27 @@ UIImage* SendButtonImage(BOOL highlighted,
 
 - (void)dismissContextMenu {
   [_plusButton.contextMenuInteraction dismissMenu];
+}
+
+- (void)updateTheme:(ComposeboxTheme*)theme {
+  _theme = theme;
+  _inputPlateContainerView.backgroundColor = _theme.inputPlateBackgroundColor;
+  CGFloat cornerRadius =
+      _theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad
+          ? kInputPlateIpadCornerRadius
+          : kInputPlateCornerRadius;
+  _inputPlateContainerView.layer.cornerRadius = cornerRadius;
+  _inputPlateInternalContainerView.layer.cornerRadius = cornerRadius;
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    _editView.minimumHeight = kOmniboxCobrowseMinHeight;
+  } else if (_theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad) {
+    _editView.minimumHeight = kOmniboxIPadMinHeight;
+  } else {
+    _editView.minimumHeight = kOmniboxMinHeight;
+  }
+  [self updateInputPlateStackViewPadding];
+  [self updateDepthShadowAppearance];
+  [self updateAIMButtonAppearance];
 }
 
 #pragma mark - ComposeboxInputItemCellDelegate

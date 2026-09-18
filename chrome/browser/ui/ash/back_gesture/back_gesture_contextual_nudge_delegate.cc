@@ -8,6 +8,7 @@
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "content/public/browser/navigation_details.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
 #include "ui/aura/window.h"
@@ -62,7 +63,8 @@ void BackGestureContextualNudgeDelegate::DidFinishNavigation(
 void BackGestureContextualNudgeDelegate::OnActiveWebContentsChanged(
     ash::BrowserDelegate* browser,
     content::WebContents* /*old_contents*/,
-    content::WebContents* new_contents) {
+    content::WebContents* new_contents,
+    bool selection_only) {
   if (window_ && browser->GetNativeWindow() == window_) {
     controller_->NavigationEntryChanged(window_);
     Observe(new_contents);

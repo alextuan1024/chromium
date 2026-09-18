@@ -37,7 +37,7 @@
 namespace features {
 namespace {
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBrand{
         &kDefaultPassthroughCommandDecoder, "BlockListByBrand", ""};
@@ -54,11 +54,9 @@ const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByManufacturer{
         &kDefaultPassthroughCommandDecoder, "BlockListByManufacturer", ""};
 
-// b/455412928 flickering issue with WebView on the following XR devices
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByModel{
-        &kDefaultPassthroughCommandDecoder, "BlockListByModel",
-        "SM-I610|SM-I610H|Robin XR|Android XR Puck|Aura"};
+        &kDefaultPassthroughCommandDecoder, "BlockListByModel", ""};
 
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBoard{
@@ -77,7 +75,7 @@ bool IsDeviceBlocked(const std::string& field, const std::string& block_list) {
   }
   return false;
 }
-#endif
+#endif  // BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 
 BASE_FEATURE(kForceANGLEFeatures, base::FEATURE_DISABLED_BY_DEFAULT);
 

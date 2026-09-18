@@ -22,7 +22,6 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/gaia_id_hash.h"
 #import "components/signin/public/base/signin_pref_names.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/base/account_pref_utils.h"
 #import "components/sync/service/sync_service.h"
@@ -588,6 +587,10 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 
 - (void)showLeavingPrimaryAccountConfirmationIfNeededStep {
   CHECK(_unsyncedDataTypes.has_value());
+  if (_unsyncedDataTypes.value().empty()) {
+    [self continueFlow];
+    return;
+  }
   ProfileIOS* profile = [self profile];
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(profile);
@@ -596,12 +599,6 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   PrefService* profilePrefService = profile->GetPrefs();
   SignedInUserState signedInUserState = GetSignedInUserState(
       authenticationService, identityManager, profilePrefService);
-  if (!ForceLeavingPrimaryAccountConfirmationDialog(signedInUserState, profile,
-                                                    _identityToSignIn.gaiaId) &&
-      _unsyncedDataTypes.value().empty()) {
-    [self continueFlow];
-    return;
-  }
   [_performer
       showLeavingPrimaryAccountConfirmationWithBaseViewController:
           _presentingViewController
@@ -613,23 +610,18 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 }
 
 - (void)fetchCanSignInToChromeCapabilityStep {
-  if (base::FeatureList::IsEnabled(switches::kBuildExternalPrivacyContext)) {
-    [_performer fetchCanSignInToChromeCapability:_identityToSignIn
-                                         profile:[self profile]];
-  } else {
-    [self continueFlow];
-  }
+  [_performer fetchCanSignInToChromeCapability:_identityToSignIn
+                                       profile:[self profile]];
 }
 
 - (void)showAgeMismatchDialogIfNeededStep {
-  if (base::FeatureList::IsEnabled(switches::kBuildExternalPrivacyContext) &&
-      !_canSignInToChrome) {
-    [_performer showAgeMismatchDialogForIdentity:_identityToSignIn
-                                  viewController:_presentingViewController
-                                         browser:_browser];
-  } else {
+  if (_canSignInToChrome) {
     [self continueFlow];
+    return;
   }
+  [_performer showAgeMismatchDialogForIdentity:_identityToSignIn
+                                viewController:_presentingViewController
+                                       browser:_browser];
 }
 
 // Fetches ManagedAccountsSigninRestriction policy, if needed.
@@ -717,7 +709,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   std::vector<AccountInfo> accountsOnDevice =
       identityManager->GetAccountsOnDevice();
   BOOL isValidIdentityOnDevice = std::ranges::contains(
-      accountsOnDevice, _identityToSignIn.gaiaId, &AccountInfo::gaia);
+      accountsOnDevice, _identityToSignIn.gaiaId, &AccountInfo::GetGaiaId);
   std::vector<CoreAccountInfo> accountsInProfile =
       identityManager->GetAccountsWithRefreshTokens();
   BOOL isValidIdentityInCurrentProfile = std::ranges::contains(

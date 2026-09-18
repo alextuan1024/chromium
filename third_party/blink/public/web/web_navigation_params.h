@@ -14,7 +14,6 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "base/uuid.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "net/storage_access_api/status.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
@@ -133,6 +132,11 @@ struct BLINK_EXPORT WebNavigationInfo {
   // ID of the tool invocation. This helps the browser to associate the
   // navigation with the tool that caused it.
   std::optional<base::UnguessableToken> script_tool_invocation_id;
+
+  // The host of the entity that injected the script initiating this
+  // navigation. This is only populated when the initiator document's
+  // ScriptInjectionPolicy is kNavigationProtection.
+  WebString script_injector_host;
 
   // Used to retrieve data related to the initiator of the navigation stored in
   // the browser process.

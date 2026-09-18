@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "base/types/expected.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
@@ -123,6 +124,7 @@ class ContextualSearchboxScreenshareController {
   void StartScreenshare(bool prefer_entire_screen,
                         StartScreenshareCallback callback);
   void CaptureRegionScreenshot(CaptureRegionScreenshotCallback callback);
+  bool CancelChromeDefaultPicker();
   void OnScreenshotMenuClosed();
 
   Delegate* delegate() const { return delegate_; }
@@ -133,6 +135,19 @@ class ContextualSearchboxScreenshareController {
   base::WeakPtr<ContextualSearchboxScreenshareController> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
+
+#if !BUILDFLAG(IS_ANDROID)
+  void set_screen_capture_delay_for_testing(
+      std::optional<base::TimeDelta> delay) {
+    screen_capture_delay_for_testing_ = delay;
+  }
+  bool IsScreenshareInProgressForTesting() const {
+    return IsScreenshareInProgress();
+  }
+  DesktopMediaPickerController* screenshare_picker_controller_for_testing() {
+    return screenshare_picker_controller_.get();
+  }
+#endif
 
  private:
 #if !BUILDFLAG(IS_ANDROID)
@@ -159,6 +174,10 @@ class ContextualSearchboxScreenshareController {
       content::DesktopMediaID source,
       StartScreenshareCallback callback,
       std::optional<RegionCaptureSource> region_capture_source = std::nullopt);
+  void CaptureAndUploadScreenshotInternal(
+      content::DesktopMediaID source,
+      StartScreenshareCallback callback,
+      std::optional<RegionCaptureSource> region_capture_source);
   void OnScreenshotCaptured(
       StartScreenshareCallback callback,
       std::optional<RegionCaptureSource> region_capture_source,
@@ -198,6 +217,7 @@ class ContextualSearchboxScreenshareController {
   StartScreenshareCallback pending_screenshare_callback_;
   std::optional<RegionCaptureSource> pending_region_capture_source_;
   bool chrome_default_picker_destroyed_ = false;
+  std::optional<base::TimeDelta> screen_capture_delay_for_testing_;
 #endif
 
   bool is_capturing_ = false;

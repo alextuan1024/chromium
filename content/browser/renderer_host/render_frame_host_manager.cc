@@ -96,6 +96,7 @@
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom.h"
 #include "third_party/blink/public/mojom/security_context/insecure_request_policy.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "url/gurl_debug.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -104,7 +105,6 @@
 
 namespace content {
 
-using LifecycleStateImpl = RenderFrameHostImpl::LifecycleStateImpl;
 using perfetto::protos::pbzero::ChromeTrackEvent;
 
 namespace {
@@ -1104,7 +1104,7 @@ void RenderFrameHostManager::CommitPendingIfNecessary(
 
   if (render_frame_host_->is_local_root() && render_frame_host_->GetView()) {
     bool is_prerendering = render_frame_host_->lifecycle_state() ==
-                           LifecycleStateImpl::kPrerendering;
+                           RenderFrameHostLifecycleStateImpl::kPrerendering;
     auto* rwhi = static_cast<RenderWidgetHostImpl*>(
         render_frame_host_->GetView()->GetRenderWidgetHost());
 
@@ -1240,6 +1240,12 @@ std::unique_ptr<StoredPage> RenderFrameHostManager::TakePrerenderedPage() {
   CHECK(frame_tree_node_->IsMainFrame());
   auto main_render_frame_host = SetRenderFrameHost(nullptr);
   return CollectPage(std::move(main_render_frame_host), FrameTreeNodeId());
+}
+
+const blink::mojom::FrameReplicationState&
+RenderFrameHostManager::current_replication_state() const {
+  return render_frame_host_->browsing_context_state()
+      ->current_replication_state();
 }
 
 void RenderFrameHostManager::PrepareForCollectingPage(
@@ -1927,7 +1933,7 @@ RenderFrameHostManager::GetFrameHostForNavigation(
   // 2) Subframes in BFCached pages that have not (or will never) sent network
   // requests. Find more details in https://crbug.com/1511153.
   if (current_frame_host()->lifecycle_state() ==
-      LifecycleStateImpl::kInBackForwardCache) {
+      RenderFrameHostLifecycleStateImpl::kInBackForwardCache) {
     CHECK(request->GetParentFrameOrOuterDocument());
     CHECK(!request->NeedsUrlLoader() ||
           (!request->HasLoader() &&
@@ -1935,9 +1941,9 @@ RenderFrameHostManager::GetFrameHostForNavigation(
                NavigationRequest::NavigationState::WILL_START_REQUEST));
   }
   if (!(current_frame_host()->lifecycle_state() ==
-            LifecycleStateImpl::kPrerendering ||
+            RenderFrameHostLifecycleStateImpl::kPrerendering ||
         (current_frame_host()->lifecycle_state() ==
-         LifecycleStateImpl::kInBackForwardCache))) {
+         RenderFrameHostLifecycleStateImpl::kInBackForwardCache))) {
     // Inactive frames should never be navigated. If this happens, log a
     // DumpWithoutCrashing to understand the root cause. See
     // https://crbug.com/926820 and https://crbug.com/927705.
@@ -2234,7 +2240,7 @@ RenderFrameHostManager::GetFrameHostForNavigation(
     SCOPED_CRASH_KEY_BOOL("Bug1404162", "without_early_commit",
                           recovering_without_early_commit);
     SCOPED_CRASH_KEY_STRING64("Bug1404162", "nav_rfh_lifecycle",
-                              RenderFrameHostImpl::LifecycleStateImplToString(
+                              RenderFrameHostLifecycleStateImplToString(
                                   navigation_rfh->lifecycle_state()));
 
     if (!ReinitializeMainRenderFrame(navigation_rfh,
@@ -2469,7 +2475,7 @@ void RenderFrameHostManager::DiscardSpeculativeRFH(
             speculative_render_frame_host_->GetSiteInstance()->GetId()));
     SCOPED_CRASH_KEY_STRING64(
         "Bug1450023", "spec_rfh_lifecycle",
-        RenderFrameHostImpl::LifecycleStateImplToString(
+        RenderFrameHostLifecycleStateImplToString(
             speculative_render_frame_host_->lifecycle_state()));
 
     if (NavigationRequest* navigation_request =
@@ -2510,7 +2516,7 @@ RenderFrameHostManager::UnsetSpeculativeRenderFrameHost(
 
   speculative_render_frame_host_->GetProcess()->RemovePendingView();
   if (speculative_render_frame_host_->lifecycle_state() ==
-      LifecycleStateImpl::kSpeculative) {
+      RenderFrameHostLifecycleStateImpl::kSpeculative) {
     speculative_render_frame_host_->DeleteRenderFrame(
         frame_tree_node_->parent()
             ? mojom::FrameDeleteIntention::kNotMainFrame
@@ -2521,7 +2527,7 @@ RenderFrameHostManager::UnsetSpeculativeRenderFrameHost(
     // TODO(https://crbug.com/526543099): CHECK-exclusion: Convert to CHECK once
     // we are sure this isn't hit.
     DCHECK_EQ(speculative_render_frame_host_->lifecycle_state(),
-              LifecycleStateImpl::kPendingCommit);
+              RenderFrameHostLifecycleStateImpl::kPendingCommit);
 
     // A reasonable person might wonder: shouldn't a RenderFrameHostImpl in
     // kPendingCommit always have a... pending commit?
@@ -2579,7 +2585,7 @@ RenderFrameHostManager::UnsetSpeculativeRenderFrameHost(
       // The main RenderFrame will be implicitly torn down later when the
       // corresponding RenderViewHost/WebView are torn down.
       speculative_render_frame_host_->SetLifecycleState(
-          LifecycleStateImpl::kReadyToBeDeleted);
+          RenderFrameHostLifecycleStateImpl::kReadyToBeDeleted);
     }
   }
 
@@ -2600,13 +2606,14 @@ void RenderFrameHostManager::DiscardSpeculativeRenderFrameHostForShutdown() {
   // provisional RenderFrame, whether this due to a child frame being removed
   // from the frame tree or the entire `blink::WebView` being torn down.
   //
-  // When the LifecycleStateImpl is kSpeculative, there is no need to transition
-  // to kReadyToBeDeleted as speculative RenderFrameHosts don't run any unload
-  // handlers but gets deleted by reset directly in kSpeculative state.
+  // When the RenderFrameHostLifecycleStateImpl is kSpeculative, there is no
+  // need to transition to kReadyToBeDeleted as speculative RenderFrameHosts
+  // don't run any unload handlers but gets deleted by reset directly in
+  // kSpeculative state.
   if (speculative_render_frame_host_->lifecycle_state() ==
-      LifecycleStateImpl::kPendingCommit) {
+      RenderFrameHostLifecycleStateImpl::kPendingCommit) {
     speculative_render_frame_host_->SetLifecycleState(
-        LifecycleStateImpl::kReadyToBeDeleted);
+        RenderFrameHostLifecycleStateImpl::kReadyToBeDeleted);
   }
   // TODO(dcheng): Figure out why `RenderFrameDeleted()` doesn't seem to be
   // called on child `RenderFrameHost`s at shutdown. This is currently limited
@@ -4418,19 +4425,19 @@ RenderFrameHostManager::CreateRenderFrameHost(
   }
   CHECK(render_view_host);
 
-  // LifecycleStateImpl of newly created RenderFrameHost.
-  LifecycleStateImpl lifecycle_state;
+  // RenderFrameHostLifecycleStateImpl of newly created RenderFrameHost.
+  RenderFrameHostLifecycleStateImpl lifecycle_state;
 
   if (create_frame_case == CreateFrameCase::kCreateSpeculative) {
-    lifecycle_state = LifecycleStateImpl::kSpeculative;
+    lifecycle_state = RenderFrameHostLifecycleStateImpl::kSpeculative;
   } else {
     // For the creation of initial documents:
     // - We create RenderFrameHost in kPrerendering state in case of
     // prerendering frame tree.
     // - We create RenderFrameHost in kActive state in all other cases.
     lifecycle_state = frame_tree.is_prerendering()
-                          ? LifecycleStateImpl::kPrerendering
-                          : LifecycleStateImpl::kActive;
+                          ? RenderFrameHostLifecycleStateImpl::kPrerendering
+                          : RenderFrameHostLifecycleStateImpl::kActive;
   }
 
   return RenderFrameHostFactory::Create(
@@ -4730,7 +4737,7 @@ void RenderFrameHostManager::CreateRenderFrameProxy(
           "Bug1400009", "current_rfh_si",
           (int)render_frame_host_->GetSiteInstance()->GetId());
       SCOPED_CRASH_KEY_STRING64("Bug1400009", "current_lifecycle",
-                                RenderFrameHostImpl::LifecycleStateImplToString(
+                                RenderFrameHostLifecycleStateImplToString(
                                     render_frame_host_->lifecycle_state()));
       RenderFrameHostImpl* parent_rfh = render_frame_host_->GetParent();
       SCOPED_CRASH_KEY_NUMBER("Bug1400009", "parent_si",
@@ -4739,7 +4746,7 @@ void RenderFrameHostManager::CreateRenderFrameProxy(
                             !!frame_tree_node_->frame_tree().GetRenderViewHost(
                                 parent_rfh->GetSiteInstance()->group()));
       SCOPED_CRASH_KEY_STRING64("Bug1400009", "parent_lifecycle",
-                                RenderFrameHostImpl::LifecycleStateImplToString(
+                                RenderFrameHostLifecycleStateImplToString(
                                     parent_rfh->lifecycle_state()));
       CHECK(render_view_host);
     }
@@ -5174,19 +5181,25 @@ bool RenderFrameHostManager::ReinitializeMainRenderFrame(
 
   CHECK(render_frame_host->IsRenderFrameLive());
 
-  // The RenderWidgetHostView goes away with the render process. Initializing a
-  // RenderFrame means we'll be creating (or reusing, https://crbug.com/419087)
-  // a RenderWidgetHostView. The new RenderWidgetHostView should take its
-  // visibility from the RenderWidgetHostImpl, but this call exists to handle
-  // cases where it did not during a same-process navigation.
-  // TODO(danakj): We now hide the widget unconditionally (treating main frame
-  // and child frames alike) and show in DidFinishNavigation() always, so this
-  // should be able to go away. Try to remove this.
-  // TODO(https://crbug.com/521200679): Removing this breaks keyboard tab
-  // switching while a new tab is loading, despite the tab appearing to become
-  // visible at the correct time.
-  if (render_frame_host == render_frame_host_.get()) {
-    EnsureRenderFrameHostVisibilityConsistent();
+  if (!base::FeatureList::IsEnabled(
+          features::kRemoveEnsureRFHVisibilityConsistent)) {
+    // The RenderWidgetHostView goes away with the render process. Initializing
+    // a RenderFrame means we'll be creating (or reusing,
+    // https://crbug.com/419087) a RenderWidgetHostView. The new
+    // RenderWidgetHostView should take its visibility from the
+    // RenderWidgetHostImpl, but this call exists to handle cases where it did
+    // not during a same-process navigation.
+    // TODO(danakj): We now hide the widget unconditionally (treating main frame
+    // and child frames alike) and show in DidFinishNavigation() always, so this
+    // should be able to go away. Try to remove this.
+    // TODO(https://crbug.com/521200679): Removing this breaks keyboard tab
+    // switching while a new tab is loading because aura::Window visibility
+    // tracks RFH visibility, not whether the window is visible to the user.
+    // kRemoveEnsureRFHVisibilityConsistent fixes this by making the RFH visible
+    // when it's focused, not just when it commits.
+    if (render_frame_host == render_frame_host_.get()) {
+      EnsureRenderFrameHostVisibilityConsistent();
+    }
   }
 
   return true;
@@ -5253,9 +5266,10 @@ void RenderFrameHostManager::CommitPending(
   CHECK(pending_rfh->IsRenderFrameLive());
   if (RenderWidgetHostImpl* rwh = pending_rfh->GetLocalRenderWidgetHost()) {
     if (rwh->compositor_metric_recorder()) {
-      if (pending_rfh->lifecycle_state() == LifecycleStateImpl::kSpeculative ||
+      if (pending_rfh->lifecycle_state() ==
+              RenderFrameHostLifecycleStateImpl::kSpeculative ||
           pending_rfh->lifecycle_state() ==
-              LifecycleStateImpl::kPendingCommit) {
+              RenderFrameHostLifecycleStateImpl::kPendingCommit) {
         // The navigation swaps in a new RenderFrameHost with a new
         // RenderWidgetHost. Log the time when the RFH swap happens to record
         // compositor-related metrics.
@@ -5267,7 +5281,7 @@ void RenderFrameHostManager::CommitPending(
         // be a prerendered RFH because we don't create recorders for
         // prerendered pages.
         CHECK_EQ(pending_rfh->lifecycle_state(),
-                 LifecycleStateImpl::kInBackForwardCache);
+                 RenderFrameHostLifecycleStateImpl::kInBackForwardCache);
         rwh->DisableCompositorMetricRecording();
       }
     }
@@ -5282,6 +5296,14 @@ void RenderFrameHostManager::CommitPending(
   // https://crbug.com/331669
   gfx::ScopedCocoaDisableScreenUpdates disabler;
 #endif  // BUILDFLAG(IS_MAC)
+
+  // Notify that we're about to swap RenderFrameHosts. For example, this is
+  // used by WebContents to avoid changing RenderWidgetHostView visibility
+  // mid-commit as the timing of visibility changes when swapping RFHs is very
+  // sensitive. This can happen when we update focus on the new view, which
+  // may trigger focus updates on the WebContents, which in turn may update
+  // view visibility.
+  delegate_->PrepareToSwapRenderFrameHosts();
 
   RenderWidgetHostView* old_view = render_frame_host_->GetView();
   bool is_main_frame = frame_tree_node_->IsMainFrame();
@@ -5331,14 +5353,12 @@ void RenderFrameHostManager::CommitPending(
 
   // If we navigate to an existing page (i.e. |pending_stored_page| is not
   // null), check that |pending_rfh|'s old lifecycle state supports that.
-  RenderFrameHostImpl::LifecycleStateImpl prev_state =
-      pending_rfh->lifecycle_state();
+  RenderFrameHostLifecycleStateImpl prev_state = pending_rfh->lifecycle_state();
   // TODO(522901110): CHECK-exclusion: Convert to a CHECK once we are confident
   // it won't be triggered.
   DCHECK(!pending_stored_page ||
-         prev_state == RenderFrameHostImpl::LifecycleStateImpl::kPrerendering ||
-         prev_state ==
-             RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+         prev_state == RenderFrameHostLifecycleStateImpl::kPrerendering ||
+         prev_state == RenderFrameHostLifecycleStateImpl::kInBackForwardCache);
 
   // Now close any modal dialogs that would prevent us from unloading the old
   // frame. This must be done separately from RenderFrameHost::Unload(), so that
@@ -5414,8 +5434,7 @@ void RenderFrameHostManager::CommitPending(
 
     StoredPage::RenderViewHostImplSafeRefSet render_view_hosts_to_restore =
         pending_stored_page->TakeRenderViewHosts();
-    if (prev_state ==
-        RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache) {
+    if (prev_state == RenderFrameHostLifecycleStateImpl::kInBackForwardCache) {
       for (const auto& rvh : render_view_hosts_to_restore) {
         CHECK_NE(&*rvh, old_render_frame_host->GetRenderViewHost());
         blink::mojom::PageRestoreParamsPtr page_restore_params =
@@ -5431,8 +5450,7 @@ void RenderFrameHostManager::CommitPending(
         rvh->LeaveBackForwardCache(std::move(page_restore_params));
       }
     } else {
-      CHECK_EQ(prev_state,
-               RenderFrameHostImpl::LifecycleStateImpl::kPrerendering);
+      CHECK_EQ(prev_state, RenderFrameHostLifecycleStateImpl::kPrerendering);
       current_frame_host()->GetPage().Activate(
           render_view_hosts_to_restore,
           pending_stored_page->TakeViewTransitionState(), base::DoNothing());
@@ -5598,8 +5616,7 @@ void RenderFrameHostManager::CommitPending(
     auto* render_widget_host_view_base =
         static_cast<RenderWidgetHostViewBase*>(render_frame_host_->GetView());
     should_take_fallback_content =
-        prev_state !=
-            RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache ||
+        prev_state != RenderFrameHostLifecycleStateImpl::kInBackForwardCache ||
         !render_widget_host_view_base->GetLocalSurfaceId().is_valid() ||
         render_widget_host_view_base->is_evicted();
   }
@@ -5848,15 +5865,18 @@ std::unique_ptr<RenderFrameHostImpl> RenderFrameHostManager::SetRenderFrameHost(
       // speculative RFHs for prerendering pages will always go through
       // kPendingCommit first.
       CHECK_NE(render_frame_host_->lifecycle_state(),
-               LifecycleStateImpl::kSpeculative);
+               RenderFrameHostLifecycleStateImpl::kSpeculative);
       if (render_frame_host_->lifecycle_state() ==
-          LifecycleStateImpl::kPendingCommit) {
+          RenderFrameHostLifecycleStateImpl::kPendingCommit) {
         render_frame_host_->SetLifecycleState(
-            LifecycleStateImpl::kPrerendering);
+            RenderFrameHostLifecycleStateImpl::kPrerendering);
       }
     } else {
-      if (render_frame_host_->lifecycle_state() != LifecycleStateImpl::kActive)
-        render_frame_host_->SetLifecycleState(LifecycleStateImpl::kActive);
+      if (render_frame_host_->lifecycle_state() !=
+          RenderFrameHostLifecycleStateImpl::kActive) {
+        render_frame_host_->SetLifecycleState(
+            RenderFrameHostLifecycleStateImpl::kActive);
+      }
     }
   }
 
@@ -6070,6 +6090,11 @@ void RenderFrameHostManager::ExecuteRemoteFramesBroadcastMethod(
   render_frame_host_->browsing_context_state()
       ->ExecuteRemoteFramesBroadcastMethod(callback, group_to_skip,
                                            outer_delegate_proxy);
+}
+
+const BrowsingContextState::RenderFrameProxyHostMap&
+RenderFrameHostManager::GetAllProxyHostsForTesting() const {
+  return render_frame_host_->browsing_context_state()->proxy_hosts();
 }
 
 void RenderFrameHostManager::EnsureRenderFrameHostVisibilityConsistent() {

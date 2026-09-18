@@ -41,6 +41,13 @@ class CriticalActionDatabase {
   // already exists or a database error occurs.
   bool AddCriticalAction(const CriticalActionEntry& entry);
 
+  // Associates conversation_id with all critical actions matching
+  // actor_task_ids. Returns true if successfully updated, or false on
+  // database error.
+  bool SetCriticalActionsConversationId(
+      const std::vector<std::string>& actor_task_ids,
+      std::string_view conversation_id);
+
   // Retrieves a critical action record by its ID.
   // Returns the record if found, or std::nullopt if the action ID is not found.
   std::optional<CriticalActionEntry> GetCriticalAction(
@@ -75,10 +82,53 @@ class CriticalActionDatabase {
   // Exposes underlying database for testing or verification.
   sql::Database& GetDBForTesting() { return db_; }
 
+  // Generates a comma-separated list of placeholder question marks for SQL
+  // parameterized queries, e.g. "?, ?, ?". Returns an empty string if `count`
+  // is 0.
+  static std::string CreatePlaceholders(size_t count);
+
+  // Builds an IN clause condition: "column_name IN (?, ?, ...)".
+  // Returns an empty string if `count` is 0.
+  static std::string BuildInCondition(std::string_view column_name,
+                                      size_t count);
+
+  // Appends timestamp range filter conditions (">= ?" and/or "< ?") to
+  // `conditions`.
+  static void AddTimeRangeConditions(
+      std::vector<std::string>& conditions,
+      std::string_view column_name,
+      std::optional<base::Time> begin_time,
+      std::optional<base::Time> end_time);
+
+  // Builds the SQL query string for `GetCriticalActions` given `options`.
+  static std::string BuildGetCriticalActionsQuery(
+      const CriticalActionQueryOptions& options);
+
  private:
+  // Binds the filter values from `options` into `statement`.
+  static void BindQueryOptions(sql::Statement& statement,
+                               const CriticalActionQueryOptions& options);
+
+  // Constructs a CriticalActionEntry from the current row of `statement`.
+  static CriticalActionEntry StatementToEntry(sql::Statement& statement);
+
   // Creates tables and indices if they do not yet exist.
   // Must be called within an active transaction.
   bool InitSchema();
+
+  // Makes sure the database version is up to date, migrating sequentially if
+  // necessary. Returns true on success.
+  bool MigrateToCurrentVersion();
+
+  // Dispatches migration to the specified target `version`.
+  bool MigrateToVersion(int version);
+
+  // Migrates schema from version 1 (monolithic CriticalActions table) to
+  // version 2 (normalized 3-table schema).
+  bool MigrateFromV1ToV2();
+
+  // Migrates schema from version 2 to version 3 (drops `url` column and index).
+  bool MigrateFromV2ToV3();
 
   // SQLite error callback.
   void DatabaseErrorCallback(int extended_error, sql::Statement* statement);
@@ -86,6 +136,7 @@ class CriticalActionDatabase {
   const base::FilePath db_path_;
   sql::Database db_ GUARDED_BY_CONTEXT(sequence_checker_);
   sql::MetaTable meta_table_ GUARDED_BY_CONTEXT(sequence_checker_);
+  bool needs_vacuum_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

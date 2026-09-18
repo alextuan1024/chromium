@@ -16,7 +16,11 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -44,20 +48,22 @@ import static org.chromium.chrome.browser.keyboard_accessory.bar_component.Keybo
 import android.widget.Button;
 import android.widget.TextView;
 
+import androidx.annotation.StringRes;
 import androidx.test.core.app.ApplicationProvider;
 
+import org.hamcrest.Matcher;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
-import org.chromium.base.CallbackUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -71,6 +77,7 @@ import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.keyboard_accessory.AccessoryAction;
+import org.chromium.chrome.browser.keyboard_accessory.NavigationDirection;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.ActionBarItem;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.AutofillBarItem;
@@ -87,6 +94,7 @@ import org.chromium.chrome.browser.keyboard_accessory.utils.ManualFillingMetrics
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.components.autofill.Acceptability;
 import org.chromium.components.autofill.AutofillAiPayload;
 import org.chromium.components.autofill.AutofillDelegate;
 import org.chromium.components.autofill.AutofillProfile;
@@ -100,6 +108,7 @@ import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.EntityType;
 import org.chromium.components.autofill.autofill_ai.EntityTypeName;
 import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -119,6 +128,9 @@ import java.util.List;
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP,
     ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING,
     ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_HOVER_PREVIEW,
+})
+@Features.DisableFeatures({
+    ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL_SUPPRESSION_UI,
 })
 public class KeyboardAccessoryControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -313,10 +325,8 @@ public class KeyboardAccessoryControllerTest {
                         .setSuggestionType(SuggestionType.AUTOCOMPLETE_ENTRY)
                         .setFeatureForIph("")
                         .build();
-        Action generationAction =
-                new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback());
-        Action credManAction =
-                new Action(CREDMAN_CONDITIONAL_UI_REENTRY, CallbackUtils.emptyCallback());
+        Action generationAction = new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {});
+        Action credManAction = new Action(CREDMAN_CONDITIONAL_UI_REENTRY, () -> {});
         mCoordinator.setSuggestions(List.of(suggestion1, suggestion2), mMockAutofillDelegate);
         generationProvider.notifyObservers(new Action[] {generationAction});
         credManProvider.notifyObservers(new Action[] {credManAction});
@@ -352,8 +362,7 @@ public class KeyboardAccessoryControllerTest {
                         .setSubLabel("passkey")
                         .setSuggestionType(SuggestionType.WEBAUTHN_CREDENTIAL)
                         .build();
-        Action credManAction =
-                new Action(CREDMAN_CONDITIONAL_UI_REENTRY, CallbackUtils.emptyCallback());
+        Action credManAction = new Action(CREDMAN_CONDITIONAL_UI_REENTRY, () -> {});
         mCoordinator.setSuggestions(List.of(suggestion), mMockAutofillDelegate);
         credManProvider.notifyObservers(new Action[] {credManAction});
 
@@ -375,8 +384,7 @@ public class KeyboardAccessoryControllerTest {
         AutofillSuggestion.Builder builder = new AutofillSuggestion.Builder().setSubLabel("");
         AutofillSuggestion suggestion1 = builder.setLabel("kayseri").build();
         AutofillSuggestion suggestion2 = builder.setLabel("spor").build();
-        Action generationAction =
-                new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback());
+        Action generationAction = new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {});
         mCoordinator.setSuggestions(List.of(suggestion1, suggestion2), mMockAutofillDelegate);
         generationProvider.notifyObservers(new Action[] {generationAction});
 
@@ -404,8 +412,7 @@ public class KeyboardAccessoryControllerTest {
                         .setSuggestionType(SuggestionType.AUTOCOMPLETE_ENTRY)
                         .setFeatureForIph("")
                         .build();
-        Action generationAction =
-                new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback());
+        Action generationAction = new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {});
         mCoordinator.setSuggestions(List.of(suggestion, suggestion), mMockAutofillDelegate);
         generationProvider.notifyObservers(new Action[] {generationAction});
         List<ActionBarItem> barItems = flattenItemGroups();
@@ -472,7 +479,7 @@ public class KeyboardAccessoryControllerTest {
         assertTrue(getAutofillItemAt(1).isEnabled());
 
         // Simulate a click on the first suggestion.
-        getAutofillItemAt(0).getAction().getCallback().onResult(getAutofillItemAt(0).getAction());
+        getAutofillItemAt(0).getAction().getCallback().run();
 
         verify(mMockAutofillDelegate).suggestionAccepted(0, true);
 
@@ -495,7 +502,7 @@ public class KeyboardAccessoryControllerTest {
         mCoordinator.setSuggestions(List.of(suggestion), mMockAutofillDelegate);
 
         List<ActionBarItem> barItems = flattenItemGroups();
-        barItems.get(0).getAction().getCallback().onResult(barItems.get(0).getAction());
+        barItems.get(0).getAction().getCallback().run();
 
         // Verify that suggestionAccepted was called with originalIndex 5 instead of loop index 0.
         verify(mMockAutofillDelegate).suggestionAccepted(5, false);
@@ -568,7 +575,7 @@ public class KeyboardAccessoryControllerTest {
         assertThat(barItems.get(0).getAction().getLongPressCallback(), notNullValue());
 
         // Simulate a long press on the suggestion.
-        barItems.get(0).getAction().getLongPressCallback().onResult(barItems.get(0).getAction());
+        barItems.get(0).getAction().getLongPressCallback().run();
 
         ArgumentCaptor<PropertyModel> modelCaptor = ArgumentCaptor.forClass(PropertyModel.class);
         verify(mModalDialogManager).showDialog(modelCaptor.capture(), anyInt());
@@ -579,31 +586,19 @@ public class KeyboardAccessoryControllerTest {
                         .findViewById(R.id.description_text_view);
         assertThat(
                 description.getText().toString(),
-                equalTo(
-                        ApplicationProvider.getApplicationContext()
-                                .getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_description)));
-        Button positiveButton =
+                equalsString(R.string.autofill_ai_suggestion_long_press_dialog_description));
+        final Button positiveButton =
                 model.get(ModalDialogProperties.CUSTOM_BUTTON_BAR_VIEW)
                         .findViewById(R.id.button_primary);
         assertThat(
                 positiveButton.getText().toString(),
-                equalTo(
-                        ApplicationProvider.getApplicationContext()
-                                .getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_positive_button)));
-        Button negativeButton =
+                equalsString(R.string.autofill_ai_suggestion_long_press_dialog_positive_button));
+        final Button negativeButton =
                 model.get(ModalDialogProperties.CUSTOM_BUTTON_BAR_VIEW)
                         .findViewById(R.id.button_secondary);
         assertThat(
                 negativeButton.getText().toString(),
-                equalTo(
-                        ApplicationProvider.getApplicationContext()
-                                .getString(
-                                        R.string
-                                                .autofill_ai_suggestion_long_press_dialog_negative_button)));
+                equalsString(R.string.autofill_ai_suggestion_long_press_dialog_negative_button));
         verify(mMockAutofillDelegate, never()).deleteSuggestion(anyInt());
 
         model.get(ModalDialogProperties.CONTROLLER)
@@ -649,11 +644,36 @@ public class KeyboardAccessoryControllerTest {
         assertThat(barItems.get(0).getAction().getLongPressCallback(), notNullValue());
 
         // Simulate a long press on the suggestion.
-        barItems.get(0).getAction().getLongPressCallback().onResult(barItems.get(0).getAction());
+        barItems.get(0).getAction().getLongPressCallback().run();
 
-        ArgumentCaptor<PropertyModel> modelCaptor = ArgumentCaptor.forClass(PropertyModel.class);
-        verify(mModalDialogManager, never()).showDialog(modelCaptor.capture(), anyInt());
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
         verify(mMockAutofillDelegate).deleteSuggestion(0);
+    }
+
+    @Test
+    @Features.EnableFeatures({ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL_SUPPRESSION_UI})
+    public void
+            testLongPressOnPersonalContextSuggestionWithSuppressionUIShowsAutofillAiSuggestionDetails() {
+        AutofillSuggestion suggestion =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Personal Context Suggestion")
+                        .setSubLabel("Order * Water")
+                        .setSuggestionType(SuggestionType.FILL_AUTOFILL_AI)
+                        .setFeatureForIph("")
+                        .setPayload(new AutofillAiPayload("guid", false))
+                        .build();
+
+        mCoordinator.setSuggestions(List.of(suggestion), mMockAutofillDelegate);
+
+        List<ActionBarItem> barItems = flattenItemGroups();
+        assertThat(barItems.get(0).getAction().getLongPressCallback(), notNullValue());
+
+        // Simulate a long press on the suggestion.
+        barItems.get(0).getAction().getLongPressCallback().run();
+
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mMockAutofillDelegate, never()).deleteSuggestion(anyInt());
+        verify(mMockAutofillDelegate).showAutofillAiSuggestionDetails(0);
     }
 
     @Test
@@ -683,7 +703,7 @@ public class KeyboardAccessoryControllerTest {
         assertTrue(barItems.get(1).isEnabled());
 
         // Simulate a click on the first suggestion, which does not require loading.
-        barItems.get(0).getAction().getCallback().onResult(barItems.get(0).getAction());
+        barItems.get(0).getAction().getCallback().run();
 
         verify(mMockAutofillDelegate).suggestionAccepted(0, false);
 
@@ -711,7 +731,7 @@ public class KeyboardAccessoryControllerTest {
 
         List<ActionBarItem> barItems = flattenItemGroups();
         // Simulate a click on the first suggestion.
-        barItems.get(0).getAction().getCallback().onResult(barItems.get(0).getAction());
+        barItems.get(0).getAction().getCallback().run();
 
         assertFalse(sheetOpener.isEnabled());
     }
@@ -1023,8 +1043,7 @@ public class KeyboardAccessoryControllerTest {
                         .setSuggestionType(SuggestionType.AUTOCOMPLETE_ENTRY)
                         .setFeatureForIph("")
                         .build();
-        Action generationAction =
-                new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback());
+        Action generationAction = new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {});
 
         mCoordinator.setSuggestions(List.of(suggestion), mMockAutofillDelegate);
         generationProvider.notifyObservers(new Action[] {generationAction});
@@ -1087,8 +1106,7 @@ public class KeyboardAccessoryControllerTest {
         // Add the generate password action, which is displayed first in the list of suggestions.
         // Verify that no suggestion group is created, because suggestion group is created only from
         // the suggestions in the beginning of the list.
-        final Action generationAction =
-                new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback());
+        final Action generationAction = new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {});
         generationProvider.notifyObservers(new Action[] {generationAction});
         assertThat(mModel.get(BAR_ITEMS).size(), is(6));
         assertThat(mModel.get(BAR_ITEMS).get(0), instanceOf(ActionBarItem.class));
@@ -1257,8 +1275,7 @@ public class KeyboardAccessoryControllerTest {
 
         // The suggestions should not be grouped again after the list of suggestions was updated
         // with a newly available item.
-        final Action credmanAction =
-                new Action(CREDMAN_CONDITIONAL_UI_REENTRY, CallbackUtils.emptyCallback());
+        final Action credmanAction = new Action(CREDMAN_CONDITIONAL_UI_REENTRY, () -> {});
         credmanActionProvider.notifyObservers(new Action[] {credmanAction});
         // The suggestions should not be grouped because the style was set to undocked.
         assertThat(mModel.get(BAR_ITEMS).size(), is(4));
@@ -1313,21 +1330,37 @@ public class KeyboardAccessoryControllerTest {
         mCoordinator.setSelectedSuggestion(0);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(0));
         assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+        assertTrue(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
+        assertFalse(getAutofillItemAt(2).isSelected());
+        assertFalse(getAutofillItemAt(3).isSelected());
 
         // Select second suggestion (inside group).
         mCoordinator.setSelectedSuggestion(1);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(1));
         assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertTrue(getAutofillItemAt(1).isSelected());
+        assertFalse(getAutofillItemAt(2).isSelected());
+        assertFalse(getAutofillItemAt(3).isSelected());
 
         // Select fourth suggestion (outside group).
         mCoordinator.setSelectedSuggestion(3);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(3));
         assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(3));
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
+        assertFalse(getAutofillItemAt(2).isSelected());
+        assertTrue(getAutofillItemAt(3).isSelected());
 
         // Clear suggestion selection.
         mCoordinator.setSelectedSuggestion(null);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), nullValue());
         assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
+        assertFalse(getAutofillItemAt(2).isSelected());
+        assertFalse(getAutofillItemAt(3).isSelected());
     }
 
     @Test
@@ -1359,18 +1392,54 @@ public class KeyboardAccessoryControllerTest {
         // Select Address1 using its ground-truth index (1 in original suggestions list).
         mCoordinator.setSelectedSuggestion(1);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(1));
+        assertTrue(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
 
         // Select Address2 using its ground-truth index (2 in original suggestions list).
         mCoordinator.setSelectedSuggestion(2);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(2));
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertTrue(getAutofillItemAt(1).isSelected());
 
         // Selecting a non-visible index (e.g. 0, 3, or 4) updates the model.
         mCoordinator.setSelectedSuggestion(4);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(4));
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
 
         // Clear suggestion selection.
         mCoordinator.setSelectedSuggestion(null);
         assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), nullValue());
+        assertFalse(getAutofillItemAt(0).isSelected());
+        assertFalse(getAutofillItemAt(1).isSelected());
+    }
+
+    @Test
+    public void testSetSuggestionsResetsSelection() {
+        AutofillSuggestion suggestion1 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 1")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(0)
+                        .build();
+        mCoordinator.setSuggestions(List.of(suggestion1), mMockAutofillDelegate);
+
+        mCoordinator.setSelectedSuggestion(0);
+        assertTrue(getAutofillItemAt(0).isSelected());
+        assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), is(0));
+
+        AutofillSuggestion suggestion2 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 2")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(0)
+                        .build();
+        mCoordinator.setSuggestions(List.of(suggestion2), mMockAutofillDelegate);
+
+        assertThat(mModel.get(SELECTED_SUGGESTION_INDEX), nullValue());
+        assertFalse(getAutofillItemAt(0).isSelected());
     }
 
     @Test
@@ -1383,6 +1452,222 @@ public class KeyboardAccessoryControllerTest {
         mCoordinator.setSelectedSuggestion(null);
         verify(mMockPropertyObserver, times(2))
                 .onPropertyChanged(mModel, SELECTED_SUGGESTION_INDEX);
+    }
+
+    @Test
+    public void testNavigateSuggestions() {
+        // Navigation returns false when there are no suggestions.
+        mCoordinator.setSuggestions(List.of(), mMockAutofillDelegate);
+        assertFalse(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        assertFalse(mCoordinator.navigateSuggestions(NavigationDirection.BACKWARD));
+
+        AutofillSuggestion suggestion1 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 1")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(0)
+                        .build();
+        AutofillSuggestion suggestion2 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 2")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(1)
+                        .build();
+
+        mCoordinator.setSuggestions(List.of(suggestion1, suggestion2), mMockAutofillDelegate);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Navigate forward (Right arrow): notifies delegate for suggestion 1 (index 0).
+        // Navigation does not update visual selection directly.
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(0, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(0);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Navigate forward again: notifies delegate for suggestion 2 (index 1).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(1, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(1);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+
+        // Navigate forward again: wraps around to suggestion 1 (index 0).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate, times(2)).suggestionSelectionStateChanged(0, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(0);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Navigate backward (Left arrow): wraps around to suggestion 2 (index 1).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.BACKWARD));
+        verify(mMockAutofillDelegate, times(2)).suggestionSelectionStateChanged(1, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Reset selection and navigate backward: selects first suggestion (suggestion 1, index 0).
+        mCoordinator.setSelectedSuggestion(null);
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.BACKWARD));
+        verify(mMockAutofillDelegate, times(3)).suggestionSelectionStateChanged(0, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(0);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+    }
+
+    @Test
+    public void testNavigateSuggestionsInRtl() {
+        LocalizationUtils.setRtlForTesting(true);
+
+        AutofillSuggestion suggestion1 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 1")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(0)
+                        .build();
+        AutofillSuggestion suggestion2 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 2")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(1)
+                        .build();
+        AutofillSuggestion suggestion3 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 3")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(2)
+                        .build();
+
+        mCoordinator.setSuggestions(
+                List.of(suggestion1, suggestion2, suggestion3), mMockAutofillDelegate);
+
+        InOrder inOrder = inOrder(mMockAutofillDelegate);
+
+        // Start at middle suggestion.
+        mCoordinator.setSelectedSuggestion(1);
+
+        // In RTL, navigating forward (Right arrow) moves visually right towards index 0.
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        inOrder.verify(mMockAutofillDelegate).suggestionSelectionStateChanged(0, true);
+
+        // Reset to middle suggestion.
+        mCoordinator.setSelectedSuggestion(1);
+
+        // In RTL, navigating backward (Left arrow) moves visually left towards index 2.
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.BACKWARD));
+        inOrder.verify(mMockAutofillDelegate).suggestionSelectionStateChanged(2, true);
+    }
+
+    @Test
+    public void testNavigateSuggestionsWithFilteredSuggestions() {
+        AutofillSuggestion addressSuggestion1 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 1")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(1)
+                        .build();
+        AutofillSuggestion addressSuggestion2 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 2")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(2)
+                        .build();
+
+        // Suggestions with original indices 1 and 2 (suggestion at index 0 was filtered out by the
+        // backend).
+        mCoordinator.setSuggestions(
+                List.of(addressSuggestion1, addressSuggestion2), mMockAutofillDelegate);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Navigate forward: should notify Address1 (original index 1) without updating visual
+        // selection.
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(1, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(1);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+
+        // Navigate forward again: should notify Address2 (original index 2).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(2, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(2);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(2));
+
+        // Navigate forward again: wraps around to Address1 (original index 1).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate, times(2)).suggestionSelectionStateChanged(1, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(2));
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(1);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(1));
+    }
+
+    @Test
+    public void testNavigateSuggestionsSkipsDisabledSuggestions() {
+        AutofillSuggestion suggestion1 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 1")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(0)
+                        .build();
+        AutofillSuggestion unselectableSuggestion =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 2")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
+                        .setOriginalIndex(1)
+                        .build();
+        AutofillSuggestion suggestion3 =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Suggestion 3")
+                        .setSubLabel("")
+                        .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
+                        .setOriginalIndex(2)
+                        .build();
+
+        // Suggestions with an unselectable suggestion at index 1.
+        mCoordinator.setSuggestions(
+                List.of(suggestion1, unselectableSuggestion, suggestion3), mMockAutofillDelegate);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Navigate forward: should notify Suggestion 1 (index 0) without updating visual selection.
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(0, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), nullValue());
+
+        // Simulate backend instructing the UI to update the selected suggestion.
+        mCoordinator.setSelectedSuggestion(0);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Navigate forward again: skips unselectable suggestion and notifies Suggestion 3 (index
+        // 2).
+        assertTrue(mCoordinator.navigateSuggestions(NavigationDirection.FORWARD));
+        verify(mMockAutofillDelegate).suggestionSelectionStateChanged(2, true);
+        assertThat(mCoordinator.getSelectedSuggestionForTesting(), is(0));
+
+        // Verify that the unselectable suggestion at index 1 was never selected.
+        verify(mMockAutofillDelegate, never()).suggestionSelectionStateChanged(eq(1), anyBoolean());
     }
 
     private int getGenerationImpressionCount() {
@@ -1406,5 +1691,9 @@ public class KeyboardAccessoryControllerTest {
             items.addAll(item.getActionBarItems());
         }
         return items;
+    }
+
+    private static Matcher<String> equalsString(@StringRes int str) {
+        return equalTo(ApplicationProvider.getApplicationContext().getString(str));
     }
 }

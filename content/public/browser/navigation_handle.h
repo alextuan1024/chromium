@@ -36,6 +36,7 @@
 #include "net/http/http_connection_info.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/mojom/declarative_performance_observer.mojom-forward.h"
+#include "services/network/public/mojom/device_bound_sessions.mojom-forward.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-forward.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -573,6 +574,11 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // will not be reflected in the network stack.
   virtual const net::HttpResponseHeaders* GetResponseHeaders() = 0;
 
+  // Returns the device bound session usage for the request, or kUnknown if
+  // response headers haven't been received yet.
+  virtual network::mojom::DeviceBoundSessionUsage GetDeviceBoundSessionUsage()
+      const = 0;
+
   // Returns the parsed Declarative Performance Observer policy for the request,
   // or nullptr if it hasn't been received yet.
   virtual const network::mojom::DeclarativePerformanceObserverPolicy*
@@ -647,6 +653,11 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // defined if and only if GetInitiatorProcessId below is.
   virtual const std::optional<blink::LocalFrameToken>&
   GetInitiatorFrameToken() = 0;
+
+  // The host of the entity that injected the script initiating this
+  // navigation, or empty if none. This is only populated when the initiator
+  // document's ScriptInjectionPolicy is kNavigationProtection.
+  virtual const std::string& GetScriptInjectorHost() const = 0;
 
   // Return the ID of the renderer process of the frame host that initiated the
   // navigation. This is defined if and only if GetInitiatorFrameToken above is,

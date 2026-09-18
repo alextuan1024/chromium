@@ -4,10 +4,12 @@
 
 package org.chromium.chrome.browser.ui.side_ui;
 
+import android.content.res.Resources;
 import android.view.View;
 import android.view.ViewGroup;
 
 import androidx.annotation.Px;
+import androidx.annotation.StringRes;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.tab.Tab;
@@ -101,6 +103,24 @@ public interface SideUiContainer {
     boolean shouldLockTopControls();
 
     /**
+     * Called after {@link SideUiCoordinator} starts a UI update that will change this {@link
+     * SideUiContainer}. This is after {@link SideUiCoordinator} computes the upcoming {@link
+     * SideUiUpdateSpecs}, but before these specs have been committed or used to update view state.
+     *
+     * @param oldWidth The stable width of this {@link SideUiContainer} before the UI update.
+     * @param newWidth The stable width of this {@link SideUiContainer} after the UI update.
+     * @param oldHeightType The stable {@link HeightType} of this {@link SideUiContainer} before the
+     *     UI update.
+     * @param newHeightType The stable {@link HeightType} of this {@link SideUiContainer} after the
+     *     UI update.
+     */
+    default void onUiUpdateStarting(
+            @Px int oldWidth,
+            @Px int newWidth,
+            @HeightType int oldHeightType,
+            @HeightType int newHeightType) {}
+
+    /**
      * Called after {@link SideUiCoordinator} completes a UI update <i>and</i> that update changed
      * this {@link SideUiContainer}.
      *
@@ -147,4 +167,51 @@ public interface SideUiContainer {
      * @see #onWillAutoClose
      */
     default void onWillAutoRestore() {}
+
+    /**
+     * Returns whether this container supports manual resizing, i.e. whether {@link
+     * SideUiCoordinator} should show a resize handle on the container's inner edge (the edge facing
+     * the web contents) while the container is showing.
+     *
+     * <p>Base this on the container's feature configuration, e.g. whether manual resizing is
+     * enabled by its feature flag or params.
+     *
+     * <p>Do not base it on the space available to the container. {@link #determineShowableSize} is
+     * called for every width a drag proposes, so clamping belongs there.
+     */
+    default boolean supportsManualResize() {
+        return false;
+    }
+
+    /**
+     * Returns the resource id of the resize handle's content description, e.g. "Resize tab rail",
+     * or {@link Resources#ID_NULL} for none.
+     *
+     * <p>Only called while {@link #supportsManualResize()} returns true.
+     */
+    default @StringRes int getResizeHandleContentDescriptionRes() {
+        return Resources.ID_NULL;
+    }
+
+    /**
+     * Called for each pointer move while the resize handle is being dragged.
+     *
+     * <p>The proposed width is the raw width implied by the pointer position; it is not clamped.
+     * Implementations are expected to record it as a transient width and request a UI update, which
+     * lets {@link #determineShowableSize} apply the container's own clamping.
+     *
+     * @param proposedWidthPx The raw candidate width in px.
+     */
+    default void onResizeLive(@Px int proposedWidthPx) {}
+
+    /**
+     * Called when the resize gesture ends.
+     *
+     * <p>Implementations should drop the transient width recorded by {@link #onResizeLive}, and
+     * either persist {@code finalWidthPx} or fall back to another state, e.g. collapsing when the
+     * width is below the container's minimum.
+     *
+     * @param finalWidthPx The raw candidate width in px at the end of the gesture.
+     */
+    default void onResizeCommitted(@Px int finalWidthPx) {}
 }

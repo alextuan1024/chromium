@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_fullscreen_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_oom.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/ignore_opens_during_unload_count_incrementer.h"
@@ -543,6 +544,13 @@ void LocalFrameMojoHandler::SendInterventionReport(
     builder.Append(")");
 
     Intervention::GenerateReport(frame_, id, builder.ReleaseString());
+  }
+}
+
+void LocalFrameMojoHandler::UpdateChildFrameToVideoAd(
+    const FrameToken& child_frame_token) {
+  if (auto* child_frame = Frame::ResolveFrame(child_frame_token)) {
+    To<HTMLFrameOwnerElement>(child_frame->Owner())->UpdateToVideoAd();
   }
 }
 
@@ -1151,6 +1159,14 @@ void LocalFrameMojoHandler::HandleRendererDebugURL(const KURL& url) {
   if (url.ProtocolIs("javascript")) {
     // JavaScript URLs should be sent to Blink for handling.
     frame_->LoadJavaScriptURL(url);
+  } else if (url == kChromeUIV8OOMURL) {
+    LOG(ERROR) << "Intentionally causing V8 OOM because user navigated to "
+               << url;
+    // Handle this here rather than in HandleChromeDebugURL() because
+    // HandleChromeDebugURL() is in //third_party/blink/common, which cannot
+    // depend on //third_party/blink/renderer/core without a layering violation.
+    ReportV8OOMError("HandleRendererDebugURL",
+                     v8::OOMDetails{.is_heap_oom = true});
   } else {
     // This is a Chrome Debug URL. Handle it.
     HandleChromeDebugURL(GURL(url));

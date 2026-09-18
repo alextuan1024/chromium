@@ -5,6 +5,7 @@
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service.h"
 
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,8 +19,11 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/supports_user_data.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/private_verification_tokens/common/privacy_pass_athm_batch_request.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_issuer_config.h"
@@ -71,6 +75,23 @@ const char* TryGetTokensErrorToString(
       return "kNullResponse";
   }
 }
+const char kOtrIssuerTrackerKey[] = "PrivateVerificationTokensOtrTracker";
+
+class OtrIssuerTracker : public base::SupportsUserData::Data {
+ public:
+  std::set<url::Origin> issuers;
+};
+
+OtrIssuerTracker* GetOrCreateOtrTracker(Profile* profile) {
+  OtrIssuerTracker* tracker = static_cast<OtrIssuerTracker*>(
+      profile->GetUserData(kOtrIssuerTrackerKey));
+  if (!tracker) {
+    auto new_tracker = std::make_unique<OtrIssuerTracker>();
+    tracker = new_tracker.get();
+    profile->SetUserData(kOtrIssuerTrackerKey, std::move(new_tracker));
+  }
+  return tracker;
+}
 
 }  // namespace
 
@@ -115,6 +136,9 @@ void PrivateVerificationTokensService::Shutdown() {
     return;
   }
   is_shutting_down_ = true;
+  for (auto& observer : observers_) {
+    observer.OnShutdown();
+  }
   auto operations = std::move(pending_operations_);
   for (auto& operation : operations) {
     std::move(operation).Run();
@@ -220,6 +244,26 @@ void PrivateVerificationTokensService::GetTokenIssuers(
   std::move(callback).Run(std::move(issuers));
 }
 
+void PrivateVerificationTokensService::GetAllTokens(
+    base::OnceCallback<
+        void(std::vector<private_verification_tokens::TokenWithId>)> callback) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (is_shutting_down_) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  if (!is_initialized()) {
+    pending_operations_.push_back(
+        base::BindOnce(&PrivateVerificationTokensService::GetAllTokens,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+    return;
+  }
+
+  CHECK(store_);
+  store_->GetAllTokens(std::move(callback));
+}
+
 void PrivateVerificationTokensService::DeleteTokens(
     base::Time delete_begin,
     base::Time delete_end,
@@ -240,8 +284,21 @@ void PrivateVerificationTokensService::DeleteTokens(
   }
 
   CHECK(store_);
-  store_->DeleteTokens(delete_begin, delete_end, std::move(issuers),
-                       std::move(callback));
+  store_->DeleteTokens(
+      delete_begin, delete_end, std::move(issuers),
+      base::BindOnce(
+          [](base::WeakPtr<PrivateVerificationTokensService> service,
+             base::OnceClosure callback) {
+            if (service) {
+              for (auto& observer : service->observers_) {
+                observer.OnTokensDeleted();
+              }
+            }
+            if (callback) {
+              std::move(callback).Run();
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void PrivateVerificationTokensService::DeleteTokensByFilter(
@@ -343,7 +400,8 @@ void PrivateVerificationTokensService::MaybeFetchTokens(
 
   auto fetcher =
       private_verification_tokens::PrivateVerificationTokensFetcher::Create(
-          config.issuer_request_url, url_loader_factory->Clone());
+          config.issuer_request_url, url_loader_factory->Clone(),
+          params->max_response_body_size);
   if (!fetcher) {
     VLOG(1) << "Failed to initialize PVT fetcher for URL: "
             << config.issuer_request_url;
@@ -405,7 +463,8 @@ void PrivateVerificationTokensService::OnFetchTokensCompleted(
 
 std::optional<std::pair<int64_t, std::string>>
 PrivateVerificationTokensService::GetTokenForRedemption(
-    const url::Origin& redeemer_origin) {
+    const url::Origin& redeemer_origin,
+    Profile* profile) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (is_shutting_down_ || !is_initialized() || !issuer_config_) {
     return std::nullopt;
@@ -431,6 +490,23 @@ PrivateVerificationTokensService::GetTokenForRedemption(
     return std::nullopt;
   }
 
+  OtrIssuerTracker* tracker = nullptr;
+  if (profile && profile->IsOffTheRecord()) {
+    tracker = GetOrCreateOtrTracker(profile);
+    if (tracker->issuers.contains(matching_issuer)) {
+      // matching_issuer already received a token in this session.
+      return std::nullopt;
+    }
+    auto params = private_verification_tokens::GetParametersForVersion(
+        config_it->second.public_key.version());
+    if (params.has_value() &&
+        tracker->issuers.size() >= params->max_distinct_issuers_per_session) {
+      base::UmaHistogramBoolean("PrivateVerificationTokens.RedemptionLimitHit",
+                                true);
+      return std::nullopt;
+    }
+  }
+
   CHECK(store_);
   const auto& tokens = store_->tokens();
   auto it = tokens.find(matching_issuer);
@@ -440,6 +516,24 @@ PrivateVerificationTokensService::GetTokenForRedemption(
 
   std::string base64_token = base::Base64Encode(it->second.token.token());
   return std::make_pair(it->second.id, std::move(base64_token));
+}
+
+void PrivateVerificationTokensService::TrackerInsert(
+    Profile* profile,
+    const url::Origin& redeemer_origin) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(profile);
+  if (!profile->IsOffTheRecord()) {
+    return;
+  }
+
+  OtrIssuerTracker* tracker = GetOrCreateOtrTracker(profile);
+  auto it_issuer = redeemer_to_issuer_.find(redeemer_origin);
+  if (it_issuer == redeemer_to_issuer_.end()) {
+    return;
+  }
+
+  tracker->issuers.insert(it_issuer->second);
 }
 
 void PrivateVerificationTokensService::DeleteToken(int64_t token_id,
@@ -458,7 +552,20 @@ void PrivateVerificationTokensService::DeleteToken(int64_t token_id,
         weak_ptr_factory_.GetWeakPtr(), token_id, std::move(callback)));
     return;
   }
-  store_->DeleteToken(token_id, std::move(callback));
+  store_->DeleteToken(
+      token_id, base::BindOnce(
+                    [](base::WeakPtr<PrivateVerificationTokensService> service,
+                       base::OnceClosure callback) {
+                      if (service) {
+                        for (auto& observer : service->observers_) {
+                          observer.OnTokensDeleted();
+                        }
+                      }
+                      if (callback) {
+                        std::move(callback).Run();
+                      }
+                    },
+                    weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 bool PrivateVerificationTokensService::IsRegisteredRedeemer(

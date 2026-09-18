@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/check_op.h"
@@ -178,7 +179,7 @@ PseudoElementStyleCache& ComputedStyle::EnsurePseudoElementStyleCache() const {
   return *cached_data_->pseudo_element_styles_;
 }
 
-const ComputedStyle* ComputedStyle::GetInitialStyleSingleton() {
+const ComputedStyle& ComputedStyle::GetInitialStyleSingleton() {
   DEFINE_THREAD_SAFE_STATIC_LOCAL(
       ThreadSpecific<Persistent<const ComputedStyle>>,
       thread_specific_initial_style, ());
@@ -187,7 +188,7 @@ const ComputedStyle* ComputedStyle::GetInitialStyleSingleton() {
     persistent = MakeGarbageCollected<ComputedStyle>(PassKey());
     LEAK_SANITIZER_IGNORE_OBJECT(&persistent);
   }
-  return persistent.Get();
+  return *persistent;
 }
 
 Vector<AtomicString>* ComputedStyle::GetVariableNamesCache() const {
@@ -2003,7 +2004,7 @@ String ApplyMathAutoTransform(const String& text, TextOffsetMap* offset_map) {
 }  // namespace
 
 String ComputedStyle::ApplyTextTransform(const String& text,
-                                         UChar previous_character,
+                                         UChar32 previous_character,
                                          TextOffsetMap* offset_map) const {
   ETextTransform transform = TextTransform();
 
@@ -2021,7 +2022,13 @@ String ComputedStyle::ApplyTextTransform(const String& text,
     if (RuntimeEnabledFeatures::ICUCapitalizationEnabled()) {
       const LayoutLocale* locale = GetFontDescription().Locale();
       CaseMap case_map(locale ? locale->CaseMapLocale() : CaseMap::Locale());
-      result = case_map.ToTitle(result, offset_map, previous_character);
+      if (RuntimeEnabledFeatures::
+              CapitalizeAfterSupplementaryCharacterFixEnabled()) {
+        result = case_map.ToTitle(result, offset_map, previous_character);
+      } else {
+        result = case_map.ToTitle(result, offset_map,
+                                  static_cast<UChar>(previous_character));
+      }
     } else {
       result = Capitalize(result, previous_character);
     }
@@ -3069,6 +3076,21 @@ bool ComputedStyle::HasBaseEffectiveAppearance() const {
          EffectiveAppearance() == AppearanceValue::kBase;
 }
 
+AnimatedSource ComputedStyle::GetAnimatedSource(CSSPropertyID property) const {
+  if (!RuntimeEnabledFeatures::TrackAnimatedSourcesEnabled()) {
+    return {};
+  }
+  const std::optional<AnimatedSourceProperty> tracked =
+      GetAnimatedSourceProperty(property);
+  if (!tracked) {
+    return {};
+  }
+  const StyleAnimatedSources& sources = CSSProperty::Get(property).IsInherited()
+                                            ? InheritedAnimatedSources()
+                                            : NonInheritedAnimatedSources();
+  return sources.Get(*tracked);
+}
+
 ComputedStyleBuilder::ComputedStyleBuilder(const ComputedStyle& style)
     : ComputedStyleBuilderBase(style) {}
 
@@ -3116,6 +3138,83 @@ void ComputedStyleBuilder::PropagateIndependentInheritedProperties(
   if (!HasVariableReference() && !HasVariableDeclaration() &&
       InheritedVariablesInternal() != parent_style.InheritedVariables()) {
     SetInheritedVariablesInternal(parent_style.InheritedVariablesInternal());
+  }
+}
+
+// Compares through the shared group first to avoid a copy-on-write when
+// unchanged.
+void ComputedStyleBuilder::UpdateAnimatedSource(AnimatedSourceProperty property,
+                                                bool is_inherited,
+                                                AnimatedSource source) {
+  DCHECK(source.IsValid());
+  if (is_inherited) {
+    if (InheritedAnimatedSources().Get(property) != source) {
+      MutableInheritedAnimatedSourcesInternal().Set(property, source);
+    }
+  } else if (NonInheritedAnimatedSources().Get(property) != source) {
+    MutableNonInheritedAnimatedSourcesInternal().Set(property, source);
+  }
+}
+
+void ComputedStyleBuilder::SetAnimatedSource(CSSPropertyID property,
+                                             Element& animating_element) {
+  // ForElement() may allocate through DOMNodeIds; only do that when
+  // setting an animated source.
+  if (!RuntimeEnabledFeatures::TrackAnimatedSourcesEnabled()) {
+    return;
+  }
+  const std::optional<AnimatedSourceProperty> tracked =
+      GetAnimatedSourceProperty(property);
+  if (!tracked) {
+    return;
+  }
+  UpdateAnimatedSource(*tracked, CSSProperty::Get(property).IsInherited(),
+                       AnimatedSource::ForElement(&animating_element));
+}
+
+void ComputedStyleBuilder::CopyAnimatedSourceFrom(
+    CSSPropertyID property,
+    const ComputedStyle* parent_style,
+    bool has_untracked_dependencies) {
+  if (!RuntimeEnabledFeatures::TrackAnimatedSourcesEnabled()) {
+    return;
+  }
+  const std::optional<AnimatedSourceProperty> tracked =
+      GetAnimatedSourceProperty(property);
+  if (!tracked) {
+    return;
+  }
+  if (!parent_style) {
+    ClearAnimatedSource(property);
+    return;
+  }
+  if (AnimatedSource source = parent_style->GetAnimatedSource(property);
+      source.IsValid()) {
+    source.has_untracked_dependencies = has_untracked_dependencies;
+    UpdateAnimatedSource(*tracked, CSSProperty::Get(property).IsInherited(),
+                         source);
+  } else {
+    ClearAnimatedSource(property);
+  }
+}
+
+void ComputedStyleBuilder::ClearAnimatedSource(CSSPropertyID property) {
+  if (!RuntimeEnabledFeatures::TrackAnimatedSourcesEnabled()) {
+    return;
+  }
+  const std::optional<AnimatedSourceProperty> tracked =
+      GetAnimatedSourceProperty(property);
+  if (!tracked) {
+    return;
+  }
+  // Compares through the shared group first to avoid a copy-on-write when
+  // already clear.
+  if (CSSProperty::Get(property).IsInherited()) {
+    if (InheritedAnimatedSources().Get(*tracked).IsValid()) {
+      MutableInheritedAnimatedSourcesInternal().Clear(*tracked);
+    }
+  } else if (NonInheritedAnimatedSources().Get(*tracked).IsValid()) {
+    MutableNonInheritedAnimatedSourcesInternal().Clear(*tracked);
   }
 }
 

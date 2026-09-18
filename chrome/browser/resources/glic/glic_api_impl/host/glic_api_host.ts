@@ -5,34 +5,26 @@
 // Chrome-WebUI-side of the Glic API.
 // Communicates with the web client side in ../client/.
 
-import {assert} from '//resources/js/assert.js';
-
 import {enumToClient} from '../../enum_conversions.js';
-import {ActorClientReceiver, ActorHandlerRemote, AnnotationHandlerRemote, ExperimentalTriggeringClientReceiver, GlicRequestEvent as MojomGlicRequestEvent, WebClientHandlerRemote, ZeroStateSuggestionsHandlerRemote} from '../../glic.mojom-webui.js';
-import type {ExperimentalTriggeringUpdatesHandlerRemote, WebClientInitialState} from '../../glic.mojom-webui.js';
+import {GlicRequestEvent as MojomGlicRequestEvent, WebClientHandlerRemote} from '../../glic.mojom-webui.js';
+import type {WebClientInitialState} from '../../glic.mojom-webui.js';
 import {ClientCapabilities} from '../../glic_api/glic_api.js';
 import {ObservableValue} from '../../observable.js';
 import type {ObservableValueReadOnly} from '../../observable.js';
 import {TaskQueue} from '../../task_queue.js';
-import {ActorClientImpl, ActorHostMessageHandler} from '../actor/actor_host.js';
-import {ActorClientDef, ActorHostDef} from '../actor/actor_types.js';
-import {AnnotationHostMessageHandler} from '../annotation/annotation_host.js';
-import {AnnotationHostDef} from '../annotation/annotation_types.js';
-import type {AnnotationHost} from '../annotation/annotation_types.js';
-import {ExperimentalTriggeringClientImpl} from '../experimental_triggering/experimental_triggering_host.js';
-import {ExperimentalTriggeringClientDef} from '../experimental_triggering/experimental_triggering_types.js';
-import type {ExperimentalTriggeringClient} from '../experimental_triggering/experimental_triggering_types.js';
 import {maybeWrapWithLogging} from '../mojo_logging.js';
 import {getHostRequestHistogramInfo} from '../request_types.js';
-import type {ActorClient, ActorHost, WebClient, ZeroStateSuggestionsHost} from '../request_types.js';
+import type {WebClient} from '../request_types.js';
 import type {ResponseExtras} from '../transport/messaging.js';
-import type {InterfaceDef, PendingReceiver, PendingRemote, PostMessageLifecycleObserver, PostMessageRemote, PostMessageRouter} from '../transport/post_message_transport.js';
-import {ZeroStateSuggestionsHostMessageHandler} from '../zero_state_suggestions/zero_state_suggestions_host.js';
-import {ZeroStateSuggestionsHostDef} from '../zero_state_suggestions/zero_state_suggestions_types.js';
+import type {                              //
+             InterfaceDef,                 //
+             PostMessageLifecycleObserver, //
+             PostMessageRemote,            //
+             PostMessageRouter,            //
+} from '../transport/post_message_transport.js';
 
 import {conversionSettings, urlFromClient} from './conversions.js';
 import {HostMessageHandler} from './host_from_client.js';
-import type {CaptureRegionObserverImpl} from './host_from_client.js';
 import {PanelOpenState} from './types.js';
 
 
@@ -74,18 +66,9 @@ export class GlicApiHost implements PostMessageLifecycleObserver {
   // processing is async.
   private panelOpenState = PanelOpenState.CLOSED;
   private instanceIsActive = true;
-  captureRegionObserver?: CaptureRegionObserverImpl;
 
-  actorHandler?: ActorHandlerRemote;
-  annotationHandler?: AnnotationHandlerRemote;
   readonly router: PostMessageRouter;
-
-  zeroStateSuggestionsHandler?: ZeroStateSuggestionsHandlerRemote;
   private isDestroyed = false;
-
-  private experimentalTriggeringUpdatesHandler =
-      new Map<number, ExperimentalTriggeringUpdatesHandlerRemote>();
-  private nextExperimentalTriggeringUpdateHandlerId = 0;
 
   constructor(
       hostRemote: PostMessageRemote<WebClient>,
@@ -118,101 +101,16 @@ export class GlicApiHost implements PostMessageLifecycleObserver {
     this.webClientState = ObservableValue.withValue<WebClientState>(
         WebClientState.ERROR);  // Final state
     this.hostMessageHandler.destroy();
-    this.captureRegionObserver?.destroy();
-    if (this.actorHandler) {
-      this.actorHandler.$.close();
-      this.actorHandler = undefined;
-    }
-    if (this.annotationHandler) {
-      this.annotationHandler.$.close();
-      this.annotationHandler = undefined;
-    }
-    for (const handler of this.experimentalTriggeringUpdatesHandler.values()) {
-      handler.$.close();
-    }
-    this.experimentalTriggeringUpdatesHandler.clear();
   }
 
   setInitialState(
       initialState: WebClientInitialState,
-      clientCapabilities: Set<ClientCapabilities>): {
-    actorRemote?: PendingRemote<ActorHost>,
-    actorReceiver?: PendingReceiver<ActorClient>,
-    experimentalTriggeringReceiver?: PendingReceiver<
-                                      ExperimentalTriggeringClient>,
-    zeroStateSuggestionsRemote?: PendingRemote<ZeroStateSuggestionsHost>,
-  } {
+      clientCapabilities: Set<ClientCapabilities>): void {
     this.panelIsActive = initialState.panelIsActive;
     this.instanceIsActive = initialState.instanceIsActive;
     conversionSettings.platform = enumToClient(initialState.platform);
     conversionSettings.omitFaviconInTabData =
         clientCapabilities.has(ClientCapabilities.IGNORES_TAB_DATA_FAVICONS);
-
-    let actorRemote: PendingRemote<ActorHost>|undefined;
-    let actorReceiver: PendingReceiver<ActorClient>|undefined;
-
-    if (initialState.enableActInFocusedTab) {
-      this.actorHandler = maybeWrapWithLogging(
-          new ActorHandlerRemote(), {prefix: 'ActorHandler'});
-      const {remote: clientRemote, receiver: receiverVal} =
-          this.router.newPipeWithRemote(ActorClientDef);
-      const actorClientReceiver =
-          new ActorClientReceiver(new ActorClientImpl(clientRemote));
-      this.handler.createActorHandler(
-          this.actorHandler.$.bindNewPipeAndPassReceiver(),
-          actorClientReceiver.$.bindNewPipeAndPassRemote());
-      const actorHostMessageHandler =
-          new ActorHostMessageHandler(this.actorHandler);
-      const {remote: hostRemote} = this.router.newPipeWithReceiver(
-          actorHostMessageHandler, ActorHostDef);
-      actorRemote = hostRemote;
-      actorReceiver = receiverVal;
-    }
-
-    const {remote: clientRemote, receiver: experimentalTriggeringReceiver} =
-        this.router.newPipeWithRemote(ExperimentalTriggeringClientDef);
-    const experimentalTriggeringClientReceiver =
-        new ExperimentalTriggeringClientReceiver(
-            new ExperimentalTriggeringClientImpl(clientRemote, this));
-    this.handler.createExperimentalTriggeringClient(
-        experimentalTriggeringClientReceiver.$.bindNewPipeAndPassRemote());
-
-    let zeroStateSuggestionsRemote: PendingRemote<ZeroStateSuggestionsHost>|
-        undefined;
-    if (initialState.enableZeroStateSuggestions) {
-      this.zeroStateSuggestionsHandler = maybeWrapWithLogging(
-          new ZeroStateSuggestionsHandlerRemote(),
-          {prefix: 'ZeroStateSuggestionsHandler'});
-      this.handler.createZeroStateSuggestionsHandler(
-          this.zeroStateSuggestionsHandler.$.bindNewPipeAndPassReceiver());
-      const zeroStateSuggestionsHostMessageHandler =
-          new ZeroStateSuggestionsHostMessageHandler(
-              this.zeroStateSuggestionsHandler, this.router);
-      const {remote: zeroStateSuggestionsRemoteVal} =
-          this.router.newPipeWithReceiver(
-              zeroStateSuggestionsHostMessageHandler,
-              ZeroStateSuggestionsHostDef);
-      zeroStateSuggestionsRemote = zeroStateSuggestionsRemoteVal;
-    }
-
-    return {
-      actorRemote,
-      actorReceiver,
-      experimentalTriggeringReceiver,
-      zeroStateSuggestionsRemote,
-    };
-  }
-
-  createAnnotationHandler(receiver: PendingReceiver<AnnotationHost>): void {
-    assert(!this.annotationHandler);
-    this.annotationHandler = maybeWrapWithLogging(
-        new AnnotationHandlerRemote(), {prefix: 'AnnotationHandler'});
-    this.handler.createAnnotationHandler(
-        this.annotationHandler.$.bindNewPipeAndPassReceiver());
-    const annotationHostMessageHandler =
-        new AnnotationHostMessageHandler(this.annotationHandler);
-    this.router.newReceiver(
-        receiver, annotationHostMessageHandler, AnnotationHostDef);
   }
 
   waitingOnPanelWillOpen() {
@@ -345,22 +243,6 @@ export class GlicApiHost implements PostMessageLifecycleObserver {
     } catch (e) {
       console.error('[reportApiRequestCount ERROR]', e);
     }
-  }
-
-  addExperimentalTriggeringUpdatesHandler(
-      handler: ExperimentalTriggeringUpdatesHandlerRemote): number {
-    const id = this.nextExperimentalTriggeringUpdateHandlerId++;
-    this.experimentalTriggeringUpdatesHandler.set(id, handler);
-    return id;
-  }
-
-  getExperimentalTriggeringUpdatesHandler(observationId: number):
-      ExperimentalTriggeringUpdatesHandlerRemote|undefined {
-    return this.experimentalTriggeringUpdatesHandler.get(observationId);
-  }
-
-  deleteExperimentalTriggeringUpdatesHandler(observationId: number): void {
-    this.experimentalTriggeringUpdatesHandler.delete(observationId);
   }
 
   reportLatency(

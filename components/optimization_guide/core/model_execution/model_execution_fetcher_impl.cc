@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 
+#include "base/command_line.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/core/access_token_helper.h"
@@ -29,19 +30,29 @@
 
 namespace optimization_guide {
 
+namespace {
+
 using ModelExecutionError =
     OptimizationGuideModelExecutionError::ModelExecutionError;
 
+constexpr char kModelExecutionUnaryRPCName[] = "v1:Execute";
+
+GURL GetModelExecutionServiceURL() {
+  return GetModelExecutionServiceFullURL(kModelExecutionUnaryRPCName);
+}
+
+}  // namespace
+
 ModelExecutionFetcherImpl::ModelExecutionFetcherImpl(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const GURL& optimization_guide_service_url,
     OptimizationGuideLogger* optimization_guide_logger)
-    : optimization_guide_service_url_(optimization_guide_service_url),
+    : optimization_guide_service_url_(GetModelExecutionServiceURL()),
       url_loader_factory_(url_loader_factory),
       optimization_guide_logger_(optimization_guide_logger) {
-  if (!net::IsLocalhost(optimization_guide_service_url_)) {
-    CHECK(optimization_guide_service_url_.SchemeIs(url::kHttpsScheme));
-  }
+  CHECK(optimization_guide_service_url_.SchemeIs(url::kHttpsScheme) ||
+        (base::CommandLine::ForCurrentProcess()->HasSwitch(
+             kOptimizationGuideServiceModelExecutionURLSwitch) &&
+         optimization_guide_service_url_.SchemeIsHTTPOrHTTPS()));
 }
 
 ModelExecutionFetcherImpl::~ModelExecutionFetcherImpl() {

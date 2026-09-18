@@ -20,6 +20,7 @@
 #include "chrome/browser/ash/login/saml/in_session_password_change_manager.h"
 #include "chrome/browser/ash/login/session/chrome_session_manager.h"
 #include "chrome/browser/ash/login/session/session_manager_delegate_impl.h"
+#include "chrome/browser/ash/login/users/account_id_annotator.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_registry.h"
 #include "chrome/browser/ash/login/users/policy_user_manager_controller.h"
 #include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
@@ -47,12 +48,10 @@
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/sessions/session_service_utils.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/auto_sign_out/auto_sign_out_service.h"
@@ -142,6 +141,8 @@ void BrowserProcessPlatformPart::InitializeUserManager() {
   auto* local_state = g_browser_process->local_state();
   user_manager_ = std::make_unique<user_manager::UserManagerImpl>(
       std::make_unique<ash::UserManagerDelegateImpl>(), local_state);
+  account_id_annotator_ = std::make_unique<ash::AccountIdAnnotator>(
+      g_browser_process->profile_manager(), user_manager_.get());
   profile_user_manager_controller_ =
       std::make_unique<ash::ProfileUserManagerController>(
           g_browser_process->profile_manager(), user_manager_.get());
@@ -192,6 +193,7 @@ void BrowserProcessPlatformPart::DestroyUserManager() {
   multi_user_sign_in_policy_controller_.reset();
   user_image_manager_registry_.reset();
   profile_user_manager_controller_.reset();
+  account_id_annotator_.reset();
   user_manager_.reset();
 }
 

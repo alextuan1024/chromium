@@ -9,8 +9,8 @@
 
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -188,7 +188,7 @@ void SafeBrowsingDatabaseManager::OnNotificationAbuseFullHashesResponse(
 
 void SafeBrowsingDatabaseManager::StartOnUIThread(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const V4ProtocolConfig& config) {
+    const SBProtocolConfig& config) {
   DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
 
   if (!base::FeatureList::IsEnabled(kLocalListsUseSBv5)) {

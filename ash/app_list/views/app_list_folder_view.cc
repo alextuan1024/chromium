@@ -28,10 +28,10 @@
 #include "ash/public/cpp/app_list/app_list_features.h"
 #include "ash/public/cpp/app_list/app_list_model_delegate.h"
 #include "ash/public/cpp/metrics_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
+#include "ash/style/style_util.h"
 #include "ash/style/system_shadow.h"
 #include "base/barrier_closure.h"
 #include "base/check.h"
@@ -44,6 +44,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/compositor.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
@@ -662,13 +663,14 @@ AppListFolderView::AppListFolderView(AppListFolderController* folder_controller,
   // such changes.
   background_view_ = AddChildView(std::make_unique<views::View>());
   background_view_->SetPaintToLayer(ui::LAYER_TEXTURED);
+  background_view_->layer()->SetName("AppListFolderView:Background");
 
   if (chromeos::features::IsSystemBlurEnabled()) {
     background_view_->layer()->SetFillsBoundsOpaquely(false);
     background_view_->layer()->SetBackgroundBlur(
-        ColorProvider::kBackgroundBlurSigma);
+        StyleUtil::kBackgroundBlurSigma);
     background_view_->layer()->SetBackdropFilterQuality(
-        ColorProvider::kBackgroundBlurQuality);
+        StyleUtil::kBackgroundBlurQuality);
   }
 
   background_view_->layer()->SetRoundedCornerRadius(
@@ -687,17 +689,20 @@ AppListFolderView::AppListFolderView(AppListFolderController* folder_controller,
 
   animating_background_ = AddChildView(std::make_unique<views::View>());
   animating_background_->SetPaintToLayer(ui::LAYER_SOLID_COLOR);
+  animating_background_->layer()->SetName(
+      "AppListFolderView:AnimatingBackground");
   if (chromeos::features::IsSystemBlurEnabled()) {
     animating_background_->layer()->SetBackgroundBlur(
-        ColorProvider::kBackgroundBlurSigma);
+        StyleUtil::kBackgroundBlurSigma);
     animating_background_->layer()->SetBackdropFilterQuality(
-        ColorProvider::kBackgroundBlurQuality);
+        StyleUtil::kBackgroundBlurQuality);
   }
 
   animating_background_->SetVisible(false);
 
   contents_container_ = AddChildView(std::make_unique<views::View>());
   contents_container_->SetPaintToLayer(ui::LAYER_NOT_DRAWN);
+  contents_container_->layer()->SetName("AppListFolderView:ContentsContainer");
 
   CreateScrollableAppsGrid(tablet_mode);
 

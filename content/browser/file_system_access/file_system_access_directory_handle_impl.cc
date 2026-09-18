@@ -53,7 +53,7 @@ namespace content {
 using HandleType = FileSystemAccessPermissionContext::HandleType;
 using SensitiveEntryResult =
     FileSystemAccessPermissionContext::SensitiveEntryResult;
-using UserAction = FileSystemAccessPermissionContext::UserAction;
+using AccessTrigger = FileSystemAccessPermissionContext::AccessTrigger;
 
 struct FileSystemAccessDirectoryHandleImpl::
     FileSystemAccessDirectoryEntriesListenerHolder
@@ -203,52 +203,43 @@ void FileSystemAccessDirectoryHandleImpl::GetFileResolved(
     return;
   }
 
-  if (GetReadPermissionStatus() != PermissionStatus::GRANTED) {
-    std::move(callback).Run(file_system_access_error::FromStatus(
-                                FileSystemAccessStatus::kPermissionDenied),
-                            mojo::NullRemote());
+  if (auto read_access = CheckReadAccess(); !read_access.has_value()) {
+    std::move(callback).Run(std::move(read_access.error()), mojo::NullRemote());
     return;
   }
 
   if (base::FeatureList::IsEnabled(
-          features::kFileSystemAccessDirectoryIterationBlocklistCheck) &&
-      manager()->permission_context()) {
+          features::kFileSystemAccessDirectoryIterationBlocklistCheck)) {
     // While this directory handle already has obtained the permission and
     // checked for the blocklist, a child symlink file may have been created
-    // since then, pointing to a blocklisted file or directory.  Check for
+    // since then, pointing to a blocklisted file or directory. Check for
     // sensitive entry access, which is run on the resolved path.
-    PathInfo path_info{
-        child_url.type() == storage::FileSystemType::kFileSystemTypeLocal
-            ? PathType::kLocal
-            : PathType::kExternal,
-        child_url.path(), basename};
-    manager()->permission_context()->ConfirmSensitiveEntryAccess(
-        context().storage_key.origin(), path_info, HandleType::kFile,
-        UserAction::kNone, context().frame_id,
+    // TODO(crbug.com/545006893): Update to pass
+    // `AccessTrigger::kProgrammaticWrite` when `create` is true. This CL is a
+    // pure refactoring so we avoid making behavioral changes here; this will
+    // be addressed in a follow-up CL.
+    RunWithSensitiveEntryAccess(
+        child_url, basename, HandleType::kFile,
+        AccessTrigger::kProgrammaticRead,
         base::BindOnce(&FileSystemAccessDirectoryHandleImpl::DoGetFile,
-                       weak_factory_.GetWeakPtr(), basename, create, child_url,
-                       std::move(callback)));
+                       weak_factory_.GetWeakPtr(), basename, create, child_url),
+        base::BindOnce([](GetFileCallback callback) {
+          std::move(callback).Run(file_system_access_error::FromStatus(
+                                      FileSystemAccessStatus::kSecurityError),
+                                  mojo::NullRemote());
+        }),
+        std::move(callback));
     return;
   }
 
-  DoGetFile(basename, create, child_url, std::move(callback),
-            SensitiveEntryResult::kAllowed);
+  DoGetFile(basename, create, child_url, std::move(callback));
 }
 
-void FileSystemAccessDirectoryHandleImpl::DoGetFile(
-    const std::string& basename,
-    bool create,
-    storage::FileSystemURL url,
-    GetFileCallback callback,
-    SensitiveEntryResult sensitive_entry_result) {
+void FileSystemAccessDirectoryHandleImpl::DoGetFile(const std::string& basename,
+                                                    bool create,
+                                                    storage::FileSystemURL url,
+                                                    GetFileCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (sensitive_entry_result != SensitiveEntryResult::kAllowed) {
-    std::move(callback).Run(file_system_access_error::FromStatus(
-                                FileSystemAccessStatus::kSecurityError),
-                            mojo::NullRemote());
-    return;
-  }
 
   if (create) {
     // If `create` is true, write permission is required unconditionally, i.e.
@@ -348,10 +339,8 @@ void FileSystemAccessDirectoryHandleImpl::GetDirectoryResolved(
     return;
   }
 
-  if (GetReadPermissionStatus() != PermissionStatus::GRANTED) {
-    std::move(callback).Run(file_system_access_error::FromStatus(
-                                FileSystemAccessStatus::kPermissionDenied),
-                            mojo::NullRemote());
+  if (auto read_access = CheckReadAccess(); !read_access.has_value()) {
+    std::move(callback).Run(std::move(read_access.error()), mojo::NullRemote());
     return;
   }
 
@@ -389,11 +378,9 @@ void FileSystemAccessDirectoryHandleImpl::GetEntries(
           std::move(pending_listener),
           base::SequencedTaskRunner::GetCurrentDefault());
 
-  if (GetReadPermissionStatus() != PermissionStatus::GRANTED) {
-    listener_holder->listener->DidReadDirectory(
-        file_system_access_error::FromStatus(
-            FileSystemAccessStatus::kPermissionDenied),
-        {}, false);
+  if (auto read_access = CheckReadAccess(); !read_access.has_value()) {
+    listener_holder->listener->DidReadDirectory(std::move(read_access.error()),
+                                                {}, false);
     return;
   }
 
@@ -844,7 +831,8 @@ void FileSystemAccessDirectoryHandleImpl::DidReadDirectory(
                   ? PathType::kLocal
                   : PathType::kExternal,
               child_url.path(), basename),
-          HandleType::kFile, UserAction::kNone, context().frame_id,
+          HandleType::kFile, AccessTrigger::kProgrammaticRead,
+          context().frame_id,
           base::BindOnce(&FileSystemAccessDirectoryHandleImpl::
                              DidVerifySensitiveAccessForFileEntry,
                          weak_factory_.GetWeakPtr(), entry.name,

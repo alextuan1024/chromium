@@ -57,6 +57,8 @@ const base::FeatureParam<CredentialDiscoveryMode> kCredentialDiscoveryModeParam{
     &kSecurePaymentConfirmationCredentialDiscoveryMode, "mode",
 #if BUILDFLAG(IS_ANDROID)
     CredentialDiscoveryMode::kOsOnly,
+#elif BUILDFLAG(IS_WIN)
+    CredentialDiscoveryMode::kHybrid,
 #else
     CredentialDiscoveryMode::kUserDatabaseOnly,
 #endif
@@ -98,6 +100,8 @@ BASE_FEATURE(kPaymentHandlerCameraAccessUx, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kSPCLocaleValidation, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kThreeDSecureTelemetry, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPaymentHandlerModalDialogHost, base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace features
 }  // namespace payments

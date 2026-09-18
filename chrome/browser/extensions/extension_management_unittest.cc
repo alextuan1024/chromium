@@ -22,6 +22,7 @@
 #include "chrome/browser/extensions/extension_management_internal.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/external_policy_loader.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/browser/extensions/standard_management_policy_provider.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
@@ -1576,6 +1577,52 @@ TEST_F(ExtensionManagementServiceTest,
   }
 }
 
+TEST_F(ExtensionManagementServiceTest, IsExtensionBlockedByLowTrust) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+#endif
+
+  const std::string extension_id = "abcdefghijklmnopabcdefghijklmnop";
+
+  // 1. Simulate low trust (unmanaged).
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      policy::ManagementServiceFactory::GetForProfile(profile_.get()),
+      policy::EnterpriseManagementAuthority::NONE);
+
+  // Initially false before marking blocked on all platforms.
+  EXPECT_FALSE(
+      extension_management_->IsExtensionBlockedByLowTrust(extension_id));
+
+  // Mark as blocked in LowTrustPolicyInstallBlockManager.
+  extension_management_->low_trust_block_manager()->MarkBlocked(
+      extension_id,
+      BlockedExtensionInfo{.override_type = util::DseNtpOverrideType::kDse,
+                           .update_url = "http://example.com",
+                           .timestamp = base::Time::Now()});
+
+  bool expect_blocked =
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+      true;
+#else
+      false;
+#endif
+
+  // Returns true on Win/Mac when marked in low trust, false on other platforms.
+  EXPECT_EQ(extension_management_->IsExtensionBlockedByLowTrust(extension_id),
+            expect_blocked);
+
+  // 2. Simulate high trust (managed enterprise).
+  policy::ScopedManagementServiceOverrideForTesting trusted_management(
+      policy::ManagementServiceFactory::GetForProfile(profile_.get()),
+      policy::EnterpriseManagementAuthority::CLOUD);
+
+  // Returns false in trusted environments on all platforms even if cached in
+  // prefs.
+  EXPECT_FALSE(
+      extension_management_->IsExtensionBlockedByLowTrust(extension_id));
+}
+
 // Tests the flag value indicating that extensions are blocklisted by default.
 TEST_F(ExtensionAdminPolicyTest, BlocklistedByDefault) {
   EXPECT_FALSE(BlocklistedByDefault(nullptr));
@@ -1755,6 +1802,171 @@ TEST_F(ExtensionAdminPolicyTest, MustRemainEnabled) {
   EXPECT_FALSE(MustRemainEnabled(extension_.get(), nullptr));
   EXPECT_FALSE(MustRemainEnabled(extension_.get(), &error));
   EXPECT_TRUE(error.empty());
+}
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+TEST_F(ExtensionManagementServiceTest, GetConfiguredInstallationMode) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      policy::ManagementServiceFactory::GetForProfile(profile_.get()),
+      policy::EnterpriseManagementAuthority::NONE);
+
+  const std::string extension_id = "abcdefghijklmnopabcdefghijklmnop";
+  const std::string blocked_id = "bcdefghijklmnopabcdefghijklmnopa";
+  const std::string update_url = extension_urls::kChromeWebstoreUpdateURL;
+
+  const std::string pref_json = base::StringPrintf(
+      R"({
+        "%s": {
+          "installation_mode": "force_installed",
+          "update_url": "%s"
+        },
+        "%s": {
+          "installation_mode": "blocked"
+        }
+      })",
+      extension_id.c_str(), update_url.c_str(), blocked_id.c_str());
+  SetExampleDictPref(pref_json.c_str());
+
+  scoped_refptr<const Extension> extension =
+      CreateExtension(ManifestLocation::kExternalPolicyDownload, "0.1",
+                      extension_id, update_url);
+
+  // Before the extension is blocked in low-trust mode, both the runtime and
+  // configured values for the installation mode report kForced.
+  EXPECT_EQ(ManagedInstallationMode::kForced,
+            extension_management_->GetInstallationMode(extension.get()));
+  EXPECT_EQ(ManagedInstallationMode::kForced,
+            extension_management_->GetConfiguredInstallationMode(*extension));
+
+  // Mark the extension as blocked in low trust.
+  extension_management_->low_trust_block_manager()->MarkBlocked(
+      extension_id,
+      BlockedExtensionInfo{.override_type = util::DseNtpOverrideType::kDse,
+                           .update_url = update_url,
+                           .timestamp = base::Time::Now()});
+
+  // After blocking the extension in low-trust mode, the configured policy
+  // still reports kForced (as specified in the raw policy), but the effective
+  // runtime mode is overridden to kAllowed so the user can manage it.
+  EXPECT_EQ(ManagedInstallationMode::kAllowed,
+            extension_management_->GetInstallationMode(extension.get()));
+  EXPECT_EQ(ManagedInstallationMode::kForced,
+            extension_management_->GetConfiguredInstallationMode(*extension));
+
+  // Test the ID + update_url overload too.
+  EXPECT_EQ(
+      ManagedInstallationMode::kAllowed,
+      extension_management_->GetInstallationMode(extension_id, update_url));
+  EXPECT_EQ(ManagedInstallationMode::kForced,
+            extension_management_->GetConfiguredInstallationMode(extension_id,
+                                                                 update_url));
+
+  // An explicitly blocked extension remains blocked even if it is present
+  // in the low-trust blocked manager (the override applies only to forced or
+  // recommended policy installs).
+  extension_management_->low_trust_block_manager()->MarkBlocked(
+      blocked_id,
+      BlockedExtensionInfo{.override_type = util::DseNtpOverrideType::kDse,
+                           .update_url = "",
+                           .timestamp = base::Time::Now()});
+  EXPECT_EQ(ManagedInstallationMode::kBlocked,
+            extension_management_->GetInstallationMode(blocked_id, ""));
+  EXPECT_EQ(
+      ManagedInstallationMode::kBlocked,
+      extension_management_->GetConfiguredInstallationMode(blocked_id, ""));
+}
+#endif
+
+TEST_F(ExtensionManagementServiceTest, IsForcedOrRecommendedInstallConfigured) {
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      policy::ManagementServiceFactory::GetForProfile(profile_.get()),
+      policy::EnterpriseManagementAuthority::NONE);
+
+  const std::string forced_id = "abcdefghijklmnopabcdefghijklmnop";
+  const std::string recommended_id = "bcdefghijklmnopabcdefghijklmnopa";
+  const std::string allowed_id = "cdefghijklmnopabcdefghijklmnopab";
+  const std::string update_url = extension_urls::kChromeWebstoreUpdateURL;
+
+  const std::string pref_json = base::StringPrintf(
+      R"({
+        "%s": {
+          "installation_mode": "force_installed",
+          "update_url": "%s"
+        },
+        "%s": {
+          "installation_mode": "normal_installed",
+          "update_url": "%s"
+        },
+        "%s": {
+          "installation_mode": "allowed"
+        }
+      })",
+      forced_id.c_str(), update_url.c_str(), recommended_id.c_str(),
+      update_url.c_str(), allowed_id.c_str());
+  SetExampleDictPref(pref_json.c_str());
+
+  scoped_refptr<const Extension> forced_extension = CreateExtension(
+      ManifestLocation::kExternalPolicyDownload, "0.1", forced_id, update_url);
+  scoped_refptr<const Extension> recommended_extension =
+      CreateExtension(ManifestLocation::kExternalPrefDownload, "0.1",
+                      recommended_id, update_url);
+  scoped_refptr<const Extension> allowed_extension = CreateExtension(
+      ManifestLocation::kExternalPrefDownload, "0.1", allowed_id, update_url);
+
+  // 1. Verify forced and recommended extensions return true, while allowed
+  // extensions return false.
+  EXPECT_TRUE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      *forced_extension));
+  EXPECT_TRUE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      *recommended_extension));
+  EXPECT_FALSE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      *allowed_extension));
+
+  // 2. Test best-effort lookup by extension ID.
+  EXPECT_TRUE(
+      extension_management_->IsForcedOrRecommendedInstallConfigured(forced_id));
+  EXPECT_TRUE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      recommended_id));
+  EXPECT_FALSE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      allowed_id));
+
+  // 3. Test lookup by extension ID and update URL.
+  EXPECT_TRUE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      forced_id, update_url));
+  EXPECT_TRUE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      recommended_id, update_url));
+  EXPECT_FALSE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      allowed_id, update_url));
+
+  // 4. Update URL policies apply to all extensions sharing an update URL.
+  // They can be configured with 'blocked' or 'allowed' modes, but not
+  // 'force_installed' or 'normal_installed' (which require individual
+  // extension IDs).
+  // A non-webstore update URL is used here to simulate a custom enterprise
+  // update server for URL-scoped policy matching, avoiding a blanket policy
+  // that would affect Web Store extensions across the test fixture.
+  const char kUpdateUrlPref[] = R"({
+    "update_url:http://example.com/update": {
+      "installation_mode": "blocked"
+    }
+  })";
+  SetExampleDictPref(kUpdateUrlPref);
+
+  const std::string update_url_id = "ddefghijklmnopabcdefghijklmnopab";
+  const std::string other_update_url = "http://example.com/update";
+  scoped_refptr<const Extension> extension_with_update_url =
+      CreateExtension(ManifestLocation::kExternalPolicyDownload, "0.1",
+                      update_url_id, other_update_url);
+
+  // Since it is configured as blocked (not forced or recommended),
+  // IsForcedOrRecommendedInstallConfigured returns false.
+  EXPECT_FALSE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      *extension_with_update_url));
+  EXPECT_FALSE(extension_management_->IsForcedOrRecommendedInstallConfigured(
+      update_url_id, other_update_url));
 }
 
 }  // namespace extensions

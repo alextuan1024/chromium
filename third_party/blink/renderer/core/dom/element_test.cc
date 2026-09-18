@@ -617,7 +617,7 @@ TEST_F(ElementTest, OptionElementDisplayNoneComputedStyle) {
                    ->GetComputedStyle());
 }
 
-// A fake plugin which will assert that script is allowed in Destroy.
+// A fake plugin which will assert that script is forbidden in Destroy.
 class ScriptOnDestroyPlugin : public GarbageCollected<ScriptOnDestroyPlugin>,
                               public WebPlugin {
  public:
@@ -627,7 +627,7 @@ class ScriptOnDestroyPlugin : public GarbageCollected<ScriptOnDestroyPlugin>,
   }
   void Destroy() override {
     destroy_called_ = true;
-    ASSERT_FALSE(ScriptForbiddenScope::IsScriptForbidden());
+    ASSERT_TRUE(ScriptForbiddenScope::IsScriptForbidden());
   }
   WebPluginContainer* Container() const override { return container_; }
 
@@ -658,7 +658,7 @@ class ScriptOnDestroyPlugin : public GarbageCollected<ScriptOnDestroyPlugin>,
   bool destroy_called_ = false;
 };
 
-TEST_F(ElementTest, CreateAndAttachShadowRootSuspendsPluginDisposal) {
+TEST_F(ElementTest, CreateAndAttachShadowRootForbidsScriptDuringPluginDispose) {
   Document& document = GetDocument();
   SetBodyContent(R"HTML(
     <div id=target>

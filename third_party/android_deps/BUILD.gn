@@ -7,6 +7,7 @@ import("//build/config/android/rules.gni")
 # Targets are declared inside a template in autorolled/BUILD.gn so they can be
 # imported here and be part of this BUILD.gn from gn's point of view.
 import("//third_party/android_deps/autorolled/BUILD.gn")
+
 define_autorolled_targets("unused") {
 }
 
@@ -105,6 +106,17 @@ if (!limit_android_deps) {
       deps = [ playcore_target ]
     } else {
       deps = [ "//third_party/android_deps:com_google_android_play_feature_delivery_java" ]
+    }
+  }
+
+  java_group("playcore_app_update_java") {
+    preferred_dep = true
+    if (defined(playcore_app_update_target)) {
+      deps = [ playcore_app_update_target ]
+    } else {
+      deps = [
+        "//third_party/android_deps:com_google_android_play_app_update_java",
+      ]
     }
   }
 
@@ -252,16 +264,6 @@ if (!limit_android_deps) {
   }
 
   # This is generated, do not edit. Update BuildConfigGenerator.groovy instead.
-  java_prebuilt("org_jsoup_jsoup_java") {
-    jar_path = "cipd/libs/org_jsoup_jsoup/jsoup.jar"
-    output_name = "org_jsoup_jsoup"
-    supports_android = true
-    requires_android = true
-    enable_bytecode_checks = false
-    testonly = true
-  }
-
-  # This is generated, do not edit. Update BuildConfigGenerator.groovy instead.
   java_prebuilt("org_mockito_mockito_android_java") {
     jar_path = "cipd/libs/org_mockito_mockito_android/mockito-android.jar"
     output_name = "org_mockito_mockito_android"
@@ -343,6 +345,23 @@ if (!limit_android_deps) {
       "//third_party/androidx:*",
     ]
     deps = [ "//third_party/kotlin_stdlib:kotlin_stdlib_java" ]
+  }
+
+  # This is generated, do not edit. Update BuildConfigGenerator.groovy instead.
+  java_prebuilt("org_jsoup_jsoup_java") {
+    jar_path = "cipd/libs/org_jsoup_jsoup/jsoup.jar"
+    output_name = "org_jsoup_jsoup"
+    supports_android = true
+    requires_android = true
+    enable_bytecode_checks = false
+
+    # To remove visibility constraint, add this dependency to
+    # //third_party/android_deps/build.gradle.template
+    visibility = [
+      ":*",
+      "//third_party/androidx:*",
+    ]
+    testonly = true
   }
 
   # This is generated, do not edit. Update BuildConfigGenerator.groovy instead.

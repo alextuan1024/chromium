@@ -142,6 +142,7 @@ Arhoswch ychydig funudau cyn newid cyfrif. Os byddwch yn newid cyfrif nawr, bydd
 <translation id="3855938650519180865">Beth sy'n newydd yn Chromium</translation>
 <translation id="3886689467633467988">Mewngofnodwch i'r wefan hon a Chromium i gael eich nodau tudalen a rhagor ar eich holl ddyfeisiau.</translation>
 <translation id="3949514465204582407">Awgrym Chromium: Cael eich cyfrineiriau mewn unrhyw ap</translation>
+<translation id="3983298990898629929">Gosodwch Chromium fel eich porwr diofyn i agor dolenni gydag un tap</translation>
 <translation id="4005283307739974863">Yn Agor a Rhedeg Gwiriad Diogelwch yn Chromium.</translation>
 <translation id="4043291146360695975">Mae cyfrineiriau'n cael eu cadw i'r Rheolwr Cyfrineiriau ar y ddyfais hon yn unig.</translation>
 <translation id="4046625794029820944">Stopio copïo URLau. Gosod Chromium fel porwr diofyn i lwytho tudalennau yn uniongyrchol.</translation>
@@ -273,6 +274,7 @@ Pethau i'w hystyried:
 <translation id="6680609900732453726">Cadwch eich pori yn breifat gyda dilysiad dyfais pan fyddwch yn cau Chromium</translation>
 <translation id="6696512128741076907">Gosod Chromium fel eich porwr diofyn i agor dolenni ar unwaith o apiau eraill.</translation>
 <translation id="6752854822223394465">Mae'ch sefydliad wrthi'n gosod Chromium…</translation>
+<translation id="6777348401413221846">Fideo sgrîn lawn o sut i osod Chromium fel y porwr diofyn: Agorwch y gosodiadau Chromium yn iOS, tapiwch 'Default Browser App' a dewiswch Chromium.</translation>
 <translation id="6794054469102824109">Yn Agor Gêm Dino Chromium.</translation>
 <translation id="6820823224820483452">Nid oedd modd i Chromium wirio'r holl gyfrineiriau. Rhowch gynnig arall arni yfory.</translation>
 <translation id="6830782797004194206">Mewngofnodwch yn gyflymach gydag awtolenwi Chromium</translation>
@@ -302,6 +304,7 @@ Dim ond rhywun sydd â'ch cyfrinymadrodd all ddarllen eich data sydd wedi'u hamg
 <translation id="7337881442233988129">Chromium</translation>
 <translation id="7395825497086981028">Bydd eich cyfrinair yn cael ei gadw i'r Rheolwr Cyfrineiriau ar gyfer <ph name="EMAIL" />.</translation>
 <translation id="7434848749522628428">Bydd y cod pas hwn yn cael ei gadw i'r Rheolwr Cyfrineiriau ar gyfer <ph name="USER_EMAIL" /></translation>
+<translation id="7453822113116681031">Gwnewch Chromium yn borwr diofyn i agor dolenni gydag un tap</translation>
 <translation id="7504829997542308412">Agor Chromium</translation>
 <translation id="7531461704633548377">O Chromium</translation>
 <translation id="7554983317097061001">Awgrym Chromium: Symudwch Chromium i'r doc</translation>

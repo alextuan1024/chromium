@@ -7,9 +7,11 @@
 #include <optional>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/rand_util.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_font_stretch.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_text_rendering.h"
@@ -33,6 +35,7 @@
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
+#include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -251,6 +254,16 @@ bool OffscreenCanvasRenderingContext2D::InitializeResourceProvider() {
     if (host->HasPlaceholderCanvas() && UseOverlaysForCanvas2D()) {
       shared_image_usage_flags |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
     }
+#if BUILDFLAG(IS_MAC)
+    // VideoToolbox encoding requires an image that can be reached via
+    // ProduceOverlay() and wrapped in a CVPixelBuffer, and the usage must be
+    // decided at allocation time. All SharedImages are IOSurface-backed on
+    // macOS, so this flag only marks the image as eligible to be handed to
+    // VideoToolbox rather than adding an allocation constraint.
+    if (base::FeatureList::IsEnabled(features::kWebRtcMacSharedImageEncode)) {
+      shared_image_usage_flags |= gpu::SHARED_IMAGE_USAGE_MACOS_VIDEO_TOOLBOX;
+    }
+#endif
 
     shared_image_provider_ = Canvas2DResourceProvider::CreateWithClear(
         host->Size(), format, alpha_type, color_space, hdr_metadata,
@@ -275,6 +288,11 @@ bool OffscreenCanvasRenderingContext2D::InitializeResourceProvider() {
     // pipeline is in a bad state (e.g. gpu process crashed, out of memory)
     bitmap_provider_ = Canvas2DBitmapProvider::CreateWithClear(
         host->Size(), format, alpha_type, color_space, hdr_metadata, host);
+  }
+
+  if (shared_image_provider_ || bitmap_provider_) {
+    CreateRecorder(host->Size(), shared_image_provider_ &&
+                                     shared_image_provider_->IsGraphite());
   }
 
   Host()->UpdateMemoryUsage();
@@ -422,24 +440,11 @@ OffscreenCanvasRenderingContext2D::GetOrCreatePaintCanvas() {
   return GetPaintCanvas();
 }
 
-const MemoryManagedPaintCanvas*
-OffscreenCanvasRenderingContext2D::GetPaintCanvas() const {
-  if (isContextLost()) [[unlikely]] {
-    return nullptr;
-  }
-  auto* recorder = Recorder();
-  return recorder ? &recorder->getRecordingCanvas() : nullptr;
-}
-
-const MemoryManagedPaintRecorder* OffscreenCanvasRenderingContext2D::Recorder()
-    const {
+void OffscreenCanvasRenderingContext2D::RecordingCleared() {
+  BaseRenderingContext2D::RecordingCleared();
   if (shared_image_provider_) {
-    return &shared_image_provider_->Recorder();
+    shared_image_provider_->RecordingCleared();
   }
-  if (bitmap_provider_) {
-    return &bitmap_provider_->Recorder();
-  }
-  return nullptr;
 }
 
 void OffscreenCanvasRenderingContext2D::WillDraw(
@@ -460,34 +465,6 @@ void OffscreenCanvasRenderingContext2D::WillDraw(
   }
 }
 
-void OffscreenCanvasRenderingContext2D::FlushIfRecordingLimitExceeded() {
-  if (shared_image_provider_) {
-    if (Host()->IsPrinting() && shared_image_provider_->clear_frame()) {
-      return;
-    }
-    const MemoryManagedPaintRecorder* recorder = Recorder();
-    CHECK(recorder);
-    if (recorder->ReleasableOpBytesUsed() >
-            shared_image_provider_->max_recorded_op_bytes() ||
-        recorder->ReleasableImageBytesUsed() >
-            shared_image_provider_->max_pinned_image_bytes()) [[unlikely]] {
-      FlushCanvas(FlushReason::kOther);
-    }
-  } else if (bitmap_provider_) {
-    if (Host()->IsPrinting() && bitmap_provider_->clear_frame()) {
-      return;
-    }
-    const MemoryManagedPaintRecorder* recorder = Recorder();
-    CHECK(recorder);
-    if (recorder->ReleasableOpBytesUsed() >
-            bitmap_provider_->max_recorded_op_bytes() ||
-        recorder->ReleasableImageBytesUsed() >
-            bitmap_provider_->max_pinned_image_bytes()) [[unlikely]] {
-      FlushCanvas(FlushReason::kOther);
-    }
-  }
-}
-
 sk_sp<PaintFilter> OffscreenCanvasRenderingContext2D::StateGetFilter() {
   return GetState().GetFilterForOffscreenCanvas(Host()->Size(), this);
 }
@@ -495,6 +472,7 @@ sk_sp<PaintFilter> OffscreenCanvasRenderingContext2D::StateGetFilter() {
 void OffscreenCanvasRenderingContext2D::ResetResourceProvider() {
   shared_image_provider_.reset();
   bitmap_provider_.reset();
+  ResetRecorder();
 }
 
 void OffscreenCanvasRenderingContext2D::Dispose() {
@@ -581,8 +559,7 @@ std::optional<cc::PaintRecord> OffscreenCanvasRenderingContext2D::FlushCanvas(
 void OffscreenCanvasRenderingContext2D::OnFlushForImage(
     cc::PaintImage::ContentId content_id) {
   if (shared_image_provider_ && !shared_image_provider_->IsSoftware()) {
-    if (shared_image_provider_->Recorder().getRecordingCanvas().IsCachingImage(
-            content_id)) {
+    if (Recorder()->getRecordingCanvas().IsCachingImage(content_id)) {
       FlushCanvas(FlushReason::kOther);
     }
     shared_image_provider_->OnFlushForImage(content_id);

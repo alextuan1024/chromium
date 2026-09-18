@@ -10,12 +10,12 @@
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_focus_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_visibility_dependent_hotkey_manager.h"
-#include "chrome/browser/glic/host/context/glic_screenshot_capturer.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/service/glic_ui_embedder.h"
 #include "chrome/browser/glic/widget/browser_conditions.h"
+#include "chrome/browser/glic/widget/scoped_modal_dialog_manager_delegate.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
@@ -75,16 +75,13 @@ class GlicFloatingUi : public GlicUiEmbedder,
   void Resize(const gfx::Size& size,
               base::TimeDelta duration,
               base::OnceClosure callback) override;
-  void EnableDragResize(bool enabled) override;
+  void SetDragResizeEnabled(bool enabled) override;
   void Attach() override;
   void Detach() override;
   void SetMinimumWidgetSize(const gfx::Size& size) override;
   void SwitchConversation(
       glic::mojom::ConversationInfoPtr info,
       mojom::WebClientHandler::SwitchConversationCallback callback) override;
-  void CaptureScreenshot(
-      glic::mojom::WebClientHandler::CaptureScreenshotCallback callback)
-      override;
   void ClosePanel() override;
   void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override;
@@ -128,7 +125,8 @@ class GlicFloatingUi : public GlicUiEmbedder,
   void RemoveObserver(web_modal::ModalDialogHostObserver* observer) override;
 
  private:
-  void ClearWebContentsDelegate();
+  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
+
   GlicWidget* GetGlicWidget() const;
   GlicView* GetGlicView() const;
   void CreateAndSetupWidget(gfx::Rect initial_bounds);
@@ -136,7 +134,6 @@ class GlicFloatingUi : public GlicUiEmbedder,
   void SetGlicWindowToFloatingMode(bool floating);
   void OnSourceTabDestroyed(tabs::TabInterface* tab);
   void FloatingPanelCanAttachChanged(bool can_attach);
-  void ConfigureWebContentsModalDialogs();
   void MaybeNotifyActivationChanged(bool window_active);
 
   // Whether the widget should be user resizable, kept here in case it's
@@ -167,8 +164,6 @@ class GlicFloatingUi : public GlicUiEmbedder,
   raw_ptr<Profile> profile_;
   raw_ref<GlicUiEmbedder::Delegate> delegate_;
   raw_ref<GlicInstanceMetrics> instance_metrics_;
-
-  std::unique_ptr<GlicScreenshotCapturer> screenshot_capturer_;
 
   tabs::TabHandle source_tab_;
   base::CallbackListSubscription source_tab_destruction_subscription_;

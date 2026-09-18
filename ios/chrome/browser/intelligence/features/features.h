@@ -190,18 +190,6 @@ BASE_DECLARE_FEATURE(kPageContextExtractorRefactored);
 // Returns true if the refactored page context extractor is enabled.
 bool IsPageContextExtractorRefactoredEnabled();
 
-// Feature flag to enable the updated eligibility checks for Gemini.
-BASE_DECLARE_FEATURE(kGeminiUpdatedEligibility);
-
-// Returns true if the updated eligibiliy checks for Gemini are enabled.
-bool IsGeminiUpdatedEligibilityEnabled();
-
-// Feature flag to enable the updated Gemini consent.
-BASE_DECLARE_FEATURE(kGeminiUpdatedConsent);
-
-// Returns true if the updated Gemini consent is enabled.
-bool IsGeminiUpdatedConsentEnabled();
-
 // Feature flag for enabling the Gemini eligibility ablation experiment.
 BASE_DECLARE_FEATURE(kGeminiEligibilityAblation);
 bool IsGeminiEligibilityAblationEnabled();
@@ -213,10 +201,6 @@ bool IsGeminiLiveEnabled();
 // Feature flag for Gemini Live Dormant Reasons.
 BASE_DECLARE_FEATURE(kGeminiLiveDormantReasons);
 bool IsGeminiLiveDormantReasonsEnabled();
-
-// Returns true if the Gemini chat persistence is enabled.
-bool IsGeminiChatPersistenceEnabled();
-BASE_DECLARE_FEATURE(kGeminiChatPersistence);
 
 // Feature flag for Gemini configurable parameters.
 BASE_DECLARE_FEATURE(kGeminiConfigParams);
@@ -259,6 +243,9 @@ base::TimeDelta GetActorPageStabilityAutofillPredictionsTimeout();
 // feature parameter of the `kActorTools` feature.
 bool IsToolDisabled(optimization_guide::proto::Action::ActionCase tool);
 
+// Feature flag for Actor origin gating on navigation.
+BASE_DECLARE_FEATURE(kActorOriginGatingForNavigation);
+
 // Feature flag for Model based page classification experiment.
 BASE_DECLARE_FEATURE(kModelBasedPageClassification);
 
@@ -290,6 +277,15 @@ PageActionMenuIconVariations GetPageActionMenuIcon();
 BASE_DECLARE_FEATURE(kGeminiAureus);
 bool IsGeminiAureusEnabled();
 
+// Parameter to enable or disable refreshing Gemini quota when the app enters
+// the foreground.
+inline constexpr char kGeminiAureusForegroundQuotaRefreshParam[] =
+    "foreground_quota_refresh_enabled";
+
+// Returns true if Project Aureus is enabled and refreshing quota on foreground
+// is enabled.
+bool IsGeminiAureusForegroundQuotaRefreshEnabled();
+
 // Feature flag for enabling Gemini actor.
 BASE_DECLARE_FEATURE(kGeminiActor);
 bool IsGeminiActorEnabled();
@@ -297,10 +293,7 @@ bool IsGeminiActorEnabled();
 // Parameter to enable or disable backgrounding in Gemini Actor.
 extern const char kGeminiActorBackgroundingParam[];
 
-// Returns true if backgrounding for Gemini Actor is enabled. This requires:
-// 1. Compile flag `IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED` is enabled.
-// 2. `IsGeminiActorEnabled()` and `kGeminiActorBackgroundingParam` (default
-// true) are both true.
+// Returns true if backgrounding for Gemini Actor is enabled.
 bool IsGeminiActorBackgroundingEnabled();
 
 // Enables the GeminiUnaryMigration feature.
@@ -315,15 +308,11 @@ BASE_DECLARE_FEATURE(kGeminiBinaryMigration);
 // Returns true if the GeminiBinaryMigration feature is enabled.
 bool IsGeminiBinaryMigrationEnabled();
 
-// Enables the PageContextIPCOptimization feature.
-BASE_DECLARE_FEATURE(kPageContextIPCOptimization);
+// Enables the PageContextActionableOptimization feature.
+BASE_DECLARE_FEATURE(kPageContextActionableOptimization);
 
-// Returns true if the PageContextIPCOptimization feature is enabled.
-bool IsPageContextIPCOptimizationEnabled();
-
-// Returns true if the actionable optimization is enabled within the IPC
-// optimization.
-bool IsPageContextIPCOptimizationActionableEnabled();
+// Returns true if the PageContextActionableOptimization feature is enabled.
+bool IsPageContextActionableOptimizationEnabled();
 
 // Enables the PageContextPdf feature. This allows PDFs to be used as context
 // for prompts for Gemini only. Other providers would have separate flags.

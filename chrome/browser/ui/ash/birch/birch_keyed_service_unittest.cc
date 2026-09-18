@@ -32,6 +32,7 @@
 #include "chrome/browser/ash/release_notes/release_notes_storage.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/global_features.h"
+#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
@@ -55,6 +56,7 @@
 #include "components/send_tab_to_self/stub_send_tab_to_self_sync_service.h"
 #include "components/send_tab_to_self/target_device_info.h"
 #include "components/sessions/core/serialized_navigation_entry_test_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/test/fake_data_type_controller_delegate.h"
 #include "components/sync/test/test_sync_service.h"
@@ -65,6 +67,7 @@
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
 #include "components/sync_sessions/synced_session.h"
+#include "content/public/browser/navigation_entry.h"
 #include "services/media_session/public/cpp/test/test_media_controller.h"
 #include "services/media_session/public/mojom/media_session.mojom-shared.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -530,6 +533,9 @@ class BirchKeyedServiceTest : public BrowserWithTestWindowTest {
         TestingProfile::TestingFactory{
             FaviconServiceFactory::GetInstance(),
             base::BindRepeating(&BuildFaviconServiceMock)},
+        TestingProfile::TestingFactory{
+            HistoryServiceFactory::GetInstance(),
+            HistoryServiceFactory::GetDefaultFactory()},
     };
   }
 

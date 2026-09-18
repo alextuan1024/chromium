@@ -57,6 +57,17 @@ const TransportSecurityStateSource* const kDefaultHSTSSource = nullptr;
 
 const TransportSecurityStateSource* g_hsts_source = kDefaultHSTSSource;
 
+#if BUILDFLAG(INCLUDE_TRANSPORT_SECURITY_STATE_PRELOAD_LIST)
+// TODO(crbug.com/497882860): Remove pins include from this file.
+#include "net/http/transport_security_state_static_pins.h"  // nogncheck
+// Points to the pins source.
+const TransportSecurityStatePinsSource* const kDefaultPinsSource = &kPinsSource;
+#else
+const TransportSecurityStatePinsSource* const kDefaultPinsSource = nullptr;
+#endif
+
+const TransportSecurityStatePinsSource* g_pins_source = kDefaultPinsSource;
+
 TransportSecurityState::HashedHost HashHost(
     base::span<const uint8_t> canonicalized_host) {
   return crypto::hash::Sha256(canonicalized_host);
@@ -214,6 +225,11 @@ bool DecodeHSTSPreload(std::string_view search_hostname, PreloadResult* out) {
 void SetTransportSecurityStateSourceForTesting(
     const TransportSecurityStateSource* source) {
   g_hsts_source = source ? source : kDefaultHSTSSource;
+}
+
+void SetTransportSecurityStatePinsSourceForTesting(
+    const TransportSecurityStatePinsSource* source) {
+  g_pins_source = source ? source : kDefaultPinsSource;
 }
 
 TransportSecurityState::TransportSecurityState()
@@ -449,8 +465,6 @@ void TransportSecurityState::AddHPKPInternal(std::string_view host,
     const HashedHost hashed_host = HashHost(canonicalized_host);
     enabled_pkp_hosts_.erase(hashed_host);
   }
-
-  DirtyNotify();
 }
 
 void TransportSecurityState::
@@ -490,12 +504,6 @@ bool TransportSecurityState::DeleteDynamicDataForHost(std::string_view host) {
     deleted = true;
   }
 
-  auto pkp_iterator = enabled_pkp_hosts_.find(hashed_host);
-  if (pkp_iterator != enabled_pkp_hosts_.end()) {
-    enabled_pkp_hosts_.erase(pkp_iterator);
-    deleted = true;
-  }
-
   if (deleted) {
     DirtyNotify();
   }
@@ -505,7 +513,6 @@ bool TransportSecurityState::DeleteDynamicDataForHost(std::string_view host) {
 void TransportSecurityState::ClearDynamicData() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   enabled_sts_hosts_.clear();
-  enabled_pkp_hosts_.clear();
 }
 
 void TransportSecurityState::DeleteAllDynamicDataBetween(
@@ -525,18 +532,6 @@ void TransportSecurityState::DeleteAllDynamicDataBetween(
     }
 
     ++sts_iterator;
-  }
-
-  auto pkp_iterator = enabled_pkp_hosts_.begin();
-  while (pkp_iterator != enabled_pkp_hosts_.end()) {
-    if (pkp_iterator->second.last_observed >= start_time &&
-        pkp_iterator->second.last_observed < end_time) {
-      dirtied = true;
-      enabled_pkp_hosts_.erase(pkp_iterator++);
-      continue;
-    }
-
-    ++pkp_iterator;
   }
 
   if (dirtied && delegate_) {
@@ -711,8 +706,8 @@ bool TransportSecurityState::GetStaticPKPState(std::string_view host,
   // logic from the above while loop but operating on a different type. Think
   // about if there is a better way to structure this.
   while (true) {
-    const TransportSecurityStateSource::HostPin* pin =
-        g_hsts_source->find_host_pin(search_hostname);
+    const TransportSecurityStatePinsSource::HostPin* pin =
+        g_pins_source->find_host_pin(search_hostname);
     // Only consider this a match if either include_subdomains is set, or
     // this is an exact match of the full hostname.
     if (pin &&
@@ -819,7 +814,6 @@ bool TransportSecurityState::GetDynamicPKPState(std::string_view host,
     // If the entry is invalid, drop it.
     if (current_time > j->second.expiry) {
       enabled_pkp_hosts_.erase(j);
-      DirtyNotify();
       continue;
     }
 

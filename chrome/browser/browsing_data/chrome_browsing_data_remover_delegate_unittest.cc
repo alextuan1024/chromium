@@ -178,7 +178,6 @@
 #include "components/strike_database/strike_database.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/ukm/test_ukm_recorder.h"
-#include "content/public/browser/background_tracing.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
@@ -186,9 +185,9 @@
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/origin_trials_controller_delegate.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/browser/tracing_delegate.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/background_tracing.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/browsing_data_remover_test_util.h"
 #include "content/public/test/mock_download_manager.h"
@@ -1100,7 +1099,7 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
     content::GetNetworkService();
     task_environment_.RunUntilIdle();
     background_tracing_manager_ =
-        content::CreateBackgroundTracingManager(&tracing_delegate_);
+        content::CreateBackgroundTracingManagerForTesting();
 
     // This needs to be done after the test constructor, so that subclasses
     // that initialize a ScopedFeatureList in their constructors can do so
@@ -1215,6 +1214,17 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
                                          const base::Time& delete_end,
                                          uint64_t remove_mask,
                                          bool include_protected_origins) {
+#if BUILDFLAG(IS_ANDROID)
+    // There's an Android specific race condition for x86 and x64 builds where
+    // data-clearing and the mocked services here fail to initialize bookmarks
+    // in time, which are required for history clearing.
+    // TODO(crbug.com/435317726): Revisit after launch.
+    if (remove_mask & constants::DATA_TYPE_HISTORY) {
+      bookmarks::test::WaitForBookmarkModelToLoad(
+          BookmarkModelFactory::GetForBrowserContext(GetProfile()));
+    }
+#endif  // BUILDFLAG(IS_ANDROID)
+
     uint64_t origin_type_mask =
         content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB;
     if (include_protected_origins) {
@@ -1324,7 +1334,6 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
   // Cached pointer to BrowsingDataRemover for access to testing methods.
   raw_ptr<content::BrowsingDataRemover> remover_;
 
-  content::TracingDelegate tracing_delegate_;
   std::unique_ptr<tracing::BackgroundTracingManager>
       background_tracing_manager_;
 
@@ -4596,6 +4605,46 @@ TEST_F(ChromeBrowsingDataRemoverDelegateMediaDeviceSaltTest,
   EXPECT_EQ(salt3c, salt3b);
 }
 
+TEST_F(ChromeBrowsingDataRemoverDelegateMediaDeviceSaltTest,
+       PartitionedCookiesOnlyDoesNotRemoveSalts) {
+  std::string salt1 = GetSalt(StorageKey1());
+  std::string salt2 = GetSalt(StorageKey2());
+  std::string salt3 = GetSalt(StorageKey3());
+
+  std::unique_ptr<BrowsingDataFilterBuilder> filter(
+      BrowsingDataFilterBuilder::Create(
+          BrowsingDataFilterBuilder::Mode::kDelete));
+  filter->AddRegisterableDomain(StorageKey1().origin().host());
+  filter->SetCookiePartitionKeyCollection(net::CookiePartitionKeyCollection(
+      net::CookiePartitionKey::FromURLForTesting(
+          GURL("https://example2.com"))));
+  filter->SetPartitionedCookiesOnly(true);
+  BlockUntilOriginDataRemoved(base::Time(), base::Time::Max(),
+                              content::BrowsingDataRemover::DATA_TYPE_COOKIES,
+                              std::move(filter));
+  EXPECT_EQ(GetSalt(StorageKey1()), salt1);
+  EXPECT_EQ(GetSalt(StorageKey2()), salt2);
+  EXPECT_EQ(GetSalt(StorageKey3()), salt3);
+}
+
+TEST_F(ChromeBrowsingDataRemoverDelegateMediaDeviceSaltTest,
+       PartitionedCookiesOnlyPreserveModeDoesNotRemoveSalts) {
+  std::string salt1 = GetSalt(StorageKey1());
+  std::string salt2 = GetSalt(StorageKey2());
+  std::string salt3 = GetSalt(StorageKey3());
+
+  std::unique_ptr<BrowsingDataFilterBuilder> filter(
+      BrowsingDataFilterBuilder::Create(
+          BrowsingDataFilterBuilder::Mode::kPreserve));
+  filter->SetPartitionedCookiesOnly(true);
+  BlockUntilOriginDataRemoved(base::Time(), base::Time::Max(),
+                              content::BrowsingDataRemover::DATA_TYPE_COOKIES,
+                              std::move(filter));
+  EXPECT_EQ(GetSalt(StorageKey1()), salt1);
+  EXPECT_EQ(GetSalt(StorageKey2()), salt2);
+  EXPECT_EQ(GetSalt(StorageKey3()), salt3);
+}
+
 // Constants for ChromeBrowsingDataRemoverDelegateRelatedWebsiteSetsTest.
 namespace {
 constexpr char kPrimaryUrl[] = "https://subdomain.example.com:112";
@@ -4799,7 +4848,7 @@ TEST_F(ChromeBrowsingDataRemoverDelegateTest,
   std::unique_ptr<BrowsingDataFilterBuilder> filter_builder(
       BrowsingDataFilterBuilder::Create(
           BrowsingDataFilterBuilder::Mode::kDelete));
-  // RWS data clearing is site-based (see FirstPartySetsSiteDataRemover).
+  // RWS data clearing is site-based.
   filter_builder->AddOrigin(
       url::Origin::Create(net::SchemefulSite(kRequestedSubdomain).GetURL()));
 

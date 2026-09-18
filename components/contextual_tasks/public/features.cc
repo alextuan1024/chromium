@@ -63,7 +63,6 @@ BASE_FEATURE(kEnableContextualTasksPinButtonInToolbar,
 BASE_FEATURE(kEphemeralPinningVisibleWhenPermanentlyPinned,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-
 // Enables relevant context determination for contextual tasks.
 BASE_FEATURE(kContextualTasksContext, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -124,7 +123,6 @@ BASE_FEATURE(kContextualTasksSendContextualInputUploadType,
 
 BASE_FEATURE(kContextualTasksUrlRedirectToAimUrl,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
 
 // If enabled, animates the caret.
 BASE_FEATURE(kContextualTasksAnimatedCaret, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -317,8 +315,8 @@ const base::FeatureParam<double> kContentVisibilityThreshold{
 
 const base::FeatureParam<int> kMaxConversationTurns{
     &kContextualTasksContext, "max_conversation_turns", 5};
-const base::FeatureParam<int> kMaxTitlesPerThread{
-    &kContextualTasksContext, "max_titles_per_thread", 25};
+const base::FeatureParam<int> kMaxTitlesPerThread{&kContextualTasksContext,
+                                                  "max_titles_per_thread", 25};
 
 const base::FeatureParam<bool> kEnablePreviousTabFallback(
     &kContextualTasksContext,
@@ -338,11 +336,15 @@ const base::FeatureParam<bool> kContextualTasksContextSmartTabSharing(
     "ContextualTasksContextSmartTabSharing",
     false);
 
+const base::FeatureParam<bool> kContextualTasksContextToggleOffAfterSubmit(
+    &kContextualTasksContext,
+    "ContextualTasksContextToggleOffAfterSubmit",
+    false);
+
 const base::FeatureParam<base::TimeDelta> kSmartTabSharingTabSelectionTimeout(
     &kContextualTasksContext,
     "ContextualTasksContextSmartTabSharingTabSelectionTimeout",
     base::Milliseconds(300));
-
 
 const base::FeatureParam<SmartTabSharingIphFirstTimePromptOption>::Option
     kSmartTabSharingIphFirstTimePromptOptions[] = {
@@ -446,6 +448,15 @@ const base::FeatureParam<EntryPointOption> kShowEntryPoint(
     EntryPointOption::kNoEntryPoint,
     &kEntryPointOptions);
 
+const base::FeatureParam<bool> kEnableRightHandContextualTasksEphemeralButton{
+    &kContextualTasksEphemeralBrandedEntryPoint,
+    "enable-right-hand-contextual-tasks-ephemeral-button", false};
+
+BASE_FEATURE_PARAM(bool,
+                   kEnableCircularEphemeralButtonNextToBatterySaver,
+                   &kContextualTasksEphemeralBrandedEntryPoint,
+                   false);
+
 constexpr base::FeatureParam<ExpandButtonOption>::Option kExpandButtonOption[] =
     {{ExpandButtonOption::kSidePanelExpandButton, "side-panel-expand-button"},
      {ExpandButtonOption::kToolbarCloseButton, "toolbar-close-button"}};
@@ -532,25 +543,15 @@ const base::FeatureParam<int> kContextualTasksOnboardingTooltipDismissedCap(
     "ContextualTasksOnboardingTooltipDismissedCap",
     1);
 
-const base::FeatureParam<int> kContextualTasksLensSearchTooltipDismissedCap(
-    &kContextualTasksShowOnboardingTooltip,
-    "ContextualTasksLensSearchTooltipDismissedCap", 1);
-
-const base::FeatureParam<int>
-    kContextualTasksLensSearchTooltipSessionImpressionCap(
-        &kContextualTasksShowOnboardingTooltip,
-        "ContextualTasksLensSearchTooltipSessionImpressionCap",
-        1);
-
 const base::FeatureParam<int> kContextualTasksAskGTooltipDismissedCap(
     &kContextualTasksShowOnboardingTooltip,
-    "ContextualTasksAskGTooltipDismissedCap", 1);
+    "ContextualTasksAskGTooltipDismissedCap",
+    1);
 
-const base::FeatureParam<int>
-    kContextualTasksAskGTooltipSessionImpressionCap(
-        &kContextualTasksShowOnboardingTooltip,
-        "ContextualTasksAskGTooltipSessionImpressionCap",
-        10);
+const base::FeatureParam<int> kContextualTasksAskGTooltipSessionImpressionCap(
+    &kContextualTasksShowOnboardingTooltip,
+    "ContextualTasksAskGTooltipSessionImpressionCap",
+    10);
 
 const base::FeatureParam<int> kContextualTasksOnboardingTooltipImpressionDelay(
     &kContextualTasksShowOnboardingTooltip,
@@ -617,23 +618,6 @@ int GetContextualTasksOnboardingTooltipDismissedCap() {
     return std::numeric_limits<int>::max();
   }
   return kContextualTasksOnboardingTooltipDismissedCap.Get();
-}
-
-int GetContextualTasksLensSearchTooltipDismissedCap() {
-  if (!base::FeatureList::IsEnabled(kContextualTasksShowOnboardingTooltip)) {
-    return 0;
-  }
-  if (base::FeatureList::IsEnabled(kContextualTasksBypassDismissedCap)) {
-    return std::numeric_limits<int>::max();
-  }
-  return kContextualTasksLensSearchTooltipDismissedCap.Get();
-}
-
-int GetContextualTasksLensSearchTooltipSessionImpressionCap() {
-  if (!base::FeatureList::IsEnabled(kContextualTasksShowOnboardingTooltip)) {
-    return 0;
-  }
-  return kContextualTasksLensSearchTooltipSessionImpressionCap.Get();
 }
 
 int GetContextualTasksAskGTooltipDismissedCap() {
@@ -773,7 +757,6 @@ bool GetIsContextualTasksSuggestionsEnabled() {
   return base::FeatureList::IsEnabled(kContextualTasksSuggestionsEnabled);
 }
 
-
 base::TimeDelta GetSmartTabSharingTabSelectionTimeout() {
   if (kSmartTabSharingTabSelectionTimeout.Get().is_positive()) {
     return kSmartTabSharingTabSelectionTimeout.Get();
@@ -781,6 +764,9 @@ base::TimeDelta GetSmartTabSharingTabSelectionTimeout() {
   return base::Milliseconds(300);
 }
 
+bool ShouldToggleOffAfterSubmit() {
+  return kContextualTasksContextToggleOffAfterSubmit.Get();
+}
 
 bool GetIsTabAutoSuggestionChipEnabled() {
   return kContextualTasksTabAutoSuggestionChipEnabled.Get();
@@ -834,7 +820,6 @@ bool IsCustomNlmUiEnabled() {
   return base::FeatureList::IsEnabled(kContextualTasksCustomNlmUi);
 }
 
-
 bool GetIsBasicModeEnabled() {
   return kContextualTasksEnableBasicMode.Get();
 }
@@ -856,7 +841,6 @@ bool ShouldEnableLockAndUnlockInputCapability() {
          kContextualTasksLockAndUnlockInputCapability.Get();
 }
 
-
 bool GetEnableFileHint() {
   return base::FeatureList::IsEnabled(kContextualTasksEnableFileHint);
 }
@@ -867,6 +851,10 @@ bool GetEnableComposeboxJumpFix() {
 
 ExpandButtonOption GetExpandButtonOption() {
   return kExpandButtonOptions.Get();
+}
+
+bool GetEnableRightHandContextualTasksEphemeralButton() {
+  return kEnableRightHandContextualTasksEphemeralButton.Get();
 }
 
 bool IsRoundedClipPathEnabled() {

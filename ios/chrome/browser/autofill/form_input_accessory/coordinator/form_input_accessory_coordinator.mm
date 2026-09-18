@@ -13,6 +13,8 @@
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/ios/ios_util.h"
+#import "base/memory/weak_ptr.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
@@ -38,6 +40,10 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_coordinator.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
+#import "ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h"
+#import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_source_item.h"
+#import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_sources_util.h"
+#import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_sources_view_controller.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator_handler.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/public/autofill_suggestion_context_menu_handler.h"
@@ -83,7 +89,10 @@
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/security_alert_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
@@ -93,6 +102,8 @@
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
+
+using autofill::FieldGlobalId;
 
 namespace {
 // Delay between the time the view is shown, and the time the suggestion label
@@ -106,6 +117,10 @@ constexpr base::TimeDelta kAutofillSuggestionTipDelay = base::Seconds(0.5);
 // Additional vertical offset for the IPH, so that it doesn't appear below the
 // Autofill strip at the top of the keyboard.
 const CGFloat kIPHVerticalOffset = -5;
+
+// The histogram recording why the AtMemory UI failed to open on button tap.
+constexpr std::string_view kAtMemoryFailedToOpenReasonHistogram =
+    "Autofill.AtMemory.IOS.FailedToOpenReason";
 
 // Return the feature corresponding to the `feature_for_iph` enum.
 const base::Feature* FetchIPHFeatureFromEnum(
@@ -152,11 +167,31 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   }
 }
 
+// Returns the EntitySuppressionManager for `profile`, or nullptr if
+// unavailable.
+autofill::EntitySuppressionManager* GetEntitySuppressionManager(
+    ProfileIOS* profile) {
+  return profile ? IOSAutofillEntitySuppressionManagerFactory::GetForProfile(
+                       profile)
+                 : nullptr;
+}
+
+// Unsuppresses `entity` for `profile`.
+void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
+                      const autofill::EntityInstance& entity) {
+  autofill::EntitySuppressionManager* suppressionManager =
+      GetEntitySuppressionManager(profile.get());
+  if (suppressionManager) {
+    suppressionManager->UnsuppressEntity(entity);
+  }
+}
+
 }  // namespace
 
 @interface FormInputAccessoryCoordinator () <
     AddressCoordinatorDelegate,
     AtMemoryCommands,
+    AutofillAiSourcesViewControllerDelegate,
     AutofillSuggestionContextMenuHandler,
     CardCoordinatorDelegate,
     ExpandedManualFillCoordinatorDelegate,
@@ -164,7 +199,8 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
     FormInputAccessoryViewControllerDelegate,
     ManualFillAllPasswordCoordinatorDelegate,
     PasswordCoordinatorDelegate,
-    SecurityAlertCommands>
+    SecurityAlertCommands,
+    UIAdaptivePresentationControllerDelegate>
 
 // The object in charge of interacting with the web view. Used to fill the data
 // in the forms.
@@ -204,6 +240,9 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
   // The coordinator for the AtMemory Autofill feature.
   AtMemoryCoordinator* _atMemoryCoordinator;
+
+  // The navigation controller presenting the Autofill AI sources bottom sheet.
+  UINavigationController* _sourcesNavigationController;
 }
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
@@ -316,6 +355,7 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
 - (void)reset {
   [self stopChildren];
+  [self dismissSourcesSheetAnimated:NO];
   [self resetInputViews];
   [_formInputAccessoryMediator reloadFirstResponderInputViews];
 }
@@ -334,9 +374,11 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
   [self dismissAlertCoordinator];
   [self dismissAtMemory];
+  [self dismissSourcesSheetAnimated:NO];
 }
 
 - (void)stopChildren {
+  [self dismissAtMemory];
   _formInputAccessoryMediator.formInputInteractionDelegate = nil;
   for (ChromeCoordinator* coordinator in self.childCoordinators) {
     [coordinator stop];
@@ -344,12 +386,29 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   [self.childCoordinators removeAllObjects];
 }
 
+// Returns the reason why the AtMemory UI can't be opened for `fieldId`, or
+// `AtMemoryFailedToOpenReason::kNone` if it can be opened.
+- (AtMemoryFailedToOpenReason)atMemoryFailedToOpenReasonForField:
+    (FieldGlobalId)fieldId {
+  if (!fieldId.renderer_id) {
+    return AtMemoryFailedToOpenReason::kNoFocusedField;
+  }
+  if (_atMemoryCoordinator) {
+    return AtMemoryFailedToOpenReason::kAlreadyOpen;
+  }
+  return GetAtMemoryFailedToOpenReason(self.browser);
+}
+
 // Starts the expanded manual fill coordinator and displays its view controller.
 - (void)startManualFillFromButton:(UIButton*)button
                       forDataType:(manual_fill::ManualFillDataType)dataType
          invokedOnObfuscatedField:(BOOL)invokedOnObfuscatedField {
   if (dataType == manual_fill::ManualFillDataType::kAtMemory) {
-    [self showAtMemory];
+    std::optional<FieldGlobalId> fieldId =
+        [_formInputAccessoryMediator lastFocusedFieldGlobalId];
+    // `showAtMemoryForField:` records the outcome for all entry points,
+    // including the `kNoFocusedField` reason for a default empty field.
+    [self showAtMemoryForField:fieldId.value_or(FieldGlobalId{})];
     return;
   }
 
@@ -581,7 +640,51 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 }
 
 - (void)openSourcesForSuggestion:(FormSuggestion*)suggestion {
-  // TODO(crbug.com/551864564): Implement opening sources for the suggestion.
+  [self dismissSourcesSheetAnimated:NO];
+
+  web::WebState* activeWebState = [self activeWebState];
+  if (!activeWebState) {
+    return;
+  }
+  base::optional_ref<const autofill::EntityInstance> entity =
+      autofill::GetEntityInstance(
+          ProfileIOS::FromBrowserState(activeWebState->GetBrowserState()),
+          suggestion.payload);
+  if (!entity.has_value() || !EntityHasValidSources(*entity)) {
+    return;
+  }
+
+  NSArray<AutofillAiSourceGroup*>* groups = ExtractSourcesFromEntity(*entity);
+  if (groups.count == 0) {
+    return;
+  }
+
+  NSString* subtitle = SourcesHeaderSubtitle(*entity, suggestion.value);
+  AutofillAiSourcesViewController* sourcesViewController =
+      [[AutofillAiSourcesViewController alloc] initWithSubtitle:subtitle
+                                                         groups:groups];
+  sourcesViewController.delegate = self;
+
+  _sourcesNavigationController = [[UINavigationController alloc]
+      initWithRootViewController:sourcesViewController];
+  _sourcesNavigationController.presentationController.delegate = self;
+  UISheetPresentationController* sheetPresentationController =
+      _sourcesNavigationController.sheetPresentationController;
+  if (sheetPresentationController) {
+    sheetPresentationController.detents = @[
+      [UISheetPresentationControllerDetent mediumDetent],
+      [UISheetPresentationControllerDetent largeDetent],
+    ];
+    sheetPresentationController.prefersGrabberVisible = YES;
+  }
+
+  UIViewController* presenter = self.baseViewController;
+  while (presenter.presentedViewController) {
+    presenter = presenter.presentedViewController;
+  }
+  [presenter presentViewController:_sourcesNavigationController
+                          animated:YES
+                        completion:nil];
 }
 
 - (void)suppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
@@ -589,15 +692,15 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 }
 
 - (BOOL)hasSourcesForSuggestion:(FormSuggestion*)suggestion {
+  web::WebState* activeWebState = [self activeWebState];
+  if (!activeWebState) {
+    return NO;
+  }
   if (!base::FeatureList::IsEnabled(
           autofill::features::kAutofillAmbientAutofillSourceAttribution)) {
     return NO;
   }
 
-  web::WebState* activeWebState = [self activeWebState];
-  if (!activeWebState) {
-    return NO;
-  }
   base::optional_ref<const autofill::EntityInstance> entity =
       autofill::GetEntityInstance(
           ProfileIOS::FromBrowserState(activeWebState->GetBrowserState()),
@@ -606,15 +709,7 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
     return NO;
   }
 
-  const auto* payload =
-      std::get_if<autofill::EntityInstance::PersonalContextRecordTypePayload>(
-          &entity->record_type_data());
-  if (!payload) {
-    return NO;
-  }
-  return std::ranges::any_of(payload->sources, [](const auto& source) {
-    return GURL(source.url).is_valid();
-  });
+  return EntityHasValidSources(*entity);
 }
 
 - (BOOL)canSuppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
@@ -637,6 +732,36 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   return entity.has_value() &&
          entity->record_type() ==
              autofill::EntityInstance::RecordType::kPersonalContext;
+}
+
+#pragma mark - AutofillAiSourcesViewControllerDelegate
+
+- (void)sourcesViewController:(AutofillAiSourcesViewController*)viewController
+          didSelectSourceItem:(AutofillAiSourceItem*)sourceItem {
+  if (!self.browser) {
+    return;
+  }
+  [self dismissSourcesSheetAnimated:YES];
+  OpenNewTabCommand* command =
+      [OpenNewTabCommand commandWithURLFromChrome:sourceItem.URL];
+  id<SceneCommands> sceneHandler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
+  [sceneHandler openURLInNewTab:command];
+}
+
+- (void)sourcesViewControllerDidDismiss:
+    (AutofillAiSourcesViewController*)viewController {
+  [self dismissSourcesSheetAnimated:YES];
+}
+
+#pragma mark - UIAdaptivePresentationControllerDelegate
+
+- (void)presentationControllerDidDismiss:
+    (UIPresentationController*)presentationController {
+  if (presentationController.presentedViewController ==
+      _sourcesNavigationController) {
+    _sourcesNavigationController = nil;
+  }
 }
 
 #pragma mark - FallbackCoordinatorDelegate
@@ -789,14 +914,18 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
 #pragma mark - AtMemoryCommands
 
-- (void)showAtMemory {
-  if (_atMemoryCoordinator) {
+- (void)showAtMemoryForField:(FieldGlobalId)fieldId {
+  AtMemoryFailedToOpenReason reason =
+      [self atMemoryFailedToOpenReasonForField:fieldId];
+  base::UmaHistogramEnumeration(kAtMemoryFailedToOpenReasonHistogram, reason);
+  if (reason != AtMemoryFailedToOpenReason::kNone) {
     return;
   }
   _atMemoryCoordinator = [[AtMemoryCoordinator alloc]
       initWithBaseViewController:self.baseViewController
                          browser:self.browser
-                 contentInjector:self.injectionHandler];
+                 contentInjector:self.injectionHandler
+                         fieldId:fieldId];
 
   [self.childCoordinators addObject:_atMemoryCoordinator];
 
@@ -894,6 +1023,17 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   _alertCoordinator = nil;
 }
 
+- (void)dismissSourcesSheetAnimated:(BOOL)animated {
+  if (!_sourcesNavigationController) {
+    return;
+  }
+  UINavigationController* sourcesNavigationController =
+      _sourcesNavigationController;
+  _sourcesNavigationController = nil;
+  [sourcesNavigationController dismissViewControllerAnimated:animated
+                                                  completion:nil];
+}
+
 - (feature_engagement::Tracker*)featureEngagementTracker {
   if (!self.profile) {
     return nullptr;
@@ -947,7 +1087,9 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
 
 // Suppresses the entity for `suggestion` and refreshes keyboard suggestions.
 - (void)suppressEntityForSuggestion:(FormSuggestion*)suggestion {
-  if (!self.profile) {
+  autofill::EntitySuppressionManager* suppressionManager =
+      GetEntitySuppressionManager(self.profile);
+  if (!suppressionManager) {
     return;
   }
   base::optional_ref<const autofill::EntityInstance> entity =
@@ -955,14 +1097,43 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   if (!entity.has_value()) {
     return;
   }
-  autofill::EntitySuppressionManager* suppressionManager =
-      IOSAutofillEntitySuppressionManagerFactory::GetForProfile(self.profile);
-  if (!suppressionManager) {
+  suppressionManager->SuppressEntity(*entity);
+  [self resetSuggestions];
+  [self showUndoSnackbarForEntity:*entity];
+}
+
+// Shows a snackbar allowing the user to undo removing `entity`.
+- (void)showUndoSnackbarForEntity:(const autofill::EntityInstance&)entity {
+  id<SnackbarCommands> snackbarHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), SnackbarCommands);
+  if (!snackbarHandler) {
     return;
   }
-  suppressionManager->SuppressEntity(*entity);
+
+  SnackbarMessageAction* action = [[SnackbarMessageAction alloc] init];
+  action.title = l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_UNDO_ACTION);
+  __weak __typeof(self) weakSelf = self;
+  base::WeakPtr<ProfileIOS> weakProfile =
+      self.profile ? self.profile->AsWeakPtr() : nullptr;
+  autofill::EntityInstance capturedEntity = entity;
+  action.handler = ^{
+    UnsuppressEntity(weakProfile, capturedEntity);
+    [weakSelf resetSuggestions];
+  };
+
+  SnackbarMessage* message = [[SnackbarMessage alloc]
+      initWithTitle:l10n_util::GetNSString(
+                        IDS_IOS_AUTOFILL_AI_REMOVE_SNACKBAR_TITLE)];
+  message.subtitle =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_SNACKBAR_SUBTITLE);
+  message.action = action;
+
+  [snackbarHandler showSnackbarMessage:message];
+}
+
+// Resets suggestions in the form input accessory mediator.
+- (void)resetSuggestions {
   [_formInputAccessoryMediator resetSuggestions];
-  // TODO(crbug.com/551864564): Trigger undo snackbar.
 }
 
 // Shows confirmation dialog before opening Other passwords.

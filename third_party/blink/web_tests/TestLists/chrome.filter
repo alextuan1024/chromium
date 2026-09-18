@@ -33,8 +33,6 @@ external/wpt/ai/translator/*
 external/wpt/storage-access-api/*
 external/wpt/fedcm/fedcm-storage-access-api-autogrant.tentative.https.sub.html
 
-# Top-Level Storage Access API is implemented in the `//chrome` layer.
-external/wpt/top-level-storage-access-api/*
 
 # Device Bound Session Credentials relies on the `//chrome` layer.
 external/wpt/device-bound-session-credentials/*
@@ -83,9 +81,6 @@ virtual/speech-with-unified-autoplay/external/wpt/speech-api/SpeechRecognition-o
 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/window-resize-aborts-transition-before-ready.html
 # TODO(crbug.com/393152490): Pending Web Bluetooth Permission API integration for running in headless shell.
 virtual/web-bluetooth-new-permissions-backend/external/wpt/bluetooth/bidi/*
-
-#webui browser is mostly implemented in `//chrome` layer.
-virtual/webui-browser/*
 
 # Extension APIs can reach into the `//chrome` layer.
 external/wpt/web-extensions/*

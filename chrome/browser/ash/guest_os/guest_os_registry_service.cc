@@ -54,6 +54,7 @@
 #include "extensions/browser/api/file_handlers/mime_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_scale_factor.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/image/image_skia_operations.h"
 
 using vm_tools::apps::App;
@@ -238,7 +239,7 @@ bool EqualsExcludingTimestamps(const base::DictValue& left,
 
 void InstallIconFromFileThread(const base::FilePath& icon_path,
                                const std::string& content) {
-  DCHECK(!content.empty());
+  CHECK(!content.empty(), base::NotFatalUntil::M160);
 
   base::CreateDirectory(icon_path.DirName());
 
@@ -252,10 +253,11 @@ void InstallIconFromFileThread(const base::FilePath& icon_path,
 }
 
 void DeleteIconFolderFromFileThread(const base::FilePath& path) {
-  DCHECK(path.DirName().BaseName().MaybeAsASCII() == kCrostiniIconFolder &&
-         (!base::PathExists(path) || base::DirectoryExists(path)));
+  CHECK(path.DirName().BaseName().MaybeAsASCII() == kCrostiniIconFolder &&
+            (!base::PathExists(path) || base::DirectoryExists(path)),
+        base::NotFatalUntil::M160);
   const bool deleted = base::DeletePathRecursively(path);
-  DCHECK(deleted);
+  CHECK(deleted, base::NotFatalUntil::M160);
 }
 
 template <typename List>
@@ -1057,7 +1059,7 @@ void GuestOsRegistryService::RequestContainerAppIcon(
   // Ignore requests for app_id that isn't registered.
   std::optional<GuestOsRegistryService::Registration> registration =
       GetRegistration(app_id);
-  DCHECK(registration);
+  CHECK(registration, base::NotFatalUntil::M160);
   if (!registration) {
     LOG(ERROR) << "Request to load icon for non-registered app: " << app_id;
     return;

@@ -33,6 +33,7 @@
 #include "components/search_engines/keyword_table.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/signin/public/webdata/token_service_table.h"
+#include "components/sync/base/data_type.h"
 #include "components/webdata/common/web_database.h"
 #include "sql/statement.h"
 #include "sql/test/test_helpers.h"
@@ -2081,4 +2082,194 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion153ToCurrent) {
   }
 }
 
+// Version 155 adds the method_name column to the web_app_manifest_section table
+// in components/payments/content. That table is not known to webdata_common (it
+// is registered via WebDataServiceWrapper in components/webdata_services), so
+// its migration is tested in
+// WebAppManifestSectionTableTest.MigrationVersion154ToCurrent.
+//
+// TODO(crbug.com/559592119): Refactor code locations to allow testing
+// //components/payments tables in the same place as other tables.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion154ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_154.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(154, VersionFromConnection(&connection));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+  }
+}
+
+// Tests that version 156 clears AUTOFILL_WALLET_OFFER sync metadata and legacy
+// offer tables.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion155ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_155.sql")));
+  // Stable identifier for deprecated syncer::AUTOFILL_WALLET_OFFER.
+  constexpr int offer_model_type = 50;
+  const int card_model_type =
+      syncer::DataTypeToStableIdentifier(syncer::AUTOFILL_WALLET_DATA);
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(155, VersionFromConnection(&connection));
+
+    // Insert sync metadata and model type state for offers and cards.
+    ASSERT_TRUE(connection.ExecuteScriptForTesting(base::StrCat({
+        "INSERT INTO autofill_sync_metadata (model_type, storage_key, value) "
+        "VALUES (",
+        base::NumberToString(offer_model_type),
+        ", 'offer_1', X'1234');",
+        "INSERT INTO autofill_sync_metadata (model_type, storage_key, value) "
+        "VALUES (",
+        base::NumberToString(card_model_type),
+        ", 'card_1', X'5678');",
+        "INSERT INTO autofill_model_type_state (model_type, value) VALUES (",
+        base::NumberToString(offer_model_type),
+        ", X'1234');",
+        "INSERT INTO autofill_model_type_state (model_type, value) VALUES (",
+        base::NumberToString(card_model_type),
+        ", X'5678');",
+        "INSERT INTO offer_data (offer_id) VALUES (123);",
+        "INSERT INTO offer_eligible_instrument (offer_id, instrument_id) "
+        "VALUES (123, 456);",
+        "INSERT INTO offer_merchant_domain (offer_id, merchant_domain) VALUES "
+        "(123, 'https://example.com');",
+    })));
+  }
+
+  DoMigration();
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+
+    // Offer sync metadata and state should be deleted.
+    sql::Statement offer_metadata_stmt(connection.GetUniqueStatement(
+        base::StrCat({"SELECT COUNT(*) FROM autofill_sync_metadata WHERE "
+                      "model_type = ",
+                      base::NumberToString(offer_model_type)})));
+    ASSERT_TRUE(offer_metadata_stmt.Step());
+    EXPECT_EQ(0, offer_metadata_stmt.ColumnInt(0));
+
+    sql::Statement offer_state_stmt(connection.GetUniqueStatement(
+        base::StrCat({"SELECT COUNT(*) FROM autofill_model_type_state WHERE "
+                      "model_type = ",
+                      base::NumberToString(offer_model_type)})));
+    ASSERT_TRUE(offer_state_stmt.Step());
+    EXPECT_EQ(0, offer_state_stmt.ColumnInt(0));
+
+    // Card sync metadata and state should be preserved.
+    sql::Statement card_metadata_stmt(connection.GetUniqueStatement(
+        base::StrCat({"SELECT COUNT(*) FROM autofill_sync_metadata WHERE "
+                      "model_type = ",
+                      base::NumberToString(card_model_type)})));
+    ASSERT_TRUE(card_metadata_stmt.Step());
+    EXPECT_EQ(1, card_metadata_stmt.ColumnInt(0));
+
+    sql::Statement card_state_stmt(connection.GetUniqueStatement(
+        base::StrCat({"SELECT COUNT(*) FROM autofill_model_type_state WHERE "
+                      "model_type = ",
+                      base::NumberToString(card_model_type)})));
+    ASSERT_TRUE(card_state_stmt.Step());
+    EXPECT_EQ(1, card_state_stmt.ColumnInt(0));
+
+    // Offer tables should be empty.
+    sql::Statement offer_data_stmt(
+        connection.GetUniqueStatement("SELECT COUNT(*) FROM offer_data"));
+    ASSERT_TRUE(offer_data_stmt.Step());
+    EXPECT_EQ(0, offer_data_stmt.ColumnInt(0));
+
+    sql::Statement eligible_stmt(connection.GetUniqueStatement(
+        "SELECT COUNT(*) FROM offer_eligible_instrument"));
+    ASSERT_TRUE(eligible_stmt.Step());
+    EXPECT_EQ(0, eligible_stmt.ColumnInt(0));
+
+    sql::Statement domain_stmt(connection.GetUniqueStatement(
+        "SELECT COUNT(*) FROM offer_merchant_domain"));
+    ASSERT_TRUE(domain_stmt.Step());
+    EXPECT_EQ(0, domain_stmt.ColumnInt(0));
+  }
+}
+
+// Version 157 cleans up orphaned entries in child tables
+// (autofill_ai_attributes and autofill_ai_entities_metadata).
+TEST_F(WebDatabaseMigrationTest, MigrateVersion156ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_156.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(156, VersionFromConnection(&connection));
+
+    // Insert a valid entity, its attribute, and its metadata.
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO autofill_ai_entities (guid, entity_type, nickname, "
+        "record_type) VALUES ('guid-1', 'TestEntity', 'Nick', 1);"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO autofill_ai_attributes (entity_guid, attribute_type, "
+        "field_type, value_encrypted, verification_status) VALUES ('guid-1', "
+        "'attr', 1, X'00', 0);"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO autofill_ai_entities_metadata (entity_guid, use_count, "
+        "use_date, date_modified) VALUES ('guid-1', 1, 100, 200);"));
+
+    // Insert orphaned attribute and metadata (entity_guid 'orphan-guid' does
+    // not exist in autofill_ai_entities).
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO autofill_ai_attributes (entity_guid, attribute_type, "
+        "field_type, value_encrypted, verification_status) VALUES "
+        "('orphan-guid', 'attr', 1, X'00', 0);"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO autofill_ai_entities_metadata (entity_guid, use_count, "
+        "use_date, date_modified) VALUES ('orphan-guid', 5, 300, 400);"));
+  }
+
+  DoMigration();
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+
+    // Valid entity and its child rows should still exist.
+    sql::Statement s_entity(connection.GetUniqueStatement(
+        "SELECT count(*) FROM autofill_ai_entities WHERE guid = 'guid-1'"));
+    ASSERT_TRUE(s_entity.Step());
+    EXPECT_EQ(1, s_entity.ColumnInt(0));
+
+    sql::Statement s_attr(connection.GetUniqueStatement(
+        "SELECT count(*) FROM autofill_ai_attributes WHERE entity_guid = "
+        "'guid-1'"));
+    ASSERT_TRUE(s_attr.Step());
+    EXPECT_EQ(1, s_attr.ColumnInt(0));
+
+    sql::Statement s_meta(connection.GetUniqueStatement(
+        "SELECT count(*) FROM autofill_ai_entities_metadata WHERE "
+        "entity_guid = 'guid-1'"));
+    ASSERT_TRUE(s_meta.Step());
+    EXPECT_EQ(1, s_meta.ColumnInt(0));
+
+    // Orphaned attribute and metadata should be deleted.
+    sql::Statement s_orphan_attr(connection.GetUniqueStatement(
+        "SELECT count(*) FROM autofill_ai_attributes WHERE entity_guid = "
+        "'orphan-guid'"));
+    ASSERT_TRUE(s_orphan_attr.Step());
+    EXPECT_EQ(0, s_orphan_attr.ColumnInt(0));
+
+    sql::Statement s_orphan_meta(connection.GetUniqueStatement(
+        "SELECT count(*) FROM autofill_ai_entities_metadata WHERE "
+        "entity_guid = 'orphan-guid'"));
+    ASSERT_TRUE(s_orphan_meta.Step());
+    EXPECT_EQ(0, s_orphan_meta.ColumnInt(0));
+  }
+}
 }  // anonymous namespace

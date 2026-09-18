@@ -48,6 +48,8 @@
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/guest_view/web_view/context_menu_content_type_web_view.h"
@@ -3153,9 +3155,10 @@ IN_PROC_BROWSER_TEST_P(WebViewTest, OpenURLFromTab_CurrentTab_Succeed) {
   ExtensionTestMessageListener load_listener("WebViewTest.LOADSTOP");
 
   GURL test_url("http://www.google.com");
-  content::OpenURLParams params(
-      test_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false /* is_renderer_initiated */);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          test_url, WindowOpenDisposition::CURRENT_TAB,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   params.source_render_frame_id = GetGuestRenderFrameHost()->GetRoutingID();
   params.source_render_process_id =
       GetGuestRenderFrameHost()->GetProcess()->GetID().GetUnsafeValue();
@@ -4164,6 +4167,10 @@ class DownloadManagerWaiter : public content::DownloadManager::Observer {
   ~DownloadManagerWaiter() override { download_manager_->RemoveObserver(this); }
 
   void WaitForInitialized() {
+    if (auto* service = DownloadCoreServiceFactory::GetForBrowserContext(
+            download_manager_->GetBrowserContext())) {
+      service->InitializeHistory();
+    }
     if (initialized_ || download_manager_->IsManagerInitialized())
       return;
     base::RunLoop run_loop;
@@ -8038,54 +8045,6 @@ IN_PROC_BROWSER_TEST_P(WebViewFencedFrameTest, ZoomFencedFrame) {
       embedder_web_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
   EXPECT_DOUBLE_EQ(blink::ZoomFactorToZoomLevel(1.0),
                    content::GetPendingZoomLevel(embedder_rwh));
-}
-
-// TODO(crbug.com/432394750): Flaky on linux.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_FencedFrameInGuestHasGuestSiteInstance \
-  DISABLED_FencedFrameInGuestHasGuestSiteInstance
-#else
-#define MAYBE_FencedFrameInGuestHasGuestSiteInstance \
-  FencedFrameInGuestHasGuestSiteInstance
-#endif
-IN_PROC_BROWSER_TEST_P(WebViewFencedFrameTest,
-                       MAYBE_FencedFrameInGuestHasGuestSiteInstance) {
-  SKIP_FOR_MPARCH();  // TODO(crbug.com/40202416): Enable test for MPArch.
-
-  TestHelper("testAddFencedFrame", "web_view/shim", NEEDS_TEST_SERVER);
-
-  auto* guest_rfh =
-      GetGuestViewManager()->WaitForSingleGuestRenderFrameHostCreated();
-  std::vector<content::RenderFrameHost*> rfhs =
-      content::CollectAllRenderFrameHosts(guest_rfh);
-  ASSERT_EQ(rfhs.size(), 2u);
-  ASSERT_EQ(rfhs[0], guest_rfh);
-  content::RenderFrameHostWrapper ff_rfh(rfhs[1]);
-
-  EXPECT_NE(ff_rfh->GetSiteInstance(), guest_rfh->GetSiteInstance());
-  EXPECT_TRUE(guest_rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
-  EXPECT_TRUE(ff_rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
-  EXPECT_EQ(ff_rfh->GetSiteInstance()
-                ->GetSecurityPrincipal()
-                .GetStoragePartitionConfig(),
-            guest_rfh->GetSiteInstance()
-                ->GetSecurityPrincipal()
-                .GetStoragePartitionConfig());
-
-  // The fenced frame will be in a different process from the embedding guest
-  // only if Process Isolation for Fenced Frames is enabled.
-  if (content::SiteIsolationPolicy::
-          IsProcessIsolationForFencedFramesEnabled()) {
-    EXPECT_NE(ff_rfh->GetProcess(), guest_rfh->GetProcess());
-  } else {
-    EXPECT_EQ(ff_rfh->GetProcess(), guest_rfh->GetProcess());
-  }
-
-  // Add a second fenced frame (same-site with the first fenced frame).
-  auto* ff_rfh_2 = fenced_frame_test_helper().CreateFencedFrame(
-      guest_rfh, ff_rfh->GetLastCommittedURL());
-  EXPECT_NE(ff_rfh_2->GetSiteInstance(), ff_rfh->GetSiteInstance());
-  EXPECT_EQ(ff_rfh->GetProcess(), ff_rfh_2->GetProcess());
 }
 
 class WebViewUsbTest : public WebViewTest {

@@ -310,13 +310,13 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/context_menu_helpers.h"
 #include "chrome/browser/extensions/devtools_util.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
-#include "extensions/browser/extension_host.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "extensions/browser/process_manager.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/extension.h"
 #endif
@@ -344,7 +344,6 @@
 #if BUILDFLAG(ENABLE_LENS_DESKTOP_GOOGLE_BRANDED_FEATURES)
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/grit/theme_resources.h"
-#include "ui/base/resource/resource_bundle.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -854,7 +853,9 @@ void OnBrowserCreated(const GURL& link_url,
   // header is a privacy risk.
   nav_params.referrer = content::Referrer();
   nav_params.window_action = NavigateParams::WindowAction::kShowWindow;
-  Navigate(&nav_params);
+  if (auto navigation_handle = Navigate(&nav_params)) {
+    AttachContextMenuOpenLinkNavigationHandleUserData(*navigation_handle);
+  }
 }
 
 bool DoesFormControlTypeSupportEmoji(
@@ -2727,17 +2728,8 @@ void RenderViewContextMenu::AppendCopyItem() {
   if (menu_model_.GetItemCount()) {
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
   }
-
-  std::u16string selected_text = PrintableSelectionText();
-  base::TrimWhitespace(selected_text, base::TRIM_ALL, &selected_text);
-  if (features::IsMenuSimplificationEnabled() && !selected_text.empty()) {
-    menu_model_.AddItem(IDC_CONTENT_CONTEXT_COPY,
-                        l10n_util::GetStringFUTF16(
-                            IDS_CONTENT_CONTEXT_COPY_SELECTION, selected_text));
-  } else {
     menu_model_.AddItemWithStringId(IDC_CONTENT_CONTEXT_COPY,
                                     IDS_CONTENT_CONTEXT_COPY);
-  }
 }
 
 void RenderViewContextMenu::AppendLinkToTextItems() {
@@ -2781,12 +2773,10 @@ void RenderViewContextMenu::AppendPrintItem() {
       (params_.media_type == ContextMenuDataMediaType::kNone ||
        params_.media_flags & ContextMenuData::kMediaCanPrint) &&
       params_.misspelled_word.empty()) {
-    const std::u16string printable_selection_text = PrintableSelectionText();
     if (ShouldUseSimplifiedTextSelection() &&
-        !printable_selection_text.empty()) {
-      menu_model_.AddItem(IDC_PRINT, l10n_util::GetStringFUTF16(
-                                         IDS_CONTENT_CONTEXT_PRINT_SELECTION,
-                                         printable_selection_text));
+        !PrintableSelectionText().empty()) {
+      menu_model_.AddItemWithStringId(IDC_PRINT,
+                                      IDS_CONTENT_CONTEXT_PRINT_SELECTION);
     } else {
       menu_model_.AddItemWithStringId(IDC_PRINT, IDS_CONTENT_CONTEXT_PRINT);
     }
@@ -2801,18 +2791,10 @@ void RenderViewContextMenu::AppendPartialTranslateItem() {
     return;
   }
 
-  const std::u16string printable_selection_text = PrintableSelectionText();
   std::u16string label;
-
   if (is_menu_simplification_enabled) {
-    if (printable_selection_text.empty()) {
       label =
           l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_PARTIAL_TRANSLATE_V2);
-    } else {
-      label = l10n_util::GetStringFUTF16(
-          IDS_CONTENT_CONTEXT_PARTIAL_TRANSLATE_SELECTION_V2,
-          printable_selection_text);
-    }
   } else {
     label = l10n_util::GetStringFUTF16(
         IDS_CONTENT_CONTEXT_PARTIAL_TRANSLATE,
@@ -3757,10 +3739,12 @@ void RenderViewContextMenu::OpenURLWithExtraHeaders(
     WindowOpenDisposition disposition,
     ui::PageTransition transition,
     const std::string& extra_headers,
-    bool started_from_context_menu) {
+    bool started_from_context_menu,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
   RenderViewContextMenuBase::OpenURLWithExtraHeaders(
       url, referring_url, initiator, disposition, transition, extra_headers,
-      started_from_context_menu);
+      started_from_context_menu, std::move(navigation_handle_callback));
 }
 
 void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
@@ -3811,10 +3795,13 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
           /*extra_headers=*/std::string(), /*started_from_context_menu=*/true);
 
       if (browser) {
-        browser->OpenURL(params, /*navigation_handle_callback=*/{});
+        browser->OpenURL(
+            params,
+            base::BindOnce(&AttachContextMenuOpenLinkNavigationHandleUserData));
       } else {
-        source_web_contents_->OpenURL(params,
-                                      /*navigation_handle_callback=*/{});
+        source_web_contents_->OpenURL(
+            params,
+            base::BindOnce(&AttachContextMenuOpenLinkNavigationHandleUserData));
       }
       break;
     }
@@ -3825,7 +3812,8 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
           params_.link_url, params_.frame_url, params_.frame_origin,
           WindowOpenDisposition::NEW_WINDOW, ui::PAGE_TRANSITION_LINK,
           /*extra_headers=*/std::string(),
-          /*started_from_context_menu=*/true);
+          /*started_from_context_menu=*/true,
+          base::BindOnce(&AttachContextMenuOpenLinkNavigationHandleUserData));
       break;
 
     case IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED:
@@ -3838,7 +3826,8 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
           params_.link_url, params_.frame_url, params_.frame_origin,
           WindowOpenDisposition::OFF_THE_RECORD, ui::PAGE_TRANSITION_LINK,
           /*extra_headers=*/std::string(),
-          /*started_from_context_menu=*/true);
+          /*started_from_context_menu=*/true,
+          base::BindOnce(&AttachContextMenuOpenLinkNavigationHandleUserData));
       break;
 
     case IDC_CONTENT_CONTEXT_OPENLINKBOOKMARKAPP:
@@ -3979,10 +3968,11 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
       break;
 
     case IDC_CONTENT_CONTEXT_OPEN_ORIGINAL_IMAGE_NEW_TAB:
-      OpenURLWithExtraHeaders(params_.src_url, params_.frame_url,
-                              params_.frame_origin,
-                              WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                              ui::PAGE_TRANSITION_LINK, std::string(), false);
+      OpenURLWithExtraHeaders(
+          params_.src_url, params_.frame_url, params_.frame_origin,
+          WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
+          /*extra_headers=*/std::string(), /*started_from_context_menu=*/false,
+          /*navigation_handle_callback=*/{});
       break;
 
     case IDC_CONTENT_CONTEXT_LOAD_IMAGE:
@@ -4757,8 +4747,10 @@ void RenderViewContextMenu::AppendSendTabToSelfItem(bool add_separator) {
   }
 
   const bool should_offer_submenu =
-      base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfEnhancedDesktopUI) &&
+      (base::FeatureList::IsEnabled(
+           send_tab_to_self::kSendTabToSelfEnhancedDesktopUI) ||
+       base::FeatureList::IsEnabled(
+           send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2)) &&
       (*display_reason ==
        send_tab_to_self::EntryPointDisplayReason::kOfferFeature);
 
@@ -4891,6 +4883,13 @@ void RenderViewContextMenu::ExecOpenWebApp() {
       *app_id, apps::LaunchContainer::kLaunchContainerWindow,
       WindowOpenDisposition::CURRENT_TAB, apps::LaunchSource::kFromMenu);
   launch_params.override_url = params_.link_url;
+  // Forwarding `params_.frame_origin`, `params_.frame_url.GetAsReferrer()`, and
+  // `params_.referrer_policy` directly mirrors
+  // `GetOpenURLParamsWithExtraHeaders()` for other link context menu items
+  // (e.g. `IDC_CONTENT_CONTEXT_OPENLINKNEWTAB`).
+  launch_params.initiator_origin = params_.frame_origin;
+  launch_params.referrer_url = params_.frame_url.GetAsReferrer();
+  launch_params.referrer_policy = params_.referrer_policy;
   apps::AppServiceProxyFactory::GetForProfile(GetProfile())
       ->LaunchAppWithParams(std::move(launch_params));
 }
@@ -5157,9 +5156,11 @@ void RenderViewContextMenu::ExecSaveAs() {
 #endif  // BUILDFLAG(ENABLE_PDF)
 
   if (!target_frame_host) {
-    target_frame_host = is_plugin
-                            ? source_web_contents_->GetOuterWebContentsFrame()
-                            : frame_host;
+    target_frame_host =
+        is_plugin && extensions::MimeHandlerViewGuest::FromRenderFrameHost(
+                         frame_host)
+            ? source_web_contents_->GetOuterWebContentsFrame()
+            : frame_host;
     if (!target_frame_host) {
       return;
     }
@@ -5922,7 +5923,11 @@ void RenderViewContextMenu::OpenLinkInSplitView(
         params.started_from_context_menu = true;
         params.transition_type = ui::PAGE_TRANSITION_LINK;
         params.referrer = CreateReferrer(params_.link_url, params_);
-        tab->GetContents()->GetController().LoadURLWithParams(params);
+        auto navigation_handle =
+            tab->GetContents()->GetController().LoadURLWithParams(params);
+        if (navigation_handle) {
+          AttachContextMenuOpenLinkNavigationHandleUserData(*navigation_handle);
+        }
         break;
       }
     }
@@ -5933,7 +5938,8 @@ void RenderViewContextMenu::OpenLinkInSplitView(
         WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
         /*extra_headers=*/std::string(), /*started_from_context_menu=*/true);
     const WebContents* new_web_contents = source_web_contents_->OpenURL(
-        params, /*navigation_handle_callback=*/{});
+        params,
+        base::BindOnce(&AttachContextMenuOpenLinkNavigationHandleUserData));
     if (!new_web_contents) {
       return;
     }

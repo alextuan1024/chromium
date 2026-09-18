@@ -251,38 +251,6 @@ const HatsConfig kHatsOsSettingsSearchSurvey = {
         kHatsOsSettingsSearchSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
 
-// Borealis games survey -- Shown after a Steam game exits.
-const HatsConfig kHatsBorealisGamesSurvey = {
-    ash::features::kHappinessTrackingBorealisGames,  // feature
-    base::Days(1),                                   // new_device_threshold
-    ash::prefs::kHatsBorealisGamesSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsBorealisGamesSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-    ash::prefs::kHatsBorealisGamesLastInteractionTimestamp,
-    // survey_last_interaction_timestamp_pref_name
-    base::Days(7),  // threshold_time
-};
-
-// Launcher survey -- Shown after a user opens the launcher for the first time.
-// This survey is enabled for 25% of users.
-const HatsConfig kHatsLauncherAppsFindingSurvey = {
-    ash::features::kHappinessTrackingLauncherAppsFinding,  // feature
-    base::Hours(2),                                 // new_device_threshold
-    ash::prefs::kHatsLauncherAppsSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsLauncherAppsSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Launcher survey -- Shown after a user opens the launcher for the first time.
-// This survey is enabled for 75% of users.
-const HatsConfig kHatsLauncherAppsNeedingSurvey = {
-    ash::features::kHappinessTrackingLauncherAppsNeeding,  // feature
-    base::Hours(2),                                 // new_device_threshold
-    ash::prefs::kHatsLauncherAppsSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsLauncherAppsSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
 // Office integration survey -- Shown after the user opens an Office file:
 // For MS365 and Docs/Sheets/Slides, shown when the app is inactive or closed.
 // For QuickOffice, shown 1 minute after launch.

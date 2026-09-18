@@ -197,9 +197,16 @@ bool GlicInstanceCoordinatorImpl::IsInvoking(
 }
 
 void GlicInstanceCoordinatorImpl::CancelInvoke(GlicInstanceImpl* instance) {
-  if (auto it = invoke_handlers_.find(instance); it != invoke_handlers_.end()) {
-    auto handler = std::move(it->second);
-    invoke_handlers_.erase(it);
+  // Take ownership of the handlers first, as cancelling them re-enters
+  // OnInvokeHandlerComplete().
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  std::vector<std::unique_ptr<GlicInvokeHandler>> handlers;
+  for (auto it = begin; it != end; ++it) {
+    handlers.push_back(std::move(it->second));
+  }
+  invoke_handlers_.erase(begin, end);
+
+  for (auto& handler : handlers) {
     if (handler) {
       handler->Cancel(GlicInvokeError::kCancelled);
     }
@@ -395,10 +402,6 @@ GlicInstance* GlicInstanceCoordinatorImpl::ShowInstanceForTabGroup(
   GlicInstanceImpl* existing_instance = GetInstanceImplForTabGroup(group_id);
 
   if (existing_instance) {
-    if (tabs::TabInterface* glic_tab = existing_instance->GetGlicTab()) {
-      existing_instance->Show(ShowOptions::ForTab(*glic_tab));
-      return existing_instance;
-    }
     existing_instance->ShowForTabGroup(group_id, /*options=*/std::nullopt);
     return existing_instance;
   }
@@ -569,10 +572,11 @@ bool GlicInstanceCoordinatorImpl::MaybeStartWarming(
 }
 
 void GlicInstanceCoordinatorImpl::Shutdown() {
-  // Extract handlers to avoid iterator invalidation when Cancel() removes them
-  // from invoke_handlers_.
-  base::flat_map<GlicInstance*, std::unique_ptr<GlicInvokeHandler>> handlers(
+  // Take ownership of the handlers to avoid iterator invalidation when
+  // Cancel() removes them from invoke_handlers_.
+  std::multimap<GlicInstance*, std::unique_ptr<GlicInvokeHandler>> handlers(
       std::move(invoke_handlers_));
+  invoke_handlers_.clear();
 
   for (auto& [instance, handler] : handlers) {
     if (handler) {
@@ -738,6 +742,26 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
     return nullptr;
   }
 
+  // Leave the conversation in the floaty instead of pulling it into the
+  // targeted tab's side panel.
+  if (options.preserve_active_surface && tab &&
+      instance->IsActiveEmbedder(FloatingEmbedderKey{})) {
+    // A `DefaultConversation` only resolves to a floating instance when the tab
+    // is already bound to it. An explicitly targeted one may still need to
+    // adopt the tab.
+    if (GetInstanceImplForTab(tab) != instance) {
+      // Bind first: rewriting the surface below discards the tab.
+      // TODO(b/562983414): Infer a more specific pin trigger from the
+      // invocation source.
+      instance->BindTabWithoutShowing(tab, GlicPinTrigger::kInstanceCreation,
+                                      options.pin_on_bind);
+    }
+    options.target.surface = Floating();
+    if (!resolve_surface()) {
+      return nullptr;
+    }
+  }
+
   // Now that the instance is fully resolved, we can safely resolve the
   // `LastActiveOrNew` surface and mutate `options.target.surface` to point to
   // the appropriate final target, before running the surface resolver.
@@ -771,39 +795,73 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
     return instance->GetWeakPtr();
   }
 
-  if (auto it = invoke_handlers_.find(instance); it != invoke_handlers_.end()) {
-    if (options.supersede_if_in_progress) {
-      // If requested by `options.supersede_if_in_progress` (e.g. for a
-      // continuation prompt from the server during actuation), cancel the
-      // previous handler so this invocation can proceed without being
-      // rejected with kInvokeInProgress.
-      std::unique_ptr<GlicInvokeHandler> old_handler = std::move(it->second);
-      invoke_handlers_.erase(it);
-      old_handler->Cancel(GlicInvokeError::kSuperseded);
-    } else {
-      metrics->RecordError(GlicInvokeError::kInvokeInProgress);
-      if (options.on_error) {
-        std::move(options.on_error).Run(GlicInvokeError::kInvokeInProgress);
+  // Only invocations that send an invoke message to the web client conflict
+  // with each other. Invocations that merely show the UI can safely run
+  // simultaneously with any other invocation on the same instance.
+  if (GlicInvokeHandler::RequiresClientInvoke(
+          options, auto_submit_passkey.has_value())) {
+    if (GlicInvokeHandler* in_progress = FindClientInvokeHandler(instance)) {
+      if (options.supersede_if_in_progress) {
+        // If requested by `options.supersede_if_in_progress` (e.g. for a
+        // continuation prompt from the server during actuation), cancel the
+        // previous handler so this invocation can proceed without being
+        // rejected with kInvokeInProgress.
+        std::unique_ptr<GlicInvokeHandler> old_handler =
+            RemoveInvokeHandler(instance, in_progress);
+        old_handler->Cancel(GlicInvokeError::kSuperseded);
+      } else {
+        metrics->RecordError(GlicInvokeError::kInvokeInProgress);
+        if (options.on_error) {
+          std::move(options.on_error).Run(GlicInvokeError::kInvokeInProgress);
+        }
+        // TODO(crbug.com/483387751): Show default toast here once implemented.
+        return nullptr;
       }
-      // TODO(crbug.com/483387751): Show default toast here once implemented.
-      return nullptr;
     }
   }
 
-  invoke_handlers_[instance] = std::make_unique<GlicInvokeHandler>(
+  auto handler = std::make_unique<GlicInvokeHandler>(
       *instance, resolved_target, std::move(options),
       std::move(auto_submit_options), auto_submit_passkey, std::move(metrics),
       base::BindOnce(&GlicInstanceCoordinatorImpl::OnInvokeHandlerComplete,
                      base::Unretained(this)));
-  invoke_handlers_[instance]->Invoke();
+  GlicInvokeHandler* handler_ptr = handler.get();
+  invoke_handlers_.emplace(instance, std::move(handler));
+  handler_ptr->Invoke();
 
   return instance->GetWeakPtr();
+}
+
+GlicInvokeHandler* GlicInstanceCoordinatorImpl::FindClientInvokeHandler(
+    GlicInstance* instance) const {
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  for (auto it = begin; it != end; ++it) {
+    if (it->second && it->second->requires_client_invoke()) {
+      return it->second.get();
+    }
+  }
+  return nullptr;
+}
+
+std::unique_ptr<GlicInvokeHandler>
+GlicInstanceCoordinatorImpl::RemoveInvokeHandler(GlicInstance* instance,
+                                                 GlicInvokeHandler* handler) {
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  auto it = std::ranges::find(begin, end, handler, [](const auto& entry) {
+    return entry.second.get();
+  });
+  if (it == end) {
+    return nullptr;
+  }
+  return std::move(invoke_handlers_.extract(it).mapped());
 }
 
 void GlicInstanceCoordinatorImpl::OnInvokeHandlerComplete(
     GlicInstance* instance,
     GlicInvokeHandler* handler) {
-  invoke_handlers_.erase(instance);
+  // This destroys `handler`, which is what the completion callback contract
+  // requires.
+  RemoveInvokeHandler(instance, handler);
 }
 
 void GlicInstanceCoordinatorImpl::CloseAndShutdownInstanceWithFrame(
@@ -947,19 +1005,6 @@ GlicInstanceCoordinatorImpl::GetOrCreateGlicInstanceImplForTab(
         "Glic.Instance.TimeSinceLastInstanceActiveOnOpen",
         last_active_instance_->GetTimeSinceLastActive(), base::Seconds(1),
         base::Hours(24), 50);
-  }
-
-  if (base::FeatureList::IsEnabled(
-          features::kGlicDefaultToLastActiveConversation) &&
-      last_active_instance_ &&
-      last_active_instance_->GetTimeSinceLastActive() <
-          features::kGlicDefaultToLastActiveConversationMaxRecency.Get() &&
-      !last_active_instance_->IsActuating()) {
-    last_active_instance_->instance_metrics().OnDaisyChain(
-        DaisyChainSource::kLastActiveInstance,
-        /*success=*/true, tab,
-        /*source_tab=*/nullptr);
-    return last_active_instance_;
   }
 
   // Create a new conversation and instance.
@@ -1112,6 +1157,38 @@ void GlicInstanceCoordinatorImpl::InvokeAndLogToggle(
     Target::Surface surface,
     const EmbedderKey& key,
     std::unique_ptr<GlicWindowInvocationTracker> invocation_tracker) {
+  if (!GlicEnabling::IsEnabledForProfile(profile_)) {
+    // TODO(b/520041903): Remove this temporary workaround and route through
+    // `InvokeInternal` once the `ClientLoadState` signal lands.
+    // When the entrypoint is anchored for an onboarded user
+    // (`ShouldShowGlicButton` is true while `IsEnabledForProfile` is false),
+    // show the panel directly so the WebUI can render the `ProfileReadyState`
+    // error screen (e.g. `kLocationMismatch` / `kIneligibleAccount`) without
+    // starting a client invocation.
+    if (!GlicEnabling::ShouldShowGlicButton(profile_)) {
+      return;
+    }
+    GlicInstanceImpl* instance = nullptr;
+    if (std::holds_alternative<Floating>(surface)) {
+      instance = GetOrCreateInstanceImplForFloaty();
+      ShowOptions show_options =
+          ShowOptions::ForFloating(/*source_tab=*/tabs::TabHandle::Null());
+      show_options.invocation_source = source;
+      instance->Show(std::move(show_options));
+    } else if (auto* tab_handle = std::get_if<tabs::TabHandle>(&surface)) {
+      if (tabs::TabInterface* tab = tab_handle->Get()) {
+        instance = GetOrCreateGlicInstanceImplForTab(tab);
+        instance->Show(ShowOptions::ForSidePanel(
+            *tab, GlicPinTrigger::kInstanceCreation, source));
+      }
+    }
+    if (instance) {
+      instance->instance_metrics().OnToggle(source, key, /*is_showing=*/false,
+                                            std::move(invocation_tracker));
+    }
+    return;
+  }
+
   GlicInvokeOptions invoke_options(source);
   invoke_options.target.surface = std::move(surface);
   invoke_options.fre_completion_wait_mode = FreCompletionWaitMode::kNever;
@@ -1213,7 +1290,6 @@ void GlicInstanceCoordinatorImpl::TransferTabGroupBinding(
   std::optional<tab_groups::TabGroupId> group_id =
       source_instance.GetTabGroup();
   if (group_id.has_value() && &target_instance != &source_instance) {
-    source_instance.SwapGlicTabToPlaceholder();
     target_instance.BindTabGroup(*group_id);
   }
 }

@@ -282,7 +282,7 @@ void LayoutBlock::ImageChanged(WrappedImagePtr image,
     return;
   if (auto* first_line_container = NearestInnerBlockWithFirstLine()) {
     for (const auto* layer = &first_line_style->BackgroundLayers(); layer;
-         layer = layer->Next()) {
+         layer = layer->NextForUsedValue()) {
       if (layer->GetImage() && image == layer->GetImage()->Data()) {
         first_line_container->SetShouldDoFullPaintInvalidationForFirstLine();
         break;
@@ -650,7 +650,7 @@ LayoutBlock* LayoutBlock::CreateAnonymousWithParentAndDisplay(
                                                   new_display);
 
   parent->UpdateAnonymousChildStyle(nullptr, new_style_builder);
-  const ComputedStyle* new_style = new_style_builder.TakeStyle();
+  const ComputedStyle& new_style = *new_style_builder.TakeStyle();
 
   LayoutBlock* layout_block;
   if (new_display == EDisplay::kFlex) {

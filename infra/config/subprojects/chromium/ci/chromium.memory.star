@@ -345,7 +345,7 @@ linux_memory_builder(
                     "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 swarming = targets.swarming(
-                    shards = 45,
+                    shards = 94,
                 ),
             ),
             "crashpad_tests": targets.remove(
@@ -361,9 +361,13 @@ linux_memory_builder(
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # Slow on certain debug builders, see crbug.com/1513713.
                 swarming = targets.swarming(
-                    shards = 15,
+                    shards = 26,
                 ),
             ),
             "sync_integration_tests": targets.mixin(
@@ -750,7 +754,7 @@ linux_memory_builder(
                     "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 swarming = targets.swarming(
-                    shards = 70,
+                    shards = 119,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -766,8 +770,12 @@ linux_memory_builder(
                 reason = "Can't run on MSAN because gl_unittests uses the hardware driver, which isn't instrumented.",
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 25,
+                    shards = 43,
                 ),
             ),
             "services_unittests": targets.remove(
@@ -1028,7 +1036,7 @@ linux_memory_builder(
                     "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 swarming = targets.swarming(
-                    shards = 20,
+                    shards = 34,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -1539,11 +1547,7 @@ ci.builder(
             target_platform = builder_config.target_platform.IOS,
         ),
         clusterfuzz_archive = builder_config.clusterfuzz_archive(
-            # TODO(https://crbug.com/527836546): Flip `use_archive_path` to True
-            # then remove `archive_name_prefix` and `archive_subdir`.
-            archive_name_prefix = "ios-asan",
             archive_path = "mac-release-ios-asan/ios-asan-mac-release",
-            archive_subdir = "ios-asan",
             gs_acl = "public-read",
             gs_bucket = "chromium-browser-asan",
         ),

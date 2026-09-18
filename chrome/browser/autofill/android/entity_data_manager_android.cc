@@ -16,6 +16,7 @@
 #include "base/containers/to_vector.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/account_settings/account_setting_service_factory.h"
+#include "chrome/browser/autofill/android/details_for_upsert_pass_android.h"
 #include "chrome/browser/autofill/android/entity_instance_android.h"
 #include "chrome/browser/autofill/android/entity_instance_with_labels.h"
 #include "chrome/browser/autofill/android/entity_type_android.h"
@@ -52,6 +53,7 @@
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/personal_context/core/url_constants.h"
+#include "components/wallet/core/browser/network/wallet_http_client.h"
 #include "components/wallet/core/common/wallet_features.h"
 #include "third_party/jni_zero/jni_zero.h"
 
@@ -264,6 +266,19 @@ void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
   AddOrUpdateEntityInstance(std::move(entity_instance), targeted_record_type,
                             description_string_id, accept_button_string_id,
                             std::move(on_local_save_fallback));
+}
+
+void EntityDataManagerAndroid::GetDetailsForUpsertPass(
+    int entity_type,
+    WalletPassAccessManager::GetDetailsForUpsertPassCallback callback) {
+  std::optional<EntityTypeName> type_name = ToSafeEntityTypeName(entity_type);
+  if (!type_name || !wallet_pass_access_manager_) {
+    std::move(callback).Run(base::unexpected(
+        wallet::WalletHttpClient::WalletRequestError::kGenericError));
+    return;
+  }
+  wallet_pass_access_manager_->GetDetailsForUpsertPass(EntityType(*type_name),
+                                                       std::move(callback));
 }
 
 void EntityDataManagerAndroid::AddOrUpdateEntityInstance(

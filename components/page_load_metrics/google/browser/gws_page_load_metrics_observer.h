@@ -7,7 +7,6 @@
 
 #include "components/google/core/common/google_util.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
-#include "components/page_load_metrics/google/browser/prerender_prewarm_navigation_data.h"
 #include "content/public/browser/navigation_handle_timing.h"
 #include "net/http/http_connection_info.h"
 
@@ -85,6 +84,7 @@ extern const char kHistogramGWSConnectStart[];
 extern const char kHistogramGWSDomainLookupStart[];
 extern const char kHistogramGWSDomainLookupEnd[];
 extern const char kHistogramGWSBeforeUnloadExecutionMode[];
+extern const char kHistogramGWSDeviceBoundSessionsNavigationWasDeferred[];
 
 extern const char kHistogramServiceWorkerParseStartSearch[];
 extern const char kHistogramServiceWorkerFirstContentfulPaintSearch[];
@@ -104,13 +104,13 @@ extern const char kNonRestoreNavigation[];
 extern const char kStartedFromContextMenu[];
 
 extern const char kHistogramPrerenderHostReused[];
-extern const char kHistogramPrerenderPrewarmNavigationStatus2[];
 extern const char kHistogramGWSPrerenderNavigationToActivation[];
 extern const char kHistogramGWSActivationToFirstContentfulPaint[];
 extern const char kHistogramGWSActivationToLargestContentfulPaint[];
-extern const char kHistogramGWSHadPriorPrewarmCommitStatus2[];
-extern const char kHistogramSiteInstanceProcessAssignment2[];
+extern const char kHistogramGWSPrewarmPrerenderCoverageStatus[];
 
+extern const char kHistogramBrowserInitiatedSuffix[];
+extern const char kHistogramRendererInitiatedSuffix[];
 extern const char kHistogramPrerenderSuffix[];
 extern const char kHistogramNonPrerenderSuffix[];
 extern const char kHistogramDuplicateIgnoredSuffix[];

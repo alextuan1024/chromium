@@ -49,7 +49,6 @@
 #include "base/trace_event/memory_dump_request_args.h"
 #include "base/types/expected.h"
 #include "components/services/storage/privileged/cpp/bucket_client_info.h"
-#include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_control_test.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom.h"
 #include "components/services/storage/public/cpp/buckets/bucket_info.h"
@@ -348,11 +347,8 @@ BucketContext::~BucketContext() {
       this);
 
   delegate_.on_ready_for_destruction.Reset();
+  ForceClose(/*doom=*/false);
   ResetBackingStore();
-
-  if (delegate_.on_destroyed) {
-    std::move(delegate_.on_destroyed).Run();
-  }
 }
 
 // static
@@ -360,13 +356,19 @@ uint64_t BucketContext::ReadUsageFromDisk(
     const storage::BucketLocator& bucket_locator,
     const base::FilePath& data_path) {
   CHECK(!data_path.empty());
-  return ShouldUseSqlite(GetSqliteRolloutStage(/*in_memory=*/false),
-                         bucket_locator, data_path)
-             ? sqlite::BackingStoreImpl::SumSizesOfDatabaseFiles(
-                   data_path.Append(GetSqliteDbDirectory(bucket_locator)))
-             : level_db::BackingStore::ReadSizeFromDisk(
-                   data_path.Append(GetLevelDBFileName(bucket_locator)),
-                   data_path.Append(GetBlobStoreFileName(bucket_locator)));
+  uint64_t result =
+      ShouldUseSqlite(GetSqliteRolloutStage(/*in_memory=*/false),
+                      bucket_locator, data_path)
+          ? sqlite::BackingStoreImpl::SumSizesOfDatabaseFiles(
+                data_path.Append(GetSqliteDbDirectory(bucket_locator)),
+                /*include_legacy_blobs=*/true)
+          : level_db::BackingStore::ReadSizeFromDisk(
+                data_path.Append(GetLevelDBFileName(bucket_locator)),
+                data_path.Append(GetBlobStoreFileName(bucket_locator)));
+  base::UmaHistogramCustomCounts("IndexedDB.BackingStore.SizeOnDisk",
+                                 base::saturated_cast<int>(result / 1024), 1,
+                                 base::GiB(6).InKiB(), 150);
+  return result;
 }
 
 void BucketContext::ForceClose(bool doom) {
@@ -705,19 +707,15 @@ void BucketContext::RunIdleTasks(bool long_idle) {
 
 void BucketContext::AddReceiver(
     const storage::BucketClientInfo& client_info,
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> pending_receiver) {
   // When `on_ready_for_destruction` is non-null, `this` hasn't requested its
   // own destruction. When it is null, this is to be torn down and has to bounce
   // the AddReceiver request back to the delegate.
   if (delegate().on_ready_for_destruction) {
-    receivers_.Add(
-        this, std::move(pending_receiver),
-        ReceiverContext(client_info, std::move(client_state_checker_remote)));
+    receivers_.Add(this, std::move(pending_receiver),
+                   ReceiverContext(client_info));
   } else {
     delegate().on_receiver_bounced.Run(client_info,
-                                       std::move(client_state_checker_remote),
                                        std::move(pending_receiver));
   }
 }
@@ -816,6 +814,7 @@ void BucketContext::Open(
   }
 
   Log(DatabaseConnectionOpenResult::kReceivedRequest, GetHistogramSuffix());
+
   auto connection = std::make_unique<PendingConnection>(
       std::move(factory_client),
       std::make_unique<DatabaseCallbacks>(std::move(database_callbacks_remote)),
@@ -825,19 +824,7 @@ void BucketContext::Open(
   connection->request_shared_connection = request_shared_connection;
 
   ReceiverContext& client = receivers_.current_context();
-  // `Connection` only needs an opaque token to uniquely identify the
-  // document or worker that owns the other side of the connection.
-  connection->client_token = client.client_info.document_token
-                                 ? client.client_info.document_token->value()
-                                 : client.client_info.context_token.value();
-  // Null in unit tests.
-  if (client.client_state_checker_remote) {
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        state_checker_clone;
-    client.client_state_checker_remote->MakeClone(
-        state_checker_clone.InitWithNewPipeAndPassReceiver());
-    connection->client_state_checker.Bind(std::move(state_checker_clone));
-  }
+  connection->client_info = client.client_info;
 
   Database* database_ptr = nullptr;
   auto it = databases_.find(name);
@@ -1383,24 +1370,39 @@ void BucketContext::ResetBackingStore(bool migrate) {
   if (backing_store_) {
     base::ElapsedTimer shutdown_timer;
     bool migrate_success = false;
+    base::FilePath sqlite_data_path;
+    base::ByteSize existing_leveldb_size;
     std::optional<base::TimeDelta> migration_duration;
     if (migrate && !IsUsingSqlite()) {
       CHECK(!in_memory());
 
-      base::FilePath sqlite_data_path =
+      sqlite_data_path =
           data_path_.Append(GetSqliteDbDirectory(bucket_locator()));
+      const base::FilePath leveldb_db_directory =
+          data_path_.Append(GetLevelDBFileName(bucket_locator()));
 
       std::optional<base::SysInfo::DiskSpaceInfo> disk_space =
           base::SysInfo::AmountOfDiskSpace(data_path_);
 
+      // This workaround is necessary on Windows to get an accurate size
+      // calculation. See remarks in `BackingStore::EstimateSize()`.
+#if BUILDFLAG(IS_WIN)
+      base::FileEnumerator(leveldb_db_directory, /*recursive=*/false,
+                           base::FileEnumerator::FILES)
+          .ForEach([](const base::FilePath& file_path) {
+            base::File file(file_path, base::File::FLAG_OPEN |
+                                           base::File::FLAG_WIN_SHARE_DELETE);
+          });
+#endif
+
       if (!disk_space) {
         LogMigrationEvent(MigrationEvent::kDiskSpaceQueryFailed);
-      } else if (int64_t existing_size = base::ComputeDirectorySize(
-                     data_path_.Append(GetLevelDBFileName(bucket_locator())));
+      } else if (!(existing_leveldb_size = base::ByteSize(static_cast<uint64_t>(
+                       base::ComputeDirectorySize(leveldb_db_directory))))
+                      .is_zero() &&
                  disk_space->available <
-                 std::max(base::KiBS(72),
-                          2.5 * base::ByteSizeDelta(existing_size)) +
-                     disk_space->total / 100) {
+                     std::max(base::KiB(72), 2.5 * existing_leveldb_size) +
+                         disk_space->total / 100) {
         // To attempt migration, the disk must be less than 99% full after we
         // assume the new database will take up 72KiB, or 2.5x the space of the
         // old one, whichever is greater. 72KiB is currently the smallest size a
@@ -1489,6 +1491,32 @@ void BucketContext::ResetBackingStore(bool migrate) {
     LogDuration(shutdown_timer.Elapsed(),
                 "IndexedDB.BackendDuration.CloseBackingStore",
                 histogram_suffix);
+
+    // This comes after the `CloseBackingStore` histogram so the cost of
+    // computing the space used by SQLite, simply for logging, isn't included.
+    if (migrate_success) {
+      uint64_t sqlite_size = sqlite::BackingStoreImpl::SumSizesOfDatabaseFiles(
+          sqlite_data_path, /*include_legacy_blobs=*/false);
+      uint64_t ratio =
+          (base::CheckMul(sqlite_size, 100u) / existing_leveldb_size.InBytes())
+              .ValueOrDie();
+      if (existing_leveldb_size < base::MiB(1)) {
+        // LevelDB databases can be very small; near-empty ones are around 1KiB.
+        // In contrast, the lower bound for SQLite DBs is one page (4KiB) per
+        // table or index, plus one for the root page. Currently for IndexedDB,
+        // the minimum is 18 pages or 72KiB. So this ratio is expected to be
+        // higher for small databases.
+        // TODO(crbug.com/554055687): try to whittle this down.
+        base::UmaHistogramCounts10000(
+            "IndexedDB.SqliteMigration.SizeRatio.SmallDb", ratio);
+      } else if (existing_leveldb_size < base::MiB(10)) {
+        base::UmaHistogramCounts1000(
+            "IndexedDB.SqliteMigration.SizeRatio.MediumDb", ratio);
+      } else {
+        base::UmaHistogramCounts1000(
+            "IndexedDB.SqliteMigration.SizeRatio.LargeDb", ratio);
+      }
+    }
   }
 
   task_run_queued_ = false;
@@ -1521,11 +1549,8 @@ void BucketContext::RecordInternalsSnapshot() {
 }
 
 BucketContext::ReceiverContext::ReceiverContext(
-    const storage::BucketClientInfo& client_info,
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote)
-    : client_info(client_info),
-      client_state_checker_remote(std::move(client_state_checker_remote)) {}
+    const storage::BucketClientInfo& client_info)
+    : client_info(client_info) {}
 
 BucketContext::ReceiverContext::ReceiverContext(
     BucketContext::ReceiverContext&&) noexcept = default;

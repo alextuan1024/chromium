@@ -19,6 +19,7 @@
 #include "base/sync_socket.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "chrome/common/readaloud/read_aloud.mojom.h"
 #include "components/optimization_guide/proto/features/read_aloud_synthesize.pb.h"
 #include "media/base/audio_parameters.h"
@@ -50,9 +51,21 @@ class MockReadAloudPlaybackControllerClient
 
   void ResetReceiver() { receiver_.reset(); }
 
+  void FlushForTesting() { receiver_.FlushForTesting(); }
+
+  using StateCallback =
+      base::RepeatingCallback<void(read_aloud::mojom::PlaybackState)>;
+
+  void set_state_callback(StateCallback callback) {
+    state_callback_ = std::move(callback);
+  }
+
   // read_aloud::mojom::ReadAloudPlaybackControllerClient:
   void OnPlaybackStateChanged(read_aloud::mojom::PlaybackState state) override {
     last_state_ = state;
+    if (state_callback_) {
+      state_callback_.Run(state);
+    }
     if (state_changed_closure_ &&
         (!expected_state_to_wait_for_.has_value() ||
          state == expected_state_to_wait_for_.value())) {
@@ -81,6 +94,7 @@ class MockReadAloudPlaybackControllerClient
       const std::u16string& text_chunk,
       uint64_t sequence_id,
       RequestSpeechSynthesisCallback callback) override {
+    synthesis_request_count_++;
     if (synthesis_handler_) {
       synthesis_handler_.Run(text_chunk, sequence_id, std::move(callback));
       return;
@@ -132,6 +146,8 @@ class MockReadAloudPlaybackControllerClient
     return last_state_;
   }
 
+  uint32_t synthesis_request_count() const { return synthesis_request_count_; }
+
   const std::optional<std::vector<std::u16string>>& last_chunks() const {
     return last_chunks_;
   }
@@ -142,9 +158,11 @@ class MockReadAloudPlaybackControllerClient
   std::optional<read_aloud::mojom::PlaybackState> last_state_;
   std::optional<read_aloud::mojom::PlaybackState> expected_state_to_wait_for_;
   base::OnceClosure state_changed_closure_;
+  StateCallback state_callback_;
   std::optional<std::vector<std::u16string>> last_chunks_;
   base::OnceClosure chunks_closure_;
   SpeechSynthesisHandler synthesis_handler_;
+  uint32_t synthesis_request_count_ = 0;
 };
 
 }  // namespace
@@ -230,15 +248,46 @@ class ReadAloudPlaybackControllerTest : public testing::Test {
         mojo::PlatformHandle(foreign_socket.Take()));
   }
 
+  void InitializeAudioForTesting() {
+    mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
+    stream_receiver_ = stream.InitWithNewPipeAndPassReceiver();
+    const media::AudioParameters params(
+        media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+        media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+        /*frames_per_buffer=*/480);
+    local_socket_ = std::make_unique<base::CancelableSyncSocket>();
+    media::mojom::ReadWriteAudioDataPipePtr data_pipe =
+        CreateValidDataPipe(params, local_socket_.get());
+    ASSERT_TRUE(data_pipe);
+    controller_remote_->InitializeAudio(std::move(stream), std::move(data_pipe),
+                                        params);
+    controller_remote_.FlushForTesting();
+  }
+
+  void FlushAll() {
+    controller_remote_.FlushForTesting();
+    if (mock_client_) {
+      mock_client_->FlushForTesting();
+    }
+  }
+
+  void FastForwardAndFlush(base::TimeDelta delta) {
+    task_environment_.FastForwardBy(delta);
+    FlushAll();
+  }
+
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
-  base::test::TaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   mojo::Remote<read_aloud::mojom::ReadAloudPlaybackControllerFactory>
       factory_remote_;
   mojo::Remote<read_aloud::mojom::ReadAloudPlaybackController>
       controller_remote_;
   std::unique_ptr<MockReadAloudPlaybackControllerClient> mock_client_;
   std::unique_ptr<ReadAloudPlaybackController> controller_impl_;
+  mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver_;
+  std::unique_ptr<base::CancelableSyncSocket> local_socket_;
 };
 
 TEST_F(ReadAloudPlaybackControllerTest, CreateControllerSuccessfulBinding) {
@@ -649,155 +698,139 @@ TEST_F(ReadAloudPlaybackControllerTest,
 }
 
 TEST_F(ReadAloudPlaybackControllerTest,
-       InitializeAudioInvalidStreamRemoteReportsBadMessage) {
+       InitializeAudioInvalidSampleRateReportsBadMessage) {
   CreateSession();
 
-  // Invalid stream remote (null / default constructed)
   mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
+  mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver =
+      stream.InitWithNewPipeAndPassReceiver();
 
+  // Invalid sample rate = 0
   const media::AudioParameters params(
       media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
-      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/0,
       /*frames_per_buffer=*/480);
 
   base::CancelableSyncSocket local_socket;
+  const media::AudioParameters valid_params(
+      media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      /*frames_per_buffer=*/480);
   media::mojom::ReadWriteAudioDataPipePtr data_pipe =
-      CreateValidDataPipe(params, &local_socket);
+      CreateValidDataPipe(valid_params, &local_socket);
   ASSERT_TRUE(data_pipe);
 
-#if DCHECK_IS_ON()
-  // In debug builds, Mojo client-side validation will crash the process before
-  // the message is sent because `stream` is non-nullable.
-  EXPECT_DEATH(controller_remote_->InitializeAudio(
-                   std::move(stream), std::move(data_pipe), params),
-               "");
-#else
   mojo::test::BadMessageObserver bad_message_observer;
   controller_remote_->InitializeAudio(std::move(stream), std::move(data_pipe),
                                       params);
   std::string bad_message = bad_message_observer.WaitForBadMessage();
-  EXPECT_TRUE(
-      bad_message.find("VALIDATION_ERROR_UNEXPECTED_INVALID_HANDLE") !=
-          std::string::npos ||
-      bad_message.find(
-          "ReadAloudPlaybackController: Invalid audio output stream remote") !=
-          std::string::npos);
-#endif
+  EXPECT_TRUE(bad_message.find("VALIDATION_ERROR_DESERIALIZATION_FAILED") !=
+                  std::string::npos ||
+              bad_message.find(
+                  "ReadAloudPlaybackController: Invalid audio parameters") !=
+                  std::string::npos);
 }
 
 TEST_F(ReadAloudPlaybackControllerTest,
-       InitializeAudioNullDataPipeReportsBadMessage) {
+       InitializeAudioZeroFramesPerBufferReportsBadMessage) {
   CreateSession();
 
   mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
   mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver =
       stream.InitWithNewPipeAndPassReceiver();
 
+  // Invalid frames_per_buffer = 0
   const media::AudioParameters params(
       media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
       media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
-      /*frames_per_buffer=*/480);
+      /*frames_per_buffer=*/0);
 
-#if DCHECK_IS_ON()
-  EXPECT_DEATH(
-      controller_remote_->InitializeAudio(std::move(stream), nullptr, params),
-      "");
-#else
-  mojo::test::BadMessageObserver bad_message_observer;
-  controller_remote_->InitializeAudio(std::move(stream), nullptr, params);
-  std::string bad_message = bad_message_observer.WaitForBadMessage();
-  EXPECT_TRUE(
-      bad_message.find("VALIDATION_ERROR_UNEXPECTED_NULL_POINTER") !=
-          std::string::npos ||
-      bad_message.find(
-          "ReadAloudPlaybackController: Invalid data pipe or handles") !=
-          std::string::npos);
-#endif
-}
-
-TEST_F(ReadAloudPlaybackControllerTest,
-       InitializeAudioInvalidSocketReportsBadMessage) {
-  CreateSession();
-
-  mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
-  mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver =
-      stream.InitWithNewPipeAndPassReceiver();
-
-  const media::AudioParameters params(
+  base::CancelableSyncSocket local_socket;
+  const media::AudioParameters valid_params(
       media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
       media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
       /*frames_per_buffer=*/480);
-
-  // Create a data pipe with invalid socket.
-  uint32_t buffer_size = media::ComputeAudioOutputBufferSize(params);
-  base::UnsafeSharedMemoryRegion shared_memory_region =
-      base::UnsafeSharedMemoryRegion::Create(buffer_size);
-  ASSERT_TRUE(shared_memory_region.IsValid());
-
   media::mojom::ReadWriteAudioDataPipePtr data_pipe =
-      media::mojom::ReadWriteAudioDataPipe::New(
-          std::move(shared_memory_region),
-          mojo::PlatformHandle());  // Invalid handle
+      CreateValidDataPipe(valid_params, &local_socket);
+  ASSERT_TRUE(data_pipe);
 
-#if DCHECK_IS_ON()
-  EXPECT_DEATH(controller_remote_->InitializeAudio(
-                   std::move(stream), std::move(data_pipe), params),
-               "");
-#else
   mojo::test::BadMessageObserver bad_message_observer;
   controller_remote_->InitializeAudio(std::move(stream), std::move(data_pipe),
                                       params);
   std::string bad_message = bad_message_observer.WaitForBadMessage();
-  EXPECT_TRUE(
-      bad_message.find("VALIDATION_ERROR_UNEXPECTED_INVALID_HANDLE") !=
-          std::string::npos ||
-      bad_message.find(
-          "ReadAloudPlaybackController: Invalid data pipe or handles") !=
-          std::string::npos);
-#endif
+  EXPECT_TRUE(bad_message.find("VALIDATION_ERROR_DESERIALIZATION_FAILED") !=
+                  std::string::npos ||
+              bad_message.find(
+                  "ReadAloudPlaybackController: Invalid audio parameters") !=
+                  std::string::npos);
 }
 
 TEST_F(ReadAloudPlaybackControllerTest,
-       InitializeAudioInvalidSharedMemoryReportsBadMessage) {
+       InitializeAudioInvalidChannelLayoutReportsBadMessage) {
   CreateSession();
 
   mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
   mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver =
       stream.InitWithNewPipeAndPassReceiver();
 
+  // Invalid channel layout = UNSUPPORTED
   const media::AudioParameters params(
       media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
-      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      media::ChannelLayoutConfig(), /*sample_rate=*/48000,
       /*frames_per_buffer=*/480);
 
   base::CancelableSyncSocket local_socket;
-  base::CancelableSyncSocket foreign_socket;
-  ASSERT_TRUE(
-      base::CancelableSyncSocket::CreatePair(&local_socket, &foreign_socket));
-
-  // Create a data pipe with invalid shared memory.
+  const media::AudioParameters valid_params(
+      media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      /*frames_per_buffer=*/480);
   media::mojom::ReadWriteAudioDataPipePtr data_pipe =
-      media::mojom::ReadWriteAudioDataPipe::New(
-          base::UnsafeSharedMemoryRegion(),  // Invalid shmem
-          mojo::PlatformHandle(foreign_socket.Take()));
+      CreateValidDataPipe(valid_params, &local_socket);
+  ASSERT_TRUE(data_pipe);
 
-#if DCHECK_IS_ON()
-  EXPECT_DEATH(controller_remote_->InitializeAudio(
-                   std::move(stream), std::move(data_pipe), params),
-               "");
-#else
   mojo::test::BadMessageObserver bad_message_observer;
   controller_remote_->InitializeAudio(std::move(stream), std::move(data_pipe),
                                       params);
   std::string bad_message = bad_message_observer.WaitForBadMessage();
-  EXPECT_TRUE(
-      bad_message.find("VALIDATION_ERROR_UNEXPECTED_NULL_POINTER") !=
-          std::string::npos ||
-      bad_message.find("VALIDATION_ERROR_") != std::string::npos ||
-      bad_message.find(
-          "ReadAloudPlaybackController: Invalid data pipe or handles") !=
-          std::string::npos);
-#endif
+  EXPECT_TRUE(bad_message.find("VALIDATION_ERROR_DESERIALIZATION_FAILED") !=
+                  std::string::npos ||
+              bad_message.find(
+                  "ReadAloudPlaybackController: Invalid audio parameters") !=
+                  std::string::npos);
+}
+
+TEST_F(ReadAloudPlaybackControllerTest,
+       InitializeAudioExcessiveFramesPerBufferReportsBadMessage) {
+  CreateSession();
+
+  mojo::PendingRemote<media::mojom::AudioOutputStream> stream;
+  mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver =
+      stream.InitWithNewPipeAndPassReceiver();
+
+  // Invalid excessive frames per buffer (1,000,000)
+  const media::AudioParameters params(
+      media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      /*frames_per_buffer=*/1000000);
+
+  base::CancelableSyncSocket local_socket;
+  const media::AudioParameters valid_params(
+      media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/48000,
+      /*frames_per_buffer=*/480);
+  media::mojom::ReadWriteAudioDataPipePtr data_pipe =
+      CreateValidDataPipe(valid_params, &local_socket);
+  ASSERT_TRUE(data_pipe);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  controller_remote_->InitializeAudio(std::move(stream), std::move(data_pipe),
+                                      params);
+  std::string bad_message = bad_message_observer.WaitForBadMessage();
+  EXPECT_TRUE(bad_message.find("VALIDATION_ERROR_DESERIALIZATION_FAILED") !=
+                  std::string::npos ||
+              bad_message.find(
+                  "ReadAloudPlaybackController: Invalid audio parameters") !=
+                  std::string::npos);
 }
 
 TEST_F(ReadAloudPlaybackControllerTest,
@@ -946,6 +979,149 @@ TEST_F(ReadAloudPlaybackControllerTest, SetTextContentEmptySegmentsValidateSeque
 
   EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
             "ReadAloudPlaybackController: segment_index must be monotonically increasing in SetTextContent");
+}
+
+TEST_F(ReadAloudPlaybackControllerTest, PlayCalledBeforeSetTextContentDefersUntilTextSet) {
+  CreateSession();
+  InitializeAudioForTesting();
+
+  // Call Play() BEFORE SetTextContent() has been called.
+  // play_on_ready_ should be set to true, deferring playback.
+  controller_remote_->Play();
+  controller_remote_.FlushForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+
+  // Now supply text content via SetTextContent().
+  // MaybePlayOnReady() should be triggered, fulfilling play intent.
+  std::vector<read_aloud::mojom::TextSegmentPtr> segments;
+  auto seg = read_aloud::mojom::TextSegment::New();
+  seg->segment_index = 0;
+  seg->text = u"Sentence to play on ready.";
+  segments.push_back(std::move(seg));
+
+  controller_remote_->SetTextContent(std::move(segments));
+  controller_remote_.FlushForTesting();
+  mock_client_->FlushForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+  // Verify playback intent was fulfilled (SetTextContent did NOT default state to kPaused).
+  EXPECT_NE(mock_client_->last_state(), read_aloud::mojom::PlaybackState::kPaused);
+}
+
+TEST_F(ReadAloudPlaybackControllerTest, PauseClearsPlayOnReady) {
+  CreateSession();
+
+  // Call Play() BEFORE SetTextContent() has been called (sets play_on_ready_ = true).
+  controller_remote_->Play();
+  controller_remote_.FlushForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+
+  // Call Pause() before text arrives (must reset play_on_ready_ = false).
+  controller_remote_->Pause();
+  controller_remote_.FlushForTesting();
+
+  // Now supply text content via SetTextContent().
+  // Playback should NOT start automatically because Pause() cleared play_on_ready_.
+  std::vector<read_aloud::mojom::TextSegmentPtr> segments;
+  auto seg = read_aloud::mojom::TextSegment::New();
+  seg->segment_index = 0;
+  seg->text = u"Text provided after explicit pause.";
+  segments.push_back(std::move(seg));
+
+  controller_remote_->SetTextContent(std::move(segments));
+  controller_remote_.FlushForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+  EXPECT_EQ(mock_client_->last_state(), read_aloud::mojom::PlaybackState::kPaused);
+}
+
+TEST_F(ReadAloudPlaybackControllerTest, PlayCalledBeforeInitializeAudioDefersUntilAudioInitialized) {
+  CreateSession();
+
+  // Load text content first.
+  std::vector<read_aloud::mojom::TextSegmentPtr> segments;
+  auto seg = read_aloud::mojom::TextSegment::New();
+  seg->segment_index = 0;
+  seg->text = u"Text loaded before audio initialization.";
+  segments.push_back(std::move(seg));
+  controller_remote_->SetTextContent(std::move(segments));
+  controller_remote_.FlushForTesting();
+
+  // Call Play() BEFORE InitializeAudio(). IsAudioInitialized() is false.
+  controller_remote_->Play();
+  controller_remote_.FlushForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+
+  // Now initialize audio via InitializeAudioForTesting().
+  InitializeAudioForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+}
+
+TEST_F(ReadAloudPlaybackControllerTest, PlayOnReadyTimeoutResetsPendingPlayState) {
+  CreateSession();
+
+  base::test::TestFuture<read_aloud::mojom::PlaybackState> state_future;
+  mock_client_->set_state_callback(state_future.GetRepeatingCallback());
+
+  // Call Play() without setting text content (play_on_ready_ = true, timer started).
+  controller_remote_->Play();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+
+  // Fast forward time by 5 seconds (under 10s threshold).
+  task_environment_.FastForwardBy(base::Seconds(5));
+  EXPECT_FALSE(state_future.IsReady());
+
+  // Fast forward remaining 5 seconds (reaching 10s timeout threshold).
+  task_environment_.FastForwardBy(base::Seconds(5));
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+  EXPECT_EQ(state_future.Take(), read_aloud::mojom::PlaybackState::kPaused);
+
+  // Verify play_on_ready_ was reset: now supply text content and initialize audio.
+  // Playback MUST NOT auto-start because the pending play intent was cleared by timeout.
+  std::vector<read_aloud::mojom::TextSegmentPtr> segments;
+  auto seg = read_aloud::mojom::TextSegment::New();
+  seg->segment_index = 0;
+  seg->text = u"Late arriving text after timeout.";
+  segments.push_back(std::move(seg));
+  controller_remote_->SetTextContent(std::move(segments));
+  InitializeAudioForTesting();
+
+  EXPECT_TRUE(controller_remote_.is_connected());
+  EXPECT_EQ(mock_client_->last_state(), read_aloud::mojom::PlaybackState::kPaused);
+}
+
+TEST_F(ReadAloudPlaybackControllerTest, PlayCalledRepeatedlyResetsWatchdogTimer) {
+  CreateSession();
+
+  base::test::TestFuture<read_aloud::mojom::PlaybackState> state_future;
+  mock_client_->set_state_callback(state_future.GetRepeatingCallback());
+
+  // Initial Play() call at t=0s.
+  controller_remote_->Play();
+
+  // Fast forward by 7 seconds (timer at 7s, hasn't timed out).
+  task_environment_.FastForwardBy(base::Seconds(7));
+  EXPECT_FALSE(state_future.IsReady());
+
+  // Consecutive Play() call at t=7s. This MUST reset the 10s watchdog timer
+  // (granting a fresh 10s window until t=17s).
+  controller_remote_->Play();
+
+  // Fast forward by 5 seconds (t=12s total). Original timer would have fired at 10s,
+  // but new timer is only at 5s, so state is NOT timed out yet.
+  task_environment_.FastForwardBy(base::Seconds(5));
+  EXPECT_FALSE(state_future.IsReady());
+
+  // Fast forward remaining 5 seconds (t=17s total). The reset timer now expires.
+  task_environment_.FastForwardBy(base::Seconds(5));
+
+  EXPECT_EQ(state_future.Take(), read_aloud::mojom::PlaybackState::kPaused);
 }
 
 }  // namespace readaloud

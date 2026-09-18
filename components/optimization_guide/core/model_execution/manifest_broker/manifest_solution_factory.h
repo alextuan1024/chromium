@@ -28,7 +28,6 @@
 #include "services/on_device_model/public/cpp/model_assets.h"
 #include "services/on_device_model/public/cpp/service_client.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace optimization_guide {
 
@@ -143,6 +142,12 @@ class ManifestSolutionFactory {
   // Creates a solution for the given use case, if possible.
   ModelBrokerImpl::MaybeSolution CreateSolutionForUseCase(
       const std::string& use_case_name);
+
+  // Logs the model's version, backend and cache configuration to the
+  // optimization guide internals page.
+  void LogBaseModelInitialization(const std::string& model_id,
+                                  const proto::BaseModelRecipe& recipe,
+                                  const BaseModelState& state) const;
 
   // Gets or loads the model.
   mojo::Remote<on_device_model::mojom::OnDeviceModel>& GetOrLoadModel(

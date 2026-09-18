@@ -146,6 +146,7 @@
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/geometry/quad_f.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
@@ -237,6 +238,23 @@ namespace {
 constexpr char kPasswordBreachEntryTrigger[] = "PASSWORD_ENTRY";
 #endif
 
+// Transforms `rect` from the `rfh`'s local root's coordinate system to the
+// main frame's coordinate system.
+gfx::RectF TransformToRootCoordinates(content::RenderFrameHost& rfh,
+                                      const gfx::RectF& rect) {
+  content::RenderWidgetHostView* view = rfh.GetView();
+  if (!view) {
+    return rect;
+  }
+
+  // Transform all corners to handle CSS `transform: scale(...)` correctly
+  // (crbug.com/562177779).
+  return gfx::QuadF(view->TransformPointToRootCoordSpaceF(rect.origin()),
+                    view->TransformPointToRootCoordSpaceF(rect.top_right()),
+                    view->TransformPointToRootCoordSpaceF(rect.bottom_right()),
+                    view->TransformPointToRootCoordSpaceF(rect.bottom_left()))
+      .BoundingBox();
+}
 
 }  // namespace
 
@@ -651,14 +669,23 @@ void ChromePasswordManagerClient::ContinueShowKeyboardReplacingSurface(
     base::WeakPtr<password_manager::PasswordManagerDriver> weak_driver,
     const autofill::PasswordSuggestionRequest& request,
     password_manager::CredManController::PasskeyDelayCallback delay_callback) {
+  if (!weak_driver || !weak_driver->CanShowAutofillUi()) {
+    return;
+  }
+
+  // The visibility controller is lazily created when showing a surface. If
+  // already created, intentionally re-check whether the surface can still be
+  // shown to prevent outdated sheets or overwriting an active surface.
+  if (keyboard_replacing_surface_visibility_controller_ &&
+      !keyboard_replacing_surface_visibility_controller_->CanBeShown()) {
+    return;
+  }
+
   // The delay callback gets split because one instance has to be passed to the
   // CredMan controller. If CredMan will not be used, that instance is destroyed
   // without being called.
   auto split_delay_callback =
       base::SplitOnceCallback(std::move(delay_callback));
-  if (!weak_driver || !weak_driver->CanShowAutofillUi()) {
-    return;
-  }
   password_manager::ContentPasswordManagerDriver* driver =
       static_cast<password_manager::ContentPasswordManagerDriver*>(
           weak_driver.get());
@@ -1393,7 +1420,7 @@ void ChromePasswordManagerClient::OnPasswordFilled(
     password_manager::PasswordManagerDriver* driver,
     const GURL& url) {
   if (critical_action_logger_) {
-    critical_action_logger_->MaybeLogCriticalAction(driver, url);
+    critical_action_logger_->MaybeLogCriticalAction(driver);
   }
 }
 
@@ -1578,9 +1605,9 @@ void ChromePasswordManagerClient::AutomaticGenerationAvailable(
     return;
   }
 
-  autofill::FieldGlobalId field_id = autofill::FieldGlobalId(
-      autofill::LocalFrameToken(*driver->render_frame_host()->GetFrameToken()),
-      ui_data.generation_element_id);
+  autofill::FieldGlobalId field_id =
+      autofill::FieldGlobalId(autofill::LocalFrameToken(*rfh.GetFrameToken()),
+                              ui_data.generation_element_id);
 
 #if BUILDFLAG(IS_ANDROID)
   if (!ShouldAcceptFocusEvent(web_contents(), driver,
@@ -1592,7 +1619,7 @@ void ChromePasswordManagerClient::AutomaticGenerationAvailable(
       PasswordGenerationController::GetOrCreate(web_contents());
 
   gfx::RectF element_bounds_in_screen_space =
-      TransformToRootCoordinates(&rfh, ui_data.bounds);
+      TransformToRootCoordinates(rfh, ui_data.bounds);
 
   auto has_saved_credentials =
       !credential_cache_.GetCredentialStore(rfh.GetLastCommittedOrigin())
@@ -1608,7 +1635,7 @@ void ChromePasswordManagerClient::AutomaticGenerationAvailable(
 #else
   // Attempt to show the autofill dropdown UI first.
   gfx::RectF element_bounds_in_top_frame_space =
-      TransformToRootCoordinates(driver->render_frame_host(), ui_data.bounds);
+      TransformToRootCoordinates(rfh, ui_data.bounds);
   if (driver->GetPasswordAutofillManager()
           ->MaybeShowPasswordSuggestionsWithGeneration(
               field_id, element_bounds_in_top_frame_space,
@@ -1721,7 +1748,7 @@ void ChromePasswordManagerClient::ShowPasswordEditingPopup(
   CHECK(driver);
 
   gfx::RectF element_bounds_in_screen_space =
-      GetBoundsInScreenSpace(TransformToRootCoordinates(&rfh, bounds));
+      GetBoundsInScreenSpace(TransformToRootCoordinates(rfh, bounds));
   autofill::password_generation::PasswordGenerationUIData ui_data(
       bounds, /*max_length=*/0, /*generation_element=*/std::u16string(),
       field_renderer_id,
@@ -2224,7 +2251,7 @@ void ChromePasswordManagerClient::ShowPasswordGenerationPopup(
     password_manager::ContentPasswordManagerDriver* driver,
     const autofill::password_generation::PasswordGenerationUIData& ui_data) {
   gfx::RectF element_bounds_in_top_frame_space =
-      TransformToRootCoordinates(driver->render_frame_host(), ui_data.bounds);
+      TransformToRootCoordinates(*driver->render_frame_host(), ui_data.bounds);
 
   gfx::RectF element_bounds_in_screen_space =
       GetBoundsInScreenSpace(element_bounds_in_top_frame_space);
@@ -2280,18 +2307,6 @@ void ChromePasswordManagerClient::MaybeShowSavePasswordPrimingPromo(
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-gfx::RectF ChromePasswordManagerClient::TransformToRootCoordinates(
-    content::RenderFrameHost* frame_host,
-    const gfx::RectF& bounds_in_frame_coordinates) {
-  content::RenderWidgetHostView* rwhv = frame_host->GetView();
-  if (!rwhv) {
-    return bounds_in_frame_coordinates;
-  }
-  return gfx::RectF(rwhv->TransformPointToRootCoordSpaceF(
-                        bounds_in_frame_coordinates.origin()),
-                    bounds_in_frame_coordinates.size());
-}
 
 #if BUILDFLAG(IS_ANDROID)
 void ChromePasswordManagerClient::ResetErrorMessageDelegate() {

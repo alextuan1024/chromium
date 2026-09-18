@@ -122,7 +122,9 @@
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/cpp/wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/blink/public/common/custom_handlers/protocol_handler_utils.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/security/protocol_handler_security_level.h"
 #include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
@@ -252,9 +254,10 @@ void DefaultBindingsDelegate::ActivateWindow() {
 }
 
 void DefaultBindingsDelegate::OpenInNewTab(const std::string& url) {
-  content::OpenURLParams params(GURL(url), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
 #if BUILDFLAG(IS_ANDROID)
   NOTIMPLEMENTED();
 #else
@@ -282,9 +285,10 @@ void DefaultBindingsDelegate::OpenSearchResultsInNewTab(
   DCHECK(url_service);
   GURL url =
       GetDefaultSearchURLForSearchTerms(url_service, base::UTF8ToUTF16(query));
-  content::OpenURLParams params(GURL(url), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::PAGE_TRANSITION_LINK);
   browser->OpenURL(params, /*navigation_handle_callback=*/{});
 #endif
 }
@@ -1409,12 +1413,22 @@ void DevToolsUIBindings::LoadNetworkResource(DispatchCallback callback,
 void DevToolsUIBindings::OpenInNewTab(const std::string& url) {
   GURL gurl(url);
   // Hardening: Verify that the frontend renderer is allowed to request this URL.
-  if (!web_contents_ || !web_contents_->GetPrimaryMainFrame() ||
-      !content::ChildProcessSecurityPolicy::GetInstance()->CanRequestURL(
-          web_contents_->GetPrimaryMainFrame()
-              ->GetProcess()
-              ->GetDeprecatedID(),
-          gurl)) {
+  content::ChildProcessSecurityPolicy* policy =
+      content::ChildProcessSecurityPolicy::GetInstance();
+  bool can_request =
+      web_contents_ && web_contents_->GetPrimaryMainFrame() &&
+      policy->CanRequestURL(
+          web_contents_->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+          gurl);
+
+  if (can_request && !gurl.SchemeIsHTTPOrHTTPS() &&
+      !policy->IsWebSafeScheme(gurl.GetScheme()) &&
+      !blink::IsValidCustomHandlerScheme(
+          gurl.scheme(), blink::ProtocolHandlerSecurityLevel::kStrict)) {
+    can_request = false;
+  }
+
+  if (!can_request) {
     gurl = GURL(url::kAboutBlankURL);
   }
 
@@ -2323,6 +2337,13 @@ base::DictValue DevToolsUIBindings::GetHostConfigDictionary(Profile* profile) {
                             GetFeatureStateForDevTools(
                                 ::features::kDevToolsMobileSafeAreaEmulation,
                                 enabled_by_flags, disabled_by_flags)));
+
+  response_dict.Set(
+      "devToolsNetworkBackendLinking",
+      base::DictValue().Set(
+          "enabled",
+          GetFeatureStateForDevTools(::features::kDevToolsNetworkBackendLinking,
+                                     enabled_by_flags, disabled_by_flags)));
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // We check AreExtensionsOnExtensionURLsAllowed() here because this is used to

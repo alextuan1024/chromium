@@ -75,9 +75,7 @@ CreateContentBrowserURLLoaderThrottles(
           ReduceAcceptLanguageUtils::Create(browser_context);
       reduce_accept_lang_utils && request.is_outermost_main_frame) {
     throttles.push_back(std::make_unique<ReduceAcceptLanguageThrottle>(
-        std::move(reduce_accept_lang_utils.value()),
-        browser_context->GetOriginTrialsControllerDelegate(),
-        frame_tree_node_id));
+        std::move(reduce_accept_lang_utils.value())));
   }
 
   // frame_tree_node_id may be invalid if we are loading the first frame
@@ -119,9 +117,17 @@ CreateContentBrowserURLLoaderThrottles(
   }
 
   if (auto throttle = MaybeCreateIdentityUrlLoaderThrottle(
-          base::BindRepeating(webid::SetIdpSigninStatus,
-                              browser_context->GetWeakPtr(),
-                              request.destination, frame_tree_node_id),
+          base::BindRepeating(
+              [](base::WeakPtr<content::BrowserContext> context,
+                 FrameTreeNodeId ftn_id,
+                 network::mojom::RequestDestination destination,
+                 const std::optional<url::Origin>& initiator,
+                 const url::Origin& idp_origin,
+                 blink::mojom::IdpSigninStatus status) {
+                webid::SetIdpSigninStatus(context, destination, ftn_id,
+                                          initiator, idp_origin, status);
+              },
+              browser_context->GetWeakPtr(), frame_tree_node_id),
           GetSetLoginHeaderDataDecoderParser())) {
     throttles.push_back(std::move(throttle));
   }

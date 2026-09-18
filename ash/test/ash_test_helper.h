@@ -17,7 +17,6 @@
 #include "ash/session/test_pref_service_provider.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell_delegate.h"
-#include "ash/system/notification_center/test_notifier_settings_controller.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_command_line.h"
@@ -59,6 +58,7 @@ class FakeFwupdDownloadClient;
 class SavedDeskTestHelper;
 class TestKeyboardControllerObserver;
 class TestNewWindowDelegate;
+class FakeFaviconServiceProvider;
 class FakeSyncServiceProvider;
 class TestWallpaperControllerClient;
 class AshTestBase;
@@ -74,6 +74,10 @@ class CrosHotspotConfigTestHelper;
 namespace input_method {
 class MockInputMethodManagerImpl;
 }  // namespace input_method
+
+namespace test {
+class UserSessionTestEnvironment;
+}  // namespace test
 
 // A helper class that does common initialization required for Ash. Creates a
 // root window and an ash::Shell instance with a test delegate.
@@ -164,9 +168,6 @@ class AshTestHelper : public aura::test::AuraTestHelper {
   // Stabilizes the variable UI components (such as the battery view).
   void StabilizeUIForPixelTest();
 
-  TestNotifierSettingsController* notifier_settings_controller() {
-    return notifier_settings_controller_.get();
-  }
   TestSystemTrayClient* system_tray_client() {
     return system_tray_client_.get();
   }
@@ -233,9 +234,18 @@ class AshTestHelper : public aura::test::AuraTestHelper {
 
   std::unique_ptr<base::test::ScopedCommandLine> command_line_;
   std::unique_ptr<system::ScopedFakeStatisticsProvider> statistics_provider_;
+
+  // Set up both UserManager and SessionManager. If UserManager already exists
+  // but SessionManager does not yet, user_session_test_environment_ is not used
+  // but session_manager_ is. This is for the workaround during the migration,
+  // and user_session_test_environment_ should be always used after the
+  // completion.
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  // TODO(crbug.com/278643115): Remove this after migration.
   std::unique_ptr<session_manager::SessionManager> session_manager_;
+
   std::unique_ptr<TestPrefServiceProvider> prefs_provider_;
-  std::unique_ptr<TestNotifierSettingsController> notifier_settings_controller_;
   std::unique_ptr<TestSystemTrayClient> system_tray_client_;
   std::unique_ptr<AppListTestHelper> app_list_test_helper_;
   std::unique_ptr<BluezDBusManagerInitializer> bluez_dbus_manager_initializer_;
@@ -250,6 +260,7 @@ class AshTestHelper : public aura::test::AuraTestHelper {
       test_keyboard_controller_observer_;
   std::unique_ptr<AmbientAshTestHelper> ambient_ash_test_helper_;
   std::unique_ptr<TestWallpaperControllerClient> wallpaper_controller_client_;
+  std::unique_ptr<FakeFaviconServiceProvider> favicon_service_provider_;
   std::unique_ptr<FakeSyncServiceProvider> sync_service_provider_;
   std::unique_ptr<SavedDeskTestHelper> saved_desk_test_helper_;
   std::unique_ptr<FakeFwupdDownloadClient> fwupd_download_client_;

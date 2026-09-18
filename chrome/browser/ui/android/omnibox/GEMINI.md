@@ -46,7 +46,9 @@ The Omnibox Java code resides under `chrome/browser/ui/android/omnibox/java/src/
 - **Semantic Grouping & Naming**: Properties listed in `*Properties.java` files must be grouped semantically by prefix (e.g. `BTN_ADD_VISIBLE`, `BTN_ADD_ENABLED`, `BTN_ADD_CALLBACK`) so alphabetical sorting naturally groups related properties together.
 - **ViewBinder Order Consistency**: `ViewBinder` binding logic (`bind(...)` method's `if/else if` chain or dispatch logic) must follow the exact same order as `*Properties.java` for all new code.
 - **Direct Reference Equality (`propertyKey == FooProperties.KEY_NAME`)**: In `ViewBinder.bind(...)` methods, always use direct reference equality (`propertyKey == FooProperties.BAR`) rather than `FooProperties.BAR.equals(propertyKey)` or `propertyKey.equals(...)`. Property keys are unique singleton instances, and equality is never overridden for them; calling `equals()` is unnecessary, incurs virtual method invocation overhead, and is inefficient on hot UI update paths.
-- **`@IntDef` Properties**: Properties representing an `@IntDef` **MUST** use `WritableIntDefPropertyKey<T>` or `ReadableIntDefPropertyKey<T>` (typed with the `@IntDef` annotation interface) rather than generic `WritableIntPropertyKey` / `ReadableIntPropertyKey` for clarity, documentation, and compile-time safety.
+- **`@IntDef` Properties**:
+  - Properties representing an `@IntDef` **MUST** use `WritableIntDefPropertyKey<T>` or `ReadableIntDefPropertyKey<T>` (typed with the `@IntDef` annotation interface) rather than generic `WritableIntPropertyKey` / `ReadableIntPropertyKey` for clarity, documentation, and compile-time safety.
+  - Each `@IntDef` must have a dedicated 1:1 association with a specific property (no multi-purpose omnibus enums; see `@IntDef State Definitions & Naming`).
 - **Prefer `ReadablePropertyKey`s**: Where applicable (such as fixed callbacks, listeners, immutable values, or delegates set only during model instantiation and never mutated afterward), `ReadablePropertyKey`s (`ReadableObjectPropertyKey`, `ReadableIntDefPropertyKey`, `ReadableBooleanPropertyKey`, etc.) should be preferred over `WritablePropertyKey`s.
 
 ### General Guidelines
@@ -59,19 +61,21 @@ The Omnibox Java code resides under `chrome/browser/ui/android/omnibox/java/src/
   - In test code, the use of `try`-with-resources is recommended but not required.
 - **View Inflation**: Prefer using `AsyncViewInflation` where possible to keep the Main Thread free and reduce startup latency.
 - **Imports**: Use `import` statements whenever possible instead of using fully qualified class names within the code.
+- **Avoid Ambiguous `var`**: Avoid using `var` when the type is not obvious from immediately surrounding code.
 - **Javadoc & Method Contracts**:
   - Keep Javadoc comments updated to reflect code changes. Javadoc must accurately capture what the method does and its proper contract (parameters, return values, side effects, and expectations).
   - When updating classes, always read the top-level class comment to catch any critical context, invariants, or restrictions (what is / what is not allowed).
 - **Reuse & Pre-research**: Research relevant existing libraries, utilities, and methods before implementing something new. Follow existing patterns in the codebase when applicable.
 - **Resource & Type Annotations**: Always annotate integer resource IDs and typed values with appropriate AndroidX annotations (e.g., `@ColorInt`, `@ColorRes`, `@DrawableRes`, `@StringRes`, `@Px`).
+  - **Nullability Annotations**: Use `org.chromium.build.annotations.Nullable` (enforced by NullAway / JSpecify). Do not use `androidx.annotation.Nullable` or `javax.annotation.Nullable` in `@NullMarked` files (enforced by Checkstyle `WrongNullable`).
 - **`@CheckResult` Annotation**:
   - Use `@CheckResult` (from `androidx.annotation.CheckResult`) to annotate results that, if thrown away or ignored, would result in a memory leak, resource leak, or failure to satisfy contract (e.g., "returns `true` if callback will be emitted").
   - At call sites, it is acceptable to skip/ignore the return value only if annotated with an explanatory comment (e.g., `// Attempt to retrieve actual icon if we have it, otherwise show fallback icon`).
 - **Constants over Magic Numbers**: Do not create or use magic numbers directly in the code. Define and use descriptive constants instead.
 - **Minimum Visibility**:
   - Visibility should always reflect the minimum visibility required to satisfy the purpose of a class or method; do not make things `public` by default.
-  - Prefer `private`, `/* package */`, and `protected`, in that order.
-  - `/* package */` is preferred when visibility is required; if both `/* package */` and `protected` satisfy the need, use `/* package */` (reserve `protected` for when subclass access is required and package visibility does not suffice).
+  - Prefer `private`, package-private (no access modifier), and `protected`, in that order.
+  - Package-private is preferred when visibility is required across classes in the package; if both package-private and `protected` satisfy the need, use package-private (reserve `protected` for when subclass access is required and package visibility does not suffice). Avoid adding `/* package */` comments, as package-private is simply the absence of a modifier in Java and arbitrary inline comments are not recognized by `google-java-format`.
 - **Method Signatures & Parameter Comments**:
   - Avoid creating constructors or methods that accept too many boolean parameters, as this degrades readability.
   - **Boolean Parameter Annotations**: Call-site boolean literals (`true` / `false`) must be documented with a `/* paramName= */` comment unless the parameter's meaning is unmistakably clear from the method name (e.g., `setVisible(true)` is fine, but `open(view, /* animated= */ true)` is not).
@@ -80,10 +84,36 @@ The Omnibox Java code resides under `chrome/browser/ui/android/omnibox/java/src/
     - Do **not** add `/* paramName= */` comments when an argument is passed from a variable already named like that parameter (e.g., `new Rect(l, t, r, b)` assuming `Rect` takes `(l, t, r, b)`, or `updateSize(width, height)`). It is completely fine (and preferred) to skip them.
     - Do **not** add comments for self-evident single-argument calls or setters (e.g., `setValue(/* value= */ value)` is completely unnecessary and discouraged).
     - Parameter comments are intended to clarify ambiguous literals and unclear expressions, not to duplicate variable names.
-  - **ErrorProne `[ParameterName]` Strict Rule**: When using `/* paramName= */`, ErrorProne strictly verifies that `paramName` matches the exact formal parameter name in the method declaration (`[ParameterName]`). Always check the target method declaration, or use `/* comment */` without `=` if not matching.
+  - **ErrorProne `[ParameterName]` Strict Rule**: When using `/* paramName= */`, ErrorProne strictly verifies that `paramName` matches the exact formal parameter name in the method declaration (`[ParameterName]`). Checkstyle also strictly requires the `/* paramName= */` syntax (flagging comments without `=`). Always check the target method declaration to ensure the name matches; if the parameter name is unclear or misleading, rename the parameter in the method declaration rather than omitting `=`.
+- **`@IntDef` State Definitions & Naming**:
+  - **Unambiguous, Descriptive State Names**: The combination of the `@IntDef` name and its item constants must clearly communicate concrete domain states:
+    - *Disallowed*: Pseudo-booleans (e.g. `TRUE` / `FALSE`), and generic numerical placeholders (e.g. `STATE_0` / `STATE_1` / `STATE_2`).
+    - *Required*: Concrete, domain-specific state names (e.g. `LayoutMode.POPOVER` / `LayoutMode.EMBEDDED` / `LayoutMode.FLOATING`, or `SearchEngineUsed.UNSET` / `SearchEngineUsed.FIRST_PARTY` / `SearchEngineUsed.THIRD_PARTY`).
+    - The full combination `IntDefName.ITEM_NAME` must clearly describe the state and be completely unambiguous in context.
+  - **Dedicated 1:1 Association (No Multi-Purpose Omnibus Enums)**: One `@IntDef` must be associated with one specific property or domain concept. It must **not** be reused to describe disparate properties across different objects or components (e.g. a generic `@IntDef` with `UNKNOWN` / `PRESENT` / `GONE` cannot be used to describe view visibility, internet connectivity, and soft keyboard presence simultaneously). Each distinct property or concept must define its own dedicated, domain-specific `@IntDef` (or use standard platform definitions like Android `@Visibility`).
+  - **Explicit Equality Checking (`==`) & Helper Methods**: Always explicitly test for **equality** (`state == State.VALUE`) rather than inequality (`state != State.OTHER`). Testing inequality (`!=`) assumes a binary domain and silently breaks when new valid or invalid states are introduced. If multiple states need to be tested across multiple places, devise a dedicated helper method rather than repeating composite conditions:
+    ```java
+    public static boolean isHubOrTabSearch(@PageClassification int pageClassification) {
+        return pageClassification == PageClassification.ANDROID_HUB
+                || pageClassification == PageClassification.ANDROID_TAB_SEARCH_OVERLAY;
+    }
+    ```
+- **Avoid `@TriBool` for Invalid/Uninitialized States**:
+  - Do not use `@TriBool` (or tri-state `@IntDef`s) when one of the states represents an invalid or uninitialized condition (e.g. "not initialized" or "unknown").
+  - An invalid state must fail fast and lead directly to a crash (e.g. throwing an exception or assertion) rather than quietly propagating as a third value. If an `@IntDef` defines 3 states (e.g. `INVALID`, `UNINITIALIZED`, `INITIALIZED`), branching with binary assumptions leads to completely unpredictable outcomes:
+    ```java
+    if (state == Initialized) { do this }
+    if (state != Initialized) { do that } // Matches both Uninitialized AND Invalid!
+    if (state == Uninitialized) { do something else }
+    if (state != Uninitialized) { now we have 4 bugs } // Matches both Initialized AND Invalid!
+    ```
+    When `state` is `INVALID`, both `!= Initialized` and `!= Uninitialized` evaluate to `true`. Every inequality check (`!=`) inadvertently conflates the invalid state with the opposite valid state or conflates multiple states, causing conflicting branch execution and unpredictable runtime behavior across callers.
+  - If the intention is to clearly capture a valid state when an unset/uninitialized state is possible, prefer `@Nullable Boolean` paired with `Boolean.TRUE.equals(state)` or `Boolean.FALSE.equals(state)`. This pattern is safer because:
+    - It requires explicitly naming the exact state being tested *for* (`Boolean.TRUE.equals(state)` only matches `Boolean.TRUE`, not `false` and not `null`).
+    - Any failure to explicitly name the state (such as accidental unboxing `if (state)`) is non-idiomatic, caught by ErrorProne, and results in a fast crash (`NullPointerException`) indicating the state is invalid or uninitialized ("hey, this is incorrect").
 - **Complexity & Early Returns**: Prefer early return statements over deeply nested conditional statements. Keep the cyclomatic complexity of methods low.
 - **Prefer Switch Expressions (`return switch (...)` / `variable = switch (...)`)**:
-  - Prefer modern Java `switch` expressions over verbose `if / else if` ladders or legacy statement `switch` blocks when mapping or resolving discrete `@IntDef`, `enum`, or primitive/string values to a result.
+  - Prefer modern Java `switch` expressions over verbose `if / else if` ladders or legacy statement `switch` blocks when mapping or resolving discrete `@IntDef`, `@LongDef`, `@StringDef`, or primitive/string values to a result (enums are banned in Chromium Java).
   - Using `return switch (key) { ... }` or assigning directly via `variable = switch (key) { ... }`:
     - Eliminates mutable temporary variables and repetitive branching boilerplate.
     - Eliminates fallthrough bugs (no `break` statements required) and enforces exhaustiveness at compile time.
@@ -116,7 +146,7 @@ The Omnibox Java code resides under `chrome/browser/ui/android/omnibox/java/src/
        - *Justification*: Method length is purely a linear function of property count in the model. Fragmenting a pure router into artificial sub-binders breaks alphabetical ordering, disrupts searchability, and introduces indirection without reducing complexity.
        - *Constraint*: Multi-line view manipulation logic, animations, or view hierarchy adjustments must *not* be inlined inside `bind()` branches; they must be extracted to private helper methods.
     2. **Pure Lookup / Mapping Switch Statements & Expressions**:
-       - *Permitted*: Linear `switch` statements or expressions mapping an enum, `@IntDef`, or `@PageClassification` to a resource ID, constant, or histogram name (e.g. `getFallbackIconFromIconType()`).
+       - *Permitted*: Linear `switch` statements or expressions mapping an `@IntDef` (e.g. `@PageClassification`), `@StringDef`, or primitive value to a resource ID, constant, or histogram name (e.g. `getFallbackIconFromIconType()`).
        - *Best Practice*: Prefer switch expressions (`return switch (...)` or `variable = switch (...)`) with arrow syntax (`case X -> Y;`) over legacy statement switches or chained `if / else if` blocks to minimize visual line count and eliminate intermediate mutable variables.
        - *Justification*: Cyclomatic complexity per branch is 1 with zero state mutation or side effects; splitting into sub-switches obscures the lookup table without architectural benefit.
     3. **Android View Constructors Parsing Attributes**:
@@ -126,11 +156,19 @@ The Omnibox Java code resides under `chrome/browser/ui/android/omnibox/java/src/
   - Non-trivial repetitive statements (encompassing at least 2 operations, e.g., `a && b || c`, or `a == x && b == y && c == z`) used more than 2 times in a file should be isolated to helper methods and reused.
   - If used across multiple files, isolate them to an appropriate separate utility/helper file so that everyone uses the same logic.
 - **Avoid `instanceof` Checks**: Avoid using `instanceof` and explicit downcasting. `instanceof` is typically a code smell indicating that concrete implementation details are being shoehorned into code that should be properly abstracted. Prefer polymorphism, interface contracts, or delegating behavior directly to the class hierarchy rather than type-checking and branching on concrete types.
+- **Nested Classes Isolation**: Large nested or inner classes ($\ge$ 100 LOC) should be isolated to a separate file.
+- **Thread Synchronization & Atomic Primitives**: Prefer atomic primitives over locks when sharing basic information across threads (e.g. `AtomicBoolean` rather than `Object sLock` + `Boolean mMember`).
 - **Placement**: Ensure logic is implemented in the correct architectural location as early as possible in the flow.
 - **OmniboxUrlUtils for NTP Evaluation**: In Omnibox and LocationBar UI logic, always use `OmniboxUrlUtils.isNtpUrl(url)` rather than calling `UrlUtilities.isNtpUrl(url)` directly. This ensures consistent handling of transient empty/invalid URLs occurring during new tab or new window creation before navigation commits (see crbug.com/553118979), preventing UI flickers (such as showing a globe icon instead of the search engine logo) and enabling early cursor focus.
 - **JNI Type Conversions (`@JniType`)**:
   - Rely on `@JniType` when declaring native methods to avoid manually converting types.
   - If a conversion doesn't exist and is used more than 3 times already, the conversion should be added and existing call sites should be updated.
+- **Time Measurement (`TimeUtils` over `SystemClock`)**: Prefer `TimeUtils` (`org.chromium.base.TimeUtils`, e.g. `TimeUtils.uptimeMillis()`, `TimeUtils.elapsedRealtimeMillis()`) over `SystemClock` or `System.currentTimeMillis()`. `TimeUtils` provides a unified, mockable clock in tests via `FakeTimeTestRule` and eliminates wall-clock flakiness.
+- **Static Test Overrides (`ResettersForTesting`)**: Any static variable (`sVariableName`) that provides a `setVariableNameForTesting(...)` method must register a resetter inside the setter:
+  ```java
+  ResettersForTesting.register(() -> sVariableName = defaultValue);
+  ```
+  This ensures test overrides do not bleed over into subsequent tests. Resetting static overrides in an `@After` block is strictly prohibited.
 
 ## Feature Flags
 
@@ -142,7 +180,7 @@ When introducing or modifying Omnibox feature flags:
   - Expose it to Java by adding `&kOmniboxFoo` to `kFeaturesExposedToJava` in `components/omnibox/common/omnibox_features.cc`. This automatically generates `OmniboxFeatureList.OMNIBOX_FOO`.
 - **Java Wrapper**:
   - In `components/omnibox/common/android/java/src/org/chromium/components/omnibox/OmniboxFeatures.java`, define a `CachedFlag` via `newFlag(OmniboxFeatureList.OMNIBOX_FOO, FeatureState.DISABLED)`.
-  - Expose a public accessor `isFooEnabled()`, and if needed for Robolectric unit tests, a `@Nullable Boolean` test override setter (`setFooForTesting(@Nullable Boolean)`).
+  - Expose a public accessor `isFooEnabled()`, and if needed for Robolectric unit tests, a `@Nullable Boolean` test override setter (`setFooForTesting(@Nullable Boolean)`), registering `ResettersForTesting.register(() -> sFooForTesting = null)` inside the setter.
 - **chrome://flags Exposure**:
   - Add name and description constants to `chrome/browser/flag_descriptions.h` (`kOmniboxFooName`, `kOmniboxFooDescription`).
   - Add the entry under `#if BUILDFLAG(IS_ANDROID)` in `chrome/browser/about_flags.cc` using `FEATURE_VALUE_TYPE(omnibox::kOmniboxFoo)`.
@@ -176,10 +214,27 @@ When introducing or modifying Omnibox feature flags:
   }
   ```
   Common setup logic must still be isolated in a helper method or `@Before` block rather than duplicated inline, keeping the test body concise and strictly within the `<30 LOC` target.
+- **Batching On-Device Tests (`@Batch(Batch.PER_CLASS)`)**: On-device suites default to one full browser restart per test case, which dominates their runtime. Every new `*Test.java` / `*UiTest.java` suite should declare `@Batch(Batch.PER_CLASS)` unless a concrete, documented obstacle exists. When batching an existing suite, audit these recurring hazards:
+  - **Per-test `EmbeddedTestServer`**: a server created in `@Before` and destroyed in `@After` gets a new port every test. Anything that captured a URL in process-wide state (most notably a search engine registered with `TemplateUrlService`) is then left pointing at a dead port. Declare `EmbeddedTestServerRule` as a `@ClassRule` by default:
+    - Do not hand-roll the equivalent with `@BeforeClass`/`@AfterClass`. `EmbeddedTestServer` registers `stopAndDestroyServer` with `ResettersForTesting`, which fires after *every* test method, so a manually started server is dead from the second test onwards. The opt-out (`mDisableResetterForTesting`) is package private to `org.chromium.net.test` and only `EmbeddedTestServerRule` can set it.
+    - The rule is lazy: the server is created on the first `getServer()` call, so class scope costs nothing for tests that never touch it.
+    - Keep it a per-test `@Rule` only when the class genuinely needs it: per-test server configuration (`setServerPort`, `setServerUsesHttps`, `setCertificateType` all assert the server has not been created yet), or per-test server-side state (custom request handlers and `addDefaultHandlers` accumulate, request counters, tests that stop the server deliberately).
+  - **Profile-scoped state**: the `Profile` and its `TemplateUrlService` outlive the batch. Register test search engines once per process and only re-apply the selection (`setSearchEngine`) per test. Detect the already-registered case by querying the service (`getTemplateUrlForKeyword(keyword) != null`) rather than by tracking a static boolean, so the guard cannot drift out of sync with the real state. Note `addSearchEngine` returns `false` on a duplicate keyword instead of throwing, so assert its result.
+  - **Static production state**: statics owned by production code (e.g. `GeolocationHeader`'s priming flag) are not reset by the activity teardown. Reset them in `@Before` via a `resetStateForTesting()` style hook — never in `@After`, which may be skipped when a test throws.
+  - **Missing `ResettersForTesting`**: a `setFooForTesting(...)` without a registered resetter silently leaks into the next test in the batch. Fix the setter rather than working around it in the test.
+  - **`@RequiresRestart` is a no-op without `@Batch`**: it only overrides a class-level `@Batch` for a single method. Finding it on an unbatched class is a strong hint the class was meant to be batched.
+  - **Render tests are batchable**: `ChromeRenderTestRule`, night mode `@ClassParameter`s and even `FreshCtaTransitTestRule` all work under `Batch.PER_CLASS` (see `ReaderModeBottomSheetRenderTest`). A fresh activity per test is still required when night mode varies per parameter; batching saves the process restart, not the activity launch.
+  - **Verifying**: the run is batched when the emitted logcat file name contains `_batch_shard0_` and a single logcat covers the whole suite.
 - **Remove Redundant and Zombie Tests**: Redundant and zombie tests need to be removed.
 - **Use `@UiThreadTest` over `runOnUiThreadBlocking()`**:
   - Tests that wrap their entire logic with `runOnUiThreadBlocking()` should be rewritten as `@UiThreadTest`.
   - Wrapping whole test bodies in `runOnUiThreadBlocking()` introduces gratuitous lambda nesting, obscures failure stack traces, and incurs unnecessary thread-hopping overhead. Annotate the test method directly with `@UiThreadTest` (from `androidx.test.annotation.UiThreadTest`) instead.
+- **Use `TimeUtils` over `SystemClock`**:
+  - Unit tests must use `TimeUtils` (`org.chromium.base.TimeUtils`) and avoid using `SystemClock`.
+  - Using `TimeUtils` makes the clock properly mockable (e.g. via `FakeTimeTestRule`), allowing tests to advance time deterministically and run without any unnecessary `Thread.sleep()` statements or real-time delays.
+- **Static Test Overrides & `ResettersForTesting` (No `@After` Resets)**:
+  - ANY static variable (`sVariableName`) that has a `setVariableNameForTesting(...)` method **must** add `ResettersForTesting.register(() -> sVariableName = defaultValue)` inside the setter so that the override does not bleed over to subsequent tests.
+  - It is **not permitted** to reset the value in an `@After` section, because if a test throws an exception, `@After` may not get executed, resulting in cross-test state leakage.
 - **Strict Mockito Stubs**: All new tests **must** (and existing tests ideally **should**) use strict Mockito stubbing to prevent aggregating dead stubbed code:
   ```java
   @Rule
@@ -221,5 +276,8 @@ When introducing or modifying Omnibox feature flags:
     - *Alternative*: Use standardized Robolectric configuration across test suites; avoid custom shadows or SDK variants when real Android or POJO classes can be used. Using `@Config(qualifiers = ...)` is acceptable for establishing device/screen configurations, but avoid proliferating too many distinct configs—standardize on and reuse existing common configs where possible, or adjust qualifiers dynamically during test execution (e.g. `RuntimeEnvironment.setQualifiers(...)`).
   - **Java Reflection (`setAccessible(true)` / `ReflectionTestUtils`) (Unwelcome)**:
     - *Problem*: Bypasses encapsulation, breaks JIT escape analysis and method inlining, and produces fragile tests.
-    - *Alternative*: Interact with the class under test through existing public contracts or via its `PropertyModel` (the primary intended interface in Clank MVC). If internal state access is unavoidable, provide package-private `@VisibleForTesting` accessors or `getFooForTesting()` / `setFooForTesting()` methods.
+    - *Alternative*: Interact with the class under test through existing public contracts or via its `PropertyModel` (the primary intended interface in Clank MVC). If internal state access is unavoidable, provide package-private `@VisibleForTesting` accessors or `getFooForTesting()` / `setFooForTesting()` methods. (Note: methods with a `ForTesting` suffix must **never** be annotated with `@VisibleForTesting`, as this triggers Checkstyle `VisibleForTestingForTesting`. Any static setter must register a resetter with `ResettersForTesting.register(...)`.)
+  - **`Thread.sleep(...)` / Wall-Clock Waiting (Unwelcome)**:
+    - *Problem*: Causes slow, flaky, and non-deterministic tests dependent on host CPU scheduling and execution speed.
+    - *Alternative*: Use `TimeUtils` and `FakeTimeTestRule` to advance simulated time deterministically without sleeping.
 

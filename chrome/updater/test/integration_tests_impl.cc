@@ -4,8 +4,9 @@
 
 #include "chrome/updater/test/integration_tests_impl.h"
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -46,6 +47,7 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/test_timeouts.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"

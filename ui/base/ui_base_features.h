@@ -343,6 +343,10 @@ BASE_DECLARE_FEATURE(kWebUIRoundedIcons);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kChromeDarkNeutrals26);
 
+// Updates dark mode sys surface tokens.
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kDarkModeSurfaceTokens);
+
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 // When enabled, reads the system accent color from the xdg-desktop-portal (the
 // org.freedesktop.appearance "accent-color" setting) and applies it as the
@@ -355,6 +359,14 @@ BASE_DECLARE_FEATURE(kUsePortalAccentColor);
 // ColorProviderKey, hierarchical theme observation, and coalescing updates.
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kThemeChangeOptimization);
+
+// Kill switch for removing
+// RenderFrameHostManager::EnsureRenderFrameHostVisibilityConsistent.
+//
+// A RenderFrameHost will now either be made visible when navigation commits, or
+// when the WebContents is focused (if the WebContents is visible).
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kRemoveEnsureRFHVisibilityConsistent);
 
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kColorIdCssStyleSheetOptimization);

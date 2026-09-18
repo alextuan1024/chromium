@@ -39,6 +39,7 @@
 #include "chrome/browser/search/instant_service_factory.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -61,11 +62,11 @@
 #include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/browser/guest_view_manager_delegate.h"
 #include "components/guest_view/browser/test_guest_view_manager.h"
-#include "components/input/native_web_keyboard_event.h"
 #include "components/policy/core/browser/url_list/url_list_policy_pref_names.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -645,6 +646,39 @@ INSTANTIATE_TEST_SUITE_P(
                            std::get<1>(info.param) ? "Dark" : "Light",
                            "ColorProvider"});
     });
+
+class PrefersColorSchemeEnterpriseIsolatedTest : public InProcessBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(PrefersColorSchemeEnterpriseIsolatedTest,
+                       PrefersColorSchemeLightInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
+  ASSERT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+
+  auto* tab_list = TabListInterface::From(isolated_browser);
+  ASSERT_TRUE(tab_list);
+  auto* web_contents = tab_list->GetActiveTab()->GetContents();
+
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents,
+      chrome_test_utils::GetTestUrl(
+          base::FilePath(base::FilePath::kCurrentDirectory),
+          base::FilePath(FILE_PATH_LITERAL("prefers-color-scheme.html")))));
+
+  EXPECT_EQ(u"light", web_contents->GetTitle());
+  EXPECT_EQ(
+      true,
+      EvalJs(web_contents,
+             "window.matchMedia('(prefers-color-scheme: light)').matches"));
+}
 
 class PreferredRootScrollbarColorSchemeChromeClientTest
     : public testing::WithParamInterface<std::tuple<bool, bool>>,
@@ -1828,117 +1862,44 @@ class ChromeContentBrowserClientClipboardTest : public InProcessBrowserTest {
             "a.com",
             base::StrCat({"/cross_site_iframe_factory.html?", frame_tree}))));
   }
-
-  // This method sets both frame-scope and tab-wide UA states to mimic prod
-  // browser behavior.
-  // TODO(https://crbug.com/550284226): Update this when the browser-level
-  // state is fixed.
-  void SimulateUserInteraction(content::RenderFrameHost* rfh) {
-    input::NativeWebKeyboardEvent event{blink::WebInputEvent::Type::kKeyDown,
-                                        /*modifiers=*/0, base::TimeTicks()};
-    rfh->GetRenderWidgetHost()->SimulateUserInteraction(event);
-    ASSERT_TRUE(content::ExecJs(rfh, "// no-op"));
-  }
 };
 
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotInheritTopFrameInteraction) {
-  content::RenderFrameHost* parent_rfh = nullptr;
-  content::RenderFrameHost* child_rfh = nullptr;
-  ASSERT_NO_FATAL_FAILURE(
-      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
-
-  ASSERT_NE(parent_rfh->GetRenderWidgetHost(),
-            child_rfh->GetRenderWidgetHost());
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
-
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(parent_rfh));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
-}
-
+// Verify that a frame still needs to be focused in order to read the
+// clipboard even if it has transient user activation.
+//
+// TODO(https://crbug.com/553327084): Disabled to land a revert for a related
+// fix (https://crbug.com/544222453)
 IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
-                       PasteAllowedByActivation_RequestingFrameActivated) {
-  content::RenderFrameHost* parent_rfh = nullptr;
-  content::RenderFrameHost* child_rfh = nullptr;
-  ASSERT_NO_FATAL_FAILURE(
-      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
+                       DISABLED_PasteAllowedByActivation_RequiresFrameFocus) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/empty.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
 
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
+  content::RenderFrameHost* rfh = browser()
+                                      ->tab_strip_model()
+                                      ->GetActiveWebContents()
+                                      ->GetPrimaryMainFrame();
 
-  // Run a no-op with ExecJs's synthetic user gesture to activate the requesting
-  // frame without setting WebContents::HasRecentInteraction().
-  ASSERT_TRUE(content::ExecJs(child_rfh, "// no-op"));
+  // Arm transient user activation via ExecJs's synthetic user gesture.
+  ASSERT_TRUE(content::ExecJs(rfh, "// no-op"));
+  rfh->GetRenderWidgetHost()->Focus();
+  ASSERT_TRUE(rfh->HasTransientUserActivation());
 
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(child_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(child_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
-}
+  // Activation on a focused frame is allowed.
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
 
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotPropagateToSiblingFrame) {
-  ASSERT_NO_FATAL_FAILURE(NavigateToCrossOriginFrameTree("a(b,c)"));
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  content::RenderFrameHost* main_rfh = web_contents->GetPrimaryMainFrame();
-  content::RenderFrameHost* activated_child =
-      content::ChildFrameAt(main_rfh, 0);
-  content::RenderFrameHost* sibling_child = content::ChildFrameAt(main_rfh, 1);
-  ASSERT_TRUE(activated_child);
-  ASSERT_TRUE(sibling_child);
-  ASSERT_NE(activated_child->GetRenderWidgetHost(),
-            sibling_child->GetRenderWidgetHost());
+  // Blur does not clear transient activation, but an unfocused frame must not
+  // be allowed to read the clipboard on activation alone.
+  rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(rfh->IsFocused());
+  EXPECT_TRUE(rfh->HasTransientUserActivation());
+  EXPECT_FALSE(IsClipboardPasteAllowed(rfh));
 
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(activated_child));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(main_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(activated_child->HasTransientUserActivation());
-  EXPECT_FALSE(sibling_child->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(main_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(activated_child));
-  EXPECT_FALSE(IsClipboardPasteAllowed(sibling_child));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotPropagateToNestedChildFrame) {
-  ASSERT_NO_FATAL_FAILURE(NavigateToCrossOriginFrameTree("a(b(c))"));
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  content::RenderFrameHost* main_rfh = web_contents->GetPrimaryMainFrame();
-  content::RenderFrameHost* activated_child =
-      content::ChildFrameAt(main_rfh, 0);
-  ASSERT_TRUE(activated_child);
-  content::RenderFrameHost* nested_child =
-      content::ChildFrameAt(activated_child, 0);
-  ASSERT_TRUE(nested_child);
-  ASSERT_NE(activated_child->GetRenderWidgetHost(),
-            nested_child->GetRenderWidgetHost());
-
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(activated_child));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(main_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(activated_child->HasTransientUserActivation());
-  EXPECT_FALSE(nested_child->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(main_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(activated_child));
-  EXPECT_FALSE(IsClipboardPasteAllowed(nested_child));
+  // Restoring focus allows clipboard access again.
+  rfh->GetRenderWidgetHost()->Focus();
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
 }
 
 // Verifies that even when persistent clipboard permission is granted,
@@ -2275,9 +2236,10 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientBrowserTest, OpenURL) {
                  GURL("https://www.chromium.org")};
 
   for (const GURL& url : urls) {
-    content::OpenURLParams params(url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
     // TODO(peter): We should have more in-depth browser tests for the window
     // opening functionality, which also covers Android. This test can currently
     // only be ran on platforms where OpenURL is implemented synchronously.

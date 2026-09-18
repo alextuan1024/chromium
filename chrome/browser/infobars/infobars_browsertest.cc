@@ -34,6 +34,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/extensions/installation_error_infobar_delegate.h"
+#include "chrome/browser/ui/omnibox/chrome_omnibox_navigation_observer.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
 #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
@@ -78,10 +79,6 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/identity/web_auth_flow.h"
 #include "chrome/browser/extensions/api/identity/web_auth_flow_info_bar_delegate.h"
-#endif
-
-#if BUILDFLAG(ENABLE_PLUGINS)
-#include "chrome/browser/plugins/reload_plugin_infobar_delegate.h"
 #endif
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -179,9 +176,11 @@ class InfoBarUiTest : public TestInfoBar,
     if (GetParam()) {
       feature_list_.InitAndEnableFeatureWithParameters(
           infobars::kCentralizedInfoBarFramework,
-          {{"MigratedCollectedCookies", "true"},
+          {{"MigratedAlternateNav", "true"},
+           {"MigratedCollectedCookies", "true"},
            {"MigratedPageInfo", "true"},
            {"MigratedGoogleApiKeys", "true"},
+           {"MigratedKeystonePromotion", "true"},
            {"MigratedObsoleteSystem", "true"},
            {"MigratedThemeInstalled", "true"},
            {"MigratedExtensionDevTools", "true"},
@@ -225,6 +224,7 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
 
   constexpr auto kIdentifiers =
       base::MakeFixedFlatMap<std::string_view, IBD::InfoBarIdentifier>({
+          {"alternate_nav", IBD::ALTERNATE_NAV_INFOBAR_DELEGATE},
           {"dev_tools", IBD::DEV_TOOLS_INFOBAR_DELEGATE},
           {"extension_dev_tools", IBD::EXTENSION_DEV_TOOLS_INFOBAR_DELEGATE},
           {"incognito_connectability",
@@ -251,9 +251,6 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
           {"session_restore", IBD::SESSION_RESTORE_INFOBAR_DELEGATE},
 #endif
 
-#if BUILDFLAG(ENABLE_PLUGINS)
-          {"reload_plugin", IBD::RELOAD_PLUGIN_INFOBAR_DELEGATE},
-#endif  // BUILDFLAG(ENABLE_PLUGINS)
       });
   const auto id_entry = kIdentifiers.find(name);
   if (id_entry == kIdentifiers.end()) {
@@ -263,6 +260,15 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
   const auto infobar_identifier = id_entry->second;
   AddExpectedInfoBar(infobar_identifier);
   switch (infobar_identifier) {
+    case IBD::ALTERNATE_NAV_INFOBAR_DELEGATE: {
+      AutocompleteMatch match;
+      match.destination_url = GURL("http://intranetsite/");
+      ChromeOmniboxNavigationObserver::ShowAlternativeNavInfoBar(
+          GetWebContents(), std::u16string(), match,
+          GURL("http://example.test/"));
+      break;
+    }
+
     case IBD::DEV_TOOLS_INFOBAR_DELEGATE:
       DevToolsInfoBarDelegate::Create(
           l10n_util::GetStringFUTF16(
@@ -313,22 +319,23 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
       }
       break;
 
-#if BUILDFLAG(ENABLE_PLUGINS)
-    case IBD::RELOAD_PLUGIN_INFOBAR_DELEGATE:
-      ReloadPluginInfoBarDelegate::Create(
-          GetInfoBarManager(), nullptr,
-          l10n_util::GetStringFUTF16(IDS_PLUGIN_CRASHED_PROMPT,
-                                     u"Test Plugin"));
-      break;
-#endif  // BUILDFLAG(ENABLE_PLUGINS)
-
     case IBD::FILE_ACCESS_DISABLED_INFOBAR_DELEGATE:
       ChromeSelectFilePolicy(GetWebContents()).SelectFileDenied();
       break;
 
     case IBD::KEYSTONE_PROMOTION_INFOBAR_DELEGATE_MAC:
 #if BUILDFLAG(IS_MAC) && BUILDFLAG(ENABLE_UPDATER)
-      KeystonePromotionInfoBarDelegate::Create(GetWebContents());
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::
+                  KEYSTONE_PROMOTION_INFOBAR_DELEGATE_MAC)) {
+        auto* browser_infobar_manager =
+            infobars::BrowserInfoBarManager::From(g_browser_process);
+        CHECK(browser_infobar_manager);
+        browser_infobar_manager->ShowGlobally(
+            infobars::InfoBarDelegate::KEYSTONE_PROMOTION_INFOBAR_DELEGATE_MAC);
+      } else {
+        KeystonePromotionInfoBarDelegate::Create(GetWebContents());
+      }
 #else
       ADD_FAILURE() << "This infobar is not supported on this OS.";
 #endif
@@ -512,6 +519,10 @@ bool InfoBarUiTest::VerifyUi() {
                         test_info->name()) != ui::test::ActionResult::kFailed);
 }
 
+IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_alternate_nav) {
+  ShowAndVerifyUi();
+}
+
 #if BUILDFLAG(IS_WIN)
 // TODO(crbug.com/40261456): This test case has been frequently failing on
 // "Win10 Tests x64" since 2024-05-08.
@@ -534,12 +545,6 @@ IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_incognito_connectability) {
 IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_theme_installed) {
   ShowAndVerifyUi();
 }
-
-#if BUILDFLAG(ENABLE_PLUGINS)
-IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_reload_plugin) {
-  ShowAndVerifyUi();
-}
-#endif  // BUILDFLAG(ENABLE_PLUGINS)
 
 IN_PROC_BROWSER_TEST_P(InfoBarUiTest, InvokeUi_file_access_disabled) {
   ShowAndVerifyUi();

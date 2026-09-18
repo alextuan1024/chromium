@@ -45,6 +45,7 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/content/browser/autofill_test_util.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
@@ -197,7 +198,7 @@ PasswordForm MakePasswordForm() {
   form.submit_element = u"signIn";
   form.signon_realm = "https://www.example.com/";
   form.in_store = PasswordForm::Store::kProfileStore;
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 #endif
@@ -2535,6 +2536,70 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
       ->GetDelegateForFrame(old_rfh.get())
       ->OnCredentialsReceived(
           std::vector<password_manager::PasskeyCredential>(),
+          ChromeWebAuthnCredentialsDelegate::SecurityKeyOrHybridFlowAvailable(
+              true));
+}
+
+TEST_F(ChromePasswordManagerClientAndroidTest,
+       DoNotShowKeyboardReplacingSurfaceWhenCannotBeShownOnDeferredArrival) {
+  webauthn::WebAuthnCredManDelegate::override_cred_man_support_for_testing(
+      webauthn::CredManSupport::DISABLED);
+  base::test::ScopedFeatureList features(
+      password_manager::features::
+          kDelaySuggestionsOnAutofocusWaitingForPasskeys);
+  CreateManualFillingController(web_contents());
+
+  auto visibility_controller = std::make_unique<
+      password_manager::MockKeyboardReplacingSurfaceVisibilityController>();
+  EXPECT_CALL(*visibility_controller, CanBeShown())
+      .WillOnce(Return(true))
+      .WillRepeatedly(Return(false));
+  password_manager::MockKeyboardReplacingSurfaceVisibilityController*
+      raw_visibility_controller = visibility_controller.get();
+  GetClient()->SetKeyboardReplacingSurfaceVisibilityControllerForTesting(
+      std::move(visibility_controller));
+
+  auto owned_ttf_controller =
+      std::make_unique<MockTouchToFillPasswordManagerController>(
+          profile(), raw_visibility_controller->AsWeakPtr());
+  MockTouchToFillPasswordManagerController* ttf_controller =
+      owned_ttf_controller.get();
+  GetClient()->SetTouchToFillPasswordManagerControllerForTesting(
+      std::move(owned_ttf_controller));
+
+  // TTF controller InitData and Show should not be called because CanBeShown()
+  // returns false when passkeys arrive.
+  EXPECT_CALL(*ttf_controller, InitData).Times(0);
+  EXPECT_CALL(*ttf_controller, Show).Times(0);
+
+  constexpr char kUrl[] = "https://www.foo.com/login.html";
+  NavigateAndCommit(GURL(kUrl));
+  ContentAutofillDriver* autofill_driver =
+      ContentAutofillDriver::GetForRenderFrameHost(main_rfh());
+  EXPECT_TRUE(autofill_driver);
+
+  std::vector<FormFieldData> fields = {CreateTestFormField(
+      "Username:", "username", "", FormControlType::kInputText, "webauthn")};
+  FormData form =
+      CreateFormDataForRenderFrameHost(*main_rfh(), std::move(fields));
+  {
+    autofill::TestAutofillManagerWaiter waiter(
+        autofill_driver->GetAutofillManager(),
+        {autofill::AutofillManagerEvent::kFormsSeen});
+    autofill_driver->renderer_events().FormsSeen(/*updated_forms=*/{form},
+                                                 /*removed_forms=*/{});
+    EXPECT_TRUE(waiter.Wait(/*num_expected_relevant_events=*/1));
+  }
+
+  GetClient()->ShowKeyboardReplacingSurface(
+      ContentPasswordManagerDriver::GetForRenderFrameHost(main_rfh()),
+      GetFocusedFieldSuggestionRequest(form));
+
+  // Passkeys arrive after the surface can no longer be shown.
+  ChromeWebAuthnCredentialsDelegateFactory::GetFactory(web_contents())
+      ->GetDelegateForFrame(main_rfh())
+      ->OnCredentialsReceived(
+          /*credentials=*/{},
           ChromeWebAuthnCredentialsDelegate::SecurityKeyOrHybridFlowAvailable(
               true));
 }

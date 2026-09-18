@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/autofill/autofill_keyboard_accessory_controller.h"
 #include "chrome/browser/ui/autofill/autofill_popup_hide_helper.h"
+#include "chrome/browser/ui/autofill/key_press_handler_registration.h"
 #include "chrome/browser/ui/autofill/next_idle_barrier.h"
 #include "chrome/browser/ui/autofill/popup_controller_common.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
@@ -25,6 +26,10 @@ namespace content {
 class WebContents;
 }  // namespace content
 
+namespace input {
+struct NativeWebKeyboardEvent;
+}  // namespace input
+
 class Profile;
 
 namespace autofill {
@@ -32,6 +37,20 @@ namespace autofill {
 class AutofillSuggestionDelegate;
 class AutofillKeyboardAccessoryView;
 struct Suggestion;
+
+// Helper to record interaction milestones (shown, selected, accepted)
+// at most once per session when a mouse or precision pointer is present.
+class AutofillKeyboardAccessoryWithMouseMetricsRecorder {
+ public:
+  void RecordShown(FillingProduct filling_product);
+  void RecordSelected(FillingProduct filling_product);
+  void RecordAccepted(FillingProduct filling_product);
+
+ private:
+  bool has_logged_shown_ = false;
+  bool has_logged_selected_ = false;
+  bool has_logged_accepted_ = false;
+};
 
 class AutofillKeyboardAccessoryControllerImpl
     : public AutofillKeyboardAccessoryController {
@@ -80,9 +99,11 @@ class AutofillKeyboardAccessoryControllerImpl
   std::optional<UiSessionId> GetUiSessionId() const override;
   void SetKeepPopupOpenForTesting(bool keep_popup_open_for_testing) override;
   void UpdateDataListValues(base::span<const SelectOption> options) override;
+  const LocalFrameToken& GetAnchorFrameToken() const override;
   bool MayRecycle(
       base::WeakPtr<AutofillSuggestionDelegate> delegate,
       content::WebContents* web_contents,
+      const LocalFrameToken& anchor_frame_token,
       AutofillSuggestionTriggerSource trigger_source) const override;
   void Recycle(PopupControllerCommon controller_common,
                int32_t form_control_ax_id) override;
@@ -93,9 +114,11 @@ class AutofillKeyboardAccessoryControllerImpl
   bool GetRemovalConfirmationText(
       int index,
       RemovalConfirmationText* removal_text) override;
+  bool ShowAutofillAiSuggestionDetails(size_t index) override;
   void OpenSettingsForEntityType(int32_t entity_type) override;
   void SelectSuggestion(int index) override;
   void UnselectSuggestion() override;
+  void UnselectSuggestionIfSelected(int index) override;
 
   base::WeakPtr<AutofillKeyboardAccessoryControllerImpl> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -116,8 +139,34 @@ class AutofillKeyboardAccessoryControllerImpl
   // `suggestion` if the dialog `confirmed` deletion and by emitting metrics.
   void OnDeletionDialogClosed(const Suggestion& suggestion, bool confirmed);
 
+  // Reacts to the result of an Autofill AI suppression dialog by suppressing
+  // `suggestion` if the dialog `confirmed` suppression.
+  void OnAutofillAiSuppressionDialogClosed(const Suggestion& suggestion,
+                                           bool confirmed);
+
   // Hides the view and asynchronously deletes itself.
   void HideViewAndDie();
+
+  // Updates `selected_suggestion_index_` and mirrors the new selection state to
+  // `ManualFillingController`.
+  void SetSelectedSuggestionIndex(std::optional<int> index);
+
+  // Handles a key press `event` of the frame the suggestions belong to. It is
+  // called for as long as `key_press_registration_` is registered. Returns true
+  // if the event was consumed by the keyboard accessory and should not be
+  // forwarded to the renderer.
+  // TODO(crbug.com/542535472): Handle arrow keys to preview suggestions. Until
+  // then, this is a no-op that never consumes an event.
+  bool HandleKeyPressEvent(const input::NativeWebKeyboardEvent& event);
+
+  // Keeps `HandleKeyPressEvent()` registered with the frame the suggestions
+  // belong to.
+  KeyPressHandlerRegistration key_press_registration_;
+
+  // Tracks the currently selected suggestion in the accessory view. Used to
+  // deduplicate redundant or stale select/unselect events from the Java
+  // bridge and mirror the selection state to the `ManualFillingController.
+  std::optional<int> selected_suggestion_index_;
 
   // Uniquely identifies the UI the controller is showing.
   UiSessionId ui_session_id_;
@@ -162,6 +211,9 @@ class AutofillKeyboardAccessoryControllerImpl
 
   // The `FillingProduct` that matches the suggestions shown in the popup.
   FillingProduct suggestions_filling_product_ = FillingProduct::kNone;
+
+  std::optional<AutofillKeyboardAccessoryWithMouseMetricsRecorder>
+      mouse_metrics_recorder_;
 
   base::WeakPtrFactory<AutofillKeyboardAccessoryControllerImpl>
       self_deletion_weak_ptr_factory_{this};

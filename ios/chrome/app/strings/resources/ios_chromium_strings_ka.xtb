@@ -142,6 +142,7 @@
 <translation id="3855938650519180865">სიახლეები Chromium-ში</translation>
 <translation id="3886689467633467988">შედით ამ საიტსა და Chromium-ში, თქვენი სანიშნეებითა და სხვა კონტენტით თქვენს ყველა მოწყობილობაზე რომ ისარგებლოთ.</translation>
 <translation id="3949514465204582407">მინიშნება Chromium-ისთვის: გამოიყენეთ თქვენი პაროლები ნებისმიერი აპში</translation>
+<translation id="3983298990898629929">დააყენეთ Chromium ნაგულისხმევ ბრაუზერად, რომ ბმულები ერთი შეხებით გახსნათ</translation>
 <translation id="4005283307739974863">გახსნის და გაუშვებს უსაფრთხოების შემოწმებას Chromium-ში.</translation>
 <translation id="4043291146360695975">პაროლები ინახება პაროლების მმართველში მხოლოდ ამ მოწყობილობაზე.</translation>
 <translation id="4046625794029820944">შეწყვიტეთ URL-ების კოპირება. დააყენეთ Chromium ნაგულისხმევ ბრაუზერად, რომ გვერდები პირდაპირ ჩატვირთოთ.</translation>
@@ -273,6 +274,7 @@
 <translation id="6680609900732453726">დატოვეთ დათვალიერება კონფიდენციალურად მოწყობილობის ავტორიზაციით, როცა Chromium-ს დახურავთ</translation>
 <translation id="6696512128741076907">დააყენეთ Chromium ნაგულისხმევ ბრაუზერად, რომ სხვა აპებიდან ბმულები მყისიერად გახსნათ.</translation>
 <translation id="6752854822223394465">თქვენი ორგანიზაცია აყენებს Chromium-ს...</translation>
+<translation id="6777348401413221846">სრულეკრანიანი ვიდეო იმის შესახებ, თუ როგორ დააყენოთ Chromium ნაგულისხმევ ბრაუზერად: გახსენით Chromium-ის პარამეტრები iOS-ში, შეეხეთ „ბრაუზერის ნაგულისხმევ აპს“ და აირჩიეთ Chromium.</translation>
 <translation id="6794054469102824109">გახსნის Chromium დინოზავრის თამაშს.</translation>
 <translation id="6820823224820483452">Chromium-მა ვერ შეამოწმა ყველა პაროლი. ცადეთ ხვალ.</translation>
 <translation id="6830782797004194206">უფრო სწრაფად შესვლა Chromium-ის ავტომატური შევსებით</translation>
@@ -302,6 +304,7 @@
 <translation id="7337881442233988129">Chromium</translation>
 <translation id="7395825497086981028">თქვენი პაროლი შეინახება პაროლების მმართველში <ph name="EMAIL" />-ისთვის.</translation>
 <translation id="7434848749522628428">აღნიშნული წვდომის გასაღები შეინახება პაროლების მმართველში ანგარიშისთვის: <ph name="USER_EMAIL" />.</translation>
+<translation id="7453822113116681031">გახადეთ Chromium ნაგულისხმევი ბრაუზერი, რომ ბმულები ერთი შეხებით გახსნათ</translation>
 <translation id="7504829997542308412">გახსენით Chromium</translation>
 <translation id="7531461704633548377">Chromium-იდან</translation>
 <translation id="7554983317097061001">მინიშნება Chromium-ისთვის: გადაიტანეთ Chromium სამაგრში</translation>
@@ -348,6 +351,7 @@
 <translation id="865600487977764604">უზრუნველყოფს თქვენს უსაფრთხოებას Chromium-სა და Google-ის სხვა აპებში, როცა სისტემაში შესული ხართ.</translation>
 <translation id="8663480472502753423">Chromium-ის მუდმივი განახლების უზრუნველყოფა</translation>
 <translation id="8685813584220679697">შედით ამ საიტსა და Chromium-ში.</translation>
+<translation id="869832267508702259">დააყენეთ Chromium ნაგულისხმევ ბრაუზერად, რომ მიიღოთ Gemini-ს ანალიტიკური მონაცემები, რასაც არ უნდა ათვალიერებდეთ</translation>
 <translation id="8698780336333802489">Chromium-ში იმპორტი</translation>
 <translation id="8730503818204408000">გახსნის Chromium-ის პარამეტრებს, Chromium ნაგულისხმევ ბრაუზერად რომ დაყენდეს.</translation>
 <translation id="8754966941001340678">Chromium გირჩევთ გაძლიერებულ დაცვას</translation>

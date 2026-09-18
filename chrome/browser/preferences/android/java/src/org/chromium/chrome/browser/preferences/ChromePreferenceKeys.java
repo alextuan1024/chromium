@@ -52,10 +52,6 @@ public final class ChromePreferenceKeys {
     public static final String ADAPTIVE_TOOLBAR_CUSTOMIZATION_SETTINGS =
             "Chrome.AdaptiveToolbarCustomization.Settings";
 
-    public static final String ADDRESS_BAR_SETTINGS_CLICKED = "Chrome.AddressBar.SettingsClicked";
-    public static final String ADDRESS_BAR_SETTINGS_VIEW_COUNT =
-            "Chrome.AddressBar.SettingsViewCount";
-
     /** Timestamp of last time ai feature availability was checked. */
     public static final String AI_ASSISTANT_ANALYZE_ATTACHMENT_AVAILABILITY =
             "Chrome.AiAssistant.AnalyzeAttachmentAvailability";
@@ -180,25 +176,8 @@ public final class ChromePreferenceKeys {
     public static final String CONTEXTUAL_SEARCH_TAP_TRIGGERED_PROMO_COUNT =
             "contextual_search_tap_triggered_promo_count";
 
-    /**
-     * Keys that indicates if an item in the context menu has been clicked or not.
-     * Used to hide the "new" tag for the items after they are clicked.
-     */
-    public static final String CONTEXT_MENU_OPEN_IMAGE_IN_EPHEMERAL_TAB_CLICKED =
-            "Chrome.Contextmenu.OpenImageInEphemeralTabClicked";
-
-    public static final String CONTEXT_MENU_OPEN_IN_EPHEMERAL_TAB_CLICKED =
-            "Chrome.Contextmenu.OpenInEphemeralTabClicked";
-
-    /** Note: The string value intentionally omits "Image" for backward compatibility. */
-    public static final String CONTEXT_MENU_SEARCH_IMAGE_WITH_GOOGLE_LENS_CLICKED =
-            "Chrome.ContextMenu.SearchWithGoogleLensClicked";
-
     public static final String CONTEXT_MENU_SEARCH_TAB_WITH_GOOGLE_LENS_CLICKED =
             "Chrome.ContextMenu.SearchTabWithGoogleLensClicked";
-
-    public static final String CONTEXT_MENU_SHOP_IMAGE_WITH_GOOGLE_LENS_CLICKED =
-            "Chrome.ContextMenu.ShopImageWithGoogleLensClicked";
 
     @Deprecated
     public static final String CROSS_DEVICE_IMPORTED_BOTTOM_OMNIBOX =
@@ -311,6 +290,9 @@ public final class ChromePreferenceKeys {
 
     public static final KeyPrefix CUSTOM_TABS_DEX_LAST_UPDATE_TIME_PREF_PREFIX =
             new KeyPrefix("pref_local_custom_tabs_module_dex_last_update_time_*");
+
+    public static final String CUSTOM_TABS_ALWAYS_OPEN_IN_BROWSER =
+            "Chrome.CustomTabs.AlwaysOpenInBrowser";
 
     /** Package name of the client app that uses CCT service of the last launched CCT. */
     public static final String CUSTOM_TABS_LAST_CLIENT_PACKAGE =
@@ -438,6 +420,10 @@ public final class ChromePreferenceKeys {
     /** Whether the precise location setting is enabled for Glic */
     public static final String GLIC_PRECISE_LOCATION_SETTING_ENABLED =
             "Chrome.Glic.PreciseLocationSettingEnabled";
+
+    /** Whether the microphone setting is enabled for Glic */
+    public static final String GLIC_MICROPHONE_SETTING_ENABLED =
+            "Chrome.Glic.MicrophoneSettingEnabled";
 
     /** Whether the share current tab default access is enabled for Glic */
     public static final String GLIC_SHARE_CURRENT_TAB_DEFAULT_ACCESS_ENABLED =
@@ -1124,6 +1110,14 @@ public final class ChromePreferenceKeys {
     public static final String VERTICAL_TABS_ENABLED_TIMESTAMP =
             "Chrome.VerticalTabs.EnabledTimestamp";
 
+    /**
+     * Stores the expanded vertical tabs rail width, in dp, that the user last chose by dragging the
+     * rail's resize handle. Unset (or non-positive) means the user has never resized the rail, so
+     * its width is determined automatically from the window size.
+     */
+    public static final String VERTICAL_TABS_USER_RESIZED_WIDTH_DP =
+            "Chrome.VerticalTabs.UserResizedWidthDp";
+
     /** Key for deferred recording of list of uninstalled WebAPK packages. */
     public static final String WEBAPK_UNINSTALLED_PACKAGES = "webapk_uninstalled_packages";
 
@@ -1182,8 +1176,6 @@ public final class ChromePreferenceKeys {
         return Arrays.asList(
                 ADAPTIVE_TOOLBAR_CUSTOMIZATION_ENABLED,
                 ADAPTIVE_TOOLBAR_CUSTOMIZATION_SETTINGS,
-                ADDRESS_BAR_SETTINGS_CLICKED,
-                ADDRESS_BAR_SETTINGS_VIEW_COUNT,
                 AI_ASSISTANT_ANALYZE_ATTACHMENT_AVAILABILITY,
                 AI_ASSISTANT_AVAILABILITY_CHECK_TIMESTAMP_MS,
                 AI_ASSISTANT_WEB_SUMMARIZATION_AVAILABILITY,
@@ -1206,11 +1198,7 @@ public final class ChromePreferenceKeys {
                 CLOUD_MANAGEMENT_CLIENT_ID,
                 CLOUD_MANAGEMENT_DM_TOKEN,
                 COMMERCE_SUBSCRIPTIONS_CHROME_MANAGED_TIMESTAMP,
-                CONTEXT_MENU_OPEN_IMAGE_IN_EPHEMERAL_TAB_CLICKED,
-                CONTEXT_MENU_OPEN_IN_EPHEMERAL_TAB_CLICKED,
-                CONTEXT_MENU_SEARCH_IMAGE_WITH_GOOGLE_LENS_CLICKED,
                 CONTEXT_MENU_SEARCH_TAB_WITH_GOOGLE_LENS_CLICKED,
-                CONTEXT_MENU_SHOP_IMAGE_WITH_GOOGLE_LENS_CLICKED,
                 CROSS_DEVICE_IMPORTED_BOTTOM_OMNIBOX,
                 CROSS_DEVICE_IMPORTED_NON_NTP_SETTINGS,
                 CROSS_DEVICE_IMPORTED_ALL_SETTINGS,
@@ -1234,6 +1222,7 @@ public final class ChromePreferenceKeys {
                 NTP_BACKGROUND_IMAGE_PORTRAIT_INFO_FOR_DAILY_REFRESH,
                 NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO_FOR_DAILY_REFRESH,
                 NTP_CUSTOMIZATION_BACKGROUND_INFO_FOR_DAILY_REFRESH,
+                CUSTOM_TABS_ALWAYS_OPEN_IN_BROWSER,
                 CUSTOM_TABS_LAST_CLIENT_PACKAGE,
                 CUSTOM_TABS_LAST_CLOSE_TAB_INTERACTION,
                 CUSTOM_TABS_LAST_CLOSE_TIMESTAMP,
@@ -1262,6 +1251,7 @@ public final class ChromePreferenceKeys {
                 FIRST_CTA_START_TIMESTAMP,
                 FLAGS_LAST_CACHED_MINIMAL_BROWSER_FLAGS_TIME_MILLIS,
                 GLIC_PRECISE_LOCATION_SETTING_ENABLED,
+                GLIC_MICROPHONE_SETTING_ENABLED,
                 GLIC_SHARE_CURRENT_TAB_DEFAULT_ACCESS_ENABLED,
                 GLIC_AUTO_BROWSE_SETTING_ENABLED,
                 GLIC_PROMO_ACCEPTED,
@@ -1390,6 +1380,7 @@ public final class ChromePreferenceKeys {
                 VERTICAL_TABS_COLLAPSED,
                 VERTICAL_TABS_ENABLED,
                 VERTICAL_TABS_ENABLED_TIMESTAMP,
+                VERTICAL_TABS_USER_RESIZED_WIDTH_DP,
                 WEB_SIGNIN_ACCOUNT_PICKER_ACTIVE_DISMISSAL_COUNT,
                 WINDOW_CONTROLS_OVERLAY_ENABLED_PACKAGES);
     }

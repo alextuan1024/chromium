@@ -110,6 +110,7 @@ class MockToolbarUIServiceDelegate
   MOCK_METHOD(void,
               OnPageActionChipShowingChanged,
               (::toolbar_ui_api::mojom::PageActionId action_id,
+               bool is_showing,
                ::toolbar_ui_api::mojom::ToolbarUIService::
                    OnPageActionChipShowingChangedCallback callback),
               (override));
@@ -143,7 +144,7 @@ class MockToolbarUIServiceDelegate
               (override));
   MOCK_METHOD(void,
               OnLhsChipClicked,
-              (toolbar_ui_api::mojom::LhsChipIdentifier, bool),
+              (toolbar_ui_api::mojom::LhsChipIdentifier, bool, uint32_t),
               (override));
   MOCK_METHOD(void,
               OnLhsChipPointerEntered,
@@ -174,12 +175,20 @@ class MockToolbarUIServiceDelegate
               OnOmniboxAction,
               (toolbar_ui_api::mojom::OmniboxActionPtr action_ptr),
               (override));
-  MOCK_METHOD(void, ShowAvatarMenu, (), (override));
+  MOCK_METHOD(void, ShowAvatarMenu, (bool), (override));
+  MOCK_METHOD(void, OnAvatarButtonMousePressed, (), (override));
   MOCK_METHOD(void, SetAvatarButtonHovered, (bool), (override));
   MOCK_METHOD(void, SetAvatarButtonFocused, (bool), (override));
   MOCK_METHOD(void, SetAvatarButtonIPHPromoShowing, (bool), (override));
   MOCK_METHOD(void, OnAppMenuFocusChanged, (bool), (override));
-  MOCK_METHOD(void, ExecuteExtensionAction, (const std::string&), (override));
+  MOCK_METHOD(void,
+              ExecuteExtensionAction,
+              (const std::string&, bool),
+              (override));
+  MOCK_METHOD(void,
+              OnExtensionActionPointerDown,
+              (const std::string&),
+              (override));
   MOCK_METHOD(void,
               ShowExtensionContextMenu,
               (const std::string&, ui::mojom::MenuSourceType),
@@ -198,6 +207,11 @@ class MockToolbarUIServiceDelegate
               OnPerformanceInterventionButtonMousePressed,
               (),
               (override));
+  MOCK_METHOD(void,
+              OnMediaButtonClicked,
+              (bool is_mouse_interaction),
+              (override));
+  MOCK_METHOD(void, OnMediaButtonMousePressed, (), (override));
 };
 
 class MockBrowserControlsServiceDelegate

@@ -10,6 +10,7 @@
 #include "base/allocator/partition_alloc_features.h"
 #include "base/base_paths_android.h"
 #include "base/check.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/path_service.h"
 #include "components/content_settings/core/common/features.h"
@@ -77,6 +78,29 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   aw_feature_overrides.DisableFeature(
       blink::features::kScrollPredictorRefinedHasPrediction);
 
+  // PARAM_OVERRIDDEN: crbug.com/486206884
+  if (!feature_list->HasAssociatedFieldTrialByFeatureName(
+          blink::features::kResamplingScrollEvents.name)) {
+    const char kResamplingScrollEventsWebViewExperiment[] =
+        "ResamplingScrollEventsWebViewExperiment";
+    const char kResamplingScrollEventsWebViewGroup[] =
+        "ResamplingScrollEventsWebViewGroup";
+    base::FieldTrial* resampling_scroll_events_field_trial =
+        base::FieldTrialList::CreateFieldTrial(
+            kResamplingScrollEventsWebViewExperiment,
+            kResamplingScrollEventsWebViewGroup);
+    base::FieldTrialParams params;
+    params.emplace(blink::features::kScrollPredictorMaxResampleTime.name,
+                   "20ms");
+    base::AssociateFieldTrialParams(kResamplingScrollEventsWebViewExperiment,
+                                    kResamplingScrollEventsWebViewGroup,
+                                    params);
+    feature_list->RegisterFieldTrialOverride(
+        blink::features::kResamplingScrollEvents.name,
+        base::FeatureList::OverrideState::OVERRIDE_ENABLE_FEATURE,
+        resampling_scroll_events_field_trial);
+  }
+
   // DISABLED_INCOMPATIBLE: InputVizard is disabled on WebView as it is a
   // Chrome-only feature that moves input handling to the VizCompositor
   // thread, which is out of scope for WebView's Synchronous Compositor
@@ -89,9 +113,11 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   aw_feature_overrides.DisableFeature(
       blink::features::kEnforceNoopenerOnBlobURLNavigation);
 
+#if BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
   // DISABLED_TEMPORARY: https://crbug.com/40593023
   aw_feature_overrides.DisableFeature(
       ::features::kDefaultPassthroughCommandDecoder);
+#endif
 
   // DISABLED_TEMPORARY: https://crbug.com/1493153. HDR does not support webview
   // yet.
@@ -285,11 +311,6 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   // DISABLED_INCOMPATIBLE: Sharing ANGLE's Vulkan queue is not supported on
   // WebView.
   aw_feature_overrides.DisableFeature(::features::kVulkanFromANGLE);
-
-  // DISABLED_TEMPORARY: crbug.com/371512561. This feature has not been
-  // experimented with yet on WebView. Disable this feature for WebView only if
-  // webview itself is using GLES.
-  aw_feature_overrides.DisableFeature(::features::kDefaultANGLEVulkan);
 
   // Partitioned :visited links history is not supported on WebView.
   aw_feature_overrides.DisableFeature(

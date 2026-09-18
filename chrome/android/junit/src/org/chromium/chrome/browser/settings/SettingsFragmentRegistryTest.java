@@ -22,6 +22,10 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.about_settings.LegalInformationSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
+import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
+import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.night_mode.NightModeMetrics;
@@ -35,8 +39,12 @@ import org.chromium.chrome.browser.safe_browsing.settings.SafeBrowsingSettingsFr
 import org.chromium.chrome.browser.safe_browsing.settings.StandardProtectionSettingsFragment;
 import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
 import org.chromium.chrome.browser.tracing.settings.TracingSettings;
+import org.chromium.components.browser_ui.site_settings.ChosenObjectSettings;
 import org.chromium.components.browser_ui.site_settings.GroupedWebsitesSettings;
+import org.chromium.components.browser_ui.site_settings.LocationPermissionSubpageSettings;
 import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
+import org.chromium.components.browser_ui.site_settings.SiteSettings;
+import org.chromium.components.browser_ui.site_settings.StorageAccessSubpageSettings;
 import org.chromium.components.browser_ui.site_settings.Website;
 import org.chromium.components.browser_ui.site_settings.WebsiteAddress;
 import org.chromium.components.browser_ui.site_settings.WebsiteGroup;
@@ -52,18 +60,15 @@ public class SettingsFragmentRegistryTest {
 
     @Test
     public void testRegistryInitialization() throws Exception {
-        Map<String, Class<? extends Fragment>> pathMap =
-                SettingsFragmentRegistry.sPathToFragmentMap;
-
         // Verify root path
-        assertEquals(MainSettings.class, pathMap.get(""));
-        assertEquals(MainSettings.class, pathMap.get("/"));
+        assertEquals(MainSettings.class, fragmentClassForPath(""));
+        assertEquals(MainSettings.class, fragmentClassForPath("/"));
 
         // Verify some notable mappings
-        assertEquals(PrivacySettings.class, pathMap.get("/privacy"));
-        assertEquals(AppearanceSettingsFragment.class, pathMap.get("/appearance"));
-        assertEquals(ThemeSettingsFragment.class, pathMap.get("/theme"));
-        assertEquals(SafeBrowsingSettingsFragment.class, pathMap.get("/safebrowsing"));
+        assertEquals(PrivacySettings.class, fragmentClassForPath("/privacy"));
+        assertEquals(AppearanceSettingsFragment.class, fragmentClassForPath("/appearance"));
+        assertEquals(ThemeSettingsFragment.class, fragmentClassForPath("/theme"));
+        assertEquals(SafeBrowsingSettingsFragment.class, fragmentClassForPath("/safebrowsing"));
 
         // Verify canonical path mapping
         Map<Class<? extends Fragment>, String> fragmentMap =
@@ -75,8 +80,6 @@ public class SettingsFragmentRegistryTest {
 
     @Test
     public void testRegisterMappingForTesting() throws Exception {
-        Map<String, Class<? extends Fragment>> pathMap =
-                SettingsFragmentRegistry.sPathToFragmentMap;
         Map<Class<? extends Fragment>, String> fragmentMap =
                 SettingsFragmentRegistry.sFragmentToPathMap;
 
@@ -84,17 +87,17 @@ public class SettingsFragmentRegistryTest {
         Class<? extends Fragment> testClass = Fragment.class;
 
         // Ensure it doesn't exist yet
-        assertFalse(pathMap.containsKey("/test/custom"));
+        assertNull(fragmentClassForPath(testPath));
 
         // Register the new mapping
         SettingsFragmentRegistry.registerMappingForTesting(testPath, testClass);
 
         // Verify it was added
-        assertEquals(testClass, pathMap.get("/test/custom"));
+        assertEquals(testClass, fragmentClassForPath(testPath));
         assertEquals("test/custom", fragmentMap.get(testClass));
 
         // Clean up
-        pathMap.remove("/test/custom");
+        SettingsFragmentRegistry.sPathToRouteSpecMap.remove(testPath);
         fragmentMap.remove(testClass);
     }
 
@@ -105,6 +108,12 @@ public class SettingsFragmentRegistryTest {
 
         assertEquals(SingleWebsiteSettings.EXTRA_SITE_ADDRESS, queryMap.get("site"));
         assertEquals("site", argMap.get(SingleWebsiteSettings.EXTRA_SITE_ADDRESS));
+
+        assertEquals(SingleWebsiteSettings.EXTRA_FROM_GROUPED, queryMap.get("fromGrouped"));
+        assertEquals("fromGrouped", argMap.get(SingleWebsiteSettings.EXTRA_FROM_GROUPED));
+
+        assertEquals(GroupedWebsitesSettings.EXTRA_GROUP, queryMap.get("group"));
+        assertEquals("group", argMap.get(GroupedWebsitesSettings.EXTRA_GROUP));
     }
 
     @Test
@@ -112,20 +121,18 @@ public class SettingsFragmentRegistryTest {
         // Registering with mixed case should be lowercased in the registry map
         SettingsFragmentRegistry.registerMappingForTesting("/Test/Case", Fragment.class);
 
-        Map<String, Class<? extends Fragment>> pathMap =
-                SettingsFragmentRegistry.sPathToFragmentMap;
         Map<Class<? extends Fragment>, String> fragmentMap =
                 SettingsFragmentRegistry.sFragmentToPathMap;
 
-        // Lookup key should be lowercased
-        assertTrue(pathMap.containsKey("/test/case"));
-        assertEquals(Fragment.class, pathMap.get("/test/case"));
+        // The Url is matched case insensitively, however it was registered or is written.
+        assertEquals(Fragment.class, fragmentClassForPath("/test/case"));
+        assertEquals(Fragment.class, fragmentClassForPath("/Test/Case"));
 
         // Canonical path map should preserve casing of the subpage path (without the slash)
         assertEquals("Test/Case", fragmentMap.get(Fragment.class));
 
         // Clean up
-        pathMap.remove("/test/case");
+        SettingsFragmentRegistry.sPathToRouteSpecMap.remove("/test/case");
         fragmentMap.remove(Fragment.class);
     }
 
@@ -179,8 +186,24 @@ public class SettingsFragmentRegistryTest {
 
         Bundle bundle =
                 SettingsFragmentRegistry.parseUrlArguments(
-                        "chrome://settings/siteDetails?site=example.com");
-        assertEquals("example.com", bundle.getString(SingleWebsiteSettings.EXTRA_SITE_ADDRESS));
+                        "chrome://settings/siteDetails?site=example.com&fromGrouped=true");
+        assertEquals(
+                WebsiteAddress.create("example.com"),
+                bundle.getSerializable(SingleWebsiteSettings.EXTRA_SITE_ADDRESS));
+        assertTrue(bundle.getBoolean(SingleWebsiteSettings.EXTRA_FROM_GROUPED));
+
+        Bundle groupBundle =
+                SettingsFragmentRegistry.parseUrlArguments(
+                        "chrome://settings/allSites/group?group=example.com");
+        assertEquals("example.com", groupBundle.getString(GroupedWebsitesSettings.EXTRA_GROUP));
+
+        Bundle autofillBundle =
+                SettingsFragmentRegistry.parseUrlArguments(
+                        "chrome://settings/autofill?referrer="
+                                + AutofillSettingsReferrer.SETTINGS_SEARCH);
+        assertEquals(
+                AutofillSettingsReferrer.SETTINGS_SEARCH,
+                autofillBundle.getInt(AutofillAndPasswordsFragment.EXTRA_REFERRER));
 
         // Non-hierarchical URIs return an empty bundle safely.
         assertTrue(SettingsFragmentRegistry.parseUrlArguments("mailto:user@example.com").isEmpty());
@@ -190,9 +213,25 @@ public class SettingsFragmentRegistryTest {
     public void testTypedQueryParameterParsing() {
         Bundle bundle =
                 SettingsFragmentRegistry.parseUrlArguments(
+                        "chrome://settings/siteDetails?site=example.com&fromGrouped=true");
+        assertTrue(bundle.getBoolean(SingleWebsiteSettings.EXTRA_FROM_GROUPED));
+
+        // Malformed numeric parameters should fall back to known good default values.
+        Bundle malformedBundle =
+                SettingsFragmentRegistry.parseUrlArguments(
+                        "chrome://settings/autofill?referrer=abc&optionsReferrer=xyz");
+        assertEquals(
+                AutofillSettingsReferrer.SETTINGS_MENU,
+                malformedBundle.getInt(AutofillAndPasswordsFragment.EXTRA_REFERRER));
+        assertEquals(
+                AutofillOptionsReferrer.SETTINGS,
+                malformedBundle.getInt(AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
+
+        Bundle unknownBundle =
+                SettingsFragmentRegistry.parseUrlArguments(
                         "chrome://settings/foo?boolKey=true&intKey=42");
-        assertEquals("true", bundle.getString("boolKey"));
-        assertEquals("42", bundle.getString("intKey"));
+        assertEquals("true", unknownBundle.getString("boolKey"));
+        assertEquals("42", unknownBundle.getString("intKey"));
     }
 
     @Test
@@ -232,6 +271,13 @@ public class SettingsFragmentRegistryTest {
                 "chrome://settings/allSites/group?group=google.com",
                 SettingsFragmentRegistry.createUrlForFragment(
                         GroupedWebsitesSettings.class, groupArgs));
+
+        Bundle stringGroupArgs = new Bundle();
+        stringGroupArgs.putString(GroupedWebsitesSettings.EXTRA_GROUP, "example.com");
+        String groupUrl =
+                SettingsFragmentRegistry.createUrlForFragment(
+                        GroupedWebsitesSettings.class, stringGroupArgs);
+        assertEquals("chrome://settings/allSites/group?group=example.com", groupUrl);
     }
 
     @Test
@@ -244,6 +290,18 @@ public class SettingsFragmentRegistryTest {
         assertEquals(
                 NightModeMetrics.ThemeSettingsEntry.SETTINGS,
                 bundle.getInt(ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY));
+
+        // Verify that parsing an autofill options URL without explicit query
+        // parameters automatically populates the mandatory
+        // autofill-options-referrer extra expected by AutofillOptionsFragment.
+        Bundle autofillOptionsBundle =
+                SettingsFragmentRegistry.parseUrlArguments("chrome://settings/autofill/settings");
+        assertTrue(
+                autofillOptionsBundle.containsKey(
+                        AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
+        assertEquals(
+                AutofillOptionsReferrer.SETTINGS,
+                autofillOptionsBundle.getInt(AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
     }
 
     @Test
@@ -329,5 +387,107 @@ public class SettingsFragmentRegistryTest {
                 TracingSettings.class,
                 SettingsFragmentRegistry.getFragmentClassForUrl(
                         "chrome://settings/developer/tracing"));
+    }
+
+    @Test
+    public void testMainMenuAnchors() {
+        // Site settings subpages are attached at runtime and are absent from the search index, so
+        // they declare the row they live under explicitly.
+        assertEquals(
+                SiteSettings.MAIN_MENU_KEY,
+                SettingsFragmentRegistry.getMainMenuAnchor(SingleWebsiteSettings.class));
+        assertEquals(
+                SiteSettings.MAIN_MENU_KEY,
+                SettingsFragmentRegistry.getMainMenuAnchor(GroupedWebsitesSettings.class));
+        assertEquals(
+                SiteSettings.MAIN_MENU_KEY,
+                SettingsFragmentRegistry.getMainMenuAnchor(StorageAccessSubpageSettings.class));
+        assertEquals(
+                SiteSettings.MAIN_MENU_KEY,
+                SettingsFragmentRegistry.getMainMenuAnchor(
+                        LocationPermissionSubpageSettings.class));
+        assertEquals(
+                SiteSettings.MAIN_MENU_KEY,
+                SettingsFragmentRegistry.getMainMenuAnchor(ChosenObjectSettings.class));
+
+        // Pages reachable from a preference XML resolve their row from the breadcrumb path and do
+        // not need an anchor.
+        assertNull(SettingsFragmentRegistry.getMainMenuAnchor(SiteSettings.class));
+        assertNull(SettingsFragmentRegistry.getMainMenuAnchor(PrivacySettings.class));
+    }
+
+    @Test
+    public void testIsSameSettingsPage() {
+        // Scheme is ignored: both schemes reach settings and are currently used interchangeably.
+        assertTrue(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "chrome://settings/allSites", "chrome-native://settings/allSites"));
+
+        // Path comparison is case insensitive and tolerates a trailing slash, matching
+        // getFragmentClassForUrl().
+        assertTrue(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "chrome://settings/allSites/", "chrome://settings/allsites"));
+
+        // Query parameters are part of the page identity.
+        assertTrue(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "chrome://settings/allSites/group?group=example.com",
+                        "chrome://settings/allSites/group?group=example.com"));
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "chrome://settings/allSites/group?group=example.com",
+                        "chrome://settings/allSites/group?group=other.com"));
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "chrome://settings/allSites", "chrome://settings/siteSettings"));
+
+        // Non-settings and malformed URLs never match, including against each other.
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "https://example.com/allSites", "chrome://settings/allSites"));
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage(
+                        "https://example.com/", "https://example.com/"));
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage(null, "chrome://settings/allSites"));
+        assertFalse(
+                SettingsFragmentRegistry.isSameSettingsPage("chrome://settings/allSites", null));
+    }
+
+    @Test
+    public void testResolveReturnsThePageAndItsArguments() {
+        SettingsFragmentRegistry.Resolution resolution =
+                SettingsFragmentRegistry.resolve(
+                        "chrome://settings/siteDetails?site=https://example.com");
+        assertEquals(SingleWebsiteSettings.class, resolution.fragmentClass);
+        assertTrue(resolution.args.containsKey(SingleWebsiteSettings.EXTRA_SITE_ADDRESS));
+    }
+
+    @Test
+    public void testResolveAppliesRouteDefaults() {
+        // The page asserts on this extra, and a URL that does not name it must still produce a
+        // page that works.
+        SettingsFragmentRegistry.Resolution resolution =
+                SettingsFragmentRegistry.resolve("chrome://settings/theme");
+        assertEquals(ThemeSettingsFragment.class, resolution.fragmentClass);
+        assertEquals(
+                NightModeMetrics.ThemeSettingsEntry.SETTINGS,
+                resolution.args.getInt(ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY));
+    }
+
+    @Test
+    public void testResolveShowsMainSettingsForUnroutedUrls() {
+        assertEquals(
+                MainSettings.class,
+                SettingsFragmentRegistry.resolve("chrome://settings/notAPage").fragmentClass);
+        assertEquals(
+                MainSettings.class,
+                SettingsFragmentRegistry.resolve("chrome://settings").fragmentClass);
+    }
+
+    /** The page a settings path resolves to, or null if the path is not registered. */
+    private static Class<? extends Fragment> fragmentClassForPath(String path) {
+        return SettingsFragmentRegistry.getFragmentClassForUrl("chrome://settings" + path);
     }
 }

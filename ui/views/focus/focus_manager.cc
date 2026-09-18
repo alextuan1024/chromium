@@ -41,19 +41,15 @@ FocusManager::FocusManager(Widget* widget,
 }
 
 FocusManager::~FocusManager() {
-  if (focused_view_) {
-    focused_view_->RemoveObserver(this);
-  }
+  view_observation_.Reset();
   focus_change_listeners_.Notify(&FocusChangeListener::OnFocusManagerDestroying,
                                  this);
 }
 
 bool FocusManager::ShouldSkipAcceleratorProcessing(
-    const ui::Accelerator& accelerator) const {
-  return focused_view_ &&
-         focused_view_->SkipDefaultKeyEventProcessing(
-             accelerator.ToKeyEvent()) &&
-         !accelerator_manager_.HasPriorityHandler(accelerator);
+    const ui::KeyEvent& event) const {
+  return focused_view_ && focused_view_->SkipDefaultKeyEventProcessing(event) &&
+         !accelerator_manager_.HasPriorityHandler(ui::Accelerator(event));
 }
 
 bool FocusManager::OnKeyEvent(const ui::KeyEvent& event) {
@@ -71,7 +67,7 @@ bool FocusManager::OnKeyEvent(const ui::KeyEvent& event) {
   ui::Accelerator accelerator(event);
 
   // If the focused view wants to process the key event as is, let it be.
-  if (ShouldSkipAcceleratorProcessing(accelerator)) {
+  if (ShouldSkipAcceleratorProcessing(event)) {
     return true;
   }
 
@@ -160,34 +156,39 @@ bool FocusManager::ContainsView(View* view) {
 }
 
 void FocusManager::AdvanceFocus(bool reverse) {
-  View* v = GetNextFocusableView(focused_view_, nullptr, reverse, false);
+  ViewTracker v(GetNextFocusableView(focused_view_, nullptr, reverse, false));
   // Note: Do not skip this next block when v == focused_view_.  If the user
   // tabs past the last focusable element in a webpage, we'll get here, and if
   // the TabContentsContainerView is the only focusable view (possible in
   // fullscreen mode), we need to run this block in order to cycle around to the
   // first element on the page.
-  if (v) {
-    views::View* focused_view = focused_view_;
-    v->AboutToRequestFocusFromTabTraversal(reverse);
-    // AboutToRequestFocusFromTabTraversal() may have changed focus. If it did,
-    // don't change focus again.
-    if (focused_view != focused_view_) {
-      return;
-    }
+  if (!v) {
+    return;
+  }
 
-    // Note that GetNextFocusableView may have returned a View in a different
-    // FocusManager.
-    DCHECK(v->GetWidget());
-    v->GetWidget()->GetFocusManager()->SetFocusedViewWithReason(
-        v, FocusChangeReason::kFocusTraversal);
+  views::View* const focused_view = focused_view_;
+  v.view()->AboutToRequestFocusFromTabTraversal(reverse);
+  // AboutToRequestFocusFromTabTraversal() may have changed focus. If it did,
+  // don't change focus again.
+  if (!v || focused_view != focused_view_) {
+    return;
+  }
 
-    // When moving focus from a child widget to a top-level widget,
-    // the top-level widget may report IsActive()==true because it's
-    // active even though it isn't focused. Explicitly activate the
-    // widget to ensure that case is handled.
-    if (v->GetWidget()->GetFocusManager() != this) {
-      v->GetWidget()->Activate();
-    }
+  // Note that GetNextFocusableView may have returned a View in a different
+  // FocusManager.
+  DCHECK(v.view()->GetWidget());
+  v.view()->GetWidget()->GetFocusManager()->SetFocusedViewWithReason(
+      v.view(), FocusChangeReason::kFocusTraversal);
+  if (!v) {
+    return;
+  }
+
+  // When moving focus from a child widget to a top-level widget,
+  // the top-level widget may report IsActive()==true because it's
+  // active even though it isn't focused. Explicitly activate the
+  // widget to ensure that case is handled.
+  if (v.view()->GetWidget()->GetFocusManager() != this) {
+    v.view()->GetWidget()->Activate();
   }
 }
 
@@ -354,18 +355,19 @@ void FocusManager::SetFocusedViewWithReason(View* view,
   // Update the reason for the focus change (since this is checked by
   // some listeners), then notify all listeners.
   focus_change_reason_ = reason;
+  ViewTracker view_tracker(view);
   focus_change_listeners_.Notify(&FocusChangeListener::OnWillChangeFocus,
                                  focused_view_, view);
 
   // Actions below like `Blur()` can destroy `focused_view_`.
   ViewTracker old_focused_view_tracker(focused_view_);
-  focused_view_ = view;
+  focused_view_ = view_tracker.view();
   base::AutoReset<int> entrance_count_resetter(
       &setting_focused_view_entrance_count_,
       setting_focused_view_entrance_count_ + 1);
 
   if (old_focused_view_tracker.view()) {
-    old_focused_view_tracker.view()->RemoveObserver(this);
+    view_observation_.Reset();
     old_focused_view_tracker.view()->Blur();
   }
   // Also make |focused_view_| the stored focus view. This way the stored focus
@@ -374,9 +376,8 @@ void FocusManager::SetFocusedViewWithReason(View* view,
   SetStoredFocusView(focused_view_);
   if (focused_view_) {
     // TODO(40763787): Remove this once reentrant callsites have been addressed.
-    if (!focused_view_->HasObserver(this)) {
-      focused_view_->AddObserver(this);
-    }
+    CHECK(!view_observation_.IsObserving());
+    view_observation_.Observe(focused_view_);
     focused_view_->Focus();
   }
 
@@ -624,6 +625,7 @@ void FocusManager::OnViewIsDeleting(View* view) {
   // child widgets it's possible to change the parent out from under the Widget
   // such that ViewRemoved() is never called.
   CHECK_EQ(view, focused_view_);
+  view_observation_.Reset();
   SetFocusedView(nullptr);
 }
 

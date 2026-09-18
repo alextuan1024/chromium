@@ -57,6 +57,7 @@
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
@@ -492,7 +493,7 @@ bool IsOpenInIncognitoAllowed(
         raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& selection,
     Profile* profile) {
   policy::IncognitoModeAvailability incognito_avail =
-      IncognitoModePrefs::GetAvailability(profile->GetPrefs());
+      IncognitoModePrefs::GetAvailability(profile);
   return HasBookmarkURLsAllowedInIncognitoMode(selection) &&
          !profile->IsOffTheRecord() &&
          incognito_avail != policy::IncognitoModeAvailability::kDisabled;

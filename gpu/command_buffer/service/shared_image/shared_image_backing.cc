@@ -90,6 +90,7 @@ SharedImageBacking::SharedImageBacking(
       surface_origin_(si_info.surface_origin),
       alpha_type_(si_info.alpha_type),
       usage_(si_info.usage),
+      array_layers_(si_info.array_layers),
       debug_label_(si_info.debug_label),
       estimated_size_(estimated_size),
       buffer_usage_(std::move(buffer_usage)) {
@@ -123,7 +124,7 @@ void SharedImageBacking::CopyToGpuMemoryBufferAsync(
   std::move(callback).Run(CopyToGpuMemoryBuffer());
 }
 
-void SharedImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {}
+void SharedImageBacking::Update(gfx::GpuFenceHandle in_fence) {}
 
 bool SharedImageBacking::UploadFromMemory(
     const std::vector<SkPixmap>& pixmaps) {
@@ -210,6 +211,7 @@ std::unique_ptr<SkiaImageRepresentation> SharedImageBacking::ProduceSkia(
     case gpu::GrContextType::kVulkan:
       return ProduceSkiaGanesh(manager, tracker, context_state);
     case gpu::GrContextType::kGraphiteDawn:
+    case gpu::GrContextType::kGraphiteVulkan:
       return ProduceSkiaGraphite(manager, tracker, context_state);
       // NOTE: Do not add a default case to force any new types to be
       // handled here on addition.

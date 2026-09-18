@@ -130,6 +130,38 @@ TEST_F(AutofillEntityInstanceTest, ServerEntityWithUnmaskedAttributes) {
   EXPECT_TRUE(entity.IsUnmaskedEntity());
 }
 
+TEST_F(AutofillEntityInstanceTest, CopyWithNewRecordTypeSetsWalletPayload) {
+  EntityInstance local_entity = test::GetPassportEntityInstance(
+      {.record_type = EntityInstance::RecordType::kLocal});
+
+  // Converting kLocal to kServerWallet initializes an empty
+  // WalletRecordTypePayload.
+  EntityInstance converted_wallet_entity = local_entity.CopyWithNewRecordType(
+      EntityInstance::RecordType::kServerWallet);
+  const EntityInstance::WalletRecordTypePayload* converted_payload =
+      std::get_if<EntityInstance::WalletRecordTypePayload>(
+          &converted_wallet_entity.record_type_data());
+  ASSERT_NE(converted_payload, nullptr);
+  EXPECT_EQ(converted_payload->management_url, "");
+}
+
+TEST_F(AutofillEntityInstanceTest,
+       CopyWithNewRecordTypeSameTypeCopiesThePayload) {
+  constexpr char kWalletUrl[] =
+      "https://wallet.google.com/synthetic_pass?id=fake123";
+  EntityInstance wallet_entity = test::GetPassportEntityInstance(
+      {.record_type = EntityInstance::WalletRecordTypePayload{.management_url =
+                                                                  kWalletUrl}});
+
+  EntityInstance converted_wallet_entity = wallet_entity.CopyWithNewRecordType(
+      EntityInstance::RecordType::kServerWallet);
+  const EntityInstance::WalletRecordTypePayload* converted_payload =
+      std::get_if<EntityInstance::WalletRecordTypePayload>(
+          &converted_wallet_entity.record_type_data());
+  ASSERT_NE(converted_payload, nullptr);
+  EXPECT_EQ(converted_payload->management_url, kWalletUrl);
+}
+
 TEST_F(AutofillEntityInstanceTest, Attributes) {
   const char16_t kName[] = u"Pippi";
   EntityInstance pp =
@@ -219,6 +251,12 @@ TEST_F(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
   auto from_affix = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
   };
+  auto from_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
+  };
+  auto from_flight_number = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
+  };
 
   {
     AttributeInstance passport_number((AttributeType(kPassportNumber)));
@@ -235,6 +273,13 @@ TEST_F(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
     EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
                       {.format_string = from_affix(u"-4")}),
               u"3456");
+    // Incompatible format strings must be ignored.
+    EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
+                      {.format_string = from_date(u"DD/MM/YYYY")}),
+              u"LR0123456");
+    EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
+                      {.format_string = from_flight_number(u"N")}),
+              u"LR0123456");
   }
 
   {
@@ -258,6 +303,15 @@ TEST_F(AutofillEntityInstanceTest, Attributes_Date) {
   auto from_date = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
   };
+  auto from_affix = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
+  };
+  auto from_flight_number = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
+  };
+  auto from_icu_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_ICU_DATE);
+  };
 
   AttributeInstance passport_name((AttributeType(kPassportIssueDate)));
   passport_name.SetInfo(PASSPORT_ISSUE_DATE, u"2001-02-03",
@@ -268,12 +322,29 @@ TEST_F(AutofillEntityInstanceTest, Attributes_Date) {
   EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
                     {.format_string = from_date(u"DD/MM/YYYY")}),
             u"03/02/2001");
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.app_locale = "en_US",
+                     .format_string = from_icu_date(u"MMM d")}),
+            u"Feb 3");
+  // Incompatible format strings must be ignored and fall back to YYYY-MM-DD.
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.format_string = from_affix(u"-4")}),
+            u"2001-02-03");
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.format_string = from_flight_number(u"N")}),
+            u"2001-02-03");
 }
 
 // Tests that formatting flight numbers works correctly.
 TEST_F(AutofillEntityInstanceTest, AttributesFlightFormat) {
   auto from_flight_number = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
+  };
+  auto from_affix = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
+  };
+  auto from_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
   };
 
   {
@@ -292,6 +363,13 @@ TEST_F(AutofillEntityInstanceTest, AttributesFlightFormat) {
               u"89");
     EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
                       {.format_string = from_flight_number(u"F")}),
+              u"LH89");
+    // Incompatible format strings must be ignored.
+    EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
+                      {.format_string = from_affix(u"-4")}),
+              u"LH89");
+    EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
+                      {.format_string = from_date(u"DD/MM/YYYY")}),
               u"LH89");
   }
 

@@ -103,7 +103,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/global_features.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/pref_names.h"
 #endif
 
@@ -200,10 +199,14 @@ void OffTheRecordProfileImpl::Init() {
   BrowserContextDependencyManager::GetInstance()->CreateBrowserContextServices(
       this);
 
+  const IncognitoModePrefs::IncognitoModeType incognito_type =
+      IncognitoModePrefs::GetIncognitoModeType(profile_);
   // Always crash when incognito is not available.
   CHECK(!IsIncognitoProfile() ||
-        IncognitoModePrefs::GetAvailability(profile_->GetPrefs()) !=
-            policy::IncognitoModeAvailability::kDisabled);
+        incognito_type == IncognitoModePrefs::IncognitoModeType::kStandard);
+  // Always crash when isolated mode is not available.
+  CHECK(!IsEnterpriseIsolatedModeProfile() ||
+        incognito_type == IncognitoModePrefs::IncognitoModeType::kEnterprise);
 
   TrackZoomLevelsFromParent();
 
@@ -606,13 +609,8 @@ class GuestSessionProfile : public OffTheRecordProfileImpl {
  public:
   explicit GuestSessionProfile(Profile* real_profile)
       : OffTheRecordProfileImpl(real_profile, OTRProfileID::PrimaryID()) {
-    if (new_guest_profile_impl_) {
-      CHECK_EQ(profile_metrics::BrowserProfileType::kGuest,
-               profile_metrics::GetBrowserProfileType(this));
-    } else {
-      profile_metrics::SetBrowserProfileType(
-          this, profile_metrics::BrowserProfileType::kGuest);
-    }
+    CHECK_EQ(profile_metrics::BrowserProfileType::kGuest,
+             profile_metrics::GetBrowserProfileType(this));
   }
 
   void InitChromeOSPreferences() override {

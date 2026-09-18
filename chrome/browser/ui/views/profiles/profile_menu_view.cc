@@ -66,7 +66,6 @@
 #include "chrome/browser/ui/views/profiles/avatar_badge_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
-#include "chrome/browser/ui/webui/signin/signin_utils_desktop.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
@@ -217,8 +216,6 @@ void ProfileMenuView::BuildMenu() {
         l10n_util::GetStringUTF16(IDS_PROFILE_MENU_PROFILES_LIST_TITLE));
   }
   BuildOtherProfilesSection(available_profiles);
-  base::UmaHistogramBoolean("ProfileChooser.HasProfilesShown",
-                            !available_profiles.empty());
 
   // Users should not be able to manage profiles from WebApps.
   if (!is_web_app) {
@@ -760,18 +757,9 @@ ProfileMenuView::GetIdentitySectionParams(const ProfileAttributesEntry& entry) {
   switch (signin_util::GetSignedInState(identity_manager)) {
     case signin_util::SignedInState::kSignedOut:
     case signin_util::SignedInState::kWebOnlySignedIn: {
-      signin::AccountPreviewDataService* account_preview_data_service =
-          AccountPreviewDataServiceFactory::GetForProfile(&profile());
-      AccountInfo account_info_for_promos =
-          signin_ui_util::GetSingleAccountForPromos(
-              identity_manager, account_preview_data_service);
-      if (!CanOfferSignin(&profile(), account_info_for_promos.GetGaiaId(),
-                          std::string(account_info_for_promos.GetEmail()),
-                          /*allow_account_from_other_profile=*/true)
-               .IsOk()) {
+      if (!signin::CanOfferSignInForPromos(profile())) {
         break;
       }
-
       access_point =
           signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo;
       if (from_avatar_promo_) {
@@ -781,6 +769,11 @@ ProfileMenuView::GetIdentitySectionParams(const ProfileAttributesEntry& entry) {
         access_point = access_point =
             signin_metrics::AccessPoint::kAvatarPillExpandPromo;
       }
+      signin::AccountPreviewDataService* account_preview_data_service =
+          AccountPreviewDataServiceFactory::GetForProfile(&profile());
+      AccountInfo account_info_for_promos =
+          signin_ui_util::GetSingleAccountForPromos(
+              identity_manager, account_preview_data_service);
       signin_metrics::LogSignInOffered(
           access_point,
           account_info_for_promos.IsEmpty()
@@ -800,7 +793,8 @@ ProfileMenuView::GetIdentitySectionParams(const ProfileAttributesEntry& entry) {
         break;
       }
       // "Continue as" signin button.
-      account_info_for_signin_action = account_info_for_promos;
+      account_info_for_signin_action =
+          account_info_for_promos.GetCoreAccountInfo();
       if (account_preview_data_service) {
         if (std::optional<
                 signin::AccountPreviewDataService::AccountPreviewPreference>
@@ -809,7 +803,8 @@ ProfileMenuView::GetIdentitySectionParams(const ProfileAttributesEntry& entry) {
             preferred_account.has_value() &&
             preferred_account->gaia_id == account_info_for_promos.GetGaiaId()) {
           if (std::optional<std::string> custom_subtitle =
-                  signin::GetAccountPreviewPromoSubtitle(*preferred_account);
+                  signin::GetAccountPreviewProfileMenuSubtitle(
+                      account_info_for_promos.GetEmail(), *preferred_account);
               custom_subtitle.has_value() && !custom_subtitle->empty()) {
             params.subtitle = base::UTF8ToUTF16(*custom_subtitle);
           }

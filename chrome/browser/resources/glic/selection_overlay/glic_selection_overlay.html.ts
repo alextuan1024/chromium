@@ -53,6 +53,38 @@ export function getHtml(this: SelectionOverlayElementElement) {
           this.isPointerInside, this.currentGesture?.state)}">
       <div id="cursorImg"></div>
     </div>
+
+    ${this.enableSelectionOverlayPrompt ? html`
+      <div id="floatingPromptContainer"
+          ?hidden="${!this.showFloatingPrompt}"
+          style="${this.floatingPromptStyle}">
+        <div class="searchbox-pill">
+          <div class="sparkle-icon">
+            <img src="/spark.svg" width="20" height="20">
+          </div>
+          <input id="promptInput"
+              type="text"
+              placeholder="$i18n{askGemini}"
+              aria-label="$i18n{askGemini}"
+              @keydown="${this.onInputKeydown}"
+              @pointerdown="${this.onPromptPointerdown}"
+              autocomplete="off">
+        </div>
+
+        <div class="action-chips-row" @pointerdown="${this.onPromptPointerdown}">
+          ${this.suggestedActions.map((action, index) => html`
+            <button class="action-chip"
+                data-index="${index}"
+                @click="${this.onSuggestedActionClick}">
+              <span class="chip-icon">
+                ${this.getActionIcon(action.title)}
+              </span>
+              <span class="chip-label">${action.title}</span>
+            </button>
+          `)}
+        </div>
+      </div>
+    ` : ''}
     <!--_html_template_end_-->`;
   // clang-format on
 }

@@ -66,7 +66,6 @@ TEST_F(CriticalActionServiceTest, AddAndGetActionRunsOnMainThread) {
   entry.conversation_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry.actor_task_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry.action_type = ActionType::kCredentialAccess;
-  entry.url = GURL("https://example.com/oauth");
   entry.metadata = "{\"scopes\": [\"profile\"]}";
 
   // AddCriticalAction does not have a callback (it is asynchronous
@@ -214,12 +213,14 @@ TEST_F(CriticalActionServiceTest, GetCriticalActionsWithOptions) {
   entry1.critical_action_id =
       base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry1.action_type = ActionType::kFormFill;
+  entry1.visit_id = 1;
   service_->AddCriticalAction(entry1);
 
   CriticalActionEntry entry2;
   entry2.critical_action_id =
       base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry2.action_type = ActionType::kDownload;
+  entry2.visit_id = 2;
   service_->AddCriticalAction(entry2);
 
   // Get both entries.
@@ -246,13 +247,12 @@ TEST_F(CriticalActionServiceTest, AddCriticalActionWithNavigationIdInOrder) {
   CriticalActionEntry entry;
   entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry.action_type = ActionType::kFormFill;
-  entry.url = GURL("https://example.com/login");
 
   // Action added before visit_id resolution.
   service_->AddCriticalActionWithNavigationId(entry, nav_id);
 
   // History callback arrives.
-  history::URLRow url_row(entry.url);
+  history::URLRow url_row(GURL("https://example.com/login"));
   history::VisitRow visit_row;
   visit_row.visit_id = visit_id;
   history::VisitedURLInfo visited_info(
@@ -284,7 +284,6 @@ TEST_F(CriticalActionServiceTest,
   CriticalActionEntry entry;
   entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   entry.action_type = ActionType::kFormFill;
-  entry.url = GURL("https://example.com/register");
   service_->AddCriticalActionWithNavigationId(entry, nav_id);
 
   base::test::TestFuture<std::optional<CriticalActionEntry>> get_future;
@@ -424,6 +423,88 @@ TEST_F(CriticalActionServiceTest, EventLoggedHistogramEmitted) {
       "CriticalActions.EventLogged.PasswordManager", ActionType::kFormFill, 1);
   histogram_tester.ExpectUniqueSample("CriticalActions.EventLogged.Autofill",
                                       ActionType::kFormFill, 1);
+}
+
+TEST_F(CriticalActionServiceTest,
+       SetCriticalActionsConversationIdBeforeAction) {
+  const std::string task_id = "test_task_1";
+  const std::string conv_id = "test_conv_1";
+
+  // Conversation ID arrives first.
+  service_->SetCriticalActionsConversationId({task_id}, conv_id);
+
+  // Critical action is added later with empty conversation_id.
+  CriticalActionEntry entry;
+  entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  entry.action_type = ActionType::kFormFill;
+  entry.actor_task_id = task_id;
+  entry.visit_id = 123;
+  service_->AddCriticalAction(entry);
+
+  base::test::TestFuture<std::optional<CriticalActionEntry>> get_future;
+  service_->GetCriticalAction(entry.critical_action_id,
+                              get_future.GetCallback());
+  auto retrieved = get_future.Get();
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->conversation_id, conv_id);
+}
+
+TEST_F(CriticalActionServiceTest,
+       SetCriticalActionsConversationIdBeforeNavigationResolution) {
+  const std::string task_id = "test_task_2";
+  const std::string conv_id = "test_conv_2";
+  const int64_t nav_id = 555;
+  const int64_t visit_id = 999;
+
+  // Action added first with navigation ID, waiting for visit resolution.
+  CriticalActionEntry entry;
+  entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  entry.action_type = ActionType::kFormFill;
+  entry.actor_task_id = task_id;
+  service_->AddCriticalActionWithNavigationId(entry, nav_id);
+
+  // Conversation ID arrives while action is pending.
+  service_->SetCriticalActionsConversationId({task_id}, conv_id);
+
+  // Navigation visit arrives.
+  history::URLRow url_row(GURL("https://example.com/step"));
+  history::VisitRow visit_row;
+  visit_row.visit_id = visit_id;
+  history::VisitedURLInfo visited_info(
+      url_row, visit_row, history::VisitResponseCodeCategory::kNot404, nav_id);
+  service_->OnURLVisitedWithNavigationId(nullptr, visited_info);
+
+  base::test::TestFuture<std::optional<CriticalActionEntry>> get_future;
+  service_->GetCriticalAction(entry.critical_action_id,
+                              get_future.GetCallback());
+  auto retrieved = get_future.Get();
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->conversation_id, conv_id);
+  EXPECT_EQ(retrieved->visit_id, visit_id);
+}
+
+TEST_F(CriticalActionServiceTest,
+       SetCriticalActionsConversationIdAfterAction) {
+  const std::string task_id = "test_task_3";
+  const std::string conv_id = "test_conv_3";
+
+  // Critical action added and committed first without conversation_id.
+  CriticalActionEntry entry;
+  entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  entry.action_type = ActionType::kFormFill;
+  entry.actor_task_id = task_id;
+  entry.visit_id = 456;
+  service_->AddCriticalAction(entry);
+
+  // Conversation ID arrives after action is already committed to database.
+  service_->SetCriticalActionsConversationId({task_id}, conv_id);
+
+  base::test::TestFuture<std::optional<CriticalActionEntry>> get_future;
+  service_->GetCriticalAction(entry.critical_action_id,
+                              get_future.GetCallback());
+  auto retrieved = get_future.Get();
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->conversation_id, conv_id);
 }
 
 }  // namespace critical_actions

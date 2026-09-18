@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
@@ -33,7 +32,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/aggregated_journal.h"
 #include "components/actor/core/shared_types.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
@@ -42,6 +40,7 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
 #include "components/one_time_tokens/core/browser/one_time_token_service_impl.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -102,6 +101,10 @@ class MockKeyedOneTimeTokenService
                one_time_tokens::OneTimeTokenService::Callback,
                base::OnceClosure),
               (override));
+  MOCK_METHOD(void,
+              FetchUserDataProcessingConsent,
+              (FetchUserDataProcessingConsentCallback),
+              (override));
 };
 
 class AttemptOtpFillingToolBrowserTest : public ActorToolsTest {
@@ -133,6 +136,15 @@ class AttemptOtpFillingToolBrowserTest : public ActorToolsTest {
 
     ASSERT_TRUE(embedded_https_test_server().Start());
     ASSERT_TRUE(embedded_test_server()->Start());
+
+    ON_CALL(GetMockOtpService(), FetchUserDataProcessingConsent)
+        .WillByDefault([](one_time_tokens::OneTimeTokenService::
+                              FetchUserDataProcessingConsentCallback callback) {
+          std::move(callback).Run(
+              one_time_tokens::UserDataProcessingConsentStates{
+                  .comms_apps = one_time_tokens::ConsentState::kEnabled,
+                  .google_apps = one_time_tokens::ConsentState::kEnabled});
+        });
 
     // Allow no-op calls to Subscribe for SMS from Autofill OtpManager.
     EXPECT_CALL(
@@ -535,39 +547,6 @@ IN_PROC_BROWSER_TEST_F(AttemptOtpFillingToolBrowserTest,
                   "AttemptOtpFillingTool::Invoke;.*for_signin=false")));
 }
 
-// The tool succeeds when the bypass switch is set, even without login context.
-IN_PROC_BROWSER_TEST_F(
-    AttemptOtpFillingToolBrowserTest,
-    ToolSucceedsWithBypassSwitchEvenWithoutLoginContext) {
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kAttemptOtpFillingBypassLoginCheck);
-
-  const GURL url = embedded_https_test_server().GetURL("example.com",
-                                                       "/actor/otp_page.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  ASSERT_NO_FATAL_FAILURE(WaitForTabObservation());
-  SeedTestServerAffiliation("example.com");
-  ASSERT_OK_AND_ASSIGN(DomNode otp_field,
-                       GetDomNodeOnPage(*main_frame(), "#otp"));
-  std::unique_ptr<ToolRequest> request =
-      std::make_unique<AttemptOtpFillingToolRequest>(
-          active_tab()->GetHandle(), std::vector<PageTarget>{otp_field},
-          /*for_signin=*/true);
-
-  // Do NOT call OnPasswordFillingStarted to simulate no login context.
-  SetExpectedOtp("1234");
-
-  ActResultFuture result;
-  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
-
-  ExpectOkResult(result);
-  EXPECT_THAT(
-      JournalEntries(),
-      testing::Contains(testing::ContainsRegex(
-          "AttemptOtpFillingTool::OnActorLoginFlowChecked;.*bypass_login_check=true")));
-}
-
-
 // The tool fails when the target tab is closed before invocation.
 IN_PROC_BROWSER_TEST_F(AttemptOtpFillingToolBrowserTest,
                        ToolFailsWhenTabIsNull) {
@@ -688,6 +667,40 @@ IN_PROC_BROWSER_TEST_F(AttemptOtpFillingToolBrowserTest,
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
 
   ExpectErrorResult(result, mojom::ActionResultCode::kOtpInsecureContext);
+}
+
+// `AttemptOtpFillingTool` fails and does not retrieve an OTP when iUDP/gUDP
+// consent is disabled, even if Gmail OTP filling pref is enabled.
+IN_PROC_BROWSER_TEST_F(AttemptOtpFillingToolBrowserTest,
+                       ToolFailsWhenConsentDisabled) {
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/otp_page.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  ASSERT_NO_FATAL_FAILURE(WaitForTabObservation());
+  ASSERT_OK_AND_ASSIGN(DomNode otp_field,
+                       GetDomNodeOnPage(*main_frame(), "#otp"));
+
+  EXPECT_CALL(GetMockOtpService(), FetchUserDataProcessingConsent)
+      .WillOnce([](one_time_tokens::OneTimeTokenService::
+                       FetchUserDataProcessingConsentCallback callback) {
+        std::move(callback).Run(
+            one_time_tokens::UserDataProcessingConsentStates{
+                .comms_apps = one_time_tokens::ConsentState::kDisabled,
+                .google_apps = one_time_tokens::ConsentState::kEnabled});
+      });
+  EXPECT_CALL(GetMockOtpService(),
+              Subscribe(one_time_tokens::OneTimeTokenSource::kGmail, _, _, _))
+      .Times(0);
+
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<AttemptOtpFillingToolRequest>(
+          active_tab()->GetHandle(), std::vector<PageTarget>{otp_field},
+          /*for_signin=*/true);
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kOtpGmailConsentRequired);
 }
 
 // Tests verifying if the OTP filling attempt is part of an ongoing actor login
@@ -944,8 +957,8 @@ IN_PROC_BROWSER_TEST_F(
     IsActorLoginFlow_OtpFrameOriginMismatch_RequiresConfirmation) {
   const GURL main_url = embedded_https_test_server().GetURL(
       "example.com", "/actor/positioned_iframe.html");
-  const GURL iframe_url =
-      embedded_https_test_server().GetURL("a.com", "/actor/otp_page.html");
+  const GURL iframe_url = embedded_https_test_server().GetURL(
+      "sub.example.com", "/actor/otp_page.html");
 
   // 1. Navigate to the main application page.
   ASSERT_TRUE(content::NavigateToURL(web_contents(), main_url));
@@ -964,21 +977,21 @@ IN_PROC_BROWSER_TEST_F(
       *web_contents()->GetPrimaryMainFrame(), *iframe_host, "#iframe", "#otp");
   ASSERT_TRUE(otp_field.has_value());
 
-  // 4. Start login tracking on example.com.
+  // 4. Start login tracking on example.com with strong matching required.
   int iframe_id = iframe_host->GetFrameTreeNodeId().value();
   actor_task()
       .GetExecutionEngine()
       .GetActorOneTimeTokenFillingService()
       .OnPasswordFillingStarted(
           active_tab()->GetHandle(), url::Origin::Create(main_url),
-          /*should_use_strong_matching=*/false, {iframe_id});
+          /*should_use_strong_matching=*/true, {iframe_id});
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<AttemptOtpFillingToolRequest>(
           active_tab()->GetHandle(), std::vector<PageTarget>{*otp_field},
           /*for_signin=*/true);
-  SeedTestServerAffiliation("a.com");
-  SetExpectedOtp("1234", "sender@a.com");
+  SeedTestServerAffiliation("sub.example.com");
+  SetExpectedOtp("1234", "sender@sub.example.com");
 
   ActResultFuture result;
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());

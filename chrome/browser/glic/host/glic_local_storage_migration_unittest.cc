@@ -15,6 +15,7 @@
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
@@ -33,7 +34,9 @@ class GlicLocalStorageMigrationTest : public testing::Test {
  public:
   GlicLocalStorageMigrationTest() {
     scoped_feature_list_.InitWithFeatures(
-        {features::kGlicNoWebview, features::kGlic}, {});
+        {features::kGlicNoWebview, features::kGlic,
+         pwc::mojom::features::kPrivilegedWebContents},
+        {});
   }
   ~GlicLocalStorageMigrationTest() override = default;
 
@@ -162,9 +165,20 @@ TEST_F(GlicLocalStorageMigrationTest, NoOpIfPrefAlreadySet) {
   EXPECT_FALSE(bard_val.has_value());
 }
 
+TEST_F(GlicLocalStorageMigrationTest, NoGlicPartitionSetsPref) {
+  EXPECT_FALSE(profile_.GetPrefs()->GetBoolean(
+      prefs::kGlicLocalStorageCopiedToMainPartition));
+
+  MaybeMigrateGlicLocalStorage(&profile_);
+  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(
+      prefs::kGlicLocalStorageCopiedToMainPartition));
+}
+
 TEST_F(GlicLocalStorageMigrationTest, EmptyGlicPartitionSetsPref) {
   EXPECT_FALSE(profile_.GetPrefs()->GetBoolean(
       prefs::kGlicLocalStorageCopiedToMainPartition));
+
+  GetGlicPartition();
 
   MaybeMigrateGlicLocalStorage(&profile_);
   EXPECT_TRUE(base::test::RunUntil([&]() {

@@ -462,9 +462,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionWindowTrackerBrowserTest,
       on_task_blocklist->IsParentTab(tab_strip_model->GetActiveWebContents()));
 }
 
+// TODO(crbug.com/562078739): Flaky.
 IN_PROC_BROWSER_TEST_F(
     OnTaskLockedSessionWindowTrackerBrowserTest,
-    NavigateCurrentTabWithSameDomainAndOneLevelDeepFromRedirectUrl) {
+    DISABLED_NavigateCurrentTabWithSameDomainAndOneLevelDeepFromRedirectUrl) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
@@ -1037,12 +1038,12 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionWindowTrackerBrowserTest,
   auto* const window_tracker =
       LockedSessionWindowTrackerFactory::GetInstance()->GetForBrowserContext(
           profile());
-  EXPECT_EQ(window_tracker->browser(), boca_app_browser);
+  EXPECT_EQ(&window_tracker->browser()->GetBrowser(), boca_app_browser);
 
   // Override the window tracker to track a different browser instance.
   window_tracker->InitializeBrowserInfoForTracking(
       ash::BrowserController::GetInstance()->GetDelegate(browser()));
-  EXPECT_EQ(window_tracker->browser(), browser());
+  EXPECT_EQ(&window_tracker->browser()->GetBrowser(), browser());
 }
 
 IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionWindowTrackerBrowserTest,

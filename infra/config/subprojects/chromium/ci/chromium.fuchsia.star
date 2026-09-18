@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 """Definitions of builders in the chromium.fuchsia builder group."""
 
-load("@chromium-luci//args.star", "args")
 load("@chromium-luci//branches.star", "branches")
 load("@chromium-luci//builder_config.star", "builder_config")
 load("@chromium-luci//builder_health_indicators.star", "health_spec")
@@ -156,8 +155,6 @@ ci.builder(
             ),
         },
     ),
-    # TODO(crbug.com/549757519): Restore to the CQ when test pool is recovered.
-    gardener_rotations = args.ignore_default(None),
     console_view_entry = [
         consoles.console_view_entry(
             category = "cast-receiver",
@@ -171,6 +168,7 @@ ci.builder(
         ),
     ],
     contact_team_email = "chrome-fuchsia-engprod@google.com",
+    execution_timeout = 6 * time.hour,
 )
 
 ci.builder(

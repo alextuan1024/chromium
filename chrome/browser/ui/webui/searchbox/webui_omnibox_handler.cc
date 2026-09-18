@@ -17,7 +17,7 @@
 #include "chrome/browser/search_engines/ai_mode_button_service_factory.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/contextual_search/searchbox_context_data.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_pedal_implementations.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/search/omnibox_utils.h"
@@ -403,7 +404,6 @@ WindowOpenDisposition WebuiOmniboxHandler::ComputeWindowOpenDisposition(
                    meta_key, shift_key);
 }
 
-
 bool WebuiOmniboxHandler::ShouldShowFirstContextualDescription() const {
   return omnibox::kAskGShowFirstDescription.Get() &&
          autocomplete_controller() &&
@@ -433,7 +433,14 @@ void WebuiOmniboxHandler::OverrideIconPaths(
 
 void WebuiOmniboxHandler::OnFocusChanged(bool focused) {
   if (focused) {
-    edit_model()->OnSetFocus(false);
+    if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
+      if (omnibox_controller() &&
+          omnibox_controller()->popup_state_manager()->popup_state() ==
+              OmniboxPopupState::kNone) {
+        return;
+      }
+    }
+    edit_model()->OnSetFocus(/*control_down=*/false);
   } else {
     edit_model()->OnWillKillFocus();
     // Delay killing focus for full popup until state is properly synced in
@@ -455,11 +462,18 @@ void WebuiOmniboxHandler::OnStart(AutocompleteController* controller,
                                   const AutocompleteInput& input) {
   const AutocompleteProviderClient* client =
       autocomplete_controller()->autocomplete_provider_client();
+  bool cobrowse_blocked = (omnibox::kAskGCoBrowse.Get() ||
+                           omnibox::kAskGCoBrowseWithVisualSelection.Get()) &&
+                          client && !client->ShouldOpenCoBrowsePanel();
+  bool composebox_blocked = omnibox::kAskGComposeBox.Get() && client &&
+                            !client->ShouldOpenComposeboxForAskG();
+  bool ask_g_fallback_to_lens = cobrowse_blocked || composebox_blocked;
   // Check if there are zero suggest (either on NTP or on web) or the
   // input text is empty (necessary because `IsZeroSuggest()` is false on
   // clobber).
   page_->UpdateLensSearchEligibility(
       ContextualSearchProvider::LensEntrypointEligible(input, client) &&
+      !ask_g_fallback_to_lens &&
       (input.IsZeroSuggest() || input.text().empty()));
 }
 
@@ -482,6 +496,12 @@ void WebuiOmniboxHandler::OnResultChanged(AutocompleteController* controller,
   SearchboxHandler::OnResultChanged(controller, default_match_changed);
 }
 
+void WebuiOmniboxHandler::SetPopupSelection(
+    searchbox::mojom::OmniboxPopupSelectionPtr selection) {
+  SearchboxHandler::SetPopupSelection(std::move(selection));
+  UpdateAimButtonVisibility();
+}
+
 void WebuiOmniboxHandler::OnSelectionChanged(
     OmniboxPopupSelection old_selection,
     OmniboxPopupSelection selection) {
@@ -492,6 +512,7 @@ void WebuiOmniboxHandler::OnSelectionChanged(
       searchbox::mojom::OmniboxPopupSelection::New(
           selection.line, ConvertLineState(selection.state),
           selection.action_index));
+  UpdateAimButtonVisibility();
 }
 
 void WebuiOmniboxHandler::OnCharTyped(base::TimeTicks timestamp) {
@@ -517,8 +538,11 @@ void WebuiOmniboxHandler::OnTabWillDetach(
 
 void WebuiOmniboxHandler::OnTabDidInsert(tabs::TabInterface* tab) {
   if (auto* browser_window_interface = tab->GetBrowserWindowInterface()) {
+    // The window can be absent in unit tests that stub out the browser.
+    BrowserWindow* const browser_window =
+        BrowserWindow::FromBrowser(browser_window_interface);
     if (auto* location_bar =
-            browser_window_interface->GetFeatures().location_bar()) {
+            browser_window ? browser_window->GetLocationBar() : nullptr) {
       if (auto* omnibox_controller = location_bar->GetOmniboxController()) {
         edit_model_observation_.Reset();
         autocomplete_controller_observation_.Reset();
@@ -542,6 +566,10 @@ void WebuiOmniboxHandler::UpdateAimButtonVisibility() {
     auto* client =
         static_cast<ChromeOmniboxClient*>(omnibox_controller()->client());
     if (LocationBar* location_bar = client->GetLocationBar()) {
+      if (auto* ai_mode_controller = omnibox::AiModePageActionController::From(
+              location_bar->GetBrowser())) {
+        ai_mode_controller->UpdatePageAction();
+      }
       SetAimButtonVisible(
           omnibox::AiModePageActionController::ShouldShowPageAction(
               profile_, *location_bar));

@@ -53,13 +53,13 @@
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_delegate.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_mediator.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view.h"
-#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_smart_stack_layout.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/coordinator/most_visited_tiles_mediator.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_collection_utils.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_commands.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_consumer.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_view_controller.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/link_preview/link_preview_coordinator.h"
+#import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_observer_bridge.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_service.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_service_factory.h"
@@ -130,6 +130,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/contextual_default_browser_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
@@ -546,6 +547,9 @@
 }
 
 - (BOOL)isScrolledToTop {
+  if (IsNTPRedesignEnabled()) {
+    return [self.NTPRedesignViewController isScrolledToTop];
+  }
   if (!self.webState) {
     return YES;
   }
@@ -555,9 +559,11 @@
 }
 
 - (void)scrollToTop {
-  if (!IsNTPRedesignEnabled()) {
-    [self.NTPViewController setContentOffsetToTop];
+  if (IsNTPRedesignEnabled()) {
+    [self.NTPRedesignViewController scrollToTopAnimated:YES];
+    return;
   }
+  [self.NTPViewController setContentOffsetToTop];
 }
 
 - (void)willUpdateSnapshot {
@@ -635,6 +641,7 @@
   [self restoreNTPScrollPosition];
   [self updateNTPIsVisible:YES];
   [self updateStartForVisibilityChange:YES];
+  [self maybeShowContextualDefaultBrowserPromo];
 }
 
 - (void)didNavigateAwayFromNTP {
@@ -972,10 +979,6 @@
     self.NTPRedesignViewController.feedViewController = self.feedViewController;
     self.NTPRedesignViewController.magicStackViewController =
         self.contentSuggestionsCoordinator.magicStackCollectionView;
-    MagicStackSmartStackLayout* customLayout =
-        [[MagicStackSmartStackLayout alloc] init];
-    [self.contentSuggestionsCoordinator.magicStackCollectionView
-        updateCollectionViewLayout:customLayout];
     self.NTPRedesignViewController.NTPShortcutsHandler = self;
     feature_engagement::Tracker* tracker =
         feature_engagement::TrackerFactory::GetForProfile(self.profile);
@@ -983,6 +986,12 @@
         tracker && tracker->ShouldTriggerHelpUI(
                        feature_engagement::kIPHiOSHomepageLensNewBadge);
     self.NTPRedesignViewController.useNewBadgeForLensButton = showLensBadge;
+    BOOL showCustomizationBadge =
+        tracker &&
+        tracker->ShouldTriggerHelpUI(
+            feature_engagement::kIPHiOSHomepageCustomizationNewBadge);
+    self.NTPRedesignViewController.useNewBadgeForCustomizationMenu =
+        showCustomizationBadge;
     self.NTPRedesignViewController.layoutGuideCenter =
         LayoutGuideCenterForBrowser(self.browser);
     [self configureMainViewControllerUsing:self.NTPRedesignViewController];
@@ -1491,9 +1500,11 @@
 }
 
 - (void)setContentOffsetToTop {
-  if (!IsNTPRedesignEnabled()) {
-    [self.NTPViewController setContentOffsetToTop];
+  if (IsNTPRedesignEnabled()) {
+    [self.NTPRedesignViewController scrollToTopAnimated:NO];
+    return;
   }
+  [self.NTPViewController setContentOffsetToTop];
 }
 
 - (BOOL)isGoogleDefaultSearchEngine {
@@ -1777,6 +1788,22 @@
 }
 
 #pragma mark - Private
+
+// Evaluates and triggers a contextual default browser promo if eligible.
+- (void)maybeShowContextualDefaultBrowserPromo {
+  CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
+  if (![dispatcher
+          dispatchingForProtocol:@protocol(
+                                     ContextualDefaultBrowserPromoCommands)]) {
+    return;
+  }
+
+  id<ContextualDefaultBrowserPromoCommands> promoHandler =
+      HandlerForProtocol(dispatcher, ContextualDefaultBrowserPromoCommands);
+  feature_engagement::Tracker* tracker =
+      feature_engagement::TrackerFactory::GetForProfile(self.profile);
+  MaybeShowContextualDefaultBrowserPromo(tracker, promoHandler);
+}
 
 // Opens the AIM web page.
 - (void)openAIMWeb {

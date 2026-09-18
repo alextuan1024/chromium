@@ -15,7 +15,6 @@ import android.view.KeyEvent;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -62,7 +61,7 @@ public class VerticalTabKeyboardHandlerUnitTest {
     @Mock private Tab mTab3;
     @Mock private Tab mPinnedTab1;
     @Mock private Tab mPinnedTab2;
-    @Mock private VerticalTabHoverCardController mHoverCardController;
+    @Mock private VerticalTabHoverController mHoverController;
 
     private TabListModel mModelList;
     private TabListModel mPinnedTabsModelList;
@@ -102,11 +101,10 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         mPinnedTabsModelList,
                         mRecyclerView,
                         mPinnedTabsRecyclerView,
-                        mHoverCardController);
+                        mHoverController);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_UnpinnedTab_MoveDown() {
         setupFocusedTab(
                 mRecyclerView,
@@ -121,7 +119,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_UnpinnedTab_MoveUp() {
         setupFocusedTab(
                 mRecyclerView,
@@ -136,7 +133,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_Boundary_ReturnsFalse() {
         setupFocusedTab(
                 mRecyclerView,
@@ -157,7 +153,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_PinnedTab_MoveDown() {
         setupFocusedTab(
                 mPinnedTabsRecyclerView,
@@ -172,7 +167,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_PinnedTab_MoveUp() {
         setupFocusedTab(
                 mPinnedTabsRecyclerView,
@@ -187,7 +181,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_TabGroupHeader() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
@@ -214,7 +207,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTab_UngroupUp() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
@@ -248,7 +240,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTab_UngroupDown() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
@@ -288,7 +279,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTabAtEndOfList_UngroupsDown() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
@@ -322,7 +312,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_NoFocus_ReturnsFalse() {
         when(mRecyclerView.hasFocus()).thenReturn(false);
         when(mPinnedTabsRecyclerView.hasFocus()).thenReturn(false);
@@ -332,7 +321,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_CtrlDpadDown_ReordersItem() {
         setupFocusedTab(
                 mRecyclerView,
@@ -355,7 +343,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_CtrlDpadUp_ReordersItem() {
         setupFocusedTab(
                 mRecyclerView,
@@ -378,7 +365,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_ActionUp_ConsumesEventWhenFocused() {
         when(mRecyclerView.hasFocus()).thenReturn(true);
         KeyEvent event =
@@ -394,7 +380,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_ActionUp_IgnoredWhenNotFocusedOnList() {
         when(mRecyclerView.hasFocus()).thenReturn(false);
         when(mPinnedTabsRecyclerView.hasFocus()).thenReturn(false);
@@ -411,7 +396,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_NonCtrlKey_ReturnsFalse() {
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP, 0, 0);
         assertFalse(mHandler.onKeyEvent(event));
@@ -419,7 +403,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_PageUpOrDown_ReturnsFalse() {
         KeyEvent pageUpEvent =
                 new KeyEvent(
@@ -444,39 +427,35 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_DismissesShowingHoverCard() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertTrue(mHandler.onKeyEvent(event));
-        verify(mHoverCardController).hideHoverCard();
+        verify(mHoverController).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_ActionUp_ReturnsTrueWhenHoverCardShowing() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertTrue(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mHoverController, never()).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_HoverCardNotShowing_ReturnsFalse() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(false);
+        when(mHoverController.isHoverCardShowing()).thenReturn(false);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertFalse(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mHoverController, never()).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_EscapeWithModifier_ReturnsFalse() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event =
                 new KeyEvent(
@@ -487,7 +466,7 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         0,
                         KeyEvent.META_CTRL_ON);
         assertFalse(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mHoverController, never()).hideHoverCard();
     }
 
     private void setupFocusedTab(

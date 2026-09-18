@@ -153,6 +153,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                 Features.NAVIGATION_GET_RESPONSE_HEADERS + Features.DEV_SUFFIX,
                 Features.WEB_CONTENT,
                 Features.WEBVIEW_NAVIGATE_DRAIN_PREFETCH,
+                Features.NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS + Features.DEV_SUFFIX,
                 // Add new features above. New features must include `+ Features.DEV_SUFFIX`
                 // when they're initially added (this can be removed in a future CL). The one
                 // exception is when adding a new method to an interface that extends from
@@ -386,6 +387,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         ApiCall.GET_CROSS_ORIGIN_ISOLATED_ALLOW_LIST,
         ApiCall.NAVIGATION_GET_RESPONSE_HEADERS,
         ApiCall.BUILD_WEB_CONTENT,
+        ApiCall.NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS,
         // Add new constants above. The final constant should have a trailing comma for cleaner
         // diffs.
         ApiCall.COUNT, // Added to suppress WrongConstant in #recordApiCall
@@ -601,8 +603,9 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         int GET_CROSS_ORIGIN_ISOLATED_ALLOW_LIST = 205;
         int NAVIGATION_GET_RESPONSE_HEADERS = 206;
         int BUILD_WEB_CONTENT = 207;
+        int NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS = 208;
         // Remember to update AndroidXWebkitApiCall in enums.xml when adding new values here
-        int COUNT = 208;
+        int COUNT = 209;
     }
 
     // LINT.ThenChange(/tools/metrics/histograms/metadata/android/enums.xml:AndroidXWebkitApiCall)
@@ -840,6 +843,8 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         try (TraceEvent event =
                 TraceEvent.scoped("WebView.APICall.AndroidX.GET_PROXY_CONTROLLER")) {
             recordApiCall(ApiCall.GET_PROXY_CONTROLLER);
+            mAwInit.getStartupController()
+                    .triggerAndWaitForChromiumStarted(StartupCallSite.GET_AW_PROXY_CONTROLLER);
             synchronized (mAwInit.getLazyInitLock()) {
                 if (mProxyController == null) {
                     mProxyController =
@@ -898,7 +903,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
             StartupDiagnostics.Callback chromiumCallback =
                     result -> handleStartupResult(onSuccess, result);
 
-            mAwInit.startUpWebView(
+            WebkitToSharedGlueConverter.startUpWebView(
                     chromiumCallback,
                     startUpConfig.mShouldRunUiThreadStartUpTasks,
                     startUpConfig.mProfileNamesToLoad);
@@ -1019,7 +1024,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                                         supportLibResult));
                     };
 
-            mAwInit.startUpWebView(
+            WebkitToSharedGlueConverter.startUpWebView(
                     callback,
                     webViewStartUpConfig.shouldRunUiThreadStartUpTasks(),
                     getProfilesToLoad(webViewStartUpConfig));

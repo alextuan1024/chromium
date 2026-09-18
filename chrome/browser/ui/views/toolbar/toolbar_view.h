@@ -9,11 +9,12 @@
 #include <optional>
 #include <vector>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/command_observer.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/toolbar/app_menu_icon_controller.h"
@@ -97,7 +98,7 @@ class ToolbarView : public views::AccessiblePaneView,
                     public AppMenuIconController::Delegate,
                     public ToolbarButtonProvider,
                     public BrowserRootView::DropTarget,
-                    public glic::GlicSplitButtonDelegate {
+                    public glic::GlicSplitButtonViewDelegate {
   METADATA_HEADER(ToolbarView, views::AccessiblePaneView)
 
  public:
@@ -221,6 +222,11 @@ class ToolbarView : public views::AccessiblePaneView,
     return detached_toolbar_webview_.get();
   }
 
+  // Forwards an early teardown request to any child WebUIToolbarWebView
+  // instances (both embedded and detached) to destroy their hosted
+  // WebContents before browser-side IPC services disconnect.
+  void DestroyWebUIToolbarWebContents();
+
   glic::ToolbarGlicActorTaskIcon* glic_actor_task_icon() {
     return glic_actor_task_icon_;
   }
@@ -251,7 +257,7 @@ class ToolbarView : public views::AccessiblePaneView,
 
   friend class AvatarToolbarButtonBaseBrowserTest;
 
-  // GlicSplitButtonDelegate:
+  // GlicSplitButtonViewDelegate:
   void SetGlicShowState(bool show) override;
   void SetGlicPanelIsOpen(bool open) override;
   // Called when the glic nudge UI needs to be triggered. `label' holds the
@@ -264,7 +270,7 @@ class ToolbarView : public views::AccessiblePaneView,
   void HideGlicActorTaskIcon() override;
   bool GetIsShowingGlicActorTaskIconNudge() override;
   void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override;
-  void TriggerGlicActorNudge(const std::u16string& nudge_text) override;
+  void TriggerGlicActorNudge(const std::u16string& nudge_label) override;
   void SetGlicActorNudgePressedState(bool pressed) override;
   void ShowActorTaskListBubble() override;
   void CloseActorTaskListBubble() override;
@@ -280,6 +286,11 @@ class ToolbarView : public views::AccessiblePaneView,
   void SetToolbarVisibility(bool visible);
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(ToolbarViewCircularContextualTasksBrowserTest,
+                           CircularButtonRetainsInteriorMarginsAndPosition);
+  FRIEND_TEST_ALL_PREFIXES(ToolbarViewCircularContextualTasksBrowserTest,
+                           LeftSidePanelUsesOriginalLeftButton);
+
   // Forwards view overrides to this class.
   class ContainerView;
 
@@ -295,6 +306,23 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Logic that must be done on initialization and then on layout.
   void LayoutCommon();
+
+  // Returns whether the app menu control should apply Fitts' law edge padding
+  // to extend to the window border when maximized or fullscreen.
+  bool ShouldAppMenuApplyFittsLaw(bool is_maximized_or_fullscreen) const;
+
+  // Positions `contextual_tasks_button_` in the toolbar hierarchy based on
+  // whether it should dock at the edges or sit as a circular button to the
+  // left of profile (and glic button if visible).
+  void PositionContextualTasksButton();
+
+  // Returns true if the contextual tasks button is visible and positioned at
+  // the leading edge of the toolbar.
+  bool IsLeadingContextualTasksButtonVisible() const;
+
+  // Returns true if the contextual tasks button is visible and positioned at
+  // the trailing edge of the toolbar.
+  bool IsTrailingContextualTasksButtonVisible() const;
 
   // AppMenuIconController::Delegate:
   void UpdateTypeAndSeverity(
@@ -359,7 +387,7 @@ class ToolbarView : public views::AccessiblePaneView,
   void OnGlicButtonAnimationEnded();
   void ShowToolbarNudge(glic::GlicButtonInterface* button);
   void HideToolbarNudge(glic::GlicButtonInterface* button);
-  void ShowGlicActorNudge(const std::u16string nudge_text);
+  void ShowGlicActorNudge(const std::u16string nudge_label);
   void ExecuteShowToolbarNudge(glic::GlicButtonInterface* button);
   void ExecuteHideToolbarNudge(glic::GlicButtonInterface* button);
   void UpdateGlicActorVisibility();
@@ -475,6 +503,10 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Subscription for when tab strip mode changes
   base::CallbackListSubscription vertical_tab_subscription_;
+
+  // Subscription for when contextual tasks button position should update.
+  base::CallbackListSubscription
+      contextual_tasks_button_position_subscription_;
 
   bool should_display_vertical_tabs_ = false;
   bool should_show_glic_button_ = false;

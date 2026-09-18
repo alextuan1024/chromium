@@ -115,6 +115,15 @@ class SuspiciousSiteControllerAndroidTest
     controller->is_suspended_ = is_suspended;
   }
 
+  bool GetIsSuspended(SuspiciousSiteControllerAndroid* controller) {
+    return controller->is_suspended_;
+  }
+
+  void SetNavigationCommitted(SuspiciousSiteControllerAndroid* controller,
+                              bool navigation_committed) {
+    controller->navigation_committed_ = navigation_committed;
+  }
+
  private:
   scoped_refptr<SafeBrowsingService> sb_service_;
 };
@@ -155,6 +164,43 @@ TEST_F(SuspiciousSiteControllerAndroidTest, CloseDialog_NavigateBack) {
 
   controller->CloseDialog(
       ui::ModalDialogWrapper::DismissalCause::NAVIGATE_BACK);
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.SuspiciousSiteWarning.WarningOutcome",
+      SuspiciousSiteControllerAndroid::WarningOutcome::kAdhered,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectBucketCount(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+      SuspiciousSiteControllerAndroid::UserInteraction::kShown,
+      /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+      SuspiciousSiteControllerAndroid::UserInteraction::kSystemBack,
+      /*expected_count=*/1);
+
+  EXPECT_EQ(web_contents()->GetController().GetPendingEntry()->GetURL(),
+            GURL("https://safe.com"));
+  EXPECT_FALSE(
+      SuspiciousSiteControllerAndroid::FromWebContents(web_contents()));
+}
+
+TEST_F(SuspiciousSiteControllerAndroidTest,
+       CloseDialog_NavigateBackOrTouchOutside) {
+  NavigateAndCommit(GURL("https://safe.com"));
+  NavigateAndCommit(GURL("https://suspicious.com"));
+
+  base::HistogramTester histogram_tester;
+
+  std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting> window =
+      ui::WindowAndroid::CreateForTesting();
+  window->get()->AddChild(web_contents()->GetNativeView());
+
+  SuspiciousSiteControllerAndroid* controller = MakeController();
+  controller->ShowDialog();
+  SetIsSuspended(controller, false);
+
+  controller->CloseDialog(
+      ui::ModalDialogWrapper::DismissalCause::NAVIGATE_BACK_OR_TOUCH_OUTSIDE);
 
   histogram_tester.ExpectUniqueSample(
       "SafeBrowsing.SuspiciousSiteWarning.WarningOutcome",
@@ -716,6 +762,34 @@ TEST_F(SuspiciousSiteControllerAndroidTest,
             GURL("https://safe.com"));
   EXPECT_FALSE(
       SuspiciousSiteControllerAndroid::FromWebContents(web_contents()));
+}
+
+TEST_F(SuspiciousSiteControllerAndroidTest,
+       OnVisibilityChanged_ReshowsDialogAfterTabHiddenAndShown) {
+  NavigateAndCommit(GURL("https://suspicious.com"));
+
+  std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting> window =
+      ui::WindowAndroid::CreateForTesting();
+  window->get()->AddChild(web_contents()->GetNativeView());
+
+  SuspiciousSiteControllerAndroid* controller = MakeController();
+  SetNavigationCommitted(controller, true);
+  controller->ShowDialog();
+  SetIsSuspended(controller, false);
+
+  // Tab is hidden (e.g. user clicks Learn More or switches tabs).
+  web_contents()->WasHidden();
+  EXPECT_TRUE(GetIsSuspended(controller));
+
+  base::RunLoop run_loop;
+  SuspiciousSiteControllerAndroid::SetDialogShownCallbackForTesting(
+      run_loop.QuitClosure());
+
+  // Tab is shown again (e.g. user navigates back to the tab).
+  web_contents()->WasShown();
+
+  // Dialog show is posted to UI thread; wait for callback.
+  run_loop.Run();
 }
 
 }  // namespace safe_browsing

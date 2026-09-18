@@ -519,7 +519,7 @@ void SigninViewControllerDelegateViews::DisplayModal() {
       if (should_show_close_button_) {
         auto border = std::make_unique<views::BubbleBorder>(
             views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-        border->SetColor(kColorProfilesReauthDialogBorder);
+        border->set_background_color(kColorProfilesReauthDialogBorder);
         GetBubbleFrameView()->SetBubbleBorder(std::move(border));
       }
       constrained_window::ShowModalDialog(
@@ -748,10 +748,11 @@ SigninViewControllerDelegate::CreateManagedUserNoticeDelegate(
         BlockNavigationUntilEnterpriseActionTaken(
             browser.GetProfile(), active_contents, dialog_web_contents, email);
 
-    content::OpenURLParams params(active_contents->GetVisibleURL(),
-                                  content::Referrer(),
-                                  WindowOpenDisposition::CURRENT_TAB,
-                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            active_contents->GetVisibleURL(),
+            WindowOpenDisposition::CURRENT_TAB,
+            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
 
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,

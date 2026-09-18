@@ -11,7 +11,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -60,7 +59,7 @@ void AppListControllerDelegate::DoShowAppInfoFlow(Profile* profile,
   auto app_type = apps::AppServiceProxyFactory::GetForProfile(profile)
                       ->AppRegistryCache()
                       .GetAppType(app_id);
-  DCHECK_NE(app_type, apps::AppType::kUnknown);
+  CHECK_NE(app_type, apps::AppType::kUnknown, base::NotFatalUntil::M160);
 
   std::string sub_page;
   std::optional<ash::SettingsAppManager::EntryPoint> entry_point;
@@ -138,6 +137,6 @@ void AppListControllerDelegate::LaunchAppWithUrl(
     const GURL& url,
     apps::LaunchSource launch_source) {
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
   proxy->LaunchAppWithUrl(app_id, event_flags, url, launch_source);
 }

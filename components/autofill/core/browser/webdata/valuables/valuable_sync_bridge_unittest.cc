@@ -13,15 +13,18 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_sync_util.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
 #include "components/autofill/core/browser/webdata/mock_autofill_webdata_backend.h"
+#include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_sync_test_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_sync_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_table.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
@@ -41,6 +44,7 @@ using syncer::test::AddUnknownFieldToProto;
 using syncer::test::HasUnknownField;
 using testing::_;
 using testing::ElementsAre;
+using testing::Property;
 using testing::Return;
 using testing::ReturnRef;
 using testing::UnorderedElementsAre;
@@ -111,14 +115,20 @@ class ValuableSyncBridgeTest : public testing::Test {
     db_.AddTable(&valuables_table_);
     db_.AddTable(&sync_metadata_table_);
     db_.AddTable(&entity_table_);
+    db_.AddTable(&payments_table_);
     db_.Init(temp_dir_.GetPath().AppendASCII("SyncTestWebDatabase"),
              encryptor_);
     ON_CALL(backend_, GetDatabase()).WillByDefault(Return(&db_));
     ON_CALL(mock_processor_, GetPossiblyTrimmedRemoteSpecifics)
         .WillByDefault(ReturnRef(sync_pb::EntitySpecifics::default_instance()));
 
+    ResetBridge();
+  }
+
+  // (Re)creates the `bridge()` with the given `app_locale`.
+  void ResetBridge(const std::string& app_locale = "en-US") {
     bridge_ = std::make_unique<ValuableSyncBridge>(
-        mock_processor_.CreateForwardingProcessor(), &backend_);
+        mock_processor_.CreateForwardingProcessor(), app_locale, &backend_);
   }
 
 #if !BUILDFLAG(IS_IOS)
@@ -182,6 +192,30 @@ class ValuableSyncBridgeTest : public testing::Test {
                                             /*base_specifics=*/{}));
   }
 
+  // Tells the processor to start syncing with pre-existing `offers`.
+  // Triggers the `bridge()`'s `MergeFullSyncData()`.
+  // Returns true if syncing started successfully.
+  bool SyncOffers(
+      const std::vector<sync_pb::AutofillValuableSpecifics>& offers) {
+    ON_CALL(mock_processor(), IsTrackingMetadata).WillByDefault(Return(true));
+    syncer::EntityChangeList entity_data;
+    for (const sync_pb::AutofillValuableSpecifics& offer : offers) {
+      entity_data.push_back(syncer::EntityChange::CreateAdd(
+          offer.id(), std::move(*CreateEntityDataFromSpecifics(offer))));
+    }
+    // `MergeFullSyncData()` returns an error if it fails.
+    return !bridge().MergeFullSyncData(bridge().CreateMetadataChangeList(),
+                                       std::move(entity_data));
+  }
+
+  std::vector<AutofillOfferData> GetAllOffersFromTable() {
+    std::vector<std::unique_ptr<AutofillOfferData>> offer_ptrs;
+    payments_table_.GetAutofillOffers(&offer_ptrs);
+    return base::ToVector(
+        offer_ptrs,
+        [](const std::unique_ptr<AutofillOfferData>& offer) { return *offer; });
+  }
+
   MockAutofillWebDataBackend& backend() { return backend_; }
 
   syncer::MockDataTypeLocalChangeProcessor& mock_processor() {
@@ -199,6 +233,7 @@ class ValuableSyncBridgeTest : public testing::Test {
   ValuablesTable valuables_table_;
   AutofillSyncMetadataTable sync_metadata_table_;
   EntityTable entity_table_;
+  PaymentsAutofillTable payments_table_;
   WebDatabase db_;
   testing::NiceMock<syncer::MockDataTypeLocalChangeProcessor> mock_processor_;
   base::test::ScopedFeatureList feature_list_;
@@ -213,7 +248,8 @@ TEST_F(ValuableSyncBridgeTest, InitializationFailure) {
   ON_CALL(backend(), GetDatabase()).WillByDefault(Return(nullptr));
   EXPECT_CALL(mock_processor(), ReportError);
   // The `bridge()` was already initialized during `SetUp()`. Recreate it.
-  ValuableSyncBridge(mock_processor().CreateForwardingProcessor(), &backend());
+  ValuableSyncBridge(mock_processor().CreateForwardingProcessor(), "en-US",
+                     &backend());
 }
 
 // Tests that for specifics that represent AutofillAi entities, import
@@ -295,6 +331,201 @@ TEST_F(ValuableSyncBridgeTest, IsLoyaltyCardEntityDataInvalid) {
   empty_merchant_name_specifics.mutable_loyalty_card()->clear_merchant_name();
   EXPECT_FALSE(bridge().IsEntityDataValid(
       *CreateEntityDataFromSpecifics(empty_merchant_name_specifics)));
+}
+
+TEST_F(ValuableSyncBridgeTest, IsOfferEntityDataValid) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+  sync_pb::AutofillValuableSpecifics specifics = TestOfferSpecifics(kId1);
+  EXPECT_TRUE(
+      bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(specifics)));
+
+  // The offer title image url is not used and doesn't affect validity.
+  specifics.mutable_offer()->clear_offer_title_image_url();
+  EXPECT_TRUE(
+      bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(specifics)));
+  EXPECT_TRUE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/"https://safeway.com/offer-details",
+                         /*offer_title_image_url=*/""))));
+  EXPECT_TRUE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/"https://safeway.com/offer-details",
+                         /*offer_title_image_url=*/"invalid_url"))));
+}
+
+TEST_F(ValuableSyncBridgeTest, IsOfferEntityDataInvalid) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+  // Invalid id.
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(TestOfferSpecifics(kInvalidId))));
+
+  // Invalid offer code.
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(TestOfferSpecifics(
+          kId1, /*offer_code=*/"",
+          /*description=*/"50% off your next purchase",
+          /*pass_view_url=*/"https://safeway.com/offer-details"))));
+
+  // Invalid description.
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(TestOfferSpecifics(
+          kId1, /*offer_code=*/"SAFEWAY50",
+          /*description=*/"",
+          /*pass_view_url=*/"https://safeway.com/offer-details"))));
+
+  // Missing description.
+  sync_pb::AutofillValuableSpecifics empty_description_specifics =
+      TestOfferSpecifics(kId1);
+  empty_description_specifics.mutable_offer()->clear_description();
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(empty_description_specifics)));
+
+  // Invalid offer details url.
+  EXPECT_FALSE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/"invalid_url"))));
+
+  // Empty offer details url.
+  EXPECT_FALSE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/""))));
+
+  // Missing offer details url.
+  sync_pb::AutofillValuableSpecifics missing_pass_view_url_specifics =
+      TestOfferSpecifics(kId1);
+  missing_pass_view_url_specifics.clear_pass_view_url();
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(missing_pass_view_url_specifics)));
+
+  // Missing issuer domains.
+  sync_pb::AutofillValuableSpecifics empty_issuer_domains_specifics =
+      TestOfferSpecifics(kId1);
+  empty_issuer_domains_specifics.mutable_offer()->clear_issuer_domains();
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(empty_issuer_domains_specifics)));
+
+  // Empty issuer domain entry.
+  sync_pb::AutofillValuableSpecifics empty_issuer_domain_entry_specifics =
+      TestOfferSpecifics(kId1);
+  empty_issuer_domain_entry_specifics.mutable_offer()->add_issuer_domains("");
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(empty_issuer_domain_entry_specifics)));
+
+  // Invalid issuer domain entry.
+  sync_pb::AutofillValuableSpecifics invalid_issuer_domain_specifics =
+      TestOfferSpecifics(kId1);
+  invalid_issuer_domain_specifics.mutable_offer()->add_issuer_domains(
+      "invalid_url");
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(invalid_issuer_domain_specifics)));
+
+  // Invalid offer short title.
+  EXPECT_FALSE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/"https://safeway.com/offer-details",
+                         /*offer_title_image_url=*/"https://image.com/logo.png",
+                         /*offer_short_title=*/""))));
+
+  // Missing offer short title.
+  sync_pb::AutofillValuableSpecifics empty_short_title_specifics =
+      TestOfferSpecifics(kId1);
+  empty_short_title_specifics.mutable_offer()->clear_offer_short_title();
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(empty_short_title_specifics)));
+
+  // Invalid expiry (<= 0).
+  EXPECT_FALSE(bridge().IsEntityDataValid(*CreateEntityDataFromSpecifics(
+      TestOfferSpecifics(kId1, /*offer_code=*/"SAFEWAY50",
+                         /*description=*/"50% off your next purchase",
+                         /*pass_view_url=*/"https://safeway.com/offer-details",
+                         /*offer_title_image_url=*/"https://image.com/logo.png",
+                         /*offer_short_title=*/"50% off",
+                         /*expiration_time_unix_epoch_micros=*/0))));
+
+  // Missing expiry.
+  sync_pb::AutofillValuableSpecifics missing_expiry_specifics =
+      TestOfferSpecifics(kId1);
+  missing_expiry_specifics.mutable_offer()
+      ->clear_expiration_time_unix_epoch_micros();
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(missing_expiry_specifics)));
+}
+
+TEST_F(ValuableSyncBridgeTest, IsOfferEntityDataInvalid_FeatureDisabled) {
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(TestOfferSpecifics(kId1))));
+}
+
+TEST_F(ValuableSyncBridgeTest, IsOfferEntityDataInvalid_LocaleNotSupported) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+  ResetBridge("fr-FR");
+  EXPECT_FALSE(bridge().IsEntityDataValid(
+      *CreateEntityDataFromSpecifics(TestOfferSpecifics(kId1))));
+}
+
+// Tests that during the initial sync, `MergeFullSyncData()` writes remote
+// offers to the `PaymentsAutofillTable` and notifies observers.
+TEST_F(ValuableSyncBridgeTest, MergeFullSyncData_Offers) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  EXPECT_CALL(backend(),
+              NotifyOnAutofillChangedBySync(syncer::AUTOFILL_VALUABLE));
+
+  EXPECT_TRUE(SyncOffers({TestOfferSpecifics(kId1), TestOfferSpecifics(kId2)}));
+
+  const std::vector<AutofillOfferData> offers = GetAllOffersFromTable();
+  ASSERT_EQ(offers.size(), 2u);
+  EXPECT_EQ(offers[0].GetOfferId(), 1);
+  EXPECT_EQ(offers[1].GetOfferId(), 2);
+  EXPECT_EQ(offers[0].GetPromoCode(), "SAFEWAY50");
+  EXPECT_EQ(offers[0].GetOfferDetailsUrl(),
+            GURL("https://safeway.com/offer-details"));
+  EXPECT_THAT(offers[0].GetMerchantOrigins(),
+              ElementsAre(GURL("https://safeway.com/")));
+  EXPECT_EQ(offers[0].GetDisplayStrings().value_prop_text,
+            "50% off your next purchase");
+  EXPECT_EQ(offers[0].GetOfferRewardAmount(), "50% off");
+  // The expiry is truncated to millisecond precision at ingestion, since that
+  // is the precision `PaymentsAutofillTable` persists.
+  EXPECT_EQ(offers[0].GetExpiry(),
+            base::Time::UnixEpoch() + base::Milliseconds(123456));
+}
+
+// Tests that syncing the same offers twice doesn't notify observers.
+TEST_F(ValuableSyncBridgeTest, MergeFullSyncData_SameOffers) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 1u);
+
+  EXPECT_CALL(backend(), NotifyOnAutofillChangedBySync).Times(0);
+  EXPECT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  EXPECT_EQ(GetAllOffersFromTable().size(), 1u);
+}
+
+// Tests that turning sync off clears all offers.
+TEST_F(ValuableSyncBridgeTest, ApplyDisableSyncChanges_Offers) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 1u);
+
+  EXPECT_CALL(backend(),
+              NotifyOnAutofillChangedBySync(syncer::AUTOFILL_VALUABLE));
+  bridge().ApplyDisableSyncChanges(bridge().CreateMetadataChangeList());
+
+  EXPECT_TRUE(GetAllOffersFromTable().empty());
 }
 
 // Tests that during the initial sync, `MergeFullSyncData()` incorporates remote
@@ -709,7 +940,8 @@ TEST_F(ValuableSyncBridgeTest,
   EXPECT_CALL(mock_processor(), Put).Times(0);
 
   bridge().EntityInstanceChanged(
-      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle));
+      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle),
+      /*context_token=*/std::nullopt);
 }
 
 // Tests that `EntityInstanceChanged()` ignores local entities.
@@ -718,7 +950,8 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_IgnoresLocalEntities) {
   const EntityInstance vehicle = GetLocalVehicleEntityInstance();
 
   bridge().EntityInstanceChanged(
-      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle));
+      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle),
+      /*context_token=*/std::nullopt);
 }
 
 // Tests that `EntityInstanceChanged()` handles ADD and UPDATE changes.
@@ -726,13 +959,47 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_AddUpdate) {
   ON_CALL(mock_processor(), IsTrackingMetadata).WillByDefault(Return(true));
   const EntityInstance vehicle = GetServerVehicleEntityInstance();
 
-  EXPECT_CALL(mock_processor(), Put(_, _, _));
+  EXPECT_CALL(mock_processor(), Put)
+      .WillOnce([](const std::string&,
+                   std::unique_ptr<syncer::EntityData> entity_data,
+                   syncer::MetadataChangeList*) {
+        EXPECT_FALSE(
+            entity_data->specifics.autofill_valuable().has_context_token());
+      });
   bridge().EntityInstanceChanged(
-      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle));
+      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle),
+      /*context_token=*/std::nullopt);
 
-  EXPECT_CALL(mock_processor(), Put(_, _, _));
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::UPDATE, vehicle.guid(), vehicle));
+  EXPECT_CALL(mock_processor(), Put)
+      .WillOnce([](const std::string&,
+                   std::unique_ptr<syncer::EntityData> entity_data,
+                   syncer::MetadataChangeList*) {
+        EXPECT_FALSE(
+            entity_data->specifics.autofill_valuable().has_context_token());
+      });
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::UPDATE, vehicle.guid(),
+                           vehicle),
+      /*context_token=*/std::nullopt);
+}
+
+// Tests that `EntityInstanceChanged()` includes the context token.
+TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_WithContextToken) {
+  ON_CALL(mock_processor(), IsTrackingMetadata).WillByDefault(Return(true));
+  const EntityInstance vehicle = GetServerVehicleEntityInstance();
+
+  EXPECT_CALL(mock_processor(), Put)
+      .WillOnce([&vehicle](const std::string& storage_key,
+                           std::unique_ptr<syncer::EntityData> entity_data,
+                           syncer::MetadataChangeList* metadata) {
+        ASSERT_EQ(storage_key, vehicle.guid().value());
+        EXPECT_EQ(entity_data->specifics.autofill_valuable().context_token(),
+                  "test_token");
+      });
+
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle),
+      "test_token");
 }
 
 // Tests that `EntityInstanceChanged()` ignores a local entity REMOVE
@@ -740,8 +1007,10 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_AddUpdate) {
 TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_RemoveLocal) {
   EXPECT_CALL(mock_processor(), Put).Times(0);
   const EntityInstance vehicle = GetLocalVehicleEntityInstance();
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::REMOVE, vehicle.guid(), vehicle));
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::REMOVE, vehicle.guid(),
+                           vehicle),
+      /*context_token=*/std::nullopt);
 }
 
 // Tests that `EntityInstanceChanged()` doesn't commit changes for private
@@ -751,12 +1020,18 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_PrivatePasses) {
       test::MaskEntityInstance(test::GetPassportEntityInstance(
           {.record_type = EntityInstance::RecordType::kServerWallet}));
   EXPECT_CALL(mock_processor(), Put).Times(0);
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::ADD, passport.guid(), passport));
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::UPDATE, passport.guid(), passport));
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::REMOVE, passport.guid(), passport));
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::ADD, passport.guid(),
+                           passport),
+      /*context_token=*/std::nullopt);
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::UPDATE, passport.guid(),
+                           passport),
+      /*context_token=*/std::nullopt);
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::REMOVE, passport.guid(),
+                           passport),
+      /*context_token=*/std::nullopt);
 }
 
 // Tests that `EntityInstanceChanged()` doesn't commit changes for shopping
@@ -771,9 +1046,12 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_Shopping) {
       {.record_type = EntityInstance::RecordType::kServerWallet});
   EXPECT_CALL(mock_processor(), Put).Times(0);
   bridge().EntityInstanceChanged(
-      EntityInstanceChange(EntityInstanceChange::ADD, order.guid(), order));
-  bridge().EntityInstanceChanged(EntityInstanceChange(
-      EntityInstanceChange::UPDATE, shipment.guid(), shipment));
+      EntityInstanceChange(EntityInstanceChange::ADD, order.guid(), order),
+      /*context_token=*/std::nullopt);
+  bridge().EntityInstanceChanged(
+      EntityInstanceChange(EntityInstanceChange::UPDATE, shipment.guid(),
+                           shipment),
+      /*context_token=*/std::nullopt);
 }
 
 // Tests that `EntityInstanceChanged()` includes unknown fields from the server.
@@ -799,15 +1077,19 @@ TEST_F(ValuableSyncBridgeTest, EntityInstanceChanged_PreservesUnknownFields) {
       });
 
   bridge().EntityInstanceChanged(
-      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle));
+      EntityInstanceChange(EntityInstanceChange::ADD, vehicle.guid(), vehicle),
+      /*context_token=*/std::nullopt);
 }
 
 class ValuableSyncBridgeWithIncrementalUpdates : public ValuableSyncBridge {
  public:
   ValuableSyncBridgeWithIncrementalUpdates(
       std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor,
+      const std::string& app_locale,
       AutofillWebDataBackend* web_data_backend)
-      : ValuableSyncBridge(std::move(change_processor), web_data_backend) {}
+      : ValuableSyncBridge(std::move(change_processor),
+                           app_locale,
+                           web_data_backend) {}
 
   // syncer::DataTypeSyncBridge:
   bool SupportsIncrementalUpdates() const override { return true; }
@@ -818,7 +1100,7 @@ class ValuableSyncBridgeIncrementalUpdatesTest : public ValuableSyncBridgeTest {
   void SetUp() override {
     ValuableSyncBridgeTest::SetUp();
     bridge_ = std::make_unique<ValuableSyncBridgeWithIncrementalUpdates>(
-        mock_processor().CreateForwardingProcessor(), &backend());
+        mock_processor().CreateForwardingProcessor(), "en-US", &backend());
   }
 };
 
@@ -940,6 +1222,100 @@ TEST_F(
 
   EXPECT_FALSE(bridge().ApplyIncrementalSyncChanges(
       bridge().CreateMetadataChangeList(), std::move(entity_change_list)));
+}
+
+// Tests that an offer added through `ApplyIncrementalSyncChanges()` is written
+// to `PaymentsAutofillTable` without dropping the offers already stored there.
+TEST_F(ValuableSyncBridgeIncrementalUpdatesTest,
+       ApplyIncrementalSyncChanges_AddsOffer) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 1u);
+
+  syncer::EntityChangeList entity_change_list;
+  entity_change_list.push_back(syncer::EntityChange::CreateAdd(
+      kId2,
+      std::move(*CreateEntityDataFromSpecifics(TestOfferSpecifics(kId2)))));
+
+  EXPECT_FALSE(bridge().ApplyIncrementalSyncChanges(
+      bridge().CreateMetadataChangeList(), std::move(entity_change_list)));
+
+  EXPECT_THAT(
+      GetAllOffersFromTable(),
+      UnorderedElementsAre(Property(&AutofillOfferData::GetOfferId, 1),
+                           Property(&AutofillOfferData::GetOfferId, 2)));
+}
+
+// Tests that an updated offer replaces the stored offer with the same id
+// instead of being added a second time.
+TEST_F(ValuableSyncBridgeIncrementalUpdatesTest,
+       ApplyIncrementalSyncChanges_UpdatesOffer) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 1u);
+  ASSERT_EQ(GetAllOffersFromTable()[0].GetPromoCode(), "SAFEWAY50");
+
+  syncer::EntityChangeList entity_change_list;
+  entity_change_list.push_back(syncer::EntityChange::CreateUpdate(
+      kId1, std::move(*CreateEntityDataFromSpecifics(TestOfferSpecifics(
+                kId1, /*offer_code=*/"SAFEWAY75",
+                /*description=*/"75% off your next purchase",
+                /*pass_view_url=*/"https://safeway.com/offer-details")))));
+
+  EXPECT_FALSE(bridge().ApplyIncrementalSyncChanges(
+      bridge().CreateMetadataChangeList(), std::move(entity_change_list)));
+
+  const std::vector<AutofillOfferData> offers = GetAllOffersFromTable();
+  ASSERT_EQ(offers.size(), 1u);
+  EXPECT_EQ(offers[0].GetOfferId(), 1);
+  EXPECT_EQ(offers[0].GetPromoCode(), "SAFEWAY75");
+}
+
+// Tests that a deletion removes only the offer with the matching id.
+TEST_F(ValuableSyncBridgeIncrementalUpdatesTest,
+       ApplyIncrementalSyncChanges_DeletesOffer) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1), TestOfferSpecifics(kId2)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 2u);
+
+  syncer::EntityChangeList entity_change_list;
+  entity_change_list.push_back(
+      syncer::EntityChange::CreateDelete(kId1, syncer::EntityData()));
+
+  EXPECT_FALSE(bridge().ApplyIncrementalSyncChanges(
+      bridge().CreateMetadataChangeList(), std::move(entity_change_list)));
+
+  const std::vector<AutofillOfferData> offers = GetAllOffersFromTable();
+  ASSERT_EQ(offers.size(), 1u);
+  EXPECT_EQ(offers[0].GetOfferId(), 2);
+}
+
+// Tests that a deletion whose storage key doesn't belong to any offer leaves
+// the stored offers untouched.
+TEST_F(ValuableSyncBridgeIncrementalUpdatesTest,
+       ApplyIncrementalSyncChanges_UnrelatedDeleteKeepsOffers) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableWalletDirectOffers};
+
+  ASSERT_TRUE(SyncOffers({TestOfferSpecifics(kId1)}));
+  ASSERT_EQ(GetAllOffersFromTable().size(), 1u);
+
+  syncer::EntityChangeList entity_change_list;
+  entity_change_list.push_back(syncer::EntityChange::CreateDelete(
+      "00000000-0000-0000-0000-000000000009", syncer::EntityData()));
+
+  EXPECT_FALSE(bridge().ApplyIncrementalSyncChanges(
+      bridge().CreateMetadataChangeList(), std::move(entity_change_list)));
+
+  const std::vector<AutofillOfferData> offers = GetAllOffersFromTable();
+  ASSERT_EQ(offers.size(), 1u);
+  EXPECT_EQ(offers[0].GetOfferId(), 1);
 }
 #endif  // !BUILDFLAG(IS_IOS)
 

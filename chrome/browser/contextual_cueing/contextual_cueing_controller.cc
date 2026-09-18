@@ -42,7 +42,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/webui_url_constants.h"
@@ -567,6 +566,20 @@ void ContextualCueingController::OnAllEligibilityChecksComplete(
       }
     }
     any_eligible = true;
+
+    CueTarget* target = GetTarget(r.type);
+    if (base::FeatureList::IsEnabled(
+            kContextualCueingV2AllowOverridingUcbScoring) &&
+        target && target->OverridesUcbScoring()) {
+      CUEING_LOG(base::StringPrintf(
+          "  Target '%s' overrides UCB scoring and automatically wins.",
+          GetName(r.type)));
+      best_score = std::numeric_limits<double>::infinity();
+      best_type = r.type;
+      winning_generator = std::move(r.generator);
+      break;
+    }
+
     double score = contextual_cueing_service_->GetUcbScore(r.type);
     CUEING_LOG(base::StringPrintf("  Target '%s' eligible, UCB score: %.4f",
                                   GetName(r.type), score));
@@ -944,7 +957,7 @@ ContextualCueingDecision ContextualCueingController::IsAllowedToShowCue() {
     return ContextualCueingDecision::kInfobarVisible;
   }
 
-  if (auto* side_panel_ui = SidePanelUIProvider::From(window);
+  if (auto* side_panel_ui = SidePanelUI::From(window);
       side_panel_ui && side_panel_ui->IsSidePanelShowing()) {
     CUEING_LOG(
         "Not attempting to show/generate cue because side panel is visible.");
@@ -1149,7 +1162,8 @@ void ContextualCueingController::ShowCue(
   contextual_cueing_service_->LogCueShownMetadata(std::move(cue_log));
 
   contextual_cueing_service_->OnCueShown(
-      tab_->GetContents()->GetLastCommittedURL(), cue_type, intrusiveness);
+      tab_->GetContents()->GetLastCommittedURL(), cue_type,
+      ShouldRecordUcbStats(cue_type), intrusiveness);
 #endif
 
   base::UmaHistogramSparse("ContextualCueing.ShownCueCUJ",
@@ -1371,11 +1385,21 @@ void ContextualCueingController::OnCueInteraction(
       tab_->GetProfile(), cue_id, cue_type, cue, tab_, tabs_to_show,
       background_tabs, interaction_type, cuj);
 
-  HideCue();
+  if (interaction_type == ContextualCueingInteraction::kCueDismissed) {
+    CueTarget* target = GetTarget(cue_type);
+    if (target && target->DowngradesToQuietOnDismiss()) {
+      HideAnchoredMessage();
+    } else {
+      HideCue();
+    }
+  } else {
+    HideCue();
+  }
 
   switch (interaction_type) {
     case ContextualCueingInteraction::kCueDismissed:
-      contextual_cueing_service_->OnCueDismissed(cue_type);
+      contextual_cueing_service_->OnCueDismissed(
+          cue_type, ShouldRecordUcbStats(cue_type));
       break;
     case ContextualCueingInteraction::kCueEditPrompt:
       if (CueTarget* target = GetTarget(cue_type)) {
@@ -1392,7 +1416,8 @@ void ContextualCueingController::OnCueInteraction(
       if (CueTarget* target = GetTarget(cue_type)) {
         target->OnAnchoredMessageClicked(std::move(action));
       }
-      contextual_cueing_service_->OnCueClicked(cue_type);
+      contextual_cueing_service_->OnCueClicked(cue_type,
+                                               ShouldRecordUcbStats(cue_type));
       break;
   }
 }
@@ -1424,12 +1449,21 @@ void ContextualCueingController::HideCue() {
 #endif
 }
 
+void ContextualCueingController::HideAnchoredMessage() {
+#if !BUILDFLAG(IS_ANDROID)
+  if (page_actions::PageActionController* page_action_controller =
+          tab_->GetTabFeatures()->page_action_controller()) {
+    page_action_controller->HideAnchoredMessage(kActionAnchoredContextualCue);
+  }
+#endif
+}
+
 void ContextualCueingController::ObserveSidePanel() {
   if (side_panel_shown_subscription_) {
     return;
   }
   if (auto* window = tab_->GetBrowserWindowInterface()) {
-    if (auto* side_panel_ui = SidePanelUIProvider::From(window)) {
+    if (auto* side_panel_ui = SidePanelUI::From(window)) {
       side_panel_shown_subscription_ = side_panel_ui->RegisterSidePanelShown(
           base::BindRepeating(&ContextualCueingController::OnSidePanelShown,
                               weak_ptr_factory_.GetWeakPtr()));
@@ -1440,6 +1474,19 @@ void ContextualCueingController::ObserveSidePanel() {
 CueTarget* ContextualCueingController::GetTarget(CueTargetType type) {
   auto iter = cue_targets_.find(type);
   return iter != cue_targets_.end() ? iter->second.get() : nullptr;
+}
+
+bool ContextualCueingController::ShouldRecordUcbStats(
+    CueTargetType type) const {
+  if (!base::FeatureList::IsEnabled(
+          kContextualCueingV2AllowOverridingUcbScoring)) {
+    return true;
+  }
+  auto iter = cue_targets_.find(type);
+  if (iter == cue_targets_.end()) {
+    return true;
+  }
+  return !iter->second->OverridesUcbScoring();
 }
 
 absl::flat_hash_set<optimization_guide::proto::ContextualCueingSurface>

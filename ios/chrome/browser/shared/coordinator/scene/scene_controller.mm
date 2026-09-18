@@ -166,6 +166,7 @@
 #import "ios/chrome/browser/whats_new/coordinator/promo/whats_new_scene_agent.h"
 #import "ios/chrome/browser/window_activities/model/window_activity_helpers.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
+#import "ios/chrome/common/app_group/app_group_utils.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/components/webui/web_ui_url_constants.h"
@@ -1385,11 +1386,7 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
 }
 
 - (BOOL)shareExtensionURLEligibleForAccountChange:(NSURL*)URL {
-  return [URL.path
-      isEqualToString:
-          [NSString
-              stringWithFormat:@"/%s",
-                               app_group::kChromeAppGroupXCallbackCommand]];
+  return app_group::IsShareExtensionCommandURL(URL);
 }
 
 - (URLContext*)findContextRequiringAccountChange:
@@ -1896,7 +1893,7 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   }
 
   if (IsSigninForcedByPolicy()) {
-    if (self.mainCoordinator.isSigninInProgress) {
+    if (self.sceneState.signinInProgress) {
       // Return NO because intents cannot be handled when a sign-in is in
       // progress.
       return NO;
@@ -2109,10 +2106,8 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
       addAgent:[[IncognitoReauthSceneAgent alloc]
                    initWithReauthModule:[[ReauthenticationModule alloc] init]]];
 
-  if (base::FeatureList::IsEnabled(switches::kBuildExternalPrivacyContext)) {
-    [_sceneState addAgent:[[SigninAccountCapabilitiesSceneAgent alloc]
-                              initWithSceneUIProvider:self]];
-  }
+  [_sceneState addAgent:[[SigninAccountCapabilitiesSceneAgent alloc]
+                            initWithSceneUIProvider:self]];
 
   [_sceneState addAgent:[[StartSurfaceSceneAgent alloc] init]];
   [_sceneState addAgent:[[SessionSavingSceneAgent alloc] init]];
@@ -2462,19 +2457,17 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   // the dismissal logic must be explicitly addressed here.
   //
   // Refer to crbug.com/470968439 for additional context.
-  if (IsComposeboxIOSEnabled()) {
-    BOOL alreadyInIncognito = self.currentInterface.profile->IsOffTheRecord();
-    BOOL targetModeIncognito =
-        targetMode == ApplicationModeForTabOpening::INCOGNITO;
-    // The composebox UI and its dependencies are browser-scoped and
-    // instantiated upon creation.
-    //
-    // When the context changes (e.g., transitioning to Incognito mode), any
-    // preexisting Composebox UI must be dismissed and recreated to ensure its
-    // underlying dependencies remain synchronized with the new environment.
-    if (alreadyInIncognito != targetModeIncognito) {
-      dismissOmnibox = YES;
-    }
+  BOOL alreadyInIncognito = self.currentInterface.profile->IsOffTheRecord();
+  BOOL targetModeIncognito =
+      targetMode == ApplicationModeForTabOpening::INCOGNITO;
+  // The composebox UI and its dependencies are browser-scoped and
+  // instantiated upon creation.
+  //
+  // When the context changes (e.g., transitioning to Incognito mode), any
+  // preexisting Composebox UI must be dismissed and recreated to ensure its
+  // underlying dependencies remain synchronized with the new environment.
+  if (alreadyInIncognito != targetModeIncognito) {
+    dismissOmnibox = YES;
   }
 
   BOOL dismissGemini = YES;
@@ -2499,17 +2492,15 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   __weak SceneController* weakSelf = self;
   std::vector<GURL> copyURLs = URLs;
 
-  if (IsComposeboxIOSEnabled()) {
-    BOOL alreadyInIncognito = self.currentInterface.profile->IsOffTheRecord();
-    // The composebox UI and its dependencies are browser-scoped and
-    // instantiated upon creation.
-    //
-    // When the context changes (e.g., transitioning to Incognito mode), any
-    // preexisting Composebox UI must be dismissed and recreated to ensure its
-    // underlying dependencies remain synchronized with the new environment.
-    if (alreadyInIncognito != incognitoMode) {
-      dismissOmnibox = YES;
-    }
+  BOOL alreadyInIncognito = self.currentInterface.profile->IsOffTheRecord();
+  // The composebox UI and its dependencies are browser-scoped and
+  // instantiated upon creation.
+  //
+  // When the context changes (e.g., transitioning to Incognito mode), any
+  // preexisting Composebox UI must be dismissed and recreated to ensure its
+  // underlying dependencies remain synchronized with the new environment.
+  if (alreadyInIncognito != incognitoMode) {
+    dismissOmnibox = YES;
   }
 
   [self

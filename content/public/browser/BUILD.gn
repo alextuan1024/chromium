@@ -57,7 +57,6 @@ source_set("browser_sources") {
     "background_sync_parameters.h",
     "background_sync_registration.cc",
     "background_sync_registration.h",
-    "background_tracing.h",
     "blob_handle.h",
     "bluetooth_chooser.cc",
     "bluetooth_chooser.h",
@@ -738,7 +737,7 @@ source_set("browser_sources") {
     sources += [ "zygote_host/zygote_host_linux.h" ]
   }
 
-  if (allow_oop_video_decoder) {
+  if (enable_oop_video_decoder) {
     sources += [ "oop_video_decoder_factory.h" ]
     public_deps += [ "//media/mojo/mojom" ]
   }
@@ -748,8 +747,8 @@ source_set("browser_sources") {
       "chromeos/delegate_to_browser_gpu_service_accelerator_factory.h",
       "lock_screen_storage.h",
       "smart_card_delegate.h",
-      "tts_controller_delegate.cc",
-      "tts_controller_delegate.h",
+      "tts_controller_delegate_chromeos.cc",
+      "tts_controller_delegate_chromeos.h",
     ]
   }
 
@@ -788,15 +787,18 @@ if (is_android) {
   java_cpp_enum("contacts_picker_properties_javagen") {
     sources = [ "contacts_picker_properties.h" ]
   }
+
   java_cpp_enum("bluetooth_chooser_event_javagen") {
     sources = [ "bluetooth_chooser.h" ]
   }
+
   java_cpp_enum("digital_identity_enum") {
     sources = [
       "digital_identity_interstitial_type.h",
       "digital_identity_provider.h",
     ]
   }
+
   java_cpp_enum("transfer_input_to_viz_result_enum") {
     sources = [ "android/transfer_input_to_viz_result.h" ]
   }

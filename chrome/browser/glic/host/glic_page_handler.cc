@@ -55,6 +55,45 @@
 
 namespace glic {
 
+namespace {
+
+// Translates the wire enum into the browser-side vocabulary. Exhaustive with
+// no default so that a new mojom value cannot be added without deciding what
+// it means.
+ClientLoadErrorReason ToClientLoadErrorReason(
+    mojom::ClientLoadErrorReason reason) {
+  switch (reason) {
+    case mojom::ClientLoadErrorReason::kUnknown:
+      return ClientLoadErrorReason::kUnknown;
+    case mojom::ClientLoadErrorReason::kUnavailable:
+      return ClientLoadErrorReason::kUnavailable;
+    case mojom::ClientLoadErrorReason::kIneligibleAccount:
+      return ClientLoadErrorReason::kIneligibleAccount;
+    case mojom::ClientLoadErrorReason::kLocationMismatch:
+      return ClientLoadErrorReason::kLocationMismatch;
+    case mojom::ClientLoadErrorReason::kDisabledByAdmin:
+      return ClientLoadErrorReason::kDisabledByAdmin;
+    case mojom::ClientLoadErrorReason::kOffline:
+      return ClientLoadErrorReason::kOffline;
+    case mojom::ClientLoadErrorReason::kSignIn:
+      return ClientLoadErrorReason::kSignIn;
+    case mojom::ClientLoadErrorReason::kCookieSyncFailed:
+      return ClientLoadErrorReason::kCookieSyncFailed;
+    case mojom::ClientLoadErrorReason::kGuestLoadFailed:
+      return ClientLoadErrorReason::kGuestLoadFailed;
+    case mojom::ClientLoadErrorReason::kGuestProcessGone:
+      return ClientLoadErrorReason::kGuestProcessGone;
+    case mojom::ClientLoadErrorReason::kClientError:
+      return ClientLoadErrorReason::kClientError;
+    case mojom::ClientLoadErrorReason::kClientLoadTimeout:
+      return ClientLoadErrorReason::kClientLoadTimeout;
+    case mojom::ClientLoadErrorReason::kWarmedTimeout:
+      return ClientLoadErrorReason::kWarmedTimeout;
+  }
+}
+
+}  // namespace
+
 GlicPageHandler::GlicPageHandler(
     content::WebContents* webui_contents,
     Host* host,
@@ -141,17 +180,23 @@ void GlicPageHandler::OnZoomLevelChange(double zoom_factor) {
     LOG(ERROR) << "Glic [PageHandler] Invalid zoom level: " << zoom_factor;
     return;
   }
+  // LINT.ThenChange(//chrome/browser/resources/glic/webview.ts:GlicZoomFactors,//chrome/browser/glic/host/guest_util.cc:GlicZoomFactors)
+
   int zoom_percent = std::round(zoom_factor * 100);
   auto* pref_service =
       Profile::FromBrowserContext(browser_context_)->GetPrefs();
   // The webui sends a zoom level change on initialization. Skip these.
+  if (!has_received_initial_zoom_) {
+    has_received_initial_zoom_ = true;
+    pref_service->SetInteger(prefs::kGlicZoomLevel, zoom_percent);
+    return;
+  }
   if (pref_service->GetInteger(prefs::kGlicZoomLevel) != zoom_percent) {
     // Note that zoom level is already persisted in the glic webview partition -
     // this pref is only used for metrics.
     pref_service->SetInteger(prefs::kGlicZoomLevel, zoom_percent);
     host().instance_metrics().OnZoomLevelChange();
   }
-  // LINT.ThenChange(//chrome/browser/resources/glic/webview.ts:GlicZoomFactors,//chrome/browser/glic/host/guest_util.cc:GlicZoomFactors)
 }
 
 void GlicPageHandler::NotifyWindowIntentToShow() {
@@ -315,14 +360,13 @@ void GlicPageHandler::ResizeWidget(const gfx::Size& size,
   host().ResizePanel(size, duration, std::move(callback));
 }
 
-void GlicPageHandler::EnableDragResize(bool enabled) {
-  // features::kGlicUserResize is not checked here because the WebUI page
-  // invokes this method when it is disabled, too (when its state changes).
-  host().EnableDragResize(enabled);
-}
-
 void GlicPageHandler::OnWebUiStateChanged(glic::mojom::WebUiState new_state) {
   host().WebUiStateChanged(this, new_state);
+}
+
+void GlicPageHandler::NotifyClientLoadError(
+    glic::mojom::ClientLoadErrorReason reason) {
+  host().ClientLoadErrorOccurred(ToClientLoadErrorReason(reason));
 }
 
 void GlicPageHandler::ClientReadyToShow(const mojom::OpenPanelInfo& open_info) {

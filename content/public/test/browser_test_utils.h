@@ -38,13 +38,13 @@
 #include "content/public/browser/commit_deferring_condition.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_metadata_provider.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_media_capture_id.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/isolated_world_ids.h"
@@ -350,6 +350,10 @@ void CrashTab(WebContents* web_contents);
 // crashed.
 void SimulateUnresponsivePrimaryMainFrameAndWaitForExit(
     WebContents* web_contents);
+
+// Causes the specified web_contents to crash due to out-of-memory. Blocks until
+// it is crashed.
+void SimulateOOMPrimaryMainFrameAndWaitForExit(WebContents* web_contents);
 
 // Sets up a commit interceptor to alter commits for |target_url| to change
 // their commit URL to |new_url| and origin to |new_origin|. This will happen

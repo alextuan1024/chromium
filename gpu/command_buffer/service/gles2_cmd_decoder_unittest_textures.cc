@@ -4081,6 +4081,45 @@ TEST_P(GLES3DecoderManualInitTest, ResetTexStorageBaseLevelWorkaround) {
   EXPECT_EQ(error::kNoError, ExecuteCmd(storage_cmd));
 }
 
+TEST_P(GLES3DecoderManualInitTest,
+       RoundUp3DTextureSizeToPOTForLimitWorkaround) {
+  InitState init;
+  init.gl_version = "OpenGL ES 3.0";
+  init.has_alpha = true;
+  init.has_depth = true;
+  init.context_type = CONTEXT_TYPE_OPENGLES3;
+  GpuDriverBugWorkarounds workarounds;
+  workarounds.round_up_3d_texture_size_to_pot_for_limit = true;
+  InitDecoderWithWorkarounds(init, workarounds);
+
+  DoBindTexture(GL_TEXTURE_3D, client_texture_id_, kServiceTextureId);
+
+  // 600 * 600 * 600 * 4 bytes is ~864MB, which fits in uint32_t.
+  // But rounded up to POT (1024 * 1024 * 1024 * 4 bytes = 4GB), it overflows
+  // uint32_t and should generate GL_OUT_OF_MEMORY.
+  cmds::TexStorage3D cmd;
+  cmd.Init(GL_TEXTURE_3D, 1, GL_RGBA8, 600, 600, 600);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_OUT_OF_MEMORY, GetGLError());
+
+  // A size whose POT-rounded dimensions fit in uint32_t should succeed.
+  EXPECT_CALL(*gl_, GenTextures(1, _))
+      .WillOnce(SetArgPointee<1>(kNewServiceId))
+      .RetiresOnSaturation();
+  GenHelper<cmds::GenTexturesImmediate>(kNewClientId);
+  DoBindTexture(GL_TEXTURE_3D, kNewClientId, kNewServiceId);
+  EXPECT_CALL(*gl_, TexStorage3D(GL_TEXTURE_3D, 1, GL_RGBA8, 600, 600, 512))
+      .Times(1)
+      .RetiresOnSaturation();
+  EXPECT_CALL(*gl_, GetError())
+      .WillOnce(Return(GL_NO_ERROR))
+      .WillOnce(Return(GL_NO_ERROR))
+      .RetiresOnSaturation();
+  cmd.Init(GL_TEXTURE_3D, 1, GL_RGBA8, 600, 600, 512);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_NO_ERROR, GetGLError());
+}
+
 TEST_P(GLES3DecoderTest, TexImage3DValidArgs) {
   const GLenum kTarget = GL_TEXTURE_3D;
   const GLint kLevel = 2;
@@ -4782,6 +4821,191 @@ TEST_P(GLES3DecoderReattachTextureAfterLayerIncreaseTest,
 
   cmds::TexStorage3D cmd;
   cmd.Init(kTarget, kLevels, kInternalFormat, kWidth, kHeight, kNewDepth);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_NO_ERROR, GetGLError());
+}
+
+class GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest
+    : public GLES3DecoderManualInitTest {};
+
+INSTANTIATE_TEST_SUITE_P(Service,
+                         GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest,
+                         ::testing::Bool());
+
+TEST_P(GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest,
+       RecreateMipmapLevelsBeforeGenerate2D) {
+  InitState init;
+  init.gl_version = "OpenGL ES 3.0";
+  init.context_type = CONTEXT_TYPE_OPENGLES3;
+  gpu::GpuDriverBugWorkarounds workarounds;
+  workarounds.recreate_mipmap_levels_before_generate = GetParam();
+  InitDecoderWithWorkarounds(init, workarounds);
+
+  const GLenum kTarget = GL_TEXTURE_2D;
+  const GLint kInternalFormat = GL_RGBA8;
+  const GLenum kFormat = GL_RGBA;
+  const GLenum kType = GL_UNSIGNED_BYTE;
+
+  DoBindTexture(kTarget, client_texture_id_, kServiceTextureId);
+  DoTexImage2D(kTarget, 1, kInternalFormat, 1, 1, 0, kFormat, kType,
+               shared_memory_id_, kSharedMemoryOffset);
+  DoTexImage2D(kTarget, 0, kInternalFormat, 4, 4, 0, kFormat, kType,
+               shared_memory_id_, kSharedMemoryOffset);
+
+  if (GetParam()) {
+    EXPECT_CALL(*gl_, PixelStorei(_, _)).Times(AnyNumber());
+    EXPECT_CALL(*gl_, TexImage2D(kTarget, 1, kInternalFormat, 2, 2, 0, kFormat,
+                                 kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+    EXPECT_CALL(*gl_, TexImage2D(kTarget, 2, kInternalFormat, 1, 1, 0, kFormat,
+                                 kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+  }
+
+  EXPECT_CALL(*gl_, GenerateMipmapEXT(kTarget)).Times(1).RetiresOnSaturation();
+  EXPECT_CALL(*gl_, GetError())
+      .WillOnce(Return(GL_NO_ERROR))
+      .WillOnce(Return(GL_NO_ERROR))
+      .RetiresOnSaturation();
+
+  cmds::GenerateMipmap cmd;
+  cmd.Init(kTarget);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_NO_ERROR, GetGLError());
+}
+
+TEST_P(GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest,
+       RecreateMipmapLevelsBeforeGenerate3D) {
+  InitState init;
+  init.gl_version = "OpenGL ES 3.0";
+  init.context_type = CONTEXT_TYPE_OPENGLES3;
+  gpu::GpuDriverBugWorkarounds workarounds;
+  workarounds.recreate_mipmap_levels_before_generate = GetParam();
+  InitDecoderWithWorkarounds(init, workarounds);
+
+  const GLenum kTarget = GL_TEXTURE_3D;
+  const GLint kInternalFormat = GL_RGBA8;
+  const GLenum kFormat = GL_RGBA;
+  const GLenum kType = GL_UNSIGNED_BYTE;
+
+  DoBindTexture(kTarget, client_texture_id_, kServiceTextureId);
+  DoTexImage3D(kTarget, 0, kInternalFormat, 4, 4, 4, 0, kFormat, kType,
+               shared_memory_id_, kSharedMemoryOffset);
+
+  if (GetParam()) {
+    EXPECT_CALL(*gl_, PixelStorei(_, _)).Times(AnyNumber());
+    EXPECT_CALL(*gl_, TexImage3D(kTarget, 1, kInternalFormat, 2, 2, 2, 0,
+                                 kFormat, kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+    EXPECT_CALL(*gl_, TexImage3D(kTarget, 2, kInternalFormat, 1, 1, 1, 0,
+                                 kFormat, kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+  }
+
+  EXPECT_CALL(*gl_, GenerateMipmapEXT(kTarget)).Times(1).RetiresOnSaturation();
+  EXPECT_CALL(*gl_, GetError())
+      .WillOnce(Return(GL_NO_ERROR))
+      .WillOnce(Return(GL_NO_ERROR))
+      .RetiresOnSaturation();
+
+  cmds::GenerateMipmap cmd;
+  cmd.Init(kTarget);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_NO_ERROR, GetGLError());
+}
+
+TEST_P(GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest,
+       RecreateMipmapLevelsBeforeGenerate2DArray) {
+  InitState init;
+  init.gl_version = "OpenGL ES 3.0";
+  init.context_type = CONTEXT_TYPE_OPENGLES3;
+  gpu::GpuDriverBugWorkarounds workarounds;
+  workarounds.recreate_mipmap_levels_before_generate = GetParam();
+  InitDecoderWithWorkarounds(init, workarounds);
+
+  const GLenum kTarget = GL_TEXTURE_2D_ARRAY;
+  const GLint kInternalFormat = GL_RGBA8;
+  const GLenum kFormat = GL_RGBA;
+  const GLenum kType = GL_UNSIGNED_BYTE;
+
+  DoBindTexture(kTarget, client_texture_id_, kServiceTextureId);
+  DoTexImage3D(kTarget, 0, kInternalFormat, 4, 4, 2, 0, kFormat, kType,
+               shared_memory_id_, kSharedMemoryOffset);
+
+  if (GetParam()) {
+    EXPECT_CALL(*gl_, PixelStorei(_, _)).Times(AnyNumber());
+    EXPECT_CALL(*gl_, TexImage3D(kTarget, 1, kInternalFormat, 2, 2, 2, 0,
+                                 kFormat, kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+    EXPECT_CALL(*gl_, TexImage3D(kTarget, 2, kInternalFormat, 1, 1, 2, 0,
+                                 kFormat, kType, nullptr))
+        .Times(1)
+        .RetiresOnSaturation();
+  }
+
+  EXPECT_CALL(*gl_, GenerateMipmapEXT(kTarget)).Times(1).RetiresOnSaturation();
+  EXPECT_CALL(*gl_, GetError())
+      .WillOnce(Return(GL_NO_ERROR))
+      .WillOnce(Return(GL_NO_ERROR))
+      .RetiresOnSaturation();
+
+  cmds::GenerateMipmap cmd;
+  cmd.Init(kTarget);
+  EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  EXPECT_EQ(GL_NO_ERROR, GetGLError());
+}
+
+TEST_P(GLES3DecoderRecreateMipmapLevelsBeforeGenerateTest,
+       RecreateMipmapLevelsBeforeGenerateCubeMap) {
+  InitState init;
+  init.gl_version = "OpenGL ES 3.0";
+  init.context_type = CONTEXT_TYPE_OPENGLES3;
+  gpu::GpuDriverBugWorkarounds workarounds;
+  workarounds.recreate_mipmap_levels_before_generate = GetParam();
+  InitDecoderWithWorkarounds(init, workarounds);
+
+  const GLenum kTarget = GL_TEXTURE_CUBE_MAP;
+  const GLint kInternalFormat = GL_RGBA8;
+  const GLenum kFormat = GL_RGBA;
+  const GLenum kType = GL_UNSIGNED_BYTE;
+
+  DoBindTexture(kTarget, client_texture_id_, kServiceTextureId);
+  for (int face = 0; face < 6; ++face) {
+    DoTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 1, kInternalFormat, 1,
+                 1, 0, kFormat, kType, shared_memory_id_, kSharedMemoryOffset);
+    DoTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, kInternalFormat, 4,
+                 4, 0, kFormat, kType, shared_memory_id_, kSharedMemoryOffset);
+  }
+
+  if (GetParam()) {
+    EXPECT_CALL(*gl_, PixelStorei(_, _)).Times(AnyNumber());
+    for (int face = 0; face < 6; ++face) {
+      EXPECT_CALL(*gl_,
+                  TexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 1,
+                             kInternalFormat, 2, 2, 0, kFormat, kType, nullptr))
+          .Times(1)
+          .RetiresOnSaturation();
+      EXPECT_CALL(*gl_,
+                  TexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 2,
+                             kInternalFormat, 1, 1, 0, kFormat, kType, nullptr))
+          .Times(1)
+          .RetiresOnSaturation();
+    }
+  }
+
+  EXPECT_CALL(*gl_, GenerateMipmapEXT(kTarget)).Times(1).RetiresOnSaturation();
+  EXPECT_CALL(*gl_, GetError())
+      .WillOnce(Return(GL_NO_ERROR))
+      .WillOnce(Return(GL_NO_ERROR))
+      .RetiresOnSaturation();
+
+  cmds::GenerateMipmap cmd;
+  cmd.Init(kTarget);
   EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
   EXPECT_EQ(GL_NO_ERROR, GetGLError());
 }

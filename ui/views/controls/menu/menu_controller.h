@@ -19,6 +19,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -165,8 +166,6 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
       gfx::NativeView native_view_for_gestures = gfx::NativeView());
 
   bool for_drop() const { return for_drop_; }
-
-  bool in_nested_run() const { return !menu_stack_.empty(); }
 
   // Whether or not drag operation is in progress.
   bool drag_in_progress() const { return drag_in_progress_; }
@@ -479,8 +478,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   static MenuAnchorPosition AdjustAnchorPositionForRtl(
       MenuAnchorPosition position);
 
-  // Invoked when the user accepts the selected item. This is only used
-  // when blocking. This schedules the loop to quit.
+  // Invoked when the user accepts the selected item.
   void Accept(MenuItemView* item, int event_flags);
   void ReallyAccept();
 
@@ -678,7 +676,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // it to null.
   void SendMouseCaptureLostToActiveView();
 
-  // Sets exit type. Calling this can terminate the active nested message-loop.
+  // Sets exit type.
   void SetExitType(ExitType type);
 
   // Sets showing_ state and updates owner_'s kMenuControllerKey property.
@@ -754,8 +752,8 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Indicates what to exit.
   ExitType exit_type_ = ExitType::kNone;
 
-  // Whether we did a capture. We do a capture only if we're blocking and
-  // the mouse was down when Run.
+  // Whether we already grabbed mouse capture for this run. Capture is taken
+  // when the first menu is opened, and is not re-taken for later submenus.
   bool did_capture_ = false;
 
   // As the user drags the mouse around pending_state_ changes immediately.
@@ -817,6 +815,10 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Owner of child windows.
   // WARNING: this may be NULL.
   raw_ptr<Widget> owner_ = nullptr;
+
+  // Observes `owner_` while a menu is running. Declared after `owner_` so it
+  // is destroyed first.
+  base::ScopedObservation<Widget, WidgetObserver> owner_observation_{this};
 
   // An optional NativeView to which gestures will be forwarded to if
   // RunType::SEND_GESTURE_EVENTS_TO_OWNER is set.

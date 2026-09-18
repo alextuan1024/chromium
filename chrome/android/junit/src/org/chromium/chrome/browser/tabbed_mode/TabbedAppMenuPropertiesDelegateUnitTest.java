@@ -2434,7 +2434,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowManagedByMenuItem(any(Tab.class));
@@ -2593,7 +2593,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setMenuOptions(new MenuOptions().withShowAddToHomeScreen());
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
 
         assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
@@ -3658,7 +3658,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                 .shouldShowManagedByMenuItem(any(Tab.class));
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowAutoDarkItem(any(Tab.class), eq(false));
@@ -4215,6 +4215,11 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(anotherSelector.getCurrentModel()).thenReturn(anotherTabModel);
         when(anotherSelector.getModel(false)).thenReturn(anotherTabModel);
         when(anotherTabModel.getTabGroupCount()).thenReturn(1);
+        Token groupId = Token.createRandom();
+        when(anotherTabModel.getAllTabGroupIds()).thenReturn(Set.of(groupId));
+        when(anotherTabModel.tabGroupExists(groupId)).thenReturn(true);
+        when(anotherTabModel.getTabGroupTitle(groupId)).thenReturn("Group");
+        when(anotherTabModel.getTabsInGroup(groupId)).thenReturn(List.of());
 
         when(tabWindowManager.getAllTabModelSelectors())
                 .thenReturn(Arrays.asList(mTabModelSelector, anotherSelector));
@@ -4387,6 +4392,53 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         assertEquals(
                 ContextUtils.getApplicationContext().getString(R.string.menu_save_page_as),
                 item.model.get(AppMenuItemProperties.TITLE));
+    }
+
+    private boolean isPrintVisible(boolean isDesktop) {
+        DeviceInfo.setIsDesktopForTesting(isDesktop);
+        setUpMocksForPageMenu();
+        return isMenuVisible(mTabbedAppMenuPropertiesDelegate.getMenuItems(), R.id.print_id);
+    }
+
+    @Test
+    public void testPrintMenuItem_Desktop() {
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getUrl()).thenReturn(new GURL("chrome://version"));
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getWebContents()).thenReturn(null);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        when(mNativePage.isPdf()).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+
+        when(mNativePage.isPdf()).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+    }
+
+    @Test
+    public void testPrintMenuItem_Mobile() {
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(true);
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
+
+        when(mTab.getUrl()).thenReturn(new GURL("chrome://version"));
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
+
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        when(mNativePage.isPdf()).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ false));
+
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
     }
 
     private MenuItem getExpectedBookmarksParentMenuTitle() {

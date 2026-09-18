@@ -21,6 +21,19 @@ TestRasterInterface::TestRasterInterface() {
 
 TestRasterInterface::~TestRasterInterface() = default;
 
+void TestRasterInterface::set_test_support(TestContextSupport* test_support) {
+  test_support_ = test_support;
+  if (test_support_) {
+    test_support_->set_sync_point_client_id(
+        {gpu::CommandBufferNamespace::GPU_IO,
+         gpu::CommandBufferId::FromUnsafeValue(test_command_buffer_id_)});
+  }
+}
+
+const gpu::Capabilities& TestRasterInterface::GetCapabilities() const {
+  return caps_;
+}
+
 void TestRasterInterface::Finish() {
   if (test_support_)
     test_support_->CallAllSyncPointCallbacks();

@@ -32,6 +32,7 @@ import android.text.format.DateUtils;
 import android.util.Pair;
 import android.util.Size;
 import android.util.TypedValue;
+import android.view.Display;
 import android.view.Display.Mode;
 import android.view.KeyEvent;
 import android.view.MenuItem;
@@ -93,8 +94,6 @@ import org.chromium.chrome.browser.actor.ActorUtils;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.app.download.DownloadMessageUiDelegate;
 import org.chromium.chrome.browser.app.metrics.LaunchCauseMetrics;
-import org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl;
-import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingDelegateFactory;
 import org.chromium.chrome.browser.app.tab_activity_glue.TabReparentingController;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.app.tabmodel.TabModelOrchestrator;
@@ -118,7 +117,6 @@ import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.compositor.layouts.SceneChangeObserver;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManagerHandler;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager;
-import org.chromium.chrome.browser.customtabs.PopupCreatorFactory;
 import org.chromium.chrome.browser.desktop_site.DesktopSiteUtils;
 import org.chromium.chrome.browser.device.DeviceClassManager;
 import org.chromium.chrome.browser.devtools.DevToolsWindowAndroid;
@@ -187,6 +185,7 @@ import org.chromium.chrome.browser.screenshot_protection.ScreenshotProtectionCon
 import org.chromium.chrome.browser.selection.SelectionPopupBackPressHandler;
 import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+import org.chromium.chrome.browser.settings.SettingsTabUtil;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegateImpl;
 import org.chromium.chrome.browser.share.ShareDelegateSupplier;
@@ -215,6 +214,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.task_manager.TaskManager;
 import org.chromium.chrome.browser.task_manager.TaskManagerFactory;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupUiUtils;
 import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.translate.TranslateBridge;
@@ -244,7 +244,6 @@ import org.chromium.chrome.browser.ui.system.StatusBarColorController;
 import org.chromium.chrome.browser.webapps.AppInstallMenuHandler;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
-import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
@@ -280,6 +279,7 @@ import org.chromium.ui.base.ApplicationViewportInsetTracker;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.PageTransition;
+import org.chromium.ui.base.UiAndroidFeatureList;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.base.WindowAndroid.KeyboardShortcutsDelegate;
 import org.chromium.ui.display.DisplayAndroid;
@@ -440,6 +440,9 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
     /** The current configuration, used to for diffing when the configuration is changed. */
     private Configuration mConfig;
 
+    /** The last known display ID, used to detect display changes during configuration updates. */
+    private int mLastDisplayId = Display.INVALID_DISPLAY;
+
     /** Track whether {@link #mTabReparentingController} has prepared tab reparenting. */
     private boolean mIsTabReparentingPrepared;
 
@@ -559,10 +562,6 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
 
     @Override
     public void performPreInflationStartup() {
-        // Initialize PopupCreator early so that it's available when WebContentsDelegateAndroid
-        // wants to create a new window.
-        PopupCreatorFactory.setInstance(new PopupCreatorImpl());
-
         mUmaActivityObserver =
                 new UmaActivityObserver(this, getLifecycleDispatcher(), getActivityType());
         setupUnownedUserDataSuppliers();
@@ -578,6 +577,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
 
         // Ensure that mConfig is initialized before tablet mode changes.
         mConfig = getResources().getConfiguration();
+        mLastDisplayId = getCurrentDisplayId();
 
         // WindowAndroid is created in #onCreateInternal, happened before
         // performPreInflationStartup.
@@ -2330,9 +2330,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         }
         mTabReparentingControllerSupplier.set(
                 new TabReparentingController(
-                        ReparentingDelegateFactory.createReparentingControllerDelegate(
-                                getTabModelSelector()),
-                        AsyncTabParamsManagerSingleton.getInstance()));
+                        this::getTabModelSelector, AsyncTabParamsManagerSingleton.getInstance()));
 
         // This must be initialized after initialization of tab reparenting controller.
         var windowAndroid = getWindowAndroid();
@@ -2488,7 +2486,9 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         return mTabModelSelectorSupplier;
     }
 
-    /** Returns an {@link SettableMonotonicObservableSupplier} for {@link EphemeralTabCoordinator}. */
+    /**
+     * Returns an {@link SettableMonotonicObservableSupplier} for {@link EphemeralTabCoordinator}.
+     */
     public final SettableMonotonicObservableSupplier<EphemeralTabCoordinator>
             getEphemeralTabCoordinatorSupplier() {
         return mEphemeralTabCoordinatorSupplier;
@@ -2705,8 +2705,8 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
     }
 
     /**
-     * @return An {@link MonotonicObservableSupplier} that will supply the {@link ShareDelegate} when
-     *         it is ready.
+     * Returns an {@link MonotonicObservableSupplier} that will supply the {@link ShareDelegate}
+     * when it is ready.
      */
     public MonotonicObservableSupplier<ShareDelegate> getShareDelegateSupplier() {
         return mShareDelegateSupplier;
@@ -2737,6 +2737,28 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
     @Override
     public void performOnConfigurationChanged(Configuration newConfig) {
         super.performOnConfigurationChanged(newConfig);
+        int displayId = getCurrentDisplayId();
+        boolean displayChanged =
+                displayId != Display.INVALID_DISPLAY
+                        && mLastDisplayId != Display.INVALID_DISPLAY
+                        && displayId != mLastDisplayId;
+        if (mConfig != null
+                && UiAndroidFeatureList.sConnectedDisplayDensityDebugLogs.isEnabled()
+                && (displayChanged
+                        || newConfig.densityDpi != mConfig.densityDpi
+                        || getTabletMode().changed)) {
+            Log.i(
+                    TAG,
+                    "performOnConfigurationChanged: displayId=%d->%d, densityDpi=%d->%d,"
+                            + " swDp=%d->%d",
+                    mLastDisplayId,
+                    displayId,
+                    mConfig.densityDpi,
+                    newConfig.densityDpi,
+                    mConfig.smallestScreenWidthDp,
+                    newConfig.smallestScreenWidthDp);
+        }
+        mLastDisplayId = displayId;
         if (mConfig != null) {
             if (mTabReparentingControllerSupplier.get() != null && maybeOnTabletModeChange()) {
                 return;
@@ -2758,29 +2780,41 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
                         getActivityTab());
             }
 
-            // On automotive, ignore density changes to prevent Chrome from exiting fullscreen.
-            // See https://crbug.com/352816133.
-            if (newConfig.densityDpi != mConfig.densityDpi) {
+            // On automotive, ignore density and fontScale changes to prevent Chrome from restarting
+            // when window size changes. See https://crbug.com/537023087.
+            if (newConfig.densityDpi != mConfig.densityDpi
+                    || newConfig.fontScale != mConfig.fontScale) {
                 if (!DeviceInfo.isAutomotive()) {
                     doRecreateActivity();
                     return;
                 }
             }
 
-            if (newConfig.fontScale != mConfig.fontScale) {
-                doRecreateActivity();
-                return;
-            }
-
             // Maintain tab state by re-parenting tabs when a Chrome window is moved between
             // displays.
-            if (newConfig.touchscreen != mConfig.touchscreen
-                    || newConfig.colorMode != mConfig.colorMode) {
+            if ((newConfig.touchscreen != mConfig.touchscreen
+                            || newConfig.colorMode != mConfig.colorMode)
+                    && !ChromeFeatureList.sAvoidRecreateOnTouchscreenOrColorModeChange
+                            .isEnabled()) {
                 doRecreateActivity();
                 return;
             }
         }
         mConfig = newConfig;
+    }
+
+    private int getCurrentDisplayId() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                Display display = getDisplay();
+                if (display != null) {
+                    return display.getDisplayId();
+                }
+            } catch (UnsupportedOperationException e) {
+                // Ignore if Activity is not associated with a display or in early lifecycle state.
+            }
+        }
+        return Display.INVALID_DISPLAY;
     }
 
     // Triggers runnable that makes content visible.
@@ -2936,6 +2970,11 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         }
     }
 
+    /** Returns true if settings should be opened in a tab instead of an independent activity. */
+    private boolean shouldOpenSettingsInTab() {
+        return SettingsInTab.shouldOpenSettingsInTab();
+    }
+
     /**
      * @return The {@link MenuOrKeyboardActionController} for registering menu or keyboard action
      *     handler for this activity.
@@ -2969,16 +3008,24 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         int type = Profile.getBrowserProfileTypeFromProfile(getCurrentTabModel().getProfile());
 
         if (id == R.id.preferences_id) {
-            if (SettingsInTab.isEnabled()) {
-                LoadUrlParams params =
-                        new LoadUrlParams(UrlConstants.SETTINGS_URL, PageTransition.LINK);
-                // Settings are associated with the on-the-record profile, never incognito.
-                getTabCreator(/* incognito= */ false)
-                        .createNewTab(params, TabLaunchType.FROM_CHROME_UI, getActivityTab());
+            if (shouldOpenSettingsInTab()) {
+                Tab settingsTab =
+                        areTabModelsInitialized()
+                                ? SettingsTabUtil.findSettingsTab(getTabModelSelector())
+                                : null;
+                if (settingsTab != null) {
+                    // Activate an existing settings tab if one exists.
+                    SettingsTabUtil.activateSettingsTab(getTabModelSelector(), settingsTab);
+                } else {
+                    // Otherwise create a new settings tab.
+                    LoadUrlParams params =
+                            new LoadUrlParams(UrlConstants.SETTINGS_URL, PageTransition.LINK);
+                    // Settings are associated with the on-the-record profile, never incognito.
+                    getTabCreator(/* incognito= */ false)
+                            .createNewTab(params, TabLaunchType.FROM_CHROME_UI, getActivityTab());
+                }
             } else {
-                SettingsNavigation settingsNavigation =
-                        SettingsNavigationFactory.createSettingsNavigation();
-                settingsNavigation.startSettings(this);
+                SettingsNavigationFactory.createSettingsNavigation().startSettings(this);
             }
             RecordUserAction.record("MobileMenuSettings");
             RecordHistogram.recordEnumeratedHistogram(
@@ -3120,19 +3167,22 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         }
 
         if (id == R.id.tab_group_tab_menu_item) {
-            assert menuItemData != null
-                    && menuItemData.containsKey(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY);
-            @TabId int tabId = menuItemData.getInt(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY);
-            if (ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled()) {
-                Tab tab = TabWindowManagerSingleton.getInstance().getTabById(tabId);
-                if (tab != null) {
-                    getTabCreator(tab.isIncognito())
+            assert menuItemData != null;
+            if (TabGroupUiUtils.isCrossWindowTabGroupOperationsEnabled()) {
+                String urlString =
+                        menuItemData.getString(AppMenuPropertiesDelegateImpl.TAB_URL_BUNDLE_KEY);
+                if (urlString != null) {
+                    GURL url = new GURL(urlString);
+                    assert url.isValid();
+                    getTabCreator(getCurrentTabModel().isIncognito())
                             .createNewTab(
-                                    new LoadUrlParams(tab.getUrl()),
-                                    TabLaunchType.FROM_CHROME_UI,
+                                    new LoadUrlParams(url),
+                                    TabLaunchType.FROM_LINK,
                                     /* parent= */ null);
                 }
             } else {
+                @TabId
+                int tabId = menuItemData.getInt(AppMenuPropertiesDelegateImpl.TAB_ID_BUNDLE_KEY);
                 TabModelUtils.selectTabById(
                         getTabModelSelector(), tabId, TabSelectionType.FROM_USER);
             }
@@ -3238,7 +3288,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
 
         if (id == R.id.open_webapk_id) {
             RecordUserAction.record("MobileMenuOpenWebApk");
-            return AppInstallMenuHandler.doOpenWebApk(this, currentTab);
+            return AppInstallMenuHandler.doOpenWebApp(this, currentTab);
         }
 
         if (id == R.id.request_desktop_site_id || id == R.id.request_desktop_site_check_id) {
@@ -3288,14 +3338,14 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
         if (id == R.id.view_source
                 && !currentTab.isNativePage()
                 && DevToolsWindowAndroid.canViewSource(
-                        currentTab.getProfile(), currentTab.getWebContents())) {
+                        this, currentTab.getProfile(), currentTab.getWebContents())) {
             currentTab.getWebContents().getMainFrame().viewSource();
             return true;
         }
 
         if (id == R.id.dev_tools
                 && DevToolsWindowAndroid.isDevToolsAllowedFor(
-                        currentTab.getProfile(), currentTab.getWebContents())) {
+                        this, currentTab.getProfile(), currentTab.getWebContents())) {
             DevToolsWindowAndroid.openDevTools(currentTab.getWebContents());
             if (fromMenu) {
                 RecordUserAction.record("MobileMenuDevTools");
@@ -3505,6 +3555,20 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
      */
     private boolean doRecreateActivity() {
         TabletMode tabletMode = getTabletMode();
+        if (UiAndroidFeatureList.sConnectedDisplayDensityDebugLogs.isEnabled()) {
+            Log.i(
+                    TAG,
+                    "doRecreateActivity: isFinishing=%b, state=%d, hasReparentingController=%b,"
+                            + " tabReparentingPrepared=%b, tabletModeChanged=%b, configDensity=%d,"
+                            + " resDensity=%d",
+                    isFinishing(),
+                    ApplicationStatus.getStateForActivity(this),
+                    mTabReparentingControllerSupplier.get() != null,
+                    mIsTabReparentingPrepared,
+                    tabletMode.changed,
+                    mConfig != null ? mConfig.densityDpi : -1,
+                    getResources().getConfiguration().densityDpi);
+        }
         if (mTabReparentingControllerSupplier.get() != null && !mIsTabReparentingPrepared) {
             mTabReparentingControllerSupplier.get().prepareTabsForReparenting();
             mIsTabReparentingPrepared = true;

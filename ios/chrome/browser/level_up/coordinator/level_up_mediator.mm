@@ -106,6 +106,13 @@
     [self.consumer setProgressUpdatesEnabled:updatesEnabled];
   }
 
+  if ([self.consumer
+          respondsToSelector:@selector(setNewTasksNotificationEnabled:)]) {
+    BOOL newTasksNotificationEnabled =
+        _prefService->GetBoolean(prefs::kLevelUpNewTasksNotificationEnabled);
+    [self.consumer setNewTasksNotificationEnabled:newTasksNotificationEnabled];
+  }
+
   int level = _levelUpService->GetCurrentLevel();
 
   NSMutableArray<LevelUpTask*>* productivityTasks =
@@ -134,22 +141,18 @@
     }
   }
 
-  // TODO(crbug.com/523325903): Update this to match the final design spec. Use
-  // the first 4 uncompleted tasks for now.
-  NSMutableArray<LevelUpTask*>* uncompletedTasks =
+  NSMutableArray<LevelUpTask*>* recommendedTasks =
       [[NSMutableArray alloc] init];
-  for (LevelUpTask* task in allTasks) {
-    if (!task.completed) {
-      [uncompletedTasks addObject:task];
-      if (uncompletedTasks.count == 4) {
-        break;
-      }
-    }
+  const auto recommendedTaskInfos = _levelUpService->GetRecommendedTasks();
+  for (const TaskInfo* info : recommendedTaskInfos) {
+    BOOL completed = _levelUpService->IsTaskCompleted(info->GetTaskType());
+    [recommendedTasks
+        addObject:[[LevelUpTask alloc] initWithTaskInfo:info
+                                              completed:completed]];
   }
-  NSArray<LevelUpTask*>* tasksForCurrentLevel = uncompletedTasks;
 
   if ([self.consumer respondsToSelector:@selector(setLevel:tasksForLevel:)]) {
-    [self.consumer setLevel:level tasksForLevel:tasksForCurrentLevel];
+    [self.consumer setLevel:level tasksForLevel:recommendedTasks];
   }
 
   _categories = @[
@@ -220,17 +223,17 @@
                                     type:LevelUpTaskStatType::kTabsDecluttered];
   [stats addObject:stat1];
 
-  int typingSaved =
-      _levelUpService->GetStatValue(LevelUpTaskStatType::kTypingSaved);
+  int passwordsAutofilled =
+      _levelUpService->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled);
   NSString* title2 = l10n_util::GetPluralNSStringF(
-      IDS_IOS_LEVEL_UP_STAT_TYPING_SAVED, typingSaved);
-  NSString* subtitle2 =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_TYPING_SAVED);
-  LevelUpStat* stat2 =
-      [[LevelUpStat alloc] initWithTitle:title2
-                                subtitle:subtitle2
-                         imageLottieName:@"typing_saved"
-                                    type:LevelUpTaskStatType::kTypingSaved];
+      IDS_IOS_LEVEL_UP_STAT_PASSWORDS_AUTOFILLED, passwordsAutofilled);
+  NSString* subtitle2 = l10n_util::GetNSString(
+      IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PASSWORDS_AUTOFILLED);
+  LevelUpStat* stat2 = [[LevelUpStat alloc]
+        initWithTitle:title2
+             subtitle:subtitle2
+      imageLottieName:@"typing_saved"
+                 type:LevelUpTaskStatType::kPasswordsAutofilled];
   [stats addObject:stat2];
 
   int passwordsVerified =
@@ -264,7 +267,8 @@
   }
 }
 
-- (void)toggleProgressUpdates {
+- (BOOL)toggleProgressUpdates {
+  CHECK(_prefService);
   BOOL oldValue = _prefService->GetBoolean(prefs::kLevelUpUIEnabled);
   BOOL newValue = !oldValue;
   _prefService->SetBoolean(prefs::kLevelUpUIEnabled, newValue);
@@ -272,6 +276,11 @@
           respondsToSelector:@selector(setProgressUpdatesEnabled:)]) {
     [self.consumer setProgressUpdatesEnabled:newValue];
   }
+  return newValue;
+}
+
+- (void)setNewTasksNotificationEnabled:(BOOL)enabled {
+  _prefService->SetBoolean(prefs::kLevelUpNewTasksNotificationEnabled, enabled);
 }
 
 - (void)turnOffLevelUp {

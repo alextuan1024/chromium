@@ -1662,6 +1662,8 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
 
   // Wrapper for glGenerateMipmap
   void DoGenerateMipmap(GLenum target);
+  void RecreateMipmapLevelsBeforeGenerate(TextureRef* texture_ref,
+                                          GLenum target);
 
   // Helper for DoGetBooleanv, Floatv, and Intergerv to adjust pname
   // to account for different pname values defined in different extension
@@ -2589,12 +2591,25 @@ ScopedBufferReattacher::ScopedBufferReattacher(GLES2DecoderImpl* decoder,
   Initialize();
 }
 
+bool IsLayeredTextureTarget(GLenum texture_target) {
+  switch (texture_target) {
+    case GL_TEXTURE_2D_ARRAY:
+    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+    case GL_TEXTURE_3D:
+    case GL_TEXTURE_CUBE_MAP:
+    case GL_TEXTURE_CUBE_MAP_ARRAY:
+      return true;
+    default:
+      return false;
+  }
+}
+
 void ScopedBufferReattacher::Initialize() {
   const bool reattach_depth_stencil =
       decoder_->workarounds().reattach_fbo_depth_stencil_on_reallocation;
   const bool reattach_layer_increase =
       decoder_->workarounds().reattach_texture_to_fbo_after_layer_increase &&
-      texture_ref_ && texture_ref_->texture()->target() == GL_TEXTURE_2D_ARRAY;
+      texture_ref_ && IsLayeredTextureTarget(texture_ref_->texture()->target());
   if (!reattach_depth_stencil && !reattach_layer_increase) {
     return;
   }
@@ -5815,6 +5830,10 @@ void GLES2DecoderImpl::InvalidateFramebufferImpl(
   }
 
   bool skip_api_call = false;
+  if (!framebuffer) {
+    // Don't invalidate backbuffer.
+    skip_api_call = true;
+  }
   if (workarounds().dont_invalidate_incomplete_fbos) {
     if (DoCheckFramebufferStatus(target) != GL_FRAMEBUFFER_COMPLETE) {
       skip_api_call = true;
@@ -5966,12 +5985,91 @@ void GLES2DecoderImpl::DoGenerateMipmap(GLenum target) {
     }
   }
 
+  if (workarounds().recreate_mipmap_levels_before_generate &&
+      !tex->IsImmutable()) {
+    RecreateMipmapLevelsBeforeGenerate(texture_ref, target);
+  }
+
   LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("glGenerateMipmap");
   api()->glGenerateMipmapEXTFn(target);
 
   GLenum error = LOCAL_PEEK_GL_ERROR("glGenerateMipmap");
   if (error == GL_NO_ERROR) {
     texture_manager()->MarkMipmapsGenerated(texture_ref);
+  }
+}
+
+void GLES2DecoderImpl::RecreateMipmapLevelsBeforeGenerate(
+    TextureRef* texture_ref,
+    GLenum target) {
+  DCHECK(texture_ref);
+  Texture* tex = texture_ref->texture();
+  DCHECK(tex);
+  DCHECK(!tex->IsImmutable());
+
+  const GLint base_level = tex->base_level();
+  const size_t num_faces = (target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
+
+  ScopedPixelUnpackState reset_restore(&state_);
+
+  for (size_t face_idx = 0; face_idx < num_faces; ++face_idx) {
+    const GLenum face_target = (target == GL_TEXTURE_CUBE_MAP)
+                                   ? GLES2Util::IndexToGLFaceTarget(face_idx)
+                                   : target;
+    const Texture::LevelInfo* base_info =
+        tex->GetLevelInfo(face_target, base_level);
+    if (!base_info) {
+      continue;
+    }
+
+    const GLenum internal_format = base_info->internal_format;
+    const GLenum format = base_info->format;
+    const GLenum type = base_info->type;
+
+    const GLenum adjusted_internal_format =
+        TextureManager::AdjustTexInternalFormat(feature_info_.get(),
+                                                internal_format, type);
+    const GLenum adjusted_format =
+        TextureManager::AdjustTexFormat(feature_info_.get(), format);
+
+    const GLsizei num_mips = tex->NumMipLevels(face_idx);
+    GLsizei level_width = base_info->width;
+    GLsizei level_height = base_info->height;
+    GLsizei level_depth = base_info->depth;
+
+    for (GLsizei level = base_level + 1; level < base_level + num_mips;
+         ++level) {
+      level_width = std::max(1, level_width >> 1);
+      level_height = std::max(1, level_height >> 1);
+      if (target != GL_TEXTURE_2D_ARRAY) {
+        level_depth = std::max(1, level_depth >> 1);
+      }
+
+      const Texture::LevelInfo* level_info =
+          tex->GetLevelInfo(face_target, level);
+      const bool needs_recreate =
+          !level_info || level_info->width != level_width ||
+          level_info->height != level_height ||
+          level_info->depth != level_depth ||
+          level_info->internal_format != internal_format ||
+          level_info->type != type;
+
+      if (needs_recreate) {
+        if (face_target == GL_TEXTURE_3D ||
+            face_target == GL_TEXTURE_2D_ARRAY) {
+          api()->glTexImage3DFn(face_target, level, adjusted_internal_format,
+                                level_width, level_height, level_depth, 0,
+                                adjusted_format, type, nullptr);
+        } else {
+          api()->glTexImage2DFn(face_target, level, adjusted_internal_format,
+                                level_width, level_height, 0, adjusted_format,
+                                type, nullptr);
+        }
+        texture_manager()->SetLevelInfo(
+            texture_ref, face_target, level, internal_format, level_width,
+            level_height, level_depth, 0, format, type, gfx::Rect());
+      }
+    }
   }
 }
 
@@ -12018,11 +12116,15 @@ error::Error GLES2DecoderImpl::HandleGetUniformIndices(
   if (!bucket) {
     return error::kInvalidArguments;
   }
-  GLsizei count = 0;
-  std::vector<char*> names;
-  std::vector<GLint> len;
-  if (!bucket->GetAsStrings(&count, &names, &len) || count <= 0) {
+  std::optional<std::vector<std::string_view>> names = bucket->GetAsStrings();
+  if (!names.has_value() || names->empty()) {
     return error::kInvalidArguments;
+  }
+  const GLsizei count = static_cast<GLsizei>(names->size());
+  std::vector<const char*> name_ptrs;
+  name_ptrs.reserve(names->size());
+  for (std::string_view name : *names) {
+    name_ptrs.push_back(name.data());
   }
   typedef cmds::GetUniformIndices::Result Result;
   uint32_t checked_size = 0;
@@ -12052,7 +12154,7 @@ error::Error GLES2DecoderImpl::HandleGetUniformIndices(
     return error::kNoError;
   }
   LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("GetUniformIndices");
-  api()->glGetUniformIndicesFn(service_id, count, &names[0], indices);
+  api()->glGetUniformIndicesFn(service_id, count, name_ptrs.data(), indices);
   GLenum error = api()->glGetErrorFn();
   if (error == GL_NO_ERROR) {
     result->SetNumResults(count);
@@ -12467,7 +12569,7 @@ bool GLES2DecoderImpl::ClearCompressedTextureLevel(Texture* texture,
     // Add extra scope to destroy zero and the object it owns right
     // after its usage.
     auto zero = base::HeapArray<char>::WithSize(bytes_required);
-    bool reset_base_level = workarounds().reset_base_level_for_astc_sub_image &&
+    bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
                             IsASTCFormat(format) && texture->base_level() != 0;
     api()->glBindTextureFn(texture->target(), texture->service_id());
     if (reset_base_level) {
@@ -12533,7 +12635,7 @@ bool GLES2DecoderImpl::ClearCompressedTextureLevel3D(Texture* texture,
     // Add extra scope to destroy zero and the object it owns right
     // after its usage.
     auto zero = base::HeapArray<char>::WithSize(bytes_required);
-    bool reset_base_level = workarounds().reset_base_level_for_astc_sub_image &&
+    bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
                             IsASTCFormat(format) && texture->base_level() != 0;
     api()->glBindTextureFn(texture->target(), texture->service_id());
     if (reset_base_level) {
@@ -13291,6 +13393,12 @@ error::Error GLES2DecoderImpl::DoCompressedTexImage(
           format_info->decompressed_type, decompressed_data.data());
     }
   } else {
+    bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
+                            IsASTCFormat(internal_format) &&
+                            texture->base_level() != 0;
+    if (reset_base_level) {
+      api()->glTexParameteriFn(texture->target(), GL_TEXTURE_BASE_LEVEL, 0);
+    }
     if (dimension == ContextState::k2D) {
       bool handled = false;
       if (workarounds().upload_oversized_mip_levels_via_unpack_buffer &&
@@ -13302,15 +13410,20 @@ error::Error GLES2DecoderImpl::DoCompressedTexImage(
         if (texture->GetLevelSize(target, 0, &level0_width, &level0_height,
                                   &level0_depth) &&
             level0_width > 0 && level0_height > 0) {
-          const int slot_w = std::max(
-              1, static_cast<int>(
-                     std::bit_ceil(static_cast<uint32_t>(level0_width))) >>
-                     level);
-          const int slot_h = std::max(
-              1, static_cast<int>(
-                     std::bit_ceil(static_cast<uint32_t>(level0_height))) >>
-                     level);
-          if (width > slot_w || height > slot_h) {
+          const gfx::Vector2d block_size =
+              GetCompressedTexBlockDimensions(internal_format);
+          const int expected_width = std::max(1, level0_width >> level);
+          const int expected_height = std::max(1, level0_height >> level);
+          const int expected_blocks_x =
+              (expected_width + block_size.x() - 1) / block_size.x();
+          const int expected_blocks_y =
+              (expected_height + block_size.y() - 1) / block_size.y();
+          const int incoming_blocks_x =
+              (width + block_size.x() - 1) / block_size.x();
+          const int incoming_blocks_y =
+              (height + block_size.y() - 1) / block_size.y();
+          if (incoming_blocks_x > expected_blocks_x ||
+              incoming_blocks_y > expected_blocks_y) {
             GLuint scratch = 0;
             api()->glGenBuffersARBFn(1, &scratch);
             api()->glBindBufferFn(GL_PIXEL_UNPACK_BUFFER, scratch);
@@ -13337,6 +13450,10 @@ error::Error GLES2DecoderImpl::DoCompressedTexImage(
     } else {
       api()->glCompressedTexImage3DFn(target, level, internal_format, width,
                                       height, depth, border, image_size, data);
+    }
+    if (reset_base_level) {
+      api()->glTexParameteriFn(texture->target(), GL_TEXTURE_BASE_LEVEL,
+                               texture->base_level());
     }
   }
   GLenum error = LOCAL_PEEK_GL_ERROR(func_name);
@@ -13742,7 +13859,7 @@ error::Error GLES2DecoderImpl::DoCompressedTexSubImage(
                                decompressed_data.data());
     }
   } else {
-    bool reset_base_level = workarounds().reset_base_level_for_astc_sub_image &&
+    bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
                             IsASTCFormat(format) && texture->base_level() != 0;
     if (reset_base_level) {
       api()->glTexParameteriFn(texture->target(), GL_TEXTURE_BASE_LEVEL, 0);
@@ -16442,25 +16559,35 @@ void GLES2DecoderImpl::TexStorageImpl(GLenum target,
     PixelStoreParams params;
     params.alignment = 1;
     for (int ii = 0; ii < levels; ++ii) {
+      GLsizei pessimized_level_width = level_width;
+      GLsizei pessimized_level_height = level_height;
+      GLsizei pessimized_level_depth = level_depth;
+      if (workarounds().round_up_3d_texture_size_to_pot_for_limit &&
+          (target == GL_TEXTURE_3D || depth > 1)) {
+        pessimized_level_width = static_cast<GLsizei>(
+            std::bit_ceil(static_cast<uint32_t>(level_width)));
+        pessimized_level_height = static_cast<GLsizei>(
+            std::bit_ceil(static_cast<uint32_t>(level_height)));
+        pessimized_level_depth = static_cast<GLsizei>(
+            std::bit_ceil(static_cast<uint32_t>(level_depth)));
+      }
       uint32_t size;
       if (is_compressed_format) {
         GLsizei level_size;
         if (!GetCompressedTexSizeInBytes(
-                function_name, level_width, level_height, level_depth,
-                internal_format, &level_size, error_state_.get())) {
-          // GetCompressedTexSizeInBytes() already generates a GL error.
+                function_name, pessimized_level_width, pessimized_level_height,
+                pessimized_level_depth, internal_format, &level_size,
+                error_state_.get())) {
+          // GetCompressedTexSizeInBytes() already generated a GL error
+          // (e.g. in the case of overflow, GL_INVALID_VALUE).
           return;
         }
         size = static_cast<uint32_t>(level_size);
       } else {
-        if (!GLES2Util::ComputeImageDataSizesES3(level_width,
-                                                 level_height,
-                                                 level_depth,
-                                                 format, type,
-                                                 params,
-                                                 &size,
-                                                 nullptr, nullptr,
-                                                 nullptr, nullptr)) {
+        if (!GLES2Util::ComputeImageDataSizesES3(
+                pessimized_level_width, pessimized_level_height,
+                pessimized_level_depth, format, type, params, &size, nullptr,
+                nullptr, nullptr, nullptr)) {
           LOCAL_SET_GL_ERROR(
               GL_OUT_OF_MEMORY, function_name, "dimensions too large");
           return;

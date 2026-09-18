@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_screenshare_controller.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/debug/omnibox_everywhere_debug.mojom.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/mojom/omnibox_everywhere.mojom.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
@@ -20,34 +20,37 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "ui/menus/simple_menu_model.h"
-#include "ui/views/controls/menu/menu_model_adapter.h"
-#include "ui/views/controls/menu/menu_runner.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
 #include "ui/webui/resources/cr_components/most_visited/most_visited.mojom.h"
 
-namespace user_education {
-class HelpBubbleHandler;
+class ComposeboxEverywhereHandler;
+class ContextualSearchboxHandler;
+class MostVisitedHandler;
+class MostVisitedPrefObserver;
+class OmniboxContextMenu;
+class OmniboxEverywhereHandler;
+class OmniboxEverywherePageHandler;
+class OmniboxEverywhereUI;
+class OmniboxPopupFileSelector;
+class Profile;
+
+namespace contextual_search {
+class ContextualSearchSessionHandle;
 }
 
 namespace omnibox_everywhere_debug {
 class OmniboxEverywhereDebugPageHandler;
 }
 
-class ComposeboxEverywhereHandler;
-class MostVisitedHandler;
-class MostVisitedPrefObserver;
-class OmniboxEverywhereHandler;
-class OmniboxEverywherePageHandler;
-class Profile;
-class OmniboxPopupFileSelector;
-class OmniboxContextMenu;
-
-namespace contextual_search {
-class ContextualSearchSessionHandle;
+namespace user_education {
+class HelpBubbleHandler;
 }
 
-class OmniboxEverywhereUI;
+namespace views {
+class MenuModelAdapter;
+class MenuRunner;
+}  // namespace views
 
 class OmniboxEverywhereUIConfig
     : public DefaultTopChromeWebUIConfig<OmniboxEverywhereUI> {
@@ -68,12 +71,31 @@ class OmniboxEverywhereUI
       public omnibox_everywhere_debug::mojom::PageHandlerFactory,
       public most_visited::mojom::MostVisitedPageHandlerFactory,
       public help_bubble::mojom::HelpBubbleHandlerFactory,
-      public ContextualSearchboxHandler::ScreenshareDelegate,
+      public ContextualSearchboxScreenshareController::Delegate,
       public ui::SimpleMenuModel::Delegate {
  public:
   explicit OmniboxEverywhereUI(content::WebUI* web_ui);
   OmniboxEverywhereUI(const OmniboxEverywhereUI&) = delete;
   OmniboxEverywhereUI& operator=(const OmniboxEverywhereUI&) = delete;
+
+  enum ScreenshotMenuCommand {
+    kScreenshotEntireScreen = 1,
+    kScreenshotWindow,
+    kScreenshotRegion,
+  };
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(OmniboxEverywhereScreenshareOption)
+  enum class ScreenshareOption {
+    kEntireScreen = 0,
+    kWindow = 1,
+    kRegion = 2,
+    kMaxValue = kRegion,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:OmniboxEverywhereScreenshareOption)
+
   ~OmniboxEverywhereUI() override;
 
   static constexpr std::string_view GetWebUIName() {
@@ -120,6 +142,13 @@ class OmniboxEverywhereUI
   // button. `anchor_rect` is in WebUI viewport coordinates (CSS DIPs).
   void ShowContextActionMenu(const gfx::Rect& anchor_rect);
 
+  // Computes the screen point for anchoring the native context menu given the
+  // entrypoint bounding box in WebUI viewport coordinates and container bounds.
+  // Handles both LTR and RTL anchor_rect bounds.
+  static gfx::Point CalculateContextMenuAnchorPoint(
+      const gfx::Rect& anchor_rect,
+      const gfx::Rect& container_bounds);
+
   // omnibox_everywhere_debug::mojom::PageHandlerFactory:
   void BindInterface(
       mojo::PendingReceiver<omnibox_everywhere_debug::mojom::PageHandlerFactory>
@@ -145,13 +174,15 @@ class OmniboxEverywhereUI
   OmniboxEverywhereHandler* omnibox_handler() { return omnibox_handler_.get(); }
   OmniboxEverywherePageHandler* page_handler() { return page_handler_.get(); }
 
+  static bool IsScreenshotCommandEnabled(ContextualSearchboxHandler* handler);
+
   // TODO(b/555331826): Clean up handler retrieval to avoid inspecting handler
   // instantiation state.
   // Returns the active ContextualSearchboxHandler (either composebox_handler_
   // or omnibox_handler_).
-  ContextualSearchboxHandler* GetContextualSearchboxHandler();
+  ContextualSearchboxHandler* GetContextualSearchboxHandler() const;
 
-  // ContextualSearchboxHandler::ScreenshareDelegate:
+  // ContextualSearchboxScreenshareController::Delegate:
   void ShowScreenshotMenu(
       const gfx::Rect& anchor_rect,
       base::WeakPtr<ContextualSearchboxScreenshareController> controller)
@@ -162,6 +193,7 @@ class OmniboxEverywhereUI
                                const RegionCaptureSource& source,
                                RegionSelectedCallback callback) override;
   void OnScreenshotMenuClosed();
+  bool CancelChromeDefaultPicker();
 
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
@@ -178,7 +210,7 @@ class OmniboxEverywhereUI
   void OnContextMenuClosed();
 
   bool is_composebox_mode() const { return is_composebox_mode_; }
-  void set_is_composebox_mode(bool mode);
+  void SetIsComposebox(bool is_composebox);
 
   void AddFileContext(const base::UnguessableToken& token,
                       searchbox::mojom::SelectedFileInfoPtr file_info);
@@ -192,6 +224,11 @@ class OmniboxEverywhereUI
 
  private:
   void OnComposeboxHandlerDisconnected();
+  void ExecuteScreenshotCommand(
+      int command_id,
+      base::WeakPtr<ContextualSearchboxScreenshareController> controller);
+  void ResetScreenshotMenu();
+
   // Buffers upload status notifications that arrive while the WebUI is
   // transitioning to composebox mode before `composebox_handler_` is bound.
   // Flushed once `CreatePageHandler` instantiates `composebox_handler_`.
@@ -201,7 +238,7 @@ class OmniboxEverywhereUI
     std::optional<contextual_search::ContextUploadErrorType> error_type;
   };
 
-  raw_ptr<Profile> profile_;
+  const raw_ptr<Profile> profile_;
   bool is_composebox_mode_ = false;
 
   std::vector<PendingUploadStatus> pending_upload_statuses_;

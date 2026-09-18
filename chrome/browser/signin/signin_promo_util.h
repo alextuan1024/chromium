@@ -15,6 +15,7 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "extensions/buildflags/buildflags.h"
 
+class BatchUploadService;
 class Profile;
 
 namespace signin_metrics {
@@ -126,12 +127,21 @@ inline constexpr signin_metrics::AccessPoint
     kHistoryOptinAvatarPromoAccessPoint =
         signin_metrics::AccessPoint::kHistorySyncOptinExpansionPillOnStartup;
 
+// Returns whether a sign in can be offered to `profile`, for the account that
+// would be used in promos. Returns `false` if signing in is not possible, e.g.
+// when sign in is disallowed by the `BrowserSignin` enterprise policy.
+bool CanOfferSignInForPromos(Profile& profile);
+
 // Based on the `profile` current state, compute the data to be shown for the
 // promos, if any, based on the promo priority and the profile state. The promo
 // between the ProfileMenu and the AvatarButton should always be aligned.
+// If `allow_batch_upload_promos` is false, batch upload promos will not be
+// considered for `ProfileMenuAvatarButtonPromoInfo::type` (though
+// `local_data_count` is still computed).
 void ComputeProfileMenuAvatarButtonPromoInfo(
     Profile& profile,
-    base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)> result_callback);
+    base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)> result_callback,
+    bool allow_batch_upload_promos);
 
 // This class manages the Signin State and Used/Shown count for the AvatarButton
 // promos based on the `ProfileMenuAvatarButtonPromoInfo::Type` that is
@@ -143,11 +153,13 @@ class AvatarButtonPromoManager : public signin::IdentityManager::Observer {
   AvatarButtonPromoManager(
       signin::IdentityManager* identity_manager,
       signin::AccountPreviewDataService* account_preview_data_service,
+      BatchUploadService* batch_upload_service,
       PrefService* pref_service);
   // Used only for testing.
   AvatarButtonPromoManager(
       signin::IdentityManager* identity_manager,
       signin::AccountPreviewDataService* account_preview_data_service,
+      BatchUploadService* batch_upload_service,
       PrefService* pref_service,
       int max_shown_count,
       int max_used_count);
@@ -182,6 +194,7 @@ class AvatarButtonPromoManager : public signin::IdentityManager::Observer {
   raw_ptr<PrefService> pref_service_;
   raw_ptr<signin::AccountPreviewDataService> account_preview_data_service_ =
       nullptr;
+  raw_ptr<BatchUploadService> batch_upload_service_ = nullptr;
 
   const int max_shown_count_ = 0;
   const int max_used_count_ = 0;

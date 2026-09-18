@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "base/callback_list.h"
+#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -30,6 +31,15 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+
+namespace content {
+class NavigationHandle;
+struct OpenURLParams;
+}  // namespace content
+
+namespace input {
+struct NativeWebKeyboardEvent;
+}  // namespace input
 
 class ReadAnythingController;
 class ReadAnythingService;
@@ -157,6 +167,21 @@ class ReadAnythingController : public tabs::ContentsObservingTabFeature {
   PresentationState GetPresentationState() const;
 
   void SetPresentationState(PresentationState new_state);
+
+  // Handles OpenURL requests originating from Reading Mode WebUI instances
+  // (both side panel and immersive views). Enforces security policies
+  // (restricting schemes to web schemes, validating transient user activation,
+  // and demoting dangerous dispositions) before delegating to the main tab's
+  // WebContentsDelegate.
+  content::WebContents* OpenURLFromTab(
+      content::WebContents* source,
+      const content::OpenURLParams& params,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback);
+
+  // Handles Escape key press to exit fullscreen via ExclusiveAccessManager.
+  // Returns true if the event was handled.
+  bool HandleEscapeKey(const input::NativeWebKeyboardEvent& event);
 
   void OnDistillationStateChanged(DistillationState new_state);
 

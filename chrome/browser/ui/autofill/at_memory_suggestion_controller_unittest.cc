@@ -100,7 +100,7 @@ class AtMemorySuggestionControllerTest
     client().suggestion_controller(manager).Show(
         AutofillSuggestionController::GenerateSuggestionUiSessionId(),
         std::move(suggestions),
-        AutofillSuggestionTriggerSource::kAtMemoryTriggerString,
+        AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl,
         AutoselectFirstSuggestion(false),
         AutofillSuggestionsIgnoreFocusLoss(false),
         /*search_bar_initial_value=*/{});
@@ -170,7 +170,7 @@ TEST_F(AtMemorySuggestionControllerTest, RecreatesControllerIfDelegateChanges) {
           PopupControllerCommon(manager1.driver().GetFrameToken(), {},
                                 base::i18n::UNKNOWN_DIRECTION),
           /*form_control_ax_id=*/0,
-          AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+          AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
   content::RenderFrameHost* subframe = CreateAndNavigateChildFrame(
       main_frame(), GURL("https://bar.com/"), "subframe");
@@ -187,7 +187,7 @@ TEST_F(AtMemorySuggestionControllerTest, RecreatesControllerIfDelegateChanges) {
           PopupControllerCommon(manager2.driver().GetFrameToken(), {},
                                 base::i18n::UNKNOWN_DIRECTION),
           /*form_control_ax_id=*/0,
-          AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+          AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
   EXPECT_NE(controller1_weak.get(), controller2_weak.get());
 
@@ -206,7 +206,7 @@ TEST_F(AtMemorySuggestionControllerTest, RecyclesControllerIfDelegateIsSame) {
           PopupControllerCommon(manager1.driver().GetFrameToken(), {},
                                 base::i18n::UNKNOWN_DIRECTION),
           /*form_control_ax_id=*/0,
-          AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+          AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
   base::WeakPtr<AutofillSuggestionController> controller2_weak =
       AutofillSuggestionController::GetOrCreate(
@@ -215,7 +215,7 @@ TEST_F(AtMemorySuggestionControllerTest, RecyclesControllerIfDelegateIsSame) {
           PopupControllerCommon(manager1.driver().GetFrameToken(), {},
                                 base::i18n::UNKNOWN_DIRECTION),
           /*form_control_ax_id=*/0,
-          AutofillSuggestionTriggerSource::kAtMemoryTriggerString);
+          AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl);
 
   EXPECT_EQ(controller1_weak.get(), controller2_weak.get());
 
@@ -261,7 +261,7 @@ TEST_F(AtMemorySuggestionControllerTest, DelegateRouting) {
   std::vector<Suggestion> suggestions = {parent};
   controller->Show(
       AutofillSuggestionController::GenerateSuggestionUiSessionId(),
-      suggestions, AutofillSuggestionTriggerSource::kAtMemoryTriggerString,
+      suggestions, AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl,
       AutoselectFirstSuggestion(false),
       AutofillSuggestionsIgnoreFocusLoss(false),
       /*search_bar_initial_value=*/{});
@@ -282,7 +282,7 @@ TEST_F(AtMemorySuggestionControllerTest, DelegateRouting) {
           testing::Field(
               &AutofillSuggestionDelegate::SuggestionMetadata::multi_index,
               std::vector<size_t>{0})));
-  controller->OnSuggestionSelected(0);
+  controller->OnSuggestionAccepted(0);
 
   // OnChildSuggestionsShown routes to OnSuggestionsShown with parent metadata.
   EXPECT_CALL(mock_delegate,

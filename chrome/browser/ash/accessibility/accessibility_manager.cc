@@ -289,7 +289,8 @@ struct ReadDlcFileResponse {
 // Reads the contents of a DLC file specified by `path`. Must run asynchronously
 // on a new ThreadPool.
 ReadDlcFileResponse ReadDlcFile(base::FilePath path) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
 
@@ -322,7 +323,8 @@ void OnReadDlcFile(GetTtsDlcContentsCallback callback,
 }
 
 std::optional<FaceGazeAssets> CreateFaceGazeAssets(base::FilePath base_path) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
   FaceGazeAssets assets;
@@ -345,7 +347,8 @@ std::optional<FaceGazeAssets> CreateFaceGazeAssets(base::FilePath base_path) {
 }
 
 std::optional<TenjiData> CreateTenjiData(base::FilePath base_path) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
   TenjiData data;
@@ -366,7 +369,8 @@ std::optional<TenjiData> CreateTenjiData(base::FilePath base_path) {
 }
 
 std::optional<PumpkinData> CreatePumpkinData(base::FilePath base_pumpkin_path) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
   PumpkinData data;
@@ -569,10 +573,6 @@ AccessibilityManager::AccessibilityManager(
     NOTREACHED();
   }
 
-  const bool enable_v3_manifest =
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ::switches::kEnableExperimentalAccessibilityManifestV3);
-
   accessibility_common_extension_loader_ =
       base::WrapUnique(new AccessibilityExtensionLoader(
           extension_misc::kAccessibilityCommonExtensionId,
@@ -587,11 +587,11 @@ AccessibilityManager::AccessibilityManager(
   const bool enable_chromevox_v3_manifest =
       ::features::IsAccessibilityManifestV3EnabledForChromeVox();
   const base::FilePath::CharType* chromevox_manifest_filename =
-      enable_v3_manifest || enable_chromevox_v3_manifest
+      enable_chromevox_v3_manifest
           ? extension_misc::kChromeVoxManifestV3Filename
           : extension_misc::kChromeVoxManifestFilename;
   const base::FilePath::CharType* chromevox_guest_manifest_filename =
-      enable_v3_manifest || enable_chromevox_v3_manifest
+      enable_chromevox_v3_manifest
           ? extension_misc::kChromeVoxGuestManifestV3Filename
           : extension_misc::kChromeVoxGuestManifestFilename;
 
@@ -997,9 +997,8 @@ void AccessibilityManager::EnableReducedAnimations(bool enabled) {
 }
 
 bool AccessibilityManager::IsReducedAnimationsEnabled() const {
-  return ::features::IsAccessibilityReducedAnimationsEnabled() && profile_ &&
-         profile_->GetPrefs()->GetBoolean(
-             prefs::kAccessibilityReducedAnimationsEnabled);
+  return profile_ && profile_->GetPrefs()->GetBoolean(
+                         prefs::kAccessibilityReducedAnimationsEnabled);
 }
 
 void AccessibilityManager::EnableAlwaysShowScrollbars(bool enabled) {
@@ -1706,7 +1705,7 @@ void AccessibilityManager::OnActiveOutputNodeChanged() {
 }
 
 void AccessibilityManager::OnProfileWillBeDestroyed(Profile* profile) {
-  DCHECK_EQ(profile_, profile);
+  CHECK_EQ(profile_, profile, base::NotFatalUntil::M160);
   SetProfile(nullptr);
 }
 
@@ -1715,9 +1714,10 @@ void AccessibilityManager::SetProfile(Profile* profile) {
     return;
 
   if (profile_)
-    DCHECK(profile_observation_.IsObservingSource(profile_.get()));
+    CHECK(profile_observation_.IsObservingSource(profile_.get()),
+          base::NotFatalUntil::M160);
   profile_observation_.Reset();
-  DCHECK(!profile_observation_.IsObserving());
+  CHECK(!profile_observation_.IsObserving(), base::NotFatalUntil::M160);
 
   pref_change_registrar_.reset();
   local_state_pref_change_registrar_.reset();
@@ -1870,7 +1870,7 @@ void AccessibilityManager::SetProfile(Profile* profile) {
 void AccessibilityManager::SetProfileByUser(const user_manager::User* user) {
   Profile* profile = Profile::FromBrowserContext(
       BrowserContextHelper::Get()->GetBrowserContextByUser(user));
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   SetProfile(profile);
 }
 
@@ -1961,12 +1961,10 @@ void AccessibilityManager::UpdateChromeOSAccessibilityHistograms() {
         prefs->GetBoolean(prefs::kAccessibilityAutoclickEnabled);
     base::UmaHistogramBoolean("Accessibility.CrosAutoclick", autoclick_enabled);
 
-    if (::features::IsAccessibilityReducedAnimationsEnabled()) {
-      bool reduced_animations_enabled =
-          prefs->GetBoolean(prefs::kAccessibilityReducedAnimationsEnabled);
-      base::UmaHistogramBoolean("Accessibility.CrosReducedAnimations",
-                                reduced_animations_enabled);
-    }
+    bool reduced_animations_enabled =
+        prefs->GetBoolean(prefs::kAccessibilityReducedAnimationsEnabled);
+    base::UmaHistogramBoolean("Accessibility.CrosReducedAnimations",
+                              reduced_animations_enabled);
 
     int caret_blink_interval_ms =
         prefs->GetInteger(prefs::kAccessibilityCaretBlinkInterval);
@@ -2153,7 +2151,7 @@ void AccessibilityManager::OnExtensionUnloaded(
     extensions::VirtualKeyboardAPI* api =
         extensions::BrowserContextKeyedAPIFactory<
             extensions::VirtualKeyboardAPI>::Get(browser_context);
-    DCHECK(api);
+    CHECK(api, base::NotFatalUntil::M160);
     api->delegate()->SetRequestedKeyboardState(
         extensions::api::virtual_keyboard_private::KeyboardState::kAuto);
   }
@@ -2240,7 +2238,8 @@ void AccessibilityManager::PostUnloadChromeVox() {
 }
 
 void AccessibilityManager::CreateChromeVoxPanel() {
-  DCHECK(!chromevox_panel_ && spoken_feedback_enabled());
+  CHECK(!chromevox_panel_ && spoken_feedback_enabled(),
+        base::NotFatalUntil::M160);
   chromevox_panel_ = new ChromeVoxPanel(profile_);
   chromevox_panel_widget_observer_ =
       std::make_unique<AccessibilityPanelWidgetObserver>(
@@ -2974,14 +2973,14 @@ void AccessibilityManager::UpdateDictationNotification() {
 }
 
 speech::LanguageCode AccessibilityManager::GetDictationLanguageCode() {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   return speech::GetLanguageCode(
       profile_->GetPrefs()->GetString(prefs::kAccessibilityDictationLocale));
 }
 
 void AccessibilityManager::InstallFaceGazeAssets(
     InstallFaceGazeAssetsCallback callback) {
-  DCHECK(!callback.is_null());
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
   if (!IsFaceGazeEnabled()) {
     std::move(callback).Run(std::nullopt);
     return;
@@ -3043,7 +3042,7 @@ void AccessibilityManager::OnFaceGazeAssetsCreated(
 
 void AccessibilityManager::InstallPumpkinForDictation(
     InstallPumpkinCallback callback) {
-  DCHECK(!callback.is_null());
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
   if (!IsDictationEnabled()) {
     std::move(callback).Run(std::nullopt);
     return;

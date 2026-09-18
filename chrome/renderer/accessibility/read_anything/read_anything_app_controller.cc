@@ -17,6 +17,7 @@
 #include "base/check_deref.h"
 #include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/tag_converters.h"
 #include "base/json/string_escape.h"
@@ -36,8 +37,8 @@
 #include "chrome/renderer/accessibility/read_anything/read_aloud_traversal_utils.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_app_model.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_distiller.h"
+#include "chrome/renderer/accessibility/read_anything/read_anything_distiller_factory.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_node_utils.h"
-#include "chrome/renderer/accessibility/read_anything/screen2x_distiller.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/translate/core/common/translate_constants.h"
 #include "content/public/renderer/chrome_object_extensions_utils.h"
@@ -174,12 +175,10 @@ ReadAnythingAppController::ReadAnythingAppController(
                           weak_ptr_factory_.GetWeakPtr()));
   renderer_load_triggered_time_ms_ = base::TimeTicks::Now();
   if (features::IsReadAnythingDistillerRefactorEnabled()) {
-    active_distiller_ = std::make_unique<Screen2xDistiller>(
+    distiller_factory_ = std::make_unique<ReadAnythingDistillerFactory>(
         render_frame,
         base::BindRepeating(&ReadAnythingAppModel::is_screen_ai_service_ready,
-                            base::Unretained(&model_)),
-        base::BindRepeating(&ReadAnythingAppController::OnDistillationComplete,
-                            weak_ptr_factory_.GetWeakPtr()));
+                            base::Unretained(&model_)));
   } else {
     distiller_ = std::make_unique<AXTreeDistiller>(
         render_frame,
@@ -202,6 +201,8 @@ ReadAnythingAppController::~ReadAnythingAppController() {
 }
 
 void ReadAnythingAppController::OnDestruct() {
+  distiller_factory_.reset();
+  active_distiller_.reset();
   self_.Clear();
 }
 
@@ -226,8 +227,7 @@ void ReadAnythingAppController::OnNodeWillBeDeleted(ui::AXTree* tree,
     return;
   }
   ui::AXNodeID node_id = CHECK_DEREF(node).id();
-  if (model_.GetCurrentlyVisibleNodes()->contains(node_id)) {
-    displayed_nodes_pending_deletion_.insert(node_id);
+  if (model_.OnNodeWillBeDeleted(node_id)) {
     if (!read_aloud_model_.speech_playing()) {
       ExecuteJavaScript("chrome.readingMode.onNodeWillBeDeleted(" +
                         base::ToString(node_id) + ")");
@@ -239,15 +239,14 @@ void ReadAnythingAppController::OnNodeDeleted(ui::AXTree* tree,
                                               ui::AXNodeID node_id) {
   // Node deletions are ignored for Readability because the Readability panel
   // renders a static HTML snapshot and does not dynamically update its content.
-  if (model_.is_readability_next_distillation_method()) {
+  if (model_.is_readability_next_distillation_method() ||
+      tree->GetAXTreeID() != model_.active_tree_id()) {
     return;
   }
 
-  if (!displayed_nodes_pending_deletion_.contains(node_id)) {
+  if (!model_.OnNodeDeleted(node_id)) {
     return;
   }
-
-  displayed_nodes_pending_deletion_.erase(node_id);
 
   // For Google Docs, we extract text from the "annotated canvas" element
   // nodes, which hold the currently visible text on screen. As the user
@@ -257,7 +256,7 @@ void ReadAnythingAppController::OnNodeDeleted(ui::AXTree* tree,
   // unexpected behavior (e.g., an empty side panel). Therefore, Google Docs
   // require special handling to ensure correct text extraction and avoid
   // these issues.
-  if (!displayed_nodes_pending_deletion_.empty() || IsGoogleDocs()) {
+  if (!model_.displayed_nodes_pending_deletion().empty() || IsGoogleDocs()) {
     return;
   }
 
@@ -455,7 +454,11 @@ void ReadAnythingAppController::ProcessModelUpdates() {
       model_.set_requires_readability_distillation(false);
     } else {
       PrepareForNewContentDistillation();
-      page_handler_->RequestReadabilityDistillation();
+      // In the legacy path, distillation results are sent via UpdateContent()
+      // rather than this callback, so the callback does not need to be handled.
+      // TODO(b/543987370): Implement readability interface path when refactor
+      // flag is enabled.
+      page_handler_->RequestReadabilityDistillation(base::DoNothing());
     }
   }
 
@@ -575,6 +578,11 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
   // seen), log session metrics for the previous tree.
   if (model_.active_tree_id() != ui::AXTreeIDUnknown()) {
     RecordSessionMetricsIfShownOrRecentlyHidden();
+    // If Line Focus is still active, start a new session so subsequent
+    // interactions continue to be tracked.
+    if (IsLineFocusOn() && !model_.will_hide() && !IsHidden()) {
+      StartLineFocusSession();
+    }
   }
 
   PrepareForNewContentDistillation();
@@ -624,7 +632,10 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
       SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
                                kDistillationInProgress);
 
-      page_handler_->RequestReadabilityDistillation();
+      // Distillation data will be received via this callback once refactored.
+      // TODO(b/543987370): Replace with ReadabilityDistiller to handle the
+      // callback.
+      page_handler_->RequestReadabilityDistillation(base::DoNothing());
     }
     return;
   }
@@ -793,6 +804,31 @@ void ReadAnythingAppController::OnAXTreeDestroyed(const ui::AXTreeID& tree_id) {
   model_.OnAXTreeDestroyed(tree_id);
 }
 
+void ReadAnythingAppController::UpdateActiveDistiller() {
+  CHECK(distiller_factory_);
+  ReadAnythingAppModel::DistillationMethod method =
+      model_.next_distillation_method();
+  if (active_distiller_ &&
+      active_distiller_->GetDistillationMethod() == method) {
+    return;
+  }
+  // Recreating active_distiller_ destructs the previous instance,
+  // canceling its in-flight operations and dropping pending callbacks.
+  active_distiller_ = distiller_factory_->CreateDistiller(
+      method,
+      base::BindRepeating(&ReadAnythingAppController::OnDistillationComplete,
+                          weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ReadAnythingAppController::ExecuteDistillation(
+    const DistillationRequest& request) {
+  // Ensure the active distiller matches the model's next distillation method
+  // before dispatching the request.
+  UpdateActiveDistiller();
+  CHECK(active_distiller_);
+  active_distiller_->Distill(request);
+}
+
 void ReadAnythingAppController::Distill() {
   if (IsUpdateProcessingPaused()) {
     // When distillation is in progress, the model may have queued up tree
@@ -835,7 +871,7 @@ void ReadAnythingAppController::Distill() {
     DistillationRequest request;
     request.tree = tree;
     request.ukm_source_id = model_.GetUkmSourceId();
-    active_distiller_->Distill(request);
+    ExecuteDistillation(request);
   } else {
     std::unique_ptr<
         ui::AXTreeSource<const ui::AXNode*, ui::AXTreeData*, ui::AXNodeData>>
@@ -1440,10 +1476,6 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
                  &ReadAnythingAppController::GetHighlightForCurrentSegmentIndex)
       .SetMethod("getValidatedFontName",
                  &ReadAnythingAppController::GetValidatedFontName)
-      .SetMethod("onScrolledToBottom",
-                 &ReadAnythingAppController::OnScrolledToBottom)
-      .SetProperty("isDocsLoadMoreButtonVisible",
-                   &ReadAnythingAppController::IsDocsLoadMoreButtonVisible)
       .SetMethod("sendGetPresentationStateRequest",
                  &ReadAnythingAppController::SendGetPresentationStateRequest)
       .SetMethod("togglePresentation",
@@ -2614,9 +2646,16 @@ void ReadAnythingAppController::OnReadingModeHidden(bool tab_active) {
 
 void ReadAnythingAppController::OnReadingModeShown(
     read_anything::mojom::ReadAnythingOpenTrigger open_trigger) {
-  // TODO (crbug.com/494307454): Add test to verify that duplicate calls of
-  // OnReadingModeShown() won't affect Read Aloud's audio playback state (other
-  // than the playOnOpen state).
+  model_.set_will_hide(false);
+
+  // The renderer process continues when reading mode is hidden, so the WebUI
+  // still considers its Line Focus session active and will not start a new one
+  // when Reading Mode is reopened. Since the previous session was logged and
+  // reset on hide, start a new session here if Line Focus is still on.
+  if (IsLineFocusOn() && !model_.line_focus_session_start_time().has_value()) {
+    StartLineFocusSession();
+  }
+
   if (open_trigger == read_anything::mojom::ReadAnythingOpenTrigger::
                           kListenToThisPageContextMenu) {
     ExecuteJavaScript("chrome.readingMode.setPlayOnOpen(true);");
@@ -2914,20 +2953,6 @@ void ReadAnythingAppController::OnUrlInformationSet() {
   read_aloud_model_.LogSpeechStop(
       model_.IsReload() ? ReadAloudAppModel::ReadAloudStopSource::kReloadPage
                         : ReadAloudAppModel::ReadAloudStopSource::kChangePage);
-}
-
-void ReadAnythingAppController::OnScrolledToBottom() {
-  if (IsGoogleDocs()) {
-    // Scroll to the last display node shown on the Reading Mode side panel
-    // TODO (b/356935604): Investigate optimal scroll position
-    page_handler_->ScrollToTargetNode(
-        model_.active_tree_id(), *model_.GetCurrentlyVisibleNodes()->rbegin());
-  }
-}
-
-bool ReadAnythingAppController::IsDocsLoadMoreButtonVisible() const {
-  return (features::IsReadAnythingDocsLoadMoreButtonEnabled() &&
-          IsGoogleDocs());
 }
 
 void ReadAnythingAppController::UpdateDependencyParserModel(

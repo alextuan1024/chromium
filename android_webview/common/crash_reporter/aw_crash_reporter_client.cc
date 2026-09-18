@@ -12,6 +12,7 @@
 #include "android_webview/common/crash_reporter/crash_keys.h"
 #include "base/android/java_exception_reporter.h"
 #include "base/android/jni_android.h"
+#include "base/android/jni_string.h"
 #include "base/base_paths_android.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
@@ -23,9 +24,9 @@
 #include "base/scoped_native_library.h"
 #include "components/crash/core/app/crash_reporter_client.h"
 #include "components/crash/core/app/crashpad.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/version_info/android/channel_getter.h"
 #include "components/version_info/version_info.h"
-#include "components/version_info/version_info_values.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/crash_client_jni/AwCrashReporterClient_jni.h"
@@ -57,7 +58,7 @@ class AwCrashReporterClient : public crash_reporter::CrashReporterClient {
 
   void GetProductInfo(ProductInfo* product_info) override {
     *product_info = ProductInfo(
-        "AndroidWebView", PRODUCT_VERSION,
+        "AndroidWebView", version_info::GetVersionNumber(),
         version_info::GetChannelString(version_info::android::GetChannel()));
   }
 
@@ -142,6 +143,14 @@ void EnableCrashReporter(const std::string& process_type) {
 
 bool CrashReporterEnabled() {
   return g_enabled;
+}
+
+static void JNI_AwCrashReporterClient_SetProcessNameCrashKey(
+    JNIEnv* env,
+    const std::string& process_name) {
+  static ::crash_reporter::CrashKeyString<64> crash_key(
+      crash_keys::kAppProcessName);
+  crash_key.Set(process_name);
 }
 
 }  // namespace android_webview

@@ -36,7 +36,7 @@ struct ProfilerNodeStackHashTraits : HashTraits<const v8::CpuProfileNode*> {
     return a->GetNodeId() == b->GetNodeId();
   }
 
-  static unsigned GetHash(const v8::CpuProfileNode* node) {
+  static uint32_t GetHash(const v8::CpuProfileNode* node) {
     return node->GetNodeId();
   }
 
@@ -52,7 +52,7 @@ struct ProfilerNodeFrameHashTraits : HashTraits<const v8::CpuProfileNode*> {
            a->GetColumnNumber() == b->GetColumnNumber();
   }
 
-  static unsigned GetHash(const v8::CpuProfileNode* node) {
+  static uint32_t GetHash(const v8::CpuProfileNode* node) {
     return blink::GetHash(node->GetFunctionNameStr()) ^
            blink::GetHash(node->GetScriptResourceNameStr()) ^
            blink::GetHash(node->GetLineNumber()) ^
@@ -180,6 +180,10 @@ class CORE_EXPORT ProfilerTraceBuilder final
   FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest, AddEmbedderStateMarker);
   FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest,
                            AddEmbedderStateMarkerFeatureDisabled);
+  FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest,
+                           SampleTimestampClampingNonCrossOriginIsolated);
+  FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest,
+                           SampleTimestampClampingCrossOriginIsolated);
 };
 
 }  // namespace blink

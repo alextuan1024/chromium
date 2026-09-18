@@ -36,6 +36,7 @@
 #include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
+#include "components/autofill/core/browser/geo/phone_number_i18n.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_l10n_util.h"
 #include "third_party/libphonenumber/phonenumber_api.h"
@@ -233,32 +234,11 @@ std::optional<PhoneNumber> AutofillProfileComparator::MergePhoneNumbers(
     return create_phone_number(new_phone_number);
   }
 
-  // TODO(crbug.com/550246835): Modify ::autofill::i18n::PhoneNumbersMatch to
-  // support SHORT_NSN_MATCH and just call that instead of accessing the
-  // underlying utility library directly?
-
-  // Parse and compare the phone numbers.
-  // The phone number util library needs the numbers in utf8.
-  PhoneNumberUtil* phone_util = PhoneNumberUtil::GetInstance();
-  switch (phone_util->IsNumberMatchWithTwoStrings(
-      base::UTF16ToUTF8(new_phone_number),
-      base::UTF16ToUTF8(old_phone_number))) {
-    case PhoneNumberUtil::INVALID_NUMBER:
-    case PhoneNumberUtil::NO_MATCH:
-      return std::nullopt;
-    case PhoneNumberUtil::SHORT_NSN_MATCH:
-    case PhoneNumberUtil::NSN_MATCH:
-    case PhoneNumberUtil::EXACT_MATCH:
-      // A merge is possible.
-      break;
-  }
-
   // Figure out a country code hint.
-  // TODO(crbug.com/40221178) `GetNonEmptyOf()` prefers `new_profile` in case
-  // both are non empty.
-  std::string region = base::UTF16ToUTF8(GetNonEmptyOf(
-      new_profile, old_profile,
-      AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true)));
+  // TODO(crbug.com/40221178) `GetNonEmptyCountryCode()` prefers `new_profile`
+  // in case both are non empty.
+  std::string region =
+      base::UTF16ToUTF8(GetNonEmptyCountryCode(new_profile, old_profile));
   // TODO(crbug.com/503704299): Remove this validation once profiles with
   // invalid country codes are cleaned up.
   if (region.empty() || !data_util::IsValidCountryCode(region)) {
@@ -266,6 +246,7 @@ std::optional<PhoneNumber> AutofillProfileComparator::MergePhoneNumbers(
   }
 
   // Parse the phone numbers.
+  PhoneNumberUtil* phone_util = PhoneNumberUtil::GetInstance();
   ::i18n::phonenumbers::PhoneNumber n1;
   if (phone_util->ParseAndKeepRawInput(base::UTF16ToUTF8(new_phone_number),
                                        region, &n1) !=
@@ -277,6 +258,10 @@ std::optional<PhoneNumber> AutofillProfileComparator::MergePhoneNumbers(
   if (phone_util->ParseAndKeepRawInput(base::UTF16ToUTF8(old_phone_number),
                                        region, &n2) !=
       PhoneNumberUtil::NO_PARSING_ERROR) {
+    return std::nullopt;
+  }
+
+  if (!i18n::PhoneNumbersMatch(n1, n2, /*support_short_nsn_match=*/true)) {
     return std::nullopt;
   }
 
@@ -295,8 +280,10 @@ std::optional<PhoneNumber> AutofillProfileComparator::MergePhoneNumbers(
   // - Both are not in international format, so their country codes both default
   //   to `region`.
   // - One of them is in international format, so we prefer that country code.
-  CHECK(HasInternationalCountryCode(n1) != HasInternationalCountryCode(n2) ||
-        n1.country_code() == n2.country_code());
+  if (HasInternationalCountryCode(n1) == HasInternationalCountryCode(n2) &&
+      n1.country_code() != n2.country_code()) {
+    return std::nullopt;
+  }
   merged_number.set_country_code(
       HasInternationalCountryCode(n1) ? n1.country_code() : n2.country_code());
   merged_number.set_national_number(
@@ -478,15 +465,14 @@ AutofillProfileComparator::CompareTokens(std::u16string_view s1,
   return DIFFERENT_TOKENS;
 }
 
-std::u16string AutofillProfileComparator::GetNonEmptyOf(
+std::u16string AutofillProfileComparator::GetNonEmptyCountryCode(
     const AutofillProfile& p1,
-    const AutofillProfile& p2,
-    AutofillType t) const {
-  const std::u16string& s1 = p1.GetInfo(t, app_locale_);
+    const AutofillProfile& p2) const {
+  const std::u16string& s1 = p1.GetRawInfo(ADDRESS_HOME_COUNTRY);
   if (!s1.empty()) {
     return s1;
   }
-  return p2.GetInfo(t, app_locale_);
+  return p2.GetRawInfo(ADDRESS_HOME_COUNTRY);
 }
 
 }  // namespace autofill

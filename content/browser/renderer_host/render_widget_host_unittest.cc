@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -16,6 +17,7 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
@@ -40,6 +42,7 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
+#include "content/browser/renderer_host/text_input_manager.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/storage_partition_impl.h"
@@ -423,6 +426,8 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
   bool handle_wheel_event_called() const { return handle_wheel_event_called_; }
 
   bool unresponsive_timer_fired() const { return unresponsive_timer_fired_; }
+  void reset_unresponsive_timer_fired() { unresponsive_timer_fired_ = false; }
+  int renderer_responsive_count() const { return renderer_responsive_count_; }
 
   MockRenderViewHostDelegateView* mock_delegate_view() {
     return render_view_host_delegate_view_.get();
@@ -469,6 +474,22 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
 
   void set_is_fullscreen(bool enabled) { is_fullscreen_ = enabled; }
 
+  TextInputManager* GetTextInputManager() override {
+    return &text_input_manager_;
+  }
+
+  gfx::Rect ConstrainPopupBounds(const gfx::Rect& bounds) override {
+    if (constrain_popup_bounds_callback_) {
+      return constrain_popup_bounds_callback_.Run(bounds);
+    }
+    return RenderWidgetHostDelegate::ConstrainPopupBounds(bounds);
+  }
+
+  void set_constrain_popup_bounds_callback(
+      base::RepeatingCallback<gfx::Rect(const gfx::Rect&)> callback) {
+    constrain_popup_bounds_callback_ = std::move(callback);
+  }
+
   MOCK_METHOD(bool,
               IsWaitingForPointerLockPrompt,
               (RenderWidgetHostImpl * host),
@@ -502,6 +523,10 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       RenderWidgetHostImpl* render_widget_host,
       base::RepeatingClosure hang_monitor_restarter) override {
     unresponsive_timer_fired_ = true;
+  }
+
+  void RendererResponsive(RenderWidgetHostImpl* render_widget_host) override {
+    ++renderer_responsive_count_;
   }
 
   bool ShouldIgnoreInputEvents() override { return ignore_input_events_; }
@@ -538,6 +563,7 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
   bool handle_wheel_event_called_;
 
   bool unresponsive_timer_fired_;
+  int renderer_responsive_count_ = 0;
 
   bool ignore_input_events_;
 
@@ -553,6 +579,11 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       viz::VerticalScrollDirection::kNull;
 
   bool is_fullscreen_ = false;
+
+  TextInputManager text_input_manager_;
+
+  base::RepeatingCallback<gfx::Rect(const gfx::Rect&)>
+      constrain_popup_bounds_callback_;
 
   VisibleTimeRequestTrigger visible_time_request_trigger_;
 };
@@ -944,6 +975,55 @@ TEST_F(RenderWidgetHostTest, DoNotAcceptPopupBoundsUntilScreenRectsAcked) {
   // And the host must accept them now as the screen rects have been
   // acked.
   EXPECT_EQ(new_popup_view_bounds, view_->GetViewBounds());
+}
+
+TEST_F(RenderWidgetHostTest, SetPopupBoundsConstrainedByDelegate) {
+  ClearScreenRects();
+  base::RunLoop().RunUntilIdle();
+
+  // Default delegate implementation does not constrain bounds.
+  gfx::Rect unconstrained_bounds(5, 5, 20, 20);
+  EXPECT_EQ(delegate_->ConstrainPopupBounds(unconstrained_bounds),
+            unconstrained_bounds);
+
+  // Set a custom constraint on the delegate.
+  delegate_->set_constrain_popup_bounds_callback(
+      base::BindRepeating([](const gfx::Rect& bounds) {
+        gfx::Rect constrained = bounds;
+        if (constrained.y() < 100) {
+          constrained.set_y(100);
+        }
+        return constrained;
+      }));
+
+  // When SetPopupBounds is called, bounds are constrained by the delegate.
+  static_cast<blink::mojom::PopupWidgetHost*>(host_.get())
+      ->SetPopupBounds(unconstrained_bounds, base::DoNothing());
+  EXPECT_EQ(gfx::Rect(5, 100, 20, 20), view_->GetViewBounds());
+}
+
+// Tests that oversized popup bounds from the renderer are clamped to the
+// display, since their area would otherwise overflow int browser side.
+TEST_F(RenderWidgetHostTest, PopupBoundsAreClampedToTheDisplay) {
+  // Let the initial screen rects settle, otherwise the popup bounds below are
+  // dropped rather than clamped.
+  ClearScreenRects();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !host_->waiting_for_screen_rects_ack_; }));
+
+  const gfx::Rect work_area =
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
+  ASSERT_FALSE(work_area.IsEmpty());
+
+  constexpr gfx::Rect kHugeBounds(0, 0, 100000, 100000);
+  ASSERT_FALSE(kHugeBounds.size().GetCheckedArea().IsValid());
+  static_cast<blink::mojom::PopupWidgetHost*>(host_.get())
+      ->SetPopupBounds(kHugeBounds, base::DoNothing());
+
+  const gfx::Rect bounds = view_->GetViewBounds();
+  EXPECT_EQ(work_area.width(), bounds.width());
+  EXPECT_EQ(work_area.height(), bounds.height());
+  EXPECT_TRUE(bounds.size().GetCheckedArea().IsValid());
 }
 
 TEST_F(RenderWidgetHostTest, SynchronizeVisualProperties) {
@@ -1530,7 +1610,7 @@ TEST_F(RenderWidgetHostTest, Background) {
   host_->set_owner_delegate(nullptr);
 #endif  // BUILDFLAG(IS_ANDROID)
   host_->SetView(nullptr);
-  view->Destroy();
+  view->DestroyOrDefer();
 }
 
 // Test that the RenderWidgetHost tells the renderer when it is hidden and
@@ -1885,6 +1965,53 @@ TEST_F(RenderWidgetHostTest, InputEventAckTimeoutDisabledForInputWhenHidden) {
   host_->WasShown({} /* record_tab_switch_time_request */);
   WaitForHang();
   EXPECT_TRUE(delegate_->unresponsive_timer_fired());
+}
+
+// Hiding a widget whose renderer is unresponsive must not report the renderer
+// as responsive; only an ack for the pending input does that.
+TEST_F(RenderWidgetHostTest, HidingUnresponsiveWidgetDoesNotReportResponsive) {
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  WaitForHang();
+  ASSERT_TRUE(delegate_->unresponsive_timer_fired());
+  ASSERT_TRUE(host_->IsCurrentlyUnresponsive());
+
+  host_->WasHidden();
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
+  EXPECT_TRUE(host_->IsCurrentlyUnresponsive());
+
+  // The ack for the pending event arrives while hidden: that is a real
+  // recovery and is reported.
+  MockWidgetInputHandler::MessageVector dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  ASSERT_TRUE(dispatched_events[0]->ToEvent());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  EXPECT_EQ(1, delegate_->renderer_responsive_count());
+  EXPECT_FALSE(host_->IsCurrentlyUnresponsive());
+}
+
+// An unresponsive widget that is hidden and shown again with input still in
+// flight re-arms the hang monitor and reports unresponsive again, without an
+// intervening responsive notification.
+TEST_F(RenderWidgetHostTest, ShowingUnresponsiveWidgetRestartsAckTimeout) {
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  WaitForHang();
+  ASSERT_TRUE(delegate_->unresponsive_timer_fired());
+
+  host_->WasHidden();
+  delegate_->reset_unresponsive_timer_fired();
+  WaitForHang();
+  EXPECT_FALSE(delegate_->unresponsive_timer_fired());
+
+  host_->WasShown({} /* record_tab_switch_time_request */);
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
+  // RenderWidgetHostImpl ignores ack timeouts within the hung renderer delay of
+  // being shown, so it takes two timeout cycles to report again.
+  WaitForHang();
+  WaitForHang();
+  EXPECT_TRUE(delegate_->unresponsive_timer_fired());
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
 }
 
 // Test that the hang monitor catches two input events but only one ack.
@@ -2945,6 +3072,63 @@ TEST_F(RenderWidgetHostTest, PasteIntoNode) {
     ASSERT_EQ(1u, dispatched_messages.size());
     EXPECT_EQ("PasteIntoNode", dispatched_messages[0]->name());
   }
+}
+
+TEST_F(RenderWidgetHostTest, GetTextPrecedingSelection) {
+  TextInputManager* text_input_manager = delegate_->GetTextInputManager();
+  ASSERT_TRUE(text_input_manager);
+
+  // Register the view with TextInputManager.
+  view_->GetTextInputManager();
+
+  ui::mojom::TextInputState state;
+  state.type = ui::TEXT_INPUT_TYPE_TEXT;
+  state.value = u"Hello world! How are you?";
+  state.selection = gfx::Range(12, 12);  // Caret after "Hello world!"
+  state.node_id = 42;
+
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+
+  GlobalDOMNodeId matching_node_id;
+  matching_node_id.target_element_dom_id = blink::DOMNodeIdType(42);
+
+  // Retrieve text preceding selection.
+  std::optional<std::u16string_view> text =
+      host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello world!");
+
+  // Caret at start of text.
+  state.selection = gfx::Range(0, 0);
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  text = host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"");
+
+  // Non-empty selection range (selection from index 6 to 11 for "world").
+  // Should return text preceding the selection start (index 6, which is "Hello
+  // ").
+  state.selection = gfx::Range(6, 11);
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  text = host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello ");
+
+  // Target element node ID mismatch.
+  GlobalDOMNodeId different_node_id;
+  different_node_id.target_element_dom_id = blink::DOMNodeIdType(999);
+  EXPECT_EQ(host_->GetTextPrecedingSelection(different_node_id), std::nullopt);
+
+  // Null DOM node ID allows retrieving active state text.
+  GlobalDOMNodeId null_node_id;
+  text = host_->GetTextPrecedingSelection(null_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello ");
+
+  // No text value.
+  state.value = std::nullopt;
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  EXPECT_EQ(host_->GetTextPrecedingSelection(matching_node_id), std::nullopt);
 }
 
 // Tests that vertical scroll direction changes are propagated to the delegate.

@@ -18,6 +18,7 @@ template("generate_dummy_java") {
 template("generate_dummy_android_library") {
   # No underscores to avoid crbug.com/40603958.
   _generate_java_source_target_name = "${target_name}generatejavasource"
+
   generate_dummy_java(_generate_java_source_target_name) {
     class_name = invoker.class_name
   }
@@ -79,7 +80,6 @@ robolectric_library("junit_tests") {
     ":z_impl_factory2_java",
     "//base:base_junit_test_support",
     "//testing/android/junit:junit_test_support",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/junit",
   ]
 }

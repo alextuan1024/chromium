@@ -317,17 +317,13 @@ final class ChromeAndroidTaskImpl
 
                 @Override
                 public void onProfileDestroyed(Profile profile) {
-                    removeAllFeaturesForProfile(profile);
-
                     if (mPendingBrowserWindow != null
                             && mPendingBrowserWindow.getProfile() == profile) {
-                        assert mActivityScopedObjectsDeque.isEmpty();
-
-                        destroyBrowserWindow(
-                                mPendingBrowserWindow, null, mAndroidBrowserWindowObserverNotifier);
-                        mPendingBrowserWindow = null;
-                        return;
+                        throw new IllegalStateException(
+                                "Profile destroyed when an associated browser window is pending");
                     }
+
+                    removeAllFeaturesForProfile(profile);
 
                     var iterator = mActivityScopedObjectsDeque.iterator();
                     while (iterator.hasNext()) {
@@ -772,7 +768,7 @@ final class ChromeAndroidTaskImpl
     public <T extends ChromeAndroidTaskFeature> @Nullable ChromeAndroidTaskFeature addFeature(
             ChromeAndroidTaskFeatureKey featureKey, Supplier<@Nullable T> featureSupplier) {
         ThreadUtils.assertOnUiThread();
-        assertPendingCreateOrIdle();
+        assertCanAddFeature();
 
         ChromeAndroidTaskFeature feature = mFeatures.get(featureKey);
         if (feature != null) {
@@ -861,7 +857,7 @@ final class ChromeAndroidTaskImpl
     @Override
     public void destroy() {
         ThreadUtils.assertOnUiThread();
-        if (mState != State.IDLE) {
+        if (mState == State.DESTROYING || mState == State.DESTROYED || mState == State.UNKNOWN) {
             return;
         }
 
@@ -915,11 +911,9 @@ final class ChromeAndroidTaskImpl
         } else {
             assert browserWindow.getActivityWindowAndroid()
                     == internalActivityScopedObjects.mActivityScopedObjects.mActivityWindowAndroid;
-        }
-        long ptr = browserWindow.getNativePtr();
-        assert ptr != 0 : "Native object has not been created.";
+            long ptr = browserWindow.getNativePtr();
+            assert ptr != 0 : "Native object has not been created.";
 
-        if (internalActivityScopedObjects != null) {
             var profile = browserWindow.getProfile();
             internalActivityScopedObjects
                     .mActivityScopedObjects
@@ -931,7 +925,9 @@ final class ChromeAndroidTaskImpl
 
         // Note: Notify observers immediately before browserWindow.destroy(), and after everything
         // else.
-        browserWindowObserverNotifier.notifyBrowserWindowDestroyed(browserWindow);
+        if (browserWindow.getNativePtr() != 0) {
+            browserWindowObserverNotifier.notifyBrowserWindowDestroyed(browserWindow);
+        }
         browserWindow.destroy();
     }
 
@@ -1768,6 +1764,19 @@ final class ChromeAndroidTaskImpl
     private void assertPendingCreateOrIdle() {
         assert mState == State.IDLE || mState == State.PENDING_CREATE
                 : "This Task is neither pending create nor idle. Current state: " + mState;
+    }
+
+    /**
+     * Asserts that this Task can still accept new {@link ChromeAndroidTaskFeature}s.
+     *
+     * <p>Adding a Feature doesn't depend on the window state, so {@code PENDING_UPDATE} is allowed;
+     * only a Task that's being or has been destroyed rejects new Features.
+     */
+    private void assertCanAddFeature() {
+        assert mState == State.PENDING_CREATE
+                        || mState == State.IDLE
+                        || mState == State.PENDING_UPDATE
+                : "This Task can no longer accept Features. Current state: " + mState;
     }
 
     private static boolean isActiveInternal(TopActivityScopedObjects topActivityScopedObjects) {

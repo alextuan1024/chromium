@@ -26,6 +26,7 @@ import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 import androidx.preference.PreferenceFragmentCompat;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.appbar.AppBarLayout;
 
@@ -34,6 +35,7 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -55,9 +57,13 @@ import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Implementation of {@link SettingsPage.FragmentDelegate} that manages {@link SettingsPage}
@@ -90,6 +96,10 @@ public class SettingsPageFragmentDelegateImpl
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mTitleUpdaterLifecycleCallbacks;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mSettingsMetricsReporter;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mOptionsMenuLifecycleCallbacks;
+    private FragmentManager.@Nullable FragmentLifecycleCallbacks mEdgeToEdgeLifecycleCallbacks;
+    private @MonotonicNonNull Function<View, @Nullable EdgeToEdgePadAdjuster>
+            mEdgeToEdgePadAdjusterGenerator;
+    private final Map<Fragment, EdgeToEdgePadAdjuster> mEdgeToEdgePadAdjusters = new HashMap<>();
     private @Nullable Toolbar mToolbar;
     private @Nullable MultiColumnTitleUpdater mMultiColumnTitleUpdater;
     private @Nullable SettingsSearchCoordinator mSearchCoordinator;
@@ -106,8 +116,6 @@ public class SettingsPageFragmentDelegateImpl
             BottomSheetController bottomSheetController,
             ModalDialogManager modalDialogManager,
             Tab tab) {
-        assert ChromeFeatureList.sSettingsInTab.isEnabled()
-                : "SettingsInTab feature must be enabled to use this class.";
         mActivity = activity;
         mProfile = profile;
         mWindowAndroid = windowAndroid;
@@ -126,8 +134,12 @@ public class SettingsPageFragmentDelegateImpl
     }
 
     @Override
-    public void initSettings(ViewGroup containerView, String initialUrl) {
-        initSettingsInternal(containerView, initialUrl, /* attachToContainer= */ false);
+    public void initSettings(
+            ViewGroup containerView,
+            String initialUrl,
+            Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator) {
+        initSettingsInternal(
+                containerView, initialUrl, padAdjusterGenerator, /* attachToContainer= */ false);
     }
 
     /**
@@ -136,11 +148,18 @@ public class SettingsPageFragmentDelegateImpl
      * tab, multi-tab recreation is not a concern, and tests expect synchronous initialization.
      */
     public void initSettingsForTesting(ViewGroup containerView, String initialUrl) {
-        initSettingsInternal(containerView, initialUrl, /* attachToContainer= */ true);
+        initSettingsInternal(
+                containerView,
+                initialUrl,
+                /* padAdjusterGenerator= */ unused -> null,
+                /* attachToContainer= */ true);
     }
 
     private void initSettingsInternal(
-            ViewGroup containerView, String initialUrl, boolean attachToContainer) {
+            ViewGroup containerView,
+            String initialUrl,
+            Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator,
+            boolean attachToContainer) {
         if (!initialUrl.isEmpty()) {
             mPendingUrl = initialUrl;
         }
@@ -193,6 +212,9 @@ public class SettingsPageFragmentDelegateImpl
         fragmentManager.registerFragmentLifecycleCallbacks(
                 mOptionsMenuLifecycleCallbacks, /* recursive= */ true);
 
+        mEdgeToEdgePadAdjusterGenerator = padAdjusterGenerator;
+        initEdgeToEdgeLifecycleCallbacks(fragmentManager);
+
         // Inflate the settings layout into the container view. Ensure it has the right theme.
         // TODO(crbug.com/521895796): Rename settings_activity.xml since with settings-in-a-tab it
         // doesn't map directly to its own activity.
@@ -238,6 +260,7 @@ public class SettingsPageFragmentDelegateImpl
         var dependencyProvider =
                 new FragmentDependencyProvider(
                         mActivity,
+                        /* shownInTab= */ true,
                         mProfile,
                         windowAndroidSupplier,
                         mActivityResultTracker,
@@ -277,6 +300,9 @@ public class SettingsPageFragmentDelegateImpl
             mSettingsHostFragment.setDependencyProvider(dependencyProvider);
         }
         mSettingsHostFragment.setSaveInstanceStateCallback(this::onSaveInstanceState);
+        if (mSettingsHostFragment.isAttachedToActivity()) {
+            attachEdgeToEdgeAdjusters(mSettingsHostFragment.getHostFragmentManager());
+        }
 
         // If the host fragment view was attached to a different tab's container, attach it to this
         // tab's container instead.
@@ -373,10 +399,8 @@ public class SettingsPageFragmentDelegateImpl
 
         mPendingUrl = null;
 
-        var fragmentClass = SettingsFragmentRegistry.getFragmentClassForUrl(url);
-        if (fragmentClass == null) {
-            fragmentClass = MainSettings.class;
-        }
+        SettingsFragmentRegistry.Resolution resolution = SettingsFragmentRegistry.resolve(url);
+        var fragmentClass = resolution.fragmentClass;
 
         // If navigating to root chrome://settings URL (e.g. via Omnibox),
         // clear any stored initial subpage URL on attached host fragment
@@ -386,10 +410,9 @@ public class SettingsPageFragmentDelegateImpl
             mSettingsHostFragment.clearInitialUrl();
         }
 
-        Bundle args = SettingsFragmentRegistry.parseUrlArguments(url);
         Fragment fragment = null;
         if (!MainSettings.class.equals(fragmentClass)) {
-            fragment = Fragment.instantiate(mActivity, fragmentClass.getName(), args);
+            fragment = Fragment.instantiate(mActivity, fragmentClass.getName(), resolution.args);
         }
 
         // Transactions pass addToBackStack = false because browser backstack
@@ -419,6 +442,16 @@ public class SettingsPageFragmentDelegateImpl
             fragmentManager.unregisterFragmentLifecycleCallbacks(mOptionsMenuLifecycleCallbacks);
             mOptionsMenuLifecycleCallbacks = null;
         }
+
+        if (mEdgeToEdgeLifecycleCallbacks != null) {
+            fragmentManager.unregisterFragmentLifecycleCallbacks(mEdgeToEdgeLifecycleCallbacks);
+            mEdgeToEdgeLifecycleCallbacks = null;
+        }
+
+        for (EdgeToEdgePadAdjuster adjuster : mEdgeToEdgePadAdjusters.values()) {
+            adjuster.destroy();
+        }
+        mEdgeToEdgePadAdjusters.clear();
 
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
         if (multiColumnSettings != null) {
@@ -511,6 +544,7 @@ public class SettingsPageFragmentDelegateImpl
                 new MultiColumnTitleUpdater(
                         savedInstanceState,
                         multiColumnSettings,
+                        /* shownInTab= */ true,
                         titleContainer,
                         mToolbar::setTitle,
                         this::onTitleTapped,
@@ -524,6 +558,12 @@ public class SettingsPageFragmentDelegateImpl
         if (searchCoordinator != null) {
             searchCoordinator.onTitleTapped(entryName);
         }
+    }
+
+    @Override
+    public boolean isShownInTab() {
+        // This delegate is only created for settings hosted in a browser tab.
+        return true;
     }
 
     @Override
@@ -633,7 +673,8 @@ public class SettingsPageFragmentDelegateImpl
                         containmentHelper.getItemDecorations(),
                         mProfile,
                         this::updateFirstVisibleTitle,
-                        mModalDialogSupplier);
+                        mModalDialogSupplier,
+                        /* shownInTab= */ true);
 
         // Multi column settings may have already created its view (in case of Activity
         // re-creation), so initialize the search coordinator's view if it exists.
@@ -692,6 +733,7 @@ public class SettingsPageFragmentDelegateImpl
             SettingsMenuHelper.updateNavigationIcon(
                     mToolbar,
                     mActivity,
+                    /* shownInTab= */ true,
                     /* show= */ shouldShowNavigationIcon(),
                     isTwoColumnSettingsVisible(),
                     isMainSettingsVisible());
@@ -815,5 +857,115 @@ public class SettingsPageFragmentDelegateImpl
                 }
             }
         }
+    }
+
+    /**
+     * Returns whether the given fragment is a settings detail fragment hosted by this tab's {@link
+     * SettingsHostFragment} (i.e. excluding the host fragment and the multi-column container).
+     */
+    private boolean isSettingsDetailFragment(Fragment fragment) {
+        if (mSettingsHostFragment == null
+                || fragment == mSettingsHostFragment
+                || fragment instanceof MultiColumnSettings) {
+            return false;
+        }
+        return mSettingsHostFragment.containsFragment(fragment);
+    }
+
+    private void initEdgeToEdgeLifecycleCallbacks(FragmentManager fragmentManager) {
+        mEdgeToEdgeLifecycleCallbacks =
+                new FragmentManager.FragmentLifecycleCallbacks() {
+                    @Override
+                    public void onFragmentViewCreated(
+                            FragmentManager fm,
+                            Fragment f,
+                            View v,
+                            @Nullable Bundle savedInstanceState) {
+                        if (!isSettingsDetailFragment(f)) {
+                            return;
+                        }
+                        // Preferences have at most one RecyclerView, so finding the first one is
+                        // sufficient.
+                        RecyclerView recyclerView = findRecyclerView(v);
+                        if (recyclerView != null) {
+                            applyEdgeToEdgePadding(f, recyclerView);
+                        }
+                    }
+
+                    @Override
+                    public void onFragmentViewDestroyed(FragmentManager fm, Fragment f) {
+                        @Nullable EdgeToEdgePadAdjuster adjuster =
+                                mEdgeToEdgePadAdjusters.remove(f);
+                        if (adjuster != null) {
+                            adjuster.destroy();
+                        }
+                    }
+                };
+        fragmentManager.registerFragmentLifecycleCallbacks(
+                mEdgeToEdgeLifecycleCallbacks, /* recursive= */ true);
+    }
+
+    private void applyEdgeToEdgePadding(Fragment fragment, RecyclerView recyclerView) {
+        @Nullable EdgeToEdgePadAdjuster oldAdjuster = mEdgeToEdgePadAdjusters.remove(fragment);
+        if (oldAdjuster != null) {
+            oldAdjuster.destroy();
+        }
+        assert mEdgeToEdgePadAdjusterGenerator != null;
+        @Nullable EdgeToEdgePadAdjuster adjuster =
+                mEdgeToEdgePadAdjusterGenerator.apply(recyclerView);
+        if (adjuster != null) {
+            mEdgeToEdgePadAdjusters.put(fragment, adjuster);
+        }
+    }
+
+    /**
+     * Recursively attaches edge-to-edge pad adjusters to all settings detail fragments hosted under
+     * the given fragment manager.
+     */
+    private void attachEdgeToEdgeAdjusters(@Nullable FragmentManager fragmentManager) {
+        if (fragmentManager == null) return;
+
+        for (Fragment fragment : fragmentManager.getFragments()) {
+            if (fragment == null) continue;
+            if (isSettingsDetailFragment(fragment)) {
+                View view = fragment.getView();
+                if (view != null) {
+                    // Preferences have at most one RecyclerView, so finding the first one is
+                    // sufficient.
+                    RecyclerView recyclerView = findRecyclerView(view);
+                    if (recyclerView != null) {
+                        applyEdgeToEdgePadding(fragment, recyclerView);
+                    }
+                }
+            }
+            if (fragment.isAdded()) {
+                attachEdgeToEdgeAdjusters(fragment.getChildFragmentManager());
+            }
+        }
+    }
+
+    /** Recursively searches the given view hierarchy for the first {@link RecyclerView}. */
+    static @Nullable RecyclerView findRecyclerView(View view) {
+        if (view instanceof RecyclerView recyclerView) {
+            return recyclerView;
+        }
+        if (view instanceof ViewGroup viewGroup) {
+            for (int i = 0; i < viewGroup.getChildCount(); i++) {
+                RecyclerView found = findRecyclerView(viewGroup.getChildAt(i));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    Map<Fragment, EdgeToEdgePadAdjuster> getEdgeToEdgePadAdjustersForTesting() {
+        return mEdgeToEdgePadAdjusters;
+    }
+
+    FragmentManager.@Nullable FragmentLifecycleCallbacks
+            getEdgeToEdgeLifecycleCallbacksForTesting() {
+        return mEdgeToEdgeLifecycleCallbacks;
     }
 }

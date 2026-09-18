@@ -683,12 +683,14 @@ void IconLabelBubbleView::SetUpForInOutAnimation(base::TimeDelta duration) {
   // statically showing the label (1800ms), and hiding the label (600ms). The
   // proportion of time spent in each portion of the animation is controlled by
   // open_state_fraction_.
-  slide_animation_.SetSlideDuration(
-      duration + 2 * base::Milliseconds(kIconLabelFadeAnimationDurationMs));
+  const base::TimeDelta fade_duration =
+      base::Milliseconds(kIconLabelFadeAnimationDurationMs);
+  const base::TimeDelta total_duration = duration + 2 * fade_duration;
+  slide_animation_.SetSlideDuration(total_duration);
   // The tween is calculated in GetWidthBetween().
   slide_animation_.SetTweenType(gfx::Tween::LINEAR);
-  open_state_fraction_ = static_cast<float>(kIconLabelFadeAnimationDurationMs) /
-                         duration.InMilliseconds();
+  open_state_fraction_ =
+      total_duration.is_positive() ? (fade_duration / total_duration) : 0.0;
 }
 
 void IconLabelBubbleView::AnimateIn(std::optional<int> string_id) {
@@ -801,14 +803,8 @@ SkPath IconLabelBubbleView::GetHighlightPath() const {
   }
   highlight_bounds = GetMirroredRect(highlight_bounds);
 
-  const SkRect rect = RectToSkRect(highlight_bounds);
-  gfx::RoundedCornersF radii = GetCornerRadii();
-  const SkVector sk_radii[4] = {{radii.upper_left(), radii.upper_left()},
-                                {radii.upper_right(), radii.upper_right()},
-                                {radii.lower_right(), radii.lower_right()},
-                                {radii.lower_left(), radii.lower_left()}};
-
-  return SkPath::RRect(SkRRect::MakeRectRadii(rect, sk_radii));
+  return SkPath::RRect(
+      RoundedRectToSkRRect(highlight_bounds, GetCornerRadii()));
 }
 
 bool IconLabelBubbleView::PaintedOnSolidBackground() const {

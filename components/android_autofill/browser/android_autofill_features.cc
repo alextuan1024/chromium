@@ -6,6 +6,8 @@
 
 #include <jni.h>
 
+#include <array>
+
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 
@@ -16,10 +18,11 @@ namespace autofill::features {
 
 namespace {
 
-const base::Feature* const kFeaturesExposedToJava[] = {
+constexpr std::array kFeaturesExposedToJava = {
     &kAndroidAutofillLazyFrameworkWrapper,
     &kAndroidAutofillImprovedVisibilityDetection,
-    &kAndroidAutofillFieldsUpdatedOnSelect};
+    &kAndroidAutofillFieldsUpdatedOnSelect,
+};
 
 }  // namespace
 
@@ -42,14 +45,13 @@ BASE_FEATURE(kAndroidAutofillUpdateContextForWebContents,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, fields are updated whenever a user interacts with a <select>.
-// TODO(crbug.com/502346855): Remove in M152 or later.
+// TODO(crbug.com/502346855): Remove in M157 or later.
 BASE_FEATURE(kAndroidAutofillFieldsUpdatedOnSelect,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 static int64_t JNI_AndroidAutofillFeatures_GetFeature(JNIEnv* env,
                                                       int32_t ordinal) {
-  return reinterpret_cast<int64_t>(
-      UNSAFE_TODO(kFeaturesExposedToJava[ordinal]));
+  return reinterpret_cast<int64_t>(kFeaturesExposedToJava[ordinal]);
 }
 
 }  // namespace autofill::features

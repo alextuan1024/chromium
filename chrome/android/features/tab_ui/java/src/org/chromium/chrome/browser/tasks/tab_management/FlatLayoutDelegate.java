@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import android.util.Pair;
-
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -70,11 +68,6 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    @Nullable Pair<Integer, Tab> getIndexAndTabForTabGroupId(@Nullable Token tabGroupId) {
-        return null;
-    }
-
-    @Override
     void didMoveTab(Tab tab, int newIndex, int curIndex) {
         // Flat layout does not need to explicitly sync standalone tab moves triggered from
         // external sources to the ModelList.
@@ -94,9 +87,10 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
 
     @Override
     public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
-        int curTabListModelIndex = mModelList.indexFromTabId(movedTab.getId());
+        int curTabListModelIndex = getIndexFromTabId(movedTab.getId());
         if (!mModelList.isValidIndex(curTabListModelIndex)) return;
 
+        mMediator.removeObserversForTab(movedTab);
         mModelList.removeAt(curTabListModelIndex);
     }
 

@@ -21,6 +21,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.content.res.Resources;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -44,6 +45,8 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactoryJni;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
@@ -735,5 +738,93 @@ public class BookmarkUtilsTest {
     @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
     public void testIsDesktopBookmarksLayoutEnabled_featureDisabled() {
         assertFalse(BookmarkUtils.isDesktopBookmarksLayoutEnabled());
+    }
+
+    @Test
+    public void testGetTopLevelFolderDisplayOrderIndex() {
+        mBookmarkModel.setAreAccountBookmarkFoldersActive(true);
+
+        // Desktop / Bookmarks bar -> 0
+        assertEquals(
+                0,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getDesktopFolderId()));
+        assertEquals(
+                0,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getAccountDesktopFolderId()));
+
+        // Other bookmarks -> 1
+        assertEquals(
+                1,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getOtherFolderId()));
+        assertEquals(
+                1,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getAccountOtherFolderId()));
+
+        // Reading list -> 2
+        assertEquals(
+                2,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getLocalOrSyncableReadingListFolder()));
+        assertEquals(
+                2,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getAccountReadingListFolder()));
+
+        // Mobile bookmarks -> 3
+        assertEquals(
+                3,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getMobileFolderId()));
+        assertEquals(
+                3,
+                BookmarkUtils.getTopLevelFolderDisplayOrderIndex(
+                        mBookmarkModel, mBookmarkModel.getAccountMobileFolderId()));
+
+        // Non-top-level folder -> 4
+        BookmarkId userFolder =
+                mBookmarkModel.addFolder(mBookmarkModel.getMobileFolderId(), 0, "User Folder");
+        assertEquals(
+                4, BookmarkUtils.getTopLevelFolderDisplayOrderIndex(mBookmarkModel, userFolder));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+    public void testGetImageIconSize_desktopLayoutEnabled() {
+        Resources res = mActivity.getResources();
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_start_image_size_visual),
+                BookmarkViewUtils.getImageIconSize(res, BookmarkRowDisplayPref.VISUAL));
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_start_image_size_desktop),
+                BookmarkViewUtils.getImageIconSize(res, BookmarkRowDisplayPref.COMPACT));
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_row_outer_corner_radius),
+                BookmarkViewUtils.getImageIconCornerRadius(res, BookmarkRowDisplayPref.VISUAL));
+        assertEquals(
+                res.getDimensionPixelSize(
+                        R.dimen.improved_bookmark_start_image_corner_radius_desktop),
+                BookmarkViewUtils.getImageIconCornerRadius(res, BookmarkRowDisplayPref.COMPACT));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+    public void testGetImageIconSize_desktopLayoutDisabled() {
+        Resources res = mActivity.getResources();
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_start_image_size_visual),
+                BookmarkViewUtils.getImageIconSize(res, BookmarkRowDisplayPref.VISUAL));
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_start_image_size_compact),
+                BookmarkViewUtils.getImageIconSize(res, BookmarkRowDisplayPref.COMPACT));
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_row_outer_corner_radius),
+                BookmarkViewUtils.getImageIconCornerRadius(res, BookmarkRowDisplayPref.VISUAL));
+        assertEquals(
+                res.getDimensionPixelSize(R.dimen.improved_bookmark_icon_radius),
+                BookmarkViewUtils.getImageIconCornerRadius(res, BookmarkRowDisplayPref.COMPACT));
     }
 }

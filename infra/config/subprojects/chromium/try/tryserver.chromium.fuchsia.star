@@ -55,16 +55,17 @@ try_.builder(
             "release_try_builder",
         ],
     ),
-    # TODO(crbug.com/549757519): Restore to the CQ when test pool is recovered.
-    # cq_settings = try_.cq_settings(
-    #     location_filters = [
-    #         # This is the only bot that builds //chromecast code for Fuchsia on
-    #         # ARM64, so trigger it when changes are made.
-    #         "chromecast/.+",
-    #         # Always trigger this builder when drilling the fuchsia-sdk.
-    #         "build/fuchsia/sdk_override.txt",
-    #     ],
-    # ),
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = [
+            # This is the only bot that builds //chromecast code for Fuchsia on
+            # ARM64, so trigger it when changes are made.
+            "chromecast/.+",
+            # Always trigger this builder when drilling the fuchsia-sdk.
+            "build/fuchsia/sdk_override.txt",
+        ],
+    ),
+    execution_timeout = 6 * time.hour,
     experiments = {
         "luci.buildbucket.run_in_turboci": 100,
     },
@@ -153,6 +154,7 @@ try_.builder(
     name = "fuchsia-fyi-arm64-dbg",
     mirrors = ["ci/fuchsia-fyi-arm64-dbg"],
     gn_args = "ci/fuchsia-fyi-arm64-dbg",
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
 )
 
 try_.builder(
@@ -220,6 +222,7 @@ try_.orchestrator_builder(
         ],
     ),
     compilator = "fuchsia-x64-cast-receiver-rel-compilator",
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
     coverage_test_types = ["unit", "overall"],
     cq_settings = try_.cq_settings(
         on_default_cq = True,
@@ -240,14 +243,6 @@ try_.orchestrator_builder(
     use_clang_coverage = True,
 )
 
-# TODO(fxbug.dev/370067428): Remove once Netstack2 no longer exists.
-try_.builder(
-    name = "fuchsia-netstack2-x64-cast-receiver-rel",
-    mirrors = ["ci/fuchsia-netstack2-x64-cast-receiver-rel"],
-    gn_args = "ci/fuchsia-netstack2-x64-cast-receiver-rel",
-    contact_team_email = "chrome-fuchsia-engprod@google.com",
-)
-
 try_.builder(
     name = "fuchsia-x64-perf-cast-receiver-rel",
     mirrors = ["ci/fuchsia-x64-perf-cast-receiver-rel"],
@@ -260,6 +255,7 @@ try_.compilator_builder(
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
     cores = "8|16",
     ssd = True,
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
     main_list_view = "try",
 )
 

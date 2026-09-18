@@ -30,6 +30,7 @@ buildflag_header("buildflags") {
   flags = [
     "SKIA_SUPPORT_SKOTTIE=$skia_support_skottie",
     "SKIA_USE_DAWN=$skia_use_dawn",
+    "SKIA_USE_GRAPHITE_VULKAN=$skia_use_graphite_vulkan",
   ]
 }
 
@@ -377,7 +378,6 @@ component("skia") {
     "//third_party/skia/src/sfnt/SkOTUtils.cpp",
   ]
   if (use_blink) {
-    sources += skia_codec_decode_bmp
     sources += skia_encode_jpeg_srcs
     public += skia_encode_jpeg_public
     sources += [
@@ -630,6 +630,7 @@ component("skia") {
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
   # enable the diagnostic by removing this line.
   configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 component("skia_switches") {
@@ -984,6 +985,7 @@ template("skia_source_set") {
     }
   }
 }
+
 set_defaults("skia_source_set") {
   # Match the defaults for `source_set`
   # (as defined in `build/config/BUILDCONFIG.gn`).
@@ -1059,6 +1061,7 @@ if (current_cpu == "x86" || current_cpu == "x64") {
     }
     visibility = [ ":skia_opts" ]
   }
+
   skia_source_set("skia_opts_ml4") {
     sources = skia_opts.ml4_sources
     configs += [ ":skia_avx512_flags" ]
@@ -1171,6 +1174,7 @@ if (current_cpu == "x64") {
     }
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = skcms_TransformSkx
     configs += [
@@ -1184,6 +1188,7 @@ if (current_cpu == "x64") {
     sources = []
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = []
     visibility = [ ":skcms" ]
@@ -1232,6 +1237,9 @@ if (skia_support_gpu) {
         "//third_party/dawn/src/dawn:proc",
       ]
     }
+    if (skia_use_graphite_vulkan) {
+      public += skia_graphite_vk_public
+    }
     deps = [ "//gpu/config:workaround_list" ]
   }
 
@@ -1240,12 +1248,13 @@ if (skia_support_gpu) {
   skia_source_set("skia_graphite_private") {
     sources = skia_graphite_sources + skia_graphite_precompile_sources +
               skia_sksl_graphite_modules_sources
-    if (skia_use_dawn) {
-      sources += skia_graphite_dawn_sources
-    }
     deps = [ "//gpu/config:workaround_list" ]
     if (skia_use_dawn) {
+      sources += skia_graphite_dawn_sources
       deps += [ "//third_party/dawn/include/dawn:cpp_headers" ]
+    }
+    if (skia_use_graphite_vulkan) {
+      sources += skia_graphite_vk_sources
     }
     visibility = [ ":skia" ]
   }
@@ -1327,6 +1336,7 @@ test("skia_unittests") {
   sources = [
     "ext/codec_utils_unittest.cc",
     "ext/convolver_unittest.cc",
+    "ext/font_utils_unittest.cc",
     "ext/geometry_unittest.cc",
     "ext/image_operations_unittest.cc",
     "ext/platform_canvas_unittest.cc",
@@ -1340,7 +1350,10 @@ test("skia_unittests") {
     sources += [ "ext/skia_utils_ios_unittest.mm" ]
   }
   if (is_mac) {
-    sources += [ "ext/skia_utils_mac_unittest.mm" ]
+    sources += [
+      "ext/font_utils_mac_unittest.mm",
+      "ext/skia_utils_mac_unittest.mm",
+    ]
   }
 
   if (!is_win) {
@@ -1362,6 +1375,7 @@ test("skia_unittests") {
     "//ui/gfx/geometry",
   ]
 
+  data = [ "//third_party/test_fonts/test_fonts/Ahem.ttf" ]
   data_deps = [ "//testing/buildbot/filters:skia_unittests_filters" ]
 
   if (!is_ios) {

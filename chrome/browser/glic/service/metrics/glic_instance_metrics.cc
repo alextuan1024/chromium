@@ -36,6 +36,7 @@
 #include "chrome/common/chrome_features.h"
 #include "components/enterprise/browser/reporting/saas_usage/saas_usage_reporting_controller.h"
 #include "components/metrics/profile_metrics_service.h"
+#include "components/metrics/structured/buildflags/buildflags.h"
 #include "components/prefs/pref_service.h"
 #include "components/skills/public/skills_metrics.h"
 #include "components/tabs/public/tab_interface.h"
@@ -45,6 +46,11 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+#include "components/metrics/structured/structured_events.h"
+#include "components/metrics/structured/structured_metrics_client.h"
+#endif
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
@@ -56,10 +62,7 @@ namespace {
 
 SafeEmbedderKey ToSafeKey(const EmbedderKey& key) {
   return std::visit(
-      absl::Overload{[](const TabEmbedderKey& key) -> SafeEmbedderKey {
-                       return SafeEmbedderKey(key);
-                     },
-                     [](const SidePanelEmbedderKey& key) -> SafeEmbedderKey {
+      absl::Overload{[](const SidePanelEmbedderKey& key) -> SafeEmbedderKey {
                        return SafeEmbedderKey(key.tab->GetHandle());
                      },
                      [](const FloatingEmbedderKey& key) -> SafeEmbedderKey {
@@ -85,9 +88,6 @@ EmbedderType GetEmbedderTypeFromShowOptions(const ShowOptions& options) {
   }
   if (std::holds_alternative<FloatingShowOptions>(options.embedder_options)) {
     return EmbedderType::kFloaty;
-  }
-  if (std::holds_alternative<TabShowOptions>(options.embedder_options)) {
-    return EmbedderType::kTab;
   }
   return EmbedderType::kUnknown;
 }
@@ -138,6 +138,46 @@ void RecordSelectionOverlayMetrics(
   }
 #endif
 }
+
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+// Translates the browser-side enum into the structured metrics enum generated
+// from structured.xml. Written as an exhaustive switch with no default so that
+// adding a ClientLoadErrorReason without adding the matching structured.xml
+// variant is a compile error rather than a silently mislabelled metric.
+metrics::structured::events::v2::glic::GlicClientLoadErrorReason
+ToStructuredReason(ClientLoadErrorReason reason) {
+  using Reason =
+      metrics::structured::events::v2::glic::GlicClientLoadErrorReason;
+  switch (reason) {
+    case ClientLoadErrorReason::kUnknown:
+      return Reason::UNKNOWN;
+    case ClientLoadErrorReason::kUnavailable:
+      return Reason::UNAVAILABLE;
+    case ClientLoadErrorReason::kIneligibleAccount:
+      return Reason::INELIGIBLE_ACCOUNT;
+    case ClientLoadErrorReason::kLocationMismatch:
+      return Reason::LOCATION_MISMATCH;
+    case ClientLoadErrorReason::kDisabledByAdmin:
+      return Reason::DISABLED_BY_ADMIN;
+    case ClientLoadErrorReason::kOffline:
+      return Reason::OFFLINE;
+    case ClientLoadErrorReason::kSignIn:
+      return Reason::SIGN_IN;
+    case ClientLoadErrorReason::kCookieSyncFailed:
+      return Reason::COOKIE_SYNC_FAILED;
+    case ClientLoadErrorReason::kGuestLoadFailed:
+      return Reason::GUEST_LOAD_FAILED;
+    case ClientLoadErrorReason::kGuestProcessGone:
+      return Reason::GUEST_PROCESS_GONE;
+    case ClientLoadErrorReason::kClientError:
+      return Reason::CLIENT_ERROR;
+    case ClientLoadErrorReason::kClientLoadTimeout:
+      return Reason::CLIENT_LOAD_TIMEOUT;
+    case ClientLoadErrorReason::kWarmedTimeout:
+      return Reason::WARMED_TIMEOUT;
+  }
+}
+#endif
 
 }  // namespace
 
@@ -869,7 +909,36 @@ void GlicInstanceMetrics::UninterruptActorTask() {
   LogEvent(GlicInstanceEvent::kUninterruptActorTask);
 }
 
+void GlicInstanceMetrics::SetActiveInvocationId(
+    std::optional<uint64_t> invocation_id) {
+  active_invocation_id_ = invocation_id;
+  active_invocation_start_time_ =
+      invocation_id ? base::TimeTicks::Now() : base::TimeTicks();
+}
+
+void GlicInstanceMetrics::OnClientLoadError(ClientLoadErrorReason reason) {
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+  metrics::structured::events::v2::glic::ClientLoadError event;
+  event.SetReason(ToStructuredReason(reason));
+  if (active_invocation_id_.has_value()) {
+    event.SetInvocationId(*active_invocation_id_);
+    event.SetElapsedMs((base::TimeTicks::Now() - active_invocation_start_time_)
+                           .InMilliseconds());
+  }
+  metrics::structured::StructuredMetricsClient::Record(std::move(event));
+#endif
+}
+
 void GlicInstanceMetrics::OnWebUiStateChanged(mojom::WebUiState state) {
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+  if (active_invocation_id_.has_value()) {
+    metrics::structured::StructuredMetricsClient::Record(
+        metrics::structured::events::v2::glic::InvokeWebUiStateReached()
+            .SetInvocationId(*active_invocation_id_)
+            .SetWebUiState(static_cast<int>(state)));
+  }
+#endif
+
   last_web_ui_state_ = state;
   switch (state) {
     case mojom::WebUiState::kUninitialized:

@@ -17,7 +17,7 @@ LayoutTableRow::LayoutTableRow(Element* element) : LayoutBlock(element) {}
 
 LayoutTableRow* LayoutTableRow::CreateAnonymousWithParent(
     const LayoutObject& parent) {
-  const ComputedStyle* new_style =
+  const ComputedStyle& new_style =
       parent.GetDocument().GetStyleResolver().CreateAnonymousStyleWithDisplay(
           parent.StyleRef(), EDisplay::kTableRow);
   auto* new_row = MakeGarbageCollected<LayoutTableRow>(nullptr);

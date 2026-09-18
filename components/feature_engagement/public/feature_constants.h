@@ -106,7 +106,6 @@ extern const base::FeatureParam<std::string>
     kIPHLensOverlayUrlPathMatchBlockPatterns;
 COMPONENT_EXPORT(FEATURE_ENGAGEMENT_FEATURE_CONSTANTS)
 extern const base::FeatureParam<base::TimeDelta> kIPHLensOverlayDelayTime;
-FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHLensOverlayTranslateButtonFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHOmniboxEverywhereLensPromoFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHTabAudioMutingFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHPasswordsSavePrimingPromoFeature);
@@ -229,7 +228,6 @@ FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHDownloadInfoBarDownloadsAreFasterFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHDownloadPageFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHDownloadPageScreenshotFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHDownloadSettingsFeature);
-FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHEphemeralTabFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHExploreSitesTileFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHExtensionsManageAppMenuFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHExtensionsManageToolbarFeature);
@@ -270,7 +268,6 @@ FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHReaderModeDistillInAppFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHReadLaterAppMenuBookmarksFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHReadLaterAppMenuBookmarkThisPageFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHReadLaterBottomSheetFeature);
-FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHReadLaterContextMenuFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHRecentTabsFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHRequestDesktopSiteDefaultOnFeature);
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHRequestDesktopSiteExceptionsGenericFeature);
@@ -433,6 +430,10 @@ FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHiOSGeminiContextualCueChip);
 
 // FET feature flag that enables "What can Gemini do" suggestion.
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHiOSGeminiWhatCanGeminiDo);
+
+// FET feature flag that enables contextual default browser promo for Gemini.
+FEATURE_CONSTANTS_DECLARE_FEATURE(
+    kIPHiOSPromoContextualDefaultBrowserGeminiFeature);
 
 // FET feature flag that enables customized sites in the most visited tile.
 FEATURE_CONSTANTS_DECLARE_FEATURE(kIPHiOSPinMostVisitedSiteFeature);

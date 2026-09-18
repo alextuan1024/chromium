@@ -244,7 +244,7 @@ AtMemoryMetricsRecorder::~AtMemoryMetricsRecorder() {
   MaybeLogSuggestionAccepted();
   base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionAcceptedInSession",
                             suggestion_accepted_in_session_);
-  if (suggestion_acceptance_.accepted_data_type.has_value()) {
+  if (suggestion_accepted_in_session_) {
     base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionFilled",
                               suggestion_filled_in_session_);
     if (fetch_pii_.duration && fetch_pii_.source) {
@@ -305,9 +305,6 @@ void AtMemoryMetricsRecorder::OnPopupShown(
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
       source_ = AutofillMetrics::AtMemoryTriggerSource::kKeyboardShortcut;
       break;
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
-      source_ = AutofillMetrics::AtMemoryTriggerSource::kTypedTrigger;
-      break;
     case AutofillSuggestionTriggerSource::kUnspecified:
     case AutofillSuggestionTriggerSource::kFormControlElementClicked:
     case AutofillSuggestionTriggerSource::kTextareaFocusedWithoutClick:
@@ -322,6 +319,7 @@ void AtMemoryMetricsRecorder::OnPopupShown(
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case AutofillSuggestionTriggerSource::kGlic:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
       // This class should only be used for AtMemory searches.
@@ -371,9 +369,15 @@ void AtMemoryMetricsRecorder::OnSuggestionAccepted(
     MemorySourcesBitmask sources_bitmask,
     base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
         metadata) {
-  suggestion_acceptance_.accepted_data_type = memory_data_type;
+  suggestion_acceptance_.suggestion_accepted = true;
   suggestion_accepted_in_session_ = true;
-  suggestion_acceptance_.accepted_sources_bitmask = sources_bitmask;
+
+  base::UmaHistogramEnumeration("Autofill.AtMemory.AcceptedSuggestionDataType",
+                                memory_data_type);
+  base::UmaHistogramCounts100("Autofill.AtMemory.QueryCountBeforeAcceptance",
+                              query_count_);
+  base::UmaHistogramSparse("Autofill.AtMemory.AcceptedSuggestionDataSources",
+                           sources_bitmask);
 
   if (ukm_search_query_builder_) {
     ukm_search_query_builder_->SetSuggestionAccepted(true);
@@ -504,20 +508,8 @@ void AtMemoryMetricsRecorder::MarkFilled() {
 
 void AtMemoryMetricsRecorder::MaybeLogSuggestionAccepted() {
   if (suggestion_acceptance_.suggestions_received) {
-    base::UmaHistogramBoolean(
-        "Autofill.AtMemory.SuggestionAccepted",
-        suggestion_acceptance_.accepted_data_type.has_value());
-  }
-  if (suggestion_acceptance_.accepted_data_type.has_value()) {
-    base::UmaHistogramEnumeration(
-        "Autofill.AtMemory.AcceptedSuggestionDataType",
-        *suggestion_acceptance_.accepted_data_type);
-    base::UmaHistogramCounts100("Autofill.AtMemory.QueryCountBeforeAcceptance",
-                                query_count_);
-  }
-  if (suggestion_acceptance_.accepted_sources_bitmask.has_value()) {
-    base::UmaHistogramSparse("Autofill.AtMemory.AcceptedSuggestionDataSources",
-                             *suggestion_acceptance_.accepted_sources_bitmask);
+    base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionAccepted",
+                              suggestion_acceptance_.suggestion_accepted);
   }
 }
 

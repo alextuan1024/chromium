@@ -23,6 +23,7 @@ import android.app.ActivityManager;
 import android.app.ActivityManager.AppTask;
 import android.content.Context;
 import android.graphics.Rect;
+import android.view.KeyEvent;
 import android.view.View;
 
 import org.junit.Assert;
@@ -176,6 +177,7 @@ public class ActivityTabWebContentsDelegateAndroidUnitTest {
     @Mock private View mUrlBar;
     @Mock private View mMenuButton;
     @Mock private View mTabSwitcherButton;
+    @Mock private View mTabSharingToolbar;
 
     @Captor private ArgumentCaptor<CompletableFuture<Boolean>> mFutureCaptor;
 
@@ -686,6 +688,51 @@ public class ActivityTabWebContentsDelegateAndroidUnitTest {
     }
 
     @Test
+    public void testTakeFocus_reverse_tabSharingToolbar() {
+        when(mActivity.findViewById(R.id.tab_sharing_toolbar_container))
+                .thenReturn(mTabSharingToolbar);
+        when(mTabSharingToolbar.isShown()).thenReturn(true);
+        when(mTabSharingToolbar.requestFocus(View.FOCUS_BACKWARD)).thenReturn(true);
+        when(mActivity.findViewById(R.id.menu_button)).thenReturn(mMenuButton);
+        when(mMenuButton.isShown()).thenReturn(true);
+
+        // The tab sharing toolbar sits below the browser toolbar, so it must take focus first.
+        assertTrue(mTabWebContentsDelegateAndroid.takeFocus(/* reverse= */ true));
+        verify(mTabSharingToolbar).requestFocus(View.FOCUS_BACKWARD);
+        verify(mMenuButton, never()).requestFocus(anyInt());
+    }
+
+    @Test
+    public void testTakeFocus_reverse_tabSharingToolbarHidden() {
+        when(mActivity.findViewById(R.id.tab_sharing_toolbar_container))
+                .thenReturn(mTabSharingToolbar);
+        when(mTabSharingToolbar.isShown()).thenReturn(false);
+        when(mActivity.findViewById(R.id.menu_button)).thenReturn(mMenuButton);
+        when(mMenuButton.isShown()).thenReturn(true);
+        when(mMenuButton.requestFocus(View.FOCUS_BACKWARD)).thenReturn(true);
+
+        assertTrue(mTabWebContentsDelegateAndroid.takeFocus(/* reverse= */ true));
+        verify(mTabSharingToolbar, never()).requestFocus(anyInt());
+        verify(mMenuButton).requestFocus(View.FOCUS_BACKWARD);
+    }
+
+    @Test
+    public void testTakeFocus_reverse_tabSharingToolbarNotFocusable() {
+        when(mActivity.findViewById(R.id.tab_sharing_toolbar_container))
+                .thenReturn(mTabSharingToolbar);
+        when(mTabSharingToolbar.isShown()).thenReturn(true);
+        when(mTabSharingToolbar.requestFocus(View.FOCUS_BACKWARD)).thenReturn(false);
+        when(mActivity.findViewById(R.id.menu_button)).thenReturn(mMenuButton);
+        when(mMenuButton.isShown()).thenReturn(true);
+        when(mMenuButton.requestFocus(View.FOCUS_BACKWARD)).thenReturn(true);
+
+        // If the toolbar has no focusable descendant, focus continues up to the browser toolbar.
+        assertTrue(mTabWebContentsDelegateAndroid.takeFocus(/* reverse= */ true));
+        verify(mTabSharingToolbar).requestFocus(View.FOCUS_BACKWARD);
+        verify(mMenuButton).requestFocus(View.FOCUS_BACKWARD);
+    }
+
+    @Test
     public void testTakeFocus_reverse_tabSwitcherButton() {
         when(mActivity.findViewById(R.id.menu_button)).thenReturn(mMenuButton);
         when(mMenuButton.isShown()).thenReturn(false);
@@ -737,5 +784,41 @@ public class ActivityTabWebContentsDelegateAndroidUnitTest {
         assertEquals(
                 DisplayMode.BROWSER,
                 mTabWebContentsDelegateAndroid.getDisplayModeCheckedForTesting());
+    }
+
+    @Test
+    public void testHandleKeyboardEvent_escapeStopsLoadingWhenRepeatCountZero() {
+        when(mWebContents.isLoading()).thenReturn(true);
+        KeyEvent escapeEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE);
+
+        mTabWebContentsDelegateAndroid.handleKeyboardEvent(escapeEvent);
+
+        verify(mWebContents).stop();
+    }
+
+    @Test
+    public void testHandleKeyboardEvent_escapeIgnoredWhenRepeatCountNonZero() {
+        when(mWebContents.isLoading()).thenReturn(true);
+        KeyEvent escapeRepeatEvent =
+                new KeyEvent(
+                        /* downTime= */ 0,
+                        /* eventTime= */ 0,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_ESCAPE,
+                        /* repeat= */ 1);
+
+        mTabWebContentsDelegateAndroid.handleKeyboardEvent(escapeRepeatEvent);
+
+        verify(mWebContents, never()).stop();
+    }
+
+    @Test
+    public void testHandleKeyboardEvent_escapeIgnoredWhenNotLoading() {
+        when(mWebContents.isLoading()).thenReturn(false);
+        KeyEvent escapeEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE);
+
+        mTabWebContentsDelegateAndroid.handleKeyboardEvent(escapeEvent);
+
+        verify(mWebContents, never()).stop();
     }
 }

@@ -76,6 +76,7 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/android_info.h"
+#include "base/android/device_info.h"
 #endif
 
 namespace glic {
@@ -111,7 +112,9 @@ constexpr char kDefaultEnabledCountries[] =
     "ae,am,ao,aq,az,ba,bf,bh,bi,bj,bw,cd,cf,cg,ci,cm,cv,dj,dz,eg,eh,er,et,ga,"
     "ge,gh,gm,gn,gq,gw,il,iq,jo,ke,kg,km,kw,kz,lb,lr,ls,ly,ma,md,me,mg,mk,ml,"
     "mr,mu,mw,mz,na,ne,ng,om,pr,ps,qa,rs,rw,sa,sc,sd,sl,sn,so,ss,st,sz,td,tg,"
-    "tj,tm,tn,tz,ua,ug,um,uz,vi,xk,ye,za,zm,zw";
+    "tj,tm,tn,tz,ua,ug,um,uz,vi,xk,ye,za,zm,zw,"
+    // Phase 4
+    "ai,bm,fk,gb,gg,gi,gs,im,io,je,ky,ms,sh,tc,vg";
 #endif
 
 // Feature flag kGlicLocaleFiltering controls whether locale filtering is
@@ -408,8 +411,10 @@ GlicEnabling::ProfileEnablement ComputeProfileEnablement(
 
   result.feature_flag_enabled = base::FeatureList::IsEnabled(features::kGlic);
   if (country_override.has_value()) {
-    result.allowed_by_country_filter = EvaluateCountryEnablement(
-        country_override->first, country_override->second);
+    result.allowed_by_country_filter =
+        GlicEnabling::IsRetailDemoModeDesktop() ||
+        EvaluateCountryEnablement(country_override->first,
+                                  country_override->second);
   } else {
     result.allowed_by_country_filter = global_enabling.IsCountryEnabled();
   }
@@ -561,6 +566,16 @@ GlicEnabling::ScopedBypassEnablementChecksForTesting::
 // static
 void GlicEnabling::SetSystemRequirementMetForTesting(std::optional<bool> met) {
   g_system_requirement_met_for_testing = met;
+}
+
+// static
+bool GlicEnabling::IsRetailDemoModeDesktop() {
+#if BUILDFLAG(IS_ANDROID)
+  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP &&
+         base::android::device_info::is_retail_demo_mode();
+#else
+  return false;
+#endif
 }
 
 // static
@@ -748,10 +763,13 @@ bool GlicGlobalEnabling::IsSystemRequirementMet() const {
     return *g_system_requirement_met_for_testing;
   }
   static const bool supported_system_requirements = [] {
-    if (base::SysInfo::AmountOfTotalPhysicalMemory() <
-        base::MiB(base::saturated_cast<uint64_t>(
-            features::kGlicMinRequiredRamMb.Get()))) {
-      return false;
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kTestType)) {
+      if (base::SysInfo::AmountOfTotalPhysicalMemory() <
+          base::MiB(base::saturated_cast<uint64_t>(
+              features::kGlicMinRequiredRamMb.Get()))) {
+        return false;
+      }
     }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -816,6 +834,10 @@ bool GlicEnabling::IsOsVersionSupported() {
 
 bool GlicGlobalEnabling::IsCountryEnabled() {
   if (is_country_enabled_) {
+    return true;
+  }
+  if (GlicEnabling::IsRetailDemoModeDesktop()) {
+    is_country_enabled_ = true;
     return true;
   }
   LastCheckedCountries current_countries{delegate_->GetPermanentCountryCode(),
@@ -1365,7 +1387,8 @@ bool GlicEnabling::HasConsented() const {
 // static
 prefs::FreStatus GlicEnabling::GetCompletedFre(Profile* profile) {
   if (base::FeatureList::IsEnabled(
-          features::kGlicExperimentalTriggeringOptInBypass)) {
+          features::kGlicExperimentalTriggeringOptInBypass) ||
+      IsRetailDemoModeDesktop()) {
     return prefs::FreStatus::kCompleted;
   }
   return static_cast<prefs::FreStatus>(

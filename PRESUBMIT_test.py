@@ -13,8 +13,18 @@ import enum
 import io
 import os.path
 import subprocess
+import sys
 import textwrap
 import unittest
+from unittest import mock
+_CHECKDEPS_PATH = os.path.join(
+    os.path.dirname(__file__), 'buildtools', 'checkdeps')
+sys.path.insert(0, _CHECKDEPS_PATH)
+try:
+    import checkdeps
+    from rules import Rule
+finally:
+    sys.path.pop(0)
 
 import PRESUBMIT
 
@@ -284,7 +294,7 @@ class CheckNoUNIT_TESTInSourceFilesTest(unittest.TestCase):
             '# if defined(UNIT_TEST) && defined(VALID)',
             '# else  // defined(UNIT_TEST)', '#endif  // defined(UNIT_TEST)'
         ]
-        errors = PRESUBMIT._CheckNoUNIT_TESTInSourceFiles(
+        errors = PRESUBMIT._CheckNoUNIT_TESTInFile(
             MockInputApi(), MockFile('some/path/source.cc', lines))
         self.assertEqual(len(lines), len(errors))
 
@@ -298,7 +308,7 @@ class CheckNoUNIT_TESTInSourceFilesTest(unittest.TestCase):
             '#ifdef _UNIT_TEST', '#ifdef UNIT_TEST_', '#ifndef _UNIT_TEST',
             '#ifndef UNIT_TEST_'
         ]
-        errors = PRESUBMIT._CheckNoUNIT_TESTInSourceFiles(
+        errors = PRESUBMIT._CheckNoUNIT_TESTInFile(
             MockInputApi(), MockFile('some/path/source.cc', lines))
         self.assertEqual(0, len(errors))
 
@@ -5153,6 +5163,32 @@ class MojomStabilityCheckTest(unittest.TestCase):
         ])
         self.assertEqual([], errors)
 
+    def testNonMojomChangeWithCaseInsensitiveFooter(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [MockFile('docs/README.md', [])]
+        mock_output_api = MockOutputApi()
+        # Non-mojom change with no footer exits immediately with []
+        mock_input_api.change.DescriptionText = lambda: (
+            'Commit title\n\nClean description\n')
+        res = PRESUBMIT.CheckStableMojomChanges(mock_input_api, mock_output_api)
+        self.assertEqual(res, [])
+
+        # Non-mojom change with valid lowercase footer must complain about unnecessary footer
+        mock_input_api.change.DescriptionText = lambda: (
+            'Commit title\n\nno-stable-mojom-checks: true\n')
+        mock_input_api.change.footers['No-Stable-Mojom-Checks'] = ['true']
+        res = PRESUBMIT.CheckStableMojomChanges(mock_input_api, mock_output_api)
+        self.assertEqual(len(res), 1)
+        self.assertIn('unnecessary git footer', res[0].message)
+
+        # Non-mojom change with invalid lowercase footer must fail validation
+        mock_input_api.change.DescriptionText = lambda: (
+            'Commit title\n\nno-stable-mojom-checks: false\n')
+        mock_input_api.change.footers['No-Stable-Mojom-Checks'] = ['false']
+        res = PRESUBMIT.CheckStableMojomChanges(mock_input_api, mock_output_api)
+        self.assertEqual(len(res), 1)
+        self.assertIn('No-Stable-Mojom-Checks only accepts', res[0].message)
+
 
 class CheckForUseOfChromeAppsDeprecationsTest(unittest.TestCase):
 
@@ -6034,6 +6070,47 @@ class CheckDanglingUntriagedTest(unittest.TestCase):
                                                 mock_output_api)
         self.assertEqual(len(msgs), 0)
 
+    def testUnmodifiedDiffSkipped(self):
+        """Test files without DanglingUntriaged in diff are skipped without reading full contents."""
+        mock_input_api = MockInputApi()
+        mock_output_api = MockOutputApi()
+
+        mock_file = MockAffectedFile(
+            local_path='foo/foo.cc',
+            old_contents=['int a = 1;'],
+            new_contents=['int a = 2;'],
+        )
+        mock_file.OldContents = mock.Mock(side_effect=AssertionError(
+            'OldContents should not be called when diff lacks DanglingUntriaged'))
+        mock_file.NewContents = mock.Mock(side_effect=AssertionError(
+            'NewContents should not be called when diff lacks DanglingUntriaged'))
+
+        mock_input_api.files = [mock_file]
+        mock_input_api.change.DescriptionText = lambda: 'description'
+        msgs = PRESUBMIT.CheckDanglingUntriaged(mock_input_api,
+                                                mock_output_api)
+        self.assertEqual(len(msgs), 0)
+        mock_file.OldContents.assert_not_called()
+        mock_file.NewContents.assert_not_called()
+
+    def testModifiedDiffCallsContents(self):
+        """Test files with DanglingUntriaged in diff do read contents and report violations."""
+        mock_input_api = MockInputApi()
+        mock_output_api = MockOutputApi()
+
+        mock_file = MockAffectedFile(
+            local_path='foo/foo.cc',
+            old_contents=['raw_ptr<T>'],
+            new_contents=['raw_ptr<T, DanglingUntriaged>'],
+        )
+        mock_input_api.files = [mock_file]
+        mock_input_api.change.DescriptionText = lambda: 'description'
+        msgs = PRESUBMIT.CheckDanglingUntriaged(mock_input_api,
+                                                mock_output_api)
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(any('Unexpected new occurrences of `DanglingUntriaged`' in m.message
+                            for m in msgs))
+
 
 class CheckInlineConstexprDefinitionsInHeadersTest(unittest.TestCase):
 
@@ -6443,6 +6520,30 @@ class CheckBaseFeatureMacroTest(unittest.TestCase):
         self.assertEqual(len(expected_warnings), len(warnings))
         self.assertCountEqual(expected_warnings, warnings)
 
+    def testNoBaseFeatureInContents(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile('valid_no_macro.cc',
+                             ['int x = 42;', 'void helper() {}']),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureMacro(mock_input_api,
+                                                  MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testBaseRuntimeMutableFeatureWarning(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile('warning_3param_runtime_mutable.cc', [
+                'BASE_RUNTIME_MUTABLE_FEATURE(kMyToggle, "MyToggle", '
+                'base::FEATURE_ENABLED_BY_DEFAULT);'
+            ]),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureMacro(mock_input_api,
+                                                  MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertIn('Use of the 3-argument BASE_FEATURE and BASE_RUNTIME_MUTABLE_FEATURE',
+                      results[0].items[0])
+
 
 class CheckBaseFeatureParamMacroTest(unittest.TestCase):
 
@@ -6573,6 +6674,30 @@ class CheckBaseFeatureParamMacroTest(unittest.TestCase):
 
         self.assertEqual(len(expected_warnings), len(warnings))
         self.assertCountEqual(expected_warnings, warnings)
+
+    def testNoBaseFeatureParamInContents(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile('valid_no_param.cc',
+                             ['int x = 42;', 'void helper() {}']),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureParamMacro(mock_input_api,
+                                                       MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testEnumParamWarning(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile('warning_6arg_enum.cc', [
+                'BASE_FEATURE_ENUM_PARAM(MyEnum, kMyEnumParam, &kMyFeature,',
+                '    "my_enum_param", MyEnum::kFirst, &kOptions);',
+            ]),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureParamMacro(mock_input_api,
+                                                       MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertIn('The 6-argument BASE_FEATURE_ENUM_PARAM macro',
+                      results[0].items[0])
 
 
 class CheckNoMojomDataViewIncludesTest(unittest.TestCase):
@@ -6939,7 +7064,15 @@ class CheckNoDirectRefToAndroidSidePanelCachedFlagTest(unittest.TestCase):
                 'chrome/browser/ui/side_panel/android/java/src/org/chromium/chrome/browser/ui/side_panel/AndroidSidePanelEnabledFn.java',
                 ['ChromeFeatureList.sEnableAndroidSidePanel.isEnabled()']),
             MockAffectedFile(
+                ('chrome/browser/ui/side_panel/android/java/src/org/chromium/'
+                 'chrome/browser/ui/side_panel/AndroidSidePanelEnabledFn.kt'),
+                ['ChromeFeatureList.sEnableAndroidSidePanel.isEnabled()']),
+            MockAffectedFile(
                 'chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java',
+                ['sEnableAndroidSidePanel']),
+            MockAffectedFile(
+                ('chrome/browser/flags/android/java/src/org/chromium/chrome/'
+                 'browser/flags/ChromeFeatureList.kt'),
                 ['sEnableAndroidSidePanel']),
             MockAffectedFile('PRESUBMIT.py', ['sEnableAndroidSidePanel']),
             MockAffectedFile('PRESUBMIT_test.py', ['sEnableAndroidSidePanel']),
@@ -6987,6 +7120,463 @@ class CheckNoDirectRefToAndroidSidePanelCachedFlagTest(unittest.TestCase):
         results = PRESUBMIT.CheckNoDirectRefToAndroidSidePanelCachedFlag(mock_input_api, MockOutputApi())
         self.assertEqual(1, len(results))
 
+    def testKotlinFile(self):
+        mock_output_api = MockOutputApi()
+        mock_input_api = MockInputApi()
+        mock_file = MockFile(
+            'chrome/android/java/src/org/chromium/Panel.kt',
+            ['ChromeFeatureList.sEnableAndroidSidePanel.isEnabled()'])
+        mock_input_api.files = [mock_file]
+        res = PRESUBMIT.CheckNoDirectRefToAndroidSidePanelCachedFlag(
+            mock_input_api, mock_output_api)
+        self.assertEqual(len(res), 1)
+        self.assertIn('sEnableAndroidSidePanel', res[0].message)
+
+
+class CheckUnwantedDependenciesTest(unittest.TestCase):
+
+    def testNoAddedIncludesOrImports(self):
+        """Files modified without adding #include or import statements should
+        return immediately.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('some/path/foo.cc',
+                     ['int x = 42;', 'void bar() {}']),
+            MockFile('some/path/foo.proto',
+                     ['syntax = "proto3";', 'message Foo {}']),
+            MockFile('some/path/Foo.java',
+                     ['public class Foo {', '  void bar() {}', '}']),
+        ]
+        with mock.patch.object(checkdeps, 'DepsChecker') as mock_checker:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_checker.assert_not_called()
+            self.assertEqual(0, len(results))
+
+    def testJavaFileNoImportsSkipsCheckdeps(self):
+        """Java files modified without adding import statements should not
+        invoke checkdeps.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile(
+                'android_webview/glue/java/src/com/android/webview/chromium/'
+                'WebViewChromiumFactoryProvider.java',
+                ['// Modified Java code without import statements',
+                 'class FactoryProvider {}']),
+        ]
+        with mock.patch.object(checkdeps, 'DepsChecker') as mock_checker:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_checker.assert_not_called()
+            self.assertEqual(0, len(results))
+
+    def testNonRelevantFiles(self):
+        """Non C++/Proto/Java files should exit early."""
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('some/path/script.py', ['import os']),
+            MockFile('docs/README.md', ['# Documentation']),
+        ]
+        with mock.patch.object(checkdeps, 'DepsChecker') as mock_checker:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_checker.assert_not_called()
+            self.assertEqual(0, len(results))
+
+    def testDisallowedCppInclude(self):
+        """Adding a disallowed #include statement should still trigger a
+        presubmit error.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.cc',
+                     ['#include "chrome/browser/foo.h"']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertEqual('error', results[0].type)
+
+    def testIndentedCppInclude(self):
+        """Indented or spaced preprocessor directives should still be
+        detected.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.cc',
+                     ['   #include "chrome/browser/foo.h"',
+                      '   #  include "chrome/browser/bar.h"']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertEqual('error', results[0].type)
+
+    def testAllowedCppInclude(self):
+        """Adding an allowed #include statement should pass cleanly."""
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.cc',
+                     ['#include "base/memory/raw_ptr.h"']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testAllowedJavaImport(self):
+        """Adding a standard Java import statement should pass cleanly
+        through checkdeps.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/android/java/src/org/chromium/base/Foo.java',
+                     ['import java.util.List;']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testProtoImportQuotes(self):
+        """Proto import statements with single quotes should be recognized
+        and passed to checkdeps.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.proto',
+                     ['import \'chrome/browser/sync_entity.proto\';']),
+        ]
+        disallow_rule = [
+            ('base/foo.proto', Rule.DISALLOW,
+             'Illegal include: chrome/browser/sync_entity.proto')
+        ]
+        with mock.patch.object(checkdeps.DepsChecker,
+                               'CheckAddedProtoImports',
+                               return_value=disallow_rule) as mock_check:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_check.assert_called_once()
+            self.assertEqual(1, len(results))
+            self.assertEqual('error', results[0].type)
+
+    def testIncludeNext(self):
+        """#include_next directives should be recognized as candidate
+        includes and passed to checkdeps.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.cc',
+                     ['#include_next "chrome/browser/foo.h"']),
+        ]
+        disallow_rule = [
+            ('base/foo.cc', Rule.DISALLOW,
+             'Illegal include: chrome/browser/foo.h')
+        ]
+        with mock.patch.object(checkdeps.DepsChecker,
+                               'CheckAddedCppIncludes',
+                               return_value=disallow_rule) as mock_check:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_check.assert_called_once()
+            self.assertEqual(1, len(results))
+            self.assertEqual('error', results[0].type)
+
+    def testProtoImportPublicWithoutSpace(self):
+        """Proto imports without whitespace before quotes (e.g.
+        import public"foo.proto") should match.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.proto',
+                     ['import public"chrome/browser/foo.proto";']),
+        ]
+        disallow_rule = [
+            ('base/foo.proto', Rule.DISALLOW,
+             'Illegal include: chrome/browser/foo.proto')
+        ]
+        with mock.patch.object(checkdeps.DepsChecker,
+                               'CheckAddedProtoImports',
+                               return_value=disallow_rule) as mock_check:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_check.assert_called_once()
+            self.assertEqual(1, len(results))
+            self.assertEqual('error', results[0].type)
+
+    def testProtoImportWithoutSpace(self):
+        """Proto imports without whitespace directly after import (e.g.
+        import"foo.proto") should match.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.proto',
+                     ['import"chrome/browser/foo.proto";']),
+        ]
+        disallow_rule = [
+            ('base/foo.proto', Rule.DISALLOW,
+             'Illegal include: chrome/browser/foo.proto')
+        ]
+        with mock.patch.object(checkdeps.DepsChecker,
+                               'CheckAddedProtoImports',
+                               return_value=disallow_rule) as mock_check:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_check.assert_called_once()
+            self.assertEqual(1, len(results))
+            self.assertEqual('error', results[0].type)
+
+    def testDisallowedProtoImport(self):
+        """Adding a disallowed proto import statement should trigger a
+        presubmit error.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/foo.proto',
+                     ['import "chrome/browser/foo.proto";']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertEqual('error', results[0].type)
+
+    def testDisallowedJavaImport(self):
+        """Adding a disallowed Java import statement should trigger a
+        presubmit error.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile(
+                'android_webview/glue/java/src/com/android/webview/chromium/'
+                'WebViewChromiumFactoryProvider.java',
+                ['import org.chromium.content.app.ContentMain;']),
+        ]
+        results = PRESUBMIT.CheckUnwantedDependencies(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertEqual('error', results[0].type)
+
+    def testJavaImportWithDollar(self):
+        """Java imports referencing identifiers with $ should be recognized
+        and passed to checkdeps.
+        """
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile('base/android/java/src/org/chromium/base/Foo.java',
+                     ['import org.chromium.chrome.browser.Foo$Bar;',
+                      'import $Inner;']),
+        ]
+        disallow_rule = [
+            ('base/android/java/src/org/chromium/base/Foo.java',
+             Rule.DISALLOW,
+             'Illegal import: org.chromium.chrome.browser.Foo$Bar')
+        ]
+        with mock.patch.object(checkdeps.DepsChecker,
+                               'CheckAddedJavaImports',
+                               return_value=disallow_rule) as mock_check:
+            results = PRESUBMIT.CheckUnwantedDependencies(
+                mock_input_api, MockOutputApi())
+            mock_check.assert_called_once()
+            self.assertEqual(1, len(results))
+            self.assertEqual('error', results[0].type)
+
+
+class ExtensionFastPathsTest(unittest.TestCase):
+
+    def _make_input(self, *files):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            f if isinstance(f, (MockFile, MockAffectedFile))
+            else MockFile(f, [])
+            for f in files
+        ]
+        return mock_input_api
+
+    def testHasFileHelpers(self):
+        inp = self._make_input('assets/logo.png')
+        self.assertFalse(PRESUBMIT._HasCPlusPlusFiles(inp))
+        self.assertFalse(PRESUBMIT._HasCPlusPlusHeaderFiles(inp))
+        self.assertFalse(PRESUBMIT._HasJavaFiles(inp))
+        self.assertFalse(PRESUBMIT._HasPythonFiles(inp))
+        self.assertFalse(PRESUBMIT._HasGnFiles(inp))
+        self.assertFalse(PRESUBMIT._HasMojomFiles(inp))
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp))
+
+        inp_md = self._make_input('docs/readme.md')
+        self.assertFalse(PRESUBMIT._HasCPlusPlusFiles(inp_md))
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_md))
+
+        inp_cc = self._make_input('base/foo.cc')
+        self.assertTrue(PRESUBMIT._HasCPlusPlusFiles(inp_cc))
+        self.assertFalse(PRESUBMIT._HasCPlusPlusHeaderFiles(inp_cc))
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_cc))
+
+        inp_h = self._make_input('base/foo.h')
+        self.assertTrue(PRESUBMIT._HasCPlusPlusFiles(inp_h))
+        self.assertTrue(PRESUBMIT._HasCPlusPlusHeaderFiles(inp_h))
+
+        inp_java = self._make_input('base/Foo.java')
+        self.assertTrue(PRESUBMIT._HasJavaFiles(inp_java))
+
+        inp_py = self._make_input('base/script.py')
+        self.assertTrue(PRESUBMIT._HasPythonFiles(inp_py))
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_py))
+
+        inp_gn = self._make_input('base/BUILD.gn')
+        self.assertTrue(PRESUBMIT._HasGnFiles(inp_gn))
+
+        inp_mojom = self._make_input('base/foo.mojom')
+        self.assertTrue(PRESUBMIT._HasMojomFiles(inp_mojom))
+
+    def testHasPotentialMacroFilesPositiveAllowlist(self):
+        # Code files that can contain macros
+        inp_cc = self._make_input('base/foo.cc')
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_cc))
+        inp_mojom = self._make_input('base/foo.mojom')
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_mojom))
+        inp_asm = self._make_input('base/crc32c.s')
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_asm))
+        inp_asm2 = self._make_input('base/crc32c.asm')
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_asm2))
+        inp_rs = self._make_input('base/lib.rs')
+        self.assertTrue(PRESUBMIT._HasPotentialMacroFiles(inp_rs))
+
+        # Non-macro files must NOT trigger macro checks
+        inp_gn = self._make_input('base/BUILD.gn')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_gn))
+        inp_png = self._make_input('assets/logo.png')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_png))
+        inp_json = self._make_input('data/test.json')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_json))
+        inp_deps = self._make_input('DEPS')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_deps))
+        inp_owners = self._make_input('OWNERS')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_owners))
+        inp_md = self._make_input('docs/README.md')
+        self.assertFalse(PRESUBMIT._HasPotentialMacroFiles(inp_md))
+
+    def testCppIncludeExtensionHandled(self):
+        mock_input_api = self._make_input('base/win/windows_defines.inc')
+        self.assertTrue(PRESUBMIT._HasCPlusPlusFiles(mock_input_api))
+        self.assertTrue(PRESUBMIT._HasCPlusPlusHeaderFiles(mock_input_api))
+
+    def testHasKotlinFiles(self):
+        inp_kt = self._make_input('chrome/android/Panel.kt')
+        self.assertTrue(PRESUBMIT._HasKotlinFiles(inp_kt))
+        self.assertFalse(PRESUBMIT._HasJavaFiles(inp_kt))
+
+        inp_java = self._make_input('chrome/android/Panel.java')
+        self.assertFalse(PRESUBMIT._HasKotlinFiles(inp_java))
+        self.assertTrue(PRESUBMIT._HasJavaFiles(inp_java))
+
+    def testDeprecatedOSMacrosInCode(self):
+        mock_output_api = MockOutputApi()
+        for path in ('base/foo.cc', 'base/test.mojom',
+                     'base/crc32c.s', 'base/crc32c.asm'):
+            mock_input_api = self._make_input(
+                MockFile(path, ['#if defined(OS_WIN)']))
+            res = PRESUBMIT.CheckForDeprecatedOSMacros(mock_input_api,
+                                                      mock_output_api)
+            self.assertEqual(len(res), 1, f'Failed for {path}')
+            self.assertIn('defined(OS_WIN)', res[0].items[0])
+
+    def testDeprecatedOSMacrosSkipsPython(self):
+        mock_output_api = MockOutputApi()
+        mock_input_api = self._make_input(
+            MockFile('base/script.py', ['# defined(OS_WIN)']))
+        res = PRESUBMIT.CheckForDeprecatedOSMacros(mock_input_api,
+                                                  mock_output_api)
+        self.assertEqual(res, [])
+
+        mock_input_api = self._make_input(
+            MockFile('base/style.css', ['/* #if defined(OS_WIN) */']))
+        res = PRESUBMIT.CheckForDeprecatedOSMacros(mock_input_api,
+                                                  mock_output_api)
+        self.assertEqual(res, [])
+
+    def testCPlusPlusCheckEarlyExitOnJavaFile(self):
+        mock_input_api = self._make_input('base/Foo.java')
+        mock_output_api = MockOutputApi()
+        self.assertEqual(
+            PRESUBMIT.CheckNoIOStreamInHeaders(mock_input_api,
+                                               mock_output_api), [])
+        self.assertEqual(
+            PRESUBMIT.CheckNoUNIT_TESTInSourceFiles(mock_input_api,
+                                                   mock_output_api), [])
+        self.assertEqual(
+            PRESUBMIT.CheckNoDISABLETypoInTests(mock_input_api,
+                                                mock_output_api), [])
+        self.assertEqual(
+            PRESUBMIT.CheckForgettingMAYBEInTests(mock_input_api,
+                                                  mock_output_api), [])
+
+    def testCheckNoStrCatRedefinesGuards(self):
+        mock_output_api = MockOutputApi()
+        mock_inp_java = self._make_input(
+            MockFile('base/Foo.java', ['#include <shlwapi.h>']))
+        self.assertEqual(
+            PRESUBMIT.CheckNoStrCatRedefines(mock_inp_java, mock_output_api),
+            [])
+
+        mock_inp_cc = self._make_input(
+            MockFile('base/foo.cc', ['#include <shlwapi.h>']))
+        res = PRESUBMIT.CheckNoStrCatRedefines(mock_inp_cc, mock_output_api)
+        self.assertEqual(len(res), 1)
+
+    def testCheckForIPCRulesGuards(self):
+        mock_output_api = MockOutputApi()
+        mock_inp_cc = self._make_input(
+            MockFile('base/foo.cc', ['IPC_ENUM_TRAITS(Foo)']))
+        self.assertEqual(
+            PRESUBMIT.CheckForIPCRules(mock_inp_cc, mock_output_api), [])
+
+        mock_inp_h = self._make_input(
+            MockFile('base/foo.h', ['IPC_ENUM_TRAITS(Foo)']))
+        res = PRESUBMIT.CheckForIPCRules(mock_inp_h, mock_output_api)
+        self.assertEqual(len(res), 1)
+
+    def testNewLLVMStyleFuzzersOnUploadGuards(self):
+        mock_output_api = MockOutputApi()
+        mock_inp_java = self._make_input(
+            MockFile('base/Foo.java', ['fuzzer_test("my_fuzzer") {']))
+        self.assertEqual(
+            PRESUBMIT.CheckNewLLVMStyleFuzzersOnUpload(mock_inp_java,
+                                                      mock_output_api), [])
+
+        mock_inp_gn = self._make_input(
+            MockFile('base/BUILD.gn', ['  fuzzer_test("my_fuzzer") {']))
+        res = PRESUBMIT.CheckNewLLVMStyleFuzzersOnUpload(mock_inp_gn,
+                                                        mock_output_api)
+        self.assertEqual(len(res), 1)
+
+        mock_inp_cc = self._make_input(
+            MockFile('base/foo.cc', ['LLVMFuzzerTestOneInput']))
+        res = PRESUBMIT.CheckNewLLVMStyleFuzzersOnUpload(mock_inp_cc,
+                                                        mock_output_api)
+        self.assertEqual(len(res), 1)
+
+    def testJavaCheckEarlyExitOnCPlusPlusFile(self):
+        mock_input_api = self._make_input('base/foo.cc')
+        mock_output_api = MockOutputApi()
+        self.assertEqual(
+            PRESUBMIT.CheckNoProductionCodeUsingTestOnlyFunctionsJava(
+                mock_input_api, mock_output_api), [])
+        self.assertEqual(
+            PRESUBMIT.CheckFlakyTestUsage(mock_input_api, mock_output_api), [])
+        self.assertEqual(
+            PRESUBMIT.CheckSettingsChanges(mock_input_api, mock_output_api), [])
+
+    def testRootDotfileGnHandling(self):
+        mock_input_api = self._make_input('.gn')
+        self.assertTrue(PRESUBMIT._HasGnFiles(mock_input_api))
+
+    def testHccAndInlExtensions(self):
+        mock_inp_hcc = self._make_input('base/fuzz.hcc')
+        self.assertTrue(PRESUBMIT._HasCPlusPlusFiles(mock_inp_hcc))
+
+        mock_inp_inl = self._make_input('base/inline.inl')
+        self.assertTrue(PRESUBMIT._HasCPlusPlusFiles(mock_inp_inl))
+        self.assertTrue(PRESUBMIT._HasCPlusPlusHeaderFiles(mock_inp_inl))
 
 if __name__ == '__main__':
     unittest.main()

@@ -899,7 +899,8 @@ void StyleCascade::ApplyInterpolation(
 
   InterpolationTypesMap map(state_.GetDocument().GetPropertyRegistry(),
                             state_.GetDocument());
-  CSSInterpolationEnvironment environment(map, state_, this, &resolver);
+  CSSInterpolationEnvironment environment(ToPropertyHandle(property, priority),
+                                          map, state_, this, &resolver);
 
   const Interpolation& interpolation = *interpolations.front();
   if (IsA<InvalidatableInterpolation>(interpolation)) {
@@ -2619,7 +2620,7 @@ const CSSValue* StyleCascade::CoerceIntoNumericValue(
     const CSSParserContext& context) {
   STACK_UNINITIALIZED StyleCascade cascade(state);
   CascadeResolver resolver{CascadeFilter()};
-  bool is_attr_tainted_unused;
+  bool is_attr_tainted_unused = false;
   CSSParserLocalContext local_context =
       CSSParserLocalContext::CreateWithoutPropertyForAtRules();
   return cascade.CoerceIntoNumericValueInternal(

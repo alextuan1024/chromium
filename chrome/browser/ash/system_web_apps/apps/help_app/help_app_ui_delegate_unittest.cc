@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/system_web_apps/apps/help_app/help_app_ui_delegate.h"
 
 #include <memory>
+#include <string_view>
 
 #include "ash/webui/help_app_ui/help_app_ui.mojom-shared.h"
 #include "base/memory/raw_ptr.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/ash/borealis/testing/features.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "content/public/test/test_web_ui.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -88,14 +90,14 @@ struct OpenSettingsScenario {
   help_app::mojom::SettingsComponent component;
 
   // Expected url string shown.
-  std::string expected_url;
+  std::string_view expected_url;
 };
 
 class HelpAppUiDelegateOpenSettingsTest
     : public HelpAppUiDelegateTest,
       public testing::WithParamInterface<OpenSettingsScenario> {};
 
-const std::vector<OpenSettingsScenario> kOpenSettingsScenario{
+constexpr OpenSettingsScenario kOpenSettingsScenario[] = {
     {.component = ash::help_app::mojom::SettingsComponent::HOME,
      .expected_url = "chrome://os-settings"},
     {.component = ash::help_app::mojom::SettingsComponent::ACCESSIBILITY,

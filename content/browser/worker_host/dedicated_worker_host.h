@@ -138,6 +138,9 @@ class CONTENT_EXPORT DedicatedWorkerHost final
   const blink::StorageKey& GetWorkerStorageKey() const {
     return worker_storage_key_;
   }
+  net::StorageAccessApiStatus storage_access_api_status() const {
+    return storage_access_api_status_;
+  }
   GlobalRenderFrameHostId GetAncestorRenderFrameHostId() const;
   // Returns the ancestor RenderFrameHost if it still hosts the document that
   // created this worker, or nullptr otherwise.
@@ -236,7 +239,7 @@ class CONTENT_EXPORT DedicatedWorkerHost final
 
   const network::CrossOriginEmbedderPolicy& cross_origin_embedder_policy()
       const {
-    DCHECK(worker_client_security_state_);
+    CHECK(worker_client_security_state_, base::NotFatalUntil::M160);
     return worker_client_security_state_->cross_origin_embedder_policy;
   }
 

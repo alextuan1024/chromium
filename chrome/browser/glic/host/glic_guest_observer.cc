@@ -32,6 +32,26 @@ enum class WebViewAutoPlayProgress {
 
 }  // namespace
 
+void GrantAutoplayPermissions(content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInPrimaryMainFrame()) {
+    return;
+  }
+  url::Origin origin = url::Origin::Create(navigation_handle->GetURL());
+  if (!IsGuestOriginAllowed(origin)) {
+    return;
+  }
+  content::RenderFrameHost* frame = navigation_handle->GetRenderFrameHost();
+  mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient> client;
+  frame->GetRemoteAssociatedInterfaces()->GetInterface(&client);
+  client->AddAutoplayFlags(origin, blink::mojom::kAutoplayFlagForceAllow);
+  DVLOG(1) << "Granted Glic AutoPlay for origin=\"" << origin
+           << "\" at primary main RFH with url=\""
+           << navigation_handle->GetURL() << "\"";
+  base::UmaHistogramEnumeration(
+      "Glic.Host.WebView.AutoPlay",
+      WebViewAutoPlayProgress::kAutoPlayGrantedForPrimaryRFH);
+}
+
 WEB_CONTENTS_USER_DATA_KEY_IMPL(GlicGuestObserver);
 
 // static
@@ -56,44 +76,17 @@ GlicGuestObserver::~GlicGuestObserver() = default;
 
 void GlicGuestObserver::RenderFrameCreated(
     content::RenderFrameHost* render_frame_host) {
-  MaybeEnableMojoJsBindings(render_frame_host);
   MaybeSetBackgroundColor(render_frame_host);
 }
-
 void GlicGuestObserver::ReadyToCommitNavigation(
     content::NavigationHandle* navigation_handle) {
   GrantAutoplayPermissions(navigation_handle);
   MaybeEnableMojoJsBindings(navigation_handle);
 }
 
-void GlicGuestObserver::GrantAutoplayPermissions(
-    content::NavigationHandle* navigation_handle) {
-  content::RenderFrameHost* frame = navigation_handle->GetRenderFrameHost();
-  mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient> client;
-  frame->GetRemoteAssociatedInterfaces()->GetInterface(&client);
-  client->AddAutoplayFlags(GetGuestOrigin(),
-                           blink::mojom::kAutoplayFlagForceAllow);
-  DVLOG(1) << "Granted Glic AutoPlay for origin=\"" << GetGuestOrigin()
-           << "\" at "
-           << (navigation_handle->IsInPrimaryMainFrame() ? "main " : "")
-           << "RFH with url=\"" << navigation_handle->GetURL() << "\"";
-  base::UmaHistogramEnumeration(
-      "Glic.Host.WebView.AutoPlay",
-      navigation_handle->IsInPrimaryMainFrame()
-          ? WebViewAutoPlayProgress::kAutoPlayGrantedForPrimaryRFH
-          : WebViewAutoPlayProgress::kAutoPlayGrantedForOtherRFH);
-}
-
-void GlicGuestObserver::MaybeEnableMojoJsBindings(
-    content::RenderFrameHost* render_frame_host) {
-  if (IsGlicGuest(web_contents())) {
-    render_frame_host->EnableMojoJsBindings(/*features=*/nullptr);
-  }
-}
-
 void GlicGuestObserver::MaybeEnableMojoJsBindings(
     content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsInMainFrame()) {
+  if (!navigation_handle->IsInPrimaryMainFrame()) {
     return;
   }
   // Enable MojoJS bindings if the pending navigation is targeting an allowed

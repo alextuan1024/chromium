@@ -277,10 +277,7 @@ class SqliteBackingStoreRolloutStageTest
   BindFactoryAndOverrideStage(const storage::BucketInfo& bucket_info,
                               SqliteRolloutStage stage) {
     mojo::Remote<blink::mojom::IDBFactory> factory_remote;
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        checker_remote;
-    BindFactory(std::move(checker_remote),
-                factory_remote.BindNewPipeAndPassReceiver(), bucket_info);
+    BindFactory(factory_remote.BindNewPipeAndPassReceiver(), bucket_info);
     BucketContext* bucket_context = GetBucketContext(bucket_info.id);
     bucket_context->SetSqliteRolloutStageForTesting(stage);
     return {std::move(factory_remote), bucket_context};
@@ -487,6 +484,12 @@ TEST_P(SqliteBackingStoreRolloutStageTest, MigrateDataToSqliteGentle) {
         {kErrorBackingStoreInitFailed, kIsLevelDb}},
        {StoreType::kLevelDbInternalCorruption, kOpenedSqlite},
        {StoreType::kLevelDbBackingStoreCorruption, kOpenedSqlite}});
+
+  histograms.ExpectTotalCount("IndexedDB.SqliteMigration.SizeRatio.SmallDb", 2);
+  int64_t average_size_ratio =
+      histograms.GetTotalSum("IndexedDB.SqliteMigration.SizeRatio.SmallDb") / 2;
+  EXPECT_GT(average_size_ratio, 1000);
+  EXPECT_LT(average_size_ratio, 10000);
 }
 
 TEST_P(SqliteBackingStoreRolloutStageTest, FailedMigrationLeavesLevelDbUsable) {

@@ -10,6 +10,7 @@
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -164,6 +165,7 @@ class MockToolbarUIDelegate
   MOCK_METHOD(void,
               OnPageActionChipShowingChanged,
               (::toolbar_ui_api::mojom::PageActionId action_id,
+               bool is_showing,
                ::toolbar_ui_api::mojom::ToolbarUIService::
                    OnPageActionChipShowingChangedCallback callback),
               (override));
@@ -196,7 +198,7 @@ class MockToolbarUIDelegate
               (override));
   MOCK_METHOD(void,
               OnLhsChipClicked,
-              (toolbar_ui_api::mojom::LhsChipIdentifier, bool),
+              (toolbar_ui_api::mojom::LhsChipIdentifier, bool, uint32_t),
               (override));
   MOCK_METHOD(void,
               OnLhsChipPointerEntered,
@@ -230,17 +232,27 @@ class MockToolbarUIDelegate
               OnPerformanceInterventionButtonMousePressed,
               (),
               (override));
+  MOCK_METHOD(void,
+              OnMediaButtonClicked,
+              (bool is_mouse_interaction),
+              (override));
+  MOCK_METHOD(void, OnMediaButtonMousePressed, (), (override));
   MOCK_METHOD((base::expected<std::monostate, mojo_base::mojom::ErrorPtr>),
               OnOmniboxAction,
               (toolbar_ui_api::mojom::OmniboxActionPtr action_ptr),
               (override));
-  MOCK_METHOD(void, ShowAvatarMenu, ());
+  MOCK_METHOD(void, ShowAvatarMenu, (bool));
+  MOCK_METHOD(void, OnAvatarButtonMousePressed, ());
   MOCK_METHOD(void, SetAvatarButtonHovered, (bool));
   MOCK_METHOD(void, SetAvatarButtonFocused, (bool));
   MOCK_METHOD(void, SetAvatarButtonIPHPromoShowing, (bool));
   MOCK_METHOD(void, OnAppMenuFocusChanged, (bool), (override));
   MOCK_METHOD(void,
               ExecuteExtensionAction,
+              (const std::string& extension_id, bool is_pointer_interaction),
+              (override));
+  MOCK_METHOD(void,
+              OnExtensionActionPointerDown,
               (const std::string& extension_id),
               (override));
   MOCK_METHOD(void,
@@ -410,6 +422,50 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, SetReloadButtonState) {
   ui()->OnNavigationControlsStateChanged(*state);
   connection.mock_observer().FlushForTesting();
 }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, SetMediaButtonState) {
+  ToolbarUIServiceConnectionManager connection(ui());
+
+  auto state = CreateValidNavigationControlsState();
+  state->media_control_state->should_be_shown = true;
+  connection.RegisterObserver();
+
+  EXPECT_CALL(
+      connection.mock_observer(),
+      OnNavigationControlsStateChanged(
+          testing::_,
+          testing::Pointee(testing::Field(
+              &toolbar_ui_api::mojom::NavigationControlsState::
+                  media_control_state,
+              testing::Pointee(testing::Field(
+                  &toolbar_ui_api::mojom::MediaControlState::should_be_shown,
+                  true))))))
+      .Times(1);
+  ui()->OnNavigationControlsStateChanged(*state);
+  connection.mock_observer().FlushForTesting();
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, OnMediaButtonClicked) {
+  mojo::Remote<toolbar_ui_api::mojom::ToolbarUIService> service_remote;
+  ui()->BindInterface(service_remote.BindNewPipeAndPassReceiver());
+
+  EXPECT_CALL(toolbar_ui_delegate(), OnMediaButtonClicked(true)).Times(1);
+
+  service_remote->OnMediaButtonClicked(true);
+  service_remote.FlushForTesting();
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, OnMediaButtonMousePressed) {
+  mojo::Remote<toolbar_ui_api::mojom::ToolbarUIService> service_remote;
+  ui()->BindInterface(service_remote.BindNewPipeAndPassReceiver());
+
+  EXPECT_CALL(toolbar_ui_delegate(), OnMediaButtonMousePressed()).Times(1);
+
+  service_remote->OnMediaButtonMousePressed();
+  service_remote.FlushForTesting();
+}
+#endif
 
 // Tests that the BindInterface method for BrowserControlsService works
 // correctly.

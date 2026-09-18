@@ -29,6 +29,7 @@
 #include "components/autofill/core/browser/integrators/at_memory/memory_search_result.h"
 #include "components/autofill/core/browser/logging/log_receiver.h"
 #include "components/autofill/core/browser/logging/log_router.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/device_reauth/mock_device_authenticator.h"
@@ -455,15 +456,32 @@ TEST_F(AtMemoryQueryServiceTest, Query_PersonalContextResolverError) {
   EXPECT_TRUE(result.entries.empty());
 }
 
-// Tests that the query service does not send results for a query that has been
-// superseded by a newer query.
-TEST_F(AtMemoryQueryServiceTest, StaleResultsAreNotSent) {
-  AtMemoryQueryResponse response;
+// Tests that the query service returns kInternalFailure when the personal
+// context fetch is cancelled.
+TEST_F(AtMemoryQueryServiceTest, Query_PersonalContextCancelled) {
+  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
+
+  StubFetchContextError(
+      personal_context::ContextMemoryError::FromExecutionError(
+          personal_context::ContextMemoryError::ExecutionError::kCancelled));
+
+  TestFuture<MemorySearchResults> future;
+  service->Query(u"random query", GURL("https://example.com"), u"Page Title",
+                 future.GetRepeatingCallback());
+
+  ASSERT_TRUE(future.Wait());
+  const auto& result = future.Get();
+  EXPECT_EQ(result.status, MemorySearchStatus::kInternalFailure);
+  EXPECT_TRUE(result.entries.empty());
+}
+
+// Tests that the query service supports multiple concurrent queries, and both
+// callbacks are called when data retrieval completes.
+TEST_F(AtMemoryQueryServiceTest, ConcurrentQueriesBothReceiveResults) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
   AutofillFetchPlan* plan = response.mutable_autofill_fetch_plan();
   plan->add_fetch_specifications()->set_data_type(
       personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
-  response.set_query_classification(
-      AtMemoryQueryResponse::QUERY_CLASSIFICATION_AT_MEMORY);
 
   Any serialized_response1;
   serialized_response1.set_value(response.SerializeAsString());
@@ -515,14 +533,71 @@ TEST_F(AtMemoryQueryServiceTest, StaleResultsAreNotSent) {
   // Complete the first query's data retrieval.
   fake_data_provider->CompleteNext({});
 
-  // The first query's callback should NOT be called.
-  EXPECT_FALSE(future1.IsReady());
+  // The first query's callback should be called.
+  ASSERT_TRUE(future1.Wait());
+  EXPECT_EQ(future1.Get().status, MemorySearchStatus::kFinalResponseSuccess);
 
   // Complete the second query's data retrieval.
   fake_data_provider->CompleteNext({});
 
   // The second query's callback should be called.
   ASSERT_TRUE(future2.Wait());
+  EXPECT_EQ(future2.Get().status, MemorySearchStatus::kFinalResponseSuccess);
+}
+
+// Tests that when PersonalContextService cancels an older query upon receiving
+// a newer one (due to single-concurrency limit), the first query's callback
+// receives kInternalFailure while the second query succeeds.
+TEST_F(AtMemoryQueryServiceTest, FirstQueryCancelledWhenSecondStarted) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
+  AutofillFetchPlan* plan = response.mutable_autofill_fetch_plan();
+  plan->add_fetch_specifications()->set_data_type(
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+
+  Any serialized_response;
+  serialized_response.set_value(response.SerializeAsString());
+  personal_context::FetchContextResult success_result(
+      std::move(serialized_response));
+
+  EXPECT_CALL(
+      mock_service(),
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AT_MEMORY, _,
+                   _, _))
+      .WillOnce([](personal_context::proto::ContextMemoryFeature feature,
+                   const google::protobuf::MessageLite& request_metadata,
+                   const personal_context::ContextMemoryRequestOptions& options,
+                   personal_context::FetchContextCallback callback) {
+        std::move(callback).Run(
+            personal_context::FetchContextResult(base::unexpected(
+                personal_context::ContextMemoryError::FromExecutionError(
+                    personal_context::ContextMemoryError::ExecutionError::
+                        kCancelled))));
+      })
+      .WillOnce(
+          [&](personal_context::proto::ContextMemoryFeature feature,
+              const google::protobuf::MessageLite& request_metadata,
+              const personal_context::ContextMemoryRequestOptions& options,
+              personal_context::FetchContextCallback callback) {
+            std::move(callback).Run(std::move(success_result));
+          });
+
+  auto data_provider = std::make_unique<FakeMemoryDataProvider>();
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryService(std::move(data_provider));
+
+  TestFuture<MemorySearchResults> future1;
+  service->Query(u"query 1", GURL("https://example.com"), u"Page Title",
+                 future1.GetRepeatingCallback());
+
+  TestFuture<MemorySearchResults> future2;
+  service->Query(u"query 2", GURL("https://example.com"), u"Page Title",
+                 future2.GetRepeatingCallback());
+
+  ASSERT_TRUE(future1.Wait());
+  EXPECT_EQ(future1.Get().status, MemorySearchStatus::kInternalFailure);
+
+  ASSERT_TRUE(future2.Wait());
+  EXPECT_EQ(future2.Get().status, MemorySearchStatus::kFinalResponseSuccess);
 }
 
 // Tests that deduplication preserves the original insertion order.
@@ -1022,29 +1097,39 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_EQ(fake_data_provider->last_type(), MemoryDataType::kAddressFull);
 }
 
-// Tests that the query service correctly identifies and marks SPII data types
-// as obfuscated, while leaving non-SPII data types set to unobfuscated.
+// Tests that the query service returns obfuscated SPII data types when sourced
+// from Autofill, while leaving non-SPII remote data types set to unobfuscated.
 TEST_F(AtMemoryQueryServiceTest, Query_SetsIsObfuscated) {
+  CreditCard card = test::GetCreditCard();
+  autofill_client()
+      .GetPersonalDataManager()
+      .payments_data_manager()
+      .AddCreditCard(card);
+
   // Prepare a fake server response.
   AtMemoryQueryResponse response;
   response.set_query_classification(
       AtMemoryQueryResponse::QUERY_CLASSIFICATION_AT_MEMORY);
 
-  // 1. Non-SPII: Full Name
+  // 1. Non-SPII: Full Name (remote)
   AtMemorySearchResult* result1 = response.add_results();
   result1->mutable_primary_attribute()->set_schemaful_key(
       personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
   result1->mutable_primary_attribute()->set_value("John Doe");
 
-  // 2. SPII: Credit Card Number
-  AtMemorySearchResult* result2 = response.add_results();
-  result2->mutable_primary_attribute()->set_schemaful_key(
-      personal_context::proto::MEMORY_DATA_TYPE_CREDIT_CARD_NUMBER);
-  result2->mutable_primary_attribute()->set_value("1111222233334444");
+  // 2. SPII: Credit Card Number (fetched from Autofill)
+  response.mutable_autofill_fetch_plan()
+      ->add_fetch_specifications()
+      ->set_data_type(
+          personal_context::proto::MEMORY_DATA_TYPE_CREDIT_CARD_NUMBER);
 
   StubFetchContextResponse(std::move(response));
 
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
+  auto data_provider = std::make_unique<AutofillDataProvider>(
+      &autofill_client().GetPersonalDataManager(),
+      autofill_client().GetEntityDataManager());
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryService(std::move(data_provider));
 
   TestFuture<MemorySearchResults> future;
   service->Query(u"some query", GURL("https://example.com"), u"Page Title",
@@ -1061,13 +1146,20 @@ TEST_F(AtMemoryQueryServiceTest, Query_SetsIsObfuscated) {
                 Field(&MemorySearchResult::is_obfuscated, true))));
 }
 
-// Tests that Autofill results are presented before remote results for
-// non-dynamic types, and Autofill results are sorted by ranking score
-// descending.
+// Tests that local Autofill results are presented before remote results, and
+// within each group results are sorted by confidence score descending.
 TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_AutofillPrioritizedForNonDynamicTypes) {
+       Query_Ranking_AutofillPrioritizedAndSortedByConfidence) {
   AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL, "Remote Name");
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL, "Remote Name B",
+      /*relevance_score=*/0.6);
+  AtMemorySearchResult* remote_result_a = response.add_results();
+  remote_result_a->set_relevance_score(0.95);
+  Attribute* primary_a = remote_result_a->mutable_primary_attribute();
+  primary_a->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+  primary_a->set_value("Remote Name A");
+
   response.mutable_autofill_fetch_plan()
       ->add_fetch_specifications()
       ->set_data_type(personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
@@ -1096,80 +1188,8 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_THAT(result.entries,
               ElementsAre(Field(&MemorySearchResult::value, u"Local Name A"),
                           Field(&MemorySearchResult::value, u"Local Name B"),
-                          Field(&MemorySearchResult::value, u"Remote Name")));
-}
-
-// Tests that remote results are presented before Autofill results when all
-// results are dynamic transaction types.
-TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_RemotePrioritizedForDynamicTransactionTypes) {
-  AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER,
-      "Remote 1Z12345");
-  response.mutable_autofill_fetch_plan()
-      ->add_fetch_specifications()
-      ->set_data_type(
-          personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER);
-
-  StubFetchContextResponse(std::move(response));
-
-  auto data_provider = std::make_unique<FakeMemoryDataProvider>();
-  FakeMemoryDataProvider* fake_data_provider = data_provider.get();
-
-  MemorySearchResult local_shipment(MemoryDataType::kShipmentTrackingNumber,
-                                    u"Tracking", u"Local 1Z67890",
-                                    /*confidence_score=*/0.8);
-  fake_data_provider->SetResults({local_shipment});
-
-  std::unique_ptr<AtMemoryQueryService> service =
-      CreateQueryService(std::move(data_provider));
-
-  TestFuture<MemorySearchResults> future;
-  service->Query(u"tracking number", GURL("https://example.com"), u"Page Title",
-                 future.GetRepeatingCallback());
-
-  ASSERT_TRUE(future.Wait());
-  const MemorySearchResults& result = future.Get();
-  EXPECT_EQ(result.status, MemorySearchStatus::kFinalResponseSuccess);
-  EXPECT_THAT(result.entries,
-              ElementsAre(Field(&MemorySearchResult::value, u"Remote 1Z12345"),
-                          Field(&MemorySearchResult::value, u"Local 1Z67890")));
-}
-
-// Tests that Autofill results are prioritized when mixed types contain at
-// least one non-dynamic transaction type.
-TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_MixedTypesNotAllDynamic_AutofillPrioritized) {
-  AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER,
-      "Remote 1Z12345");
-  response.mutable_autofill_fetch_plan()
-      ->add_fetch_specifications()
-      ->set_data_type(personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_FULL);
-
-  StubFetchContextResponse(std::move(response));
-
-  auto data_provider = std::make_unique<FakeMemoryDataProvider>();
-  FakeMemoryDataProvider* fake_data_provider = data_provider.get();
-
-  MemorySearchResult local_address(MemoryDataType::kAddressFull, u"Address",
-                                   u"123 Main St", /*confidence_score=*/0.7);
-  fake_data_provider->SetResults({local_address});
-
-  std::unique_ptr<AtMemoryQueryService> service =
-      CreateQueryService(std::move(data_provider));
-
-  TestFuture<MemorySearchResults> future;
-  service->Query(u"where is my package", GURL("https://example.com"),
-                 u"Page Title", future.GetRepeatingCallback());
-
-  ASSERT_TRUE(future.Wait());
-  const MemorySearchResults& result = future.Get();
-  EXPECT_EQ(result.status, MemorySearchStatus::kFinalResponseSuccess);
-  EXPECT_THAT(
-      result.entries,
-      ElementsAre(Field(&MemorySearchResult::value, u"123 Main St"),
-                  Field(&MemorySearchResult::value, u"Remote 1Z12345")));
+                          Field(&MemorySearchResult::value, u"Remote Name A"),
+                          Field(&MemorySearchResult::value, u"Remote Name B")));
 }
 
 struct QueryClassificationTestCase {

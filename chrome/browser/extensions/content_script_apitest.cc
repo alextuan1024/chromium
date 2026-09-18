@@ -67,6 +67,7 @@
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -971,10 +972,10 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest, ContentScriptBlockingScript) {
 
   // Navigate! Both extensions will try to inject. Use WebContents::OpenURL() to
   // avoid waits on navigation/load, which cause the test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -1025,10 +1026,10 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
 
   // Navigate! Use WebContents::OpenURL() to avoid waits that can cause the
   // test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -1066,10 +1067,10 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
 
   // Navigate! Use WebContents::OpenURL() to avoid waits that can cause the
   // test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -2427,22 +2428,7 @@ IN_PROC_BROWSER_TEST_P(ContentScriptApiPrerenderingMV3Test, SpeculationRules) {
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-class ContentScriptApiFencedFrameTest : public ContentScriptApiTest {
- protected:
-  ContentScriptApiFencedFrameTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kFencedFrames, {{"implementation_type", "mparch"}}},
-         {features::kPrivacySandboxAdsAPIsOverride, {}},
-         {blink::features::kFencedFramesAPIChanges, {}},
-         {blink::features::kFencedFramesDefaultMode, {}}},
-        {/* disabled_features */});
-    UseHttpsTestServer();
-  }
-  ~ContentScriptApiFencedFrameTest() override = default;
 
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
 
 // Inject two extensions with matching rules. Only the extension
 // that matches the outermost extension's content_scripts should
@@ -2450,83 +2436,7 @@ class ContentScriptApiFencedFrameTest : public ContentScriptApiTest {
 // The documentIdle extension should execute (sending 'done').
 // The documentStart extension should not-execute (sending 'fail') since it
 // isn't the parent extension of the fenced frame.
-IN_PROC_BROWSER_TEST_F(ContentScriptApiFencedFrameTest,
-                       InjectionMatchesCorrectExtension) {
-  ASSERT_TRUE(StartEmbeddedTestServer());
 
-  const char kDocumentIdleExtensionManifest[] =
-      R"MANIFEST({
-        "name": "Document Idle Extesnsion",
-        "version": "0.1",
-        "manifest_version": 3,
-        "content_scripts": [{
-          "matches": ["https://*/fenced_frames/title1.html"],
-          "js": ["script.js"],
-          "run_at": "document_idle",
-          "all_frames": true
-        }]
-      })MANIFEST";
-
-  const char kDocumentStartExtensionManifest[] =
-      R"MANIFEST({
-        "name": "Document Start extension",
-        "version": "0.1",
-        "manifest_version": 3,
-        "content_scripts": [{
-          "matches": ["https://*/fenced_frames/title1.html"],
-          "js": ["script.js"],
-          "run_at": "document_start",
-          "all_frames": true
-        }]
-      })MANIFEST";
-
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("a.test", "/fenced_frames/title1.html");
-
-  TestExtensionDir document_idle_extension_dir;
-  document_idle_extension_dir.WriteManifest(kDocumentIdleExtensionManifest);
-
-  document_idle_extension_dir.WriteFile(FILE_PATH_LITERAL("test.html"), R"HTML(
-    <html>
-      Fenced Frame Test!
-      <fencedframe></fencedframe>
-      <script src="navigation.js"></script>
-    </html>
-  )HTML");
-
-  document_idle_extension_dir.WriteFile(
-      FILE_PATH_LITERAL("navigation.js"),
-      content::JsReplace(
-          "const fencedframe = document.querySelector('fencedframe');"
-          "fencedframe.config = new FencedFrameConfig($1);",
-          fenced_frame_url));
-
-  document_idle_extension_dir.WriteFile(FILE_PATH_LITERAL("script.js"),
-                                        kNonBlockingScript);
-  const Extension* extension =
-      LoadExtension(document_idle_extension_dir.UnpackedPath());
-  ASSERT_TRUE(extension);
-
-  TestExtensionDir document_start_extension_dir;
-  const char kFailureScript[] = "chrome.test.sendMessage('fail');";
-
-  document_start_extension_dir.WriteManifest(kDocumentStartExtensionManifest);
-  document_start_extension_dir.WriteFile(FILE_PATH_LITERAL("script.js"),
-                                         kFailureScript);
-
-  ASSERT_TRUE(LoadExtension(document_start_extension_dir.UnpackedPath()));
-
-  ExtensionTestMessageListener listener;
-  content::WebContents* tab_contents = GetActiveWebContents();
-
-  GURL extension_test_url = extension->GetResourceURL("test.html");
-  ASSERT_TRUE(NavigateToURL(tab_contents, extension_test_url));
-
-  EXPECT_EQ(extension_test_url,
-            tab_contents->GetPrimaryMainFrame()->GetLastCommittedURL());
-  EXPECT_TRUE(listener.WaitUntilSatisfied());
-  EXPECT_EQ("done", listener.message());
-}
 
 class ContentScriptApiTestWithActivityLog : public ContentScriptApiTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -2711,10 +2621,10 @@ IN_PROC_BROWSER_TEST_P(ContentScriptApiTestWithBackgroundCompilation,
 
   // Navigate, the script will be injected.
   content::WebContents* web_contents = GetActiveWebContents();
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -2813,4 +2723,137 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
   // reused.
   EXPECT_TRUE(listener.WaitUntilSatisfied());
 }
+
+class ContentScriptSkipServiceWorkerTest : public ContentScriptApiTest {
+ protected:
+  base::test::ScopedFeatureList feature_list_{
+      blink::features::kIsolatedWorldEventSourceAndBeaconsSkipServiceWorker};
+};
+
+// Tests that requests issued from a content script's isolated world bypass the
+// page's service worker. Regression test for https://crbug.com/501419037
+// (EventSource and sendBeacon) and https://crbug.com/371011220 (import()).
+IN_PROC_BROWSER_TEST_F(ContentScriptSkipServiceWorkerTest,
+                       IsolatedWorldRequestsSkipPageServiceWorker) {
+  // Answers every request under `/sw-probe/` itself, so a probe can only reach
+  // the embedded test server if the worker was skipped.
+  static constexpr char kServiceWorker[] = R"(
+    self.addEventListener('install', () => self.skipWaiting());
+    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+    self.addEventListener('fetch', e => {
+      const probe = new URL(e.request.url).pathname.split('/sw-probe/')[1];
+      if (probe === undefined) {
+        return;
+      }
+      const responses = {
+        'module.js': ['text/javascript', "export default 'INTERCEPTED';"],
+        'events': ['text/event-stream', 'data: INTERCEPTED\n\n'],
+      };
+      const [type, body] = responses[probe] ?? ['text/plain', 'INTERCEPTED'];
+      e.respondWith(new Response(body, {headers: {'Content-Type': type}}));
+    });
+  )";
+
+  // Registers the worker and, once it controls the page, issues one request
+  // per API. `navigator.serviceWorker.ready` is unavailable in isolated
+  // worlds, hence the `controllerchange` listener.
+  static constexpr char kContentScript[] = R"(
+    const url = probe => location.origin + '/sw-probe/' + probe;
+    navigator.serviceWorker.register('/sw.js');
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      chrome.test.runTests([
+        async function fetchProbe() {
+          const response = await fetch(url('text'));
+          chrome.test.assertEq('REAL_SERVER', await response.text());
+          chrome.test.succeed();
+        },
+        async function xhrProbe() {
+          const text = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url('text'));
+            xhr.onload = () => resolve(xhr.responseText);
+            xhr.onerror = () => reject(new Error('XHR failed'));
+            xhr.send();
+          });
+          chrome.test.assertEq('REAL_SERVER', text);
+          chrome.test.succeed();
+        },
+        async function importProbe() {
+          const module = await import(url('module.js'));
+          chrome.test.assertEq('REAL_SERVER', module.default);
+          chrome.test.succeed();
+        },
+        async function eventSourceProbe() {
+          const data = await new Promise((resolve, reject) => {
+            const source = new EventSource(url('events'));
+            source.onmessage = e => { source.close(); resolve(e.data); };
+            source.onerror = () => reject(new Error('EventSource failed'));
+          });
+          chrome.test.assertEq('REAL_SERVER', data);
+          chrome.test.succeed();
+        },
+        function beaconProbe() {
+          // Only the server can tell what a beacon carried; see the test.
+          chrome.test.assertTrue(
+              navigator.sendBeacon(url('beacon'), 'BEACON_PAYLOAD'));
+          chrome.test.succeed();
+        },
+      ]);
+    });
+  )";
+
+  static constexpr char kProbeManifest[] = R"({
+    "name": "Isolated world service worker test",
+    "version": "1.0",
+    "manifest_version": 3,
+    "content_scripts": [{
+      "matches": ["*://*/*"],
+      "js": ["content_script.js"]
+    }]
+  })";
+
+  net::test_server::ControllableHttpResponse beacon(embedded_test_server(),
+                                                    "/sw-probe/beacon");
+  // Serves the worker, and the probes that make it to the network.
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        if (request.relative_url == "/sw.js") {
+          response->set_content_type("text/javascript");
+          response->set_content(kServiceWorker);
+        } else if (request.relative_url == "/sw-probe/text") {
+          response->set_content("REAL_SERVER");
+        } else if (request.relative_url == "/sw-probe/module.js") {
+          response->set_content_type("text/javascript");
+          response->set_content("export default 'REAL_SERVER';");
+        } else if (request.relative_url == "/sw-probe/events") {
+          response->set_content_type("text/event-stream");
+          response->set_content("data: REAL_SERVER\n\n");
+        } else {
+          return nullptr;
+        }
+        return response;
+      }));
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kProbeManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), kContentScript);
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+
+  ResultCatcher catcher;
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(),
+                            embedded_test_server()->GetURL("/empty.html")));
+  ASSERT_TRUE(catcher.GetNextResult()) << catcher.message();
+
+  // A beacon's response is not observable by its sender, so check on the server
+  // side that the payload arrived unaltered.
+  {
+    SCOPED_TRACE("waiting for beacon request to reach the server");
+    beacon.WaitForRequest();
+  }
+  EXPECT_EQ("BEACON_PAYLOAD", beacon.http_request()->content);
+}
+
 }  // namespace extensions

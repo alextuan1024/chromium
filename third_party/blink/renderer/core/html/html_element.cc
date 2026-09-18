@@ -955,10 +955,8 @@ void HTMLElement::ParseAttribute(const AttributeModificationParams& params) {
   }
 
   if (triggers->event != g_null_atom) {
-    SetAttributeEventListener(
-        triggers->event,
-        JSEventHandlerForContentAttribute::Create(
-            GetExecutionContext(), params.name, params.new_value));
+    SetElementAttributeEventListenerFromScriptBody(
+        triggers->event, params.name, params.new_value, params.reason);
   }
 
   if (triggers->web_feature != kNoWebFeature) {
@@ -4027,6 +4025,18 @@ void HTMLElement::AddHTMLLengthToStyle(HeapVector<CSSPropertyValue, 8>& style,
                                : CSSPrimitiveValue::UnitType::kPixels;
   AddPropertyToPresentationAttributeStyle(style, property_id, dimension.Value(),
                                           unit);
+}
+
+void HTMLElement::AddHTMLPixelLengthToStyle(
+    HeapVector<CSSPropertyValue, 8>& style,
+    CSSPropertyID property_id,
+    const String& value) {
+  unsigned parsed_value;
+  if (!ParseHTMLNonNegativeInteger(value, parsed_value)) {
+    return;
+  }
+  AddPropertyToPresentationAttributeStyle(style, property_id, parsed_value,
+                                          CSSPrimitiveValue::UnitType::kPixels);
 }
 
 static Color ParseColorStringWithCrazyLegacyRules(const String& color_string) {

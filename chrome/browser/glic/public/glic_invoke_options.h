@@ -231,10 +231,12 @@ struct TabSharingOptions {
 
 // Specifies how to wait for the First Run Experience (FRE) to complete.
 enum class FreCompletionWaitMode {
-  // Whether or not we wait depends on the FRE override.
+  // Whether or not we wait depends on the FRE override and context.
   kDefault,
   // We do not wait for the FRE to complete, regardless of the FRE override.
   kNever,
+  // Always wait for the FRE to complete before proceeding.
+  kAlways,
 };
 
 // Configuration options for invoking Glic.
@@ -275,6 +277,15 @@ struct GlicInvokeOptions {
 
   // Defines the target for the invocation (surface and conversation).
   Target target;
+
+  // Whether an invocation that targets a tab should leave the conversation on
+  // the surface it is already showing on, rather than moving it into that
+  // tab's side panel. Currently only applies to the floating panel.
+  //
+  // Targeting a specific conversation (`ConversationId`/`InstanceId`) also
+  // binds the tab to it. `DefaultConversation` does not: an unbound tab still
+  // gets its own conversation in its own side panel.
+  bool preserve_active_surface = false;
 
   // The feature mode to use for the invocation, triggering specific client
   // behaviours like actuation or image generation.

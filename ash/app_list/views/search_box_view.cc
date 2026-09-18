@@ -40,7 +40,7 @@
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/ash_color_provider.h"
+#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "ash/user_education/user_education_class_properties.h"
 #include "ash/user_education/user_education_util.h"
@@ -731,7 +731,7 @@ void SearchBoxView::UpdateSearchBoxBorder() {
 }
 
 void SearchBoxView::OnPaintBackground(gfx::Canvas* canvas) {
-  // Paint the SearchBoxBackground defined in SearchBoxViewBase first.
+  // Paint the background defined in SearchBoxViewBase first.
   views::View::OnPaintBackground(canvas);
 
   if (is_app_list_bubble_) {
@@ -788,7 +788,8 @@ void SearchBoxView::OnThemeChanged() {
   UpdatePlaceholderTextStyle();
   UpdateTextColor();
 
-  UpdateBackgroundColor(GetBackgroundColorForState(current_app_list_state_));
+  UpdateSearchBoxBackground(
+      corner_radius_, GetBackgroundColorForState(current_app_list_state_));
   SchedulePaint();
 }
 
@@ -934,7 +935,6 @@ void SearchBoxView::OnKeyEvent(ui::KeyEvent* evt) {
 
 void SearchBoxView::UpdateBackground(AppListState target_state) {
   int corner_radius = GetSearchBoxBorderCornerRadiusForState(target_state);
-  SetSearchBoxBackgroundCornerRadius(corner_radius);
   const bool is_corner_radius_changed = corner_radius_ != corner_radius;
   corner_radius_ = corner_radius;
 
@@ -945,8 +945,8 @@ void SearchBoxView::UpdateBackground(AppListState target_state) {
   if (!is_app_list_bubble_ && (!search_result_page_visible_ ||
                                target_state == AppListState::kStateApps)) {
     layer()->SetClipRect(GetContentsBounds());
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
     layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(corner_radius));
     highlight_border_changed = !should_paint_highlight_border_;
     should_paint_highlight_border_ = true;
@@ -959,7 +959,8 @@ void SearchBoxView::UpdateBackground(AppListState target_state) {
 
   if (is_corner_radius_changed || highlight_border_changed)
     SchedulePaint();
-  UpdateBackgroundColor(GetBackgroundColorForState(target_state));
+  UpdateSearchBoxBackground(corner_radius,
+                            GetBackgroundColorForState(target_state));
   UpdateTextColor();
   current_app_list_state_ = target_state;
 }

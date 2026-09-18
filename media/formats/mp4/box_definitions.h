@@ -29,6 +29,7 @@
 #include "media/formats/mp4/dtsx.h"
 #include "media/formats/mp4/eac3.h"
 #include "media/formats/mp4/fourccs.h"
+#include "media/formats/mp4/stream_parser_metadata_track.h"
 #include "media/media_buildflags.h"
 
 namespace media {
@@ -404,11 +405,8 @@ struct MEDIA_EXPORT MetadataIT35SampleEntry : Box {
 
   uint16_t data_reference_index = 0;
 
-  enum class IT35PrefixType {
-    kUnknown,
-    kSmpteSt2094App5,
-  };
-  IT35PrefixType it35_prefix_type = IT35PrefixType::kUnknown;
+  MetadataTrack::IT35PrefixType it35_prefix_type =
+      MetadataTrack::IT35PrefixType::kUnknown;
 };
 
 struct MEDIA_EXPORT ElementaryStreamDescriptor : Box {

@@ -305,10 +305,6 @@ public final class ProductionSupportedFlagList {
                     + " hashes of form and field metadata, and evaluate the accuracy of returned"
                     + " experimental predictions."),
         Flag.baseFeature(
-                AutofillFeatures.AUTOFILL_SERVER_QUERY_PREDICTIONS_EARLY,
-                "When enabled, Autofill enables querying the server for predictions before the form"
-                        + " has been parsed locally."),
-        Flag.baseFeature(
                 AutofillFeatures.AUTOFILL_SUPPORT_SPLIT_ZIP_CODE,
                 "When enabled, two-part zip codes are splitted into two fields while filling and"
                         + " imported from two adjacent fields."),
@@ -380,6 +376,10 @@ public final class ProductionSupportedFlagList {
                 "Schedules tasks related to the navigation network responses on a higher "
                         + "priority task queue."),
         Flag.baseFeature(
+                ContentFeatures.PRIORITIZE_MAIN_FRAME_NAVIGATION_NETWORK_RESPONSE,
+                "Schedules tasks related to the primary main frame navigation network responses"
+                        + " on a highest priority task queue."),
+        Flag.baseFeature(
                 ContentFeatures.GIN_JAVA_BRIDGE_MOJO_SKIP_CLEAR_OBJECTS_ON_MAIN_DOCUMENT_READY,
                 "Skips clearing objects on main document ready."),
         Flag.baseFeature(
@@ -441,6 +441,10 @@ public final class ProductionSupportedFlagList {
         Flag.baseFeature(CcFeatures.NEW_CONTENT_FOR_CHECKERBOARDED_SCROLLS),
         Flag.baseFeature(CcFeatures.PRESERVE_DISCARDABLE_IMAGE_MAP_QUALITY),
         Flag.baseFeature(BlinkFeatures.SCROLLBAR_COLOR),
+        Flag.baseFeature(BlinkFeatures.RASTER_INDUCING_SCROLL),
+        Flag.baseFeature(
+                BlinkFeatures.CONSTRUCTABLE_STYLESHEET_CACHE,
+                "Enables StyleSheetContents cache for constructible stylesheets."),
         Flag.baseFeature(
                 AwFeatures.WEBVIEW_FILE_SYSTEM_ACCESS, "Enables JS File System Access API"),
         Flag.baseFeature(
@@ -470,6 +474,10 @@ public final class ProductionSupportedFlagList {
                         + "log upload."),
         Flag.baseFeature(
                 MetricsFeatures.METRICS_LOG_TRIMMING, "Controls trimming for metrics logs."),
+        Flag.baseFeature(
+                "HistogramDenylist",
+                "Disables or overrides the denylist for UMA histogram uploads "
+                        + "(e.g. Variations.FeatureAccess)."),
         Flag.baseFeature(
                 ContentFeatures.REDUCE_SUBRESOURCE_RESPONSE_STARTED_IPC,
                 "When enabled, reduces SubresourceResponseStarted IPC by sending"
@@ -537,6 +545,9 @@ public final class ProductionSupportedFlagList {
         Flag.baseFeature("MojoIpcz"),
         Flag.baseFeature("MojoFixGeometricBufferGrowth"),
         Flag.baseFeature(
+                "MojoDirectSharedMemoryAllocation",
+                "Enables direct shared memory allocation in Mojo without brokering."),
+        Flag.baseFeature(
                 "FixDataPipeTrapBug",
                 "Used to disable a specific bug fix for a long-standing bug that may"
                         + " have affected performance. Brief experiment for data collection"),
@@ -554,6 +565,9 @@ public final class ProductionSupportedFlagList {
                 UiAndroidFeatures.ANDROID_USE_DISPLAY_TOPOLOGY,
                 "Enables usage of the display topology API to obtain information about all"
                         + " displays."),
+        Flag.baseFeature(
+                UiAndroidFeatures.AVOID_PER_CONTEXT_COLOR_PROVIDERS,
+                "Avoids per-context ColorProviders for contexts without dynamic color support."),
         Flag.baseFeature(
                 UiAndroidFeatures.DEPRECATED_EXTERNAL_PICKER_FUNCTION,
                 "Deprecates old external file picker function."),
@@ -579,7 +593,6 @@ public final class ProductionSupportedFlagList {
                 "Minimizes Mojo URLLoaderFactory cloning overhead during navigation and worker"
                         + " startup."),
         Flag.baseFeature("NetworkServiceCookiesHighPriorityTaskRunner"),
-        Flag.baseFeature("IncreaseCoookieAccesCacheSize"),
         Flag.baseFeature("AvoidScheduleWorkDuringNativeEventProcessing"),
         Flag.baseFeature("AvoidEntryCreationForNoStore"),
         Flag.baseFeature("ChangeGeneratedCodeCacheSize"),
@@ -1241,17 +1254,6 @@ public final class ProductionSupportedFlagList {
                 AwFeatures.WEBVIEW_VIZ_DIRECT_COMPOSITOR_THREAD_IPC_FRAME_SINK_MANAGER,
                 "Binds FrameSinkManager as a DirectReceiver, allowing FSM and all mojoms passed"
                         + " through it to receive IPCs directly."),
-
-        // Features for PerfCombined2025_WebView study
-        Flag.baseFeature("ReducePPMs"),
-        Flag.baseFeature("RemoveCancelledScriptedIdleTasks"),
-        Flag.baseFeature("MemoryCacheChangeStrongReferencePruneDelay"),
-        Flag.baseFeature("MemoryCacheStrongReference"),
-        Flag.baseFeature("ReleaseResourceStrongReferencesOnMemoryPressure"),
-        Flag.baseFeature("ReleaseResourceDecodedDataOnMemoryPressure"),
-        Flag.baseFeature("SuppressMemoryListeners"),
-        Flag.baseFeature("SuppressMemoryMonitor"),
-        Flag.baseFeature("CompressParkableStrings"),
         Flag.baseFeature(
                 ContentFeatures.ANDROID_MEDIA_INSERTION,
                 "When enabled, IMEs should be able to insert media content such as images, gifs and"
@@ -1297,9 +1299,6 @@ public final class ProductionSupportedFlagList {
                 BlinkFeatures.UNTHROTTLE_ASYNC_TOUCH_MOVES,
                 "When enabled, touch move events to javascript handlers are unthrottled if "
                         + "they are sent as async to Renderer."),
-        Flag.baseFeature(
-                BlinkFeatures.RUSTY_BMP_FEATURE,
-                "When enabled, uses Rust `image` crate to decode BMP images."),
         Flag.baseFeature(
                 "NoSequenceForLevelDBCleanupTasks",
                 "When enabled, LevelDB cleanup tasks are run concurrently instead of in sequence."),
@@ -1493,6 +1492,14 @@ public final class ProductionSupportedFlagList {
         Flag.baseFeature(
                 PaymentFeatureList.THREE_D_SECURE_TELEMETRY,
                 "When enabled, collect telemetry for 3D Secure challenge flow."),
+        Flag.baseFeature(
+                BlinkFeatures.XSLT,
+                "Controls whether XSLT is supported by the browser. Disabling this flag disables"
+                        + " all XSLT processing."),
+        Flag.baseFeature("UseRustCborParser", "Enables the Rust-based CBOR parser instead of C++."),
+        Flag.baseFeature(
+                AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER,
+                "Enables automatic triggering of prefetch ahead of prerender in WebView."),
         // Add new commandline switches and features above. The final entry should have a
         // trailing comma for cleaner diffs.
     };

@@ -468,7 +468,6 @@ public class BaseCustomTabRootUiCoordinator extends RootUiCoordinator {
                         mActivityLifecycleDispatcher,
                         mActivityTabProvider);
 
-        assert mFindToolbarManager != null;
         super.initializeToolbar();
 
         mToolbarManager.setOptionalButtonDelegate(mToolbarButtonsCoordinator);
@@ -516,8 +515,7 @@ public class BaseCustomTabRootUiCoordinator extends RootUiCoordinator {
                 mActivityTabProvider,
                 mIntentDataProvider.get(),
                 AppCompatResources.getDrawable(mActivity, R.drawable.ic_open_in_new_white_24dp),
-                mOpenInBrowserRunnable,
-                () -> addVoiceSearchAdaptiveButton(trackerSupplier));
+                mOpenInBrowserRunnable);
     }
 
     @Override
@@ -842,8 +840,7 @@ public class BaseCustomTabRootUiCoordinator extends RootUiCoordinator {
                         }
 
                         @Override
-                        public @Nullable Tab createFrozenTab(
-                                @Nullable TabState state, int id, int index) {
+                        public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
                             return null;
                         }
 

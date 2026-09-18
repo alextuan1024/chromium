@@ -747,32 +747,28 @@ void StyleAdjuster::AdjustOverflow(ComputedStyleBuilder& builder,
   }
 }
 
-static bool IsCanvasWithLayoutSubtree(const Element* element) {
-  if (!element || !element->IsCanvasOrInCanvasSubtree() ||
-      !RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          element->GetExecutionContext())) {
+static bool IsCanvasWithContentDrawable(const Element* element) {
+  if (!element || !element->IsCanvasOrInCanvasSubtree()) {
     return false;
   }
 
   if (const auto* canvas = DynamicTo<HTMLCanvasElement>(element)) {
-    return canvas->layoutSubtree();
+    return canvas->IsContentDrawable();
   }
 
   return false;
 }
 
-// Direct children of a <canvas layoutsubtree> element have their style adjusted
-// to be blockified and have static position.
+// Direct children of a <canvas content=drawable> element have their style
+// adjusted to be blockified and have static position.
 // See: https://github.com/WICG/html-in-canvas
-static bool IsLayoutSubtreeCanvasChild(const Element* element) {
-  if (!element || !element->IsInCanvasSubtree() ||
-      !RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          element->GetExecutionContext())) {
+static bool IsContentDrawableCanvasChild(const Element* element) {
+  if (!element || !element->IsInCanvasSubtree()) {
     return false;
   }
   const auto* parent_canvas = DynamicTo<HTMLCanvasElement>(
       FlatTreeTraversal::ParentElementSkippingSlots(*element));
-  return parent_canvas && parent_canvas->layoutSubtree();
+  return parent_canvas && parent_canvas->IsContentDrawable();
 }
 
 void StyleAdjuster::AdjustStyleForDisplay(
@@ -780,7 +776,7 @@ void StyleAdjuster::AdjustStyleForDisplay(
     const ComputedStyle& layout_parent_style,
     const Element* element,
     Document* document) {
-  bool is_immediate_canvas_child = IsLayoutSubtreeCanvasChild(element);
+  bool is_immediate_canvas_child = IsContentDrawableCanvasChild(element);
 
   if ((layout_parent_style.BlockifiesChildren() && !HostIsInputFile(element)) ||
       is_immediate_canvas_child) {
@@ -1086,8 +1082,7 @@ void StyleAdjuster::AdjustForForcedColorsMode(ComputedStyleBuilder& builder,
   //
   // [1] https://www.w3.org/TR/css-color-adjust-1/#forced-colors-properties
   FontVariantEmoji variant = builder.GetFontDescription().VariantEmoji();
-  if (RuntimeEnabledFeatures::EmojiMonochromeRenderingEnabled() &&
-      (variant == kNormalVariantEmoji || variant == kUnicodeVariantEmoji)) {
+  if (variant == kNormalVariantEmoji || variant == kUnicodeVariantEmoji) {
     builder.SetFontVariantEmoji(kTextVariantEmoji);
   }
   if (builder.InternalForcedColor().IsSystemColor()) {
@@ -1253,8 +1248,8 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
   builder.SetForcesStackingContext(false);
 
   // https://github.com/WICG/html-in-canvas
-  // The `layoutsubtree` attribute ... causes descendants of the <canvas> with
-  // the `drawable` attribute to imply `isolation: isolate`.
+  // The `content=drawable` attribute ... causes descendants of the <canvas>
+  // with the `drawable` attribute to imply `isolation: isolate`.
   if (element && element->CanvasForDrawing()) {
     builder.SetIsolation(EIsolation::kIsolate);
   }
@@ -1279,7 +1274,7 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
       (element && IsA<SVGForeignObjectElement>(*element)) || is_in_top_layer ||
       builder.StyleType() == kPseudoIdBackdrop ||
       builder.StyleType() == kPseudoIdViewTransition ||
-      IsCanvasWithLayoutSubtree(element)) {
+      IsCanvasWithContentDrawable(element)) {
     builder.SetForcesStackingContext(true);
   }
 
@@ -1528,7 +1523,7 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
   }
 
   // Has special handling in a number of places (including depending on
-  // parents' layoutSubtree() status).
+  // parents' IsContentDrawable() status).
   if (element.IsCanvasOrInCanvasSubtree()) {
     return {ElementType::kIsNotElement};
   }
@@ -1569,7 +1564,7 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
   switch (element.GetElementType()) {
     case ElementType::kHTMLCanvasElement:
       // <canvas> has special handling for touch-action and stacking contexts
-      // depending on whether it has layoutSubtree() or not, and also
+      // depending on whether it has IsContentDrawable() or not, and also
       // CanExecuteScripts(). It seems rare enough that we don't bother checking
       // the properties on the elements, and just exclude all canvas elements.
       return {ElementType::kIsNotElement};

@@ -7,7 +7,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"
 #include "chrome/browser/ui/views/tabs/glic/tab_strip_glic_actor_task_icon.h"
 #include "chrome/browser/ui/views/tabs/glic/tab_strip_glic_button.h"
@@ -44,7 +44,7 @@ enum class LockedExpansionMode {
 class TabStripActionContainer : public views::View,
                                 public views::AnimationDelegateViews,
                                 public views::MouseWatcherListener,
-                                public glic::GlicSplitButtonDelegate {
+                                public glic::GlicSplitButtonViewDelegate {
   METADATA_HEADER(TabStripActionContainer, views::View)
 
  public:
@@ -109,6 +109,7 @@ class TabStripActionContainer : public views::View,
 
   views::LabelButton* GetGlicButtonForTesting() { return glic_button_; }
   geic::GeicButton* GetGeicButtonForTesting() { return geic_button_; }
+  views::Separator* GetSeparatorForTesting() { return separator_; }
 
   glic::TabStripGlicActorTaskIcon* glic_actor_task_icon() {
     return glic_actor_task_icon_;
@@ -120,7 +121,7 @@ class TabStripActionContainer : public views::View,
   // views::MouseWatcherListener:
   void MouseMovedOutOfHost() override;
 
-  // GlicSplitButtonDelegate:
+  // GlicSplitButtonViewDelegate:
   void SetGlicShowState(bool show) override;
   void SetGlicPanelIsOpen(bool open) override;
   void OnTriggerGlicNudgeUI(glic::NudgeParams params) override;
@@ -130,14 +131,14 @@ class TabStripActionContainer : public views::View,
   void HideGlicActorTaskIcon() override;
   bool GetIsShowingGlicActorTaskIconNudge() override;
   void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override;
-  void TriggerGlicActorNudge(const std::u16string& nudge_text) override;
+  void TriggerGlicActorNudge(const std::u16string& nudge_label) override;
   void SetGlicActorNudgePressedState(bool pressed) override;
   void ShowActorTaskListBubble() override;
   void CloseActorTaskListBubble() override;
   bool IsActorTaskListBubbleShowing() override;
 
   views::FlexLayoutView* glic_actor_button_container();
-  void ShowGlicActorNudge(const std::u16string& nudge_text);
+  void ShowGlicActorNudge(const std::u16string& nudge_label);
 
   void UpdateButtonBorders(gfx::Insets button_insets);
 
@@ -206,6 +207,9 @@ class TabStripActionContainer : public views::View,
 
   // Update visibility of glic button and action container
   void UpdateGlicButtonVisibility(bool should_show);
+
+  // Update visibility of separator.
+  void UpdateSeparatorVisibility();
 
   // The button currently holding the lock to be shown/hidden.
   raw_ptr<TabStripNudgeButton> locked_expansion_button_ = nullptr;

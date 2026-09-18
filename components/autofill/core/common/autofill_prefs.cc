@@ -185,6 +185,12 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
       kAutofillAtMemoryTriggerInfo,
       base::DictValue().Set("trigger", "@@").Set("is_shortcut", false),
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterBooleanPref(
+      kAutofillAtMemoryDoubleCtrlTriggerEnabled,
+      features::kAutofillAtMemoryDoubleCtrlDefaultPref.Get(),
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterStringPref(kAutofillAtMemoryShortcut, "",
+                               user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 
   registry->RegisterDictionaryPref(
       kAutofillHomeMetadata,

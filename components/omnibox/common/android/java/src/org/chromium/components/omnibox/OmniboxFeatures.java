@@ -13,6 +13,7 @@ import androidx.annotation.IntDef;
 import com.google.android.gms.location.Priority;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
@@ -138,7 +139,9 @@ public class OmniboxFeatures {
             newFlag(OmniboxFeatureList.FORCE_ANDROID_REALBOX, FeatureState.DISABLED);
 
     public static final CachedFlag sDebounceKeyboardVisibility =
-            newFlag(OmniboxFeatureList.OMNIBOX_DEBOUNCE_KEYBOARD_VISIBILITY, FeatureState.DISABLED);
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_DEBOUNCE_KEYBOARD_VISIBILITY,
+                    FeatureState.ENABLED_IN_PROD);
 
     public static final CachedFlag sPostDelayedTaskFocusTab =
             newFlag(OmniboxFeatureList.POST_DELAYED_TASK_FOCUS_TAB, FeatureState.ENABLED_IN_PROD);
@@ -162,6 +165,11 @@ public class OmniboxFeatures {
     private static final CachedFlag sOmniboxMultimodalInput =
             newFlag(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT, FeatureState.ENABLED_IN_PROD);
 
+    public static final CachedFlag sOmniboxFuseboxPopupVariations =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_FUSEBOX_POPUP_VARIATIONS,
+                    FeatureState.ENABLED_IN_TEST);
+
     public static final BooleanCachedFeatureParam sMultiattachmentFusebox =
             newBooleanParam(sOmniboxMultimodalInput, "multi_context", true);
 
@@ -173,22 +181,31 @@ public class OmniboxFeatures {
             newBooleanParam(sOmniboxMultimodalInput, "allow_current_tab", true);
 
     /**
-     * If the expanded set of inputs (model picker as well as canvas tool) should be options. These
-     * new types, as well as all existing types, should be driven through PEC instead of hard coded
-     * into the client when this param is enabled.
+     * Whether the bottom sheet popup should be shown for multimodal input.
      */
-    public static final BooleanCachedFeatureParam sShowModelPicker =
-            newBooleanParam(sOmniboxMultimodalInput, "show_model_picker", false);
-
-    public static final BooleanCachedFeatureParam sModelPickerOptimizations =
-            newBooleanParam(sOmniboxMultimodalInput, "model_picker_optimizations", true);
+    private static final BooleanCachedFeatureParam sMultimodalShowBottomSheetPopup =
+            newBooleanParam(sOmniboxMultimodalInput, "show_bottom_sheet_popup", false);
 
     /**
-     * Whether the bottom sheet popup should be shown. This is private to ensure that callers use
-     * {@link #shouldShowBottomSheetPopup()} which also checks if the platform is desktop.
+     * Whether the bottom sheet popup should be shown for fusebox popup variations.
      */
-    private static final BooleanCachedFeatureParam sShowBottomSheetPopup =
-            newBooleanParam(sOmniboxMultimodalInput, "show_bottom_sheet_popup", false);
+    private static final BooleanCachedFeatureParam sFuseboxPopupShowBottomSheet =
+            newBooleanParam(sOmniboxFuseboxPopupVariations, "show_bottom_sheet_popup", false);
+
+    /**
+     * Whether the popup should use a horizontal carousel for attachments. This is private to ensure
+     * that callers use {@link #shouldUseCarousel()} which also checks if the platform is desktop.
+     */
+    private static final BooleanCachedFeatureParam sFuseboxPopupCarouselUi =
+            newBooleanParam(sOmniboxFuseboxPopupVariations, "fusebox_popup_carousel_ui", false);
+
+    /**
+     * Whether the popup should use an accordion for tools. This is private to ensure that callers
+     * use {@link #hasAccordion()} which also checks if the platform is desktop.
+     */
+    private static final BooleanCachedFeatureParam sFuseboxPopupAccordionUi =
+            newBooleanParam(
+                    sOmniboxFuseboxPopupVariations, "fusebox_popup_use_accordion_ui", false);
 
     public static final BooleanCachedFeatureParam sUseAskHintForNtp =
             newBooleanParam(sOmniboxMultimodalInput, "use_ask_hint_for_ntp", false);
@@ -198,9 +215,6 @@ public class OmniboxFeatures {
 
     public static final BooleanCachedFeatureParam sFocusFuseboxFromNtpPlusButton =
             newBooleanParam(sOmniboxMultimodalInput, "focus_fusebox_from_ntp_plus_button", false);
-
-    public static final CachedFlag sAndroidDesktopAimGate =
-            newFlag(OmniboxFeatureList.ANDROID_DESKTOP_AIM_GATE, FeatureState.ENABLED_IN_PROD);
 
     public static final CachedFlag sAIMSuppressVerbatimMatch =
             newFlag(OmniboxFeatureList.AIM_SUPPRESS_VERBATIM_MATCH, FeatureState.ENABLED_IN_PROD);
@@ -222,6 +236,17 @@ public class OmniboxFeatures {
             newFlag(
                     OmniboxFeatureList.OMNIBOX_DISABLE_TABS_FOR_CANVAS,
                     FeatureState.ENABLED_IN_PROD);
+
+    public static final CachedFlag sComposeboxDriveContextMenuOption =
+            newFlag(OmniboxFeatureList.COMPOSEBOX_DRIVE_CONTEXT_MENU_OPTION, FeatureState.DISABLED);
+
+    public static final CachedFlag sComposeboxDriveContextMenuOptionDisclaimer =
+            newFlag(
+                    OmniboxFeatureList.COMPOSEBOX_DRIVE_CONTEXT_MENU_OPTION_DISCLAIMER,
+                    FeatureState.DISABLED);
+
+    public static final CachedFlag sForceDriveDisclaimerAccepted =
+            newFlag(OmniboxFeatureList.FORCE_DRIVE_DISCLAIMER_ACCEPTED, FeatureState.DISABLED);
 
     public static final IntCachedFeatureParam sGeolocationRequestTimeoutMinutes =
             newIntParam(
@@ -377,6 +402,7 @@ public class OmniboxFeatures {
     /** Modifies the output of {@link #isDebounceKeyboardVisibilityEnabled()} for testing. */
     public static void setDebounceKeyboardVisibilityForTesting(@Nullable Boolean value) {
         sDebounceKeyboardVisibilityForTesting = value;
+        ResettersForTesting.register(() -> sDebounceKeyboardVisibilityForTesting = null);
     }
 
     /**
@@ -399,33 +425,50 @@ public class OmniboxFeatures {
 
     /** Modifies the output of {@link #shouldShowBottomSheetPopup()} for testing. */
     public static void setShowBottomSheetPopupForTesting(boolean value) {
-        sShowBottomSheetPopup.setForTesting(value);
+        sMultimodalShowBottomSheetPopup.setForTesting(value);
+        sFuseboxPopupShowBottomSheet.setForTesting(value);
     }
 
-    /**
-     * Returns whether the bottom sheet popup should be shown.
-     *
-     * <p>This checks both the feature param and whether the platform is desktop.
-     */
+    /** Modifies the output of {@link #shouldUseCarousel()} for testing. */
+    public static void setUseCarouselForTesting(boolean value) {
+        sFuseboxPopupCarouselUi.setForTesting(value);
+    }
+
+    /** Modifies the output of {@link #hasAccordion()} for testing. */
+    public static void setUseAccordionForTesting(boolean value) {
+        sFuseboxPopupAccordionUi.setForTesting(value);
+    }
+
+    /** Returns whether the bottom sheet popup should be shown. */
     public static boolean shouldShowBottomSheetPopup() {
-        return !OmniboxCapabilities.isDesktopPlatform() && sShowBottomSheetPopup.getValue();
+        if (OmniboxCapabilities.isDesktopPlatform()) {
+            return false;
+        }
+        return sOmniboxFuseboxPopupVariations.isEnabled()
+                ? sFuseboxPopupShowBottomSheet.getValue()
+                : sMultimodalShowBottomSheetPopup.getValue();
+    }
+
+    /** Returns whether the popup should use a horizontal carousel for attachments. */
+    public static boolean shouldUseCarousel() {
+        return shouldShowBottomSheetPopup() && sFuseboxPopupCarouselUi.getValue();
+    }
+
+    /** Returns whether the popup should use a collapsible accordion for tools. */
+    public static boolean hasAccordion() {
+        if (OmniboxCapabilities.isDesktopPlatform()) {
+            return false;
+        }
+        return sFuseboxPopupAccordionUi.getValue();
     }
 
     /**
-     * Explicitly disable fusebox for desktop for release users, but not for tests or for local
-     * development. Fusebox feature checks should go through this instead of the feature directly.
-     * This should be removed in a milestone or two, before fusebox launch for desktop.
-     *
-     * <p>Checks whether the fusebox is enabled for the current combination of context, device and
-     * flag state, disabling the fusebox on unsupported device and experience configurations.
+     * Checks whether the fusebox is enabled for the current combination of context, device and flag
+     * state, disabling the fusebox on unsupported device and experience configurations.
      */
     public static boolean isMultimodalInputEnabled(Context context) {
         if (!OmniboxCapabilities.isFuseboxSupportedDeviceType()) {
             return false;
-        }
-        if (OmniboxCapabilities.isDesktopPlatform()
-                || OmniboxCapabilities.hasDesktopExperience(context)) {
-            return sAndroidDesktopAimGate.isEnabled() && sOmniboxMultimodalInput.isEnabled();
         }
         return sOmniboxMultimodalInput.isEnabled();
     }

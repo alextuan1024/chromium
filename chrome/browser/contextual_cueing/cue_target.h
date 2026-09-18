@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
 #include "components/tabs/public/tab_interface.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/models/image_model.h"
 
 namespace content {
@@ -84,6 +83,16 @@ class CueTarget {
   // Whether this target relies on the backend Model Execution Service (MES)
   // to generate cue content rather than generating content locally.
   virtual bool RequiresModelExecution() const = 0;
+
+  // Whether this target should bypass UCB scoring and take absolute precedence
+  // when eligible. NOTE: This is a highly privileged override that is strictly
+  // intended for Indigo temporarily to ensure it always wins. It should not be
+  // used by other targets.
+  virtual bool OverridesUcbScoring() const;
+
+  // Whether this target should fall back to a suggestion chip instead of fully
+  // disappearing when the anchored message is dismissed.
+  virtual bool DowngradesToQuietOnDismiss() const;
 
   // Returns true if this target supports the given intrusiveness level.
   // Targets requiring MES are restricted to kLoud only. Non-MES targets

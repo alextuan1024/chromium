@@ -140,7 +140,6 @@
 #include "ash/shell_tab_handler.h"
 #include "ash/shutdown_controller_impl.h"
 #include "ash/style/ash_color_mixer.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/color_palette_controller.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/style/style_util.h"
@@ -864,9 +863,7 @@ Shell::~Shell() {
   RemoveAccessibilityEventHandler(mouse_cursor_filter_.get());
   RemovePreTargetHandler(shortcut_input_handler_.get());
   RemovePreTargetHandler(modality_filter_.get());
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    RemovePreTargetHandler(mouse_keys_controller_.get());
-  }
+  RemovePreTargetHandler(mouse_keys_controller_.get());
   RemovePreTargetHandler(tooltip_controller_.get());
 
   // Resets the implementation of clipboard history utility functions.
@@ -1109,8 +1106,6 @@ Shell::~Shell() {
   // Needs to be destructed before `ime_controller_`.
   keyboard_backlight_color_controller_.reset();
   rgb_keyboard_manager_.reset();
-
-  ash_color_provider_.reset();
 
   // Depends on `dark_light_mode_controller_` and `wallpaper_controller_` so it
   // should be destroyed first.
@@ -1430,7 +1425,6 @@ void Shell::Init(
     env->set_context_factory(context_factory);
   }
 
-  ash_color_provider_ = std::make_unique<AshColorProvider>();
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
       base::BindRepeating(AddCrosStylesColorMixer));
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
@@ -1689,10 +1683,8 @@ void Shell::Init(
 
   autoclick_controller_ = std::make_unique<AutoclickController>();
 
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    mouse_keys_controller_ = std::make_unique<MouseKeysController>();
-    AddPreTargetHandler(mouse_keys_controller_.get());
-  }
+  mouse_keys_controller_ = std::make_unique<MouseKeysController>();
+  AddPreTargetHandler(mouse_keys_controller_.get());
 
   color_enhancement_controller_ =
       std::make_unique<ColorEnhancementController>();

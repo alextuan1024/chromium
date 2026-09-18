@@ -894,6 +894,12 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
 
 - (NSDirectionalEdgeInsets)lensOverlayContainerPresenterInsetsForPresentation:
     (LensOverlayContainerPresenter*)containerPresenter {
+  // LVF on iPad has no top toolbar, so postcapture should match the LVF frame
+  // and be presented fullscreen.
+  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET &&
+      lens::IsLVFEntrypoint(_entrypoint)) {
+    return NSDirectionalEdgeInsetsZero;
+  }
   return self.presentationEnvironment.presentationInsetsForLensOverlay;
 }
 
@@ -1716,7 +1722,8 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
   } else {
     _resultsPagePresenter = [[LensOverlayResultsPagePresenter alloc]
         initWithBaseViewController:_containerViewController
-          resultPageViewController:_resultViewController];
+          resultPageViewController:_resultViewController
+                             isLVF:lens::IsLVFEntrypoint(_entrypoint)];
   }
 
   _resultsPagePresenter.delegate = self;

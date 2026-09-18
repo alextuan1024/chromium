@@ -7,11 +7,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
+#include <numbers>
 
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
-#include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
 
@@ -98,7 +99,7 @@ void GenerateSignal(base::span<float> data, SignalType type) {
   } else if (type == SignalType::kSine) {
     for (size_t i = 0; i < size; ++i) {
       // 3 cycles
-      data[i] = std::sin(2.0f * kPiFloat * 3.0f * i / size);
+      data[i] = std::sin(2.0f * std::numbers::pi_v<float> * 3.0f * i / size);
     }
   } else if (type == SignalType::kDC) {
     std::fill(data.begin(), data.end(), 1.0f);
@@ -164,6 +165,28 @@ TEST(FFTFrameSimpleTest, ExactValuesSize2) {
 
   EXPECT_NEAR(output[0], 1.0f, kIdentityTolerance);
   EXPECT_NEAR(output[1], 2.0f, kIdentityTolerance);
+}
+
+TEST(FFTFrameTest, TryCreateSuccess) {
+  auto frame = FFTFrame::TryCreate(128);
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->FftSize(), 128u);
+  EXPECT_NE(frame->RealData().Data(), nullptr);
+  EXPECT_NE(frame->ImagData().Data(), nullptr);
+  EXPECT_EQ(frame->RealData().size(), (128u + 1) / 2);
+  EXPECT_EQ(frame->ImagData().size(), (128u + 1) / 2);
+}
+
+TEST(FFTFrameTest, TryCreateInvalidSize) {
+  // Sizes smaller than MinFFTSize (2) should fail.
+  EXPECT_EQ(FFTFrame::TryCreate(0), nullptr);
+  EXPECT_EQ(FFTFrame::TryCreate(1), nullptr);
+}
+
+TEST(FFTFrameTest, TryCreateOOM) {
+  // Requesting an excessive size that causes allocation failure should return
+  // nullptr instead of crashing.
+  EXPECT_EQ(FFTFrame::TryCreate(std::numeric_limits<unsigned>::max()), nullptr);
 }
 
 }  // namespace

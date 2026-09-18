@@ -39,6 +39,7 @@ import {Deferred} from '../../../utils/Deferred.js';
 import {type LoggerFn, LogType} from '../../../utils/log.js';
 import {getTimestamp} from '../../../utils/time.js';
 import {inchesFromCm} from '../../../utils/unitConversions.js';
+import {urlMatchesAboutBlank} from '../../../utils/urlHelpers.js';
 import {uuidv4} from '../../../utils/uuid.js';
 import type {ContextConfigStorage} from '../browser/ContextConfigStorage.js';
 import type {CdpTarget} from '../cdp/CdpTarget.js';
@@ -125,6 +126,7 @@ export class BrowsingContextImpl {
       id,
       eventManager,
       logger,
+      this.userContext,
     );
   }
 
@@ -211,6 +213,12 @@ export class BrowsingContextImpl {
 
   dispose(emitContextDestroyed: boolean) {
     this.#navigationTracker.dispose();
+
+    // Reject any pending callers awaiting the default realm when the context
+    // is destroyed before its default realm is created.
+    this.#defaultRealmDeferred.reject(
+      new NoSuchFrameException(`Context ${this.id} was destroyed`),
+    );
 
     this.#realmStorage.deleteRealms({
       browsingContextId: this.id,
@@ -323,6 +331,9 @@ export class BrowsingContextImpl {
 
   updateCdpTarget(cdpTarget: CdpTarget) {
     this.#cdpTarget = cdpTarget;
+    if (this.#defaultRealmDeferred.isFinished) {
+      this.#defaultRealmDeferred = new Deferred<Realm>();
+    }
     this.#initListeners();
   }
 
@@ -358,9 +369,13 @@ export class BrowsingContextImpl {
   async #getOrCreateSandboxInternal(
     sandbox: string | undefined,
   ): Promise<Realm> {
+    // Always await the default realm first so that sandbox creation waits for
+    // the active document to be ready rather than creating an isolated world
+    // on a loading or provisional document.
+    const defaultRealm = await this.#defaultRealmDeferred;
+
     if (sandbox === undefined || sandbox === '') {
-      // Default realm is not guaranteed to be created at this point, so return a deferred.
-      return await this.#defaultRealmDeferred;
+      return defaultRealm;
     }
 
     let maybeSandboxes = this.#realmStorage.findRealms({
@@ -459,6 +474,7 @@ export class BrowsingContextImpl {
             context: this.id,
             multiple: params.mode === 'selectMultiple',
             element,
+            userContext: this.userContext,
           },
         },
         this.id,
@@ -489,6 +505,19 @@ export class BrowsingContextImpl {
         return;
       }
 
+      // When a newly opened context (e.g. via `window.open(url)`) starts its
+      // initial navigation to a non-`about:blank` URL, reset `#defaultRealmDeferred`
+      // so that commands awaiting the context's default realm wait for the
+      // navigating document's default realm to be created.
+      if (
+        this.#navigationTracker.isInitialNavigation &&
+        !urlMatchesAboutBlank(params.url)
+      ) {
+        if (this.#defaultRealmDeferred.isFinished) {
+          this.#defaultRealmDeferred = new Deferred<Realm>();
+        }
+      }
+
       this.#navigationTracker.frameStartedNavigating(
         params.url,
         params.loaderId,
@@ -513,6 +542,7 @@ export class BrowsingContextImpl {
               context: this.id,
               timestamp: getTimestamp(),
               url: this.#navigationTracker.url,
+              userContext: this.userContext,
             },
           },
           this.id,
@@ -562,6 +592,7 @@ export class BrowsingContextImpl {
                   navigation: this.#navigationTracker.currentNavigationId,
                   timestamp: getTimestamp(),
                   url: this.#navigationTracker.url,
+                  userContext: this.userContext,
                 },
               },
               this.id,
@@ -582,6 +613,7 @@ export class BrowsingContextImpl {
                   navigation: this.#navigationTracker.currentNavigationId,
                   timestamp: getTimestamp(),
                   url: this.#navigationTracker.url,
+                  userContext: this.userContext,
                 },
               },
               this.id,
@@ -646,6 +678,12 @@ export class BrowsingContextImpl {
         );
 
         if (auxData.isDefault) {
+          // If `#defaultRealmDeferred` was already resolved to a previous realm
+          // (without a preceding reset), replace it with a fresh Deferred so
+          // calling `resolve(realm)` updates it to the new default realm.
+          if (this.#defaultRealmDeferred.isFinished) {
+            this.#defaultRealmDeferred = new Deferred<Realm>();
+          }
           this.#defaultRealmDeferred.resolve(realm);
 
           // Initialize ChannelProxy listeners for all the channels of all the
@@ -665,6 +703,9 @@ export class BrowsingContextImpl {
     this.#cdpTarget.cdpClient.on(
       'Runtime.executionContextDestroyed',
       (params) => {
+        // If the destroyed context is the currently resolved default realm,
+        // reset `#defaultRealmDeferred` to pending so subsequent callers wait
+        // for the next default realm.
         if (
           this.#defaultRealmDeferred.isFinished &&
           this.#defaultRealmDeferred.result.executionContextId ===
@@ -681,12 +722,13 @@ export class BrowsingContextImpl {
     );
 
     this.#cdpTarget.cdpClient.on('Runtime.executionContextsCleared', () => {
-      if (!this.#defaultRealmDeferred.isFinished) {
-        this.#defaultRealmDeferred.reject(
-          new UnknownErrorException('execution contexts cleared'),
-        );
+      // Only replace `#defaultRealmDeferred` if it was already resolved.
+      // If it is currently pending, do not reject it so callers waiting for
+      // a navigating context's realm will resolve when the new default realm
+      // is created.
+      if (this.#defaultRealmDeferred.isFinished) {
+        this.#defaultRealmDeferred = new Deferred<Realm>();
       }
-      this.#defaultRealmDeferred = new Deferred<Realm>();
       this.#realmStorage.deleteRealms({
         cdpSessionId: this.#cdpTarget.cdpSessionId,
       });
@@ -732,6 +774,7 @@ export class BrowsingContextImpl {
             type:
               this.#lastUserPromptType ??
               ('UNKNOWN' as BrowsingContext.UserPromptType),
+            userContext: this.userContext,
             userText:
               accepted && params.userInput ? params.userInput : undefined,
           },
@@ -774,6 +817,7 @@ export class BrowsingContextImpl {
             handler: promptHandler,
             type: promptType,
             message: params.message,
+            userContext: this.userContext,
             ...(params.type === 'prompt'
               ? {defaultValue: params.defaultPrompt}
               : {}),
@@ -816,6 +860,7 @@ export class BrowsingContextImpl {
               navigation: params.guid,
               timestamp: getTimestamp(),
               url: params.url,
+              userContext: this.userContext,
             },
           },
           this.id,
@@ -851,6 +896,7 @@ export class BrowsingContextImpl {
                   navigation: params.guid,
                   timestamp: getTimestamp(),
                   url,
+                  userContext: this.userContext,
                 },
               },
               this.id,
@@ -869,6 +915,7 @@ export class BrowsingContextImpl {
                   navigation: params.guid,
                   timestamp: getTimestamp(),
                   url,
+                  userContext: this.userContext,
                 },
               },
               this.id,
@@ -1150,6 +1197,7 @@ export class BrowsingContextImpl {
       screenOrientation,
       config.screenArea ?? null,
       config.scrollbarType ?? null,
+      config.viewportMeta ?? null,
     );
   }
 
@@ -2023,6 +2071,22 @@ export class BrowsingContextImpl {
       config.screenOrientation ?? null,
       config.screenArea ?? null,
       scrollbarType,
+      config.viewportMeta ?? null,
+    );
+  }
+
+  async setViewportMetaOverride(viewportMeta: true | null): Promise<void> {
+    const config = this.#configStorage.getActiveConfig(
+      this.id,
+      this.userContext,
+    );
+    await this.cdpTarget.setDeviceMetricsOverride(
+      config.viewport ?? null,
+      config.devicePixelRatio ?? null,
+      config.screenOrientation ?? null,
+      config.screenArea ?? null,
+      config.scrollbarType ?? null,
+      viewportMeta,
     );
   }
 }

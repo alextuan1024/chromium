@@ -13,19 +13,19 @@
 #include "base/functional/bind.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/task/sequenced_task_runner.h"
-#include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/ui/actor_ui_metrics.h"
-#include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
+#include "chrome/browser/actor/ui/actor_ui_state_manager.h"
 #include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller_delegate.h"
 #include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager.h"
 #include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager_factory.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/grit/generated_resources.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -51,6 +51,67 @@ int GetPriorityForTaskState(actor::ActorTask::State task_state,
              : 4;
 }
 
+bool ShouldShowConsentOverride(
+    actor::ActorTask::State state,
+    bool has_tab,
+    std::optional<actor::ActorTask::InterruptReason> interrupt_reason) {
+  if (!has_tab && !(state == actor::ActorTask::State::kActing ||
+                    state == actor::ActorTask::State::kReflecting)) {
+    return false;
+  }
+  return glic::GlicActorTaskIconManager::RequiresAttention(state) &&
+         interrupt_reason == actor::ActorTask::InterruptReason::
+                                 kWaitingForExperimentalTriggeringConsent;
+}
+
+bool IsProcessedTabClosedRow(actor::ActorTask::State state,
+                             bool has_tab,
+                             bool requires_processing) {
+  if (state == actor::ActorTask::State::kActing ||
+      state == actor::ActorTask::State::kReflecting) {
+    return false;
+  }
+  return !has_tab && !requires_processing;
+}
+
+std::string GetRowSubtitle(
+    actor::ActorTask::State state,
+    bool has_tab,
+    glic::mojom::FeatureMode feature_mode,
+    std::optional<actor::ActorTask::InterruptReason> interrupt_reason) {
+  if (ShouldShowConsentOverride(state, has_tab, interrupt_reason)) {
+    return l10n_util::GetStringUTF8(IDS_GLIC_TASK_WAITING_FOR_CONSENT_SUBTITLE);
+  }
+  // If the task does not have a tab, show the "Tab closed" subtitle *unless*
+  // the task is active (kActing or kReflecting). Active tasks may start with no
+  // associated tab yet, so we avoid displaying "Tab closed" on them.
+  if (!has_tab && !(state == actor::ActorTask::State::kActing ||
+                    state == actor::ActorTask::State::kReflecting)) {
+    return l10n_util::GetStringUTF8(
+        IDS_ACTOR_TASK_LIST_BUBBLE_ROW_TAB_CLOSED_SUBTITLE);
+  }
+  if (glic::GlicActorTaskIconManager::RequiresAttention(state)) {
+    return l10n_util::GetStringUTF8(
+        IDS_ACTOR_TASK_LIST_BUBBLE_ROW_CHECK_TASK_SUBTITLE);
+  }
+  if (state == actor::ActorTask::State::kFinished) {
+    if (feature_mode == glic::mojom::FeatureMode::kExperimentalTriggering) {
+      return l10n_util::GetStringUTF8(
+          IDS_EXPERIMENTAL_TRIGGERING_TASK_LIST_BUBBLE_ROW_COMPLETED_TASK_SUBTITLE);
+    }
+    return l10n_util::GetStringUTF8(
+        IDS_ACTOR_TASK_LIST_BUBBLE_ROW_COMPLETED_TASK_SUBTITLE);
+  } else if (state == actor::ActorTask::State::kFailed) {
+    return l10n_util::GetStringUTF8(
+        IDS_ACTOR_TASK_LIST_BUBBLE_ROW_FAILED_TASK_SUBTITLE);
+  } else if (state == actor::ActorTask::State::kPausedByUser) {
+    return l10n_util::GetStringUTF8(
+        IDS_ACTOR_TASK_LIST_BUBBLE_ROW_PAUSED_TASK_SUBTITLE);
+  }
+  return l10n_util::GetStringUTF8(
+      IDS_ACTOR_TASK_LIST_BUBBLE_ROW_ACTING_TASK_SUBTITLE);
+}
+
 }  // namespace
 
 DEFINE_USER_DATA(ActorTaskListBubbleController);
@@ -60,12 +121,8 @@ std::vector<actor::ui::ActorTaskRowData>
 ActorTaskListBubbleController::GetActorTaskRowsForBubble(
     Profile* profile,
     const absl::flat_hash_map<actor::TaskId, bool>& task_list) {
-  auto* actor_service = actor::ActorKeyedService::Get(profile);
-  if (!actor_service) {
-    return {};
-  }
-  actor::ui::ActorUiStateManagerInterface* actor_ui_state_manager =
-      actor_service->GetActorUiStateManager();
+  actor::ui::ActorUiStateManager* actor_ui_state_manager =
+      actor::ui::ActorUiStateManager::Get(profile);
   if (!actor_ui_state_manager) {
     return {};
   }
@@ -113,16 +170,33 @@ ActorTaskListBubbleController::GetActorTaskRowsForBubble(
       has_tab = true;
     }
 
+    bool is_waiting_for_consent = ShouldShowConsentOverride(
+        task_state.value(), has_tab, task_interrupt_reason);
+    bool is_enabled = !IsProcessedTabClosedRow(task_state.value(), has_tab,
+                                               requires_processing);
+    std::string subtitle = GetRowSubtitle(task_state.value(), has_tab,
+                                          feature_mode, task_interrupt_reason);
+    bool needs_review =
+        glic::GlicActorTaskIconManager::RequiresAttention(task_state.value());
+
+    std::string title =
+        is_waiting_for_consent
+            ? l10n_util::GetStringUTF8(IDS_GLIC_TASK_WAITING_FOR_CONSENT_TITLE)
+            : task_title.value();
+
     prioritized_rows.emplace_back(
         priority, actor::ui::ActorTaskRowData{
                       .task_id = task_id,
-                      .title = task_title.value(),
+                      .title = std::move(title),
                       .state = task_state.value(),
                       .requires_processing = requires_processing,
                       .has_tab = has_tab,
                       .tab_id = tab_id,
                       .feature_mode = feature_mode,
                       .interrupt_reason = task_interrupt_reason,
+                      .subtitle = std::move(subtitle),
+                      .is_enabled = is_enabled,
+                      .needs_review = needs_review,
                   });
   }
 
@@ -180,8 +254,8 @@ void ActorTaskListBubbleController::ShowBubble(bool is_start_notification) {
 }
 
 void ActorTaskListBubbleController::CloseBubble() {
-  if (auto* delegate = split_button_controller_->GetActiveDelegate()) {
-    delegate->CloseActorTaskListBubble();
+  if (auto* view_delegate = split_button_controller_->GetActiveViewDelegate()) {
+    view_delegate->CloseActorTaskListBubble();
   }
 }
 
@@ -211,6 +285,13 @@ void ActorTaskListBubbleController::ShowBubbleImpl(bool is_start_notification) {
   const bool is_active = browser_->IsActive();
 #endif
   if (!is_active) {
+    // When kGlicExperimentalTriggeringOsNotification is enabled, we avoid
+    // popping up the bubble on inactive windows entirely.
+    if (base::FeatureList::IsEnabled(
+            features::kGlicExperimentalTriggeringOsNotification)) {
+      return;
+    }
+
     auto* glic_service = glic::GlicKeyedServiceFactory::GetGlicKeyedService(
         browser_->GetProfile());
     if (!is_start_notification || !glic_service ||
@@ -226,7 +307,7 @@ void ActorTaskListBubbleController::ShowBubbleImpl(bool is_start_notification) {
   }
   // Close any existing bubble widget to avoid stacking multiple bubble windows.
   split_button_controller_->CallOnBoth(
-      base::BindRepeating([](glic::GlicSplitButtonDelegate& delegate) {
+      base::BindRepeating([](glic::GlicSplitButtonViewDelegate& delegate) {
         delegate.CloseActorTaskListBubble();
       }));
   delegate->ShowActorTaskListBubble();
@@ -269,8 +350,8 @@ ActorTaskListBubbleController::RegisterBubbleDestroyedCallback(
 
 void ActorTaskListBubbleController::OnTaskRowClicked(actor::TaskId task_id) {
   Profile* profile = browser_->GetProfile();
-  actor::ui::ActorUiStateManagerInterface* manager =
-      actor::ActorKeyedService::Get(profile)->GetActorUiStateManager();
+  actor::ui::ActorUiStateManager* manager =
+      actor::ui::ActorUiStateManager::Get(profile);
   if (auto last_tab_opt = manager->GetLastActedOnTab(task_id);
       last_tab_opt && *last_tab_opt) {
     tabs::TabInterface* last_tab = *last_tab_opt;
@@ -300,7 +381,7 @@ void ActorTaskListBubbleController::OnTaskRowClicked(actor::TaskId task_id) {
 
 ActorTaskListBubbleControllerDelegate*
 ActorTaskListBubbleController::GetActiveDelegate() const {
-  return split_button_controller_->GetActiveDelegate();
+  return split_button_controller_->GetActiveViewDelegate();
 }
 
 // static

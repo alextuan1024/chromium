@@ -539,7 +539,7 @@ void ShowAccessibilityNotification(
   std::unique_ptr<message_center::Notification> notification =
       ash::CreateSystemNotificationPtr(
           message_center::NOTIFICATION_TYPE_SIMPLE, notification_id, title,
-          text, display_source, GURL(),
+          text, display_source,
           message_center::NotifierId(
               message_center::NotifierType::SYSTEM_COMPONENT,
               kNotifierAccessibility, catalog_name),
@@ -1517,11 +1517,9 @@ void AccessibilityController::RegisterProfilePrefs(
       kDefaultFaceGazePrecisionClickSpeedFactor,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
-  if (::features::IsAccessibilityMagnifierFollowsChromeVoxEnabled()) {
-    registry->RegisterBooleanPref(
-        prefs::kAccessibilityMagnifierFollowsChromeVox, true,
-        user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
-  }
+  registry->RegisterBooleanPref(
+      prefs::kAccessibilityMagnifierFollowsChromeVox, true,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   registry->RegisterBooleanPref(
       prefs::kAccessibilityMagnifierFollowsSts, true,
@@ -2678,28 +2676,26 @@ void AccessibilityController::ObservePrefs(PrefService* prefs) {
       prefs::kAccessibilitySlowKeysDelayMs,
       base::BindRepeating(&AccessibilityController::UpdateSlowKeysDelayFromPref,
                           base::Unretained(this)));
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    pref_change_registrar_->Add(
-        prefs::kAccessibilityMouseKeysAcceleration,
-        base::BindRepeating(
-            &AccessibilityController::UpdateMouseKeysAccelerationFromPref,
-            base::Unretained(this)));
-    pref_change_registrar_->Add(
-        prefs::kAccessibilityMouseKeysMaxSpeed,
-        base::BindRepeating(
-            &AccessibilityController::UpdateMouseKeysMaxSpeedFromPref,
-            base::Unretained(this)));
-    pref_change_registrar_->Add(
-        prefs::kAccessibilityMouseKeysUsePrimaryKeys,
-        base::BindRepeating(
-            &AccessibilityController::UpdateMouseKeysUsePrimaryKeysFromPref,
-            base::Unretained(this)));
-    pref_change_registrar_->Add(
-        prefs::kAccessibilityMouseKeysDominantHand,
-        base::BindRepeating(
-            &AccessibilityController::UpdateMouseKeysDominantHandFromPref,
-            base::Unretained(this)));
-  }
+  pref_change_registrar_->Add(
+      prefs::kAccessibilityMouseKeysAcceleration,
+      base::BindRepeating(
+          &AccessibilityController::UpdateMouseKeysAccelerationFromPref,
+          base::Unretained(this)));
+  pref_change_registrar_->Add(
+      prefs::kAccessibilityMouseKeysMaxSpeed,
+      base::BindRepeating(
+          &AccessibilityController::UpdateMouseKeysMaxSpeedFromPref,
+          base::Unretained(this)));
+  pref_change_registrar_->Add(
+      prefs::kAccessibilityMouseKeysUsePrimaryKeys,
+      base::BindRepeating(
+          &AccessibilityController::UpdateMouseKeysUsePrimaryKeysFromPref,
+          base::Unretained(this)));
+  pref_change_registrar_->Add(
+      prefs::kAccessibilityMouseKeysDominantHand,
+      base::BindRepeating(
+          &AccessibilityController::UpdateMouseKeysDominantHandFromPref,
+          base::Unretained(this)));
   pref_change_registrar_->Add(
       prefs::kAccessibilityFloatingMenuPosition,
       base::BindRepeating(
@@ -2802,12 +2798,10 @@ void AccessibilityController::ObservePrefs(PrefService* prefs) {
   UpdateAutoclickMenuPositionFromPref();
   UpdateBounceKeysDelayFromPref();
   UpdateSlowKeysDelayFromPref();
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    UpdateMouseKeysAccelerationFromPref();
-    UpdateMouseKeysMaxSpeedFromPref();
-    UpdateMouseKeysUsePrimaryKeysFromPref();
-    UpdateMouseKeysDominantHandFromPref();
-  }
+  UpdateMouseKeysAccelerationFromPref();
+  UpdateMouseKeysMaxSpeedFromPref();
+  UpdateMouseKeysUsePrimaryKeysFromPref();
+  UpdateMouseKeysDominantHandFromPref();
   UpdateFloatingMenuPositionFromPref();
   UpdateLargeCursorFromPref();
   UpdateCursorColorFromPrefs(/*notify=*/true);
@@ -3581,7 +3575,7 @@ void AccessibilityController::SetVirtualKeyboardVisible(bool is_visible) {
 }
 
 void AccessibilityController::ToggleMouseKeys() {
-  if (::features::IsAccessibilityMouseKeysEnabled() && mouse_keys().enabled()) {
+  if (mouse_keys().enabled()) {
     Shell::Get()->mouse_keys_controller()->Toggle();
     NotifyAccessibilityStatusChanged();
   }
@@ -3866,11 +3860,8 @@ void AccessibilityController::UpdateFeatureFromPref(FeatureType feature) {
       CrasAudioHandler::Get()->SetOutputMonoEnabled(enabled);
       break;
     case FeatureType::kMouseKeys:
-      if (::features::IsAccessibilityMouseKeysEnabled()) {
-        // TODO(b/259372916): Consider creating/deleting MouseKeysController
-        // here.
-        Shell::Get()->mouse_keys_controller()->set_enabled(enabled);
-      }
+      // TODO(b/259372916): Consider creating/deleting MouseKeysController here.
+      Shell::Get()->mouse_keys_controller()->set_enabled(enabled);
       break;
     case FeatureType::kSpokenFeedback:
       message_center::MessageCenter::Get()->SetSpokenFeedbackEnabled(enabled);

@@ -56,6 +56,9 @@ namespace {
 constexpr char kURLVerdictSourceHistogram[] =
     "Enterprise.DataProtection.URLVerdictSource";
 
+constexpr char kURLVerdictScreenshotHistogram[] =
+    "Enterprise.DataProtection.URLVerdictForScreenshot";
+
 // This is non-null in tests to install a fake service.
 safe_browsing::RealTimeUrlLookupServiceBase* g_lookup_service = nullptr;
 
@@ -81,15 +84,17 @@ DataProtectionPageUserData* GetUserData(content::WebContents* web_contents) {
 // of the interstitial page appearing, so we only need to report in this class
 // for SAFE verdicts where no interstitial was shown, only if a rule was
 // triggered.
+bool ShouldReportSafeUrlFilteringEvents(
+    const safe_browsing::RTLookupResponse* rt_lookup_response) {
+  return rt_lookup_response && !rt_lookup_response->threat_info().empty() &&
+         rt_lookup_response->threat_info(0).verdict_type() ==
+             safe_browsing::RTLookupResponse::ThreatInfo::SAFE &&
+         rt_lookup_response->threat_info(0).has_matched_url_navigation_rule();
+}
+
 bool ShouldReportSafeUrlFilteringEvents(DataProtectionPageUserData* user_data) {
   DCHECK(user_data);
-  return user_data->rt_lookup_response() &&
-         !user_data->rt_lookup_response()->threat_info().empty() &&
-         user_data->rt_lookup_response()->threat_info(0).verdict_type() ==
-             safe_browsing::RTLookupResponse::ThreatInfo::SAFE &&
-         user_data->rt_lookup_response()
-             ->threat_info(0)
-             .has_matched_url_navigation_rule();
+  return ShouldReportSafeUrlFilteringEvents(user_data->rt_lookup_response());
 }
 #endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
@@ -114,10 +119,34 @@ void RunPendingNavigationCallback(
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   if (ShouldReportSafeUrlFilteringEvents(user_data)) {
-    MaybeTriggerUrlFilteringInterstitialEvent(
-        web_contents, web_contents->GetLastCommittedURL(),
-        /*threat_type=*/"", *user_data->rt_lookup_response(),
-        /*tab_title=*/base::UTF16ToUTF8(web_contents->GetTitle()));
+    bool is_enabled = base::FeatureList::IsEnabled(
+        enterprise_data_protection::kEnterpriseTabTitleReporting);
+    base::UmaHistogramBoolean(
+        "Enterprise.DelayedReportingInterstitial.Triggered.UrlFiltering",
+        is_enabled);
+    if (is_enabled) {
+      enterprise_data_protection::DelayedInterstitialReporter::Start(
+          web_contents,
+          base::BindOnce(
+              [](base::WeakPtr<content::WebContents> web_contents, GURL url,
+                 std::string threat_type,
+                 safe_browsing::RTLookupResponse response,
+                 const std::string& tab_title) {
+                if (web_contents) {
+                  MaybeTriggerUrlFilteringInterstitialEvent(
+                      web_contents.get(), std::move(url),
+                      std::move(threat_type), std::move(response), tab_title);
+                }
+              },
+              web_contents->GetWeakPtr(), web_contents->GetLastCommittedURL(),
+              /*threat_type=*/"", *user_data->rt_lookup_response()),
+          /*is_bypassing_interstitial=*/false, "UrlFiltering");
+    } else {
+      MaybeTriggerUrlFilteringInterstitialEvent(
+          web_contents, web_contents->GetLastCommittedURL(),
+          /*threat_type=*/"", *user_data->rt_lookup_response(),
+          /*tab_title=*/base::UTF16ToUTF8(web_contents->GetTitle()));
+    }
   }
 #endif
 
@@ -165,7 +194,7 @@ bool IsEnterpriseLookupEnabled(Profile* profile) {
       connectors_service->GetDMTokenForRealTimeUrlCheck().has_value();
   return safe_browsing::RealTimePolicyEngine::CanPerformEnterpriseFullURLLookup(
       profile->GetPrefs(), has_valid_dm_token, profile->IsOffTheRecord(),
-      profile->IsGuestSession());
+      profile->IsGuestSession(), profile->IsEnterpriseIsolatedModeProfile());
 #else
   return false;
 #endif
@@ -203,7 +232,7 @@ std::string GetIdentifier(content::BrowserContext* browser_context) {
 
 void LogVerdictSource(
     DataProtectionNavigationObserver::URLVerdictSource verdict_source) {
-  VLOG(1) << "enterprise.watermark: verdict source: "
+  VLOG(1) << "enterprise.data_protection: verdict source: "
           << static_cast<int>(verdict_source);
   base::UmaHistogramEnumeration(kURLVerdictSourceHistogram, verdict_source);
 }
@@ -375,7 +404,21 @@ DataProtectionNavigationObserver::DataProtectionNavigationObserver(
   }
 }
 
-DataProtectionNavigationObserver::~DataProtectionNavigationObserver() = default;
+DataProtectionNavigationObserver::~DataProtectionNavigationObserver() {
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+  if (pending_navigation_callback_ && rt_lookup_response_ && web_contents() &&
+      ShouldReportSafeUrlFilteringEvents(rt_lookup_response_.get())) {
+    MaybeTriggerUrlFilteringInterstitialEvent(
+        web_contents(), web_contents()->GetLastCommittedURL(),
+        /*threat_type=*/"", std::move(*rt_lookup_response_),
+        /*tab_title=*/
+        base::FeatureList::IsEnabled(
+            enterprise_data_protection::kEnterpriseTabTitleReporting)
+            ? base::UTF16ToUTF8(web_contents()->GetTitle())
+            : std::string());
+  }
+#endif
+}
 
 void DataProtectionNavigationObserver::OnLookupComplete(
     std::unique_ptr<safe_browsing::RTLookupResponse> rt_lookup_response) {
@@ -388,6 +431,11 @@ void DataProtectionNavigationObserver::OnLookupComplete(
   if (!web_contents()) {
     return;
   }
+
+  base::UmaHistogramBoolean(
+      kURLVerdictScreenshotHistogram,
+      GetUrlSettings("", rt_lookup_response.get()).allow_screenshots);
+
   if (is_navigation_finished_) {
     OnDoLookupComplete(web_contents()->GetWeakPtr(),
                        std::move(pending_navigation_callback_), identifier_,
@@ -423,13 +471,13 @@ void DataProtectionNavigationObserver::DidRedirectNavigation(
           navigation_handle->GetWebContents()->GetBrowserContext())) {
     is_verdict_received_ = false;
     rt_lookup_response_.reset();
-    // Cancel any previous lookup calls before starting a new lookup for the redirect.
+    // Cancel any previous lookup calls before starting a new lookup for
+    // the redirect.
     weak_factory_.InvalidateWeakPtrs();
-    DoLookup(
-        lookup_service_, navigation_handle->GetURL(),
-        base::BindOnce(&DataProtectionNavigationObserver::OnLookupComplete,
-                       weak_factory_.GetWeakPtr()),
-        navigation_handle->GetWebContents());
+    DoLookup(lookup_service_, navigation_handle->GetURL(),
+             base::BindOnce(&DataProtectionNavigationObserver::OnLookupComplete,
+                            weak_factory_.GetWeakPtr()),
+             navigation_handle->GetWebContents());
   }
 }
 

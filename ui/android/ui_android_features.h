@@ -60,11 +60,17 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseFiles);
 // across processes via ClipboardTextDataProvider on Android.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardOversizedPayloadProvider);
 
+// Enables debug logging for connected display and density changes.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kConnectedDisplayDensityDebugLogs);
+
 // Use the old-style opening of an External Picker when uploading files.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDeprecatedExternalPickerFunction);
 
 // Whether photo picker should be disabled for video capture.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDisablePhotoPickerForVideoCapture);
+
+// Whether to read ClipDescription.hasContentUri().
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kHasContentUri);
 
 // Guard changes to use maximum window metrics for gesture navigation detection.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kMaximumWindowForGestureNavDetection);
@@ -73,7 +79,7 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kMaximumWindowForGestureNavDetection);
 // (crbug.com/490206349).
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kPointerLockMouseScaling);
 inline constexpr base::FeatureParam<double> kPointerLockMouseScalingFactor{
-    &kPointerLockMouseScaling, "factor", 1.2};
+    &kPointerLockMouseScaling, "factor", 2.4};
 
 // Whether to enable the refactor of the smallestScreenWidthDp override.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kRefactorMinWidthContextOverride);
@@ -107,6 +113,10 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
 // Update padding for display calculations to use view width instead of screen
 // width.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUpdatePaddingForDisplayCalculation);
+
+// Avoids allocating unique ColorProviders per Activity context in Android
+// embedders that do not supply a ColorProviderBridge.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAvoidPerContextColorProviders);
 
 }  // namespace ui
 

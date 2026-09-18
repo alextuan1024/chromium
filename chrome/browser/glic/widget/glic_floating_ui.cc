@@ -102,7 +102,6 @@ GlicFloatingUi::~GlicFloatingUi() {
     profile_manager->SetCurrentDetachedGlic(nullptr);
   }
 
-  ClearWebContentsDelegate();
   PictureInPictureOcclusionTracker* tracker =
       PictureInPictureWindowManager::GetInstance()->GetOcclusionTracker();
   tracker->RemovePictureInPictureWidget(glic_widget_.get());
@@ -256,9 +255,10 @@ void GlicFloatingUi::ActiveWebContentsChanged(
   if (auto* glic_view = GetGlicView()) {
     glic_view->SetWebContents(new_contents);
   }
+  scoped_modal_dialog_delegate_.SetWebContents(new_contents);
 }
 
-void GlicFloatingUi::EnableDragResize(bool enabled) {
+void GlicFloatingUi::SetDragResizeEnabled(bool enabled) {
   user_resizable_ = enabled;
 
   if (!GetGlicWidget() || !GetGlicWidget()->widget_delegate()) {
@@ -324,16 +324,6 @@ void GlicFloatingUi::CanAttachToBrowserChanged(bool can_attach) {
   FloatingPanelCanAttachChanged(can_attach && source_tab_.Get() != nullptr);
 }
 
-void GlicFloatingUi::ConfigureWebContentsModalDialogs() {
-  // Add capability to show web modal dialogs (e.g. Data Controls Dialogs for
-  // enterprise users) via constrained_window APIs.
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(
-      delegate_->host().webui_contents());
-  web_modal::WebContentsModalDialogManager::FromWebContents(
-      delegate_->host().webui_contents())
-      ->SetDelegate(this);
-}
-
 void GlicFloatingUi::Attach() {
   if (!base::FeatureList::IsEnabled(kGlicFloatingUiReattachment)) {
     return;
@@ -370,7 +360,8 @@ void GlicFloatingUi::Show(const ShowOptions& options) {
   GetGlicView()->UpdateBackgroundColor();
   panel_visibility_dependent_hotkey_manager_->InitializeAccelerators();
   panel_focus_dependent_hotkey_manager_->InitializeAccelerators();
-  ConfigureWebContentsModalDialogs();
+  scoped_modal_dialog_delegate_.SetWebContents(
+      delegate_->host().webui_contents());
 }
 
 void GlicFloatingUi::Close(const CloseOptions& options) {
@@ -379,11 +370,8 @@ void GlicFloatingUi::Close(const CloseOptions& options) {
     modal_dialog_host_observers_.Notify(
         &web_modal::ModalDialogHostObserver::OnHostDestroying);
   }
-  ClearWebContentsDelegate();
+  scoped_modal_dialog_delegate_.SetWebContents(nullptr);
   CloseSelectionOverlay();
-  if (screenshot_capturer_) {
-    screenshot_capturer_->CloseScreenPicker();
-  }
   FloatingPanelCanAttachChanged(false);
   glic_window_animator_.reset();
   glic_widget_observation_.Reset();
@@ -395,20 +383,11 @@ void GlicFloatingUi::Close(const CloseOptions& options) {
                          EmbedderCloseReason::kExplicitlyClosed);
 }
 
-void GlicFloatingUi::ClearWebContentsDelegate() {
-  if (auto* web_contents = delegate_->host().webui_contents()) {
-    auto* dialog_manager =
-        web_modal::WebContentsModalDialogManager::FromWebContents(web_contents);
-    if (dialog_manager->delegate() == this) {
-      dialog_manager->SetDelegate(nullptr);
-    }
-  }
-}
-
 void GlicFloatingUi::OnReload() {
   if (auto* glic_view = GetGlicView()) {
-    glic_view->SetWebContents(delegate_->host().webui_contents());
-    ConfigureWebContentsModalDialogs();
+    content::WebContents* web_contents = delegate_->host().webui_contents();
+    glic_view->SetWebContents(web_contents);
+    scoped_modal_dialog_delegate_.SetWebContents(web_contents);
   }
 }
 
@@ -533,15 +512,6 @@ void GlicFloatingUi::SwitchConversation(
   delegate_->SwitchConversation(
       ShowOptions::ForFloating(GetGlicWidget()->GetWindowBoundsInScreen()),
       std::move(info), std::move(callback));
-}
-
-void GlicFloatingUi::CaptureScreenshot(
-    glic::mojom::WebClientHandler::CaptureScreenshotCallback callback) {
-  if (!screenshot_capturer_) {
-    screenshot_capturer_ = GlicScreenshotCapturer::Create();
-  }
-  screenshot_capturer_->CaptureScreenshot(GetGlicWidget()->GetNativeWindow(),
-                                          std::move(callback));
 }
 
 void GlicFloatingUi::ClosePanel() {

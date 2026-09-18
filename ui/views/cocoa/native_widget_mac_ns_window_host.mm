@@ -16,6 +16,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #include "components/remote_cocoa/app_shim/mouse_capture.h"
 #include "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
@@ -56,6 +57,7 @@
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/views_delegate.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_activation_delegate.h"
@@ -486,6 +488,8 @@ void NativeWidgetMacNSWindowHost::InitWindow(
     window_params->is_translucent =
         params.opacity == Widget::InitParams::WindowOpacity::kTranslucent;
     window_params->is_tooltip = is_tooltip;
+    window_params->prevent_stale_content_after_hide =
+        params.prevent_stale_content_after_hide;
 
     // macOS likes to put shadows on most things. However, frameless windows
     // (with styleMask = NSWindowStyleMaskBorderless) default to no shadow. So
@@ -658,6 +662,8 @@ void NativeWidgetMacNSWindowHost::CreateCompositor(
 
   // Create the layer.
   SetLayer(ui::Layer::Create(params.layer_type));
+  layer()->SetName(params.name.empty() ? "NativeWidgetMacNSWindowHost"
+                                       : params.name);
   layer()->set_delegate(this);
   layer()->SetFillsBoundsOpaquely(!translucent);
 
@@ -676,8 +682,9 @@ void NativeWidgetMacNSWindowHost::CreateCompositor(
   // case it will never become visible but we want its compositor to produce
   // frames for screenshooting and screencasting.
   UpdateCompositorProperties();
-  layer()->SetVisible(is_visible_);
-  if (is_visible_ || display::Screen::Get()->IsHeadless()) {
+  layer()->SetVisible(is_visible_ || video_capture_count_ > 0);
+  if (is_visible_ || display::Screen::Get()->IsHeadless() ||
+      video_capture_count_ > 0) {
     compositor_->Unsuspend();
   }
 
@@ -1101,25 +1108,64 @@ void NativeWidgetMacNSWindowHost::OnApplicationHostDestroying(
   OnWindowHasClosed();
 }
 
+base::ScopedClosureRunner
+NativeWidgetMacNSWindowHost::CreateVideoCaptureLock() {
+  ++video_capture_count_;
+  if (video_capture_count_ == 1) {
+    UpdateCompositorVisibility();
+  }
+  return base::ScopedClosureRunner(
+      base::BindOnce(&NativeWidgetMacNSWindowHost::OnVideoCaptureLockDestroyed,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void NativeWidgetMacNSWindowHost::OnVideoCaptureLockDestroyed() {
+  CHECK_GT(video_capture_count_, 0u);
+  --video_capture_count_;
+  if (video_capture_count_ == 0) {
+    UpdateCompositorVisibility();
+  }
+}
+
+void NativeWidgetMacNSWindowHost::UpdateCompositorVisibility() {
+  if (!compositor_) {
+    return;
+  }
+  const bool visible = is_visible_ || video_capture_count_ > 0;
+  const bool was_layer_visible = layer()->visible();
+  layer()->SetVisible(visible);
+  if (visible) {
+    if (base::FeatureList::IsEnabled(
+            views::features::kNotifyCompositorOfWindowVisibilityOnMacOs)) {
+      compositor_->compositor()->SetVisible(true);
+    }
+    compositor_->Unsuspend();
+    if (!was_layer_visible) {
+      layer()->SchedulePaint(layer()->bounds());
+    }
+  } else {
+    if (!display::Screen::Get()->IsHeadless()) {
+      compositor_->Suspend();
+    }
+    if (base::FeatureList::IsEnabled(
+            views::features::kNotifyCompositorOfWindowVisibilityOnMacOs)) {
+      compositor_->compositor()->SetVisible(false);
+    }
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // NativeWidgetMacNSWindowHost,
 // remote_cocoa::mojom::NativeWidgetNSWindowHost:
 
 void NativeWidgetMacNSWindowHost::OnVisibilityChanged(bool window_visible) {
+  TRACE_EVENT("ui", __PRETTY_FUNCTION__, "window_visible", window_visible);
   if (is_visible_ == window_visible) {
     return;
   }
   const bool was_visible_on_screen = IsVisibleOnScreen();
   is_visible_ = window_visible;
-  if (compositor_) {
-    layer()->SetVisible(window_visible);
-    if (window_visible) {
-      compositor_->Unsuspend();
-      layer()->SchedulePaint(layer()->bounds());
-    } else {
-      compositor_->Suspend();
-    }
-  }
+  UpdateCompositorVisibility();
 
   Widget* widget = GetWidget();
   if (!widget) {
@@ -1218,7 +1264,7 @@ bool NativeWidgetMacNSWindowHost::DispatchMonitorEvent(
   auto weak_this = weak_factory_.GetWeakPtr();
 
   *event_handled = false;
-  for (auto* event_monitor : event_monitors_snapshot) {
+  for (NativeWidgetMacEventMonitor* event_monitor : event_monitors_snapshot) {
     // Ensure `event_monitor` was not removed from `event_monitors_` by a
     // previous call to NativeWidgetMacEventMonitorOnEvent.
     if (!std::ranges::contains(event_monitors_, event_monitor)) {
@@ -1569,7 +1615,7 @@ void NativeWidgetMacNSWindowHost::OnWindowKeyStatusChanged(
   // for PWAs. However this breaks accessibility on in-process windows,
   // so set it back to NO when a local window gains focus. See
   // https://crbug.com/41485830.
-  if (is_key && features::IsAccessibilityRemoteUIAppEnabled()) {
+  if (is_key && ::features::IsAccessibilityRemoteUIAppEnabled()) {
     [NSAccessibilityRemoteUIElement setRemoteUIApp:!!application_host_];
   }
   // Explicitly set the keyboard accessibility state on regaining key
@@ -1738,7 +1784,7 @@ bool NativeWidgetMacNSWindowHost::GetRootViewAccessibilityToken(
   *pid = getpid();
   id element_id = GetNativeViewAccessible();
 
-  if (features::IsAccessibilityRemoteUIAppEnabled()) {
+  if (::features::IsAccessibilityRemoteUIAppEnabled()) {
     pid_t client_pid = [remote_view_accessible_ processIdentifier];
     if ([element_id respondsToSelector:@selector
                     (accessibilitySetPresenterProcessIdentifier:)]) {

@@ -71,7 +71,6 @@ source_set("feedback_impl") {
   ]
   deps = [
     ":feedback",
-    "//chrome/browser:browser_features",
     "//chrome/browser:browser_process",
     "//chrome/browser:memory_details",
     "//chrome/browser/profiles:profile",
@@ -184,6 +183,9 @@ source_set("feedback_impl") {
     ]
     deps += [ "//ui/ozone" ]
   }
+  if (!is_android) {
+    deps += [ "//chrome/browser/ui:browser_window_header" ]
+  }
 }
 
 source_set("unit_tests") {
@@ -192,7 +194,6 @@ source_set("unit_tests") {
   deps = [
     ":feedback_impl",
     "//base/test:test_support",
-    "//chrome/browser:browser_features",
     "//chrome/browser/performance_manager:test_support",
     "//chrome/common:constants",
     "//chrome/test:test_support",

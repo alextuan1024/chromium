@@ -5,163 +5,103 @@ Group: Main origin
 Group: Secure origins
 <SPAN class=highlighted-url >
     <SPAN class=url-scheme-secure >
-        <#comment >
-        </#comment>
 https
     </SPAN>
     <SPAN class=url-scheme-separator >
-        <#comment >
-        </#comment>
 ://
     </SPAN>
     <SPAN >
-        <#comment >
-        </#comment>
 foo.test
     </SPAN>
 </SPAN>
 <SPAN class=url-scheme-secure >
-    <#comment >
-    </#comment>
 https
 </SPAN>
 <SPAN class=url-scheme-separator >
-    <#comment >
-    </#comment>
 ://
 </SPAN>
 <SPAN >
-    <#comment >
-    </#comment>
 foo.test
 </SPAN>
 <SPAN class=highlighted-url >
     <SPAN class=url-scheme-secure >
-        <#comment >
-        </#comment>
 https
     </SPAN>
     <SPAN class=url-scheme-separator >
-        <#comment >
-        </#comment>
 ://
     </SPAN>
     <SPAN >
-        <#comment >
-        </#comment>
 ecdhe.foo.test
     </SPAN>
 </SPAN>
 <SPAN class=url-scheme-secure >
-    <#comment >
-    </#comment>
 https
 </SPAN>
 <SPAN class=url-scheme-separator >
-    <#comment >
-    </#comment>
 ://
 </SPAN>
 <SPAN >
-    <#comment >
-    </#comment>
 ecdhe.foo.test
 </SPAN>
 <SPAN class=highlighted-url >
     <SPAN class=url-scheme-secure >
-        <#comment >
-        </#comment>
 https
     </SPAN>
     <SPAN class=url-scheme-separator >
-        <#comment >
-        </#comment>
 ://
     </SPAN>
     <SPAN >
-        <#comment >
-        </#comment>
 tls13.foo.test
     </SPAN>
 </SPAN>
 <SPAN class=url-scheme-secure >
-    <#comment >
-    </#comment>
 https
 </SPAN>
 <SPAN class=url-scheme-separator >
-    <#comment >
-    </#comment>
 ://
 </SPAN>
 <SPAN >
-    <#comment >
-    </#comment>
 tls13.foo.test
 </SPAN>
 <SPAN class=highlighted-url >
     <SPAN class=url-scheme-secure >
-        <#comment >
-        </#comment>
 https
     </SPAN>
     <SPAN class=url-scheme-separator >
-        <#comment >
-        </#comment>
 ://
     </SPAN>
     <SPAN >
-        <#comment >
-        </#comment>
 ech.foo.test
     </SPAN>
 </SPAN>
 <SPAN class=url-scheme-secure >
-    <#comment >
-    </#comment>
 https
 </SPAN>
 <SPAN class=url-scheme-separator >
-    <#comment >
-    </#comment>
 ://
 </SPAN>
 <SPAN >
-    <#comment >
-    </#comment>
 ech.foo.test
 </SPAN>
 Group: Unknown / canceled
 <SPAN class=highlighted-url >
     <SPAN class=url-scheme-unknown >
-        <#comment >
-        </#comment>
 https
     </SPAN>
     <SPAN class=url-scheme-separator >
-        <#comment >
-        </#comment>
 ://
     </SPAN>
     <SPAN >
-        <#comment >
-        </#comment>
 bar.test
     </SPAN>
 </SPAN>
 <SPAN class=url-scheme-unknown >
-    <#comment >
-    </#comment>
 https
 </SPAN>
 <SPAN class=url-scheme-separator >
-    <#comment >
-    </#comment>
 ://
 </SPAN>
 <SPAN >
-    <#comment >
-    </#comment>
 bar.test
 </SPAN>
 Origin view (https://foo.test) -----------------
@@ -175,10 +115,6 @@ Origin view (https://foo.test) -----------------
 Origin
         </DIV>
         <DIV class=origin-display >
-            <#comment >
-            </#comment>
-            <#comment >
-            </#comment>
             <DEVTOOLS-ICON role=presentation name=lock class=security-property security-property-secure >
                 <#document-fragment >
                     <STYLE >
@@ -187,47 +123,25 @@ Origin
                     </SPAN>
                 </#document-fragment>
             </DEVTOOLS-ICON>
-            <#comment >
-            </#comment>
             <SPAN class=highlighted-url >
                 <SPAN class=url-scheme-secure >
-                    <#comment >
-                    </#comment>
 https
                 </SPAN>
                 <SPAN class=url-scheme-separator >
-                    <#comment >
-                    </#comment>
 ://
                 </SPAN>
                 <SPAN >
-                    <#comment >
-                    </#comment>
 foo.test
                 </SPAN>
             </SPAN>
-            <#comment >
-            </#comment>
         </DIV>
         <DIV class=view-network-button >
-            <DEVTOOLS-BUTTON role=link jslog=Action; track: click; context: reveal-in-network >
+            <DEVTOOLS-BUTTON role=presentation >
 View requests in Network panel
                 <#document-fragment >
-                    <#comment >
-                    </#comment>
                     <STYLE >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
                     </STYLE>
-                    <BUTTON class=outlined >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
+                    <BUTTON class= outlined  jslog=Action; track: click; context: reveal-in-network >
                         <SLOT >
                         </SLOT>
                     </BUTTON>
@@ -235,7 +149,7 @@ View requests in Network panel
             </DEVTOOLS-BUTTON>
         </DIV>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section connection-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Connection
         </DIV>
@@ -266,7 +180,7 @@ Cypher with Mac
             </TR>
         </TABLE>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section certificate-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Certificate
         </DIV>
@@ -284,33 +198,13 @@ foo.test
 SAN
                 </TD>
                 <TD >
-                    <DIV >
-                        <#comment >
-                        </#comment>
-                        <DIV class= san  >
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                            <SPAN class= san-entry  >
-                                <#comment >
-                                </#comment>
+                    <DIV class= san  >
+                        <SPAN class= san-entry  >
 foo.test
-                            </SPAN>
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                            <SPAN class= san-entry  >
-                                <#comment >
-                                </#comment>
+                        </SPAN>
+                        <SPAN class= san-entry  >
 *.test
-                            </SPAN>
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                        </DIV>
+                        </SPAN>
                     </DIV>
                 </TD>
             </TR>
@@ -342,24 +236,12 @@ Super CA
                 <TD >
                 </TD>
                 <TD >
-                    <DEVTOOLS-BUTTON role=button class=origin-button jslog=Action; track: click; context: security.view-certificate-for-origin title=Open full certificate details >
+                    <DEVTOOLS-BUTTON class=origin-button role=presentation title=Open full certificate details >
 Open full certificate details
                         <#document-fragment >
-                            <#comment >
-                            </#comment>
                             <STYLE >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
                             </STYLE>
-                            <BUTTON class=outlined title=Open full certificate details aria-label=Open full certificate details >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
+                            <BUTTON title=Open full certificate details class= outlined  aria-label=Open full certificate details jslog=Action; track: click; context: security.view-certificate-for-origin >
                                 <SLOT >
                                 </SLOT>
                             </BUTTON>
@@ -381,10 +263,6 @@ Origin view (https://ecdhe.foo.test) -----------
 Origin
         </DIV>
         <DIV class=origin-display >
-            <#comment >
-            </#comment>
-            <#comment >
-            </#comment>
             <DEVTOOLS-ICON role=presentation name=lock class=security-property security-property-secure >
                 <#document-fragment >
                     <STYLE >
@@ -393,47 +271,25 @@ Origin
                     </SPAN>
                 </#document-fragment>
             </DEVTOOLS-ICON>
-            <#comment >
-            </#comment>
             <SPAN class=highlighted-url >
                 <SPAN class=url-scheme-secure >
-                    <#comment >
-                    </#comment>
 https
                 </SPAN>
                 <SPAN class=url-scheme-separator >
-                    <#comment >
-                    </#comment>
 ://
                 </SPAN>
                 <SPAN >
-                    <#comment >
-                    </#comment>
 ecdhe.foo.test
                 </SPAN>
             </SPAN>
-            <#comment >
-            </#comment>
         </DIV>
         <DIV class=view-network-button >
-            <DEVTOOLS-BUTTON role=link jslog=Action; track: click; context: reveal-in-network >
+            <DEVTOOLS-BUTTON role=presentation >
 View requests in Network panel
                 <#document-fragment >
-                    <#comment >
-                    </#comment>
                     <STYLE >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
                     </STYLE>
-                    <BUTTON class=outlined >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
+                    <BUTTON class= outlined  jslog=Action; track: click; context: reveal-in-network >
                         <SLOT >
                         </SLOT>
                     </BUTTON>
@@ -441,7 +297,7 @@ View requests in Network panel
             </DEVTOOLS-BUTTON>
         </DIV>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section connection-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Connection
         </DIV>
@@ -480,7 +336,7 @@ AES-128-GCM
             </TR>
         </TABLE>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section certificate-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Certificate
         </DIV>
@@ -498,24 +354,10 @@ ecdhe.foo.test
 SAN
                 </TD>
                 <TD >
-                    <DIV >
-                        <#comment >
-                        </#comment>
-                        <DIV class= san  >
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                            <SPAN class= san-entry  >
-                                <#comment >
-                                </#comment>
+                    <DIV class= san  >
+                        <SPAN class= san-entry  >
 ecdhe.foo.test
-                            </SPAN>
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                        </DIV>
+                        </SPAN>
                     </DIV>
                 </TD>
             </TR>
@@ -547,24 +389,12 @@ Super CA
                 <TD >
                 </TD>
                 <TD >
-                    <DEVTOOLS-BUTTON role=button class=origin-button jslog=Action; track: click; context: security.view-certificate-for-origin title=Open full certificate details >
+                    <DEVTOOLS-BUTTON class=origin-button role=presentation title=Open full certificate details >
 Open full certificate details
                         <#document-fragment >
-                            <#comment >
-                            </#comment>
                             <STYLE >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
                             </STYLE>
-                            <BUTTON class=outlined title=Open full certificate details aria-label=Open full certificate details >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
+                            <BUTTON title=Open full certificate details class= outlined  aria-label=Open full certificate details jslog=Action; track: click; context: security.view-certificate-for-origin >
                                 <SLOT >
                                 </SLOT>
                             </BUTTON>
@@ -586,10 +416,6 @@ Origin view (https://tls13.foo.test) -----------
 Origin
         </DIV>
         <DIV class=origin-display >
-            <#comment >
-            </#comment>
-            <#comment >
-            </#comment>
             <DEVTOOLS-ICON role=presentation name=lock class=security-property security-property-secure >
                 <#document-fragment >
                     <STYLE >
@@ -598,47 +424,25 @@ Origin
                     </SPAN>
                 </#document-fragment>
             </DEVTOOLS-ICON>
-            <#comment >
-            </#comment>
             <SPAN class=highlighted-url >
                 <SPAN class=url-scheme-secure >
-                    <#comment >
-                    </#comment>
 https
                 </SPAN>
                 <SPAN class=url-scheme-separator >
-                    <#comment >
-                    </#comment>
 ://
                 </SPAN>
                 <SPAN >
-                    <#comment >
-                    </#comment>
 tls13.foo.test
                 </SPAN>
             </SPAN>
-            <#comment >
-            </#comment>
         </DIV>
         <DIV class=view-network-button >
-            <DEVTOOLS-BUTTON role=link jslog=Action; track: click; context: reveal-in-network >
+            <DEVTOOLS-BUTTON role=presentation >
 View requests in Network panel
                 <#document-fragment >
-                    <#comment >
-                    </#comment>
                     <STYLE >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
                     </STYLE>
-                    <BUTTON class=outlined >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
+                    <BUTTON class= outlined  jslog=Action; track: click; context: reveal-in-network >
                         <SLOT >
                         </SLOT>
                     </BUTTON>
@@ -646,7 +450,7 @@ View requests in Network panel
             </DEVTOOLS-BUTTON>
         </DIV>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section connection-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Connection
         </DIV>
@@ -685,7 +489,7 @@ AES-128-GCM
             </TR>
         </TABLE>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section certificate-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Certificate
         </DIV>
@@ -703,24 +507,10 @@ tls13.foo.test
 SAN
                 </TD>
                 <TD >
-                    <DIV >
-                        <#comment >
-                        </#comment>
-                        <DIV class= san  >
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                            <SPAN class= san-entry  >
-                                <#comment >
-                                </#comment>
+                    <DIV class= san  >
+                        <SPAN class= san-entry  >
 tls13.foo.test
-                            </SPAN>
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                        </DIV>
+                        </SPAN>
                     </DIV>
                 </TD>
             </TR>
@@ -752,24 +542,12 @@ Super CA
                 <TD >
                 </TD>
                 <TD >
-                    <DEVTOOLS-BUTTON role=button class=origin-button jslog=Action; track: click; context: security.view-certificate-for-origin title=Open full certificate details >
+                    <DEVTOOLS-BUTTON class=origin-button role=presentation title=Open full certificate details >
 Open full certificate details
                         <#document-fragment >
-                            <#comment >
-                            </#comment>
                             <STYLE >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
                             </STYLE>
-                            <BUTTON class=outlined title=Open full certificate details aria-label=Open full certificate details >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
+                            <BUTTON title=Open full certificate details class= outlined  aria-label=Open full certificate details jslog=Action; track: click; context: security.view-certificate-for-origin >
                                 <SLOT >
                                 </SLOT>
                             </BUTTON>
@@ -791,10 +569,6 @@ Origin view (https://ech.foo.test) -------------
 Origin
         </DIV>
         <DIV class=origin-display >
-            <#comment >
-            </#comment>
-            <#comment >
-            </#comment>
             <DEVTOOLS-ICON role=presentation name=lock class=security-property security-property-secure >
                 <#document-fragment >
                     <STYLE >
@@ -803,47 +577,25 @@ Origin
                     </SPAN>
                 </#document-fragment>
             </DEVTOOLS-ICON>
-            <#comment >
-            </#comment>
             <SPAN class=highlighted-url >
                 <SPAN class=url-scheme-secure >
-                    <#comment >
-                    </#comment>
 https
                 </SPAN>
                 <SPAN class=url-scheme-separator >
-                    <#comment >
-                    </#comment>
 ://
                 </SPAN>
                 <SPAN >
-                    <#comment >
-                    </#comment>
 ech.foo.test
                 </SPAN>
             </SPAN>
-            <#comment >
-            </#comment>
         </DIV>
         <DIV class=view-network-button >
-            <DEVTOOLS-BUTTON role=link jslog=Action; track: click; context: reveal-in-network >
+            <DEVTOOLS-BUTTON role=presentation >
 View requests in Network panel
                 <#document-fragment >
-                    <#comment >
-                    </#comment>
                     <STYLE >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
                     </STYLE>
-                    <BUTTON class=outlined >
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
-                        <#comment >
-                        </#comment>
+                    <BUTTON class= outlined  jslog=Action; track: click; context: reveal-in-network >
                         <SLOT >
                         </SLOT>
                     </BUTTON>
@@ -851,7 +603,7 @@ View requests in Network panel
             </DEVTOOLS-BUTTON>
         </DIV>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section connection-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Connection
         </DIV>
@@ -898,7 +650,7 @@ enabled
             </TR>
         </TABLE>
     </DIV>
-    <DIV class=origin-view-section >
+    <DIV class=origin-view-section certificate-section >
         <DIV class=origin-view-section-title role=heading aria-level=2 >
 Certificate
         </DIV>
@@ -916,24 +668,10 @@ ech.foo.test
 SAN
                 </TD>
                 <TD >
-                    <DIV >
-                        <#comment >
-                        </#comment>
-                        <DIV class= san  >
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                            <SPAN class= san-entry  >
-                                <#comment >
-                                </#comment>
+                    <DIV class= san  >
+                        <SPAN class= san-entry  >
 ech.foo.test
-                            </SPAN>
-                            <#comment >
-                            </#comment>
-                            <#comment >
-                            </#comment>
-                        </DIV>
+                        </SPAN>
                     </DIV>
                 </TD>
             </TR>
@@ -965,24 +703,12 @@ Super CA
                 <TD >
                 </TD>
                 <TD >
-                    <DEVTOOLS-BUTTON role=button class=origin-button jslog=Action; track: click; context: security.view-certificate-for-origin title=Open full certificate details >
+                    <DEVTOOLS-BUTTON class=origin-button role=presentation title=Open full certificate details >
 Open full certificate details
                         <#document-fragment >
-                            <#comment >
-                            </#comment>
                             <STYLE >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
                             </STYLE>
-                            <BUTTON class=outlined title=Open full certificate details aria-label=Open full certificate details >
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
-                                <#comment >
-                                </#comment>
+                            <BUTTON title=Open full certificate details class= outlined  aria-label=Open full certificate details jslog=Action; track: click; context: security.view-certificate-for-origin >
                                 <SLOT >
                                 </SLOT>
                             </BUTTON>

@@ -13,12 +13,16 @@
 
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
+#include "base/functional/bind.h"
+#include "base/i18n/rtl.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/types/optional_ref.h"
 #include "chrome/browser/android/preferences/autofill/settings_navigation_helper.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
@@ -31,13 +35,18 @@
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/next_idle_barrier.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/content/browser/renderer_forms_from_browser_form.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_labels.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/suggestions/suggestion_util.h"
@@ -45,11 +54,14 @@
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_util.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/pointer/pointer_device.h"
 
 namespace autofill {
 
@@ -59,7 +71,14 @@ using FillingSource = ManualFillingController::FillingSource;
 using RemovalConfirmationText =
     AutofillKeyboardAccessoryController::RemovalConfirmationText;
 
-constexpr std::u16string_view kLabelSeparator = u" ";
+bool HasPointerAndHoverSupport() {
+  const auto [pointer_types, hover_types] =
+      ui::GetAvailablePointerAndHoverTypes();
+  return (pointer_types & ui::POINTER_TYPE_FINE) &&
+         (hover_types & ui::HOVER_TYPE_HOVER);
+}
+
+constexpr std::u16string_view kPasswordLabelSeparator = u" ";
 constexpr size_t kMaxBulletCount = 8;
 
 constexpr std::u16string_view kHomeAddressManagementUrl =
@@ -88,7 +107,7 @@ Suggestion::Text FormatLabelsByFillingProduct(
       return Suggestion::Text(
           additional_label.empty()
               ? ExtractPassword(label)
-              : base::StrCat({additional_label, kLabelSeparator,
+              : base::StrCat({additional_label, kPasswordLabelSeparator,
                               ExtractPassword(label)}));
     case FillingProduct::kAddress:
     case FillingProduct::kCreditCard:
@@ -249,15 +268,90 @@ std::u16string GetAccountEmail(content::WebContents* web_contents) {
   return true;
 }
 
-}  // namespace
+struct AutofillAiSuggestionDetailsText {
+  std::u16string title;
+  std::u16string body;
+  std::u16string confirm_button_text;
+  std::u16string primary_button_text;
+};
 
+std::u16string GetAutofillAiSuggestionTitle(const EntityInstance& entity,
+                                            std::string_view app_locale) {
+  const std::vector<EntityLabel> labels =
+      GetLabelsForEntities({&entity},
+                           /*attribute_types_to_ignore=*/{},
+                           /*only_disambiguating_types=*/true,
+                           /*obfuscate_sensitive_types=*/false, app_locale);
+  const std::u16string first_disambiguating_label =
+      (!labels.empty() && !labels[0].empty()) ? labels[0][0] : std::u16string();
+
+  if (first_disambiguating_label.empty()) {
+    return entity.type().GetNameForI18n();
+  }
+  if (base::i18n::IsRTL()) {
+    return base::StrCat({first_disambiguating_label, autofill::kLabelSeparator,
+                         entity.type().GetNameForI18n()});
+  }
+  return base::StrCat({entity.type().GetNameForI18n(),
+                       autofill::kLabelSeparator, first_disambiguating_label});
+}
+
+// Gets the text for a dialog to confirm suppressing an Autofill AI suggestion.
+[[nodiscard]] AutofillAiSuggestionDetailsText
+GetAutofillAiSuggestionDetailsText(const EntityInstance& entity,
+                                   std::string_view app_locale) {
+  return AutofillAiSuggestionDetailsText{
+      .title = GetAutofillAiSuggestionTitle(entity, app_locale),
+      .body =
+          l10n_util::GetStringUTF16(IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_BODY),
+      .confirm_button_text = l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_SECONDARY_BUTTON),
+      .primary_button_text = l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_PRIMARY_BUTTON),
+  };
+}
+
+base::optional_ref<const EntityInstance> GetPersonalContextEntityForSuggestion(
+    const Suggestion& suggestion,
+    const ContentAutofillClient& client) {
+  const EntityDataManager* edm = client.GetEntityDataManager();
+  if (!edm) {
+    return std::nullopt;
+  }
+  const auto* ai_payload =
+      std::get_if<Suggestion::AutofillAiPayload>(&suggestion.payload);
+  if (!ai_payload) {
+    return std::nullopt;
+  }
+  base::optional_ref<const EntityInstance> entity =
+      edm->GetEntityInstance(ai_payload->guid);
+  if (!entity.has_value()) {
+    return std::nullopt;
+  }
+  switch (entity->record_type()) {
+    case EntityInstance::RecordType::kPersonalContext:
+      return entity;
+    case EntityInstance::RecordType::kLocal:
+    case EntityInstance::RecordType::kServerWallet:
+      // Suppression confirmation is only supported for ambient Personal
+      // Context entities suggested by Gemini. Local entities and Wallet
+      // passes are managed through settings/Wallet and do not support
+      // suppression.
+      return std::nullopt;
+  }
+  NOTREACHED();
+}
+
+}  // namespace
 
 bool AutofillKeyboardAccessoryControllerImpl::MayRecycle(
     base::WeakPtr<AutofillSuggestionDelegate> delegate,
     content::WebContents* web_contents,
+    const LocalFrameToken& anchor_frame_token,
     AutofillSuggestionTriggerSource trigger_source) const {
   return delegate_.get() == delegate.get() &&
          container_view() == web_contents->GetNativeView() &&
+         GetAnchorFrameToken() == anchor_frame_token &&
          GetSuggestionTriggerSource() == trigger_source;
 }
 
@@ -269,6 +363,8 @@ void AutofillKeyboardAccessoryControllerImpl::Recycle(
   }
   controller_common_ = std::move(controller_common);
   suggestions_.clear();
+  key_press_registration_.Unregister();
+  mouse_metrics_recorder_.reset();
 }
 
 AutofillKeyboardAccessoryControllerImpl::
@@ -300,6 +396,7 @@ void AutofillKeyboardAccessoryControllerImpl::Hide(
     delegate_->ClearPreviewedForm();
     delegate_->OnSuggestionsHidden(reason);
   }
+  key_press_registration_.Unregister();
   popup_hide_helper_.reset();
   AutofillMetrics::LogAutofillSuggestionHidingReason(
       suggestions_filling_product_, reason);
@@ -307,6 +404,8 @@ void AutofillKeyboardAccessoryControllerImpl::Hide(
 }
 
 void AutofillKeyboardAccessoryControllerImpl::HideViewAndDie() {
+  mouse_metrics_recorder_.reset();
+
   // Invalidates in particular ChromeAutofillClient's WeakPtr to `this`, which
   // prevents recursive calls triggered by `view_->Hide()`
   // (crbug.com/40204318).
@@ -346,6 +445,39 @@ void AutofillKeyboardAccessoryControllerImpl::HideViewAndDie() {
           self_deletion_weak_ptr_factory_.GetWeakPtr()));
 }
 
+void AutofillKeyboardAccessoryWithMouseMetricsRecorder::RecordShown(
+    FillingProduct filling_product) {
+  if (has_logged_shown_) {
+    return;
+  }
+  has_logged_shown_ = true;
+  AutofillMetrics::LogKeyboardAccessoryInteractionWithMouse(
+      filling_product,
+      AutofillMetrics::AutofillKeyboardAccessoryInteraction::kAccessoryShown);
+}
+
+void AutofillKeyboardAccessoryWithMouseMetricsRecorder::RecordSelected(
+    FillingProduct filling_product) {
+  if (has_logged_selected_) {
+    return;
+  }
+  has_logged_selected_ = true;
+  AutofillMetrics::LogKeyboardAccessoryInteractionWithMouse(
+      filling_product, AutofillMetrics::AutofillKeyboardAccessoryInteraction::
+                           kSuggestionSelected);
+}
+
+void AutofillKeyboardAccessoryWithMouseMetricsRecorder::RecordAccepted(
+    FillingProduct filling_product) {
+  if (has_logged_accepted_) {
+    return;
+  }
+  has_logged_accepted_ = true;
+  AutofillMetrics::LogKeyboardAccessoryInteractionWithMouse(
+      filling_product, AutofillMetrics::AutofillKeyboardAccessoryInteraction::
+                           kSuggestionAccepted);
+}
+
 void AutofillKeyboardAccessoryControllerImpl::ViewDestroyed() {
   Hide(SuggestionHidingReason::kViewDestroyed);
 }
@@ -375,6 +507,8 @@ AutofillKeyboardAccessoryControllerImpl::GetElementTextDirection() const {
 }
 
 void AutofillKeyboardAccessoryControllerImpl::OnSuggestionsChanged() {
+  SetSelectedSuggestionIndex(std::nullopt);
+
   // Assume that suggestions are (still) available. If this is wrong, the method
   // `HideViewAndDie` will be called soon after and will hide all suggestions.
   if (base::WeakPtr<ManualFillingController> manual_filling_controller =
@@ -426,6 +560,8 @@ void AutofillKeyboardAccessoryControllerImpl::AcceptSuggestion(
     return;
   }
 
+  SetSelectedSuggestionIndex(std::nullopt);
+
   if (base::WeakPtr<ManualFillingController> manual_filling_controller =
           ManualFillingController::GetOrCreate(web_contents_.get())) {
     bool is_loading = false;
@@ -453,6 +589,9 @@ void AutofillKeyboardAccessoryControllerImpl::AcceptSuggestion(
 
   base::UmaHistogramEnumeration("Autofill.SuggestionAccepted.Method",
                                 accept_method);
+  if (mouse_metrics_recorder_) {
+    mouse_metrics_recorder_->RecordAccepted(suggestions_filling_product_);
+  }
   delegate_->DidAcceptSuggestion(
       suggestion, AutofillSuggestionDelegate::SuggestionMetadata{
                       .multi_index = {static_cast<size_t>(index)}});
@@ -465,6 +604,9 @@ bool AutofillKeyboardAccessoryControllerImpl::RemoveSuggestion(int index) {
   RemovalConfirmationText removal_text;
   if (!GetRemovalConfirmationText(index, &removal_text)) {
     return false;
+  }
+  if (selected_suggestion_index_) {
+    UnselectSuggestion();
   }
 
   view_->ConfirmDeletion(
@@ -518,7 +660,8 @@ void AutofillKeyboardAccessoryControllerImpl::OnDeletionDialogClosed(
       break;
     case FillingProduct::kAutocomplete:
       AutofillMetrics::LogAutocompleteEvent(
-          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED);
+          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED,
+          suggestion);
       break;
     case FillingProduct::kCreditCard:
       // TODO(crbug.com/41482065): Add metrics for credit cards.
@@ -582,8 +725,12 @@ void AutofillKeyboardAccessoryControllerImpl::Show(
     AutoselectFirstSuggestion autoselect_first_suggestion,
     AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss,
     std::u16string search_bar_initial_value) {
+  if (!mouse_metrics_recorder_ && HasPointerAndHoverSupport()) {
+    mouse_metrics_recorder_.emplace();
+  }
   // TODO(crbug.com/535486238): Plumb search_bar_initial_value through to the
   // UI.
+  SetSelectedSuggestionIndex(std::nullopt);
   ui_session_id_ = ui_session_id;
   suggestions_filling_product_ = GetFillingProductFromSuggestionTypes(
       base::ToVector(suggestions, &Suggestion::type), trigger_source);
@@ -593,29 +740,17 @@ void AutofillKeyboardAccessoryControllerImpl::Show(
     return;
   }
 
-  content::RenderFrameHost* rfh = nullptr;
-  if (base::FeatureList::IsEnabled(features::kAutofillSimplifyFocusCheck)) {
-    rfh = FindRenderFrameHostByToken(*web_contents_,
-                                     controller_common_.frame_token);
-  } else {
-    // The focused frame may be different from the one one the controller is
-    // anchored to. This happens in two scenarios:
-    // - With frame-transcending forms: the focused frame is subframe, whose
-    //   form has been flattened into an ancestor form.
-    // - With race conditions: while Autofill parsed the form, the focused may
-    //   have moved to another frame.
-    // We support the case where the focused frame is a descendant of the
-    // `delegate_`'s frame. We observe the focused frame's RenderFrameDeleted()
-    // event.
-    rfh = web_contents_->GetFocusedFrame();
-    content::RenderFrameHost* anchor_rfh = FindRenderFrameHostByToken(
-        *web_contents_, controller_common_.frame_token);
-    if (!rfh || !delegate_ || !IsAncestorOf(anchor_rfh, rfh)) {
-      rfh = nullptr;
-    }
-  }
-
+  content::RenderFrameHost* rfh = FindRenderFrameHostByToken(
+      *web_contents_, controller_common_.anchor_frame_token);
   if (!rfh) {
+    Hide(SuggestionHidingReason::kNoFrameHasFocus);
+    return;
+  }
+  if (rfh != web_contents_->GetFocusedFrame() &&
+      base::FeatureList::IsEnabled(
+          features::kAutofillRequireFocusInFrameForSuggestions)) {
+    base::UmaHistogramEnumeration("Autofill.SuggestionSuppressionDueToNoFocus",
+                                  trigger_source);
     Hide(SuggestionHidingReason::kNoFrameHasFocus);
     return;
   }
@@ -669,12 +804,31 @@ void AutofillKeyboardAccessoryControllerImpl::Show(
     }
   }
 
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAndroidKeyboardAccessoryHoverPreview)) {
+    key_press_registration_.Register(
+        rfh,
+        base::BindRepeating(
+            // Cannot bind HandleKeyPressEvent() directly because of its
+            // return value.
+            [](base::WeakPtr<AutofillKeyboardAccessoryControllerImpl> weak_this,
+               const input::NativeWebKeyboardEvent& event) {
+              return weak_this && weak_this->HandleKeyPressEvent(event);
+            },
+            weak_ptr_factory_.GetWeakPtr()));
+  }
+
   if (!barrier_for_accepting_ || ShouldResetIdleBarrier(trigger_source_)) {
     barrier_for_accepting_ = NextIdleBarrier::CreateNextIdleBarrierWithDelay(
         kIgnoreEarlyClicksOnSuggestionsDuration);
   }
   // TODO(crbug.com/364165357): Use actually shown suggestions.
   delegate_->OnSuggestionsShown(suggestions_, /*metadata=*/{});
+
+  if (mouse_metrics_recorder_ && view_ && HasSuggestions() &&
+      autofill_metrics::ShouldLogAutofillSuggestionShown(trigger_source_)) {
+    mouse_metrics_recorder_->RecordShown(suggestions_filling_product_);
+  }
 }
 
 std::optional<AutofillSuggestionController::UiSessionId>
@@ -697,6 +851,11 @@ void AutofillKeyboardAccessoryControllerImpl::UpdateDataListValues(
   } else {
     Hide(SuggestionHidingReason::kNoSuggestions);
   }
+}
+
+const LocalFrameToken&
+AutofillKeyboardAccessoryControllerImpl::GetAnchorFrameToken() const {
+  return controller_common_.anchor_frame_token;
 }
 
 bool AutofillKeyboardAccessoryControllerImpl::HasSuggestions() const {
@@ -734,6 +893,72 @@ bool AutofillKeyboardAccessoryControllerImpl::GetRemovalConfirmationText(
   }
 
   return false;
+}
+
+bool AutofillKeyboardAccessoryControllerImpl::ShowAutofillAiSuggestionDetails(
+    size_t index) {
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillAmbientAutofillSuppressionUI)) {
+    return false;
+  }
+  if (index >= suggestions_.size()) {
+    return false;
+  }
+  if (!std::holds_alternative<Suggestion::AutofillAiPayload>(
+          suggestions_[index].payload)) {
+    return false;
+  }
+  ContentAutofillClient* client =
+      ContentAutofillClient::FromWebContents(web_contents_.get());
+  if (!client) {
+    return false;
+  }
+  if (base::optional_ref<const EntityInstance> entity =
+          GetPersonalContextEntityForSuggestion(suggestions_[index], *client)) {
+    SetSelectedSuggestionIndex(std::nullopt);
+    AutofillAiSuggestionDetailsText details_text =
+        GetAutofillAiSuggestionDetailsText(*entity, client->GetAppLocale());
+    view_->ShowAutofillAiSuggestionDetails(
+        details_text.title, details_text.body, details_text.confirm_button_text,
+        details_text.primary_button_text,
+        base::BindOnce(&AutofillKeyboardAccessoryControllerImpl::
+                           OnAutofillAiSuppressionDialogClosed,
+                       GetWeakPtr(), suggestions_[index]));
+    return true;
+  }
+  return false;
+}
+
+void AutofillKeyboardAccessoryControllerImpl::
+    OnAutofillAiSuppressionDialogClosed(const Suggestion& suggestion,
+                                        bool confirmed) {
+  if (!confirmed) {
+    return;
+  }
+  auto it = std::ranges::find(suggestions_, suggestion);
+  if (it == suggestions_.end()) {
+    return;
+  }
+  CHECK_EQ(suggestions_.size(), labels_.size());
+
+  // Suppress suggestion in data model & clear if already previewing.
+  if (!delegate_ || !delegate_->RemoveSuggestion(suggestion)) {
+    return;
+  }
+  delegate_->ClearPreviewedForm();
+
+  // Remove the suppressed element visually.
+  const size_t index = std::distance(suggestions_.begin(), it);
+  suggestions_.erase(it);
+  labels_.erase(labels_.begin() + index);
+
+  // Update the accessory to remove the item from the view or hide it if nothing
+  // worth showing is left.
+  if (HasSuggestions()) {
+    OnSuggestionsChanged();
+  } else {
+    Hide(SuggestionHidingReason::kNoSuggestions);
+  }
 }
 
 void AutofillKeyboardAccessoryControllerImpl::OpenSettingsForEntityType(
@@ -785,6 +1010,10 @@ void AutofillKeyboardAccessoryControllerImpl::SelectSuggestion(int index) {
     return;
   }
 
+  if (selected_suggestion_index_ == index) {
+    return;
+  }
+
   // If the mouse pointer is locked by the webpage, hide the suggestions to
   // prevent unexpected or untrusted interactions.
   if (IsPointerLocked(web_contents_.get())) {
@@ -792,9 +1021,14 @@ void AutofillKeyboardAccessoryControllerImpl::SelectSuggestion(int index) {
     return;
   }
 
+  SetSelectedSuggestionIndex(index);
+
   const Suggestion& suggestion = GetSuggestionAt(index);
 
   if (suggestion.IsSelectable()) {
+    if (mouse_metrics_recorder_) {
+      mouse_metrics_recorder_->RecordSelected(suggestions_filling_product_);
+    }
     delegate_->DidSelectSuggestion(suggestion);
   } else {
     delegate_->ClearPreviewedForm();
@@ -807,8 +1041,32 @@ void AutofillKeyboardAccessoryControllerImpl::UnselectSuggestion() {
     return;
   }
 
+  SetSelectedSuggestionIndex(std::nullopt);
+
   if (delegate_) {
     delegate_->ClearPreviewedForm();
+  }
+}
+
+void AutofillKeyboardAccessoryControllerImpl::UnselectSuggestionIfSelected(
+    int index) {
+  if (selected_suggestion_index_ != index) {
+    return;
+  }
+  UnselectSuggestion();
+}
+
+void AutofillKeyboardAccessoryControllerImpl::SetSelectedSuggestionIndex(
+    std::optional<int> index) {
+  if (selected_suggestion_index_ == index) {
+    return;
+  }
+  selected_suggestion_index_ = index;
+  if (web_contents_) {
+    if (base::WeakPtr<ManualFillingController> manual_filling_controller =
+            ManualFillingController::GetOrCreate(web_contents_.get())) {
+      manual_filling_controller->SetSelectedSuggestion(index);
+    }
   }
 }
 
@@ -826,6 +1084,11 @@ void AutofillKeyboardAccessoryControllerImpl::
   for (const Suggestion& suggestion : suggestions_) {
     labels_.push_back(CreateLabel(suggestion));
   }
+}
+
+bool AutofillKeyboardAccessoryControllerImpl::HandleKeyPressEvent(
+    const input::NativeWebKeyboardEvent& event) {
+  return false;
 }
 
 }  // namespace autofill

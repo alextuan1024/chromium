@@ -30,6 +30,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.Log;
 import org.chromium.base.MathUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -74,6 +75,8 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
 import org.chromium.chrome.browser.lifecycle.TopResumedActivityChangedObserver;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
+import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
+import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher.MultiWindowModeObserver;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.omnibox.OmniboxStub;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -116,6 +119,7 @@ import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.PageTransition;
+import org.chromium.ui.base.UiAndroidFeatureList;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.dragdrop.DragAndDropDelegate;
 import org.chromium.ui.dragdrop.DragDropGlobalState;
@@ -139,7 +143,8 @@ public class StripLayoutHelperManager
                 TabStripSceneLayerHolder,
                 TopResumedActivityChangedObserver,
                 AppHeaderObserver,
-                TabObscuringHandler.Observer {
+                TabObscuringHandler.Observer,
+                MultiWindowModeObserver {
     /**
      * POD type that contains the necessary tab model info on startup. Used in the startup flicker
      * fix experiment where we create a placeholder tab strip on startup to mitigate jank as tabs
@@ -168,6 +173,8 @@ public class StripLayoutHelperManager
             this.createdIncognitoTabOnStartup = createdIncognitoTabOnStartup;
         }
     }
+
+    private static final String TAG = "StripLayoutManager";
 
     private static final FloatProperty<StripLayoutHelperManager> SCRIM_OPACITY =
             new FloatProperty<>("scrimOpacity") {
@@ -245,9 +252,9 @@ public class StripLayoutHelperManager
     private float mSceneLayerVisibleHeight; // Used during height transition.
 
     /**
-     * Whether the current activity is the top resumed activity. This is only relevant for use in
-     * the desktop windowing mode, to determine the tab strip background color and the Glic button
-     * opacity.
+     * Whether the current activity is the top resumed activity. This is used in desktop windowing
+     * mode to determine the tab strip background color, and in multi-window mode to determine the
+     * Glic button opacity.
      */
     private boolean mIsTopResumedActivity;
 
@@ -255,6 +262,7 @@ public class StripLayoutHelperManager
             ObservableSuppliers.createNonNull(false);
 
     private final @Nullable DesktopWindowStateManager mDesktopWindowStateManager;
+    private final @Nullable MultiWindowModeStateDispatcher mMultiWindowModeStateDispatcher;
 
     private @MonotonicNonNull TabModelSelectorTabModelObserver mTabModelSelectorTabModelObserver;
     private @MonotonicNonNull TabModelSelectorTabObserver mTabModelSelectorTabObserver;
@@ -463,6 +471,7 @@ public class StripLayoutHelperManager
      * @param windowAndroid The {@link WindowAndroid} instance to access Activity.
      * @param toolbarManager The ToolbarManager instance.
      * @param desktopWindowStateManager The DesktopWindowStateManager for the app header.
+     * @param multiWindowModeStateDispatcher The {@link MultiWindowModeStateDispatcher}.
      * @param actionConfirmationManager The {@link ActionConfirmationManager} for group actions.
      * @param dataSharingTabManager The {@link DataSharingTabManager} for shared groups.
      * @param bottomSheetController The {@link BottomSheetController} used to show bottom sheets.
@@ -501,6 +510,7 @@ public class StripLayoutHelperManager
             // implement an interface to manage strip transition states.
             ToolbarManager toolbarManager,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
+            @Nullable MultiWindowModeStateDispatcher multiWindowModeStateDispatcher,
             ActionConfirmationManager actionConfirmationManager,
             DataSharingTabManager dataSharingTabManager,
             BottomSheetController bottomSheetController,
@@ -525,6 +535,13 @@ public class StripLayoutHelperManager
         mLayerTitleCacheSupplier = layerTitleCacheSupplier;
         mDensity = res.getDisplayMetrics().density;
         mTabStripTreeProvider = new TabStripSceneLayer(mDensity);
+        if (UiAndroidFeatureList.sConnectedDisplayDensityDebugLogs.isEnabled()) {
+            Log.i(
+                    TAG,
+                    "init: stripDensity=%.2f, windowDipScale=%.2f",
+                    mDensity,
+                    windowAndroid.getDisplay().getDipScale());
+        }
         mTabStripEventHandler = new TabStripEventHandler();
         mTabSwitcherLayoutObserver = new TabSwitcherLayoutObserver();
         mLifecycleDispatcher = lifecycleDispatcher;
@@ -563,6 +580,18 @@ public class StripLayoutHelperManager
                         : mScrollableStripHeight;
         mTopPadding = mHeight - mScrollableStripHeight;
         mDesktopWindowStateManager = desktopWindowStateManager;
+        if (mDesktopWindowStateManager != null) {
+            mDesktopWindowStateManager.addObserver(this);
+        }
+        if (isAppInDesktopWindow()) {
+            mIsTopResumedActivity = !mDesktopWindowStateManager.isInUnfocusedDesktopWindow();
+        } else {
+            mIsTopResumedActivity = AppHeaderUtils.isActivityFocusedAtStartup(lifecycleDispatcher);
+        }
+        mMultiWindowModeStateDispatcher = multiWindowModeStateDispatcher;
+        if (mMultiWindowModeStateDispatcher != null) {
+            mMultiWindowModeStateDispatcher.addObserver(this);
+        }
         mStripVisibilityStateObserver =
                 state -> {
                     if (mEventFilter == null) return;
@@ -604,7 +633,7 @@ public class StripLayoutHelperManager
                         mWindowAndroid,
                         mDensity,
                         controlContainerView,
-                        isAppInDesktopWindow(),
+                        isInMultiWindowMode(),
                         mIsTopResumedActivity,
                         ChromeAndroidTaskTrackerFactory.getInstance(),
                         mIsIncognito,
@@ -757,12 +786,6 @@ public class StripLayoutHelperManager
                     mTrailingButtonsCoordinator.setLayerTitleCache(layerTitleCache);
                 });
 
-        if (mDesktopWindowStateManager != null) {
-            mDesktopWindowStateManager.addObserver(this);
-            mIsTopResumedActivity = !mDesktopWindowStateManager.isInUnfocusedDesktopWindow();
-        } else {
-            mIsTopResumedActivity = AppHeaderUtils.isActivityFocusedAtStartup(lifecycleDispatcher);
-        }
         if (isAppInDesktopWindow()) {
             @Nullable AppHeaderState appHeaderState =
                     mDesktopWindowStateManager.getAppHeaderState();
@@ -790,6 +813,11 @@ public class StripLayoutHelperManager
                 && mDesktopWindowStateManager != null;
     }
 
+    private boolean isInMultiWindowMode() {
+        return mMultiWindowModeStateDispatcher != null
+                && mMultiWindowModeStateDispatcher.isInMultiWindowMode();
+    }
+
     private boolean isNormalHelperGlicIphShowing() {
         return mNormalHelper != null && mNormalHelper.isGlicIphShowing();
     }
@@ -813,8 +841,10 @@ public class StripLayoutHelperManager
             mOmniboxStub = null;
         }
         mTabObscuringHandler.removeObserver(this);
-        mTabStripTreeProvider.destroy();
-        mTabStripTreeProvider = null;
+        if (mTabStripTreeProvider != null) {
+            mTabStripTreeProvider.destroy();
+            mTabStripTreeProvider = null;
+        }
         mTrailingButtonsCoordinator.destroy();
         mLifecycleDispatcher.unregister(this);
         mBrowserControlsStateProvider.removeObserver(mBrowserControlsObserver);
@@ -840,6 +870,9 @@ public class StripLayoutHelperManager
         if (mDesktopWindowStateManager != null) {
             mDesktopWindowStateManager.removeObserver(this);
         }
+        if (mMultiWindowModeStateDispatcher != null) {
+            mMultiWindowModeStateDispatcher.removeObserver(this);
+        }
     }
 
     /** Mark whether tab strip is hidden by a height transition. */
@@ -850,6 +883,19 @@ public class StripLayoutHelperManager
 
     @Override
     public void onResumeWithNative() {
+        if (UiAndroidFeatureList.sConnectedDisplayDensityDebugLogs.isEnabled()) {
+            float currentResDensity = mContext.getResources().getDisplayMetrics().density;
+            float windowDipScale = mWindowAndroid.getDisplay().getDipScale();
+            if (mDensity != currentResDensity || mDensity != windowDipScale) {
+                Log.i(
+                        TAG,
+                        "onResumeWithNative density mismatch: stripDensity=%.2f, resDensity=%.2f,"
+                                + " windowDipScale=%.2f",
+                        mDensity,
+                        currentResDensity,
+                        windowDipScale);
+            }
+        }
         if (mTabModelSelector == null) return;
         Tab currentTab = mTabModelSelector.getCurrentTab();
         if (currentTab == null) return;
@@ -1233,14 +1279,18 @@ public class StripLayoutHelperManager
 
     @Override
     public void onTopResumedActivityChanged(boolean isTopResumedActivity) {
-        // TODO (crbug/328055199): Check if losing focus to a non-Chrome task.
-        if (!mIsHeaderCustomizationSupported) return;
+        // TODO(crbug.com/333794203): Check if losing focus to a non-Chrome task.
         mIsTopResumedActivity = isTopResumedActivity;
+        if (!mIsHeaderCustomizationSupported && !isInMultiWindowMode()) return;
 
         mTrailingButtonsCoordinator.updateGlicButtonOpacity(
-                isAppInDesktopWindow(), mIsTopResumedActivity);
+                isInMultiWindowMode(), mIsTopResumedActivity);
+    }
 
-        mUpdateHost.requestUpdate();
+    @Override
+    public void onMultiWindowModeChanged(boolean isInMultiWindowMode) {
+        mTrailingButtonsCoordinator.updateGlicButtonOpacity(
+                isInMultiWindowMode, mIsTopResumedActivity);
     }
 
     public TintedCompositorButton getNewTabButton() {
@@ -1710,7 +1760,7 @@ public class StripLayoutHelperManager
         updateHorizontalPaddings(newState.getLeftPadding(), newState.getRightPadding());
 
         mTrailingButtonsCoordinator.updateGlicButtonOpacity(
-                isAppInDesktopWindow(), mIsTopResumedActivity);
+                isInMultiWindowMode(), mIsTopResumedActivity);
     }
 
     /**

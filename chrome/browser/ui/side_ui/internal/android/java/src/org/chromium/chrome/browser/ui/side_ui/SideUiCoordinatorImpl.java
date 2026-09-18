@@ -82,6 +82,23 @@ final class SideUiCoordinatorImpl
     /** Maps {@link AnchorSide} to {@link ViewGroup} where {@link SideUiContainer} is attached. */
     private final Map<@AnchorSide Integer, ViewGroup> mAnchorContainers = new ArrayMap<>();
 
+    /**
+     * Maps {@link AnchorSide} to the currently committed {@link HeightType}.
+     *
+     * <p>This explicit tracking is necessary because the current {@link HeightType} cannot be
+     * reliably inferred from the anchor container's {@code topMargin} and {@link
+     * TopControlsStacker}. External events (e.g. switching between horizontal and vertical tabs)
+     * can update top control heights before {@link #updateUi} is invoked. Inferring {@link
+     * HeightType} dynamically would compare the container's existing {@code topMargin} against the
+     * newly updated top control heights, causing it to misidentify the current {@link HeightType}
+     * and fail to notify {@link SideUiContainer}s of height type transitions.
+     */
+    private final Map<@AnchorSide Integer, @HeightType Integer> mCurrentHeightTypes =
+            new ArrayMap<>();
+
+    /** Maps {@link AnchorSide} to the {@link SideUiResizeHandler} owning that side's handle. */
+    private final Map<@AnchorSide Integer, SideUiResizeHandler> mResizeHandlers = new ArrayMap<>();
+
     /** List of registered {@link SideUiContainer} objects. */
     private final List<SideUiContainer> mSideUiContainers = new ArrayList<>();
 
@@ -152,6 +169,8 @@ final class SideUiCoordinatorImpl
         assert mAnchorContainerParent == rightAnchorContainer.getParent();
         mAnchorContainers.put(AnchorSide.LEFT, leftAnchorContainer);
         mAnchorContainers.put(AnchorSide.RIGHT, rightAnchorContainer);
+        mCurrentHeightTypes.put(AnchorSide.LEFT, HeightType.NOT_APPLICABLE);
+        mCurrentHeightTypes.put(AnchorSide.RIGHT, HeightType.NOT_APPLICABLE);
 
         webContentHairlineContainerStub.setLayoutResource(
                 R.layout.side_ui_web_content_hairline_container);
@@ -198,6 +217,14 @@ final class SideUiCoordinatorImpl
 
         // Keep the containers in descending order of the priority.
         mSideUiContainers.sort((c1, c2) -> c1.getSideUiId() - c2.getSideUiId());
+
+        @AnchorSide int anchorSide = sideUiContainer.getAnchorSide();
+        mResizeHandlers.put(
+                anchorSide,
+                new SideUiResizeHandler(
+                        mParentActivity,
+                        assumeNonNull(mAnchorContainers.get(anchorSide)),
+                        sideUiContainer));
     }
 
     @Override
@@ -209,7 +236,10 @@ final class SideUiCoordinatorImpl
         // initialization, but ChromeActivity is destroyed before the async task is completed.
         //
         // Therefore, we shouldn't assert that the given SideUiContainer is already registered.
-        mSideUiContainers.remove(sideUiContainer);
+        if (!mSideUiContainers.remove(sideUiContainer)) return;
+
+        SideUiResizeHandler resizeHandler = mResizeHandlers.remove(sideUiContainer.getAnchorSide());
+        if (resizeHandler != null) resizeHandler.destroyHandleView();
     }
 
     @Override
@@ -235,6 +265,8 @@ final class SideUiCoordinatorImpl
         }
         mCallbackController.destroy();
         mSideUiContainers.clear();
+        mResizeHandlers.clear();
+        mCurrentHeightTypes.clear();
         mBrowserControlsVisibilityManager.removeObserver(this);
         mFullscreenManager.removeObserver(this);
         mWebContentsHairlineManager.destroy();
@@ -389,6 +421,20 @@ final class SideUiCoordinatorImpl
         return null;
     }
 
+    private void notifyContainersOnUiUpdateStarting(
+            SideUiSpecs oldSideUiSpecs, SideUiSpecs newSideUiSpecs) {
+        for (var container : mSideUiContainers) {
+            @AnchorSide int anchorSide = container.getAnchorSide();
+            @Px int oldWidth = oldSideUiSpecs.getWidth(anchorSide);
+            @Px int newWidth = newSideUiSpecs.getWidth(anchorSide);
+            @HeightType int oldHeightType = oldSideUiSpecs.getHeightType(anchorSide);
+            @HeightType int newHeightType = newSideUiSpecs.getHeightType(anchorSide);
+            if (newWidth != oldWidth || oldHeightType != newHeightType) {
+                container.onUiUpdateStarting(oldWidth, newWidth, oldHeightType, newHeightType);
+            }
+        }
+    }
+
     private void notifyContainersOnUiUpdateCompleted(
             SideUiSpecs oldSideUiSpecs, SideUiSpecs newSideUiSpecs) {
         for (var container : mSideUiContainers) {
@@ -400,6 +446,12 @@ final class SideUiCoordinatorImpl
             if (newWidth != oldWidth || oldHeightType != newHeightType) {
                 container.onUiUpdateCompleted(oldWidth, newWidth, oldHeightType, newHeightType);
             }
+        }
+    }
+
+    private void updateResizeHandles() {
+        for (SideUiResizeHandler resizeHandler : mResizeHandlers.values()) {
+            resizeHandler.onUiUpdateCompleted();
         }
     }
 
@@ -481,6 +533,10 @@ final class SideUiCoordinatorImpl
             mWebContentsHairlineManager.update();
         }
 
+        // 9. Sync the resize handles. This is also done when specs change, but a container can
+        // become (non-)resizable without any change to the specs.
+        updateResizeHandles();
+
         mIsUpdatingUi = false;
     }
 
@@ -542,13 +598,14 @@ final class SideUiCoordinatorImpl
     }
 
     private @HeightType int getCurrentHeightType(@AnchorSide int anchorSide) {
-        var anchorContainerTopMargins = getCurrentAnchorContainerTopMargins();
-        Integer topMargin = anchorContainerTopMargins.get(anchorSide);
-        if (topMargin == null) return HeightType.NOT_APPLICABLE;
+        ViewGroup anchorContainer = mAnchorContainers.get(anchorSide);
+        if (anchorContainer == null
+                || anchorContainer.getVisibility() == View.GONE
+                || anchorContainer.getWidth() == 0) {
+            return HeightType.NOT_APPLICABLE;
+        }
 
-        return topMargin.equals(getTopMarginForHeightType(HeightType.TOOLBAR))
-                ? HeightType.TOOLBAR
-                : HeightType.WEB_CONTENTS;
+        return mCurrentHeightTypes.getOrDefault(anchorSide, HeightType.NOT_APPLICABLE);
     }
 
     private AnchorContainerTopMargins getCurrentAnchorContainerTopMargins() {
@@ -732,6 +789,8 @@ final class SideUiCoordinatorImpl
      */
     private void commitNewSideUiSpecs(
             SideUiUpdateSpecs uiUpdateSpecs, @Nullable TransitionSet transitionSet) {
+        notifyContainersOnUiUpdateStarting(uiUpdateSpecs.mCurrentSpecs, uiUpdateSpecs.mNewSpecs);
+
         // Whether both the width and height gets updated. The animation will be suppressed if true.
         boolean willUpdateBothWidthHeight = false;
         for (var marginDiff : uiUpdateSpecs.mTopMarginDiff.entrySet()) {
@@ -823,6 +882,11 @@ final class SideUiCoordinatorImpl
                             }
                         }
 
+                        for (Map.Entry<@AnchorSide Integer, SideUiSize> entry :
+                                uiUpdateSpecs.mNewSpecs.entrySet()) {
+                            mCurrentHeightTypes.put(entry.getKey(), entry.getValue().mHeightType);
+                        }
+
                         notifyContainersOnUiUpdateCompleted(
                                 uiUpdateSpecs.mCurrentSpecs, uiUpdateSpecs.mNewSpecs);
                         mSideUiObserverNotifier.notifyTransitionEnded(uiUpdateSpecs.mNewSpecs);
@@ -901,6 +965,10 @@ final class SideUiCoordinatorImpl
         // Android framework will skip this subtree.
         ViewUtils.triggerSynchronousMeasureAndLayout(mAnchorContainerParent);
 
+        for (Map.Entry<@AnchorSide Integer, SideUiSize> entry : newSideUiSpecs.entrySet()) {
+            mCurrentHeightTypes.put(entry.getKey(), entry.getValue().mHeightType);
+        }
+
         notifyContainersOnUiUpdateCompleted(currentSideUiSpecs, newSideUiSpecs);
         mSideUiObserverNotifier.notifySideUiSpecsChanged(newSideUiSpecs);
     }
@@ -971,6 +1039,12 @@ final class SideUiCoordinatorImpl
                 : "SideUiContainer was attached to an unknown group.";
 
         anchorContainer.removeView(sideUiContainerView);
+
+        // The resize handle is only meaningful while the container is attached, and the assert
+        // below requires the anchor container to be empty.
+        SideUiResizeHandler resizeHandler = mResizeHandlers.get(sideUiContainer.getAnchorSide());
+        if (resizeHandler != null) resizeHandler.destroyHandleView();
+
         assert anchorContainer.getChildCount() == 0;
         anchorContainer.setVisibility(View.GONE);
     }
@@ -1009,5 +1083,10 @@ final class SideUiCoordinatorImpl
                 .computeCurrentWindowMetrics(mParentActivity)
                 .getBounds()
                 .width();
+    }
+
+    @Nullable View getResizeHandleViewForTesting(@AnchorSide int side) {
+        SideUiResizeHandler resizeHandler = mResizeHandlers.get(side);
+        return resizeHandler == null ? null : resizeHandler.getHandleViewForTesting();
     }
 }

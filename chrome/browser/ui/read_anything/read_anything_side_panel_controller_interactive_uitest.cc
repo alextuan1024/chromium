@@ -9,6 +9,7 @@
 
 #include "base/metrics/histogram_base.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -427,8 +428,17 @@ namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadAnythingWebContentsId);
 }
 
-using ReadAnythingSidePanelInteractiveTest =
-    ReadAnythingSidePanelControllerInteractiveTest;
+class ReadAnythingSidePanelInteractiveTest
+    : public ReadAnythingSidePanelControllerInteractiveTest {
+ public:
+  ReadAnythingSidePanelInteractiveTest() {
+    feature_list_.InitAndEnableFeature(features::kReadAnythingImprovedUi);
+  }
+  ~ReadAnythingSidePanelInteractiveTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
 
 // Regression test for https://crbug.com/557055820.
 // Verifies that the "toggle images" menu button toggles the value in prefs.

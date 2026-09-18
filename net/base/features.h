@@ -32,9 +32,6 @@ NET_EXPORT BASE_DECLARE_FEATURE(kAlpsForHttp2);
 // asynchronous (yielding to the message loop) after many attempts.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncRetryOnTooManyConnectionErrors);
 
-// Disable H2 reprioritization, in order to measure its impact.
-NET_EXPORT BASE_DECLARE_FEATURE(kAvoidH2Reprioritization);
-
 // Derives Android connection type from NetworkCapabilities inside
 // NetworkCallbacks instead of calling synchronous ConnectivityManager methods.
 NET_EXPORT BASE_DECLARE_FEATURE(kDeriveConnectionTypeFromCapabilities);
@@ -363,12 +360,6 @@ NET_EXPORT extern const base::FeatureParam<base::TimeDelta>
 // See spec changes in https://github.com/httpwg/http-extensions/pull/1348
 NET_EXPORT BASE_DECLARE_FEATURE(kCookieSameSiteConsidersRedirectChain);
 
-// When this feature is enabled, servers can include an
-// allow-same-site-none-cookies value that notifies the browser that same-site
-// SameSite=None cookies should be allowed in sandboxed contexts with 3PC
-// restrictions.
-NET_EXPORT BASE_DECLARE_FEATURE(kAllowSameSiteNoneCookiesInSandbox);
-
 // Controls whether static key pinning is enforced.
 NET_EXPORT BASE_DECLARE_FEATURE(kStaticKeyPinningEnforcement);
 
@@ -570,6 +561,10 @@ NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsForSingleSignOn);
 // Controls whether a session's expiry timestamp is updated in memory and
 // persisted to disk when a network refresh finishes with NoSessionConfigChange.
 NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsPersistExpiryOnRefresh);
+
+// Controls whether DBSC includes the 'aud' (audience) claim in registration
+// and refresh JWT payloads.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsIncludeAudienceClaim);
 
 // Enables more checks when creating a SpdySession for proxy. These checks are
 // already applied to non-proxy SpdySession creations.
@@ -1063,6 +1058,15 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
 NET_EXPORT BASE_DECLARE_FEATURE(kEnableWindowsTcpLoopbackFastFail);
 #endif
 
+// Controls the socket send buffer size for QUIC client sockets.
+// If the feature is enabled:
+// - If the parameter is -1, SetSendBufferSize() is not called at all.
+// - If the parameter is > 0, SetSendBufferSize() is called with this value.
+// If the feature is disabled, the default behavior (20 packets) is used.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicSocketSendBufferSize);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kQuicSocketSendBufferSizeParam);
+
 }  // namespace net::features
 
 #endif  // NET_BASE_FEATURES_H_
+

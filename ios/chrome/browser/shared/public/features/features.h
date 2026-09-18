@@ -166,6 +166,16 @@ BASE_DECLARE_FEATURE(kDisableLensCamera);
 // Feature flag to enable Lens on iPad.
 BASE_DECLARE_FEATURE(kEnableLensOnIPad);
 
+// Feature param for kEnableLensOnIPad presentation style.
+inline constexpr char kEnableLensOnIPadPresentationStyleParam[] =
+    "presentation-style";
+inline constexpr char kEnableLensOnIPadPresentationStyleSidePanel[] =
+    "side-panel";
+inline constexpr char kEnableLensOnIPadPresentationStyleBottomSheet[] =
+    "bottom-sheet";
+inline constexpr char kEnableLensOnIPadPresentationStyleWideBottomSheet[] =
+    "wide-bottom-sheet";
+
 // Feature flag that allows the Auto-deletion feature to clear all downloaded
 // files scheduled for deletion on every application startup, regardless of when
 // the file was downloaded. This feature is intended for testing-only.
@@ -302,12 +312,6 @@ bool IsContentPushNotificationsSetUpListRegistrationOnly();
 // false otherwise.
 bool IsLiquidGlassEffectEnabled();
 
-// Feature flag to enable the default input accessory view.
-BASE_DECLARE_FEATURE(kIOSKeyboardAccessoryDefaultView);
-
-// Returns true if the default input accessory view is enabled.
-bool IsIOSKeyboardAccessoryDefaultViewEnabled();
-
 // Kill switch for disabling the navigations when the application is in
 // foreground inactive state after opening an external app.
 BASE_DECLARE_FEATURE(kInactiveNavigationAfterAppLaunchKillSwitch);
@@ -338,9 +342,6 @@ bool IsBlueDotOnToolsMenuButtoneEnabled();
 
 // Killswitch for the reauth-first step in AuthenticationFlowInProfile.
 BASE_DECLARE_FEATURE(kAuthenticationFlowReauthFirstKillswitch);
-
-// Feature to control resyncing the omaha ping timer on foregrounding.
-BASE_DECLARE_FEATURE(kOmahaResyncTimerOnForeground);
 
 // Feature flag to enable Reactivation Notifications.
 BASE_DECLARE_FEATURE(kIOSReactivationNotifications);
@@ -676,18 +677,8 @@ bool IsComposeboxPlusButtonBottomSheet();
 // Enables the ChromeNextIa feature.
 BASE_DECLARE_FEATURE(kChromeNextIa);
 
-// Parameters for kChromeNextIa.
-extern const base::FeatureParam<bool> kChromeNextIaLensIconVisible;
-extern const base::FeatureParam<bool> kChromeNextIaShareIconVisible;
-
 // Returns true if the ChromeNextIa feature is enabled.
 bool IsChromeNextIaEnabled();
-
-// Returns true if Lens icon should be visible in ChromeNextIa.
-bool IsChromeNextIaLensIconVisible();
-
-// Returns true if Share icon should be visible in ChromeNextIa.
-bool IsChromeNextIaShareIconVisible();
 
 // Enables the EnableNewStartupFlow feature.
 BASE_DECLARE_FEATURE(kEnableNewStartupFlow);
@@ -898,11 +889,6 @@ BASE_DECLARE_FEATURE(kIOSPhishGuardPasteShortcutDetection);
 // Returns true if kIOSPhishGuardPasteShortcutDetection is enabled.
 bool IsIOSPhishGuardPasteShortcutDetectionEnabled();
 
-// Feature to hide the labels for the buttons in the App Bar.
-BASE_DECLARE_FEATURE(kAppBarHideLabels);
-
-// Returns true if the App Bar labels should be hidden.
-bool IsAppBarLabelsHidden();
 
 // Enables Google One deep link support on startup.
 BASE_DECLARE_FEATURE(kSupportGoogleOneDeepLink);
@@ -928,11 +914,6 @@ extern const base::FeatureParam<base::TimeDelta>
 extern const base::FeatureParam<base::TimeDelta>
     kDiscoverFeedBackgroundRefreshMinBuffer;
 
-// Feature to completely hide the App Bar when in fullscreen.
-BASE_DECLARE_FEATURE(kAppBarHideInFullscreen);
-
-// Returns true if the App Bar should be completely hidden when in fullscreen.
-bool IsAppBarHiddenInFullscreen();
 
 // Enables the DefaultBottomOmniboxOnIOS feature.
 BASE_DECLARE_FEATURE(kDefaultBottomOmniboxOnIOS);
@@ -967,5 +948,11 @@ BASE_DECLARE_FEATURE(kAimHistoryThreadsManagement);
 
 // Returns true if the AimHistoryThreadsManagement feature is enabled.
 bool IsAimHistoryThreadsManagementEnabled();
+
+// Enables TalkToChrome prototype.
+BASE_DECLARE_FEATURE(kTTCEnabled);
+
+// Returns true if the TTCEnabled feature is enabled.
+bool IsTTCEnabled();
 
 #endif  // IOS_CHROME_BROWSER_SHARED_PUBLIC_FEATURES_FEATURES_H_

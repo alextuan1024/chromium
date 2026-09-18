@@ -261,9 +261,7 @@ extern NSString* const kLottieAnimationFirstRunBannerName;
 
 // Lottie animation names for Gemini Visual Rich First Run carousel slides.
 extern NSString* const kLottieAnimationFRESummarizeSlideName;
-extern NSString* const kLottieAnimationFRESummarizeSlideDarkName;
 extern NSString* const kLottieAnimationFRESummarizeSlideRTLName;
-extern NSString* const kLottieAnimationFRESummarizeSlideDarkRTLName;
 
 extern NSString* const kLottieAnimationFREShoppingSlideName;
 extern NSString* const kLottieAnimationFREShoppingSlideDarkName;
@@ -275,6 +273,12 @@ extern NSString* const kLottieAnimationFREPlanningSlideDarkName;
 extern NSString* const kLottieAnimationFREPlanningSlideRTLName;
 extern NSString* const kLottieAnimationFREPlanningSlideDarkRTLName;
 
+// Returns the color provider dictionary for the Summarize slide in light mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideLightModeColorProvider();
+
+// Returns the color provider dictionary for the Summarize slide in dark mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideDarkModeColorProvider();
+
 // Accessibility identifier for the Gemini Visual Rich FRE carousel scroll view.
 extern NSString* const kGeminiFRECarouselScrollViewAccessibilityIdentifier;
 
@@ -284,17 +288,11 @@ extern const char kLastInteractionTimestampDictKey[];
 // interaction.
 extern const char kURLOnLastInteractionDictKey[];
 
-// Consent row links for the new Gemini First Run.
+// Consent row links for the Gemini First Run.
 extern const char kDataGovernanceManagedLinkURL[];
 extern const char kActivityLinkURL[];
 extern const char kChoicesLinkURL[];
 extern const char kConnectedServicesLinkURL[];
-
-// Consent row links for the old First Run experience.
-// TODO(crbug.com/393204662): Remove these links once the old FRE is removed.
-extern const char kSecondBoxLinkURLManagedAccount[];
-extern const char kSecondBoxLink1URLNonManagedAccount[];
-extern const char kSecondBoxLink2URLNonManagedAccount[];
 
 // Consent row links for Gemini Live First Run.
 extern const char kLivePrivacyNoticeLinkURL[];
@@ -308,17 +306,11 @@ extern const char kSecondFootnoteLinkURL[];
 extern const char kKoreanTermsFootnoteLinkURL[];
 extern const char kWatchLinkURL[];
 
-// Action identifiers for links in the new Gemini First Run consent rows.
+// Action identifiers for links in the Gemini First Run consent rows.
 extern NSString* const kGeminiDataGovernanceManagedLinkAction;
 extern NSString* const kGeminiActivityLinkAction;
 extern NSString* const kGeminiChoicesLinkAction;
 extern NSString* const kGeminiConnectedServicesLinkAction;
-
-// TODO(crbug.com/393204662): Remove these links once the old FRE is removed.
-// Action identifiers for links in the old Gemini First Run consent rows.
-extern NSString* const kGeminiSecondBoxLinkActionManagedAccount;
-extern NSString* const kGeminiSecondBoxLink1ActionNonManagedAccount;
-extern NSString* const kGeminiSecondBoxLink2ActionNonManagedAccount;
 
 // Action identifiers for links in the Gemini Live First Run consent rows.
 extern NSString* const kGeminiLivePrivacyNoticeLinkAction;

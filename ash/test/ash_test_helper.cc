@@ -53,6 +53,7 @@
 #include "chromeos/ash/components/dbus/dlcservice/fake_dlcservice_client.h"
 #include "chromeos/ash/components/dbus/rgbkbd/rgbkbd_client.h"
 #include "chromeos/ash/components/dbus/typecd/typecd_client.h"
+#include "chromeos/ash/components/favicon/fake_favicon_service_provider.h"
 #include "chromeos/ash/components/fwupd/fake_fwupd_download_client.h"
 #include "chromeos/ash/components/geolocation/cached_location_provider.h"
 #include "chromeos/ash/components/geolocation/live_location_provider.h"
@@ -65,6 +66,7 @@
 #include "chromeos/dbus/power/power_policy_controller.h"
 #include "chromeos/ui/frame/multitask_menu/multitask_menu_nudge_controller.h"
 #include "components/session_manager/core/fake_session_manager_delegate.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/dbus/bluez_dbus_manager.h"
 #include "device/bluetooth/floss/floss_dbus_manager.h"
@@ -199,7 +201,6 @@ void AshTestHelper::TearDown() {
   system_tray_client_.reset();
   session_controller_client_.reset();
   wallpaper_controller_client_.reset();
-  notifier_settings_controller_.reset();
   new_window_delegate_.reset();
   test_keyboard_controller_observer_.reset();
 
@@ -236,6 +237,9 @@ void AshTestHelper::TearDown() {
   // while any SyncService a test registered with it is still alive.
   // TODO(crbug.com/332481586): Revisit teardown ordering.
   sync_service_provider_.reset();
+  // Uninstall the FaviconServiceProvider while any FaviconService a test
+  // registered with it is still alive.
+  favicon_service_provider_.reset();
 
   cros_hotspot_config_test_helper_.reset();
   scoped_bluetooth_config_test_helper_.reset();
@@ -279,6 +283,7 @@ void AshTestHelper::TearDown() {
   // session_manager_ is reset here, preserving production destruction order.
   // TODO(crbug.com/332481586): Revisit teardown ordering.
   session_manager_.reset();
+  user_session_test_environment_.reset();
   system_monitor_.reset();
   statistics_provider_.reset();
   command_line_.reset();
@@ -380,7 +385,16 @@ void AshTestHelper::SetUp(InitParams init_params) {
   // In production, SessionManager is initialized in PreCreateMainMessageLoop
   // (BrowserProcessPlatformPart::InitializeSessionManager) so that other
   // components can observe it early.
-  if (!session_manager::SessionManager::Get()) {
+  // Setting up UserManager here is too early compared to the production
+  // behavior. There's on-going work to shift the initialization timing of
+  // SessionManager and UserManager, so this should be revisited on its
+  // completion.
+  if (!user_manager::UserManager::IsInitialized() &&
+      !session_manager::SessionManager::Get()) {
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            init_params.local_state);
+  } else if (!session_manager::SessionManager::Get()) {
     session_manager_ = std::make_unique<session_manager::SessionManager>(
         std::make_unique<session_manager::FakeSessionManagerDelegate>());
   }
@@ -412,6 +426,7 @@ void AshTestHelper::SetUp(InitParams init_params) {
   // SyncService (e.g. wallpaper sync) does not crash on the missing
   // process-wide provider. Tests can register a service per account via
   // sync_service_provider().
+  favicon_service_provider_ = std::make_unique<FakeFaviconServiceProvider>();
   sync_service_provider_ = std::make_unique<FakeSyncServiceProvider>();
 
   if (create_global_cras_audio_handler_) {
@@ -526,8 +541,6 @@ void AshTestHelper::SetUp(InitParams init_params) {
 
   system_tray_client_ = std::make_unique<TestSystemTrayClient>();
   shell->system_tray_model()->SetClient(system_tray_client_.get());
-  notifier_settings_controller_ =
-      std::make_unique<TestNotifierSettingsController>();
   prefs_provider_ = std::make_unique<TestPrefServiceProvider>();
 
   // Requires the AppListController the Shell creates.

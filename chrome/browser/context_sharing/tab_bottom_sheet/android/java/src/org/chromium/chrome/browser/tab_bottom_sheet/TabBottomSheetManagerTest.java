@@ -41,6 +41,7 @@ import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
@@ -292,6 +293,7 @@ public class TabBottomSheetManagerTest {
                                 CoBrowseViewFactory.buildCoBrowseViews(
                                         mWindowAndroid,
                                         webContents,
+                                        /* backgroundColor= */ Color.WHITE,
                                         TabBottomSheetClientType.UNKNOWN,
                                         CoBrowseContainerType.BOTTOM_SHEET,
                                         /* requestFocus= */ false,
@@ -346,6 +348,7 @@ public class TabBottomSheetManagerTest {
                                 CoBrowseViewFactory.buildCoBrowseViews(
                                         mWindowAndroid,
                                         webContents,
+                                        /* backgroundColor= */ Color.WHITE,
                                         TabBottomSheetClientType.UNKNOWN,
                                         CoBrowseContainerType.BOTTOM_SHEET,
                                         /* requestFocus= */ false,
@@ -819,6 +822,7 @@ public class TabBottomSheetManagerTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625930
     public void testTryToShowBottomSheet_ReuseExistingSheetAndExpand() {
         NativeInterfaceDelegate mockDelegate = mock(NativeInterfaceDelegate.class);
 

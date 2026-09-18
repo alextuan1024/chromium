@@ -21,6 +21,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_mock_time_message_loop_task_runner.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
@@ -37,13 +38,11 @@
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/mock_userdataauth_client.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
@@ -109,8 +108,7 @@ class LocalFilesMigrationManagerTest : public policy::PolicyTest {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{ash::features::kSkyVault,
                               ash::features::kSkyVaultV2,
-                              ash::features::kSkyVaultV3,
-                              chromeos::features::kUploadOfficeToCloud},
+                              ash::features::kSkyVaultV3},
         /*disabled_features=*/{});
   }
   ~LocalFilesMigrationManagerTest() override = default;

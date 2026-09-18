@@ -11,6 +11,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
@@ -96,6 +97,8 @@ import org.chromium.chrome.browser.tasks.tab_management.TabGridDialogMediator.Di
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.ParentOverrideSlot;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -143,6 +146,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
     @Mock private TabContentManager mTabContentManager;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private ScrimManager mScrimManager;
+    @Mock private SnackbarManager mSnackbarManager;
     @Mock private DataSharingService mDataSharingService;
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private TabSwitcherMessageManager mMessageManager;
@@ -202,6 +206,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
         when(mTabGroupSyncFeaturesJniMock.isTabGroupSyncEnabled(mProfile)).thenReturn(true);
         MultiInstanceOrchestratorFactory.setInstanceForTesting(mMultiInstanceOrchestrator);
         TabGroupSyncServiceFactory.setForTesting(mTabGroupSyncService);
+        when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
         DataSharingServiceFactory.setForTesting(mDataSharingService);
         MessagingBackendServiceFactory.setForTesting(mMessagingBackendService);
         CollaborationServiceFactory.setForTesting(mCollaborationService);
@@ -255,6 +260,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
                         mTabContentManager,
                         mBrowserControlsStateProvider,
                         mScrimManager,
+                        mSnackbarManager,
                         mModalDialogManager,
                         mBottomSheetController,
                         mDataSharingTabManager,
@@ -314,6 +320,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
     @After
     public void tearDown() {
         mCoordinator.destroy();
+        verify(mSnackbarManager, never()).destroy();
         // Force animation to complete.
         RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(mDestroyed);
@@ -330,11 +337,14 @@ public class TabSwitcherPaneCoordinatorUnitTest {
         assertTrue(handlesBackPressSupplier.get());
 
         assertNotNull(mActivity.findViewById(R.id.selectable_list));
+        verify(mSnackbarManager)
+                .pushParentViewOverride(eq(ParentOverrideSlot.TAB_LIST_EDITOR), any(), isNull());
 
         assertEquals(BackPressResult.SUCCESS, mCoordinator.handleBackPress());
         assertFalse(handlesBackPressSupplier.get());
 
         assertNull(mActivity.findViewById(R.id.selectable_list));
+        verify(mSnackbarManager).popParentViewOverride(eq(ParentOverrideSlot.TAB_LIST_EDITOR));
     }
 
     @Test
@@ -368,7 +378,6 @@ public class TabSwitcherPaneCoordinatorUnitTest {
     @Test
     @DisableFeatures({ChromeFeatureList.DATA_SHARING})
     public void testTabGridDialogVisibilitySupplier() {
-
         Supplier<Boolean> tabGridDialogVisibilitySupplier =
                 mCoordinator.getTabGridDialogVisibilitySupplier();
 

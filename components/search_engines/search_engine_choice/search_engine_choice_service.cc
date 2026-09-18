@@ -29,7 +29,6 @@
 #include "base/version.h"
 #include "base/version_info/version_info.h"
 #include "components/country_codes/country_codes.h"
-#include "components/metrics/private_metrics/puma_histogram_functions.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/policy_service.h"
@@ -297,8 +296,8 @@ void RecordLegacyStaticEligibilityInternal(
     search_engines::SearchEngineChoiceService::Client& client,
     metrics::ProfileMetricsService& profile_metrics_service,
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client.IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenProfileInitConditionsPostRestoreHistogram, condition);
@@ -306,17 +305,14 @@ void RecordLegacyStaticEligibilityInternal(
 
   profile_metrics_service.UmaHistogramEnumeration(
       kSearchEngineChoiceScreenProfileInitConditionsHistogram, condition);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenProfileInitConditionsHistogram, condition);
 }
 
 bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
                       SearchEngineChoiceService::Client& client,
                       const PrefService& profile_prefs,
                       bool include_previous_just_in_time_detection) {
-  if (!base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection)) {
+  if (!switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled()) {
     // Feature disabled, don't detect imported choices.
     return false;
   }
@@ -325,7 +321,7 @@ bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
     return false;
   }
 
-  if (switches::kInvalidateChoiceOnRestoreIsRetroactive.Get()) {
+  if (switches::IsInvalidateChoiceOnRestoreRetroactive()) {
     // Retroactive detection is activated, report the choice as imported.
     return true;
   }
@@ -764,8 +760,8 @@ bool SearchEngineChoiceService::IsSurfaceEligible(
 
 void SearchEngineChoiceService::RecordTriggeringEligibility(
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenNavigationConditionsPostRestoreHistogram, condition);
@@ -773,9 +769,6 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenNavigationConditionsHistogram, condition);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenNavigationConditionsHistogram, condition);
 
   regional_capabilities::RecordTriggeringFunnelStageDetails(
       condition, *profile_metrics_service_);
@@ -785,8 +778,8 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
 void SearchEngineChoiceService::RecordChoiceScreenEvent(
     SearchEngineChoiceScreenEvents event) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(kChoiceScreenEventsPostRestoreHistogram,
                                   event);
@@ -794,9 +787,6 @@ void SearchEngineChoiceService::RecordChoiceScreenEvent(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenEventsHistogram, event);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenEventsHistogram, event);
 
   if (event == SearchEngineChoiceScreenEvents::kChoiceScreenWasDisplayed ||
       event == SearchEngineChoiceScreenEvents::kFreChoiceScreenWasDisplayed ||
@@ -1257,6 +1247,7 @@ void SearchEngineChoiceService::RegisterLocalStatePrefs(
 // static
 void SearchEngineChoiceService::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
+  // TODO(crbug.com/556263496): Restrict direct access to this pref.
   registry->RegisterInt64Pref(
       prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp, 0);
   registry->RegisterStringPref(

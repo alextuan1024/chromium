@@ -843,7 +843,7 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
                 .getTabStripCollection(mNativeTabCollectionTabModelImplPtr);
     }
 
-    // TabCloser overrides.
+    // TabModelInternal overrides.
 
     @Override
     public boolean closeTabs(TabClosureParams params) {
@@ -852,8 +852,6 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
             return closeTabsInternal(params);
         }
     }
-
-    // TabModelInternal overrides.
 
     @Override
     public void completeInitialization() {
@@ -1016,8 +1014,10 @@ public class TabCollectionTabModelImpl extends TabModelJniBridge {
     private void updateCacheOnAddTab(Tab tab, int finalIndex) {
         assertOnUiThread();
         if (mTabsList != null) {
-            List<Tab> updatedList = new ArrayList<>(mTabsList);
-            int safeIndex = MathUtils.clamp(finalIndex, 0, updatedList.size());
+            int currentSize = mTabsList.size();
+            List<Tab> updatedList = new ArrayList<>(currentSize + 1);
+            updatedList.addAll(mTabsList);
+            int safeIndex = MathUtils.clamp(finalIndex, 0, currentSize);
             updatedList.add(safeIndex, tab);
             mTabsList = Collections.unmodifiableList(updatedList);
         }

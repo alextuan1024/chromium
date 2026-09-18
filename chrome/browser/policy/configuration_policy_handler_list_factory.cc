@@ -497,7 +497,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kVoiceTypingSettings,
     prefs::kVoiceTypingSettings,
     base::Value::Type::INTEGER },
-  { key::kIndigo,
+  { key::kTryOnYouSettings,
     indigo::prefs::kIndigoPolicy,
     base::Value::Type::INTEGER },
 #endif
@@ -546,6 +546,9 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kWebHidBlockedForUrls,
     prefs::kManagedWebHidBlockedForUrls,
     base::Value::Type::LIST },
+  { key::kRemoteDebuggingAllowed,
+    prefs::kDevToolsRemoteDebuggingAllowed,
+    base::Value::Type::BOOLEAN },
 // Policies for all platforms - End
 #if BUILDFLAG(IS_ANDROID)
   { key::kAccessibilityPerformanceFilteringAllowed,
@@ -863,9 +866,6 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kRelaunchFastIfOutdated,
     prefs::kRelaunchFastIfOutdated,
     base::Value::Type::INTEGER },
-  { key::kRemoteDebuggingAllowed,
-    prefs::kDevToolsRemoteDebuggingAllowed,
-    base::Value::Type::BOOLEAN },
   { key::kRestoreOnStartupURLs,
     prefs::kURLsToRestoreOnStartup,
     base::Value::Type::LIST },
@@ -977,9 +977,6 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kIsolatedWebAppUserInstallationEnabled,
     prefs::kIsolatedWebAppUserInstallationEnabled,
     base::Value::Type::BOOLEAN },
-  { key::kSubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins,
-    prefs::kSubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins,
-    base::Value::Type::LIST },
 #endif  // BUILDFLAG(IS_CHROMEOS)
   { key::kForceYouTubeRestrict,
     policy::policy_prefs::kForceYouTubeRestrict,
@@ -1330,6 +1327,9 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     base::Value::Type::STRING },
   { key::kShowAccessibilityOptionsInSystemTrayMenu,
     ash::prefs::kShouldAlwaysShowAccessibilityMenu,
+    base::Value::Type::BOOLEAN },
+  { key::kShowInputOptionsInShelfEnabled,
+    ash::prefs::kLanguageImeMenuActivated,
     base::Value::Type::BOOLEAN },
   { key::kFloatingAccessibilityMenuEnabled,
     ash::prefs::kAccessibilityFloatingMenuEnabled,
@@ -2245,6 +2245,9 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kKioskChromeAppsForceAllowed,
     ash::prefs::kKioskChromeAppsForceAllowed,
     base::Value::Type::BOOLEAN },
+  { key::kAdminInstalledChromeAppsForceAllowed,
+    ash::prefs::kAdminInstalledChromeAppsForceAllowed,
+    base::Value::Type::BOOLEAN },
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
@@ -2701,6 +2704,13 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
   handlers->AddHandler(
       std::make_unique<
           enterprise_connectors::EnterpriseConnectorsPolicyHandler>(
+          key::kOnFileAttachedEnterpriseConnector,
+          enterprise_connectors::kOnFileAttachedPref,
+          enterprise_connectors::kOnFileAttachedScopePref, chrome_schema));
+
+  handlers->AddHandler(
+      std::make_unique<
+          enterprise_connectors::EnterpriseConnectorsPolicyHandler>(
           key::kOnFileDownloadedEnterpriseConnector,
           enterprise_connectors::kOnFileDownloadedPref,
           enterprise_connectors::kOnFileDownloadedScopePref, chrome_schema));
@@ -2877,12 +2887,6 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
           key::kOnDataCopiedEnterpriseConnector,
           enterprise_connectors::kOnDataCopiedPref,
           enterprise_connectors::kOnDataCopiedScopePref, chrome_schema));
-  handlers->AddHandler(
-      std::make_unique<
-          enterprise_connectors::EnterpriseConnectorsPolicyHandler>(
-          key::kOnFileAttachedEnterpriseConnector,
-          enterprise_connectors::kOnFileAttachedPref,
-          enterprise_connectors::kOnFileAttachedScopePref, chrome_schema));
 #if BUILDFLAG(IS_CHROMEOS)
   handlers->AddHandler(
       std::make_unique<
@@ -3678,7 +3682,7 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
 #if !BUILDFLAG(IS_ANDROID)
   gen_ai_default_policies.emplace_back(key::kVoiceTypingSettings,
                                        prefs::kVoiceTypingSettings);
-  gen_ai_default_policies.emplace_back(key::kIndigo,
+  gen_ai_default_policies.emplace_back(key::kTryOnYouSettings,
                                        indigo::prefs::kIndigoPolicy);
 #endif
   // Default value for SearchContentSharingSettings is 0 if

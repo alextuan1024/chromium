@@ -17,6 +17,7 @@
 #include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
 #include "base/types/expected.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_task_delegate.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
@@ -43,6 +44,7 @@ class BrowserContext;
 namespace actor {
 class AggregatedJournalFileSerializer;
 namespace ui {
+class ActorUiStateManager;
 class ActorUiStateManagerInterface;
 class UiEventDispatcher;
 }
@@ -68,11 +70,6 @@ class ActorKeyedService : public KeyedService,
 
   // Convenience method, may return nullptr.
   static ActorKeyedService* Get(content::BrowserContext* context);
-
-  // TODO(crbug.com/428014205): Create a mock ActorKeyedService for testing so
-  // we can remove this function.
-  void SetActorUiStateManagerForTesting(
-      std::unique_ptr<ui::ActorUiStateManagerInterface> ausm);
 
   const std::map<TaskId, const ActorTask*> GetActiveTasks() const;
 
@@ -129,12 +126,8 @@ class ActorKeyedService : public KeyedService,
   AggregatedJournal& GetJournal() LIFETIME_BOUND { return journal_; }
 
   // The associated ActorUiStateManager for the associated profile.
-  ui::ActorUiStateManagerInterface* GetActorUiStateManager();
-
-  // Sets/clears pending actuation indicator on a tab prior to an ActorTask
-  // starting.
-  void SetTabPendingActuation(tabs::TabHandle tab_handle);
-  bool ClearTabPendingActuation(tabs::TabHandle tab_handle);
+  ui::ActorUiStateManager* GetActorUiStateManager(
+      base::PassKey<ui::ActorUiStateManager>);
 
   // Returns true if there is a task that is actively (i.e. not paused) acting
   // in the given `tab`.
@@ -290,7 +283,9 @@ class ActorKeyedService : public KeyedService,
 
   // Needs to be declared before the tasks, as they will indirectly have a
   // reference to it. This ensures the correct destruction order.
-  std::unique_ptr<ui::ActorUiStateManagerInterface> actor_ui_state_manager_;
+  // Note: This field should not be used directly, use the
+  // ActorUiStateManagerInterface* passed in via CreateTaskImpl instead.
+  std::unique_ptr<ui::ActorUiStateManager> actor_ui_state_manager_;
 
   std::map<TaskId, std::unique_ptr<ActorTask>> active_tasks_;
 

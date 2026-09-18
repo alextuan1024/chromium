@@ -169,6 +169,11 @@ void AtMemorySuggestionController::UpdateDataListValues(
   NOTREACHED();
 }
 
+const LocalFrameToken& AtMemorySuggestionController::GetAnchorFrameToken()
+    const {
+  return controller_common_.anchor_frame_token;
+}
+
 void AtMemorySuggestionController::HideViewAndDie() {
   ui_session_id_ = std::nullopt;
 
@@ -202,9 +207,11 @@ void AtMemorySuggestionController::HideViewAndDie() {
 bool AtMemorySuggestionController::MayRecycle(
     base::WeakPtr<AutofillSuggestionDelegate> delegate,
     content::WebContents* web_contents,
+    const LocalFrameToken& anchor_frame_token,
     AutofillSuggestionTriggerSource trigger_source) const {
   return delegate_.get() == delegate.get() &&
          container_view() == web_contents->GetNativeView() &&
+         GetAnchorFrameToken() == anchor_frame_token &&
          IsAtMemoryTriggerSource(trigger_source);
 }
 
@@ -232,7 +239,7 @@ void AtMemorySuggestionController::OnQueryTextChanged(
   }
 }
 
-void AtMemorySuggestionController::OnSuggestionSelected(int position) {
+void AtMemorySuggestionController::OnSuggestionAccepted(int position) {
   AcceptSuggestion(position, AutofillMetrics::SuggestionAcceptedMethod::kTap);
 }
 

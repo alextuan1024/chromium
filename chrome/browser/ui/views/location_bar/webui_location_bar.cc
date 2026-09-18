@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/logging.h"
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/branding_buildflags.h"
@@ -25,6 +26,7 @@
 #include "chrome/browser/ui/omnibox/chrome_omnibox_client.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -116,7 +118,18 @@ WebUILocationBar::WebUILocationBar(BrowserWindowInterface* browser,
           permission_dashboard_.get());
 }
 
-WebUILocationBar::~WebUILocationBar() = default;
+WebUILocationBar::~WebUILocationBar() {
+  // Disconnect from delegate to prevent any notifications (e.g.
+  // UpdateLhsChipsState() or UpdateLocationIcon()) during teardown.
+  toolbar_delegate_ = nullptr;
+
+  // Explicitly destroy the controllers and views before member destruction.
+  // Otherwise, ~ChipController() -> HideChip() -> InvalidateLayout() attempts
+  // to acquire a weak pointer from `weak_ptr_factory_`, which is declared last
+  // and destroyed first in reverse member declaration order.
+  permission_dashboard_controller_.reset();
+  permission_dashboard_.reset();
+}
 
 void WebUILocationBar::Init(WebUIToolbarControlDelegate* delegate) {
   toolbar_delegate_ = delegate;
@@ -300,8 +313,8 @@ bool WebUILocationBar::UpdateContentSettingModels() {
   bool permission_dashboard_changed = false;
   bool dashboard_updated = false;
 
-  if (base::FeatureList::IsEnabled(
-          content_settings::features::kLeftHandSideActivityIndicators)) {
+  if (ContentSettingImageModel::IsLeftHandSideIndicatorEnabled(
+          ContentSettingImageModel::ImageType::kMediaStream)) {
     ContentSettingImageModel* media_stream_model =
         content_setting_image_control_.GetModel(
             ContentSettingImageModel::ImageType::kMediaStream);
@@ -315,8 +328,8 @@ bool WebUILocationBar::UpdateContentSettingModels() {
   }
 
   if (!dashboard_updated &&
-      base::FeatureList::IsEnabled(
-          content_settings::features::kLeftHandSideSensorActivityIndicators)) {
+      ContentSettingImageModel::IsLeftHandSideIndicatorEnabled(
+          ContentSettingImageModel::ImageType::kSensors)) {
     ContentSettingImageModel* sensors_model =
         content_setting_image_control_.GetModel(
             ContentSettingImageModel::ImageType::kSensors);
@@ -380,7 +393,10 @@ bool WebUILocationBar::ShouldCloseOmniboxPopup(ui::MouseEvent* event) {
     return false;
   }
 
-  if (omnibox_popup_view_->presenter()->GetOuterView()->Contains(view)) {
+  // The outer view may be null while the popup is hidden and its widget has
+  // been released, in which case the event can't have targeted the popup.
+  auto* const outer_view = omnibox_popup_view_->presenter()->GetOuterView();
+  if (outer_view && outer_view->Contains(view)) {
     return false;
   }
 
@@ -470,7 +486,13 @@ bool WebUILocationBar::IsMouseHovered() const {
 }
 
 bool WebUILocationBar::IsFocusWithin() const {
-  return focus_within_;
+  // If `using_full_popup_` is `true`, focus resides inside the WebUI popup's
+  // `WebContents` / `RenderWidgetHost` rather than a native child View of
+  // `WebUILocationBar`.
+  const bool full_popup_has_focus =
+      using_full_popup_ && omnibox_controller_ &&
+      omnibox_controller_->edit_model()->has_focus();
+  return full_popup_has_focus || focus_within_;
 }
 
 void WebUILocationBar::InvalidateLayout() {
@@ -519,6 +541,9 @@ void WebUILocationBar::Update(content::WebContents* contents) {
     omnibox_view_->OnTabChanged(contents);
     if (using_full_popup_) {
       omnibox_popup_view_->OnTabChanged(contents);
+    }
+    if (permission_dashboard_) {
+      permission_dashboard_->ResetTabState();
     }
   } else {
     omnibox_view_->Update();
@@ -680,7 +705,12 @@ void WebUILocationBar::OnIconFetched(const gfx::Image& image) {
 }
 
 void WebUILocationBar::ResetTabState(content::WebContents* contents) {
-  omnibox_view_->ResetTabState(contents);
+  if (contents) {
+    omnibox_view_->ResetTabState(contents);
+  }
+  if (permission_dashboard_) {
+    permission_dashboard_->ResetTabState();
+  }
 }
 
 bool WebUILocationBar::HasSecurityStateChanged() {
@@ -732,7 +762,8 @@ void WebUILocationBar::OnLhsChipMousePressed(
 
 void WebUILocationBar::OnLhsChipClicked(
     toolbar_ui_api::mojom::LhsChipIdentifier identifier,
-    bool is_mouse_interaction) {
+    bool is_mouse_interaction,
+    uint32_t state_token) {
   if (identifier == toolbar_ui_api::mojom::LhsChipIdentifier::kLocationIcon) {
     // Prevent reopening the bubble if it was just closed by this exact click.
     if (page_info_reopen_suppressor_.ShouldSuppressBubbleShow(
@@ -741,15 +772,34 @@ void WebUILocationBar::OnLhsChipClicked(
     }
 
     ShowPageInfoBubble();
-  } else if (identifier ==
-             toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator) {
-    permission_dashboard_->indicator_chip()->OnClicked(is_mouse_interaction);
-  } else if (identifier ==
-             toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest) {
-    permission_dashboard_->request_chip()->OnClicked(is_mouse_interaction);
-  } else {
-    NOTREACHED();
+    return;
   }
+
+  if (identifier ==
+          toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator ||
+      identifier ==
+          toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest) {
+    WebUIPermissionChip* chip =
+        identifier ==
+                toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator
+            ? permission_dashboard_->indicator_chip()
+            : permission_dashboard_->request_chip();
+
+    // Drop stale clicks: the WebUI echoes the token it rendered with, so a
+    // mismatch means the chip's backing model changed while the click IPC was
+    // in flight (e.g. across a tab switch or same-tab navigation). See
+    // crbug.com/557279024.
+    if (chip->state_token() != state_token) {
+      VLOG(1) << "Dropped stale chip click for identifier "
+              << static_cast<int>(identifier) << ": received token "
+              << state_token << " != current token " << chip->state_token();
+      return;
+    }
+    chip->OnClicked(is_mouse_interaction);
+    return;
+  }
+
+  NOTREACHED();
 }
 
 void WebUILocationBar::ShowPageInfoBubble() {
@@ -858,6 +908,10 @@ void WebUILocationBar::SetSuppressionThresholdForTesting(
   content_setting_image_control_.SetSuppressionThresholdForTesting(  // IN-TEST
       threshold);
   page_action_control_.SetSuppressionThresholdForTesting(threshold);  // IN-TEST
+  if (permission_dashboard_controller_) {
+    permission_dashboard_controller_->SetSuppressionThresholdForTesting(  // IN-TEST
+        threshold);
+  }
 }
 
 void WebUILocationBar::OnLhsChipPointerEntered(

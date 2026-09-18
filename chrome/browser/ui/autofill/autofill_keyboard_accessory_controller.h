@@ -20,11 +20,16 @@ class AutofillKeyboardAccessoryController
  public:
   struct RemovalConfirmationText {
     RemovalConfirmationText();
+    RemovalConfirmationText(const RemovalConfirmationText&);
+    RemovalConfirmationText& operator=(const RemovalConfirmationText&);
+    RemovalConfirmationText(RemovalConfirmationText&&);
+    RemovalConfirmationText& operator=(RemovalConfirmationText&&);
     ~RemovalConfirmationText();
 
     std::u16string title;
     std::u16string body;
     std::u16string body_link;
+    // The text on the button that confirms removal (e.g. "Delete" or "Remove").
     std::u16string confirm_button_text;
   };
 
@@ -48,8 +53,17 @@ class AutofillKeyboardAccessoryController
       int index,
       RemovalConfirmationText* removal_text) = 0;
 
+  // Shows suggestion details (e.g. attribution and suppression dialog) for an
+  // Autofill AI suggestion at `index`.
+  //
+  // Returns `true` if details could be shown, `false` otherwise.
+  virtual bool ShowAutofillAiSuggestionDetails(size_t index) = 0;
+
   // Opens settings for the given entity type.
   virtual void OpenSettingsForEntityType(int32_t entity_type) = 0;
+
+  // Unselects the suggestion at `index` if it is currently selected.
+  virtual void UnselectSuggestionIfSelected(int index) = 0;
 };
 
 }  // namespace autofill

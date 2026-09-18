@@ -9,6 +9,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
 #include "chrome/browser/ash/printing/fake_cups_printers_manager.h"
 #include "chrome/browser/ash/printing/oauth2/authorization_zones_manager_factory.h"
@@ -27,7 +29,7 @@
 #include "components/account_id/account_id_literal.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/test_helper.h"
 #include "content/public/test/browser_task_environment.h"
 #include "printing/backend/print_backend.h"
@@ -153,20 +155,23 @@ class LocalPrinterImplTestBase : public testing::Test {
   ~LocalPrinterImplTestBase() override = default;
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->GetTestingLocalState());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
+    profile_user_manager_controller_ =
+        std::make_unique<ash::ProfileUserManagerController>(
+            profile_manager_->profile_manager(),
+            user_manager::UserManager::Get());
 
-    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(kAccountId));
-    test_user_session_manager_->LogIn(kAccountId);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kAccountId));
+    user_session_test_environment_->LogIn(kAccountId);
 
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_->profile_manager(),
+                                            kAccountId);
     profile_ = profile_manager_->CreateTestingProfile(kEmail);
-    ash::AnnotatedAccountId::Set(profile_, kAccountId);
-    user_manager::UserManager::Get()->OnUserProfileCreated(
-        kAccountId, profile_->GetPrefs());
 
     std::vector<base::test::FeatureRefAndParams> features_to_enable = {};
     std::vector<base::test::FeatureRef> features_to_disable = {};
@@ -254,10 +259,11 @@ class LocalPrinterImplTestBase : public testing::Test {
 
     local_printer_ = nullptr;
     printers_manager_ = nullptr;
-    user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(kAccountId);
     profile_ = nullptr;
     profile_manager_->DeleteTestingProfile(kEmail);
     profile_manager_.reset();
+    profile_user_manager_controller_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -332,7 +338,10 @@ class LocalPrinterImplTestBase : public testing::Test {
   const bool enable_oauth_;
   base::test::ScopedFeatureList feature_list_;
   content::BrowserTaskEnvironment task_environment_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::unique_ptr<ash::ProfileUserManagerController>
+      profile_user_manager_controller_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   scoped_refptr<::printing::TestPrintBackend> sandboxed_test_backend_;
   scoped_refptr<::printing::TestPrintBackend> unsandboxed_test_backend_;

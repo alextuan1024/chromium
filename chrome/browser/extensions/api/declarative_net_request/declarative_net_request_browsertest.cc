@@ -84,6 +84,7 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_transport_simple_test_server.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/action_tracker.h"
 #include "extensions/browser/api/declarative_net_request/composite_matcher.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
@@ -269,7 +270,6 @@ class DeclarativeNetRequestBrowserTest
         /*enabled_features=*/
         {blink::features::kFencedFrames,
          blink::features::kFencedFramesAPIChanges,
-         blink::features::kFencedFramesDefaultMode,
          features::kPrivacySandboxAdsAPIsOverride},
         /*disabled_features=*/
         {// TODO(crbug.com/40248833): Use HTTPS URLs in tests to avoid
@@ -1538,17 +1538,6 @@ IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestBrowserTest,
     content::RenderFrameHost* child = GetFrameByName("third-party.com");
     EXPECT_TRUE(child);
     EXPECT_EQ(test_case.expect_scripts_loaded, WasFrameWithScriptLoaded(child));
-
-    // Check the requests made via fencedframes are also loaded/blocked as
-    // expected.
-    GURL fencedframe_url =
-        embedded_test_server()->GetURL("third-party.test", "/child_frame.html");
-    content::RenderFrameHost* fencedframe =
-        fenced_frame_test_helper().CreateFencedFrame(GetPrimaryMainFrame(),
-                                                     fencedframe_url);
-    EXPECT_TRUE(fencedframe);
-    EXPECT_EQ(test_case.expect_scripts_loaded,
-              WasFrameWithScriptLoaded(fencedframe));
   }
 
   // Test requests made outside of tabs (from a shared worker).
@@ -4727,8 +4716,7 @@ IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestBrowserTest,
       SetExtensionActionOptions(
           extension->id(),
           base::StringPrintf("{tabUpdate: {tabId: %d, increment: 10}}", 999)),
-      ErrorUtils::FormatErrorMessage(declarative_net_request::kTabNotFoundError,
-                                     "999"));
+      ErrorUtils::FormatErrorMessage(kTabNotFoundError, "999"));
   EXPECT_EQ("11", action->GetDisplayBadgeText(tab_id));
 
   // The action count should continue to increment when an action is taken.

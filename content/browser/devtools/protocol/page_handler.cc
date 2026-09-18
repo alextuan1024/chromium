@@ -524,7 +524,7 @@ PageHandler::PageHandler(
   video_consumer_ = std::make_unique<DevToolsVideoConsumer>(base::BindRepeating(
       &PageHandler::OnFrameFromVideoConsumer, weak_factory_.GetWeakPtr()));
   video_consumer_->SetFormat(kScreencastPixelFormat);
-  DCHECK(emulation_handler_);
+  CHECK(emulation_handler_, base::NotFatalUntil::M159);
 }
 
 PageHandler::~PageHandler() = default;
@@ -592,7 +592,7 @@ void PageHandler::RenderWidgetHostVisibilityChanged(
 }
 
 void PageHandler::RenderWidgetHostDestroyed(RenderWidgetHost* widget_host) {
-  DCHECK(observation_.IsObservingSource(widget_host));
+  CHECK(observation_.IsObservingSource(widget_host), base::NotFatalUntil::M159);
   observation_.Reset();
 }
 
@@ -620,7 +620,7 @@ void PageHandler::DidRunJavaScriptDialog(const GURL& url,
   if (!enabled_) {
     return;
   }
-  DCHECK(pending_dialog_.is_null());
+  CHECK(pending_dialog_.is_null(), base::NotFatalUntil::M159);
   pending_dialog_ = std::move(callback);
   std::string type = Page::DialogTypeEnum::Alert;
   if (dialog_type == JAVASCRIPT_DIALOG_TYPE_CONFIRM) {
@@ -642,7 +642,7 @@ void PageHandler::DidRunBeforeUnloadConfirm(
   if (!enabled_) {
     return;
   }
-  DCHECK(pending_dialog_.is_null());
+  CHECK(pending_dialog_.is_null(), base::NotFatalUntil::M159);
   pending_dialog_ = std::move(callback);
   frontend_->JavascriptDialogOpening(url.spec(), frame_id.ToString(),
                                      std::string(),
@@ -695,6 +695,8 @@ Response PageHandler::Disable() {
   if (!pending_dialog_.is_null()) {
     ResponseOrWebContents result = GetWebContentsForTopLevelActiveFrame();
     // Only a top level frame can have a dialog.
+    // TODO(crbug.com/558971359): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(std::holds_alternative<WebContentsImpl*>(result));
     WebContentsImpl* web_contents = std::get<WebContentsImpl*>(result);
     // Leave dialog hanging if there is a manager that can take care of it,
@@ -1327,7 +1329,7 @@ void PageHandler::CaptureSnapshot(
     return;
   }
 
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M159);
   DevToolsMHTMLHelper::Capture(
       base::BindRepeating(&WebContents::FromFrameTreeNodeId,
                           host_->frame_tree_node()->frame_tree_node_id()),
@@ -2021,7 +2023,18 @@ void PageHandler::GetManifestIcons(
 void PageHandler::GetAppId(std::unique_ptr<GetAppIdCallback> callback) {
   // TODO: Use InstallableManager once it moves into content/.
   // Until then, this code is only used to return no image data in the tests.
-  callback->sendSuccess(std::nullopt, std::nullopt);
+  callback->sendSuccess(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+}
+
+void PageHandler::GetSubApps(std::unique_ptr<GetSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
+}
+
+void PageHandler::GetSiblingSubApps(
+    std::unique_ptr<GetSiblingSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
 }
 
 Response PageHandler::SetBypassCSP(bool enabled) {
@@ -2180,6 +2193,8 @@ Page::BackForwardCacheNotRestoredReason NotRestoredReasonToProtocol(
     case Reason::kRfhEnforceInsecureRequestPolicy:
     case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
     case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
       return Page::BackForwardCacheNotRestoredReasonEnum::Unknown;
     case Reason::kCacheControlNoStoreDeviceBoundSessionTerminated:
       return Page::BackForwardCacheNotRestoredReasonEnum::
@@ -2303,6 +2318,7 @@ Page::BackForwardCacheNotRestoredReason BlocklistedFeatureToProtocol(
       return Page::BackForwardCacheNotRestoredReasonEnum::
           JsNetworkRequestReceivedCacheControlNoStoreResource;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       // These features only disable aggressive throttling.
       NOTREACHED();
     case WebSchedulerTrackedFeature::kSmartCard:
@@ -2510,6 +2526,8 @@ Page::BackForwardCacheNotRestoredReasonType MapNotRestoredReasonToType(
     case Reason::kRfhEnforceInsecureRequestPolicy:
     case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
     case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
     case Reason::kUnknown:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::SupportPending;
     case Reason::kBlocklistedFeatures:
@@ -2574,6 +2592,7 @@ Page::BackForwardCacheNotRestoredReasonType MapBlocklistedFeatureToType(
     case WebSchedulerTrackedFeature::kWebSocketSticky:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::Circumstantial;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       NOTREACHED();
   }
 }
@@ -2603,7 +2622,7 @@ CreateNotRestoredExplanation(
        not_restored_reasons) {
     if (not_restored_reason ==
         BackForwardCacheMetrics::NotRestoredReason::kBlocklistedFeatures) {
-      DCHECK(!blocklisted_features.empty());
+      CHECK(!blocklisted_features.empty(), base::NotFatalUntil::M159);
       for (blink::scheduler::WebSchedulerTrackedFeature feature :
            blocklisted_features) {
         // Details are not always present for blocklisted features, because the

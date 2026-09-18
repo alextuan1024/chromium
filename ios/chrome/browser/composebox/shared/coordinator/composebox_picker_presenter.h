@@ -31,7 +31,7 @@
              didPickFilesWithURLs:(NSArray<NSURL*>*)urls;
 
 /// Called when the camera picker presentation dismisses.
-- (void)composeboxPickerPresenterDidDissmissCamera:
+- (void)composeboxPickerPresenterDidDismissCamera:
     (ComposeboxPickerPresenter*)presenter;
 
 // Called when the tab picker finishes picking tabs.
@@ -45,6 +45,14 @@
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
                 didPickDriveItems:
                     (NSArray<ComposeboxPickerDriveResult*>*)results;
+
+// Called when the Drive picker is cancelled or dismissed without picking items.
+- (void)composeboxPickerPresenterDidCancelDrivePicker:
+    (ComposeboxPickerPresenter*)presenter;
+
+// Called when the tab picker is cancelled or dismissed without picking tabs.
+- (void)composeboxPickerPresenterDidCancelTabPicker:
+    (ComposeboxPickerPresenter*)presenter;
 
 @end
 
@@ -100,6 +108,9 @@
 
 // Presents the Drive file picker.
 - (void)presentDriveFilePicker;
+
+// Dismisses the presented picker.
+- (void)dismissPicker;
 
 @end
 

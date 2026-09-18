@@ -47,7 +47,6 @@
 #import "ios/chrome/browser/signin/model/authentication_service_observer.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_refresh_access_token_error.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
@@ -112,8 +111,7 @@ class AuthenticationServiceTest : public PlatformTest {
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     fake_system_identity1_ = [FakeSystemIdentity fakeIdentity1];
@@ -231,15 +229,6 @@ class AuthenticationServiceTest : public PlatformTest {
 
   bool HasCachedMDMInfo(id<SystemIdentity> identity) {
     return GetCachedMDMInfo(identity) != nil;
-  }
-
-  int ClearBrowsingDataCount() {
-    return authentication_service()->delegate_->clear_browsing_data_counter_;
-  }
-
-  int ClearBrowsingDataFromSigninCount() {
-    return authentication_service()
-        ->delegate_->clear_browsing_data_from_signin_counter_;
   }
 
   AuthenticationService* authentication_service() {
@@ -531,6 +520,7 @@ TEST_F(AuthenticationServiceTest, MDMErrorsDontSeedEmptyAccountIds) {
 // Tests that potential MDM notifications are correctly handled and dispatched
 // to MDM service when necessary.
 TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
+  base::HistogramTester histogram_tester;
   authentication_service()->SignIn(identity(0),
                                    signin_metrics::AccessPoint::kStartPage);
   VerifyLastSigninTimestamp();
@@ -550,11 +540,15 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
   FireAccessTokenRefreshFailed(identity(0), mdm_error1);
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 1);
 
   // Same notification won't show the MDM dialog the second time.
   FireAccessTokenRefreshFailed(identity(0), mdm_error1);
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 1);
 
   uint32_t invocation_counter2 = 0;
   id<RefreshAccessTokenError> mdm_error2 =
@@ -566,6 +560,8 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
   EXPECT_EQ(invocation_counter2, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 2);
 }
 
 // Tests that MDM notification is suppressed for scope limited errors.
@@ -594,6 +590,8 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotificationSuppressed) {
   EXPECT_EQ(invocation_counter, 0u);
   histogram_tester.ExpectBucketCount("Signin.ScopeLimitedErrorSuppressed", true,
                                      1);
+  histogram_tester.ExpectTotalCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", 0);
 }
 
 // Tests that MDM blocked notifications are correctly signing out the user if

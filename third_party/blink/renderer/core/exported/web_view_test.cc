@@ -1199,6 +1199,130 @@ TEST_F(WebViewTest, AutoResizeDoesNotResetWithoutLayout) {
   web_view_helper_.Reset();
 }
 
+TEST_F(WebViewTest, AutoResizeDoesNotRemeasureScrollWidthWithoutLayout) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; font-size: 12px; }
+          table { border-spacing: 0; width: 100%; }
+          td { vertical-align: top; }
+          .bar {
+            margin-left: 2px;
+            padding: 2px;
+            border: 2px solid;
+            white-space: nowrap;
+          }
+          .item { display: inline-block; max-width: 24px; }
+          .icon { margin: 1px 2px; width: 18px; height: 18px; }
+          .badge {
+            position: relative;
+            left: -12px;
+            width: 12px;
+            height: 12px;
+            vertical-align: bottom;
+          }
+        </style>
+        <div id="bar"></div>
+        <script>
+          const item = '<div class=item><img class=icon></div>';
+          bar.innerHTML =
+              '<table><td class=bar>' + item.repeat(13) +
+              '<td><td class=bar width=100%>' + item.repeat(6) +
+              '<td><td class=bar>' + item.repeat(7) +
+              '<div class=item><img class=icon><img class=badge></div>' +
+              '</table>';
+        </script>
+      )HTML",
+      client);
+
+  const gfx::Size stable_size = frame->GetFrame()->View()->Size();
+  const int resize_count = client.ResizeCount();
+  for (int i = 0; i < 3; ++i) {
+    UpdateAllLifecyclePhases();
+    EXPECT_EQ(stable_size, frame->GetFrame()->View()->Size());
+  }
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  const unsigned layout_count =
+      frame->GetFrame()->View()->LayoutCountForTesting();
+  frame->ExecuteScript(WebScriptSource("bar.style.backgroundColor = 'red';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(layout_count, frame->GetFrame()->View()->LayoutCountForTesting());
+  EXPECT_EQ(stable_size, frame->GetFrame()->View()->Size());
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizeRemeasuresHeightAfterWidthChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      "<!DOCTYPE html><style>"
+      "body { margin: 0; width: 400px; height: 50vw; }"
+      "</style>",
+      client);
+  EXPECT_EQ(gfx::Size(400, 200), frame->GetFrame()->View()->Size());
+
+  frame->ExecuteScript(WebScriptSource("document.body.style.width = '200px';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(gfx::Size(200, 100), frame->GetFrame()->View()->Size());
+
+  const int resize_count = client.ResizeCount();
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(gfx::Size(200, 100), frame->GetFrame()->View()->Size());
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizeRemeasuresAfterTransformChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; width: 200px; height: 100px; }
+          #child { width: 100px; height: 50px; transform: translate(0px); }
+        </style>
+        <div id="child"></div>
+      )HTML",
+      client);
+  auto* frame_view = frame->GetFrame()->View();
+  EXPECT_EQ(gfx::Size(200, 100), frame_view->Size());
+
+  for (bool update_style_separately : {false, true}) {
+    for (bool expand : {true, false}) {
+      frame->ExecuteScript(WebScriptSource(WebString::FromUtf8(
+          expand ? "document.getElementById('child').style.transform = "
+                   "'translate(300px, 200px)';"
+                 : "document.getElementById('child').style.transform = "
+                   "'translate(0px)';")));
+      if (update_style_separately) {
+        // Overflow can be recalculated in a separate style update, without
+        // layout.
+        const unsigned layout_count = frame_view->LayoutCountForTesting();
+        frame->GetFrame()->GetDocument()->UpdateStyleAndLayoutTree();
+        EXPECT_EQ(layout_count, frame_view->LayoutCountForTesting());
+      }
+      UpdateAllLifecyclePhases();
+      const gfx::Size expected_size =
+          expand ? gfx::Size(400, 250) : gfx::Size(200, 100);
+      EXPECT_EQ(expected_size, frame_view->Size());
+      const int resize_count = client.ResizeCount();
+      UpdateAllLifecyclePhases();
+      EXPECT_EQ(expected_size, frame_view->Size());
+      EXPECT_EQ(resize_count, client.ResizeCount());
+    }
+  }
+
+  web_view_helper_.Reset();
+}
+
 TEST_F(WebViewTest, AutoResizeReportsOnlyStableSize) {
   ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
   AutoResizeWebViewClient client;
@@ -7042,15 +7166,19 @@ TEST_F(WebViewTest, SetZoomLevelWhilePluginFocused) {
 }
 
 // Tests that a layout update that detaches a plugin doesn't crash if the
-// plugin tries to execute script while being destroyed.
+// plugin tries to execute script while being destroyed, and that script
+// execution is forbidden during plugin disposal.
 TEST_F(WebViewTest, DetachPluginInLayout) {
   class ScriptInDestroyPlugin : public FakeWebPlugin {
    public:
-    ScriptInDestroyPlugin(WebLocalFrame* frame, const WebPluginParams& params)
-        : FakeWebPlugin(params), frame_(frame) {}
+    ScriptInDestroyPlugin(WebLocalFrame* frame,
+                          const WebPluginParams& params,
+                          bool* destroyed)
+        : FakeWebPlugin(params), frame_(frame), destroyed_(destroyed) {}
 
     // WebPlugin overrides:
     void Destroy() override {
+      *destroyed_ = true;
       frame_->ExecuteScript(WebScriptSource("console.log('done')"));
       // Deletes this.
       FakeWebPlugin::Destroy();
@@ -7059,6 +7187,7 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
    private:
     raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged>
         frame_;  // Unowned
+    raw_ptr<bool> destroyed_;
   };
 
   class PluginCreatingWebFrameClient
@@ -7066,7 +7195,7 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
    public:
     // WebLocalFrameClient overrides:
     WebPlugin* CreatePlugin(const WebPluginParams& params) override {
-      return new ScriptInDestroyPlugin(Frame(), params);
+      return new ScriptInDestroyPlugin(Frame(), params, &plugin_destroyed_);
     }
 
     void DidAddMessageToConsole(const WebConsoleMessage& message,
@@ -7077,9 +7206,11 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
     }
 
     const String& Message() const { return message_; }
+    bool PluginDestroyed() const { return plugin_destroyed_; }
 
    private:
     String message_;
+    bool plugin_destroyed_ = false;
   };
 
   PluginCreatingWebFrameClient frame_client;
@@ -7102,7 +7233,8 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
   EXPECT_TRUE(plugin_element->OwnedPlugin());
   UpdateAllLifecyclePhases();
   EXPECT_FALSE(plugin_element->OwnedPlugin());
-  EXPECT_EQ("done", frame_client.Message());
+  EXPECT_TRUE(frame_client.PluginDestroyed());
+  EXPECT_TRUE(frame_client.Message().IsNull());
   web_view_helper_.Reset();  // Remove dependency on locally scoped client.
 }
 

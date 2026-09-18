@@ -10,6 +10,7 @@
 #include "base/base64.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -77,7 +78,7 @@ void SBStore::LogHasValidDataHistograms() {
   std::string sb_store_suffix = suffix;
   // Make sure that the SBStore suffix does not have "_v5" at the end, that way
   // the SBStore logs are directly comparable between v4 and v5.
-  // TODO(crbug.com/362791941): Pull out a shared constant for "_v5".
+  // TODO(crbug.com/372395685): Remove all SB logs upon deprecation.
   if (base::EndsWith(sb_store_suffix, "_v5", base::CompareCase::SENSITIVE)) {
     sb_store_suffix = sb_store_suffix.substr(0, sb_store_suffix.length() - 3);
   }
@@ -462,8 +463,7 @@ base::expected<int64_t, SBStoreWriteResult> SBStore::WriteToDiskLoop(
     Container* container,
     base::FunctionRef<void()> set_file_metadata,
     base::FunctionRef<void(const base::FilePath&)> cleanup_on_error,
-    base::FunctionRef<int64_t()> get_hash_files_size,
-    base::FunctionRef<void()> cleanup_extra_files) {
+    base::FunctionRef<int64_t()> get_hash_files_size) {
   // Attempt writing to a temporary file first and at the end, swap the files.
   const base::FilePath new_filename = TemporaryFileForFilename(store_path);
 
@@ -499,9 +499,24 @@ base::expected<int64_t, SBStoreWriteResult> SBStore::WriteToDiskLoop(
 
   // No cleanup needed, cancel the cleanup.
   std::move(cleanup_on_error_block).Cancel();
-  cleanup_extra_files();
 
   return file_size;
+}
+
+// static
+void SBStore::CleanupExtraFiles(
+    const base::FilePath& store_path,
+    const base::flat_set<base::FilePath>& paths_in_use) {
+  // Iterate through all files that start with the store path name. All hash
+  // files will be the store path plus an extension.
+  base::FileEnumerator e(
+      store_path.DirName(), /*recursive=*/false, base::FileEnumerator::FILES,
+      store_path.BaseName().value() + FILE_PATH_LITERAL(".*"));
+  for (base::FilePath name = e.Next(); !name.empty(); name = e.Next()) {
+    if (!paths_in_use.contains(name)) {
+      base::DeleteFile(name);
+    }
+  }
 }
 
 // static
@@ -558,15 +573,13 @@ template base::expected<int64_t, SBStoreWriteResult> SBStore::WriteToDiskLoop(
     HashPrefixMap* container,
     base::FunctionRef<void()> set_file_metadata,
     base::FunctionRef<void(const base::FilePath&)> cleanup_on_error,
-    base::FunctionRef<int64_t()> get_hash_files_size,
-    base::FunctionRef<void()> cleanup_extra_files);
+    base::FunctionRef<int64_t()> get_hash_files_size);
 template base::expected<int64_t, SBStoreWriteResult> SBStore::WriteToDiskLoop(
     const base::FilePath& store_path,
     V5StoreFileFormat* file_format,
     HashPrefixList* container,
     base::FunctionRef<void()> set_file_metadata,
     base::FunctionRef<void(const base::FilePath&)> cleanup_on_error,
-    base::FunctionRef<int64_t()> get_hash_files_size,
-    base::FunctionRef<void()> cleanup_extra_files);
+    base::FunctionRef<int64_t()> get_hash_files_size);
 
 }  // namespace safe_browsing

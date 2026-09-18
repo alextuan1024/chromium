@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/tab_observation_strategy.h"
+#include "chrome/browser/glic/actor/glic_actor_metrics.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/common/actor.mojom-forward.h"
@@ -104,9 +105,17 @@ class GlicActorTaskManager {
 
   GlicActorClientSessionInterface* GetClientSessionForTesting();
 
+  // TODO(b/561944228): CriticalActionService needs conversation_id, this is a
+  // temporary solution while b/494212836 is in place; remove once fixed.
+  void OnConversationRegistered(const std::string& conversation_id);
+
  private:
   void MaybeNotifyActuatingChanged();
   friend class GlicActorClientSession;
+
+  // TODO(b/561944228): CriticalActionService needs conversation_id, this is a
+  // temporary solution while b/494212836 is in place; remove once fixed.
+  std::vector<std::string> pending_conversation_task_ids_;
 
   raw_ptr<Profile> profile_;
   raw_ptr<actor::ActorKeyedService> actor_keyed_service_;
@@ -257,7 +266,7 @@ class GlicActorClientSession : public GlicActorClientSessionInterface {
   void StopTaskImpl(actor::TaskId task_id,
                     actor::ActorTask::StoppedReason reason);
   bool ValidateTaskIdMatchesCurrent(actor::TaskId task_id,
-                                    std::string_view method_name);
+                                    GlicActorTaskIdMismatchMethod method);
   actor::ActorKeyedService& actor_keyed_service() const;
   GlicActorPolicyChecker& actor_policy_checker() const;
   GlicInstanceMetrics& instance_metrics() const;

@@ -25,6 +25,7 @@
 #import "components/sync/base/user_selectable_type.h"
 #import "components/sync/service/local_data_description.h"
 #import "components/sync/service/sync_service.h"
+#import "components/sync/service/sync_service_utils.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/central_account_view.h"
@@ -56,7 +57,6 @@
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/sync/model/enterprise_utils.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -1054,7 +1054,8 @@ constexpr CGFloat kBatchUploadSymbolPointSize = 22.;
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
-      _chromeAccountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
+      _chromeAccountManagerService->GetIdentityOnDeviceWithGaiaID(
+          info.GetGaiaId());
   if ([_signedInIdentity isEqual:identity]) {
     [self updatePrimaryAccountDetails];
     // Update the model without notifying the consumer, then reload atomically.
@@ -1260,7 +1261,7 @@ constexpr CGFloat kBatchUploadSymbolPointSize = 22.;
     if (errorSectionPreviouslyExisted) {
       [self removeSyncErrorsSection:notifyConsumer];
     }
-      self.syncErrorItem = nil;
+    self.syncErrorItem = nil;
     return;
   }
 
@@ -1283,6 +1284,9 @@ constexpr CGFloat kBatchUploadSymbolPointSize = 22.;
   }
 
   // 4. Construct and populate the error message and actionable button items.
+  syncer::MaybeRecordIdentityErrorShown(
+      syncer::IdentityErrorDisplaySurface::kSyncSettings,
+      errorUIInfo.errorType);
   self.syncErrorItem =
       [self createSyncErrorButtonItemWithItemType:type.value()
                                     buttonLabelID:errorUIInfo.buttonLabelID];

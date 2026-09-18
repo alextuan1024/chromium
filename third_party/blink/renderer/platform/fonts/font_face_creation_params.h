@@ -34,9 +34,9 @@
 #include "base/check_op.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_hasher.h"
 
 namespace blink {
 
@@ -49,10 +49,9 @@ class FontFaceCreationParams {
   USING_FAST_MALLOC(FontFaceCreationParams);
 
  public:
-  FontFaceCreationParams() : creation_type_(kCreateFontByFamily) {}
+  FontFaceCreationParams() = default;
 
-  explicit FontFaceCreationParams(AtomicString family)
-      : creation_type_(kCreateFontByFamily), family_(family) {
+  explicit FontFaceCreationParams(AtomicString family) : family_(family) {
 #if BUILDFLAG(IS_WIN)
     // Leading "@" in the font name enables Windows vertical flow flag for the
     // font.  Because we do vertical flow by ourselves, we don't want to use the
@@ -96,7 +95,7 @@ class FontFaceCreationParams {
     return ttc_index_;
   }
 
-  unsigned GetHash() const {
+  uint32_t GetHash() const {
     if (creation_type_ == kCreateFontByFciIdAndTtcIndex) {
       // Hashing the filename and ints in this way is sensitive to character
       // encoding and endianness. However, since the hash is not transferred
@@ -106,11 +105,10 @@ class FontFaceCreationParams {
         int index;
         int id;
         uint64_t filename_hash;
-      } hash_data = {ttc_index_, fontconfig_interface_id_,
-                     HasFilename() ? StringHasher::HashMemory64(
-                                         base::as_byte_span(Filename()))
-                                   : 0};
-      return StringHasher::HashMemory32(base::byte_span_from_ref(hash_data));
+      } hash_data = {
+          ttc_index_, fontconfig_interface_id_,
+          HasFilename() ? HashMemory64(base::as_byte_span(Filename())) : 0};
+      return HashMemory32(base::byte_span_from_ref(hash_data));
     }
     return DeprecatedCaseFoldingHash::GetHash(family_.empty() ? g_empty_atom
                                                               : family_);
@@ -125,7 +123,7 @@ class FontFaceCreationParams {
   }
 
  private:
-  FontFaceCreationType creation_type_;
+  FontFaceCreationType creation_type_ = kCreateFontByFamily;
   AtomicString family_;
 
   void SetFilename(std::string& filename) {

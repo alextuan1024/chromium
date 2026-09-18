@@ -37,6 +37,7 @@ import static org.chromium.chrome.browser.keyboard_accessory.bar_component.Keybo
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.DISABLE_ANIMATIONS_FOR_TESTING;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.HAS_STICKY_LAST_ITEM;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.OBFUSCATED_CHILD_AT_CALLBACK;
+import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SELECTED_SUGGESTION_INDEX;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SHEET_OPENER_ITEM;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.SHOW_SWIPING_IPH;
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.VISIBLE;
@@ -349,7 +350,7 @@ public class KeyboardAccessoryViewTest {
                     mModel.get(BAR_ITEMS)
                             .set(
                                     createAutofillChipAndTab(
-                                            "Johnathan", result -> clickRecorded.set(true)));
+                                            "Johnathan", () -> clickRecorded.set(true)));
                 });
 
         onViewWaiting(withText("Johnathan")).perform(click());
@@ -370,9 +371,9 @@ public class KeyboardAccessoryViewTest {
                             .set(
                                     new BarItem[] {
                                         createAutofillBarItem(
-                                                "Johnathan", result -> clickRecorded1.set(true)),
+                                                "Johnathan", () -> clickRecorded1.set(true)),
                                         createAutofillBarItem(
-                                                "Mark", result -> clickRecorded2.set(true)),
+                                                "Mark", () -> clickRecorded2.set(true)),
                                         createSheetOpener(/* atMemoryEnabled= */ true)
                                     });
                 });
@@ -406,8 +407,8 @@ public class KeyboardAccessoryViewTest {
                                                         .build(),
                                                 new Action(
                                                         AUTOFILL_SUGGESTION,
-                                                        CallbackUtils.emptyCallback(),
-                                                        result -> clickRecorded.set(true)),
+                                                        () -> {},
+                                                        () -> clickRecorded.set(true)),
                                                 mProfile),
                                         createSheetOpener(/* atMemoryEnabled= */ true)
                                     });
@@ -424,12 +425,12 @@ public class KeyboardAccessoryViewTest {
         BarItem generatePasswordItem =
                 new ActionBarItem(
                         BarItem.Type.ACTION_BUTTON,
-                        new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback()),
+                        new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {}),
                         R.string.password_generation_accessory_button);
         BarItem credmanItem =
                 new ActionBarItem(
                         BarItem.Type.ACTION_CHIP,
-                        new Action(CREDMAN_CONDITIONAL_UI_REENTRY, CallbackUtils.emptyCallback()),
+                        new Action(CREDMAN_CONDITIONAL_UI_REENTRY, () -> {}),
                         R.string.more_passkeys);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -456,12 +457,12 @@ public class KeyboardAccessoryViewTest {
         BarItem generatePasswordsItem =
                 new ActionBarItem(
                         BarItem.Type.ACTION_BUTTON,
-                        new Action(GENERATE_PASSWORD_AUTOMATIC, CallbackUtils.emptyCallback()),
+                        new Action(GENERATE_PASSWORD_AUTOMATIC, () -> {}),
                         R.string.password_generation_accessory_button);
         BarItem credmanItem =
                 new ActionBarItem(
                         BarItem.Type.ACTION_CHIP,
-                        new Action(CREDMAN_CONDITIONAL_UI_REENTRY, CallbackUtils.emptyCallback()),
+                        new Action(CREDMAN_CONDITIONAL_UI_REENTRY, () -> {}),
                         R.string.more_passkeys);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -528,7 +529,7 @@ public class KeyboardAccessoryViewTest {
                                 .setIphDescriptionText(descriptionText)
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(
                 FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_CARD_INFO_RETRIEVAL_FEATURE);
@@ -574,7 +575,7 @@ public class KeyboardAccessoryViewTest {
                                 .setFeatureForIph("")
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(
                 FeatureConstants.KEYBOARD_ACCESSORY_HOME_WORK_PROFILE_SUGGESTION_FEATURE);
@@ -618,7 +619,7 @@ public class KeyboardAccessoryViewTest {
                                 .setFeatureForIph("")
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(FeatureConstants.KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE);
 
@@ -662,7 +663,7 @@ public class KeyboardAccessoryViewTest {
                                 .setFeatureForIph("")
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(FeatureConstants.KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE);
 
@@ -704,7 +705,7 @@ public class KeyboardAccessoryViewTest {
                                 .setFeatureForIph("")
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE);
 
@@ -736,6 +737,7 @@ public class KeyboardAccessoryViewTest {
     @Test
     @MediumTest
     @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/40263973")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562626278
     public void testDismissesSwipingEducationBubbleOnTap() throws InterruptedException {
         TestTracker tracker =
                 new TestTracker(FeatureConstants.KEYBOARD_ACCESSORY_BAR_SWIPING_FEATURE) {
@@ -772,6 +774,7 @@ public class KeyboardAccessoryViewTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562626278
     public void testDismissesPaymentOfferEducationBubbleOnFilling() throws InterruptedException {
         AutofillBarItem itemWithIph =
                 new AutofillBarItem(
@@ -783,7 +786,7 @@ public class KeyboardAccessoryViewTest {
                                 .setFeatureForIph("")
                                 .setApplyDeactivatedStyle(false)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
         itemWithIph.setFeatureForIph(FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_OFFER_FEATURE);
 
@@ -922,7 +925,7 @@ public class KeyboardAccessoryViewTest {
                         getDefaultAutofillSuggestionBuilder()
                                 .setCustomIconUrl(customIconUrl)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -963,7 +966,7 @@ public class KeyboardAccessoryViewTest {
                         getDefaultAutofillSuggestionBuilder()
                                 .setCustomIconUrl(customIconUrl)
                                 .build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -996,7 +999,7 @@ public class KeyboardAccessoryViewTest {
         AutofillBarItem itemWithoutCustomIconUrl =
                 new AutofillBarItem(
                         getDefaultAutofillSuggestionBuilder().build(),
-                        new Action(AUTOFILL_SUGGESTION, CallbackUtils.emptyCallback()),
+                        new Action(AUTOFILL_SUGGESTION, () -> {}),
                         mProfile);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -1044,8 +1047,8 @@ public class KeyboardAccessoryViewTest {
                                                         .build(),
                                                 new Action(
                                                         AUTOFILL_SUGGESTION,
-                                                        result -> clickRecorded.set(true),
-                                                        result -> clickRecorded.set(true)),
+                                                        () -> clickRecorded.set(true),
+                                                        () -> clickRecorded.set(true)),
                                                 mProfile),
                                         createSheetOpener(/* atMemoryEnabled= */ true)
                                     });
@@ -1100,6 +1103,7 @@ public class KeyboardAccessoryViewTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562626278
     public void testDismissesAtMemoryEducationBubbleOnTap() throws InterruptedException {
         TestTracker tracker =
                 new TestTracker(FeatureConstants.KEYBOARD_ACCESSORY_AT_MEMORY_FEATURE);
@@ -1273,6 +1277,59 @@ public class KeyboardAccessoryViewTest {
         CriteriaHelper.pollUiThread(() -> view.getTranslationX() == expectedMargin);
     }
 
+    @Test
+    @MediumTest
+    public void testSelectedSuggestionIndexTogglesHoverOnChildViews() throws InterruptedException {
+        AutofillBarItem firstItem = createAutofillBarItem("First", /* originalIndex= */ 0, null);
+        AutofillBarItem secondItem = createAutofillBarItem("Second", /* originalIndex= */ 1, null);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(VISIBLE, true);
+                    mModel.get(BAR_ITEMS)
+                            .set(
+                                    new BarItem[] {
+                                        firstItem,
+                                        secondItem,
+                                        createSheetOpener(/* atMemoryEnabled= */ true)
+                                    });
+                });
+        KeyboardAccessoryView view = mKeyboardAccessoryView.take();
+
+        CriteriaHelper.pollUiThread(() -> view.mBarItemsView.getChildCount() >= 2);
+
+        ChipView firstChip =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> (ChipView) view.mBarItemsView.getChildAt(0));
+        ChipView secondChip =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> (ChipView) view.mBarItemsView.getChildAt(1));
+
+        CriteriaHelper.pollUiThread(() -> !firstChip.isHovered() && !secondChip.isHovered());
+
+        ThreadUtils.runOnUiThreadBlocking(() -> setModelSelectedSuggestion(0));
+        CriteriaHelper.pollUiThread(() -> firstChip.isHovered() && !secondChip.isHovered());
+
+        ThreadUtils.runOnUiThreadBlocking(() -> setModelSelectedSuggestion(1));
+        CriteriaHelper.pollUiThread(() -> !firstChip.isHovered() && secondChip.isHovered());
+
+        ThreadUtils.runOnUiThreadBlocking(() -> setModelSelectedSuggestion(null));
+        CriteriaHelper.pollUiThread(() -> !firstChip.isHovered() && !secondChip.isHovered());
+    }
+
+    /**
+     * Simulates the mediator by updating the selection state on each {@link BarItem} and setting
+     * {@link KeyboardAccessoryProperties#SELECTED_SUGGESTION_INDEX} on the model.
+     *
+     * @param selectedIndex The ground-truth index of the selected suggestion, or null to clear.
+     */
+    private void setModelSelectedSuggestion(@Nullable Integer selectedIndex) {
+        for (BarItem barItem : mModel.get(BAR_ITEMS)) {
+            barItem.setSelectedSuggestion(selectedIndex);
+        }
+        mModel.set(SELECTED_SUGGESTION_INDEX, selectedIndex);
+    }
+
     /**
      * Sets up the accessory, adds two buttons, and waits for them to be laid out.
      *
@@ -1374,14 +1431,19 @@ public class KeyboardAccessoryViewTest {
         };
     }
 
-    private BarItem[] createAutofillChipAndTab(String label, Callback<Action> chipCallback) {
+    private BarItem[] createAutofillChipAndTab(String label, Runnable chipCallback) {
         return new BarItem[] {
             createAutofillBarItem(label, chipCallback),
             createSheetOpener(/* atMemoryEnabled= */ true)
         };
     }
 
-    private AutofillBarItem createAutofillBarItem(String label, Callback<Action> chipCallback) {
+    private AutofillBarItem createAutofillBarItem(String label, Runnable chipCallback) {
+        return createAutofillBarItem(label, /* originalIndex= */ 0, chipCallback);
+    }
+
+    private AutofillBarItem createAutofillBarItem(
+            String label, int originalIndex, Runnable chipCallback) {
         return new AutofillBarItem(
                 new AutofillSuggestion.Builder()
                         .setLabel(label)
@@ -1389,6 +1451,7 @@ public class KeyboardAccessoryViewTest {
                         .setSuggestionType(SuggestionType.ADDRESS_ENTRY)
                         .setFeatureForIph("")
                         .setApplyDeactivatedStyle(false)
+                        .setOriginalIndex(originalIndex)
                         .build(),
                 new Action(AUTOFILL_SUGGESTION, chipCallback),
                 mProfile);
